@@ -1,36 +1,82 @@
-# AutoCount Sync v2
+# Houzs ERP
 
-Simplified web app replacing Google Sheets + Apps Script.
+Internal operations platform for Houzs — AutoCount sync, delivery
+planning, driver dispatch, and proof-of-delivery. Replaces a legacy
+Google Sheets + Apps Script setup with a single web app.
 
-## Quick Start
+**Stack**
+
+- **Backend**: Cloudflare Workers (Hono) + D1 + R2
+- **Frontend**: React 18 + Vite + TypeScript + Tailwind
+- **Auth**: session-based, role/permission gated
+- **Integration**: AutoCount middleware (.NET) over HTTPS
+
+## Modules
+
+| Module | What it does |
+|--------|--------------|
+| Orders | Sales orders synced from AutoCount, editable delivery fields, real-time push back |
+| Purchase Orders | Outstanding PO list with manual supplier dates + overdue tracking |
+| Balance | Outstanding-balance view with expiry highlighting |
+| Overdue | Daily auto-extension log |
+| ASSR | Service case management |
+| Trips | Dispatcher trip planning, driver mobile flow, GPS pings, POD photo + signature upload to R2 |
+| Planner | Route/stop optimization helpers |
+| Presence | Live "who's online" for the dispatcher view |
+| Logs | Execution + sync activity log |
+
+## Project layout
+
+```
+ERP-Houzs/
+├── wrangler.toml          # Worker config (D1, R2, secrets, crons)
+├── package.json
+├── src/                   # Backend (Hono on Workers)
+│   ├── index.ts
+│   ├── middleware/
+│   ├── routes/            # HTTP routes per module
+│   ├── services/          # Business logic
+│   └── db/
+│       ├── schema.sql
+│       └── migrations/
+└── frontend/              # React dashboard + driver app
+    ├── index.html
+    ├── vite.config.ts
+    └── src/
+        ├── pages/
+        ├── components/
+        ├── hooks/
+        └── api/
+```
+
+## Quick start
 
 ```bash
+# Backend
 npm install
 wrangler secret put AUTOCOUNT_API_KEY
 wrangler secret put DASHBOARD_API_KEY
+npm run db:reset            # apply schema to D1
+npm run dev                 # local Worker
 
-# Reset DB with simplified schema
-npm run db:reset
-
-# Dev
+# Frontend
+cd frontend
+npm install
 npm run dev
-
-# Deploy
-npm run deploy
 ```
 
-## Key Files
+## Deploy
 
-| File | What to do with it |
-|------|-------------------|
-| `PROJECT_BRIEF.md` | Full backend spec. Feed to Claude Code for Worker API. |
-| `FRONTEND_PROMPT.md` | Full frontend spec. Feed to Claude Code for React dashboard. |
-| `src/db/schema.sql` | Simplified schema (6 tables). Run `npm run db:reset` to apply. |
-| `reference/` | Original Apps Script files for business logic reference. |
+```bash
+npm run deploy              # Worker → Cloudflare
+cd frontend && npm run build  # static bundle → Cloudflare Pages
+```
 
-## Architecture
+## Crons
 
-- 2 crons (pull every 5m, overdue daily)
-- Everything else is real-time (push on save, refresh on click)
-- 6 database tables (down from 8)
-- No PENDING status, no batch push, no balance table copy
+| Schedule | Job |
+|----------|-----|
+| `*/5 * * * *` | Pull modified orders from AutoCount |
+| `0 2 * * *`   | Daily overdue detection + auto-extension |
+
+Everything else runs on-demand from user actions.

@@ -39,3 +39,7 @@ desktop.ini
 
 # Claude local state
 .claude/
+
+# Internal specs (kept local, not published)
+PROJECT_BRIEF.md
+FRONTEND_PROMPT.md
