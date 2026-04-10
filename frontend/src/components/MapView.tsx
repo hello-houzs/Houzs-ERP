@@ -20,7 +20,7 @@ export interface MapPin {
   /** Big number stamped on the pin (used for stop sequence). */
   label?: string | number;
   /** Tone changes the pin color. */
-  tone?: "default" | "warehouse" | "done" | "failed" | "current";
+  tone?: "default" | "warehouse" | "hub" | "done" | "failed" | "current";
   popup?: string;
   onClick?: () => void;
 }
@@ -35,6 +35,8 @@ interface Props {
   currentLocation?: { lat: number; lng: number } | null;
   /** Force the map to recenter on the bounds whenever pins change. */
   fitToPins?: boolean;
+  /** Show a color legend below the map for the pin tones in use. */
+  showLegend?: boolean;
   className?: string;
   height?: number | string;
 }
@@ -45,6 +47,7 @@ export function MapView({
   trail,
   currentLocation,
   fitToPins = true,
+  showLegend = true,
   className,
   height = 320,
 }: Props) {
@@ -163,24 +166,51 @@ export function MapView({
     }
   }, [currentLocation]);
 
+  // Determine which tones are actually used so we only show relevant legend items
+  const usedTones = new Set(pins.map((p) => p.tone || "default"));
+
   return (
-    <div
-      ref={containerRef}
-      className={className ?? "w-full overflow-hidden rounded-md border border-border"}
-      style={{ height }}
-    />
+    <div>
+      <div
+        ref={containerRef}
+        className={className ?? "w-full overflow-hidden rounded-md border border-border"}
+        style={{ height }}
+      />
+      {showLegend && usedTones.size > 1 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-3 px-0.5">
+          {PIN_LEGEND.filter((l) => usedTones.has(l.tone)).map((l) => (
+            <div key={l.tone} className="flex items-center gap-1.5 text-[9px] text-ink-secondary">
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: l.color }}
+              />
+              {l.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
 
 const PIN_COLORS: Record<string, string> = {
-  default: "#a16a2e",
-  warehouse: "#1f1d1a",
-  done: "#15803d",
-  failed: "#b91c1c",
-  current: "#0a84ff",
+  default: "#a16a2e",    // brass — customer stops
+  warehouse: "#1f1d1a",  // black — warehouses (KL, PG, SBH, SRW)
+  hub: "#0a84ff",        // blue — transit hubs (Port Klang, JB)
+  done: "#15803d",       // green — delivered
+  failed: "#b91c1c",     // red — failed
+  current: "#0a84ff",    // blue — live driver position
 };
+
+export const PIN_LEGEND: { tone: string; label: string; color: string }[] = [
+  { tone: "warehouse", label: "Warehouse", color: PIN_COLORS.warehouse },
+  { tone: "hub", label: "Transit Hub", color: PIN_COLORS.hub },
+  { tone: "default", label: "Customer Stop", color: PIN_COLORS.default },
+  { tone: "done", label: "Delivered", color: PIN_COLORS.done },
+  { tone: "failed", label: "Failed", color: PIN_COLORS.failed },
+];
 
 function makeIcon(pin: MapPin) {
   const color = PIN_COLORS[pin.tone || "default"];

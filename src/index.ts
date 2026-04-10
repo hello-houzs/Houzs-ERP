@@ -20,6 +20,8 @@ import warehouses from "./routes/warehouses";
 import maps from "./routes/maps";
 import planner from "./routes/planner";
 import events from "./routes/events";
+import fleet from "./routes/fleet";
+import delivery from "./routes/delivery";
 import { runPull } from "./services/pull";
 import { runOverdue } from "./services/overdue";
 
@@ -54,6 +56,8 @@ app.route("/api/warehouses", warehouses);
 app.route("/api/maps", maps);
 app.route("/api/planner", planner);
 app.route("/api/events", events);
+app.route("/api/fleet", fleet);
+app.route("/api/delivery", delivery);
 
 app.onError((err, c) => {
   console.error("[onError]", err);

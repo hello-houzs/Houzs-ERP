@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { DELIVERY_WHERE } from "./deliveryFilter";
+import { directions } from "./maps";
 
 /**
  * HC Delivery scheduling agent.
@@ -23,20 +24,19 @@ import { DELIVERY_WHERE } from "./deliveryFilter";
 
 // ── Tunables ───────────────────────────────────────────────────────
 
-const REVENUE_IDEAL = 30_000;
-const REVENUE_MAX = 45_000;
-const REVENUE_MIN_NORMAL = 20_000;
-const MAX_KM_NORMAL = 100;
-const MAX_KM_LARGE = 120; // when stop count >= 8
-const LARGE_STOP_THRESHOLD = 8;
-const TOLERANCE_DAYS = 3;
+const REVENUE_IDEAL = 30_000;      // min target before trip is worth sending (MYR)
+const REVENUE_MIN_NORMAL = 20_000; // floor — skip trip unless deadline urgent
+const MAX_KM = 120;                // inter-stop distance cap
+const MAX_STOPS = 8;               // lorry capacity (6-8 orders per trip)
+const TOLERANCE_DAYS = 3;          // days past expiry still eligible
 
 // ── Inputs ─────────────────────────────────────────────────────────
 
 interface EligibleOrder {
   doc_no: string;
   region: "WEST" | "EAST" | "SG"; // routing bucket from sales_orders.region
-  warehouse: string | null;        // origin warehouse (always KL for now)
+  sales_location: string | null;   // KL, PG, SBH, SRW — direct from AutoCount
+  warehouse: string | null;        // origin warehouse (from sales_location)
   state: string | null;
   lat: number | null;
   lng: number | null;
@@ -80,11 +80,13 @@ interface ProposedTrip {
   suggested_driver_user_id: number | null;
   is_outsourced: boolean;
   total_revenue: number;
-  total_distance_km: number;
+  total_distance_km: number;       // inter-stop only (what the cap checks)
+  full_route_km: number;           // warehouse → stops → warehouse (informational)
   stop_count: number;
   stops: ProposedStop[];
   reason: string;
   blocked_reason?: string;
+  route_chain?: { label: string; lat: number; lng: number; type: string }[];
 }
 
 export interface PlannerSummary {
@@ -111,37 +113,91 @@ export async function generatePlan(
   const orders = await fetchEligibleOrders(env, today, horizonEnd);
   const lorriesByWarehouse = await fetchLorriesByWarehouse(env);
   const busy = await fetchLorryBusyMap(env, today, horizonEnd);
+  const warehouseCoords = await fetchWarehouseCoords(env);
 
-  // Single origin model: every internal lorry runs out of KL.
   const klLorries = lorriesByWarehouse["KL"] || [];
+  const pgLorries = lorriesByWarehouse["PG"] || [];
+  const sbhLorries = lorriesByWarehouse["SBH"] || [];
+  const srwLorries = lorriesByWarehouse["SRW"] || [];
+  const klCoords = warehouseCoords["KL"] || { lat: 3.0264, lng: 101.7340 };
+  const pgCoords = warehouseCoords["PG"] || { lat: 5.3007, lng: 100.4273 };
+  const sbhCoords = warehouseCoords["SBH"] || { lat: 5.8784, lng: 116.0103 };
+  const srwCoords = warehouseCoords["SRW"] || { lat: 1.5806, lng: 110.3762 };
 
-  // Partition by destination region. WEST orders need lat/lng for the
-  // multi-drop algorithm; EAST and SG orders are bundled by revenue and
-  // dropped at a single transit point, so they don't need geocoding.
+  // Partition orders by region and warehouse.
+  //
+  // WEST: direct delivery from KL or PG warehouse → customer
+  // EAST: two legs —
+  //   1. Transfer: KL → Port Klang (sea freight) → SBH/SRW
+  //   2. Local delivery: SBH/SRW → customer (same as WEST)
+  //   Orders at_warehouse (delivery_tracking) go to local delivery.
+  //   Orders not yet at warehouse go to transfer trip.
+  // SG: KL → JB hub → outsource vendor
   const blocked: EligibleOrder[] = [];
-  const west: EligibleOrder[] = [];
-  const east: EligibleOrder[] = [];
+  const westKL: EligibleOrder[] = [];
+  const westPG: EligibleOrder[] = [];
+  const eastTransfer: EligibleOrder[] = [];  // needs KL → Port Klang trip
+  const eastSBH: EligibleOrder[] = [];       // at SBH warehouse, ready for local delivery
+  const eastSRW: EligibleOrder[] = [];       // at SRW warehouse, ready for local delivery
   const sg: EligibleOrder[] = [];
+
+  // Check which EM orders have arrived at warehouse
+  const atWarehouseSet = await fetchEMAtWarehouse(env);
+
   for (const o of orders) {
     if (o.region === "WEST") {
-      if (o.lat == null || o.lng == null) blocked.push(o);
-      else west.push(o);
+      if (o.lat == null || o.lng == null) {
+        blocked.push(o);
+      } else if (o.warehouse === "PG") {
+        westPG.push(o);
+      } else {
+        westKL.push(o);
+      }
     } else if (o.region === "EAST") {
-      east.push(o);
+      if (atWarehouseSet.has(o.doc_no)) {
+        // Goods arrived at EM warehouse — plan local delivery
+        if (o.lat == null || o.lng == null) {
+          blocked.push(o);
+        } else if (o.sales_location === "SRW") {
+          eastSRW.push(o);
+        } else {
+          eastSBH.push(o);
+        }
+      } else {
+        // Not yet at warehouse — needs transfer trip
+        eastTransfer.push(o);
+      }
     } else if (o.region === "SG") {
       sg.push(o);
     }
   }
 
   const proposed: ProposedTrip[] = [];
-  if (west.length) {
-    proposed.push(...planWarehouse("KL", west, klLorries, busy, today, horizonEnd));
+
+  // WEST deliveries
+  if (westKL.length) {
+    proposed.push(...await planWarehouse(env, "KL", klCoords, westKL, klLorries, busy, today, horizonEnd));
   }
-  if (east.length) {
-    proposed.push(...planEast(east, klLorries, busy));
+  if (westPG.length) {
+    proposed.push(...await planWarehouse(env, "PG", pgCoords, westPG, pgLorries, busy, today, horizonEnd));
   }
+
+  // EM transfer trips (KL → Port Klang)
+  if (eastTransfer.length) {
+    proposed.push(...await planEast(env, eastTransfer, klLorries, busy));
+  }
+
+  // EM local delivery trips (SBH/SRW → customer, same model as WEST)
+  if (eastSBH.length) {
+    proposed.push(...await planWarehouse(env, "SBH", sbhCoords, eastSBH, sbhLorries, busy, today, horizonEnd));
+  }
+  if (eastSRW.length) {
+    proposed.push(...await planWarehouse(env, "SRW", srwCoords, eastSRW, srwLorries, busy, today, horizonEnd));
+  }
+
+  // SG trips
   if (sg.length) {
-    proposed.push(...planSingapore(sg, klLorries, busy));
+    proposed.push(...await planSingapore(env, sg, klLorries, busy));
   }
 
   // Emit blocked-order proposals so the dispatcher can see what's stuck.
@@ -155,6 +211,7 @@ export async function generatePlan(
       is_outsourced: false,
       total_revenue: blocked.reduce((s, o) => s + o.local_total, 0),
       total_distance_km: 0,
+      full_route_km: 0,
       stop_count: blocked.length,
       stops: blocked.map((o, i) => ({
         doc_no: o.doc_no,
@@ -193,18 +250,26 @@ export async function generatePlan(
 
 // ── Per-warehouse planner ─────────────────────────────────────────
 
-function planWarehouse(
+async function planWarehouse(
+  env: Env,
   warehouse: string,
+  whCoords: { lat: number; lng: number },
   orders: EligibleOrder[],
   lorries: LorryRow[],
   busy: BusyMap,
   startDate: Date,
   endDate: Date
-): ProposedTrip[] {
+): Promise<ProposedTrip[]> {
   const trips: ProposedTrip[] = [];
+  const { lat: whLat, lng: whLng } = whCoords;
 
-  // Sort by tightest deadline (latest cap), then by earliest (earliest first)
-  orders.sort((a, b) => a.latest.localeCompare(b.latest));
+  // Sort by tightest deadline, then prefer orders nearer to warehouse
+  // (so the seed is close to the warehouse for better round-trip).
+  orders.sort((a, b) => {
+    const dl = a.latest.localeCompare(b.latest);
+    if (dl !== 0) return dl;
+    return distToWarehouse(whLat, whLng, a) - distToWarehouse(whLat, whLng, b);
+  });
 
   // Setup orders → solo trips, scheduled on the earliest day available.
   const setups = orders.filter((o) => o.order_type === "setup");
@@ -213,30 +278,37 @@ function planWarehouse(
   for (const setup of setups) {
     const day = pickEarliestUnreservedDay(setup.earliest, setup.latest, lorries, busy, warehouse);
     const lorry = pickLorry(lorries, busy, day);
-    trips.push(makeSoloTrip(warehouse, day, setup, lorry, "setup"));
+    trips.push(await makeSoloTrip(env, warehouse, whCoords, day, setup, lorry, "setup"));
     if (lorry) markBusy(busy, day, lorry.id);
   }
 
-  // Day-by-day greedy bin-pack for normal deliveries
+  // Day-by-day greedy bin-pack for normal deliveries.
+  // Distance cap counts only stop-to-stop legs (warehouse legs excluded).
+  // Cap: <8 stops → 100km, ≥8 stops → 120km.
   const scheduled = new Set<string>();
   for (let d = new Date(startDate); d <= endDate; d = addDays(d, 1)) {
     const dayStr = dateOnly(d);
 
-    // Stop early if no day-eligible orders remain
     let safety = 20; // hard cap on trips per warehouse per day
     while (safety-- > 0) {
       const eligible = others
         .filter((o) => !scheduled.has(o.doc_no) && o.earliest <= dayStr && dayStr <= o.latest)
-        .sort((a, b) => a.latest.localeCompare(b.latest));
+        .sort((a, b) => {
+          const dl = a.latest.localeCompare(b.latest);
+          if (dl !== 0) return dl;
+          return distToWarehouse(whLat, whLng, a) - distToWarehouse(whLat, whLng, b);
+        });
       if (!eligible.length) break;
 
+      // Seed with the most-urgent, nearest-to-warehouse order.
       const seed = eligible[0];
       const stops: EligibleOrder[] = [seed];
       let revenue = seed.local_total;
-      let routeKm = haversineSeed(warehouse, seed); // warehouse → seed → warehouse
+      let stopToStopKm = 0; // only inter-stop distance (for cap)
 
-      // Greedy nearest-neighbor expansion
-      while (true) {
+      // Greedy nearest-neighbor expansion — maximize lorry usage.
+      // Keep adding orders until we hit the stop cap (8) or distance cap (120km).
+      while (stops.length < MAX_STOPS) {
         const last = stops[stops.length - 1];
         const candidates = others.filter(
           (o) =>
@@ -258,26 +330,43 @@ function planWarehouse(
         }
         if (!best) break;
 
-        const projectedStops = [...stops, best];
-        const projectedKm = routeWithReturn(warehouse, projectedStops);
-        const projectedRev = revenue + best.local_total;
-        const cap = projectedStops.length >= LARGE_STOP_THRESHOLD ? MAX_KM_LARGE : MAX_KM_NORMAL;
-
-        if (projectedRev > REVENUE_MAX) break;
-        if (projectedKm > cap) break;
+        const projectedKm = interStopDistance([...stops, best]);
+        if (projectedKm > MAX_KM) break;
 
         stops.push(best);
-        revenue = projectedRev;
-        routeKm = projectedKm;
+        revenue += best.local_total;
+        stopToStopKm = projectedKm;
+      }
 
-        if (revenue >= REVENUE_IDEAL) break; // good enough
+      // Optimize: if possible, swap the last stop so the one nearest
+      // to the warehouse is last (better return leg). Only swap if it
+      // doesn't violate the distance cap.
+      if (stops.length >= 3) {
+        let nearestIdx = 0;
+        let nearestDist = Infinity;
+        for (let i = 0; i < stops.length; i++) {
+          const d2 = distToWarehouse(whLat, whLng, stops[i]);
+          if (d2 < nearestDist) {
+            nearestDist = d2;
+            nearestIdx = i;
+          }
+        }
+        if (nearestIdx !== stops.length - 1 && nearestIdx !== 0) {
+          const candidate = [...stops];
+          const [moved] = candidate.splice(nearestIdx, 1);
+          candidate.push(moved);
+          const newKm = interStopDistance(candidate);
+          if (newKm <= MAX_KM) {
+            stops.length = 0;
+            stops.push(...candidate);
+            stopToStopKm = newKm;
+          }
+        }
       }
 
       // Validate revenue floor
       const hasUrgent = stops.some((s) => s.latest === dayStr);
       if (revenue < REVENUE_MIN_NORMAL && !hasUrgent) {
-        // Skip this trip — defer to a future day so we can bundle more.
-        // We don't mark stops scheduled, so the next day's iteration sees them.
         break;
       }
 
@@ -287,6 +376,33 @@ function planWarehouse(
       const isOut = lorry ? !lorry.is_internal : true;
       if (lorry) markBusy(busy, dayStr, lorry.id);
 
+      // Get real road distance from Google Directions API with route optimization
+      let fullKm = fullRouteDistance(whLat, whLng, stops); // haversine fallback
+      let roadStopToStopKm = stopToStopKm;
+      const geoStops = stops.filter((s) => s.lat != null && s.lng != null);
+      if (geoStops.length > 0) {
+        try {
+          const waypoints = geoStops.map((s) => ({ lat: s.lat!, lng: s.lng! }));
+          const res = await directions(env, {
+            origin: { lat: whLat, lng: whLng },
+            destination: { lat: whLat, lng: whLng },
+            waypoints,
+            optimize: true,
+          });
+          fullKm = res.total_distance_m / 1000;
+          // Inter-stop = exclude first leg (warehouse→stop1) and last leg (stopN→warehouse)
+          if (res.legs.length > 2) {
+            roadStopToStopKm = res.legs.slice(1, -1).reduce((s, l) => s + l.distance_m, 0) / 1000;
+          }
+          // Reorder stops to match Google's optimized sequence
+          if (res.waypoint_order?.length === geoStops.length) {
+            const reordered = res.waypoint_order.map((idx) => stops[idx]);
+            stops.length = 0;
+            stops.push(...reordered);
+          }
+        } catch { /* keep haversine fallback */ }
+      }
+
       trips.push({
         warehouse,
         trip_date: dayStr,
@@ -295,7 +411,8 @@ function planWarehouse(
         suggested_driver_user_id: lorry?.default_driver_user_id ?? null,
         is_outsourced: isOut,
         total_revenue: round2(revenue),
-        total_distance_km: round2(routeKm),
+        total_distance_km: round2(roadStopToStopKm),
+        full_route_km: round2(fullKm),
         stop_count: stops.length,
         stops: stops.map((s, i) => ({
           doc_no: s.doc_no,
@@ -307,47 +424,22 @@ function planWarehouse(
           expiry_date: s.expiry_date,
           reason:
             i === 0
-              ? `Seed (deadline ${s.latest})`
+              ? `Seed (deadline ${s.latest}, nearest to warehouse)`
               : `Nearest of pending (deadline ${s.latest})`,
         })),
-        reason: buildReason(revenue, routeKm, stops.length, hasUrgent),
+        reason: buildReason(revenue, roadStopToStopKm, stops.length, hasUrgent),
       });
     }
   }
 
-  // Anything still unscheduled at end of horizon → emit as a "deferred"
-  // proposal so the dispatcher knows about it. Treat as low-rev solo
-  // trip on the deadline day.
+  // Anything still unscheduled at end of horizon → deferred solo trip.
   const leftover = others.filter((o) => !scheduled.has(o.doc_no));
   for (const o of leftover) {
     const day = clampDate(o.latest, dateOnly(startDate), dateOnly(endDate));
     const lorry = pickLorry(lorries, busy, day);
     const isOut = lorry ? !lorry.is_internal : true;
     if (lorry) markBusy(busy, day, lorry.id);
-    trips.push({
-      warehouse,
-      trip_date: day,
-      trip_type: "delivery",
-      suggested_lorry_id: lorry?.id ?? null,
-      suggested_driver_user_id: lorry?.default_driver_user_id ?? null,
-      is_outsourced: isOut,
-      total_revenue: round2(o.local_total),
-      total_distance_km: round2(haversineSeed(warehouse, o)),
-      stop_count: 1,
-      stops: [
-        {
-          doc_no: o.doc_no,
-          sequence: 1,
-          debtor_name: o.debtor_name,
-          lat: o.lat as number,
-          lng: o.lng as number,
-          local_total: o.local_total,
-          expiry_date: o.expiry_date,
-          reason: "Could not bundle within horizon — solo trip",
-        },
-      ],
-      reason: "Standalone delivery (no efficient bundle found)",
-    });
+    trips.push(await makeSoloTrip(env, warehouse, whCoords, day, o, lorry, "delivery"));
   }
 
   return trips;
@@ -360,97 +452,189 @@ function planWarehouse(
 // orders into trips that are revenue-efficient, and (b) which day
 // each bundle leaves. Customer addresses are irrelevant — coordinates
 // aren't required.
-function planEast(
+async function planEast(
+  env: Env,
   orders: EligibleOrder[],
   lorries: LorryRow[],
   busy: BusyMap
-): ProposedTrip[] {
+): Promise<ProposedTrip[]> {
   const trips: ProposedTrip[] = [];
   orders.sort((a, b) => a.latest.localeCompare(b.latest));
 
+  // No distance constraint (single drop at Port Klang). Split at MAX_STOPS.
   let bin: EligibleOrder[] = [];
-  let binRev = 0;
   for (const o of orders) {
-    if (binRev + o.local_total > REVENUE_MAX && bin.length) {
-      trips.push(makeEastTrip(bin, lorries, busy));
-      bin = [];
-      binRev = 0;
-    }
     bin.push(o);
-    binRev += o.local_total;
-    if (binRev >= REVENUE_IDEAL) {
-      trips.push(makeEastTrip(bin, lorries, busy));
+    if (bin.length >= MAX_STOPS) {
+      trips.push(await makeEastTrip(env, bin, lorries, busy));
       bin = [];
-      binRev = 0;
     }
   }
-  if (bin.length) trips.push(makeEastTrip(bin, lorries, busy));
+  if (bin.length) trips.push(await makeEastTrip(env, bin, lorries, busy));
   return trips;
 }
 
-function makeEastTrip(stops: EligibleOrder[], lorries: LorryRow[], busy: BusyMap): ProposedTrip {
+// Port Klang coordinates — the physical drop point for EM orders
+const PORT_KLANG = { lat: 3.0042, lng: 101.3933 };
+const KL_WAREHOUSE = { lat: 3.0264, lng: 101.7340 };
+const SBH_WAREHOUSE = { lat: 5.8784, lng: 116.0103 };
+const SRW_WAREHOUSE = { lat: 1.5806, lng: 110.3762 };
+// EM receiving ports — sea freight arrives here, then lorry to warehouse
+const SBH_PORT = { lat: 6.0467, lng: 116.0544 }; // Sepanggar Bay, Kota Kinabalu
+const SRW_PORT = { lat: 1.5590, lng: 110.3891 }; // Kuching Port
+
+async function makeEastTrip(env: Env, stops: EligibleOrder[], lorries: LorryRow[], busy: BusyMap): Promise<ProposedTrip> {
   const day = stops.reduce((min, o) => (o.latest < min ? o.latest : min), stops[0].latest);
   const lorry = pickLorry(lorries, busy, day);
   if (lorry) markBusy(busy, day, lorry.id);
+
+  // Determine destination warehouse from the orders' sales_location
+  const srwCount = stops.filter((s) => s.sales_location === "SRW").length;
+  const isSRW = srwCount > stops.length / 2;
+  const destWh = isSRW
+    ? { code: "SRW", label: "Sarawak Warehouse", ...SRW_WAREHOUSE }
+    : { code: "SBH", label: "Sabah Warehouse", ...SBH_WAREHOUSE };
+
+  const emPort = isSRW ? SRW_PORT : SBH_PORT;
+  const emWh = isSRW ? SRW_WAREHOUSE : SBH_WAREHOUSE;
+
+  // Leg 1: KL warehouse → Port Klang → KL warehouse (lorry round trip)
+  let klToPortKlang = round2(2 * haversineKm(KL_WAREHOUSE.lat, KL_WAREHOUSE.lng, PORT_KLANG.lat, PORT_KLANG.lng));
+  try {
+    const res = await directions(env, {
+      origin: KL_WAREHOUSE,
+      destination: KL_WAREHOUSE,
+      waypoints: [PORT_KLANG],
+    });
+    klToPortKlang = round2(res.total_distance_m / 1000);
+  } catch { /* keep haversine fallback */ }
+
+  // Leg 2: EM port → EM warehouse (pickup from port)
+  let emPortToWh = round2(haversineKm(emPort.lat, emPort.lng, emWh.lat, emWh.lng));
+  try {
+    const res = await directions(env, {
+      origin: emPort,
+      destination: emWh,
+    });
+    emPortToWh = round2(res.total_distance_m / 1000);
+  } catch { /* keep haversine fallback */ }
+
+  // Leg 3: EM warehouse → customer stops → EM warehouse (local delivery)
+  let emLocalKm = 0;       // full local route including warehouse legs
+  let emStopToStopKm = 0;  // customer stops only
+  const geoStops = stops.filter((s) => s.lat != null && s.lng != null);
+  if (geoStops.length > 0) {
+    // Haversine fallback
+    emLocalKm = fullRouteDistance(emWh.lat, emWh.lng, geoStops as any);
+    emStopToStopKm = interStopDistance(geoStops as any);
+    try {
+      const waypoints = geoStops.map((s) => ({ lat: s.lat!, lng: s.lng! }));
+      const res = await directions(env, {
+        origin: emWh,
+        destination: emWh,
+        waypoints,
+        optimize: true,
+      });
+      emLocalKm = res.total_distance_m / 1000;
+      // Customer-only: exclude first leg (wh→stop1) and last leg (stopN→wh)
+      if (res.legs.length > 2) {
+        emStopToStopKm = res.legs.slice(1, -1).reduce((s, l) => s + l.distance_m, 0) / 1000;
+      }
+    } catch { /* keep haversine fallback */ }
+  }
+
+  const totalFullKm = round2(klToPortKlang + emPortToWh + emLocalKm);
+
   return {
-    warehouse: "KL",
+    warehouse: "PORT_KLANG",
     trip_date: day,
-    trip_type: "delivery", // an EAST trip is still a real delivery trip type-wise
+    trip_type: "delivery",
     suggested_lorry_id: lorry?.id ?? null,
     suggested_driver_user_id: lorry?.default_driver_user_id ?? null,
     is_outsourced: lorry ? !lorry.is_internal : true,
     total_revenue: round2(stops.reduce((s, o) => s + o.local_total, 0)),
-    total_distance_km: 0,
+    total_distance_km: round2(emStopToStopKm),
+    full_route_km: totalFullKm,
     stop_count: stops.length,
     stops: stops.map((s, i) => ({
       doc_no: s.doc_no,
       sequence: i + 1,
       debtor_name: s.debtor_name,
-      lat: s.lat ?? 3.0042, // fallback to Port Klang for the map
-      lng: s.lng ?? 101.3933,
+      lat: s.lat ?? 0,
+      lng: s.lng ?? 0,
       local_total: s.local_total,
       expiry_date: s.expiry_date,
     })),
-    reason: "EAST drop at Port Klang — sea freight handles last mile",
+    reason: `EAST → ${destWh.code} — ${stops.length} orders · KL→PK ~${klToPortKlang}km + port→wh ~${emPortToWh}km + local ~${round2(emLocalKm)}km`,
+    route_chain: [
+      { label: "KL Warehouse", lat: KL_WAREHOUSE.lat, lng: KL_WAREHOUSE.lng, type: "origin" },
+      { label: "Port Klang", lat: PORT_KLANG.lat, lng: PORT_KLANG.lng, type: "transit" },
+      { label: `${destWh.code} Port`, lat: emPort.lat, lng: emPort.lng, type: "transit" },
+      { label: destWh.label, lat: destWh.lat, lng: destWh.lng, type: "warehouse" },
+    ],
   };
 }
 
 // ── Singapore planner (capacity-only) ─────────────────────────────
 
-function planSingapore(
+async function planSingapore(
+  env: Env,
   orders: EligibleOrder[],
   lorries: LorryRow[],
   busy: BusyMap
-): ProposedTrip[] {
+): Promise<ProposedTrip[]> {
   const trips: ProposedTrip[] = [];
   // Sort by deadline so urgent orders ship in the earliest bin
   orders.sort((a, b) => a.latest.localeCompare(b.latest));
 
+  // Distance ignored for SG. Split at MAX_STOPS.
   let bin: EligibleOrder[] = [];
-  let binRev = 0;
   for (const o of orders) {
-    if (binRev + o.local_total > REVENUE_MAX && bin.length) {
-      trips.push(makeSgTrip(bin, lorries, busy));
-      bin = [];
-      binRev = 0;
-    }
     bin.push(o);
-    binRev += o.local_total;
-    if (binRev >= REVENUE_IDEAL) {
-      trips.push(makeSgTrip(bin, lorries, busy));
+    if (bin.length >= MAX_STOPS) {
+      trips.push(await makeSgTrip(env, bin, lorries, busy));
       bin = [];
-      binRev = 0;
     }
   }
-  if (bin.length) trips.push(makeSgTrip(bin, lorries, busy));
+  if (bin.length) trips.push(await makeSgTrip(env, bin, lorries, busy));
   return trips;
 }
 
-function makeSgTrip(stops: EligibleOrder[], lorries: LorryRow[], busy: BusyMap): ProposedTrip {
-  // Ship on the tightest deadline in the bin
+// JB hub coordinates
+const JB_HUB = { lat: 1.4927, lng: 103.7414 };
+
+async function makeSgTrip(env: Env, stops: EligibleOrder[], lorries: LorryRow[], busy: BusyMap): Promise<ProposedTrip> {
   const day = stops.reduce((min, o) => (o.latest < min ? o.latest : min), stops[0].latest);
   const lorry = pickLorry(lorries, busy, day);
   if (lorry) markBusy(busy, day, lorry.id);
+  // KL → JB hub round trip
+  let klToJb = round2(2 * haversineKm(KL_WAREHOUSE.lat, KL_WAREHOUSE.lng, JB_HUB.lat, JB_HUB.lng));
+  try {
+    const res = await directions(env, {
+      origin: KL_WAREHOUSE,
+      destination: KL_WAREHOUSE,
+      waypoints: [JB_HUB],
+    });
+    klToJb = round2(res.total_distance_m / 1000);
+  } catch { /* keep haversine fallback */ }
+
+  // Customer stop-to-stop distance only
+  let sgStopToStopKm = 0;
+  const geoStops = stops.filter((s) => s.lat != null && s.lng != null);
+  if (geoStops.length >= 2) {
+    sgStopToStopKm = interStopDistance(geoStops as any);
+    try {
+      const waypoints = geoStops.map((s) => ({ lat: s.lat!, lng: s.lng! }));
+      const res = await directions(env, {
+        origin: waypoints[0],
+        destination: waypoints[waypoints.length - 1],
+        waypoints: waypoints.slice(1, -1),
+        optimize: true,
+      });
+      sgStopToStopKm = res.total_distance_m / 1000;
+    } catch { /* keep haversine fallback */ }
+  }
+
   return {
     warehouse: "SG",
     trip_date: day,
@@ -459,18 +643,24 @@ function makeSgTrip(stops: EligibleOrder[], lorries: LorryRow[], busy: BusyMap):
     suggested_driver_user_id: lorry?.default_driver_user_id ?? null,
     is_outsourced: lorry ? !lorry.is_internal : true,
     total_revenue: round2(stops.reduce((s, o) => s + o.local_total, 0)),
-    total_distance_km: 0,
+    total_distance_km: round2(sgStopToStopKm),
+    full_route_km: round2(klToJb + sgStopToStopKm),
     stop_count: stops.length,
     stops: stops.map((s, i) => ({
       doc_no: s.doc_no,
       sequence: i + 1,
       debtor_name: s.debtor_name,
-      lat: s.lat as number,
-      lng: s.lng as number,
+      lat: s.lat ?? 0,
+      lng: s.lng ?? 0,
       local_total: s.local_total,
       expiry_date: s.expiry_date,
     })),
-    reason: "SG drop at JB hub — capacity bin",
+    reason: `SG drop at JB hub — ${stops.length} orders, outsource vendor handles last mile`,
+    route_chain: [
+      { label: "KL Warehouse", lat: KL_WAREHOUSE.lat, lng: KL_WAREHOUSE.lng, type: "origin" },
+      { label: "JB Hub", lat: JB_HUB.lat, lng: JB_HUB.lng, type: "transit" },
+      { label: "Customer (SG)", lat: 0, lng: 0, type: "destination" },
+    ],
   };
 }
 
@@ -507,13 +697,29 @@ function markBusy(busy: BusyMap, day: string, lorryId: number) {
   (busy[day] ||= new Set()).add(lorryId);
 }
 
-function makeSoloTrip(
+async function makeSoloTrip(
+  env: Env,
   warehouse: string,
+  whCoords: { lat: number; lng: number },
   day: string,
   o: EligibleOrder,
   lorry: LorryRow | null,
   type: "setup" | "delivery"
-): ProposedTrip {
+): Promise<ProposedTrip> {
+  // Solo trip: 0 inter-stop km (only 1 stop). Full round-trip for info.
+  let roundTrip = o.lat != null
+    ? round2(2 * haversineKm(whCoords.lat, whCoords.lng, o.lat!, o.lng!))
+    : 0;
+  if (o.lat != null) {
+    try {
+      const res = await directions(env, {
+        origin: whCoords,
+        destination: whCoords,
+        waypoints: [{ lat: o.lat!, lng: o.lng! }],
+      });
+      roundTrip = round2(res.total_distance_m / 1000);
+    } catch { /* keep haversine fallback */ }
+  }
   return {
     warehouse,
     trip_date: day,
@@ -522,7 +728,8 @@ function makeSoloTrip(
     suggested_driver_user_id: lorry?.default_driver_user_id ?? null,
     is_outsourced: lorry ? !lorry.is_internal : true,
     total_revenue: round2(o.local_total),
-    total_distance_km: round2(haversineSeed(warehouse, o)),
+    total_distance_km: 0,         // solo trip: 0 inter-stop distance
+    full_route_km: roundTrip,     // warehouse → stop → warehouse
     stop_count: 1,
     stops: [
       {
@@ -533,14 +740,39 @@ function makeSoloTrip(
         lng: o.lng as number,
         local_total: o.local_total,
         expiry_date: o.expiry_date,
-        reason: type === "setup" ? "Setup → solo trip (rule)" : undefined,
+        reason: type === "setup" ? "Setup → solo trip (rule)" : "Could not bundle within horizon — solo trip",
       },
     ],
-    reason: type === "setup" ? "Setup order — full trip required" : "Standalone delivery",
+    reason: type === "setup" ? "Setup order — full trip required" : "Standalone delivery (no efficient bundle found)",
   };
 }
 
 // ── DB I/O ─────────────────────────────────────────────────────────
+
+/**
+ * Returns doc_nos of EM orders that have arrived at their local
+ * warehouse (delivery_tracking.status = 'at_warehouse' or later
+ * local statuses). These are ready for local delivery planning.
+ */
+async function fetchEMAtWarehouse(env: Env): Promise<Set<string>> {
+  const rows = await env.DB.prepare(
+    `SELECT doc_no FROM delivery_tracking
+      WHERE region = 'EAST'
+        AND status IN ('at_warehouse', 'out_for_delivery')`
+  ).all<{ doc_no: string }>();
+  return new Set((rows.results ?? []).map((r) => r.doc_no));
+}
+
+async function fetchWarehouseCoords(env: Env): Promise<Record<string, { lat: number; lng: number }>> {
+  const rows = await env.DB.prepare(
+    `SELECT code, lat, lng FROM warehouses WHERE lat IS NOT NULL AND lng IS NOT NULL`
+  ).all<{ code: string; lat: number; lng: number }>();
+  const map: Record<string, { lat: number; lng: number }> = {};
+  for (const r of rows.results ?? []) {
+    map[r.code] = { lat: r.lat, lng: r.lng };
+  }
+  return map;
+}
 
 async function fetchEligibleOrders(env: Env, today: Date, end: Date): Promise<EligibleOrder[]> {
   const todayStr = dateOnly(today);
@@ -550,6 +782,7 @@ async function fetchEligibleOrders(env: Env, today: Date, end: Date): Promise<El
   const rows = await env.DB.prepare(
     `SELECT
         so.doc_no, so.region, so.local_total, so.expiry_date, so.debtor_name,
+        so.sales_location,
         od.warehouse, od.state, od.lat, od.lng,
         od.proposed_delivery_date, od.order_type
       FROM sales_orders so
@@ -574,10 +807,15 @@ async function fetchEligibleOrders(env: Env, today: Date, end: Date): Promise<El
     const latestRaw = dateOnly(addDays(new Date(r.expiry_date), TOLERANCE_DAYS));
     const latest = latestRaw < endStr ? latestRaw : endStr;
     if (latest < earliest) continue; // already past tolerance — let dispatcher see via blocked? skip for now
+    // Use sales_location directly as warehouse (KL, PG, SBH, SRW)
+    const salesLoc = (r.sales_location || "").toUpperCase();
+    const effectiveWarehouse = salesLoc === "PG" ? "PG" : salesLoc === "SBH" ? "SBH" : salesLoc === "SRW" ? "SRW" : "KL";
+
     out.push({
       doc_no: r.doc_no,
       region: r.region as "WEST" | "EAST" | "SG",
-      warehouse: r.warehouse,
+      sales_location: r.sales_location,
+      warehouse: effectiveWarehouse,
       state: r.state,
       lat: r.lat,
       lng: r.lng,
@@ -606,18 +844,57 @@ async function fetchLorriesByWarehouse(env: Env): Promise<Record<string, LorryRo
 }
 
 async function fetchLorryBusyMap(env: Env, today: Date, end: Date): Promise<BusyMap> {
-  const rows = await env.DB.prepare(
+  const todayStr = dateOnly(today);
+  const endStr = dateOnly(end);
+
+  // Lorries busy with existing trips
+  const tripRows = await env.DB.prepare(
     `SELECT trip_date, lorry_id FROM trips
       WHERE lorry_id IS NOT NULL
         AND status IN ('assigned','started','in_progress','completed')
         AND trip_date BETWEEN ? AND ?`
   )
-    .bind(dateOnly(today), dateOnly(end))
+    .bind(todayStr, endStr)
     .all<{ trip_date: string; lorry_id: number }>();
+
   const map: BusyMap = {};
-  for (const r of rows.results ?? []) {
+  for (const r of tripRows.results ?? []) {
     (map[r.trip_date] ||= new Set()).add(r.lorry_id);
   }
+
+  // Lorries unavailable due to maintenance
+  const maintRows = await env.DB.prepare(
+    `SELECT lorry_id, unavailable_from, unavailable_to FROM lorry_maintenance
+      WHERE unavailable_from IS NOT NULL AND unavailable_to IS NOT NULL
+        AND unavailable_from <= ? AND unavailable_to >= ?`
+  )
+    .bind(endStr, todayStr)
+    .all<{ lorry_id: number; unavailable_from: string; unavailable_to: string }>();
+
+  for (const m of maintRows.results ?? []) {
+    const from = m.unavailable_from < todayStr ? todayStr : m.unavailable_from;
+    const to = m.unavailable_to > endStr ? endStr : m.unavailable_to;
+    for (let d = new Date(from); dateOnly(d) <= to; d = addDays(d, 1)) {
+      (map[dateOnly(d)] ||= new Set()).add(m.lorry_id);
+    }
+  }
+
+  // Lorries with expired compliance (road tax, insurance, PUSPAKOM)
+  const expiredRows = await env.DB.prepare(
+    `SELECT id FROM lorries
+      WHERE is_active = 1
+        AND (road_tax_expiry < ? OR insurance_expiry < ? OR puspakom_expiry < ?)`
+  )
+    .bind(todayStr, todayStr, todayStr)
+    .all<{ id: number }>();
+
+  // Mark expired lorries as busy for the entire horizon
+  for (const l of expiredRows.results ?? []) {
+    for (let d = new Date(today); d <= end; d = addDays(d, 1)) {
+      (map[dateOnly(d)] ||= new Set()).add(l.id);
+    }
+  }
+
   return map;
 }
 
@@ -658,6 +935,8 @@ async function persistProposal(
           stops: t.stops,
           reason: t.reason,
           blocked_reason: t.blocked_reason,
+          full_route_km: t.full_route_km,
+          route_chain: t.route_chain,
         })
       )
       .run();
@@ -670,7 +949,19 @@ async function persistProposal(
 
 import { nextTripNo } from "./trips";
 
-export async function confirmProposal(env: Env, proposalId: number, userId: number) {
+/**
+ * Materialize proposed trips into real trips.
+ * If `tripIds` is provided, only those proposal-trip rows are confirmed
+ * and the proposal stays as 'draft' so the dispatcher can confirm more
+ * later. If omitted (or empty), all non-blocked trips are confirmed and
+ * the proposal is marked 'confirmed'.
+ */
+export async function confirmProposal(
+  env: Env,
+  proposalId: number,
+  userId: number,
+  tripIds?: number[]
+) {
   const proposal = await env.DB.prepare(
     `SELECT * FROM trip_proposals WHERE id = ?`
   )
@@ -685,9 +976,15 @@ export async function confirmProposal(env: Env, proposalId: number, userId: numb
     .bind(proposalId)
     .all<any>();
 
+  const selectAll = !tripIds || tripIds.length === 0;
+  const selectedSet = selectAll ? null : new Set(tripIds);
+
   let createdCount = 0;
+  const confirmedPtIds: number[] = [];
+
   for (const pt of proposalTrips.results ?? []) {
     if (pt.trip_type === "blocked") continue;
+    if (selectedSet && !selectedSet.has(pt.id)) continue;
 
     const tripNo = await nextTripNo(env);
     const ins = await env.DB.prepare(
@@ -727,14 +1024,40 @@ export async function confirmProposal(env: Env, proposalId: number, userId: numb
         )
         .run();
     }
+    confirmedPtIds.push(pt.id);
     createdCount++;
   }
 
-  await env.DB.prepare(
-    `UPDATE trip_proposals SET status = 'confirmed' WHERE id = ?`
-  )
-    .bind(proposalId)
-    .run();
+  // Remove confirmed proposal trips so they don't show in the draft anymore
+  if (confirmedPtIds.length && !selectAll) {
+    const ph = confirmedPtIds.map(() => "?").join(",");
+    await env.DB.prepare(
+      `DELETE FROM trip_proposal_trips WHERE id IN (${ph})`
+    )
+      .bind(...confirmedPtIds)
+      .run();
+
+    // If no non-blocked trips remain, mark proposal as confirmed
+    const remaining = await env.DB.prepare(
+      `SELECT COUNT(*) as c FROM trip_proposal_trips
+        WHERE proposal_id = ? AND trip_type != 'blocked'`
+    )
+      .bind(proposalId)
+      .first<{ c: number }>();
+    if (!remaining || remaining.c === 0) {
+      await env.DB.prepare(
+        `UPDATE trip_proposals SET status = 'confirmed' WHERE id = ?`
+      )
+        .bind(proposalId)
+        .run();
+    }
+  } else {
+    await env.DB.prepare(
+      `UPDATE trip_proposals SET status = 'confirmed' WHERE id = ?`
+    )
+      .bind(proposalId)
+      .run();
+  }
 
   return { created: createdCount };
 }
@@ -772,18 +1095,13 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-// We don't have warehouse coords in the algorithm scope; estimate
-// the seed leg as 2× the order's distance from a heuristic centroid.
-// Underestimates slightly, but the planner just needs a relative
-// signal — the dispatcher gets the real route from Directions on view.
-function haversineSeed(_warehouse: string, o: EligibleOrder): number {
-  if (o.lat == null || o.lng == null) return 0;
-  return 30; // assume ~15km each way as a baseline
-}
+// Distance cap only counts stop-to-stop legs. Warehouse → first stop
+// and last stop → warehouse are excluded from the cap but used as an
+// optimization signal (prefer first/last stops near the warehouse).
 
-function routeWithReturn(_warehouse: string, stops: EligibleOrder[]): number {
-  if (stops.length === 0) return 0;
-  let total = 30; // warehouse round trip baseline
+function interStopDistance(stops: EligibleOrder[]): number {
+  if (stops.length < 2) return 0;
+  let total = 0;
   for (let i = 1; i < stops.length; i++) {
     const a = stops[i - 1];
     const b = stops[i];
@@ -791,6 +1109,29 @@ function routeWithReturn(_warehouse: string, stops: EligibleOrder[]): number {
     total += haversineKm(a.lat!, a.lng!, b.lat!, b.lng!);
   }
   return total;
+}
+
+// Full round-trip estimate including warehouse legs — used for the
+// total_distance_km stored on the proposal (informational, not for cap).
+function fullRouteDistance(whLat: number, whLng: number, stops: EligibleOrder[]): number {
+  if (stops.length === 0) return 0;
+  let total = 0;
+  // Warehouse → first stop
+  const first = stops[0];
+  if (first.lat != null) total += haversineKm(whLat, whLng, first.lat!, first.lng!);
+  // Stop-to-stop
+  total += interStopDistance(stops);
+  // Last stop → warehouse
+  const last = stops[stops.length - 1];
+  if (last.lat != null) total += haversineKm(last.lat!, last.lng!, whLat, whLng);
+  return total;
+}
+
+// Distance from an order to a warehouse — used to prefer first/last
+// stops near the warehouse for route optimization.
+function distToWarehouse(whLat: number, whLng: number, o: EligibleOrder): number {
+  if (o.lat == null || o.lng == null) return Infinity;
+  return haversineKm(whLat, whLng, o.lat, o.lng);
 }
 
 function buildReason(rev: number, km: number, n: number, urgent: boolean): string {

@@ -19,49 +19,37 @@
 -- absent until the dispatcher finalizes the lifecycle.
 -- ═══════════════════════════════════════
 
--- ── Deactivate everything except KL + SG, then refresh KL info ────
-UPDATE warehouses SET is_active = 0 WHERE code IN ('PG','EAST','SABAH','SARAWAK');
-UPDATE warehouses SET name = 'KL Warehouse (origin)' WHERE code = 'KL';
+-- ── All warehouses active (KL, PG, SBH, SRW, SG) ────────────────
 
 -- ── Add Port Klang as the EAST transit drop ───────────────────────
 INSERT OR IGNORE INTO warehouses (code, name, address, lat, lng, is_active) VALUES
   ('PORT_KLANG', 'Port Klang (East Malaysia transit)', 'Port Klang, Selangor', 3.0042, 101.3933, 1);
 
--- ── Rewrite the state map so every state lands at KL ──────────────
--- Origin is always KL for now. The destination logic (WEST/EAST/SG)
--- comes from sales_orders.region, which is set during the AutoCount
--- pull and is more reliable than parsing addresses.
+-- ── Rewrite state map: KL covers south/central, PG covers north/east coast
 DELETE FROM state_warehouse_map;
 INSERT OR IGNORE INTO state_warehouse_map (state, warehouse) VALUES
+  -- KL warehouse
   ('Kuala Lumpur',    'KL'),
   ('Selangor',        'KL'),
   ('Putrajaya',       'KL'),
   ('Negeri Sembilan', 'KL'),
   ('Melaka',          'KL'),
   ('Johor',           'KL'),
-  ('Penang',          'KL'),
-  ('Pulau Pinang',    'KL'),
-  ('Kedah',           'KL'),
-  ('Perlis',          'KL'),
-  ('Perak',           'KL'),
-  ('Kelantan',        'KL'),
-  ('Terengganu',      'KL'),
-  ('Pahang',          'KL'),
-  ('Sabah',           'KL'),
-  ('Labuan',          'KL'),
-  ('Sarawak',         'KL'),
+  -- PG warehouse
+  ('Penang',          'PG'),
+  ('Pulau Pinang',    'PG'),
+  ('Kedah',           'PG'),
+  ('Perlis',          'PG'),
+  ('Perak',           'PG'),
+  ('Pahang',          'PG'),
+  ('Terengganu',      'PG'),
+  ('Kelantan',        'PG'),
+  -- EM (local warehouse for last-mile delivery)
+  ('Sabah',           'SBH'),
+  ('Labuan',          'SBH'),
+  ('Sarawak',         'SRW'),
+  -- SG
   ('Singapore',       'KL');
-
--- ── Remap any existing geocoded order_details rows ────────────────
--- All orders now ship from KL regardless of destination region.
-UPDATE order_details
-   SET warehouse = 'KL'
- WHERE warehouse IS NOT NULL AND warehouse != 'KL';
-
--- ── Move PG lorries to KL pool ────────────────────────────────────
--- The PG warehouse is inactive; the existing lorries are still part
--- of the fleet, just operating out of KL alongside the rest.
-UPDATE lorries SET warehouse = 'KL' WHERE warehouse = 'PG' AND is_internal = 1;
 
 -- ── Events (setup / dismantle calendar) ───────────────────────────
 CREATE TABLE IF NOT EXISTS events (

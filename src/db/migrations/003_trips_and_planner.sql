@@ -33,11 +33,10 @@ CREATE TABLE IF NOT EXISTS warehouses (
 );
 
 INSERT OR IGNORE INTO warehouses (code, name, address, lat, lng) VALUES
-  ('KL',      'KL Warehouse',          'Klang Valley, Selangor',     3.0738, 101.5183),
-  ('PG',      'PG Warehouse',          'Penang',                     5.4145, 100.3292),
-  ('EAST',    'East Coast Warehouse',  'Kelantan / Terengganu',      5.3300, 103.1400),
-  ('SABAH',   'Sabah Warehouse',       'Kota Kinabalu',              5.9788, 116.0753),
-  ('SARAWAK', 'Sarawak Warehouse',     'Kuching',                    1.5533, 110.3592),
+  ('KL',      'KL Warehouse',            'Semenyih, Selangor',        3.0264, 101.7340),
+  ('PG',      'PG Warehouse',          'Simpang Ampat, Penang',      5.3007, 100.4273),
+  ('SBH',     'Sabah Warehouse',       'Putatan, Sabah',             5.8784, 116.0103),
+  ('SRW',     'Sarawak Warehouse',     'Kuching, Sarawak',           1.5806, 110.3762),
   ('SG',      'SG / JB Outsource Hub', 'Johor Bahru',                1.4927, 103.7414);
 
 -- ── State → Warehouse mapping ──────────────────────────────────────
@@ -61,14 +60,14 @@ INSERT OR IGNORE INTO state_warehouse_map (state, warehouse) VALUES
   ('Kedah',            'PG'),
   ('Perlis',           'PG'),
   ('Perak',            'PG'),
-  -- East coast
-  ('Kelantan',         'EAST'),
-  ('Terengganu',       'EAST'),
-  ('Pahang',           'EAST'),
-  -- Borneo
-  ('Sabah',            'SABAH'),
-  ('Labuan',           'SABAH'),
-  ('Sarawak',          'SARAWAK'),
+  -- East coast (ships from KL to Port Klang)
+  ('Kelantan',         'KL'),
+  ('Terengganu',       'KL'),
+  ('Pahang',           'KL'),
+  -- Borneo (on hold — ships from KL for now)
+  ('Sabah',            'SBH'),
+  ('Labuan',           'SBH'),
+  ('Sarawak',          'SRW'),
   -- Singapore
   ('Singapore',        'SG');
 

@@ -11,6 +11,7 @@ build/
 .dev.vars
 .dev.vars.*
 wrangler.toml.bak
+.cloudflare/
 
 # Env / secrets
 .env
@@ -39,6 +40,9 @@ desktop.ini
 
 # Claude local state
 .claude/
+
+# Temp SQL scripts
+tmp_*.sql
 
 # Internal specs (kept local, not published)
 PROJECT_BRIEF.md

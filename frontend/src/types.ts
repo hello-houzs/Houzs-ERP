@@ -418,6 +418,8 @@ export interface PlannerTrip {
   proposal_id: number;
   warehouse: string;
   warehouse_name: string | null;
+  warehouse_lat: number | null;
+  warehouse_lng: number | null;
   trip_date: string;
   suggested_lorry_id: number | null;
   suggested_driver_user_id: number | null;
@@ -435,6 +437,8 @@ export interface PlannerTrip {
     stops: PlannerStop[];
     reason: string;
     blocked_reason?: string;
+    full_route_km?: number;
+    route_chain?: { label: string; lat: number; lng: number; type: string }[];
   };
 }
 

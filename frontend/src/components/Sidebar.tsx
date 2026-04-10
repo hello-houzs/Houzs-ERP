@@ -89,6 +89,7 @@ const WORKSPACES: Workspace[] = [
         hidePerm: "trips.read.all",
       },
       { to: "/trips", label: "Trips", icon: Route, perm: "trips.read.all" },
+{ to: "/fleet", label: "Fleet", icon: Users, perm: "fleet.read" },
       { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read" },
       { to: "/assr", label: "Service", icon: Zap, perm: "service_cases.read" },
       { to: "/balance", label: "Balance", icon: CircleDollarSign, perm: "balance.read" },

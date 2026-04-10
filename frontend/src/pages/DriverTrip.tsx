@@ -13,6 +13,8 @@ import {
   Truck,
   Maximize2,
   Minimize2,
+  ClipboardCheck,
+  X,
 } from "lucide-react";
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
@@ -45,13 +47,27 @@ export function DriverTrip() {
   const [livePos, setLivePos] = useState<{ lat: number; lng: number } | null>(null);
   const [mapExpanded, setMapExpanded] = useState(false);
 
+  // Start/end trip forms
+  const [showStartForm, setShowStartForm] = useState(false);
+  const [showEndForm, setShowEndForm] = useState(false);
+  const [startOdo, setStartOdo] = useState("");
+  const [endOdo, setEndOdo] = useState("");
+  const [fuelLitres, setFuelLitres] = useState("");
+  const [fuelCost, setFuelCost] = useState("");
+  const [tripNotes, setTripNotes] = useState("");
+
   async function startTrip() {
     setBusy(true);
     try {
+      // Clock in automatically
+      await api.post("/api/fleet/clock/in").catch(() => {});
       await api.patch(`/api/trips/${tripId}`, {
         status: "started",
         started_at: new Date().toISOString(),
+        start_odometer: parseFloat(startOdo) || null,
+        clock_in_at: new Date().toISOString(),
       });
+      setShowStartForm(false);
       detail.reload();
     } finally {
       setBusy(false);
@@ -59,13 +75,24 @@ export function DriverTrip() {
   }
 
   async function endTrip() {
-    if (!window.confirm("End this trip?")) return;
+    if (!endOdo) {
+      alert("Please enter the end odometer reading.");
+      return;
+    }
     setBusy(true);
     try {
+      // Clock out automatically
+      await api.post("/api/fleet/clock/out").catch(() => {});
       await api.patch(`/api/trips/${tripId}`, {
         status: "completed",
         completed_at: new Date().toISOString(),
+        end_odometer: parseFloat(endOdo) || null,
+        fuel_litres: parseFloat(fuelLitres) || null,
+        fuel_cost: parseFloat(fuelCost) || null,
+        notes: tripNotes || null,
+        clock_out_at: new Date().toISOString(),
       });
+      setShowEndForm(false);
       detail.reload();
     } finally {
       setBusy(false);
@@ -123,34 +150,178 @@ export function DriverTrip() {
             <StatusBadge status={trip.status} />
           </div>
 
-          {/* Action button */}
+          {/* Helper info */}
+          {(trip.helper_1_name || trip.helper_2_name) && (
+            <div className="mt-2 flex items-center gap-2 text-[12px] text-ink-secondary">
+              <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">Helpers</span>
+              {trip.helper_1_name && <span>{trip.helper_1_name}</span>}
+              {trip.helper_2_name && <span>· {trip.helper_2_name}</span>}
+            </div>
+          )}
+
+          {/* Action section */}
           <div className="mt-4">
-            {isAssigned && (
+            {isAssigned && !showStartForm && (
               <button
-                disabled={busy}
-                onClick={startTrip}
-                className="flex w-full items-center justify-center gap-2 rounded-md bg-accent py-3 text-[13px] font-bold uppercase tracking-wide text-accent-ink shadow-sm active:bg-accent/90 disabled:opacity-50"
+                onClick={() => setShowStartForm(true)}
+                className="flex w-full items-center justify-center gap-2 rounded-md bg-accent py-3 text-[13px] font-bold uppercase tracking-wide text-accent-ink shadow-sm active:bg-accent/90"
               >
                 <Play size={16} /> Start Trip
               </button>
             )}
-            {isLive && (
+
+            {isAssigned && showStartForm && (
+              <div className="rounded-lg border border-accent/30 bg-accent/5 p-4 space-y-3">
+                <div className="text-[11px] font-semibold uppercase tracking-brand text-accent">
+                  Before you go
+                </div>
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+                    Start Odometer (km)
+                  </span>
+                  <input
+                    type="number"
+                    value={startOdo}
+                    onChange={(e) => setStartOdo(e.target.value)}
+                    placeholder="e.g. 45230"
+                    className="w-full rounded-md border border-border bg-paper px-3 py-2.5 text-[14px] font-mono"
+                    inputMode="decimal"
+                  />
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowStartForm(false)}
+                    className="flex-1 rounded-md border border-border bg-surface py-2.5 text-[12px] font-semibold text-ink"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={startTrip}
+                    className="flex-1 rounded-md bg-accent py-2.5 text-[12px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+                  >
+                    {busy ? "Starting…" : "Confirm Start"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {isLive && !showEndForm && (
               <button
-                disabled={busy}
-                onClick={endTrip}
-                className="flex w-full items-center justify-center gap-2 rounded-md border border-err/60 bg-err/5 py-3 text-[13px] font-bold uppercase tracking-wide text-err active:bg-err/10 disabled:opacity-50"
+                onClick={() => setShowEndForm(true)}
+                className="flex w-full items-center justify-center gap-2 rounded-md border border-err/60 bg-err/5 py-3 text-[13px] font-bold uppercase tracking-wide text-err active:bg-err/10"
               >
                 <Square size={16} /> End Trip
               </button>
             )}
+
+            {isLive && showEndForm && (
+              <div className="rounded-lg border border-err/30 bg-err/5 p-4 space-y-3">
+                <div className="text-[11px] font-semibold uppercase tracking-brand text-err">
+                  End Trip
+                </div>
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+                    End Odometer (km) *
+                  </span>
+                  <input
+                    type="number"
+                    value={endOdo}
+                    onChange={(e) => setEndOdo(e.target.value)}
+                    placeholder="e.g. 45380"
+                    className="w-full rounded-md border border-border bg-paper px-3 py-2.5 text-[14px] font-mono"
+                    inputMode="decimal"
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block">
+                    <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+                      Fuel (litres)
+                    </span>
+                    <input
+                      type="number"
+                      value={fuelLitres}
+                      onChange={(e) => setFuelLitres(e.target.value)}
+                      placeholder="0"
+                      className="w-full rounded-md border border-border bg-paper px-3 py-2.5 text-[13px] font-mono"
+                      inputMode="decimal"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+                      Fuel Cost (RM)
+                    </span>
+                    <input
+                      type="number"
+                      value={fuelCost}
+                      onChange={(e) => setFuelCost(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full rounded-md border border-border bg-paper px-3 py-2.5 text-[13px] font-mono"
+                      inputMode="decimal"
+                    />
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+                    Notes
+                  </span>
+                  <textarea
+                    value={tripNotes}
+                    onChange={(e) => setTripNotes(e.target.value)}
+                    rows={2}
+                    placeholder="Any issues or remarks…"
+                    className="w-full rounded-md border border-border bg-paper px-3 py-2 text-[13px]"
+                  />
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowEndForm(false)}
+                    className="flex-1 rounded-md border border-border bg-surface py-2.5 text-[12px] font-semibold text-ink"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={endTrip}
+                    className="flex-1 rounded-md bg-err py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
+                  >
+                    {busy ? "Ending…" : "Confirm End"}
+                  </button>
+                </div>
+              </div>
+            )}
+
             {isDone && (
-              <div className="rounded-md bg-paper px-3 py-2 text-center text-[12px] text-ink-secondary">
-                Trip {trip.status}.
+              <div className="rounded-lg border border-border bg-paper p-3">
+                <div className="text-center text-[12px] font-semibold text-ink-secondary">
+                  Trip {trip.status}
+                </div>
+                {(trip.start_odometer || trip.end_odometer) && (
+                  <div className="mt-2 flex justify-center gap-4 text-[11px]">
+                    {trip.start_odometer && (
+                      <span className="text-ink-secondary">Start: <span className="font-mono font-semibold text-ink">{trip.start_odometer} km</span></span>
+                    )}
+                    {trip.end_odometer && (
+                      <span className="text-ink-secondary">End: <span className="font-mono font-semibold text-ink">{trip.end_odometer} km</span></span>
+                    )}
+                  </div>
+                )}
+                {trip.fuel_litres && (
+                  <div className="mt-1 text-center text-[11px] text-ink-secondary">
+                    Fuel: <span className="font-mono font-semibold text-ink">{trip.fuel_litres}L</span>
+                    {trip.fuel_cost ? <span> · RM {trip.fuel_cost}</span> : null}
+                  </div>
+                )}
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* Daily inspection — shown if trip is assigned and lorry hasn't been inspected today */}
+      {isAssigned && trip.lorry_id && (
+        <InspectionCard lorryId={trip.lorry_id} lorryPlate={trip.lorry_plate} />
+      )}
 
       {/* Route map */}
       <DriverMap
@@ -221,6 +392,139 @@ export function DriverTrip() {
 }
 
 // ── Stop card ──────────────────────────────────────────────────────
+
+// ── Daily inspection card ─────────────────────────────────────────
+
+function InspectionCard({ lorryId, lorryPlate }: { lorryId: number; lorryPlate?: string }) {
+  const inspection = useQuery<{ record: any }>(
+    () => api.get(`/api/fleet/inspection/today/${lorryId}`),
+    [lorryId]
+  );
+  const [open, setOpen] = useState(false);
+  const [checklist, setChecklist] = useState<Record<string, boolean>>({});
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [defaultItems, setDefaultItems] = useState<string[]>([]);
+
+  // Load default checklist items
+  useState(() => {
+    // We'll hardcode the defaults — they match system_settings.inspection_checklist
+    setDefaultItems(["Tyres", "Brakes", "Lights", "Mirrors", "Horn", "Wipers", "Fuel level", "Body condition", "Load secured"]);
+    const initial: Record<string, boolean> = {};
+    for (const item of ["Tyres", "Brakes", "Lights", "Mirrors", "Horn", "Wipers", "Fuel level", "Body condition", "Load secured"]) {
+      initial[item] = true;
+    }
+    setChecklist(initial);
+  });
+
+  async function submit() {
+    setBusy(true);
+    try {
+      const allPassed = Object.values(checklist).every(Boolean);
+      await api.post("/api/fleet/inspection", {
+        lorry_id: lorryId,
+        checklist,
+        passed: allPassed,
+        notes: notes || undefined,
+      });
+      inspection.reload();
+      setOpen(false);
+    } catch (e: any) {
+      alert(e?.message || "Submit failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Already inspected today
+  if (inspection.data?.record) {
+    const rec = inspection.data.record;
+    return (
+      <div className="mb-4 rounded-xl border border-ok/30 bg-ok/5 p-3">
+        <div className="flex items-center gap-2">
+          <CheckCircle2 size={16} className="text-ok" />
+          <span className="text-[12px] font-semibold text-ok">
+            Inspection completed
+          </span>
+          <span className="ml-auto text-[10px] text-ink-secondary">
+            {lorryPlate}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <div className="mb-4">
+        <button
+          onClick={() => setOpen(true)}
+          className="flex w-full items-center justify-center gap-2 rounded-xl border border-warning-text/30 bg-warning-bg/40 py-3 text-[12px] font-semibold text-warning-text"
+        >
+          <ClipboardCheck size={16} />
+          Daily Inspection Required — {lorryPlate}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-4 rounded-xl border border-border bg-surface p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
+            Daily Inspection
+          </div>
+          <div className="text-[13px] font-bold text-ink">{lorryPlate}</div>
+        </div>
+        <button onClick={() => setOpen(false)} className="text-ink-secondary">
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="space-y-2">
+        {defaultItems.map((item) => (
+          <label
+            key={item}
+            className="flex items-center gap-3 rounded-md border border-border bg-paper px-3 py-2.5"
+          >
+            <input
+              type="checkbox"
+              checked={checklist[item] ?? true}
+              onChange={(e) => setChecklist({ ...checklist, [item]: e.target.checked })}
+              className="h-4 w-4 accent-accent"
+            />
+            <span className="text-[13px] text-ink">{item}</span>
+            {!(checklist[item] ?? true) && (
+              <span className="ml-auto text-[10px] font-semibold text-err">FAIL</span>
+            )}
+          </label>
+        ))}
+      </div>
+
+      <label className="mt-3 block">
+        <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+          Notes
+        </span>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+          placeholder="Any issues found…"
+          className="w-full rounded-md border border-border bg-paper px-3 py-2 text-[13px]"
+        />
+      </label>
+
+      <button
+        disabled={busy}
+        onClick={submit}
+        className="mt-3 w-full rounded-md bg-accent py-2.5 text-[12px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+      >
+        {busy ? "Submitting…" : "Submit Inspection"}
+      </button>
+    </div>
+  );
+}
 
 function StopCard({
   stop,

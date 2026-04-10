@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, X, Wand2, RefreshCw } from "lucide-react";
+import { Plus, X, Wand2, RefreshCw, ExternalLink } from "lucide-react";
 import { MapView, type MapPin } from "../components/MapView";
 import { PageHeader } from "../components/Layout";
 import { DataTable } from "../components/DataTable";
@@ -10,6 +10,7 @@ import { DashboardGrid } from "../components/Dashboard";
 import { DraftsTab } from "../components/DraftsTab";
 import { QueueTab } from "../components/QueueTab";
 import { EventsTab } from "../components/EventsTab";
+import { TrackingTab } from "../components/TrackingTab";
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
@@ -25,12 +26,13 @@ import type {
   SalesOrder,
 } from "../types";
 
-type TripsTab = "queue" | "drafts" | "live" | "events" | "history";
+type TripsTab = "queue" | "drafts" | "live" | "tracking" | "events" | "history";
 
 const TAB_STATUS: Record<TripsTab, string> = {
   queue: "",
   drafts: "",
   live: "assigned,started,in_progress",
+  tracking: "",
   events: "",
   history: "completed,cancelled",
 };
@@ -62,7 +64,7 @@ export function Trips() {
 
   const list = useQuery<Paginated<Trip>>(
     () =>
-      tab === "drafts" || tab === "queue" || tab === "events"
+      tab === "drafts" || tab === "queue" || tab === "events" || tab === "tracking"
         ? Promise.resolve({ data: [], page: 1, per_page: perPage, total: 0 } as Paginated<Trip>)
         : api.get(
             `/api/trips${buildQuery({
@@ -100,6 +102,7 @@ export function Trips() {
     { id: "queue", label: "Queue", show: true },
     { id: "drafts", label: "Drafts", show: canPlan },
     { id: "live", label: "Live & Upcoming", show: true },
+    { id: "tracking", label: "Tracking", show: true },
     { id: "events", label: "Events", show: true },
     { id: "history", label: "History", show: true },
   ];
@@ -112,8 +115,8 @@ export function Trips() {
         description="Plan, assign, and monitor lorry trips."
         actions={
           <>
-            {tab !== "events" && <BackfillButton />}
-            {tab !== "drafts" && tab !== "queue" && tab !== "events" && (
+            {tab !== "events" && tab !== "tracking" && <BackfillButton />}
+            {tab !== "drafts" && tab !== "queue" && tab !== "events" && tab !== "tracking" && (
               <button
                 onClick={() => {
                   setNewTripSeed(null);
@@ -162,9 +165,11 @@ export function Trips() {
 
       {tab === "drafts" && <DraftsTab onConfirmed={() => setTab("live")} />}
 
+      {tab === "tracking" && <TrackingTab />}
+
       {tab === "events" && <EventsTab />}
 
-      {tab !== "drafts" && tab !== "queue" && tab !== "events" && (
+      {tab !== "drafts" && tab !== "queue" && tab !== "events" && tab !== "tracking" && (
         <>
           <DashboardGrid cols={4}>
             <StatCard label="Today's Trips" value={todayCount.toString()} subtitle="From the current view" />
@@ -317,7 +322,7 @@ export function Trips() {
 
             <PanelSection title={`Stops (${detail.data.stops.length})`}>
               <div className="space-y-2">
-                {detail.data.stops.map((s, i) => (
+                {detail.data.stops.map((s: any, i: number) => (
                   <div key={s.id} className="rounded-md border border-border bg-paper p-2.5">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
@@ -338,6 +343,34 @@ export function Trips() {
                         {s.status}
                       </span>
                     </div>
+                    {/* Delivery tracking status */}
+                    {s.delivery_status && s.delivery_status !== s.status && (
+                      <div className="mt-1 flex items-center gap-1.5">
+                        <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+                          Delivery
+                        </span>
+                        <span
+                          className={cn(
+                            "rounded-full px-1.5 py-0.5 text-[8px] font-bold uppercase",
+                            s.delivery_status === "delivered" && "bg-ok/10 text-ok",
+                            s.delivery_status === "failed" && "bg-err/10 text-err",
+                            s.delivery_status === "out_for_delivery" && "bg-accent/10 text-accent",
+                            s.delivery_status === "in_transit" && "bg-warning-bg text-warning-text",
+                            s.delivery_status === "at_warehouse" && "bg-warning-bg text-warning-text",
+                            s.delivery_status === "shipped" && "bg-accent/10 text-accent",
+                            s.delivery_status === "pending_shipout" && "bg-accent/10 text-accent",
+                            s.delivery_status === "do_ready" && "bg-ink/10 text-ink-secondary"
+                          )}
+                        >
+                          {s.delivery_status.replace(/_/g, " ")}
+                        </span>
+                        {s.est_delivery_date && (
+                          <span className="text-[9px] text-ink-secondary">
+                            Est. {formatDate(s.est_delivery_date)}
+                          </span>
+                        )}
+                      </div>
+                    )}
                     {s.recipient_name && (
                       <div className="mt-1 text-[11px] text-ink-secondary">
                         Received by{" "}
@@ -430,7 +463,7 @@ function NewTripDialog({
     () => api.get(`/api/lorries${buildQuery({ warehouse })}`),
     [warehouse]
   );
-  const drivers = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users"));
+  const drivers = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users").catch(() => ({ users: [] })));
 
   // Use the existing delivery-orders feed; dispatcher picks from these.
   const orders = useQuery<Paginated<SalesOrder>>(
@@ -838,6 +871,15 @@ function RoutePanel({
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
+          <a
+            href={buildGoogleMapsUrl(warehouseLatLng, geoStops.map((s) => ({ lat: s.stop_lat as number, lng: s.stop_lng as number })))}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink hover:border-accent/40"
+          >
+            <ExternalLink size={11} className="mr-1 inline" />
+            Google Maps
+          </a>
           <button
             disabled={routeBusy}
             onClick={() => fetchRoute(false)}
@@ -864,4 +906,16 @@ function RoutePanel({
       )}
     </div>
   );
+}
+
+/** Build a Google Maps directions URL: warehouse → stops → warehouse. */
+function buildGoogleMapsUrl(
+  warehouse: { lat: number; lng: number } | null,
+  stops: { lat: number; lng: number }[]
+): string {
+  const points: string[] = [];
+  if (warehouse) points.push(`${warehouse.lat},${warehouse.lng}`);
+  for (const s of stops) points.push(`${s.lat},${s.lng}`);
+  if (warehouse) points.push(`${warehouse.lat},${warehouse.lng}`);
+  return `https://www.google.com/maps/dir/${points.join("/")}`;
 }

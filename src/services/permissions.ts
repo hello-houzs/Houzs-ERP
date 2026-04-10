@@ -37,6 +37,11 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "trips.manage",   resource: "Trips", verb: "manage", label: "Manage trips",        description: "Create, assign, cancel trips and edit any trip" },
   { key: "planner.run",    resource: "Trips", verb: "manage", label: "Run scheduling agent", description: "Generate and confirm trip proposals" },
 
+  // Fleet management
+  { key: "fleet.read",    resource: "Fleet", verb: "read",   label: "View fleet",          description: "See drivers, helpers, lorries, and compliance" },
+  { key: "fleet.manage",  resource: "Fleet", verb: "manage", label: "Manage fleet",        description: "Edit driver/lorry profiles, maintenance, incidents, salary" },
+  { key: "fleet.salary",  resource: "Fleet", verb: "read",   label: "View own salary",     description: "Driver/helper self-service salary view" },
+
   // System
   { key: "sync.run",   resource: "Sync",     verb: "write",  label: "Run sync", description: "Trigger Sync / Sync All / Retry Errors" },
   { key: "udf.manage", resource: "Custom Fields", verb: "manage", label: "Manage custom fields", description: "Add or remove user-defined fields on tables" },

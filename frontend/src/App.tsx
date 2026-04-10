@@ -13,6 +13,7 @@ import { Settings } from "./pages/Settings";
 import { Team } from "./pages/Team";
 import { Roles } from "./pages/Roles";
 import { Trips } from "./pages/Trips";
+import { Fleet } from "./pages/Fleet";
 import { DriverHome } from "./pages/DriverHome";
 import { DriverTrip } from "./pages/DriverTrip";
 import { DriverProfile } from "./pages/DriverProfile";
@@ -96,6 +97,14 @@ export default function App() {
           element={
             <Guard perm="trips.read.all">
               <Trips />
+            </Guard>
+          }
+        />
+        <Route
+          path="/fleet"
+          element={
+            <Guard perm="fleet.read">
+              <Fleet />
             </Guard>
           }
         />

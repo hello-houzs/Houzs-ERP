@@ -145,8 +145,9 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
 
 /**
  * DELETE /api/users/:id
- * Hard-deletes a user. Their sessions and pending invitations are
- * cleaned up too. Owners can't delete themselves.
+ * Disables the user and revokes sessions instead of hard-deleting,
+ * because trips, clock records, salary lines etc. reference the user.
+ * If the user has no references (e.g. never accepted invite), hard-delete.
  */
 app.delete("/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
@@ -154,12 +155,11 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
   if (!id) return c.json({ error: "Bad id" }, 400);
   if (id === me.id) return c.json({ error: "You cannot delete yourself" }, 400);
 
-  // Refuse to remove the last active Owner.
   const row = await c.env.DB.prepare(
-    `SELECT u.id, r.name as role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?`
+    `SELECT u.id, u.status, r.name as role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?`
   )
     .bind(id)
-    .first<{ id: number; role_name: string }>();
+    .first<{ id: number; status: string; role_name: string }>();
   if (!row) return c.json({ error: "User not found" }, 404);
 
   if (row.role_name === "Owner") {
@@ -172,15 +172,29 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
     }
   }
 
+  // Revoke sessions
   await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(id).run();
-  await c.env.DB.prepare(
-    `DELETE FROM invitations WHERE email = (SELECT email FROM users WHERE id = ?)`
-  )
-    .bind(id)
-    .run();
-  await c.env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(id).run();
 
-  return c.json({ ok: true });
+  // If never joined (still invited), safe to hard-delete
+  if (row.status === "invited") {
+    await c.env.DB.prepare(
+      `DELETE FROM invitations WHERE email = (SELECT email FROM users WHERE id = ?)`
+    ).bind(id).run();
+    await c.env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(id).run();
+    return c.json({ ok: true, action: "deleted" });
+  }
+
+  // Otherwise disable — preserves FK references in trips, salary, etc.
+  await c.env.DB.prepare(
+    `UPDATE users SET status = 'disabled' WHERE id = ?`
+  ).bind(id).run();
+
+  // Clear default_driver on lorries
+  await c.env.DB.prepare(
+    `UPDATE lorries SET default_driver_user_id = NULL WHERE default_driver_user_id = ?`
+  ).bind(id).run();
+
+  return c.json({ ok: true, action: "disabled" });
 });
 
 /**

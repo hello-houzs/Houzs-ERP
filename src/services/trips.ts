@@ -117,10 +117,13 @@ export async function listTrips(env: Env, f: ListTripsFilters) {
 
   const rows = await env.DB.prepare(
     `SELECT t.*, l.plate as lorry_plate, l.size as lorry_size,
-            u.name as driver_name, u.email as driver_email
+            u.name as driver_name, u.email as driver_email,
+            h1.name as helper_1_name, h2.name as helper_2_name
        FROM trips t
        LEFT JOIN lorries l ON l.id = t.lorry_id
        LEFT JOIN users u ON u.id = t.driver_user_id
+       LEFT JOIN users h1 ON h1.id = t.helper_1_id
+       LEFT JOIN users h2 ON h2.id = t.helper_2_id
      ${whereSql}
      ORDER BY t.trip_date DESC, t.id DESC
      LIMIT ? OFFSET ?`
@@ -142,10 +145,13 @@ export async function getTrip(env: Env, id: number) {
   const trip = await env.DB.prepare(
     `SELECT t.*, l.plate as lorry_plate, l.size as lorry_size,
             u.name as driver_name, u.email as driver_email,
+            h1.name as helper_1_name, h2.name as helper_2_name,
             w.name as warehouse_name, w.lat as warehouse_lat, w.lng as warehouse_lng
        FROM trips t
        LEFT JOIN lorries l ON l.id = t.lorry_id
        LEFT JOIN users u ON u.id = t.driver_user_id
+       LEFT JOIN users h1 ON h1.id = t.helper_1_id
+       LEFT JOIN users h2 ON h2.id = t.helper_2_id
        LEFT JOIN warehouses w ON w.code = t.warehouse
       WHERE t.id = ?`
   )
@@ -158,10 +164,13 @@ export async function getTrip(env: Env, id: number) {
             so.debtor_name, so.phone, so.local_total, so.balance,
             so.inv_addr1, so.inv_addr2, so.inv_addr3, so.inv_addr4,
             od.lat as stop_lat, od.lng as stop_lng,
-            od.warehouse as order_warehouse, od.state as order_state
+            od.warehouse as order_warehouse, od.state as order_state,
+            dt.status as delivery_status, dt.est_delivery_date,
+            dt.delivered_at as delivery_delivered_at
        FROM trip_stops s
        LEFT JOIN sales_orders so ON so.doc_no = s.doc_no
        LEFT JOIN order_details od ON od.doc_no = s.doc_no
+       LEFT JOIN delivery_tracking dt ON dt.doc_no = s.doc_no
       WHERE s.trip_id = ?
       ORDER BY s.sequence ASC, s.id ASC`
   )
@@ -251,6 +260,10 @@ export async function createTrip(env: Env, input: CreateTripInput, createdBy: nu
       .run();
   }
 
+  // Auto-create delivery tracking records for each stop
+  const { createRecordsForTrip } = await import("./delivery");
+  await createRecordsForTrip(env, tripId, createdBy).catch(() => {});
+
   return tripId;
 }
 
@@ -259,6 +272,9 @@ export async function createTrip(env: Env, input: CreateTripInput, createdBy: nu
 const TRIP_PATCH_FIELDS = [
   "lorry_id",
   "driver_user_id",
+  "helper_1_id",
+  "helper_2_id",
+  "helper_outsourced",
   "trip_date",
   "warehouse",
   "trip_type",
@@ -268,6 +284,8 @@ const TRIP_PATCH_FIELDS = [
   "completed_at",
   "start_odometer",
   "end_odometer",
+  "clock_in_at",
+  "clock_out_at",
   "fuel_litres",
   "fuel_cost",
   "notes",
@@ -304,7 +322,34 @@ export async function transitionTrip(env: Env, id: number, status: string) {
   if (status === "completed") {
     stamps.total_distance_km = await computeTripDistanceKm(env, id);
   }
-  return patchTrip(env, id, stamps);
+  const ok = await patchTrip(env, id, stamps);
+
+  if (ok && status === "started") {
+    // Auto-advance WEST delivery records to out_for_delivery
+    await autoAdvanceDeliveriesOnTripStart(env, id).catch(() => {});
+  }
+
+  if (ok && status === "completed") {
+    // Auto-create salary trip lines for driver + helpers
+    const { createTripSalaryLines } = await import("./fleet");
+    await createTripSalaryLines(env, id).catch(() => {});
+  }
+
+  return ok;
+}
+
+async function autoAdvanceDeliveriesOnTripStart(env: Env, tripId: number) {
+  const { advanceStatus } = await import("./delivery");
+  const rows = await env.DB.prepare(
+    `SELECT dt.doc_no FROM delivery_tracking dt
+       JOIN trip_stops ts ON ts.doc_no = dt.doc_no
+      WHERE ts.trip_id = ? AND dt.region = 'WEST' AND dt.status = 'do_ready'`
+  )
+    .bind(tripId)
+    .all<{ doc_no: string }>();
+  for (const r of rows.results ?? []) {
+    await advanceStatus(env, r.doc_no, "out_for_delivery", 0).catch(() => {});
+  }
 }
 
 /**
@@ -395,6 +440,22 @@ export async function patchStop(
     )
       .bind(tripId)
       .run();
+  }
+
+  // Auto-advance delivery tracking when stop is delivered or failed
+  if (body.status === "delivered" || body.status === "failed") {
+    const stop = await env.DB.prepare(
+      `SELECT doc_no FROM trip_stops WHERE id = ? AND trip_id = ?`
+    )
+      .bind(stopId, tripId)
+      .first<{ doc_no: string }>();
+    if (stop) {
+      const { advanceStatus } = await import("./delivery");
+      const target = body.status === "delivered" ? "delivered" : "failed";
+      await advanceStatus(env, stop.doc_no, target, 0, {
+        notes: body.status === "failed" ? body.failure_reason : undefined,
+      }).catch(() => {});
+    }
   }
 
   return r.meta.changes > 0;

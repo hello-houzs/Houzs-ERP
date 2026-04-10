@@ -216,7 +216,10 @@ CREATE TABLE roles (
 
 INSERT OR IGNORE INTO roles (name, description, permissions, is_system) VALUES
   ('Owner', 'Full access to everything, including team and roles', '["*"]', 1),
-  ('Member', 'Read-only access to operational data', '["sales_orders.read","delivery_orders.read","purchase_orders.read","service_cases.read","balance.read","overdue.read","logs.read"]', 1);
+  ('Member', 'Read-only access to operational data', '["sales_orders.read","delivery_orders.read","purchase_orders.read","service_cases.read","balance.read","overdue.read","logs.read","fleet.read"]', 1),
+  ('Dispatcher', 'Trip planning, fleet management, and delivery tracking', '["sales_orders.read","sales_orders.write","delivery_orders.read","delivery_orders.write","purchase_orders.read","service_cases.read","balance.read","overdue.read","logs.read","trips.read.all","trips.write","trips.manage","planner.run","fleet.read","fleet.manage","sync.run"]', 1),
+  ('Driver', 'Driver mobile app — own trips, clock, inspection, salary', '["trips.read.own","trips.write","fleet.salary"]', 1),
+  ('Helper', 'Helper mobile app — clock and salary view', '["trips.read.own","fleet.salary"]', 1);
 
 -- ═══════════════════════════════════════
 -- Users
@@ -317,11 +320,10 @@ CREATE TABLE warehouses (
 );
 
 INSERT OR IGNORE INTO warehouses (code, name, address, lat, lng, is_active) VALUES
-  ('KL',         'KL Warehouse (origin)',              'Klang Valley, Selangor', 3.0738, 101.5183, 1),
-  ('PG',         'PG Warehouse',                       'Penang',                 5.4145, 100.3292, 0),
-  ('EAST',       'East Coast Warehouse',               'Kelantan / Terengganu',  5.3300, 103.1400, 0),
-  ('SABAH',      'Sabah Warehouse',                    'Kota Kinabalu',          5.9788, 116.0753, 0),
-  ('SARAWAK',    'Sarawak Warehouse',                  'Kuching',                1.5533, 110.3592, 0),
+  ('KL',         'KL Warehouse',                       'Semenyih, Selangor',     3.0264, 101.7340, 1),
+  ('PG',         'PG Warehouse',                       'Simpang Ampat, Penang',  5.3007, 100.4273, 1),
+  ('SBH',        'Sabah Warehouse',                    'Putatan, Sabah',         5.8784, 116.0103, 1),
+  ('SRW',        'Sarawak Warehouse',                  'Kuching, Sarawak',       1.5806, 110.3762, 1),
   ('PORT_KLANG', 'Port Klang (East Malaysia transit)', 'Port Klang, Selangor',   3.0042, 101.3933, 1),
   ('SG',         'SG / JB Outsource Hub',              'Johor Bahru',            1.4927, 103.7414, 1);
 
@@ -332,26 +334,29 @@ CREATE TABLE state_warehouse_map (
   FOREIGN KEY (warehouse) REFERENCES warehouses(code)
 );
 
--- Single origin (KL) for now. Destination region (WEST/EAST/SG) is
--- driven by sales_orders.region from the AutoCount pull, not by state.
+-- KL covers central + south. PG covers north + east coast.
+-- EM/SG ship from KL to transit points regardless of state.
 INSERT OR IGNORE INTO state_warehouse_map (state, warehouse) VALUES
+  -- KL warehouse
   ('Kuala Lumpur',    'KL'),
   ('Selangor',        'KL'),
   ('Putrajaya',       'KL'),
   ('Negeri Sembilan', 'KL'),
   ('Melaka',          'KL'),
   ('Johor',           'KL'),
-  ('Penang',          'KL'),
-  ('Pulau Pinang',    'KL'),
-  ('Kedah',           'KL'),
-  ('Perlis',          'KL'),
-  ('Perak',           'KL'),
-  ('Kelantan',        'KL'),
-  ('Terengganu',      'KL'),
-  ('Pahang',          'KL'),
-  ('Sabah',           'KL'),
-  ('Labuan',          'KL'),
-  ('Sarawak',         'KL'),
+  -- PG warehouse
+  ('Penang',          'PG'),
+  ('Pulau Pinang',    'PG'),
+  ('Kedah',           'PG'),
+  ('Perlis',          'PG'),
+  ('Perak',           'PG'),
+  ('Pahang',          'PG'),
+  ('Terengganu',      'PG'),
+  ('Kelantan',        'PG'),
+  -- EM (local warehouse for last-mile delivery)
+  ('Sabah',           'SBH'),
+  ('Labuan',          'SBH'),
+  ('Sarawak',         'SRW'),
   ('Singapore',       'KL');
 
 DROP TABLE IF EXISTS lorries;

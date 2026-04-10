@@ -37,7 +37,7 @@ app.get("/current", requirePermission("planner.run"), async (c) => {
   const trips = await c.env.DB.prepare(
     `SELECT pt.*, l.plate as lorry_plate, l.size as lorry_size, l.is_internal as lorry_is_internal,
             u.name as driver_name, u.email as driver_email,
-            w.name as warehouse_name
+            w.name as warehouse_name, w.lat as warehouse_lat, w.lng as warehouse_lng
        FROM trip_proposal_trips pt
        LEFT JOIN lorries l ON l.id = pt.suggested_lorry_id
        LEFT JOIN users u ON u.id = pt.suggested_driver_user_id
@@ -163,14 +163,18 @@ app.delete("/trips/:id", requirePermission("planner.run"), async (c) => {
 
 /**
  * POST /api/planner/:id/confirm
- * Materialize all proposed trips (skipping blocked) into real trips.
+ * Materialize proposed trips into real trips.
+ * Body may contain { trip_ids: number[] } to confirm only specific
+ * proposals. Omit or pass empty to confirm all.
  */
 app.post("/:id/confirm", requirePermission("planner.run"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (Number.isNaN(id)) return c.json({ error: "Bad id" }, 400);
   const user = c.get("user");
+  const body = await c.req.json<any>().catch(() => ({}));
+  const tripIds: number[] | undefined = Array.isArray(body?.trip_ids) ? body.trip_ids : undefined;
   try {
-    const r = await confirmProposal(c.env, id, user.id);
+    const r = await confirmProposal(c.env, id, user.id, tripIds);
     return c.json(r);
   } catch (e: any) {
     return c.json({ error: e?.message || "Confirm failed" }, 400);
