@@ -567,7 +567,7 @@ function LorryPanel({
                 </div>
                 <EditField label="Description" value={maintForm.description} onChange={(v) => setMaintForm({ ...maintForm, description: v })} />
                 <div className="flex gap-2">
-                  <button onClick={onMaintFormClose} className="rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink">Cancel</button>
+                  <button onClick={() => setShowMaintForm(false)} className="rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink">Cancel</button>
                   <button disabled={maintBusy} onClick={submitMaint} className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold text-accent-ink disabled:opacity-50">{maintBusy ? "Saving…" : "Save"}</button>
                 </div>
               </div>

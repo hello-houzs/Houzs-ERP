@@ -437,7 +437,7 @@ function ProposalPanel({
   );
   // Show all active users as potential drivers (not just Driver role)
   const drivers = useQuery<{ users: TeamMember[] }>(
-    () => (trip ? api.get("/api/users").catch(() => ({ users: [] })) : Promise.resolve({ users: [] }))
+    () => (trip ? api.get<{ users: TeamMember[] }>("/api/users").catch(() => ({ users: [] as TeamMember[] })) : Promise.resolve({ users: [] as TeamMember[] }))
   );
 
   const stops = local?.stops ?? [];

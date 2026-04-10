@@ -349,6 +349,8 @@ export interface Trip {
   lorry_size?: string | null;
   driver_name?: string | null;
   driver_email?: string | null;
+  helper_1_name?: string | null;
+  helper_2_name?: string | null;
   warehouse_name?: string | null;
   // mine/today extras
   stop_count_actual?: number;

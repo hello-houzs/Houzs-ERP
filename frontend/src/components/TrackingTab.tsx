@@ -244,7 +244,7 @@ export function TrackingTab() {
         <BoardView
           rows={rows}
           region={region}
-          overdue={overdue.data}
+          overdue={overdue.data ?? undefined}
           onSelect={setSelected}
         />
       )}

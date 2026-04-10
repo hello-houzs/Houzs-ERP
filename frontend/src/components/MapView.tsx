@@ -167,7 +167,7 @@ export function MapView({
   }, [currentLocation]);
 
   // Determine which tones are actually used so we only show relevant legend items
-  const usedTones = new Set(pins.map((p) => p.tone || "default"));
+  const usedTones: Set<string> = new Set(pins.map((p) => p.tone || "default"));
 
   return (
     <div>

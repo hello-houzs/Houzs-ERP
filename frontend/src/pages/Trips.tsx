@@ -463,7 +463,7 @@ function NewTripDialog({
     () => api.get(`/api/lorries${buildQuery({ warehouse })}`),
     [warehouse]
   );
-  const drivers = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users").catch(() => ({ users: [] })));
+  const drivers = useQuery<{ users: TeamMember[] }>(() => api.get<{ users: TeamMember[] }>("/api/users").catch(() => ({ users: [] as TeamMember[] })));
 
   // Use the existing delivery-orders feed; dispatcher picks from these.
   const orders = useQuery<Paginated<SalesOrder>>(

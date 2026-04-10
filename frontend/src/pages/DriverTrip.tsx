@@ -320,7 +320,7 @@ export function DriverTrip() {
 
       {/* Daily inspection — shown if trip is assigned and lorry hasn't been inspected today */}
       {isAssigned && trip.lorry_id && (
-        <InspectionCard lorryId={trip.lorry_id} lorryPlate={trip.lorry_plate} />
+        <InspectionCard lorryId={trip.lorry_id} lorryPlate={trip.lorry_plate ?? undefined} />
       )}
 
       {/* Route map */}

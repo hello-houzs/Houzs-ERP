@@ -6,7 +6,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:reset": "wrangler d1 execute autocount-sync --file=./src/db/schema.sql --remote",
-    "db:reset:local": "wrangler d1 execute autocount-sync --local --file=./src/db/schema.sql"
+    "db:reset:local": "wrangler d1 execute autocount-sync --local --file=./src/db/schema.sql",
+    "build": "cd frontend && npm run build"
   },
   "dependencies": {
     "hono": "^4.6.0"
