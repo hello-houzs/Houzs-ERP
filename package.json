@@ -1,20 +1,29 @@
 {
-  "name": "autocount-sync",
-  "version": "2.0.0",
+  "name": "houzs-erp",
+  "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "db:reset": "wrangler d1 execute autocount-sync --file=./src/db/schema.sql --remote",
-    "db:reset:local": "wrangler d1 execute autocount-sync --local --file=./src/db/schema.sql",
-    "build": "cd frontend && npm run build"
+    "dev": "next dev -p 3200",
+    "build": "next build",
+    "start": "next start -p 3200",
+    "lint": "eslint"
   },
   "dependencies": {
-    "hono": "^4.6.0"
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.8.0",
+    "next": "16.2.2",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20241218.0",
-    "typescript": "^5.7.0",
-    "wrangler": "^4.81.0"
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.2",
+    "tailwindcss": "^4",
+    "typescript": "^5"
   }
 }

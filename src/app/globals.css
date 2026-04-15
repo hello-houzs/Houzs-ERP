@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme inline {
+  /* Houzs brand — Teal/Deep-Navy (distinct from Hookka Taupe) */
+  --color-houzs-navy: #0A1F2E;
+  --color-houzs-navy-2: #112A3C;
+  --color-houzs-navy-3: #1A3648;
+  --color-houzs-teal: #0F766E;
+  --color-houzs-teal-light: #14B8A6;
+  --color-houzs-teal-dark: #0B5A54;
+  --color-houzs-teal-10: rgba(15,118,110,.1);
+  --color-houzs-teal-15: rgba(15,118,110,.15);
+  --color-houzs-teal-20: rgba(15,118,110,.2);
+  --color-houzs-bg: #F4F7F7;
+  --color-border: #DDE5E5;
+  --color-border-light: #E5ECEC;
+  --color-text-secondary: #475559;
+  --color-text-tertiary: #7A8B8F;
+  --color-accent-green: #16A34A;
+  --color-accent-blue: #2563EB;
+  --color-accent-amber: #D97706;
+  --color-accent-red: #DC2626;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+body {
+  background: var(--color-houzs-bg);
+  color: var(--color-houzs-navy);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #C9D2D2; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }
+
+.scrollbar-thin::-webkit-scrollbar { width: 4px; }
+
+table tbody tr:hover {
+  background: rgba(15, 118, 110, 0.04);
+}
