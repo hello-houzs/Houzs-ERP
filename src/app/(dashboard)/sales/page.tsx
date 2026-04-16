@@ -4,189 +4,171 @@ import { useMemo, useState } from "react";
 import {
   Users, Plus, Trash2, ChevronDown, ChevronRight, Search, X,
   Phone, UserPlus, Edit2, Check, Crown, Shield, User as UserIcon,
+  Mail, Tag, DollarSign, AlertTriangle,
 } from "lucide-react";
+import { BRANDS, type Brand } from "@/lib/mock-data";
 import {
   useSalesMembers, addMember, updateMember, removeMember, resetSalesMembers,
-  buildTree, flattenTree,
-  type SalesMember, type MemberRole, type MemberStatus, type MemberNode,
+  buildTree, flattenTree, readPositions, writePositions,
+  readDefaultCommission, writeDefaultCommission, calcCommission,
+  DEFAULT_POSITIONS, DEFAULT_COMMISSION,
+  type SalesMember, type MemberStatus, type MemberNode,
+  type CommissionTier,
 } from "@/lib/sales-store";
 
-const ROLES: MemberRole[] = ["PIC", "LEADER", "MEMBER"];
 const STATUSES: MemberStatus[] = ["ACTIVE", "INACTIVE"];
 
-const ROLE_CONFIG: Record<MemberRole, { label: string; color: string; bg: string; icon: typeof Crown }> = {
-  PIC:    { label: "PIC",    color: "text-amber-700",  bg: "bg-amber-100 border-amber-200",  icon: Crown },
-  LEADER: { label: "Leader", color: "text-blue-700",   bg: "bg-blue-100 border-blue-200",    icon: Shield },
-  MEMBER: { label: "Member", color: "text-gray-600",   bg: "bg-gray-100 border-gray-200",    icon: UserIcon },
-};
-
-const fieldLabel = "text-[9px] font-semibold uppercase tracking-wider text-gray-400";
+const fieldLabel = "text-[9px] font-semibold uppercase tracking-wider text-gray-400 mb-0.5";
 const fieldInput =
   "w-full h-8 rounded-md border border-[#DDE5E5] px-2 text-[11px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E]";
 const fieldSelect = fieldInput + " appearance-none cursor-pointer";
 const selectClass =
   "h-8 rounded-md border border-[#DDE5E5] bg-white pl-2.5 pr-7 text-[11px] font-semibold text-gray-600 appearance-none cursor-pointer hover:border-[#0F766E] focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E] bg-no-repeat bg-[right_0.5rem_center] bg-[length:10px] bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%236b7280%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22M6%209l6%206%206-6%22%2F%3E%3C%2Fsvg%3E')]";
 
-function RoleBadge({ role }: { role: MemberRole }) {
-  const cfg = ROLE_CONFIG[role];
-  const Icon = cfg.icon;
+const BRAND_DOT: Record<Brand, string> = {
+  AKEMI: "bg-[#4F6BED]", ZANOTTI: "bg-[#7B5BD6]",
+  ERGOTEX: "bg-[#1A73E8]", DUNLOPILLO: "bg-[#0B8043]",
+};
+
+function StatusDot({ status }: { status: MemberStatus }) {
+  return <span className={`inline-block h-2 w-2 rounded-full shrink-0 ${status === "ACTIVE" ? "bg-emerald-500" : "bg-gray-300"}`} title={status} />;
+}
+
+function PositionBadge({ position }: { position: string }) {
+  const isDir = position.includes("Director");
+  const isMgr = position.includes("Manager");
   return (
-    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-semibold ${cfg.bg} ${cfg.color}`}>
-      <Icon className="h-2.5 w-2.5" />
-      {cfg.label}
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-semibold ${
+      isDir ? "bg-amber-100 border-amber-200 text-amber-700" :
+      isMgr ? "bg-blue-100 border-blue-200 text-blue-700" :
+              "bg-gray-100 border-gray-200 text-gray-600"
+    }`}>
+      {isDir ? <Crown className="h-2.5 w-2.5" /> : isMgr ? <Shield className="h-2.5 w-2.5" /> : <UserIcon className="h-2.5 w-2.5" />}
+      {position}
     </span>
   );
 }
 
-function StatusDot({ status }: { status: MemberStatus }) {
+function BrandDots({ brands }: { brands: Brand[] }) {
+  if (brands.length === 0) return <span className="text-[9px] text-gray-300">—</span>;
   return (
-    <span className={`inline-block h-2 w-2 rounded-full shrink-0 ${
-      status === "ACTIVE" ? "bg-emerald-500" : "bg-gray-300"
-    }`} title={status} />
+    <div className="flex items-center gap-1">
+      {brands.map((b) => (
+        <span key={b} className={`h-4 px-1.5 rounded text-[8px] font-bold text-white inline-flex items-center ${BRAND_DOT[b]}`} title={b}>
+          {b.slice(0, 3)}
+        </span>
+      ))}
+    </div>
   );
+}
+
+function fmtRM(n: number) {
+  return "RM " + n.toLocaleString("en-MY", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
 // ─── Add Member Dialog ───────────────────────────────────────────────────────
 
-function AddMemberForm({
-  members,
-  onClose,
-}: {
-  members: SalesMember[];
-  onClose: () => void;
+function AddMemberForm({ members, positions, onClose }: {
+  members: SalesMember[]; positions: string[]; onClose: () => void;
 }) {
   const [name, setName] = useState("");
+  const [code, setCode] = useState("");
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
   const [ic, setIc] = useState("");
-  const [role, setRole] = useState<MemberRole>("MEMBER");
+  const [position, setPosition] = useState(positions[positions.length - 1] ?? "Sales Executive");
   const [parentId, setParentId] = useState("");
   const [joinDate, setJoinDate] = useState(new Date().toISOString().slice(0, 10));
+  const [selectedBrands, setSelectedBrands] = useState<Brand[]>([]);
 
-  // Parent candidates: PICs and Leaders
-  const parentCandidates = members.filter(
-    (m) => m.status === "ACTIVE" && (m.role === "PIC" || m.role === "LEADER")
-  );
+  const parentCandidates = members.filter((m) => m.status === "ACTIVE");
+
+  function toggleBrand(b: Brand) {
+    setSelectedBrands((prev) => prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b]);
+  }
 
   function submit() {
     const n = name.trim().toUpperCase();
     if (!n) return;
     addMember({
-      name: n,
-      phone: phone.trim(),
-      ic: ic.trim() || undefined,
-      role,
-      parentId: role === "PIC" ? "" : parentId,
-      joinDate,
-      status: "ACTIVE",
+      name: n, code: code.trim() || n, phone: phone.trim(), email: email.trim(),
+      ic: ic.trim() || undefined, position, parentId, joinDate,
+      status: "ACTIVE", assignedBrands: selectedBrands, commissionTiers: [],
     });
     onClose();
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div
-        className="bg-white rounded-lg border border-[#DDE5E5] shadow-xl w-full max-w-md mx-4 overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-lg border border-[#DDE5E5] shadow-xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between sticky top-0">
           <h3 className="text-[13px] font-semibold text-[#0A1F2E]">
             <UserPlus className="h-4 w-4 inline mr-1.5 -mt-0.5 text-[#0F766E]" />
             Register New Member
           </h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-6 w-6 rounded hover:bg-gray-200 inline-flex items-center justify-center text-gray-400 hover:text-gray-600"
-          >
+          <button type="button" onClick={onClose} className="h-6 w-6 rounded hover:bg-gray-200 inline-flex items-center justify-center text-gray-400 hover:text-gray-600">
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
-
         <div className="p-5 space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2">
+            <div>
               <div className={fieldLabel}>Name *</div>
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. ALI BIN AHMAD"
-                className={fieldInput}
-                autoFocus
-              />
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" className={fieldInput} autoFocus />
+            </div>
+            <div>
+              <div className={fieldLabel}>Code / Alias</div>
+              <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Short code" className={fieldInput} />
             </div>
             <div>
               <div className={fieldLabel}>Phone</div>
-              <input
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="012-345 6789"
-                className={fieldInput}
-              />
+              <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+6012..." className={fieldInput} />
             </div>
             <div>
-              <div className={fieldLabel}>IC No. (optional)</div>
-              <input
-                value={ic}
-                onChange={(e) => setIc(e.target.value)}
-                placeholder="880101-10-1234"
-                className={fieldInput}
-              />
+              <div className={fieldLabel}>Email</div>
+              <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@…" className={fieldInput} />
             </div>
             <div>
-              <div className={fieldLabel}>Role</div>
-              <select
-                value={role}
-                onChange={(e) => setRole(e.target.value as MemberRole)}
-                className={fieldSelect}
-              >
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>{ROLE_CONFIG[r].label}</option>
-                ))}
-              </select>
+              <div className={fieldLabel}>IC No.</div>
+              <input value={ic} onChange={(e) => setIc(e.target.value)} placeholder="880101-10-1234" className={fieldInput} />
             </div>
             <div>
               <div className={fieldLabel}>Join Date</div>
-              <input
-                type="date"
-                value={joinDate}
-                onChange={(e) => setJoinDate(e.target.value)}
-                className={fieldInput}
-              />
+              <input type="date" value={joinDate} onChange={(e) => setJoinDate(e.target.value)} className={fieldInput} />
             </div>
-            {role !== "PIC" && (
-              <div className="col-span-2">
-                <div className={fieldLabel}>Report to (Upline)</div>
-                <select
-                  value={parentId}
-                  onChange={(e) => setParentId(e.target.value)}
-                  className={fieldSelect}
-                >
-                  <option value="">— Select upline —</option>
-                  {parentCandidates.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} ({ROLE_CONFIG[m.role].label})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+            <div>
+              <div className={fieldLabel}>Position</div>
+              <select value={position} onChange={(e) => setPosition(e.target.value)} className={fieldSelect}>
+                {positions.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div>
+              <div className={fieldLabel}>Upline</div>
+              <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={fieldSelect}>
+                <option value="">— No upline (top level) —</option>
+                {parentCandidates.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.position})</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <div className={fieldLabel}>Assigned Brands</div>
+            <div className="flex gap-1.5 mt-1">
+              {BRANDS.map((b) => (
+                <button key={b} type="button" onClick={() => toggleBrand(b)}
+                  className={`h-7 px-2.5 rounded border text-[10px] font-semibold transition ${
+                    selectedBrands.includes(b)
+                      ? `${BRAND_DOT[b]} text-white border-transparent`
+                      : "bg-white text-gray-600 border-[#DDE5E5] hover:border-[#0F766E]"
+                  }`}>
+                  {b}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-
-        <div className="px-5 py-3 border-t border-[#DDE5E5] flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-8 px-3 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={submit}
-            disabled={!name.trim()}
-            className="h-8 px-4 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
-          >
+        <div className="px-5 py-3 border-t border-[#DDE5E5] flex justify-end gap-2 sticky bottom-0 bg-white">
+          <button type="button" onClick={onClose} className="h-8 px-3 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600">Cancel</button>
+          <button type="button" onClick={submit} disabled={!name.trim()} className="h-8 px-4 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] disabled:opacity-40 inline-flex items-center gap-1">
             <Plus className="h-3 w-3" /> Register
           </button>
         </div>
@@ -195,121 +177,222 @@ function AddMemberForm({
   );
 }
 
-// ─── Edit Inline ─────────────────────────────────────────────────────────────
+// ─── Edit Member Dialog ──────────────────────────────────────────────────────
 
-function EditRow({
-  member,
-  members,
-  onClose,
-}: {
-  member: SalesMember;
-  members: SalesMember[];
-  onClose: () => void;
+function EditMemberDialog({ member, members, positions, onClose }: {
+  member: SalesMember; members: SalesMember[]; positions: string[]; onClose: () => void;
 }) {
   const [name, setName] = useState(member.name);
+  const [code, setCode] = useState(member.code);
   const [phone, setPhone] = useState(member.phone);
+  const [email, setEmail] = useState(member.email);
   const [ic, setIc] = useState(member.ic ?? "");
-  const [role, setRole] = useState(member.role);
+  const [position, setPosition] = useState(member.position);
   const [parentId, setParentId] = useState(member.parentId);
   const [status, setStatus] = useState(member.status);
+  const [selectedBrands, setSelectedBrands] = useState<Brand[]>(member.assignedBrands);
+  const [tiers, setTiers] = useState<CommissionTier[]>(member.commissionTiers);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [tab, setTab] = useState<"info" | "commission">("info");
 
-  const parentCandidates = members.filter(
-    (m) => m.status === "ACTIVE" && m.id !== member.id && (m.role === "PIC" || m.role === "LEADER")
-  );
+  const parentCandidates = members.filter((m) => m.status === "ACTIVE" && m.id !== member.id);
+  const defaultTiers = readDefaultCommission();
+
+  function toggleBrand(b: Brand) {
+    setSelectedBrands((prev) => prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b]);
+  }
+
+  function addTier() {
+    const last = tiers.length > 0 ? tiers[tiers.length - 1] : null;
+    setTiers([...tiers, { minSales: last ? last.maxSales : 0, maxSales: (last?.maxSales ?? 0) + 30000, pct: 3 }]);
+  }
+
+  function updateTier(i: number, patch: Partial<CommissionTier>) {
+    setTiers((prev) => prev.map((t, idx) => idx === i ? { ...t, ...patch } : t));
+  }
+
+  function removeTier(i: number) {
+    setTiers((prev) => prev.filter((_, idx) => idx !== i));
+  }
 
   function save() {
     updateMember(member.id, {
-      name: name.trim().toUpperCase(),
-      phone: phone.trim(),
-      ic: ic.trim() || undefined,
-      role,
-      parentId: role === "PIC" ? "" : parentId,
-      status,
+      name: name.trim().toUpperCase(), code: code.trim(), phone: phone.trim(),
+      email: email.trim(), ic: ic.trim() || undefined, position, parentId, status,
+      assignedBrands: selectedBrands, commissionTiers: tiers,
     });
     onClose();
   }
 
+  // Preview commission
+  const previewSales = 50000;
+  const effectiveTiers = tiers.length > 0 ? tiers : defaultTiers;
+  const previewComm = calcCommission(previewSales, effectiveTiers);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-lg border border-[#DDE5E5] shadow-xl w-full max-w-md mx-4 overflow-hidden">
-        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-lg border border-[#DDE5E5] shadow-xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between shrink-0">
           <h3 className="text-[13px] font-semibold text-[#0A1F2E]">
             <Edit2 className="h-4 w-4 inline mr-1.5 -mt-0.5 text-[#0F766E]" />
-            Edit: {member.name}
+            {member.name}
           </h3>
           <button type="button" onClick={onClose} className="h-6 w-6 rounded hover:bg-gray-200 inline-flex items-center justify-center text-gray-400 hover:text-gray-600">
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
 
-        <div className="p-5 space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2">
-              <div className={fieldLabel}>Name</div>
-              <input value={name} onChange={(e) => setName(e.target.value)} className={fieldInput} />
-            </div>
-            <div>
-              <div className={fieldLabel}>Phone</div>
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} className={fieldInput} />
-            </div>
-            <div>
-              <div className={fieldLabel}>IC No.</div>
-              <input value={ic} onChange={(e) => setIc(e.target.value)} className={fieldInput} />
-            </div>
-            <div>
-              <div className={fieldLabel}>Role</div>
-              <select value={role} onChange={(e) => setRole(e.target.value as MemberRole)} className={fieldSelect}>
-                {ROLES.map((r) => <option key={r} value={r}>{ROLE_CONFIG[r].label}</option>)}
-              </select>
-            </div>
-            <div>
-              <div className={fieldLabel}>Status</div>
-              <select value={status} onChange={(e) => setStatus(e.target.value as MemberStatus)} className={fieldSelect}>
-                {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-            {role !== "PIC" && (
-              <div className="col-span-2">
-                <div className={fieldLabel}>Report to (Upline)</div>
-                <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={fieldSelect}>
-                  <option value="">— No upline —</option>
-                  {parentCandidates.map((m) => (
-                    <option key={m.id} value={m.id}>{m.name} ({ROLE_CONFIG[m.role].label})</option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
+        {/* Tabs */}
+        <div className="flex border-b border-[#DDE5E5] shrink-0">
+          {(["info", "commission"] as const).map((t) => (
+            <button key={t} type="button" onClick={() => setTab(t)}
+              className={`flex-1 py-2 text-[11px] font-semibold transition ${
+                tab === t ? "text-[#0F766E] border-b-2 border-[#0F766E]" : "text-gray-400 hover:text-gray-600"
+              }`}>
+              {t === "info" ? "Profile & Brands" : "Commission"}
+            </button>
+          ))}
         </div>
 
-        <div className="px-5 py-3 border-t border-[#DDE5E5] flex items-center justify-between gap-2">
+        <div className="flex-1 overflow-y-auto">
+          {tab === "info" && (
+            <div className="p-5 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div><div className={fieldLabel}>Name</div><input value={name} onChange={(e) => setName(e.target.value)} className={fieldInput} /></div>
+                <div><div className={fieldLabel}>Code</div><input value={code} onChange={(e) => setCode(e.target.value)} className={fieldInput} /></div>
+                <div><div className={fieldLabel}>Phone</div><input value={phone} onChange={(e) => setPhone(e.target.value)} className={fieldInput} /></div>
+                <div><div className={fieldLabel}>Email</div><input value={email} onChange={(e) => setEmail(e.target.value)} className={fieldInput} /></div>
+                <div><div className={fieldLabel}>IC No.</div><input value={ic} onChange={(e) => setIc(e.target.value)} className={fieldInput} /></div>
+                <div>
+                  <div className={fieldLabel}>Status</div>
+                  <select value={status} onChange={(e) => setStatus(e.target.value as MemberStatus)} className={fieldSelect}>
+                    {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div className={fieldLabel}>Position</div>
+                  <select value={position} onChange={(e) => setPosition(e.target.value)} className={fieldSelect}>
+                    {positions.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div className={fieldLabel}>Upline</div>
+                  <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={fieldSelect}>
+                    <option value="">— No upline —</option>
+                    {parentCandidates.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.position})</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <div className={fieldLabel}>Assigned Brands</div>
+                <div className="flex gap-1.5 mt-1">
+                  {BRANDS.map((b) => (
+                    <button key={b} type="button" onClick={() => toggleBrand(b)}
+                      className={`h-7 px-2.5 rounded border text-[10px] font-semibold transition ${
+                        selectedBrands.includes(b)
+                          ? `${BRAND_DOT[b]} text-white border-transparent`
+                          : "bg-white text-gray-600 border-[#DDE5E5] hover:border-[#0F766E]"
+                      }`}>{b}</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {tab === "commission" && (
+            <div className="p-5 space-y-4">
+              <div className="text-[10px] text-gray-500">
+                {tiers.length === 0
+                  ? "Using global default commission tiers. Add personal tiers to override."
+                  : "Custom commission tiers for this member."}
+              </div>
+
+              {/* Tier table */}
+              <div className="rounded-md border border-[#DDE5E5] overflow-hidden">
+                <table className="w-full text-[11px]">
+                  <thead className="bg-[#F4F7F7] text-[9px] font-semibold uppercase tracking-wider text-gray-500">
+                    <tr>
+                      <th className="text-left px-3 py-1.5">From (RM)</th>
+                      <th className="text-left px-3 py-1.5">To (RM)</th>
+                      <th className="text-left px-3 py-1.5">Rate %</th>
+                      <th className="w-8" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#F0F3F3]">
+                    {(tiers.length > 0 ? tiers : defaultTiers).map((t, i) => {
+                      const isCustom = tiers.length > 0;
+                      return (
+                        <tr key={i} className={!isCustom ? "opacity-50" : ""}>
+                          <td className="px-3 py-1.5">
+                            {isCustom ? (
+                              <input type="number" value={t.minSales} onChange={(e) => updateTier(i, { minSales: Number(e.target.value) })}
+                                className="w-full h-6 rounded border border-[#DDE5E5] px-1.5 text-[11px] tabular-nums" />
+                            ) : fmtRM(t.minSales)}
+                          </td>
+                          <td className="px-3 py-1.5">
+                            {isCustom ? (
+                              <input type="number" value={t.maxSales === Infinity ? "" : t.maxSales}
+                                placeholder="∞"
+                                onChange={(e) => updateTier(i, { maxSales: e.target.value === "" ? Infinity : Number(e.target.value) })}
+                                className="w-full h-6 rounded border border-[#DDE5E5] px-1.5 text-[11px] tabular-nums" />
+                            ) : (t.maxSales === Infinity ? "∞" : fmtRM(t.maxSales))}
+                          </td>
+                          <td className="px-3 py-1.5">
+                            {isCustom ? (
+                              <input type="number" step="0.5" value={t.pct} onChange={(e) => updateTier(i, { pct: Number(e.target.value) })}
+                                className="w-full h-6 rounded border border-[#DDE5E5] px-1.5 text-[11px] tabular-nums" />
+                            ) : `${t.pct}%`}
+                          </td>
+                          <td className="px-1">
+                            {isCustom && (
+                              <button type="button" onClick={() => removeTier(i)} className="h-5 w-5 rounded hover:bg-red-50 inline-flex items-center justify-center text-gray-300 hover:text-red-500">
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex gap-2">
+                <button type="button" onClick={addTier}
+                  className="h-7 px-2.5 rounded border border-[#DDE5E5] bg-white text-[10px] font-semibold text-[#0F766E] hover:border-[#0F766E] inline-flex items-center gap-1">
+                  <Plus className="h-3 w-3" /> Add tier
+                </button>
+                {tiers.length > 0 && (
+                  <button type="button" onClick={() => setTiers([])}
+                    className="h-7 px-2.5 rounded border border-[#DDE5E5] bg-white text-[10px] font-semibold text-gray-500 hover:text-red-600 hover:border-red-300">
+                    Reset to default
+                  </button>
+                )}
+              </div>
+
+              {/* Preview */}
+              <div className="rounded-md border border-[#DDE5E5] bg-[#FAFBFB] p-3">
+                <div className="text-[9px] font-semibold uppercase tracking-wider text-gray-400 mb-1">Preview</div>
+                <div className="text-[11px] text-[#0A1F2E]">
+                  If sales = <span className="font-semibold tabular-nums">{fmtRM(previewSales)}</span> → commission = <span className="font-bold text-[#0F766E] tabular-nums">{fmtRM(previewComm)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-[#DDE5E5] flex items-center justify-between gap-2 shrink-0 bg-white">
           <div>
             {!confirmDelete ? (
-              <button
-                type="button"
-                onClick={() => setConfirmDelete(true)}
-                className="h-7 px-2 rounded border border-red-200 text-[10px] font-semibold text-red-600 hover:bg-red-50 inline-flex items-center gap-1"
-              >
+              <button type="button" onClick={() => setConfirmDelete(true)}
+                className="h-7 px-2 rounded border border-red-200 text-[10px] font-semibold text-red-600 hover:bg-red-50 inline-flex items-center gap-1">
                 <Trash2 className="h-3 w-3" /> Remove
               </button>
             ) : (
               <div className="flex gap-1.5 items-center">
                 <span className="text-[10px] text-red-600">Sure?</span>
-                <button
-                  type="button"
-                  onClick={() => { removeMember(member.id); onClose(); }}
-                  className="h-7 px-2 rounded bg-red-600 text-white text-[10px] font-semibold hover:bg-red-700"
-                >
-                  Yes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmDelete(false)}
-                  className="h-7 px-2 rounded border border-[#DDE5E5] text-[10px] font-semibold text-gray-600"
-                >
-                  No
-                </button>
+                <button type="button" onClick={() => { removeMember(member.id); onClose(); }} className="h-7 px-2 rounded bg-red-600 text-white text-[10px] font-semibold">Yes</button>
+                <button type="button" onClick={() => setConfirmDelete(false)} className="h-7 px-2 rounded border border-[#DDE5E5] text-[10px] font-semibold text-gray-600">No</button>
               </div>
             )}
           </div>
@@ -325,37 +408,23 @@ function EditRow({
   );
 }
 
-// ─── Org Chart Tree Row ──────────────────────────────────────────────────────
+// ─── Tree Row ────────────────────────────────────────────────────────────────
 
-function TreeRow({
-  node,
-  collapsed,
-  onToggle,
-  onEdit,
-}: {
-  node: MemberNode;
-  collapsed: boolean;
-  onToggle: () => void;
-  onEdit: () => void;
+function TreeRow({ node, collapsed, onToggle, onEdit }: {
+  node: MemberNode; collapsed: boolean; onToggle: () => void; onEdit: () => void;
 }) {
   const m = node.member;
   const hasChildren = node.children.length > 0;
-  const cfg = ROLE_CONFIG[m.role];
-
   return (
     <div
       className="flex items-center gap-2 py-2 px-4 hover:bg-[#FAFBFB] cursor-pointer border-b border-[#F0F3F3] last:border-b-0"
-      style={{ paddingLeft: `${node.depth * 28 + 16}px` }}
+      style={{ paddingLeft: `${node.depth * 24 + 16}px` }}
       onClick={onEdit}
     >
-      {/* Expand/collapse toggle */}
       <div className="w-4 shrink-0">
         {hasChildren ? (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onToggle(); }}
-            className="h-4 w-4 rounded hover:bg-gray-200 inline-flex items-center justify-center text-gray-400"
-          >
+          <button type="button" onClick={(e) => { e.stopPropagation(); onToggle(); }}
+            className="h-4 w-4 rounded hover:bg-gray-200 inline-flex items-center justify-center text-gray-400">
             {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
           </button>
         ) : (
@@ -363,37 +432,34 @@ function TreeRow({
         )}
       </div>
 
-      {/* Avatar circle */}
       <div className={`h-7 w-7 rounded-full shrink-0 flex items-center justify-center text-[10px] font-bold ${
         m.status === "INACTIVE" ? "bg-gray-200 text-gray-400" :
-        m.role === "PIC" ? "bg-amber-100 text-amber-700" :
-        m.role === "LEADER" ? "bg-blue-100 text-blue-700" :
+        m.position.includes("Director") ? "bg-amber-100 text-amber-700" :
         "bg-[#0F766E]/10 text-[#0F766E]"
       }`}>
         {m.name.charAt(0)}
       </div>
 
-      {/* Name + phone */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <span className={`text-[12px] font-semibold truncate ${m.status === "INACTIVE" ? "text-gray-400 line-through" : "text-[#0A1F2E]"}`}>
             {m.name}
           </span>
+          {m.code !== m.name && <span className="text-[9px] text-gray-400">({m.code})</span>}
           <StatusDot status={m.status} />
         </div>
-        <div className="text-[9px] text-gray-500 inline-flex items-center gap-1 tabular-nums">
-          <Phone className="h-2 w-2" />
-          {m.phone || "—"}
+        <div className="flex items-center gap-2 text-[9px] text-gray-500">
+          {m.phone && <span className="inline-flex items-center gap-0.5 tabular-nums"><Phone className="h-2 w-2" />{m.phone}</span>}
+          {m.email && <span className="inline-flex items-center gap-0.5 truncate max-w-[180px]"><Mail className="h-2 w-2" />{m.email}</span>}
         </div>
       </div>
 
-      {/* Role badge */}
-      <RoleBadge role={m.role} />
+      <BrandDots brands={m.assignedBrands} />
+      <PositionBadge position={m.position} />
 
-      {/* Team count */}
       {node.descendantCount > 0 && (
         <span className="text-[9px] font-semibold text-[#0F766E] bg-[#0F766E]/10 rounded px-1.5 py-0.5 tabular-nums shrink-0">
-          {node.descendantCount} pax
+          {node.descendantCount}
         </span>
       )}
     </div>
@@ -407,89 +473,93 @@ export default function SalesPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [editMember, setEditMember] = useState<SalesMember | null>(null);
   const [search, setSearch] = useState("");
-  const [filterRole, setFilterRole] = useState<MemberRole | "ALL">("ALL");
+  const [filterPosition, setFilterPosition] = useState("ALL");
   const [filterStatus, setFilterStatus] = useState<MemberStatus | "ALL">("ALL");
+  const [filterBrand, setFilterBrand] = useState<Brand | "ALL">("ALL");
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  const positions = readPositions();
 
   const tree = useMemo(() => buildTree(members), [members]);
   const flat = useMemo(() => flattenTree(tree), [tree]);
 
-  // Apply search + filters — if searching, show flat list; otherwise show tree
-  const isFiltering = search.trim() !== "" || filterRole !== "ALL" || filterStatus !== "ALL";
+  const isFiltering = search.trim() !== "" || filterPosition !== "ALL" || filterStatus !== "ALL" || filterBrand !== "ALL";
   const q = search.trim().toUpperCase();
 
   const filteredFlat = useMemo(() => {
     if (!isFiltering) return flat;
     return flat.filter((n) => {
       const m = n.member;
-      if (filterRole !== "ALL" && m.role !== filterRole) return false;
+      if (filterPosition !== "ALL" && m.position !== filterPosition) return false;
       if (filterStatus !== "ALL" && m.status !== filterStatus) return false;
+      if (filterBrand !== "ALL" && !m.assignedBrands.includes(filterBrand)) return false;
       if (q) {
-        const hay = [m.name, m.phone, m.ic ?? "", m.role].join(" ").toUpperCase();
+        const hay = [m.name, m.code, m.phone, m.email, m.ic ?? "", m.position].join(" ").toUpperCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [flat, isFiltering, filterRole, filterStatus, q]);
+  }, [flat, isFiltering, filterPosition, filterStatus, filterBrand, q]);
 
-  // When showing tree (no filter), respect collapsed state
   const visibleNodes = useMemo(() => {
     if (isFiltering) return filteredFlat;
     const result: MemberNode[] = [];
     function walk(nodes: MemberNode[]) {
-      for (const n of nodes) {
-        result.push(n);
-        if (!collapsedIds.has(n.member.id)) {
-          walk(n.children);
-        }
-      }
+      for (const n of nodes) { result.push(n); if (!collapsedIds.has(n.member.id)) walk(n.children); }
     }
     walk(tree);
     return result;
   }, [tree, filteredFlat, isFiltering, collapsedIds]);
 
   function toggleCollapse(id: string) {
-    setCollapsedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setCollapsedIds((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
   }
 
-  // Stats
+  const uniquePositions = useMemo(() => Array.from(new Set(members.map((m) => m.position))).sort(), [members]);
   const activeCount = members.filter((m) => m.status === "ACTIVE").length;
-  const picCount = members.filter((m) => m.role === "PIC" && m.status === "ACTIVE").length;
-  const leaderCount = members.filter((m) => m.role === "LEADER" && m.status === "ACTIVE").length;
-  const memberCount = members.filter((m) => m.role === "MEMBER" && m.status === "ACTIVE").length;
+  const dirCount = members.filter((m) => m.position.includes("Director") && m.status === "ACTIVE").length;
+  const brandedCount = members.filter((m) => m.assignedBrands.length > 0 && m.status === "ACTIVE").length;
 
   return (
     <div className="space-y-4">
-      {/* Header */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-[#0A1F2E]">Sales Team</h1>
           <p className="text-sm text-gray-500 mt-1 inline-flex items-center gap-1.5">
             <Users className="h-3.5 w-3.5" />
-            Organisation chart, member registration &amp; team hierarchy
+            Organisation chart, position, brand assignment &amp; commission
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowAdd(true)}
-          className="h-9 px-3.5 rounded-md bg-[#0F766E] text-white text-[12px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1.5"
-        >
-          <UserPlus className="h-4 w-4" /> Register Member
-        </button>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => setConfirmReset(true)}
+            className="h-9 px-3 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:border-red-300 hover:text-red-600 inline-flex items-center gap-1.5">
+            <AlertTriangle className="h-3.5 w-3.5" /> Reset
+          </button>
+          <button type="button" onClick={() => setShowAdd(true)}
+            className="h-9 px-3.5 rounded-md bg-[#0F766E] text-white text-[12px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1.5">
+            <UserPlus className="h-4 w-4" /> Register Member
+          </button>
+        </div>
       </div>
 
-      {/* Stats row */}
+      {confirmReset && (
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 flex items-center justify-between gap-3">
+          <div className="text-[11px] text-red-700">Reset all sales data to seed (from Excel export)?</div>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setConfirmReset(false)} className="h-7 px-2.5 rounded border border-[#DDE5E5] bg-white text-[10px] font-semibold text-gray-600">Cancel</button>
+            <button type="button" onClick={() => { resetSalesMembers(); setConfirmReset(false); }} className="h-7 px-2.5 rounded bg-red-600 text-white text-[10px] font-semibold hover:bg-red-700">Yes, reset</button>
+          </div>
+        </div>
+      )}
+
+      {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
-          { label: "Total Active", value: activeCount, color: "text-[#0F766E]", bg: "bg-[#0F766E]/10" },
-          { label: "PICs", value: picCount, color: "text-amber-700", bg: "bg-amber-100" },
-          { label: "Leaders", value: leaderCount, color: "text-blue-700", bg: "bg-blue-100" },
-          { label: "Members", value: memberCount, color: "text-gray-700", bg: "bg-gray-100" },
+          { label: "Total Active", value: activeCount, color: "text-[#0F766E]" },
+          { label: "Directors", value: dirCount, color: "text-amber-700" },
+          { label: "Brand Assigned", value: brandedCount, color: "text-blue-700" },
+          { label: "Total Members", value: members.length, color: "text-gray-700" },
         ].map((s) => (
           <div key={s.label} className="rounded-lg border border-[#DDE5E5] bg-white px-4 py-3">
             <div className="text-[9px] font-semibold uppercase tracking-wider text-gray-400">{s.label}</div>
@@ -498,58 +568,41 @@ export default function SalesPage() {
         ))}
       </div>
 
-      {/* Search + filter bar */}
+      {/* Filters */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white p-2.5 flex flex-wrap gap-2 items-center">
         <div className="relative flex-1 min-w-[200px] max-w-sm">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search name, phone, IC…"
-            className="w-full h-8 pl-8 pr-8 rounded-md border border-[#DDE5E5] bg-white text-[11px] text-[#0A1F2E] placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E]"
-          />
-          {search && (
-            <button type="button" onClick={() => setSearch("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 h-5 w-5 rounded inline-flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100">
-              <X className="h-3 w-3" />
-            </button>
-          )}
+          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search name, code, phone, email…"
+            className="w-full h-8 pl-8 pr-8 rounded-md border border-[#DDE5E5] bg-white text-[11px] text-[#0A1F2E] placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E]" />
+          {search && <button type="button" onClick={() => setSearch("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 h-5 w-5 rounded inline-flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100"><X className="h-3 w-3" /></button>}
         </div>
 
-        <select
-          value={filterRole}
-          onChange={(e) => setFilterRole(e.target.value as MemberRole | "ALL")}
-          className={selectClass}
-        >
-          <option value="ALL">All roles</option>
-          {ROLES.map((r) => <option key={r} value={r}>{ROLE_CONFIG[r].label}</option>)}
+        <select value={filterPosition} onChange={(e) => setFilterPosition(e.target.value)} className={selectClass}>
+          <option value="ALL">All positions</option>
+          {uniquePositions.map((p) => <option key={p} value={p}>{p}</option>)}
         </select>
 
-        <select
-          value={filterStatus}
-          onChange={(e) => setFilterStatus(e.target.value as MemberStatus | "ALL")}
-          className={selectClass}
-        >
+        <select value={filterBrand} onChange={(e) => setFilterBrand(e.target.value as Brand | "ALL")} className={selectClass}>
+          <option value="ALL">All brands</option>
+          {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
+        </select>
+
+        <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as MemberStatus | "ALL")} className={selectClass}>
           <option value="ALL">All status</option>
           {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
 
         {isFiltering && (
-          <button
-            type="button"
-            onClick={() => { setSearch(""); setFilterRole("ALL"); setFilterStatus("ALL"); }}
-            className="h-8 px-2.5 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:border-red-300 hover:text-red-600 inline-flex items-center gap-1"
-          >
+          <button type="button" onClick={() => { setSearch(""); setFilterPosition("ALL"); setFilterBrand("ALL"); setFilterStatus("ALL"); }}
+            className="h-8 px-2.5 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:border-red-300 hover:text-red-600 inline-flex items-center gap-1">
             <X className="h-3 w-3" /> Clear
           </button>
         )}
-
-        <div className="ml-auto text-[10px] text-gray-500 tabular-nums">
-          {visibleNodes.length} / {members.length} members
-        </div>
+        <div className="ml-auto text-[10px] text-gray-500 tabular-nums">{visibleNodes.length} / {members.length}</div>
       </div>
 
-      {/* Org Chart Tree */}
+      {/* Org Chart */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
         <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between">
           <div>
@@ -557,36 +610,22 @@ export default function SalesPage() {
               {isFiltering ? "Search Results" : "Organisation Chart"}
             </h2>
             <p className="text-[10px] text-gray-500 mt-0.5">
-              {isFiltering
-                ? "Flat list — clear filters to see tree hierarchy"
-                : "Click a member to edit · PIC → Leader → Member hierarchy"}
+              {isFiltering ? "Flat list — clear filters to see hierarchy" : "Click to edit · Director → Executive → Sub-Executive"}
             </p>
           </div>
-          <div className="flex gap-1.5">
-            {!isFiltering && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setCollapsedIds(new Set())}
-                  className="h-7 px-2 rounded border border-[#DDE5E5] bg-white text-[10px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E]"
-                >
-                  Expand all
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCollapsedIds(new Set(members.map((m) => m.id)))}
-                  className="h-7 px-2 rounded border border-[#DDE5E5] bg-white text-[10px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E]"
-                >
-                  Collapse all
-                </button>
-              </>
-            )}
-          </div>
+          {!isFiltering && (
+            <div className="flex gap-1.5">
+              <button type="button" onClick={() => setCollapsedIds(new Set())}
+                className="h-7 px-2 rounded border border-[#DDE5E5] bg-white text-[10px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E]">Expand</button>
+              <button type="button" onClick={() => setCollapsedIds(new Set(members.map((m) => m.id)))}
+                className="h-7 px-2 rounded border border-[#DDE5E5] bg-white text-[10px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E]">Collapse</button>
+            </div>
+          )}
         </div>
 
         {visibleNodes.length === 0 ? (
           <div className="p-8 text-center text-[11px] text-gray-400">
-            {isFiltering ? "No members match your filters" : "No members yet — register your first team member above"}
+            {isFiltering ? "No members match" : "No members — register your first one"}
           </div>
         ) : (
           <div>
@@ -605,21 +644,19 @@ export default function SalesPage() {
 
       {/* Legend */}
       <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-[10px] text-gray-500">
-        <span className="font-semibold uppercase tracking-wider">Hierarchy:</span>
-        <span className="inline-flex items-center gap-1.5">
-          <Crown className="h-3 w-3 text-amber-600" /> PIC — top-level person in charge
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <Shield className="h-3 w-3 text-blue-600" /> Leader — team lead under PIC
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <UserIcon className="h-3 w-3 text-gray-500" /> Member — sales team member
-        </span>
+        <span className="font-semibold uppercase tracking-wider">Brands:</span>
+        {BRANDS.map((b) => (
+          <span key={b} className="inline-flex items-center gap-1.5">
+            <span className={`h-2.5 w-2.5 rounded-sm ${BRAND_DOT[b]}`} /> {b}
+          </span>
+        ))}
+        <span className="w-px h-3 bg-[#DDE5E5]" />
+        <span className="inline-flex items-center gap-1"><Crown className="h-3 w-3 text-amber-600" /> Director</span>
+        <span className="inline-flex items-center gap-1"><UserIcon className="h-3 w-3 text-gray-500" /> Executive</span>
       </div>
 
-      {/* Dialogs */}
-      {showAdd && <AddMemberForm members={members} onClose={() => setShowAdd(false)} />}
-      {editMember && <EditRow member={editMember} members={members} onClose={() => setEditMember(null)} />}
+      {showAdd && <AddMemberForm members={members} positions={positions} onClose={() => setShowAdd(false)} />}
+      {editMember && <EditMemberDialog member={editMember} members={members} positions={positions} onClose={() => setEditMember(null)} />}
     </div>
   );
 }
