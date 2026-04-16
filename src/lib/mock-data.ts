@@ -351,8 +351,9 @@ export const mockEvents: HouzsEvent[] = [
 
 // ---------- Helpers ----------
 export function calendarTitle(e: HouzsEvent): string {
-  const pic = e.pic ? ` (${e.pic})` : "";
-  return `${e.state} [${e.brand}] ${e.organizer}${pic} @ ${e.venue}`;
+  // SOLO → show "SOLO" instead of organizer name; never show PIC
+  const who = e.eventType === "SOLO" ? "SOLO" : e.organizer;
+  return `${e.state} [${e.brand}] ${who} @ ${e.venue}`;
 }
 export function findEvent(id: string): HouzsEvent | undefined {
   return mockEvents.find((e) => e.a42 === id);
