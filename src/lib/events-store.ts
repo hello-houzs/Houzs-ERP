@@ -12,7 +12,7 @@
 // Overrides let us edit fields on seeded mock events too (e.g. drag dates
 // in the PM Dashboard), without mutating the module-level mockEvents array.
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { mockEvents, type HouzsEvent } from "./mock-data";
 
 const USER_KEY = "houzs-user-events-v1";
@@ -21,7 +21,8 @@ const OVERRIDE_KEY = "houzs-event-overrides-v1";
 type Overrides = Record<string, Partial<HouzsEvent>>;
 
 const listeners = new Set<() => void>();
-function emit() { listeners.forEach((l) => l()); }
+let cached: HouzsEvent[] | null = null;
+function emit() { cached = null; listeners.forEach((l) => l()); }
 
 function safeParse<T>(raw: string | null, fallback: T): T {
   if (!raw) return fallback;
@@ -68,20 +69,28 @@ function merge(): HouzsEvent[] {
   });
 }
 
+function subscribe(cb: () => void): () => void {
+  listeners.add(cb);
+  const onStorage = () => { cached = null; cb(); };
+  window.addEventListener("storage", onStorage);
+  return () => {
+    listeners.delete(cb);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+function getSnapshot(): HouzsEvent[] {
+  if (!cached) cached = merge();
+  return cached;
+}
+
+function getServerSnapshot(): HouzsEvent[] {
+  return mockEvents;
+}
+
 /** Reactive hook — subscribes to store mutations + storage events from other tabs. */
 export function useAllEvents(): HouzsEvent[] {
-  const [events, setEvents] = useState<HouzsEvent[]>(mockEvents);
-  useEffect(() => {
-    setEvents(merge());
-    const onChange = () => setEvents(merge());
-    listeners.add(onChange);
-    window.addEventListener("storage", onChange);
-    return () => {
-      listeners.delete(onChange);
-      window.removeEventListener("storage", onChange);
-    };
-  }, []);
-  return events;
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
 /** Find one event by a42 including user-added and overrides. */

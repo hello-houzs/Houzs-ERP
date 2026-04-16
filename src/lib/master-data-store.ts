@@ -50,7 +50,7 @@ function seedPics(): string[] {
   return Array.from(new Set(mockEvents.map((e) => e.pic).filter(Boolean) as string[])).sort();
 }
 function seedContractors(): string[] {
-  return Array.from(new Set(mockEvents.map((e) => e.contractor))).sort();
+  return Array.from(new Set(mockEvents.map((e) => e.contractor).filter(Boolean) as string[])).sort();
 }
 function seedDrivers(): DriverRecord[] {
   return [
@@ -131,12 +131,12 @@ function readAll(): MasterData {
 
 export function useMasterData(): MasterData {
   const [data, setData] = useState<MasterData>(() => ({
-    organizers: [],
-    venues: [],
-    pics: [],
-    contractors: [],
-    drivers: [],
-    lori: [],
+    organizers: typeof window !== "undefined" ? readList(K_ORG, seedOrganizers) : [],
+    venues:     typeof window !== "undefined" ? readVenues() : [],
+    pics:       typeof window !== "undefined" ? readList(K_PIC, seedPics) : [],
+    contractors: typeof window !== "undefined" ? readList(K_CON, seedContractors) : [],
+    drivers:    typeof window !== "undefined" ? readDrivers() : [],
+    lori:       typeof window !== "undefined" ? readList(K_LORI, seedLori) : [],
   }));
   useEffect(() => {
     setData(readAll());

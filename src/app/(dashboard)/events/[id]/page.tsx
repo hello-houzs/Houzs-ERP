@@ -16,6 +16,7 @@ import {
 import {
   useAllEvents, updateEvent, deleteUserEvent,
 } from "@/lib/events-store";
+import { useSalesMembers } from "@/lib/sales-store";
 import { useEventPhotos } from "@/lib/photos-store";
 import {
   useMasterData,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/master-data-store";
 import { Combo } from "@/components/ui/combo";
 import { WorkflowAttachmentDialog } from "@/components/ui/workflow-attachment-dialog";
+import { FIELD_LABEL, FIELD_INPUT, FIELD_SELECT } from "@/lib/ui-tokens";
 
 const STATUS_OPTIONS: EventStatus[] = ["CONFIRMED", "PENDING", "CANCELLED"];
 const PROGRESS_OPTIONS: EventProgress[] = ["NOT STARTED", "IN PROGRESS", "COMPLETED"];
@@ -30,11 +32,6 @@ const TYPE_OPTIONS: EventType[] = ["SOLO", "EXHIBITION"];
 const SD_STATUSES: NonNullable<HouzsEvent["setupDismantleStatus"]>[] = [
   "", "PREPARED", "SETUP DONE", "DISMANTLE DONE",
 ];
-
-const fieldLabel = "text-[9px] font-semibold uppercase tracking-wider text-gray-400";
-const fieldInput =
-  "w-full h-8 rounded-md border border-[#DDE5E5] px-2 text-[11px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E]";
-const fieldSelect = fieldInput + " appearance-none cursor-pointer";
 
 const WORKFLOW_FIELDS: { key: keyof HouzsEvent; label: string; stage: string }[] = [
   { key: "agreementApproval",       label: "Agreement / Quotation Approval", stage: "Contract" },
@@ -73,6 +70,8 @@ export default function EventDetailPage() {
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState<Partial<HouzsEvent>>({});
   const { photos: allPhotos } = useEventPhotos(a42);
+  const salesMembers = useSalesMembers();
+  const activeSalesMembers = useMemo(() => salesMembers.filter(m => m.status === "ACTIVE").sort((a, b) => a.name.localeCompare(b.name)), [salesMembers]);
 
   // Seed draft whenever we enter edit mode (or event changes while editing)
   useEffect(() => {
@@ -98,6 +97,7 @@ export default function EventDetailPage() {
         setupDatetime: event.setupDatetime ?? "",
         dismantleDatetime: event.dismantleDatetime ?? "",
         setupDismantleStatus: event.setupDismantleStatus ?? "",
+        assignedSales: event.assignedSales ?? [],
       });
     }
   }, [isEditing, event]);
@@ -143,6 +143,14 @@ export default function EventDetailPage() {
     setDraft((d) => ({ ...d, [k]: v }));
   }
 
+  function toggleAssignedSales(id: string) {
+    setDraft(d => {
+      const current = d.assignedSales ?? [];
+      return { ...d, assignedSales: current.includes(id) ? current.filter(x => x !== id) : [...current, id] };
+    });
+  }
+  const [salesSearch, setSalesSearch] = useState("");
+
   function saveEdits() {
     // recompute durationDays from dates
     const patch: Partial<HouzsEvent> = { ...draft };
@@ -184,7 +192,7 @@ export default function EventDetailPage() {
                 <Hash className="h-2.5 w-2.5 shrink-0" />
                 <span className="truncate">{event.a42}</span>
               </div>
-              <h1 className="text-[18px] font-bold text-[#0A1F2E] mt-1 leading-tight">
+              <h1 className="text-2xl font-bold text-[#0A1F2E] mt-1 leading-tight">
                 {calendarTitle(event)}
               </h1>
             </div>
@@ -216,7 +224,7 @@ export default function EventDetailPage() {
                 <button
                   type="button"
                   onClick={() => setIsEditing(true)}
-                  className="h-7 px-2.5 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E] inline-flex items-center gap-1.5"
+                  className="h-8 px-2.5 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E] inline-flex items-center gap-1.5"
                 >
                   <Pencil className="h-3 w-3" /> Edit
                 </button>
@@ -225,14 +233,14 @@ export default function EventDetailPage() {
                   <button
                     type="button"
                     onClick={cancelEdits}
-                    className="h-7 px-2.5 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:bg-gray-50 inline-flex items-center gap-1"
+                    className="h-8 px-2.5 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:bg-gray-50 inline-flex items-center gap-1"
                   >
                     <XIcon className="h-3 w-3" /> Cancel
                   </button>
                   <button
                     type="button"
                     onClick={saveEdits}
-                    className="h-7 px-3 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1"
+                    className="h-8 px-3 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1"
                   >
                     <Check className="h-3 w-3" /> Save
                   </button>
@@ -248,7 +256,7 @@ export default function EventDetailPage() {
             <div className="flex items-start gap-1.5">
               <CalIcon className="h-3 w-3 text-gray-400 mt-0.5 shrink-0" />
               <div>
-                <div className={fieldLabel}>Dates</div>
+                <div className={FIELD_LABEL}>Dates</div>
                 <div className="text-[#0A1F2E] font-medium">{event.startDate} → {event.endDate}</div>
                 <div className="text-[10px] text-gray-500">{event.durationDays} day{event.durationDays === 1 ? "" : "s"}</div>
               </div>
@@ -256,7 +264,7 @@ export default function EventDetailPage() {
             <div className="flex items-start gap-1.5">
               <MapPin className="h-3 w-3 text-gray-400 mt-0.5 shrink-0" />
               <div>
-                <div className={fieldLabel}>Location</div>
+                <div className={FIELD_LABEL}>Location</div>
                 <div className="text-[#0A1F2E] font-medium truncate">{event.venue}</div>
                 <div className="text-[10px] text-gray-500">{event.state}</div>
               </div>
@@ -264,7 +272,7 @@ export default function EventDetailPage() {
             <div className="flex items-start gap-1.5">
               <Building2 className="h-3 w-3 text-gray-400 mt-0.5 shrink-0" />
               <div>
-                <div className={fieldLabel}>Booth</div>
+                <div className={FIELD_LABEL}>Booth</div>
                 <div className="text-[#0A1F2E] font-medium">{event.boothNo}</div>
                 <div className="text-[10px] text-gray-500">{event.sizeSqm} sqm · {event.contractor}</div>
               </div>
@@ -272,7 +280,7 @@ export default function EventDetailPage() {
             <div className="flex items-start gap-1.5">
               <User className="h-3 w-3 text-gray-400 mt-0.5 shrink-0" />
               <div>
-                <div className={fieldLabel}>PIC</div>
+                <div className={FIELD_LABEL}>PIC</div>
                 <div className="text-[#0A1F2E] font-medium">{event.pic ?? "—"}</div>
                 <div className="text-[10px] text-gray-500">Organizer: {event.organizer}</div>
               </div>
@@ -286,41 +294,41 @@ export default function EventDetailPage() {
             {/* Row 1: status / progress / brand / type */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div>
-                <div className={fieldLabel}>Status</div>
+                <div className={FIELD_LABEL}>Status</div>
                 <select
                   value={draft.status ?? ""}
                   onChange={(e) => patchDraft("status", e.target.value as EventStatus)}
-                  className={fieldSelect}
+                  className={FIELD_SELECT}
                 >
                   {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div>
-                <div className={fieldLabel}>Progress</div>
+                <div className={FIELD_LABEL}>Progress</div>
                 <select
                   value={draft.progress ?? ""}
                   onChange={(e) => patchDraft("progress", e.target.value as EventProgress)}
-                  className={fieldSelect}
+                  className={FIELD_SELECT}
                 >
                   {PROGRESS_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
               </div>
               <div>
-                <div className={fieldLabel}>Brand</div>
+                <div className={FIELD_LABEL}>Brand</div>
                 <select
                   value={draft.brand ?? ""}
                   onChange={(e) => patchDraft("brand", e.target.value as Brand)}
-                  className={fieldSelect}
+                  className={FIELD_SELECT}
                 >
                   {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
                 </select>
               </div>
               <div>
-                <div className={fieldLabel}>Event Type</div>
+                <div className={FIELD_LABEL}>Event Type</div>
                 <select
                   value={draft.eventType ?? ""}
                   onChange={(e) => patchDraft("eventType", e.target.value as EventType)}
-                  className={fieldSelect}
+                  className={FIELD_SELECT}
                 >
                   {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
@@ -330,35 +338,35 @@ export default function EventDetailPage() {
             {/* Row 2: dates + state */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div>
-                <div className={fieldLabel}>Start Date</div>
+                <div className={FIELD_LABEL}>Start Date</div>
                 <input
                   type="date"
                   value={draft.startDate ?? ""}
                   onChange={(e) => patchDraft("startDate", e.target.value)}
-                  className={fieldInput}
+                  className={FIELD_INPUT}
                 />
               </div>
               <div>
-                <div className={fieldLabel}>End Date</div>
+                <div className={FIELD_LABEL}>End Date</div>
                 <input
                   type="date"
                   value={draft.endDate ?? ""}
                   onChange={(e) => patchDraft("endDate", e.target.value)}
-                  className={fieldInput}
+                  className={FIELD_INPUT}
                 />
               </div>
               <div>
-                <div className={fieldLabel}>State</div>
+                <div className={FIELD_LABEL}>State</div>
                 <select
                   value={draft.state ?? ""}
                   onChange={(e) => patchDraft("state", e.target.value as MalaysianState)}
-                  className={fieldSelect}
+                  className={FIELD_SELECT}
                 >
                   {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div>
-                <div className={fieldLabel}>Organizer</div>
+                <div className={FIELD_LABEL}>Organizer</div>
                 <Combo
                   value={draft.organizer ?? ""}
                   options={master.organizers}
@@ -372,7 +380,7 @@ export default function EventDetailPage() {
             {/* Row 3: venue + contractor + pic */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               <div>
-                <div className={fieldLabel}>Venue</div>
+                <div className={FIELD_LABEL}>Venue</div>
                 <Combo
                   value={draft.venue ?? ""}
                   options={master.venues.map((v) => v.name)}
@@ -382,7 +390,7 @@ export default function EventDetailPage() {
                 />
               </div>
               <div>
-                <div className={fieldLabel}>Contractor</div>
+                <div className={FIELD_LABEL}>Contractor</div>
                 <Combo
                   value={draft.contractor ?? ""}
                   options={master.contractors}
@@ -392,10 +400,10 @@ export default function EventDetailPage() {
                 />
               </div>
               <div>
-                <div className={fieldLabel}>PIC</div>
+                <div className={FIELD_LABEL}>PIC</div>
                 <Combo
                   value={draft.pic ?? ""}
-                  options={master.pics}
+                  options={activeSalesMembers.map(m => m.name)}
                   onChange={(v) => patchDraft("pic", v)}
                   onCreate={(v) => addPic(v)}
                   placeholder="PIC…"
@@ -406,43 +414,43 @@ export default function EventDetailPage() {
             {/* Row 4: booth + size + sales + rental */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div>
-                <div className={fieldLabel}>Booth No</div>
+                <div className={FIELD_LABEL}>Booth No</div>
                 <input
                   type="text"
                   value={draft.boothNo ?? ""}
                   onChange={(e) => patchDraft("boothNo", e.target.value)}
                   placeholder="e.g. P1ExtB"
-                  className={fieldInput}
+                  className={FIELD_INPUT}
                 />
               </div>
               <div>
-                <div className={fieldLabel}>Size (sqm)</div>
+                <div className={FIELD_LABEL}>Size (sqm)</div>
                 <input
                   type="number"
                   step="0.01"
                   value={draft.sizeSqm ?? 0}
                   onChange={(e) => patchDraft("sizeSqm", Number(e.target.value))}
-                  className={fieldInput}
+                  className={FIELD_INPUT}
                 />
               </div>
               <div>
-                <div className={fieldLabel}>Total Sales (RM)</div>
+                <div className={FIELD_LABEL}>Total Sales (RM)</div>
                 <input
                   type="number"
                   step="0.01"
                   value={draft.totalSalesRm ?? 0}
                   onChange={(e) => patchDraft("totalSalesRm", Number(e.target.value))}
-                  className={fieldInput}
+                  className={FIELD_INPUT}
                 />
               </div>
               <div>
-                <div className={fieldLabel}>Rental (RM)</div>
+                <div className={FIELD_LABEL}>Rental (RM)</div>
                 <input
                   type="number"
                   step="0.01"
                   value={draft.rentalRm ?? 0}
                   onChange={(e) => patchDraft("rentalRm", Number(e.target.value))}
-                  className={fieldInput}
+                  className={FIELD_INPUT}
                 />
               </div>
             </div>
@@ -452,7 +460,7 @@ export default function EventDetailPage() {
 
       {/* Workflow (Notion-style stages) */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
-        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between gap-3">
+        <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between gap-3">
           <div>
             <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">PM Workflow</h2>
             <p className="text-[10px] text-gray-500 mt-0.5">
@@ -541,10 +549,10 @@ export default function EventDetailPage() {
 
       {/* Setup & Dismantle logistics */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
-        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between">
+        <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between">
           <div>
             <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Setup &amp; Dismantle</h2>
-            <p className="text-[10px] text-gray-500 mt-0.5">Driver, lori, schedule — who delivers and dismantles this booth</p>
+            <p className="text-[10px] text-gray-500 mt-0.5">Driver, lori, schedule, setup crew</p>
           </div>
           {event.setupDismantleStatus && (
             <span className={`px-2 py-[2px] rounded text-[10px] font-semibold ${
@@ -556,25 +564,27 @@ export default function EventDetailPage() {
           )}
         </div>
         {!isEditing ? (
-          <div className="px-5 py-4 grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div>
-              <div className={fieldLabel}>Setup Driver</div>
-              <div className="text-[12px] font-semibold text-[#0A1F2E] mt-0.5">{event.setupDriver || <span className="text-gray-300 font-normal">—</span>}</div>
-            </div>
-            <div>
-              <div className={fieldLabel}>Setup Lori</div>
-              <div className="text-[12px] font-semibold text-[#0A1F2E] mt-0.5 tabular-nums">{event.setupLori || <span className="text-gray-300 font-normal">—</span>}</div>
-            </div>
-            <div>
-              <div className={fieldLabel}>Setup Time</div>
-              <div className="text-[11px] text-[#0A1F2E] mt-0.5 tabular-nums">
-                {event.setupDatetime ? new Date(event.setupDatetime).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : <span className="text-gray-300">—</span>}
+          <div className="px-5 py-4 space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <div className={FIELD_LABEL}>Setup Driver</div>
+                <div className="text-[12px] font-semibold text-[#0A1F2E] mt-0.5">{event.setupDriver || <span className="text-gray-300 font-normal">—</span>}</div>
               </div>
-            </div>
-            <div>
-              <div className={fieldLabel}>Dismantle Time</div>
-              <div className="text-[11px] text-[#0A1F2E] mt-0.5 tabular-nums">
-                {event.dismantleDatetime ? new Date(event.dismantleDatetime).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : <span className="text-gray-300">—</span>}
+              <div>
+                <div className={FIELD_LABEL}>Setup Lori</div>
+                <div className="text-[12px] font-semibold text-[#0A1F2E] mt-0.5 tabular-nums">{event.setupLori || <span className="text-gray-300 font-normal">—</span>}</div>
+              </div>
+              <div>
+                <div className={FIELD_LABEL}>Setup Time</div>
+                <div className="text-[11px] text-[#0A1F2E] mt-0.5 tabular-nums">
+                  {event.setupDatetime ? new Date(event.setupDatetime).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : <span className="text-gray-300">—</span>}
+                </div>
+              </div>
+              <div>
+                <div className={FIELD_LABEL}>Dismantle Time</div>
+                <div className="text-[11px] text-[#0A1F2E] mt-0.5 tabular-nums">
+                  {event.dismantleDatetime ? new Date(event.dismantleDatetime).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : <span className="text-gray-300">—</span>}
+                </div>
               </div>
             </div>
           </div>
@@ -582,7 +592,7 @@ export default function EventDetailPage() {
           <div className="px-5 py-4 space-y-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div>
-                <div className={fieldLabel}>Setup Driver</div>
+                <div className={FIELD_LABEL}>Setup Driver</div>
                 <Combo
                   value={draft.setupDriver ?? ""}
                   options={master.drivers.map((d) => d.name)}
@@ -592,7 +602,7 @@ export default function EventDetailPage() {
                 />
               </div>
               <div>
-                <div className={fieldLabel}>Setup Lori</div>
+                <div className={FIELD_LABEL}>Setup Lori</div>
                 <Combo
                   value={draft.setupLori ?? ""}
                   options={master.lori}
@@ -602,31 +612,31 @@ export default function EventDetailPage() {
                 />
               </div>
               <div>
-                <div className={fieldLabel}>Setup Time</div>
+                <div className={FIELD_LABEL}>Setup Time</div>
                 <input
                   type="datetime-local"
                   value={draft.setupDatetime ?? ""}
                   onChange={(e) => patchDraft("setupDatetime", e.target.value)}
-                  className={fieldInput}
+                  className={FIELD_INPUT}
                 />
               </div>
               <div>
-                <div className={fieldLabel}>Dismantle Time</div>
+                <div className={FIELD_LABEL}>Dismantle Time</div>
                 <input
                   type="datetime-local"
                   value={draft.dismantleDatetime ?? ""}
                   onChange={(e) => patchDraft("dismantleDatetime", e.target.value)}
-                  className={fieldInput}
+                  className={FIELD_INPUT}
                 />
               </div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div>
-                <div className={fieldLabel}>Setup/Dismantle Status</div>
+                <div className={FIELD_LABEL}>Setup/Dismantle Status</div>
                 <select
                   value={draft.setupDismantleStatus ?? ""}
                   onChange={(e) => patchDraft("setupDismantleStatus", e.target.value as HouzsEvent["setupDismantleStatus"])}
-                  className={fieldSelect}
+                  className={FIELD_SELECT}
                 >
                   {SD_STATUSES.map((s) => <option key={s || "none"} value={s}>{s || "—"}</option>)}
                 </select>
@@ -636,9 +646,57 @@ export default function EventDetailPage() {
         )}
       </div>
 
+      {/* Assigned Sales */}
+      <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
+          <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Assigned Sales</h2>
+          <p className="text-[10px] text-gray-500 mt-0.5">Sales members working this fair</p>
+        </div>
+        {!isEditing ? (
+          <div className="px-5 py-4">
+            <div className="flex flex-wrap gap-1.5">
+              {(event.assignedSales ?? []).length > 0
+                ? (event.assignedSales ?? []).map(id => {
+                    const member = salesMembers.find(m => m.id === id);
+                    return member ? (
+                      <span key={id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#0F766E]/10 text-[#0F766E] text-[10px] font-semibold">
+                        <User className="h-2.5 w-2.5" />{member.name}
+                      </span>
+                    ) : null;
+                  })
+                : <span className="text-[11px] text-gray-300">— No sales assigned —</span>
+              }
+            </div>
+          </div>
+        ) : (
+          <div className="px-5 py-4">
+            <div className="rounded-md border border-[#DDE5E5] overflow-hidden">
+              <div className="px-3 py-1.5 border-b border-[#F0F3F3] bg-[#FAFBFB]">
+                <input type="text" value={salesSearch} onChange={(e) => setSalesSearch(e.target.value)}
+                  placeholder="Search name…" className="w-full h-6 text-[11px] bg-transparent outline-none placeholder:text-gray-400" />
+              </div>
+              <div className="max-h-[200px] overflow-y-auto divide-y divide-[#F0F3F3]">
+                {activeSalesMembers
+                  .filter(m => !salesSearch.trim() || m.name.toUpperCase().includes(salesSearch.trim().toUpperCase()))
+                  .map(m => {
+                    const checked = (draft.assignedSales ?? []).includes(m.id);
+                    return (
+                      <label key={m.id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-[#FAFBFB] cursor-pointer">
+                        <input type="checkbox" checked={checked} onChange={() => toggleAssignedSales(m.id)} className="h-3.5 w-3.5 rounded border-gray-300 text-[#0F766E] focus:ring-[#0F766E]" />
+                        <span className="text-[11px] font-semibold text-[#0A1F2E]">{m.name}</span>
+                        <span className="text-[9px] text-gray-400 ml-auto">{m.position}</span>
+                      </label>
+                    );
+                  })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Financial snapshot */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
-        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7]">
+        <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
           <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Financial Snapshot</h2>
           <p className="text-[10px] text-gray-500 mt-0.5">
             From Exhibition Report cost model · Sales − COGS = GP · Sales − all costs = Net Profit
@@ -741,7 +799,7 @@ export default function EventDetailPage() {
 
       {/* Integration + actions */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
-        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7]">
+        <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
           <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Integrations</h2>
         </div>
         <div className="px-5 py-3 flex flex-wrap gap-3 text-[11px]">
@@ -763,7 +821,7 @@ export default function EventDetailPage() {
 
       {/* Danger zone */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
-        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7]">
+        <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
           <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Actions</h2>
         </div>
         <div className="px-5 py-3 flex items-center justify-between gap-3">

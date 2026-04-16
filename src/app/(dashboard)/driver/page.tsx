@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { Car, Truck, Phone } from "lucide-react";
 import { useMasterData } from "@/lib/master-data-store";
 import { useAllEvents } from "@/lib/events-store";
 
 export default function DriverPage() {
+  const router = useRouter();
   const master = useMasterData();
   const allEvents = useAllEvents();
 
@@ -127,8 +129,8 @@ export default function DriverPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="min-w-full text-[11px]">
-              <thead className="bg-[#FAFBFB] text-[9px] font-semibold uppercase tracking-wider text-gray-500">
+            <table className="min-w-full text-[12px]">
+              <thead className="bg-[#F4F7F7] text-[9px] font-semibold uppercase tracking-wider text-gray-500">
                 <tr>
                   <th className="text-left px-3 py-2">Start</th>
                   <th className="text-left px-3 py-2">Event</th>
@@ -139,7 +141,11 @@ export default function DriverPage() {
               </thead>
               <tbody className="divide-y divide-[#F0F3F3]">
                 {upcoming.map((e) => (
-                  <tr key={e.a42} className="hover:bg-[#FAFBFB]">
+                  <tr
+                    key={e.a42}
+                    onDoubleClick={() => router.push(`/events/${encodeURIComponent(e.a42)}`)}
+                    className="hover:bg-[#F4F7F7] cursor-pointer transition-colors"
+                  >
                     <td className="px-3 py-2 tabular-nums text-gray-600">{e.startDate}</td>
                     <td className="px-3 py-2">
                       <Link

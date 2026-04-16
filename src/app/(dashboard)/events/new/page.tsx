@@ -18,6 +18,7 @@ import {
   addContractor,
 } from "@/lib/master-data-store";
 import { Combo } from "@/components/ui/combo";
+import { FIELD_INPUT, FIELD_SELECT } from "@/lib/ui-tokens";
 
 const MONTHS = [
   "JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE",
@@ -45,7 +46,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 function Field({ label, required, children, hint }: { label: string; required?: boolean; children: ReactNode; hint?: string }) {
   return (
     <div>
-      <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 flex items-center gap-1">
+      <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 flex items-center gap-1">
         {label}
         {required && <span className="text-red-500">*</span>}
       </label>
@@ -55,9 +56,6 @@ function Field({ label, required, children, hint }: { label: string; required?: 
   );
 }
 
-const inputClass =
-  "w-full h-9 rounded-md border border-[#DDE5E5] px-2.5 text-[12px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E]";
-const selectClass = inputClass + " appearance-none cursor-pointer";
 
 export default function NewEventPage() {
   const router = useRouter();
@@ -219,19 +217,19 @@ export default function NewEventPage() {
                     setVenue("");
                   }
                 }}
-                className={selectClass}
+                className={FIELD_SELECT}
               >
                 {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </Field>
 
             <Field label="Brand" required>
-              <select value={brand} onChange={(e) => setBrand(e.target.value as Brand)} className={selectClass}>
+              <select value={brand} onChange={(e) => setBrand(e.target.value as Brand)} className={FIELD_SELECT}>
                 {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
               </select>
             </Field>
             <Field label="Event Type" required>
-              <select value={eventType} onChange={(e) => setEventType(e.target.value as EventType)} className={selectClass}>
+              <select value={eventType} onChange={(e) => setEventType(e.target.value as EventType)} className={FIELD_SELECT}>
                 <option value="EXHIBITION">EXHIBITION</option>
                 <option value="SOLO">SOLO</option>
               </select>
@@ -251,24 +249,24 @@ export default function NewEventPage() {
         <Section title="Status & Dates">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <Field label="Status" required>
-              <select value={status} onChange={(e) => setStatus(e.target.value as EventStatus)} className={selectClass}>
+              <select value={status} onChange={(e) => setStatus(e.target.value as EventStatus)} className={FIELD_SELECT}>
                 <option value="PENDING">PENDING</option>
                 <option value="CONFIRMED">CONFIRMED</option>
                 <option value="CANCELLED">CANCELLED</option>
               </select>
             </Field>
             <Field label="Progress" required>
-              <select value={progress} onChange={(e) => setProgress(e.target.value as EventProgress)} className={selectClass}>
+              <select value={progress} onChange={(e) => setProgress(e.target.value as EventProgress)} className={FIELD_SELECT}>
                 <option value="NOT STARTED">NOT STARTED</option>
                 <option value="IN PROGRESS">IN PROGRESS</option>
                 <option value="COMPLETED">COMPLETED</option>
               </select>
             </Field>
             <Field label="Start Date" required>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={inputClass} />
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={FIELD_INPUT} />
             </Field>
             <Field label="End Date" required hint={`Duration: ${durationDays} day${durationDays === 1 ? "" : "s"}`}>
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} min={startDate} className={inputClass} />
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} min={startDate} className={FIELD_INPUT} />
             </Field>
           </div>
         </Section>
@@ -276,10 +274,10 @@ export default function NewEventPage() {
         <Section title="Booth & Logistics">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <Field label="Booth No" required>
-              <input value={boothNo} onChange={(e) => setBoothNo(e.target.value)} placeholder="e.g. A12 (6 BOOTH)" className={inputClass} />
+              <input value={boothNo} onChange={(e) => setBoothNo(e.target.value)} placeholder="e.g. A12 (6 BOOTH)" className={FIELD_INPUT} />
             </Field>
             <Field label="Size (SQM)" required>
-              <input type="number" step="0.01" min="0" value={sizeSqm} onChange={(e) => setSizeSqm(Number(e.target.value))} className={inputClass} />
+              <input type="number" step="0.01" min="0" value={sizeSqm} onChange={(e) => setSizeSqm(Number(e.target.value))} className={FIELD_INPUT} />
             </Field>
             <Field label="Contractor">
               <Combo
@@ -291,7 +289,7 @@ export default function NewEventPage() {
               />
             </Field>
             <Field label="Notion Link">
-              <input type="url" value={linkNotion} onChange={(e) => setLinkNotion(e.target.value)} placeholder="https://notion.so/…" className={inputClass} />
+              <input type="url" value={linkNotion} onChange={(e) => setLinkNotion(e.target.value)} placeholder="https://notion.so/…" className={FIELD_INPUT} />
             </Field>
           </div>
         </Section>
@@ -299,13 +297,13 @@ export default function NewEventPage() {
         <Section title="Financial">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Field label="Total Sales (RM)" hint="Can be updated later from Exhibition Report">
-              <input type="number" step="0.01" min="0" value={totalSalesRm} onChange={(e) => setTotalSalesRm(Number(e.target.value))} className={inputClass} />
+              <input type="number" step="0.01" min="0" value={totalSalesRm} onChange={(e) => setTotalSalesRm(Number(e.target.value))} className={FIELD_INPUT} />
             </Field>
             <Field label="Rental (RM)">
-              <input type="number" step="0.01" min="0" value={rentalRm} onChange={(e) => setRentalRm(Number(e.target.value))} className={inputClass} />
+              <input type="number" step="0.01" min="0" value={rentalRm} onChange={(e) => setRentalRm(Number(e.target.value))} className={FIELD_INPUT} />
             </Field>
             <Field label="Google Calendar ID">
-              <input value={gcalId} onChange={(e) => setGcalId(e.target.value)} placeholder="optional@google.com" className={inputClass} />
+              <input value={gcalId} onChange={(e) => setGcalId(e.target.value)} placeholder="optional@google.com" className={FIELD_INPUT} />
             </Field>
           </div>
           <div className="text-[10px] text-gray-400 mt-3">
@@ -314,10 +312,10 @@ export default function NewEventPage() {
         </Section>
 
         <div className="flex items-center gap-2 justify-end pb-2">
-          <Link href="/pms" className="h-9 px-4 rounded-md border border-[#DDE5E5] bg-white text-[12px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E] inline-flex items-center">
+          <Link href="/pms" className="h-8 px-4 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E] inline-flex items-center">
             Cancel
           </Link>
-          <button type="submit" className="h-9 px-4 rounded-md bg-[#0F766E] text-white text-[12px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1.5">
+          <button type="submit" className="h-8 px-4 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1.5">
             <Save className="h-4 w-4" /> Create Event
           </button>
         </div>

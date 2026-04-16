@@ -54,7 +54,7 @@ function getDb(): Promise<IDBDatabase> {
         }
       };
       req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => { dbPromise = null; reject(req.error); };
     });
   }
   return dbPromise;
@@ -121,6 +121,8 @@ export function useEventPhotos(a42: string): {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setLoading(true);
+    setPhotos([]);
     let cancelled = false;
     const load = () => {
       listPhotosForEvent(a42)

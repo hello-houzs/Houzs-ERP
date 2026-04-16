@@ -64,6 +64,9 @@ export interface HouzsEvent {
   setupDatetime?: string;        // ISO "2025-10-29T14:00"
   dismantleDatetime?: string;    // ISO "2025-11-03T10:00"
   setupDismantleStatus?: "PREPARED" | "SETUP DONE" | "DISMANTLE DONE" | "";
+  // Assigned team
+  assignedSales?: string[];     // sales member IDs assigned to work this fair
+  setupCrew?: string[];         // sales member IDs assigned for setup/dismantle
 }
 
 function mkEvent(e: Omit<HouzsEvent, "durationDays">): HouzsEvent {

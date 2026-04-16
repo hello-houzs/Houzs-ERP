@@ -19,10 +19,7 @@ import {
   removeLori,
   resetMasterData,
 } from "@/lib/master-data-store";
-
-const inputClass =
-  "h-9 rounded-md border border-[#DDE5E5] px-2.5 text-[12px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E]";
-const selectClass = inputClass + " appearance-none cursor-pointer";
+import { FIELD_INPUT, FIELD_SELECT } from "@/lib/ui-tokens";
 
 function Section({
   title,
@@ -39,7 +36,7 @@ function Section({
     <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
       <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between">
         <div>
-          <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-[#0A1F2E]">
             {title}
           </h2>
           <p className="text-[10px] text-gray-500 mt-0.5">{subtitle}</p>
@@ -79,7 +76,7 @@ function SimpleList({
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
           placeholder={placeholder}
-          className={`${inputClass} flex-1`}
+          className={`${FIELD_INPUT} flex-1`}
         />
         <button
           type="button"
@@ -136,14 +133,14 @@ function DriverList() {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
           placeholder="Driver name (e.g. YUNUS)"
-          className={`${inputClass} flex-1`}
+          className={`${FIELD_INPUT} flex-1`}
         />
         <input
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
           placeholder="013-580 0830"
-          className={`${inputClass} w-36`}
+          className={`${FIELD_INPUT} w-36`}
         />
         <button
           type="button"
@@ -295,12 +292,12 @@ export default function SettingsPage() {
                 onChange={(e) => setVenueDraft(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addVenueSubmit(); } }}
                 placeholder="e.g. MID VALLEY EXHIBITION CENTRE"
-                className={`${inputClass} flex-1`}
+                className={`${FIELD_INPUT} flex-1`}
               />
               <select
                 value={venueState}
                 onChange={(e) => setVenueState(e.target.value as MalaysianState)}
-                className={`${selectClass} w-32`}
+                className={`${FIELD_SELECT} w-32`}
               >
                 {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>

@@ -8,6 +8,7 @@ import {
   type Brand, type EventType, type EventStatus, type MalaysianState, type HouzsEvent, type WorkflowFlag,
 } from "@/lib/mock-data";
 import { useAllEvents } from "@/lib/events-store";
+import { FILTER_SELECT } from "@/lib/ui-tokens";
 
 const WORKFLOW_KEYS: (keyof HouzsEvent)[] = [
   "agreementApproval", "floorplan", "sendFloorplanToDesigner", "threeDCheckedByMgt",
@@ -33,9 +34,6 @@ function fmtDateShort(iso: string): string {
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
-
-const selectClass =
-  "h-8 rounded-md border border-[#DDE5E5] bg-white px-2 pr-6 text-[11px] font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E] cursor-pointer appearance-none bg-[url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%236b7280%22 stroke-width=%222%22><path d=%22M6 9l6 6 6-6%22/></svg>')] bg-no-repeat bg-[right_0.35rem_center]";
 
 export default function ProjectDetailsPage() {
   const [brand, setBrand] = useState<Brand | "ALL">("ALL");
@@ -78,7 +76,7 @@ export default function ProjectDetailsPage() {
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-[#0A1F2E]">Project Details</h1>
-          <p className="text-[12px] text-gray-500 mt-0.5">
+          <p className="text-sm text-gray-500 mt-0.5">
             {filtered.length} of {allEvents.length} projects
           </p>
         </div>
@@ -102,25 +100,25 @@ export default function ProjectDetailsPage() {
           />
         </div>
 
-        <select value={status} onChange={(e) => setStatus(e.target.value as EventStatus | "ALL")} className={selectClass}>
+        <select value={status} onChange={(e) => setStatus(e.target.value as EventStatus | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All status</option>
           <option value="CONFIRMED">Confirmed</option>
           <option value="PENDING">Pending</option>
           <option value="CANCELLED">Cancelled</option>
         </select>
 
-        <select value={eventType} onChange={(e) => setEventType(e.target.value as EventType | "ALL")} className={selectClass}>
+        <select value={eventType} onChange={(e) => setEventType(e.target.value as EventType | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All types</option>
           <option value="SOLO">Solo</option>
           <option value="EXHIBITION">Exhibition</option>
         </select>
 
-        <select value={brand} onChange={(e) => setBrand(e.target.value as Brand | "ALL")} className={selectClass}>
+        <select value={brand} onChange={(e) => setBrand(e.target.value as Brand | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All brands</option>
           {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
 
-        <select value={state} onChange={(e) => setState(e.target.value as MalaysianState | "ALL")} className={selectClass}>
+        <select value={state} onChange={(e) => setState(e.target.value as MalaysianState | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All states</option>
           {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>

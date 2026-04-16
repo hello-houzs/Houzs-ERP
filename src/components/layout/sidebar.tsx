@@ -13,6 +13,7 @@ import {
   DollarSign,
   Calendar,
   Settings,
+  ShieldCheck,
   ChevronLeft,
   ChevronRight,
   type LucideIcon,
@@ -38,21 +39,27 @@ const navigationGroups: NavGroup[] = [
       { name: "Project Management Dashboard", href: "/", icon: LayoutDashboard },
       { name: "Project Financial Report", href: "/finance", icon: DollarSign },
       { name: "Project Details", href: "/pms", icon: KanbanSquare },
+      { name: "Master Data", href: "/settings", icon: Settings },
+    ],
+  },
+  {
+    label: "SALES",
+    items: [
+      { name: "Sales Team", href: "/sales", icon: Users },
+    ],
+  },
+  {
+    label: "QMS",
+    items: [
+      { name: "After-Sales Cases", href: "/qms", icon: ShieldCheck },
     ],
   },
   {
     label: "DEPARTMENTS",
     items: [
       { name: "PM Department", href: "/bd", icon: Briefcase },
-      { name: "Sales", href: "/sales", icon: Users },
       { name: "Operation", href: "/operation", icon: Wrench },
       { name: "Driver", href: "/driver", icon: Car },
-    ],
-  },
-  {
-    label: "SYSTEM",
-    items: [
-      { name: "Master Data", href: "/settings", icon: Settings },
     ],
   },
 ];

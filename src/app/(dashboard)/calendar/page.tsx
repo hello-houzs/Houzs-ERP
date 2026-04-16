@@ -10,6 +10,7 @@ import {
 } from "@/lib/mock-data";
 import { useAllEvents } from "@/lib/events-store";
 import { buildHolidayIndex } from "@/lib/holidays";
+import { FILTER_SELECT } from "@/lib/ui-tokens";
 
 // Google-Calendar style brand palette (all blue-purple family on the real sheet,
 // but we tint per-brand for quick visual scan while staying close to the look).
@@ -256,9 +257,6 @@ export default function CalendarPage() {
   const pillBase = "h-8 px-2.5 rounded-md text-[11px] font-semibold border transition whitespace-nowrap";
   const pillOff = "bg-white text-gray-600 border-[#DDE5E5] hover:border-[#0F766E]";
   const pillOn = "bg-[#0F766E] text-white border-[#0F766E]";
-  const selectClass =
-    "h-8 rounded-md border border-[#DDE5E5] bg-white pl-2.5 pr-7 text-[11px] font-semibold text-gray-600 appearance-none cursor-pointer hover:border-[#0F766E] focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E] bg-no-repeat bg-[right_0.5rem_center] bg-[length:10px] bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%236b7280%22%20stroke-width%3D%222%22%3E%3Cpath%20d%3D%22M6%209l6%206%206-6%22%2F%3E%3C%2Fsvg%3E')]";
-
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -378,7 +376,7 @@ export default function CalendarPage() {
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value as EventType | "ALL")}
-            className={selectClass}
+            className={FILTER_SELECT}
             title="Event type"
           >
             <option value="ALL">All types</option>
@@ -389,7 +387,7 @@ export default function CalendarPage() {
           <select
             value={stateFilter}
             onChange={(e) => setStateFilter(e.target.value as MalaysianState | "ALL")}
-            className={selectClass}
+            className={FILTER_SELECT}
             title="State"
           >
             <option value="ALL">All states</option>
@@ -399,7 +397,7 @@ export default function CalendarPage() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as EventStatus | "ALL")}
-            className={selectClass}
+            className={FILTER_SELECT}
             title="Status"
           >
             <option value="ALL">All status</option>
@@ -411,7 +409,7 @@ export default function CalendarPage() {
           <select
             value={progressFilter}
             onChange={(e) => setProgressFilter(e.target.value as EventProgress | "ALL")}
-            className={selectClass}
+            className={FILTER_SELECT}
             title="Progress"
           >
             <option value="ALL">All progress</option>
@@ -423,7 +421,7 @@ export default function CalendarPage() {
           <select
             value={organizerFilter}
             onChange={(e) => setOrganizerFilter(e.target.value)}
-            className={selectClass}
+            className={FILTER_SELECT}
             title="Organizer"
           >
             <option value="ALL">All organizers</option>

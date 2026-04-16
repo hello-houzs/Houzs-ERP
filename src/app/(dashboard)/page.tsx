@@ -13,6 +13,7 @@ import {
   type MalaysianState, type WorkflowFlag, type HouzsEvent,
 } from "@/lib/mock-data";
 import { useAllEvents, updateEvent } from "@/lib/events-store";
+import { FILTER_SELECT } from "@/lib/ui-tokens";
 
 // ---------- helpers ----------
 function isDone(v: WorkflowFlag) { return v === "TRUE" || v === "DONE"; }
@@ -343,12 +344,11 @@ export default function ProjectManagementPage() {
     permit: allEvents.filter((e) => matchesNeeds(e, "NEEDS_PERMIT")).length,
   }), [allEvents]);
 
+  const router = useRouter();
+
   const pillBase = "h-8 px-2.5 rounded-md text-[11px] font-semibold border transition whitespace-nowrap";
   const pillOff = "bg-white text-gray-600 border-[#DDE5E5] hover:border-[#0F766E]";
   const pillOn = "bg-[#0F766E] text-white border-[#0F766E]";
-
-  const selectClass =
-    "h-8 rounded-md border border-[#DDE5E5] bg-white px-2 pr-6 text-[11px] font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E] cursor-pointer appearance-none bg-[url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%236b7280%22 stroke-width=%222%22><path d=%22M6 9l6 6 6-6%22/></svg>')] bg-no-repeat bg-[right_0.35rem_center]";
 
   const baseCount = ALL_COLUMNS.filter((c) => c.kind === "base").length;
   const workflowCount = ALL_COLUMNS.filter((c) => c.kind === "workflow").length;
@@ -400,7 +400,7 @@ export default function ProjectManagementPage() {
       </div>
 
       {/* Main filter bar — compact dropdowns */}
-      <div className="rounded-lg border border-[#DDE5E5] bg-white px-3 py-2 flex flex-wrap gap-2 items-center">
+      <div className="rounded-lg border border-[#DDE5E5] bg-white p-2.5 flex flex-wrap gap-2 items-center">
         <div className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
           <Filter className="h-3.5 w-3.5" />
           {activeFilterCount > 0 && (
@@ -416,32 +416,32 @@ export default function ProjectManagementPage() {
           className="h-8 rounded-md border border-[#DDE5E5] px-2.5 text-[11px] focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E] w-56"
         />
 
-        <select value={status} onChange={(e) => setStatus(e.target.value as EventStatus | "ALL")} className={selectClass}>
+        <select value={status} onChange={(e) => setStatus(e.target.value as EventStatus | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All status</option>
           <option value="CONFIRMED">Confirmed</option>
           <option value="PENDING">Pending</option>
           <option value="CANCELLED">Cancelled</option>
         </select>
 
-        <select value={progress} onChange={(e) => setProgress(e.target.value as EventProgress | "ALL")} className={selectClass}>
+        <select value={progress} onChange={(e) => setProgress(e.target.value as EventProgress | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All progress</option>
           <option value="NOT STARTED">Not started</option>
           <option value="IN PROGRESS">In progress</option>
           <option value="COMPLETED">Completed</option>
         </select>
 
-        <select value={eventType} onChange={(e) => setEventType(e.target.value as EventType | "ALL")} className={selectClass}>
+        <select value={eventType} onChange={(e) => setEventType(e.target.value as EventType | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All types</option>
           <option value="SOLO">Solo</option>
           <option value="EXHIBITION">Exhibition</option>
         </select>
 
-        <select value={brand} onChange={(e) => setBrand(e.target.value as Brand | "ALL")} className={selectClass}>
+        <select value={brand} onChange={(e) => setBrand(e.target.value as Brand | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All brands</option>
           {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
 
-        <select value={state} onChange={(e) => setState(e.target.value as MalaysianState | "ALL")} className={selectClass}>
+        <select value={state} onChange={(e) => setState(e.target.value as MalaysianState | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All states</option>
           {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
@@ -472,7 +472,7 @@ export default function ProjectManagementPage() {
             <>
               <div className="fixed inset-0 z-20" onClick={() => setColumnsOpen(false)} />
               <div className="absolute right-0 top-full mt-1 z-30 w-72 rounded-lg border border-[#DDE5E5] bg-white shadow-lg overflow-hidden">
-                <div className="flex items-center justify-between px-3 py-2 border-b border-[#DDE5E5] bg-[#F4F7F7]">
+                <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-[#0A1F2E]">
                     Columns ({visibleColumns.length})
                   </span>
@@ -583,7 +583,7 @@ export default function ProjectManagementPage() {
             </thead>
             <tbody>
               {sorted.map((e) => (
-                <tr key={e.a42} className="border-b border-[#F0F3F3] hover:bg-[#F4F7F7]">
+                <tr key={e.a42} className="border-b border-[#F0F3F3] hover:bg-[#F4F7F7] cursor-pointer transition-colors" onDoubleClick={() => router.push(`/events/${encodeURIComponent(e.a42)}`)}>
                   {visibleColumns.map((c) => (
                     <td
                       key={c.key}

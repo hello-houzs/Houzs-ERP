@@ -5,9 +5,11 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ArrowDown, ArrowUpDown, X, Filter, TrendingUp, TrendingDown, Columns3 } from "lucide-react";
 import {
-  mockEvents, BRANDS, STATES, fmtRM, computeCosts,
+  BRANDS, STATES, fmtRM, computeCosts,
   type Brand, type EventType, type EventStatus, type MalaysianState, type HouzsEvent,
 } from "@/lib/mock-data";
+import { useAllEvents } from "@/lib/events-store";
+import { FILTER_SELECT } from "@/lib/ui-tokens";
 
 interface FinancialRow extends HouzsEvent {
   cogsTotal: number;
@@ -92,6 +94,8 @@ export default function ProjectFinancialPage() {
   const [state, setState] = useState<MalaysianState | "ALL">("ALL");
   const [query, setQuery] = useState("");
 
+  const allEvents = useAllEvents();
+
   const [sortKey, setSortKey] = useState<SortKey>("netProfit");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -124,7 +128,7 @@ export default function ProjectFinancialPage() {
   const visibleCols = useMemo(() => COLUMNS.filter((c) => visibleKeys.has(c.key)), [visibleKeys]);
 
   const rows = useMemo(() => {
-    return mockEvents
+    return allEvents
       .filter((e) => {
         if (brand !== "ALL" && e.brand !== brand) return false;
         if (eventType !== "ALL" && e.eventType !== eventType) return false;
@@ -135,7 +139,7 @@ export default function ProjectFinancialPage() {
         return true;
       })
       .map(buildRow);
-  }, [brand, eventType, status, state, query]);
+  }, [allEvents, brand, eventType, status, state, query]);
 
   const sorted = useMemo(() => {
     const col = COLUMNS.find((c) => c.key === sortKey);
@@ -194,9 +198,6 @@ export default function ProjectFinancialPage() {
   function clearAll() {
     setBrand("ALL"); setEventType("ALL"); setStatus("ALL"); setState("ALL"); setQuery("");
   }
-
-  const selectClass =
-    "h-8 rounded-md border border-[#DDE5E5] bg-white px-2 pr-6 text-[11px] font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E] cursor-pointer appearance-none bg-[url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%236b7280%22 stroke-width=%222%22><path d=%22M6 9l6 6 6-6%22/></svg>')] bg-no-repeat bg-[right_0.35rem_center]";
 
   function SortIcon({ k }: { k: SortKey }) {
     if (sortKey !== k) return <ArrowUpDown className="h-3 w-3 text-gray-300 inline ml-0.5" />;
@@ -270,25 +271,25 @@ export default function ProjectFinancialPage() {
           className="h-8 rounded-md border border-[#DDE5E5] px-2.5 text-[11px] focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E] w-56"
         />
 
-        <select value={status} onChange={(e) => setStatus(e.target.value as EventStatus | "ALL")} className={selectClass}>
+        <select value={status} onChange={(e) => setStatus(e.target.value as EventStatus | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All status</option>
           <option value="CONFIRMED">Confirmed</option>
           <option value="PENDING">Pending</option>
           <option value="CANCELLED">Cancelled</option>
         </select>
 
-        <select value={eventType} onChange={(e) => setEventType(e.target.value as EventType | "ALL")} className={selectClass}>
+        <select value={eventType} onChange={(e) => setEventType(e.target.value as EventType | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All types</option>
           <option value="SOLO">Solo</option>
           <option value="EXHIBITION">Exhibition</option>
         </select>
 
-        <select value={brand} onChange={(e) => setBrand(e.target.value as Brand | "ALL")} className={selectClass}>
+        <select value={brand} onChange={(e) => setBrand(e.target.value as Brand | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All brands</option>
           {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
 
-        <select value={state} onChange={(e) => setState(e.target.value as MalaysianState | "ALL")} className={selectClass}>
+        <select value={state} onChange={(e) => setState(e.target.value as MalaysianState | "ALL")} className={FILTER_SELECT}>
           <option value="ALL">All states</option>
           {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
