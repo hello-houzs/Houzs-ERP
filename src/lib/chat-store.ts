@@ -84,7 +84,9 @@ function readLastRead(): Record<string, string> {
 
 function writeLastRead(map: Record<string, string>) {
   localStorage.setItem(LASTREAD_KEY, JSON.stringify(map));
-  emit();
+  // NOTE: intentionally no emit() — last-read changes shouldn't trigger
+  // re-renders of message lists (would cause infinite loop with markAsRead
+  // being called inside useEffect that depends on messages).
 }
 
 // ─── Subscribe / snapshots ──────────────────────────────────────────────────
