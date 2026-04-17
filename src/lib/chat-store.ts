@@ -6,14 +6,22 @@ import { useSyncExternalStore } from "react";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+export interface OrderData {
+  orderNo: string;              // e.g. "ZNT5155"
+  amount: number;               // main order amount (RM)
+  extraChargeAmount?: number;   // optional extra charge amount (RM)
+  extraChargeType?: string;     // e.g. "Transport", "Disposal", "Other"
+}
+
 export interface ChatMessage {
   id: string;           // unique ID (timestamp + random)
   chatId: string;       // = event a42 (the chat room is per-event)
   senderId: string;     // sales member ID (from sales-store)
   senderName: string;   // denormalized for display
-  content: string;      // message text
+  content: string;      // message text (for TEXT/SYSTEM); "ZNT5155 RM5500" summary for ORDER
   timestamp: string;    // ISO datetime
-  type: "TEXT" | "SYSTEM";  // SYSTEM = auto-generated (e.g. "Chat created", "Event started")
+  type: "TEXT" | "SYSTEM" | "ORDER";  // SYSTEM = auto-generated; ORDER = sales order submission
+  orderData?: OrderData; // present when type === "ORDER"
 }
 
 export interface ChatRoom {
@@ -223,6 +231,35 @@ export function sendMessage(
     content,
     timestamp: new Date().toISOString(),
     type: "TEXT",
+  };
+  const all = readMessages();
+  all.push(msg);
+  writeMessages(all);
+  return msg;
+}
+
+/** Submit a sales order to a chat room. Returns the created ORDER message. */
+export function sendOrderMessage(
+  chatId: string,
+  senderId: string,
+  senderName: string,
+  orderData: OrderData,
+): ChatMessage {
+  // Human-readable summary (also stored in content for fallback display)
+  const extra = orderData.extraChargeAmount
+    ? ` + RM${orderData.extraChargeAmount.toLocaleString("en-MY")} (${orderData.extraChargeType ?? "extra"})`
+    : "";
+  const content = `${orderData.orderNo} RM${orderData.amount.toLocaleString("en-MY")}${extra}`;
+
+  const msg: ChatMessage = {
+    id: uid(),
+    chatId,
+    senderId,
+    senderName,
+    content,
+    timestamp: new Date().toISOString(),
+    type: "ORDER",
+    orderData,
   };
   const all = readMessages();
   all.push(msg);

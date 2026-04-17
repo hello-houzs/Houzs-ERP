@@ -12,11 +12,11 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import {
   MessageCircle, Send, Users, Archive, ChevronDown, ChevronUp,
-  Clock, Rocket, Calendar,
+  Clock, Rocket, Calendar, Plus, Receipt, X as XIcon,
 } from "lucide-react";
 import {
   useChatMessages, useChatRooms,
-  createChatRoom, sendMessage, archiveChatRoom,
+  createChatRoom, sendMessage, sendOrderMessage, archiveChatRoom,
   addMemberToChat, removeMemberFromChat,
   getChatRoom, markAsRead,
 } from "@/lib/chat-store";
@@ -25,6 +25,8 @@ import {
   appendSystemMessageIfMissing,
   hasSystemMessage,
 } from "@/lib/chat-store";
+
+const EXTRA_CHARGE_TYPES = ["Transport", "Disposal", "Installation", "Other"];
 
 interface EventChatProps {
   eventA42: string;
@@ -84,8 +86,38 @@ export function EventChat({
   const salesMembers = useSalesMembers();
   const [input, setInput] = useState("");
   const [showMembers, setShowMembers] = useState(false);
+  const [showOrderForm, setShowOrderForm] = useState(false);
+  const [orderForm, setOrderForm] = useState({
+    orderNo: "",
+    amount: "",
+    extraChargeType: "",
+    extraChargeAmount: "",
+  });
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Render messages as a sequence of "blocks" — single messages OR grouped
+  // consecutive ORDER messages (接龙-style running list). A group breaks when
+  // a non-ORDER message appears between orders.
+  type Block =
+    | { kind: "MESSAGE"; msg: typeof messages[number] }
+    | { kind: "ORDER_GROUP"; messages: typeof messages };
+
+  const blocks = useMemo(() => {
+    const out: Block[] = [];
+    let current: typeof messages | null = null;
+    for (const m of messages) {
+      if (m.type === "ORDER") {
+        if (!current) current = [];
+        current.push(m);
+      } else {
+        if (current) { out.push({ kind: "ORDER_GROUP", messages: current }); current = null; }
+        out.push({ kind: "MESSAGE", msg: m });
+      }
+    }
+    if (current) out.push({ kind: "ORDER_GROUP", messages: current });
+    return out;
+  }, [messages]);
 
   const room = useMemo(() => allRooms.find((r) => r.id === eventA42), [allRooms, eventA42]);
   const isArchived = room?.status === "ARCHIVED";
@@ -222,6 +254,25 @@ export function EventChat({
     }
   }
 
+  function handleSubmitOrder() {
+    const orderNo = orderForm.orderNo.trim().toUpperCase();
+    const amount = parseFloat(orderForm.amount);
+    if (!orderNo || !amount || amount <= 0 || isArchived) return;
+
+    const extraAmt = parseFloat(orderForm.extraChargeAmount);
+    const hasExtra = extraAmt > 0 && orderForm.extraChargeType;
+
+    sendOrderMessage(eventA42, currentUserId, currentUserName, {
+      orderNo,
+      amount,
+      extraChargeAmount: hasExtra ? extraAmt : undefined,
+      extraChargeType: hasExtra ? orderForm.extraChargeType : undefined,
+    });
+
+    setOrderForm({ orderNo: "", amount: "", extraChargeType: "", extraChargeAmount: "" });
+    setShowOrderForm(false);
+  }
+
   // No sales assigned yet
   if (assignedSales.length === 0 && !room) {
     return (
@@ -333,14 +384,75 @@ export function EventChat({
           </div>
         )}
 
-        {messages.map((msg, i) => {
-          const prev = i > 0 ? messages[i - 1] : null;
+        {blocks.map((block, bi) => {
+          // ── 接龙-style aggregated order list ─────────────────────────────
+          if (block.kind === "ORDER_GROUP") {
+            const grandTotal = block.messages.reduce((sum, m) => {
+              const od = m.orderData;
+              if (!od) return sum;
+              return sum + od.amount + (od.extraChargeAmount ?? 0);
+            }, 0);
+            return (
+              <div key={`g-${bi}`} className="flex justify-center py-2">
+                <div className="w-full max-w-[520px] rounded-lg border border-[#0F766E]/30 bg-white overflow-hidden">
+                  <div className="px-3 py-1.5 bg-[#0F766E]/10 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-[#0F766E]">
+                    <Receipt className="h-3 w-3" />
+                    <span>Sales Orders · {block.messages.length} item{block.messages.length === 1 ? "" : "s"}</span>
+                    <span className="ml-auto font-mono text-[#0A1F2E]">
+                      Total: RM {grandTotal.toLocaleString("en-MY", { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <ol className="divide-y divide-[#F0F3F3]">
+                    {block.messages.map((m, idx) => {
+                      const od = m.orderData!;
+                      const lineTotal = od.amount + (od.extraChargeAmount ?? 0);
+                      return (
+                        <li key={m.id} className="px-3 py-1.5 flex items-center gap-2 text-[11px]">
+                          <span className="font-mono font-semibold text-gray-400 w-6 shrink-0 text-right">
+                            {idx + 1}.
+                          </span>
+                          <span className="font-mono font-bold text-[#0A1F2E] shrink-0">{od.orderNo}</span>
+                          <span className="font-mono text-[#0A1F2E] ml-1">
+                            RM{od.amount.toLocaleString("en-MY")}
+                          </span>
+                          {od.extraChargeAmount && (
+                            <span className="font-mono text-gray-500 text-[10px]">
+                              + RM{od.extraChargeAmount.toLocaleString("en-MY")} ({od.extraChargeType})
+                            </span>
+                          )}
+                          <span className="ml-auto flex items-center gap-1.5 shrink-0">
+                            <span
+                              className="h-4 w-4 rounded-full flex items-center justify-center text-[8px] text-white font-bold"
+                              style={{ backgroundColor: avatarColor(m.senderName) }}
+                            >
+                              {m.senderName.charAt(0)}
+                            </span>
+                            <span className="text-[9px] font-semibold" style={{ color: avatarColor(m.senderName) }}>
+                              {m.senderName}
+                            </span>
+                            <span className="text-[9px] text-gray-400 tabular-nums w-10 text-right">
+                              {formatTime(m.timestamp).slice(0, 5)}
+                            </span>
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+              </div>
+            );
+          }
+
+          // ── Regular text / system message ──────────────────────────────
+          const msg = block.msg;
+          const prevMsg = bi > 0 && blocks[bi - 1].kind === "MESSAGE"
+            ? (blocks[bi - 1] as { kind: "MESSAGE"; msg: typeof messages[number] }).msg
+            : null;
           const isSystem = msg.type === "SYSTEM";
           const isMe = msg.senderId === currentUserId;
-          const showSender = !isSystem && (!prev || prev.senderId !== msg.senderId || prev.type === "SYSTEM");
+          const showSender = !isSystem && (!prevMsg || prevMsg.senderId !== msg.senderId || prevMsg.type !== "TEXT");
 
           if (isSystem) {
-            // strip milestone prefix like "⟦MILESTONE:KEY⟧ " from display
             const displayContent = msg.content.replace(/^\u27E6MILESTONE:[^\u27E7]+\u27E7\s*/, "");
             return (
               <div key={msg.id} className="text-center py-1.5">
@@ -384,9 +496,105 @@ export function EventChat({
         <div ref={bottomRef} />
       </div>
 
+      {/* Order form popup */}
+      {showOrderForm && !isArchived && (
+        <div className="px-3 py-3 border-t border-[#DDE5E5] bg-[#FAFBFB]">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5">
+              <Receipt className="h-3.5 w-3.5 text-[#0F766E]" />
+              <span className="text-[11px] font-semibold text-[#0A1F2E]">Submit Sales Order</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowOrderForm(false)}
+              className="h-6 w-6 rounded hover:bg-gray-100 flex items-center justify-center text-gray-400 hover:text-gray-600"
+            >
+              <XIcon className="h-3 w-3" />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[9px] font-semibold uppercase tracking-wider text-gray-500">Order No.</label>
+              <input
+                type="text"
+                value={orderForm.orderNo}
+                onChange={(e) => setOrderForm({ ...orderForm, orderNo: e.target.value })}
+                placeholder="ZNT5155"
+                className="w-full mt-0.5 h-7 px-2 rounded border border-[#DDE5E5] text-[11px] font-mono uppercase outline-none focus:border-[#0F766E]"
+              />
+            </div>
+            <div>
+              <label className="text-[9px] font-semibold uppercase tracking-wider text-gray-500">Amount (RM)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={orderForm.amount}
+                onChange={(e) => setOrderForm({ ...orderForm, amount: e.target.value })}
+                placeholder="5500"
+                className="w-full mt-0.5 h-7 px-2 rounded border border-[#DDE5E5] text-[11px] font-mono outline-none focus:border-[#0F766E]"
+              />
+            </div>
+            <div>
+              <label className="text-[9px] font-semibold uppercase tracking-wider text-gray-500">Extra Charge</label>
+              <select
+                value={orderForm.extraChargeType}
+                onChange={(e) => setOrderForm({ ...orderForm, extraChargeType: e.target.value })}
+                className="w-full mt-0.5 h-7 px-2 rounded border border-[#DDE5E5] text-[11px] outline-none focus:border-[#0F766E] bg-white"
+              >
+                <option value="">— None —</option>
+                {EXTRA_CHARGE_TYPES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[9px] font-semibold uppercase tracking-wider text-gray-500">Extra Amount (RM)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={orderForm.extraChargeAmount}
+                onChange={(e) => setOrderForm({ ...orderForm, extraChargeAmount: e.target.value })}
+                disabled={!orderForm.extraChargeType}
+                placeholder="500"
+                className="w-full mt-0.5 h-7 px-2 rounded border border-[#DDE5E5] text-[11px] font-mono outline-none focus:border-[#0F766E] disabled:bg-gray-100 disabled:text-gray-400"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-1.5 mt-2">
+            <button
+              type="button"
+              onClick={() => setShowOrderForm(false)}
+              className="h-7 px-3 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSubmitOrder}
+              disabled={!orderForm.orderNo.trim() || !parseFloat(orderForm.amount)}
+              className="h-7 px-3 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
+            >
+              <Receipt className="h-3 w-3" /> Submit Order
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Input area */}
       {!isArchived && (
         <div className="px-3 py-2 border-t border-[#DDE5E5] bg-white flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowOrderForm(!showOrderForm)}
+            title="Submit sales order"
+            className={`h-8 w-8 rounded-md flex items-center justify-center shrink-0 transition-colors ${
+              showOrderForm
+                ? "bg-[#0F766E] text-white"
+                : "border border-[#DDE5E5] bg-white text-gray-500 hover:border-[#0F766E] hover:text-[#0F766E]"
+            }`}
+          >
+            <Plus className="h-4 w-4" />
+          </button>
           <input
             ref={inputRef}
             type="text"
