@@ -1,5 +1,3 @@
-"use client";
-
 // Per-workflow attachment dialog — click a BD workflow checkpoint
 // (e.g. "Floorplan", "Agreement / Quotation Approval") to view existing
 // files or drop new ones. Photos are stored in IndexedDB and tagged with
@@ -30,7 +28,6 @@ function AttachmentRow({ photo }: { photo: PhotoRecord }) {
     <div className="flex items-center gap-3 px-3 py-2 border border-[#DDE5E5] rounded-md hover:bg-[#F4F7F7]">
       <div className="h-12 w-12 rounded bg-[#FAFBFB] border border-[#F0F3F3] overflow-hidden shrink-0 flex items-center justify-center">
         {isImage && url ? (
-          /* eslint-disable-next-line @next/next/no-img-element */
           <img src={url} alt={photo.filename} className="w-full h-full object-cover" />
         ) : (
           <FileText className="h-5 w-5 text-gray-400" />

@@ -1,5 +1,3 @@
-"use client";
-
 // ASSR (After-Sales Service & Repair) case management store —
 // localStorage-backed with subscriber pattern, same as sales-store.ts.
 

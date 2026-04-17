@@ -1,5 +1,5 @@
 node_modules
-.next
+dist
 .env*.local
 .DS_Store
 *.log
@@ -7,5 +7,6 @@ node_modules
 # Claude Code IDE local config
 .claude/
 
-# Next.js build cache
+# Build caches
 tsconfig.tsbuildinfo
+.vite

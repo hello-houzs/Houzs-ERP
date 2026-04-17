@@ -1,7 +1,5 @@
-"use client";
-
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { Link } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { useState } from "react";
 import {
   LayoutDashboard,
@@ -65,7 +63,7 @@ const navigationGroups: NavGroup[] = [
 ];
 
 export function Sidebar() {
-  const pathname = usePathname();
+  const { pathname } = useLocation();
   const [collapsed, setCollapsed] = useState(false);
 
   const isActive = (href: string) => {
@@ -83,14 +81,14 @@ export function Sidebar() {
       {/* Brand */}
       <div className="flex h-14 items-center justify-between px-3 border-b border-white/10 shrink-0">
         {!collapsed ? (
-          <Link href="/" className="flex items-center gap-2">
+          <Link to="/" className="flex items-center gap-2">
             <div className="h-8 w-8 rounded bg-gradient-to-br from-[#14B8A6] to-[#0F766E] flex items-center justify-center text-sm font-bold shrink-0">
               H
             </div>
             <span className="text-[18px] font-[800] tracking-[2px]">HOUZS</span>
           </Link>
         ) : (
-          <Link href="/" className="mx-auto">
+          <Link to="/" className="mx-auto">
             <div className="h-8 w-8 rounded bg-gradient-to-br from-[#14B8A6] to-[#0F766E] flex items-center justify-center text-sm font-bold">
               H
             </div>
@@ -114,7 +112,7 @@ export function Sidebar() {
                 return (
                   <Link
                     key={item.href}
-                    href={item.href}
+                    to={item.href}
                     className={cn(
                       "group relative flex items-center gap-3 rounded-md text-sm font-medium transition-colors",
                       "h-9 px-3",

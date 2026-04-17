@@ -1,5 +1,3 @@
-"use client";
-
 // IndexedDB-backed photo store for event attachments.
 // localStorage can't hold images (5MB cap); IndexedDB stores Blobs natively
 // which is way more efficient than base64.

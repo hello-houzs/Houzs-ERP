@@ -1,5 +1,3 @@
-"use client";
-
 // Client-side events store: mockEvents + user-added + per-event overrides,
 // persisted in localStorage and reactive via a subscriber registry.
 //

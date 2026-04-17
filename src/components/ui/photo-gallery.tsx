@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useRef, useState } from "react";
 import { Upload, Trash2, X, Image as ImageIcon, FileText } from "lucide-react";
 import {
@@ -39,7 +37,6 @@ function Thumb({
           onClick={onClick}
           className="absolute inset-0 w-full h-full"
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={url} alt={photo.filename} className="w-full h-full object-cover" />
         </button>
       ) : (
@@ -103,7 +100,6 @@ function Lightbox({
         onClick={(e) => e.stopPropagation()}
       >
         {isImage && url ? (
-          /* eslint-disable-next-line @next/next/no-img-element */
           <img src={url} alt={photo.filename} className="max-w-full max-h-[80vh] object-contain rounded" />
         ) : (
           <div className="bg-white rounded p-8 flex flex-col items-center gap-3">

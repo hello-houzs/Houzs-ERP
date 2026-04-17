@@ -1,5 +1,3 @@
-"use client";
-
 // Notion-style searchable combo:
 //   - click to open
 //   - type to filter

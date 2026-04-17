@@ -1,5 +1,3 @@
-"use client";
-
 // Master data store — reactive localStorage lists for dropdown options.
 // Organizers, Venues, PICs, Contractors. (Brand / State / EventType are
 // baked into the type system as enums, so they're not stored here.)

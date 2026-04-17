@@ -1,5 +1,3 @@
-"use client";
-
 // Sales team member store — localStorage-backed with subscriber pattern.
 // Supports MLM-style tree hierarchy with position, brand assignment, and
 // commission tiers.

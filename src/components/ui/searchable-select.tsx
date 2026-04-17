@@ -1,4 +1,3 @@
-"use client";
 import { useState, useRef, useEffect } from "react";
 import { X, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
