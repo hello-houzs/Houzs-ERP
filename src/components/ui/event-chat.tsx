@@ -1,9 +1,19 @@
 // Event-scoped WhatsApp-style chat panel.
-// Embeds in EventDetailPage — auto-creates room when sales assigned,
-// auto-archives when event completes.
+//
+// Lifecycle (auto-managed):
+//   T-∞ .. T-4 : Planning phase — chat room created with management only,
+//                sales members are NOT added yet. Shows countdown banner.
+//   T-3 .. T-1 : Activation window — sales members auto-added, milestone
+//                system messages posted, full chat unlocked.
+//   T-0 .. end : Event running — active chat.
+//   > end      : Event completed → chat archived (read-only), history saved
+//                to localStorage keyed by eventA42.
 
 import { useState, useEffect, useRef, useMemo } from "react";
-import { MessageCircle, Send, Users, Archive, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  MessageCircle, Send, Users, Archive, ChevronDown, ChevronUp,
+  Clock, Rocket, Calendar,
+} from "lucide-react";
 import {
   useChatMessages, useChatRooms,
   createChatRoom, sendMessage, archiveChatRoom,
@@ -11,16 +21,26 @@ import {
   getChatRoom, markAsRead,
 } from "@/lib/chat-store";
 import { useSalesMembers } from "@/lib/sales-store";
+import {
+  appendSystemMessageIfMissing,
+  hasSystemMessage,
+} from "@/lib/chat-store";
 
 interface EventChatProps {
   eventA42: string;
   eventTitle: string;
+  eventStartDate: string;       // ISO yyyy-mm-dd
+  eventEndDate: string;         // ISO yyyy-mm-dd
   assignedSales: string[];
   eventStatus: "NOT STARTED" | "IN PROGRESS" | "COMPLETED";
+  pic?: string;                 // PIC name — added to chat automatically
   currentUserId?: string;
 }
 
-// Simple color palette for sender avatars
+// Activation window — members auto-added this many days before event start
+const ACTIVATION_DAYS_BEFORE = 3;
+
+// Color palette for sender avatars
 const AVATAR_COLORS = [
   "#0F766E", "#2563EB", "#7C3AED", "#DB2777",
   "#EA580C", "#CA8A04", "#059669", "#4F46E5",
@@ -41,11 +61,22 @@ function formatTime(iso: string): string {
   return `${day} ${time}`;
 }
 
+function daysBetween(fromISO: string, toISO: string): number {
+  const from = new Date(fromISO);
+  const to = new Date(toISO);
+  from.setHours(0, 0, 0, 0);
+  to.setHours(0, 0, 0, 0);
+  return Math.round((to.getTime() - from.getTime()) / 86400000);
+}
+
 export function EventChat({
   eventA42,
   eventTitle,
+  eventStartDate,
+  eventEndDate,
   assignedSales,
   eventStatus,
+  pic,
   currentUserId = "dir-kingsley",
 }: EventChatProps) {
   const allRooms = useChatRooms();
@@ -59,12 +90,45 @@ export function EventChat({
   const room = useMemo(() => allRooms.find((r) => r.id === eventA42), [allRooms, eventA42]);
   const isArchived = room?.status === "ARCHIVED";
 
+  // Compute event lifecycle
+  const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const daysUntilStart = useMemo(
+    () => daysBetween(todayISO, eventStartDate),
+    [todayISO, eventStartDate]
+  );
+  const daysUntilEnd = useMemo(
+    () => daysBetween(todayISO, eventEndDate),
+    [todayISO, eventEndDate]
+  );
+  const isWithinActivationWindow = daysUntilStart <= ACTIVATION_DAYS_BEFORE && daysUntilEnd >= 0;
+  const isEventRunning = daysUntilStart <= 0 && daysUntilEnd >= 0;
+  const isPlanningPhase = daysUntilStart > ACTIVATION_DAYS_BEFORE;
+
   const currentUserName = useMemo(() => {
     const m = salesMembers.find((s) => s.id === currentUserId);
     return m?.name ?? "You";
   }, [salesMembers, currentUserId]);
 
-  // Resolve member names
+  // Resolve PIC user id from name
+  const picId = useMemo(() => {
+    if (!pic) return null;
+    const m = salesMembers.find((s) => s.name.toUpperCase() === pic.toUpperCase());
+    return m?.id ?? null;
+  }, [pic, salesMembers]);
+
+  // Who gets in the room during planning vs activation
+  const planningPhaseMembers = useMemo(() => {
+    const ids = [currentUserId];
+    if (picId && picId !== currentUserId) ids.push(picId);
+    return [...new Set(ids)];
+  }, [currentUserId, picId]);
+
+  const fullRosterMembers = useMemo(() => {
+    const ids = [currentUserId, ...(picId ? [picId] : []), ...assignedSales];
+    return [...new Set(ids)];
+  }, [currentUserId, picId, assignedSales]);
+
+  // Resolve member names for display
   const memberNames = useMemo(() => {
     if (!room) return [];
     return room.memberIds.map((id) => {
@@ -73,40 +137,55 @@ export function EventChat({
     });
   }, [room, salesMembers]);
 
-  // Auto-create chat room when assigned sales exist but no room yet
+  // Auto-create chat room when sales assigned
   useEffect(() => {
     if (assignedSales.length === 0) return;
     const existing = getChatRoom(eventA42);
     if (!existing) {
-      const members = [...new Set([currentUserId, ...assignedSales])];
-      createChatRoom(eventA42, eventTitle, members);
+      // Only management + PIC at creation (planning phase)
+      createChatRoom(eventA42, eventTitle, planningPhaseMembers);
     }
-  }, [eventA42, eventTitle, assignedSales, currentUserId]);
+  }, [eventA42, eventTitle, assignedSales, planningPhaseMembers]);
 
-  // Sync members when assignedSales changes
+  // Auto-activation: add sales members when within T-3 window
   useEffect(() => {
     const existing = getChatRoom(eventA42);
     if (!existing || existing.status === "ARCHIVED") return;
 
-    const targetMembers = new Set([currentUserId, ...assignedSales]);
-    const currentMembers = new Set(existing.memberIds);
+    if (isWithinActivationWindow) {
+      // Post activation milestone once
+      if (!hasSystemMessage(eventA42, "MILESTONE:ACTIVATED")) {
+        const daysMsg = daysUntilStart > 0
+          ? `Event starting in ${daysUntilStart} day${daysUntilStart === 1 ? "" : "s"} — sales team joining the chat`
+          : `Event starting today — sales team joining the chat`;
+        appendSystemMessageIfMissing(eventA42, daysMsg, "MILESTONE:ACTIVATED");
+      }
 
-    // Add new members
-    for (const id of targetMembers) {
-      if (!currentMembers.has(id)) {
-        const name = salesMembers.find((s) => s.id === id)?.name ?? id;
-        addMemberToChat(eventA42, id, name);
+      // Add all assigned sales to the group
+      const targetSet = new Set(fullRosterMembers);
+      const currentSet = new Set(existing.memberIds);
+      for (const id of targetSet) {
+        if (!currentSet.has(id)) {
+          const name = salesMembers.find((s) => s.id === id)?.name ?? id;
+          addMemberToChat(eventA42, id, name);
+        }
+      }
+      // Remove any who were un-assigned (except management/PIC)
+      for (const id of currentSet) {
+        if (!targetSet.has(id)) {
+          const name = salesMembers.find((s) => s.id === id)?.name ?? id;
+          removeMemberFromChat(eventA42, id, name);
+        }
       }
     }
+  }, [isWithinActivationWindow, daysUntilStart, eventA42, fullRosterMembers, salesMembers]);
 
-    // Remove members no longer assigned (but keep management)
-    for (const id of currentMembers) {
-      if (!targetMembers.has(id) && id !== currentUserId) {
-        const name = salesMembers.find((s) => s.id === id)?.name ?? id;
-        removeMemberFromChat(eventA42, id, name);
-      }
+  // Milestone: event started
+  useEffect(() => {
+    if (isEventRunning && !hasSystemMessage(eventA42, "MILESTONE:STARTED")) {
+      appendSystemMessageIfMissing(eventA42, "Event has started", "MILESTONE:STARTED");
     }
-  }, [assignedSales, eventA42, currentUserId, salesMembers]);
+  }, [isEventRunning, eventA42]);
 
   // Auto-archive when event completes
   useEffect(() => {
@@ -171,6 +250,21 @@ export function EventChat({
               <Archive className="h-2.5 w-2.5" /> Archived
             </span>
           )}
+          {!isArchived && isPlanningPhase && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-amber-100 text-amber-700">
+              <Clock className="h-2.5 w-2.5" /> Planning
+            </span>
+          )}
+          {!isArchived && isWithinActivationWindow && !isEventRunning && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[#0F766E]/10 text-[#0F766E]">
+              <Rocket className="h-2.5 w-2.5" /> Activated
+            </span>
+          )}
+          {!isArchived && isEventRunning && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-green-100 text-green-700">
+              <Calendar className="h-2.5 w-2.5" /> Live
+            </span>
+          )}
         </div>
         <button
           type="button"
@@ -203,20 +297,36 @@ export function EventChat({
               </span>
             ))}
           </div>
+          {isPlanningPhase && assignedSales.length > 0 && (
+            <p className="text-[9px] text-amber-600 mt-1.5">
+              💡 Sales team will auto-join {ACTIVATION_DAYS_BEFORE} days before event ({daysUntilStart - ACTIVATION_DAYS_BEFORE} more days)
+            </p>
+          )}
         </div>
       )}
 
-      {/* Archived banner */}
-      {isArchived && (
-        <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-center">
+      {/* Lifecycle banner */}
+      {!isArchived && isPlanningPhase && assignedSales.length > 0 && (
+        <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 flex items-center justify-center gap-1.5">
+          <Clock className="h-3 w-3 text-amber-600 shrink-0" />
           <p className="text-[10px] text-amber-700 font-medium">
-            This chat has been archived — messages are read-only
+            Planning phase — sales team will auto-join in {daysUntilStart - ACTIVATION_DAYS_BEFORE} day{daysUntilStart - ACTIVATION_DAYS_BEFORE === 1 ? "" : "s"}
+            {" "}(T-{ACTIVATION_DAYS_BEFORE}). Only management + PIC for now.
+          </p>
+        </div>
+      )}
+
+      {isArchived && (
+        <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-center gap-1.5">
+          <Archive className="h-3 w-3 text-gray-500 shrink-0" />
+          <p className="text-[10px] text-gray-600 font-medium">
+            Chat archived — event completed · history saved to event record
           </p>
         </div>
       )}
 
       {/* Messages area */}
-      <div className="max-h-[400px] min-h-[200px] overflow-y-auto px-4 py-3 space-y-1 bg-[#FAFBFB]">
+      <div className="max-h-[400px] min-h-[240px] overflow-y-auto px-4 py-3 space-y-1 bg-[#FAFBFB]">
         {messages.length === 0 && (
           <div className="text-center py-8">
             <p className="text-[11px] text-gray-400">No messages yet. Start the conversation!</p>
@@ -230,10 +340,12 @@ export function EventChat({
           const showSender = !isSystem && (!prev || prev.senderId !== msg.senderId || prev.type === "SYSTEM");
 
           if (isSystem) {
+            // strip milestone prefix like "⟦MILESTONE:KEY⟧ " from display
+            const displayContent = msg.content.replace(/^\u27E6MILESTONE:[^\u27E7]+\u27E7\s*/, "");
             return (
               <div key={msg.id} className="text-center py-1.5">
                 <span className="inline-block px-3 py-1 rounded-full bg-gray-100 text-[9px] text-gray-500">
-                  {msg.content}
+                  {displayContent}
                 </span>
               </div>
             );
@@ -281,7 +393,7 @@ export function EventChat({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message..."
+            placeholder={isPlanningPhase ? "Planning chat (management only)..." : "Type a message..."}
             className="flex-1 h-8 px-3 rounded-md border border-[#DDE5E5] text-[12px] text-[#0A1F2E] placeholder:text-gray-400 outline-none focus:border-[#0F766E] transition-colors"
           />
           <button

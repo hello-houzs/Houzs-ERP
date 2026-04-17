@@ -696,8 +696,11 @@ export default function EventDetailPage() {
       <EventChat
         eventA42={a42}
         eventTitle={calendarTitle(event)}
+        eventStartDate={event.startDate}
+        eventEndDate={event.endDate}
         assignedSales={event.assignedSales ?? []}
         eventStatus={event.progress}
+        pic={event.pic}
         currentUserId="dir-kingsley"
       />
 

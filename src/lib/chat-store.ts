@@ -292,3 +292,42 @@ export function getChatRoom(eventA42: string): ChatRoom | undefined {
 export function getActiveChatRooms(): ChatRoom[] {
   return readRooms().filter((r) => r.status === "ACTIVE");
 }
+
+// ─── Milestone-aware system messages (idempotent) ──────────────────────────
+//
+// Some system messages should be posted at most once per chat (e.g. "Event
+// has started"). We use a marker prefix in the content to detect duplicates.
+// Format: "⟦MILESTONE:KEY⟧ <human-readable message>"
+
+const MILESTONE_PREFIX_RE = /^\u27E6MILESTONE:([A-Z_:0-9-]+)\u27E7\s*/;
+
+export function hasSystemMessage(chatId: string, milestoneKey: string): boolean {
+  const all = readMessages();
+  return all.some((m) => {
+    if (m.chatId !== chatId || m.type !== "SYSTEM") return false;
+    const match = m.content.match(MILESTONE_PREFIX_RE);
+    return match?.[1] === milestoneKey;
+  });
+}
+
+/** Append a system message tagged with a milestone key, only if not already posted. */
+export function appendSystemMessageIfMissing(
+  chatId: string,
+  content: string,
+  milestoneKey: string,
+): void {
+  if (hasSystemMessage(chatId, milestoneKey)) return;
+  const tagged = `\u27E6MILESTONE:${milestoneKey}\u27E7 ${content}`;
+  const msg: ChatMessage = {
+    id: uid(),
+    chatId,
+    senderId: "__system__",
+    senderName: "System",
+    content: tagged,
+    timestamp: new Date().toISOString(),
+    type: "SYSTEM",
+  };
+  const all = readMessages();
+  all.push(msg);
+  writeMessages(all);
+}
