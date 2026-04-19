@@ -1,22 +1,34 @@
 import { useMemo, useState } from "react";
-import { Plus, Trash2, Lock, Shield } from "lucide-react";
-import { PageHeader } from "../components/Layout";
+import { Trash2, Lock, Shield } from "lucide-react";
 import { Button } from "../components/Button";
 import { Panel, PanelSection } from "../components/Panel";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
+import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { cn } from "../lib/utils";
 import type { Role, PermissionDef } from "../types";
 
-export function Roles() {
+/**
+ * Roles grid + editor panel, extracted for embedding inside the unified
+ * Team page. The parent owns the "New Role" button (in the PageHeader
+ * actions) and passes `creating` + `onCloseCreate` down so the editor
+ * panel can open/close in response.
+ */
+export function RolesTab({
+  creating,
+  onCloseCreate,
+}: {
+  creating: boolean;
+  onCloseCreate: () => void;
+}) {
   const { can } = useAuth();
   const toast = useToast();
+  const dialog = useDialog();
   const canManage = can("roles.manage");
 
   const [editing, setEditing] = useState<Role | null>(null);
-  const [creating, setCreating] = useState(false);
 
   const rolesQ = useQuery<{ roles: Role[] }>(() => api.get("/api/roles"));
   const permsQ = useQuery<{ permissions: PermissionDef[] }>(() =>
@@ -29,7 +41,7 @@ export function Roles() {
 
   async function deleteRole(r: Role) {
     if (
-      !confirm(
+      !await dialog.confirm(
         `Delete role "${r.name}"?\n\nThis cannot be undone. Reassign any members holding this role first.`
       )
     )
@@ -43,25 +55,14 @@ export function Roles() {
     }
   }
 
+  const editorOpen = editing !== null || creating;
+  function closeEditor() {
+    setEditing(null);
+    onCloseCreate();
+  }
+
   return (
     <div>
-      <PageHeader
-        eyebrow="Workspace · Access Control"
-        title="Roles"
-        description="Define what each role can access. System roles are locked; create custom roles for fine-grained control."
-        actions={
-          canManage && (
-            <Button
-              variant="brass"
-              icon={<Plus size={14} />}
-              onClick={() => setCreating(true)}
-            >
-              New Role
-            </Button>
-          )
-        }
-      />
-
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {rolesQ.loading && (
           <div className="px-5 py-6 text-sm text-ink-muted">Loading…</div>
@@ -130,18 +131,14 @@ export function Roles() {
         ))}
       </div>
 
-      {(editing || creating) && (
+      {editorOpen && (
         <RoleEditorPanel
           open={true}
-          onClose={() => {
-            setEditing(null);
-            setCreating(false);
-          }}
+          onClose={closeEditor}
           role={editing}
           permissions={permsQ.data?.permissions ?? []}
           onSaved={() => {
-            setEditing(null);
-            setCreating(false);
+            closeEditor();
             reload();
           }}
           canManage={canManage}
@@ -181,7 +178,6 @@ function RoleEditorPanel({
   );
   const [busy, setBusy] = useState(false);
 
-  // Group permissions by resource for the picker UI.
   const grouped = useMemo(() => {
     const m = new Map<string, PermissionDef[]>();
     for (const p of permissions) {
@@ -243,7 +239,6 @@ function RoleEditorPanel({
     }
   }
 
-  // Owner role with wildcard — show a special note instead of the full picker
   const isWildcard = role?.permissions.includes("*");
 
   return (

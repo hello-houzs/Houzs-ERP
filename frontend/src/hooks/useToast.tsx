@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
-import { Check, X, Info } from "lucide-react";
+import { Check, X, Info, AlertTriangle } from "lucide-react";
 
-type ToastKind = "success" | "error" | "info";
+type ToastKind = "success" | "error" | "info" | "warning";
+
 interface ToastItem {
   id: number;
   kind: ToastKind;
@@ -13,6 +14,7 @@ interface ToastContextValue {
   success: (m: string) => void;
   error: (m: string) => void;
   info: (m: string) => void;
+  warning: (m: string) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -23,9 +25,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const show = useCallback((kind: ToastKind, message: string) => {
     const id = Date.now() + Math.random();
     setItems((prev) => [...prev, { id, kind, message }]);
+    // Errors hang around a touch longer so users can read them.
+    const ttl = kind === "error" ? 5000 : 3000;
     setTimeout(() => {
       setItems((prev) => prev.filter((t) => t.id !== id));
-    }, 3000);
+    }, ttl);
   }, []);
 
   const value: ToastContextValue = {
@@ -33,25 +37,63 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     success: (m) => show("success", m),
     error: (m) => show("error", m),
     info: (m) => show("info", m),
+    warning: (m) => show("warning", m),
   };
 
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="pointer-events-none fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 flex-col gap-2">
+      {/* Top-center stack — slides in from above. Pinned to top so
+          it doesn't collide with floating action bars or the PWA
+          install banner pinned to the bottom. */}
+      <div
+        className="pointer-events-none fixed left-1/2 top-4 z-[200] flex w-full max-w-md -translate-x-1/2 flex-col items-center gap-2 px-3 sm:top-6"
+        aria-live="polite"
+        role="status"
+      >
         {items.map((t) => (
-          <div
-            key={t.id}
-            className="pointer-events-auto flex items-center gap-2 rounded-lg border border-border bg-surface px-4 py-2.5 text-sm shadow-sm"
-          >
-            {t.kind === "success" && <Check size={16} className="text-synced" />}
-            {t.kind === "error" && <X size={16} className="text-err" />}
-            {t.kind === "info" && <Info size={16} className="text-accent" />}
-            <span>{t.message}</span>
-          </div>
+          <ToastCard key={t.id} item={t} />
         ))}
       </div>
     </ToastContext.Provider>
+  );
+}
+
+function ToastCard({ item }: { item: ToastItem }) {
+  const palette =
+    item.kind === "success"
+      ? "border-synced/30 bg-surface text-ink"
+      : item.kind === "error"
+      ? "border-err/40 bg-surface text-ink"
+      : item.kind === "warning"
+      ? "border-amber-500/40 bg-surface text-ink"
+      : "border-accent/30 bg-surface text-ink";
+  const Icon =
+    item.kind === "success"
+      ? Check
+      : item.kind === "error"
+      ? X
+      : item.kind === "warning"
+      ? AlertTriangle
+      : Info;
+  const iconColor =
+    item.kind === "success"
+      ? "text-synced"
+      : item.kind === "error"
+      ? "text-err"
+      : item.kind === "warning"
+      ? "text-amber-600"
+      : "text-accent";
+  return (
+    <div
+      className={
+        "pointer-events-auto flex w-full items-start gap-2.5 rounded-lg border px-4 py-2.5 text-[13px] shadow-slab animate-toast-in " +
+        palette
+      }
+    >
+      <Icon size={16} className={"mt-0.5 shrink-0 " + iconColor} />
+      <span className="flex-1 leading-snug">{item.message}</span>
+    </div>
   );
 }
 

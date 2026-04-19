@@ -5,6 +5,7 @@ import { StatusDot } from "../components/StatusDot";
 import { Pagination } from "../components/Pagination";
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useServerSort } from "../hooks/useServerSort";
 import { api, buildQuery } from "../api/client";
 import { relativeTime } from "../lib/utils";
 import type { Paginated, ExecutionLog } from "../types";
@@ -14,11 +15,14 @@ export function Logs() {
   const [status, setStatus] = useState("");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:logs", 50);
+  const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
 
   const list = useQuery<Paginated<ExecutionLog>>(
     () =>
-      api.get(`/api/logs${buildQuery({ type, status, page, per_page: perPage })}`),
-    [type, status, page, perPage]
+      api.get(
+        `/api/logs${buildQuery({ type, status, page, per_page: perPage, ...sortParams })}`
+      ),
+    [type, status, page, perPage, sort?.key, sort?.dir]
   );
 
   const columns: Column<ExecutionLog>[] = [
@@ -128,6 +132,8 @@ export function Logs() {
         error={list.error}
         emptyLabel="No log entries"
         getRowKey={(r) => r.id}
+        serverSort
+        onSortChange={handleSortChange}
       />
 
       {list.data && (

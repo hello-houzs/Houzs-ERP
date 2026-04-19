@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Plus, Trash2, X, Calendar, MapPin, Wrench } from "lucide-react";
 import { useQuery } from "../hooks/useQuery";
+import { useDialog } from "../hooks/useDialog";
+import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
 import { formatDate, cn } from "../lib/utils";
 import type { CalendarEvent, EventType } from "../types";
@@ -31,7 +33,7 @@ export function EventsTab() {
         </div>
         <button
           onClick={() => setEditing("new")}
-          className="ml-auto flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-accent-ink shadow-sm"
+          className="ml-auto flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm"
         >
           <Plus size={13} /> Add Event
         </button>
@@ -97,13 +99,15 @@ function EventCard({
   onEdit: () => void;
   onDeleted: () => void;
 }) {
+  const dialog = useDialog();
+  const toast = useToast();
   async function remove() {
-    if (!window.confirm(`Delete "${event.title}"?`)) return;
+    if (!await dialog.confirm(`Delete "${event.title}"?`)) return;
     try {
       await api.del(`/api/events/${event.id}`);
       onDeleted();
     } catch (e: any) {
-      alert(e?.message || "Delete failed");
+      toast.error(e?.message || "Delete failed");
     }
   }
 
@@ -302,7 +306,7 @@ function EventDialog({
           <button
             disabled={busy}
             onClick={save}
-            className="ml-auto rounded-md bg-accent px-5 py-2.5 text-[12px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+            className="ml-auto rounded-md bg-accent px-5 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
           >
             {busy ? "Saving…" : event ? "Save" : "Create"}
           </button>

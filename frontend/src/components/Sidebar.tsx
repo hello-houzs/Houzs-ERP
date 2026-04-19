@@ -6,9 +6,6 @@ import {
   Route,
   Package,
   Zap,
-  CircleDollarSign,
-  Clock,
-  ScrollText,
   Settings as SettingsIcon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -17,12 +14,14 @@ import {
   Users,
   Shield,
   LogOut,
+  Calendar,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
 import { PresencePanel } from "./PresencePanel";
+import { GlobalSearchTrigger } from "./GlobalSearch";
 
 interface Props {
   /** Desktop-only collapsed state (lg+). */
@@ -42,6 +41,9 @@ interface Tab {
   end?: boolean;
   /** Permission key required to see/use this tab. Omit = always visible. */
   perm?: string;
+  /** Show when the user has at least one of the listed permissions.
+   *  Paired with `perm` it's `any` OR `perm` — rarely needed together. */
+  anyPerm?: string[];
   /** If the user has this permission, the tab is hidden — used to suppress
    *  legacy entries when a richer replacement is available (e.g. hide the
    *  flat Delivery list from dispatchers who already have the Trips Queue
@@ -88,13 +90,15 @@ const WORKSPACES: Workspace[] = [
         perm: "delivery_orders.read",
         hidePerm: "trips.read.all",
       },
-      { to: "/trips", label: "Trips", icon: Route, perm: "trips.read.all" },
-{ to: "/fleet", label: "Fleet", icon: Users, perm: "fleet.read" },
+      {
+        to: "/logistics",
+        label: "Logistics",
+        icon: Route,
+        anyPerm: ["trips.read.all", "fleet.read"],
+      },
       { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read" },
       { to: "/assr", label: "Service", icon: Zap, perm: "service_cases.read" },
-      { to: "/balance", label: "Balance", icon: CircleDollarSign, perm: "balance.read" },
-      { to: "/overdue", label: "Overdue", icon: Clock, perm: "overdue.read" },
-      { to: "/logs", label: "Activity Log", icon: ScrollText, perm: "logs.read" },
+      { to: "/projects", label: "Projects", icon: Calendar, perm: "projects.read" },
     ],
   },
   {
@@ -103,8 +107,7 @@ const WORKSPACES: Workspace[] = [
     code: "AD",
     icon: Shield,
     tabs: [
-      { to: "/team", label: "Team", icon: Users, perm: "users.read" },
-      { to: "/roles", label: "Roles", icon: Shield, perm: "roles.read" },
+      { to: "/team", label: "Team", icon: Users, anyPerm: ["users.read", "roles.read"] },
       { to: "/settings", label: "Settings", icon: SettingsIcon, perm: "settings.manage" },
     ],
   },
@@ -144,6 +147,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     ...ws,
     tabs: ws.tabs.filter((t) => {
       if (t.perm && !can(t.perm)) return false;
+      if (t.anyPerm && !t.anyPerm.some((p) => can(p))) return false;
       if (t.hidePerm && can(t.hidePerm)) return false;
       return true;
     }),
@@ -238,6 +242,11 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
           <PanelLeftOpen size={14} />
         </button>
       )}
+
+      {/* ── Global search trigger ──────────────────────────── */}
+      <div className={cn("border-b border-sidebar-border", collapsed ? "px-2 py-3" : "px-3 py-3")}>
+        <GlobalSearchTrigger collapsed={collapsed} />
+      </div>
 
       {/* ── Section label ────────────────────────────────────── */}
       {!collapsed && (
@@ -346,27 +355,35 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
       {user && (
         <div className="border-t border-sidebar-border">
           {collapsed ? (
-            <button
-              onClick={() => logout()}
+            <NavLink
+              to="/profile"
               className="flex h-12 w-full items-center justify-center text-sidebar-ink-muted transition-colors hover:bg-sidebar-hover hover:text-accent"
-              aria-label="Sign out"
-              title={`${user.name || user.email} · Sign out`}
+              aria-label="Profile"
+              title={`${user.name || user.email} · Profile`}
             >
-              <LogOut size={14} />
-            </button>
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-sidebar-active text-[9px] font-bold uppercase text-accent-ink">
+                {(user.name || user.email).slice(0, 2).toUpperCase()}
+              </span>
+            </NavLink>
           ) : (
             <div className="flex items-center gap-2.5 px-5 py-3.5">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sidebar-active text-[10px] font-bold uppercase text-accent-ink shadow-[inset_0_0_0_1px_rgba(161,106,46,0.25)]">
-                {(user.name || user.email).slice(0, 2).toUpperCase()}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[12px] font-semibold text-sidebar-ink">
-                  {user.name || user.email.split("@")[0]}
+              <NavLink
+                to="/profile"
+                className="group flex min-w-0 flex-1 items-center gap-2.5"
+                title="Open profile"
+              >
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sidebar-active text-[10px] font-bold uppercase text-accent-ink shadow-[inset_0_0_0_1px_rgba(161,106,46,0.25)] group-hover:bg-accent group-hover:text-white">
+                  {(user.name || user.email).slice(0, 2).toUpperCase()}
                 </div>
-                <div className="truncate text-[10px] text-sidebar-ink-muted">
-                  {user.role_name}
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[12px] font-semibold text-sidebar-ink group-hover:text-accent">
+                    {user.name || user.email.split("@")[0]}
+                  </div>
+                  <div className="truncate text-[10px] text-sidebar-ink-muted">
+                    {user.role_name}
+                  </div>
                 </div>
-              </div>
+              </NavLink>
               <button
                 onClick={() => logout()}
                 className="rounded p-1.5 text-sidebar-ink-muted transition-colors hover:bg-sidebar-hover hover:text-accent"

@@ -216,7 +216,7 @@ export function QueueTab({
             </button>
             <button
               onClick={scheduleSelected}
-              className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-accent-ink shadow-sm"
+              className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm"
             >
               <Plus size={13} /> Schedule selected
             </button>

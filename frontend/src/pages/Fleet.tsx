@@ -1,8 +1,5 @@
 import { useState } from "react";
 import {
-  Users,
-  Truck,
-  HardHat,
   AlertTriangle,
   Wrench,
   Plus,
@@ -11,9 +8,11 @@ import {
   Clock,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
+import { TabStrip, type TabOption } from "../components/TabStrip";
 import { DataTable } from "../components/DataTable";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
 import { useQuery } from "../hooks/useQuery";
+import { useToast } from "../hooks/useToast";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
@@ -72,38 +71,42 @@ export function Fleet() {
   const [selectedStaff, setSelectedStaff] = useState<StaffMember | null>(null);
   const [selectedLorry, setSelectedLorry] = useState<number | null>(null);
 
-  const tabs: { id: FleetTab; label: string; icon: any }[] = [
-    { id: "drivers", label: "Drivers", icon: Users },
-    { id: "helpers", label: "Helpers", icon: HardHat },
-    { id: "lorries", label: "Lorries", icon: Truck },
-    { id: "compliance", label: "Compliance", icon: Shield },
+  const tabs: TabOption<FleetTab>[] = [
+    { value: "drivers", label: "Drivers" },
+    { value: "helpers", label: "Helpers" },
+    { value: "lorries", label: "Lorries" },
+    { value: "compliance", label: "Compliance" },
   ];
+
+  const TAB_HEADER: Record<FleetTab, { title: string; description: string }> = {
+    drivers: {
+      title: "Drivers",
+      description: "Roster, licences, salaries, and clock-in activity.",
+    },
+    helpers: {
+      title: "Helpers",
+      description: "Helper roster — contact info, salaries, assignments.",
+    },
+    lorries: {
+      title: "Lorries",
+      description: "Vehicles, capacity, road tax / insurance / Puspakom status.",
+    },
+    compliance: {
+      title: "Compliance",
+      description: "Upcoming expiries and inspections across drivers and lorries.",
+    },
+  };
 
   return (
     <div>
+      <TabStrip<FleetTab> value={tab} onChange={setTab} options={tabs} />
+
       <PageHeader
-        eyebrow="Operations"
-        title="Fleet"
-        description="Manage drivers, helpers, and lorries."
+        eyebrow="Operations · Fleet"
+        title={TAB_HEADER[tab].title}
+        description={TAB_HEADER[tab].description}
       />
 
-      <div className="mb-4 flex items-center gap-1 border-b border-border">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={cn(
-              "relative -mb-px border-b-2 px-4 py-2.5 text-[12px] font-semibold transition-colors",
-              tab === t.id
-                ? "border-accent text-accent"
-                : "border-transparent text-ink-secondary hover:text-ink"
-            )}
-          >
-            <t.icon size={13} className="mr-1.5 inline" />
-            {t.label}
-          </button>
-        ))}
-      </div>
 
       {(tab === "drivers" || tab === "helpers") && (
         <StaffTab
@@ -232,6 +235,7 @@ function StaffPanel({
   staff: StaffMember | null;
   onClose: () => void;
 }) {
+  const toast = useToast();
   const detail = useQuery<any>(
     () => (staff ? api.get(`/api/fleet/staff/${staff.id}`) : Promise.resolve(null)),
     [staff?.id]
@@ -259,7 +263,7 @@ function StaffPanel({
       setEditing(false);
       detail.reload();
     } catch (e: any) {
-      alert(e?.message || "Save failed");
+      toast.error(e?.message || "Save failed");
     } finally {
       setBusy(false);
     }
@@ -299,7 +303,7 @@ function StaffPanel({
                 <button
                   disabled={busy}
                   onClick={save}
-                  className="ml-auto rounded-md bg-accent px-5 py-2.5 text-[12px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+                  className="ml-auto rounded-md bg-accent px-5 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
                 >
                   {busy ? "Saving…" : "Save"}
                 </button>
@@ -464,6 +468,7 @@ function LorryPanel({
   lorryId: number | null;
   onClose: () => void;
 }) {
+  const toast = useToast();
   const [showMaintForm, setShowMaintForm] = useState(false);
   const detail = useQuery<LorryDetail>(
     () => (lorryId ? api.get(`/api/fleet/lorries/${lorryId}`) : Promise.resolve(null as any)),
@@ -501,7 +506,7 @@ function LorryPanel({
         unavailable_to: "",
       });
     } catch (e: any) {
-      alert(e?.message || "Failed");
+      toast.error(e?.message || "Failed");
     } finally {
       setMaintBusy(false);
     }
@@ -568,7 +573,7 @@ function LorryPanel({
                 <EditField label="Description" value={maintForm.description} onChange={(v) => setMaintForm({ ...maintForm, description: v })} />
                 <div className="flex gap-2">
                   <button onClick={() => setShowMaintForm(false)} className="rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink">Cancel</button>
-                  <button disabled={maintBusy} onClick={submitMaint} className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold text-accent-ink disabled:opacity-50">{maintBusy ? "Saving…" : "Save"}</button>
+                  <button disabled={maintBusy} onClick={submitMaint} className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-50">{maintBusy ? "Saving…" : "Save"}</button>
                 </div>
               </div>
             )}

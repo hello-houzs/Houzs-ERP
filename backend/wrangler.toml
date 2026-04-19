@@ -1,0 +1,53 @@
+name = "autocount-sync-api"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+[vars]
+AUTOCOUNT_API_URL = "https://it-houzs.dev/"
+# Public origin used to build email links (survey, portal, supplier invite).
+# Must match the Pages deployment or the email links will 404.
+PUBLIC_APP_URL = "https://houzs-erp.pages.dev"
+# From address shown on outbound transactional emails. Leave the domain
+# aligned with what you verify in Resend.
+EMAIL_FROM = "Houzs ERP <no-reply@mail.it-houzs.dev>"
+#EMAIL_FROM = "Houzs ERP <onboarding@resend.dev>"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "autocount-sync"
+database_id = "d0401549-c099-407b-ae95-57a5f85e5ad5"
+
+# R2 bucket for proof-of-delivery photos and signatures.
+[[r2_buckets]]
+binding = "POD_BUCKET"
+bucket_name = "houzs-erp"
+
+# Required secrets (set with `wrangler secret put`):
+#   AUTOCOUNT_API_KEY
+#   DASHBOARD_API_KEY
+#   GOOGLE_MAPS_API_KEY  — used by the planner geocoder (Phase 2)
+#   RESEND_API_KEY       — transactional email (see src/services/email.ts).
+#                          If unset the email service silently no-ops so
+#                          deploys never break on missing keys.
+
+[triggers]
+# Cron schedule:
+#   */5  → SO incremental pull (tight — ops users see new orders fast)
+#   */30 → PO pull (docs + outstanding lines). Procurement changes slowly,
+#          hitting AutoCount every 5 min is overkill.
+#   0 2  → Daily batch: overdue auto-extend, SLA escalation, project
+#          reminders, creditors resync, and stock-items refresh (which
+#          also re-writes assr_cases.creditor_code when MainSupplier
+#          moves upstream).
+crons = [
+  "*/5 * * * *",
+  "*/30 * * * *",
+  "0 2 * * *"
+]
+
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[observability.traces]

@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import { ShieldAlert, Menu } from "lucide-react";
 import { Sidebar } from "./Sidebar";
+import { GlobalSearchTrigger } from "./GlobalSearch";
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
 import type { SyncStatusResponse } from "../types";
@@ -88,15 +89,8 @@ function MobileTopBar({ onOpenDrawer }: { onOpenDrawer: () => void }) {
         className="h-7 w-auto max-w-[140px] object-contain"
         draggable={false}
       />
-      {/* Right-side hook for future top-bar actions (notifications etc.) */}
       <div className="ml-auto flex items-center gap-1">
-        <img
-          src={LOGO_MARK_SRC}
-          alt=""
-          className="h-7 w-7 object-contain opacity-0"
-          aria-hidden
-          draggable={false}
-        />
+        <GlobalSearchTrigger collapsed />
       </div>
     </div>
   );

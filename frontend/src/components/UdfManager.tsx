@@ -3,6 +3,8 @@ import { Plus, Trash2, Database } from "lucide-react";
 import { Button } from "./Button";
 import { Panel } from "./Panel";
 import type { UseUdfResult, UdfFieldType } from "../hooks/useUdf";
+import { useDialog } from "../hooks/useDialog";
+import { useToast } from "../hooks/useToast";
 import { cn } from "../lib/utils";
 
 interface Props {
@@ -33,6 +35,8 @@ const FIELD_TYPES: Array<{ value: UdfFieldType; label: string }> = [
  * UDFs are stored in worker D1 and never round-trip to AutoCount.
  */
 export function UdfManager({ open, onClose, udf, tableLabel }: Props) {
+  const dialog = useDialog();
+  const toast = useToast();
   const [creating, setCreating] = useState(false);
   const [label, setLabel] = useState("");
   const [key, setKey] = useState("");
@@ -113,7 +117,7 @@ export function UdfManager({ open, onClose, udf, tableLabel }: Props) {
 
   async function handleDelete(fieldKey: string, fieldLabel: string) {
     if (
-      !confirm(
+      !await dialog.confirm(
         `Delete custom field "${fieldLabel}"?\n\nAll values stored across rows will be removed. This cannot be undone.`
       )
     )
@@ -121,7 +125,7 @@ export function UdfManager({ open, onClose, udf, tableLabel }: Props) {
     try {
       await udf.deleteField(fieldKey);
     } catch (e: any) {
-      alert(`Failed to delete: ${e?.message || e}`);
+      toast.error(`Failed to delete: ${e?.message || e}`);
     }
   }
 

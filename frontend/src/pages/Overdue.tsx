@@ -9,6 +9,7 @@ import { DashboardGrid, DashboardPanels, DashboardBreakdown } from "../component
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useServerSort } from "../hooks/useServerSort";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, relativeTime } from "../lib/utils";
 import type { Paginated, OverdueHistoryRow, OverdueSummary } from "../types";
@@ -19,9 +20,14 @@ export function Overdue() {
   const [perPage, setPerPage] = useLocalStorage<number>("pp:overdue", 50);
   const [running, setRunning] = useState(false);
 
+  const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
+
   const list = useQuery<Paginated<OverdueHistoryRow>>(
-    () => api.get(`/api/overdue/history${buildQuery({ page, per_page: perPage })}`),
-    [page, perPage]
+    () =>
+      api.get(
+        `/api/overdue/history${buildQuery({ page, per_page: perPage, ...sortParams })}`
+      ),
+    [page, perPage, sort?.key, sort?.dir]
   );
 
   const summary = useQuery<OverdueSummary>(() => api.get("/api/overdue/summary"));
@@ -157,6 +163,8 @@ export function Overdue() {
         error={list.error}
         emptyLabel="No overdue history"
         getRowKey={(r) => r.id}
+        serverSort
+        onSortChange={handleSortChange}
       />
 
       {list.data && (

@@ -61,8 +61,29 @@ body {
 
 /* Native date input — match Manrope */
 input[type="date"],
+input[type="datetime-local"],
 select {
   font-family: inherit;
+}
+
+/* ──────────────────────────────────────────────────────────
+   Dropdown chevron.
+   Selects with appearance-none strip the native arrow; we
+   paint one back via a data-URI SVG tinted to the muted-ink
+   colour so every dropdown in the app signals itself.
+   ────────────────────────────────────────────────────────── */
+select.appearance-none {
+  /* Chevron colour: #8a8e85 (ink-muted), URL-encoded # as %23 */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8e85' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.55rem center;
+  background-size: 12px 12px;
+  padding-right: 1.9rem;
+}
+select.appearance-none:hover,
+select.appearance-none:focus {
+  /* Brass #a16a2e on hover/focus — the chevron tracks the rest of the UI */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a16a2e' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* Hide scrollbar for sidebar nav */

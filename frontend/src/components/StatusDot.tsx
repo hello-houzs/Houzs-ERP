@@ -33,3 +33,53 @@ export function statusVariantForAssr(status: string): Variant {
   if (s.includes("open") || s.includes("verification")) return "open";
   return "neutral";
 }
+
+const STAGE_VARIANT: Record<string, Variant> = {
+  registration: "open",
+  triage: "open",
+  action: "in-progress",
+  logistics: "in-progress",
+  resolution: "in-progress",
+  closed: "closed",
+};
+
+const STAGE_LABEL: Record<string, string> = {
+  registration: "Pending Review",
+  triage: "Under Verification",
+  action: "Pending Solution",
+  logistics: "Pending Logistics",
+  resolution: "Pending Completion",
+  closed: "Completed",
+};
+
+export function stageVariant(stage: string): Variant {
+  return STAGE_VARIANT[stage] ?? "neutral";
+}
+
+export function stageLabel(stage: string): string {
+  return STAGE_LABEL[stage] ?? stage;
+}
+
+const PRIORITY_COLORS: Record<string, string> = {
+  low: "bg-ink-muted",
+  normal: "bg-accent",
+  high: "bg-amber-500",
+  urgent: "bg-err",
+};
+
+export function priorityColor(priority: string): string {
+  return PRIORITY_COLORS[priority] ?? "bg-ink-muted";
+}
+
+const RESOLUTION_LABEL: Record<string, string> = {
+  replace_unit: "Replace Unit",
+  supplier_repair: "Supplier Repair (Workshop)",
+  field_service_own: "Field Service (Our Team)",
+  field_service_supplier: "Field Service (Supplier)",
+  return_visit: "Return Visit",
+};
+
+export function resolutionLabel(method: string | null): string {
+  if (!method) return "—";
+  return RESOLUTION_LABEL[method] ?? method;
+}

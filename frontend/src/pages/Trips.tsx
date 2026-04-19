@@ -11,8 +11,12 @@ import { DraftsTab } from "../components/DraftsTab";
 import { QueueTab } from "../components/QueueTab";
 import { EventsTab } from "../components/EventsTab";
 import { TrackingTab } from "../components/TrackingTab";
+import { TabStrip } from "../components/TabStrip";
 import { useQuery } from "../hooks/useQuery";
+import { useToast } from "../hooks/useToast";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useServerSort } from "../hooks/useServerSort";
+import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
@@ -59,8 +63,23 @@ export function Trips() {
   const [selected, setSelected] = useState<Trip | null>(null);
   const [showNew, setShowNew] = useState(false);
 
+  // ?focus=ID — opened from the Overview inbox. /api/trips/:id returns
+  // { trip, stops, locations }, we need the trip header to seed
+  // setSelected so the detail panel renders correctly.
+  useFocusFromUrl((id) => {
+    // Force the Live tab so the trips list shell is visible behind
+    // the panel; tracking/events tabs hide the table entirely.
+    if (tab !== "live" && tab !== "history") setTab("live");
+    api
+      .get<{ trip: Trip }>(`/api/trips/${id}`)
+      .then((r) => setSelected(r.trip))
+      .catch(() => {});
+  });
+
   // The status filter is driven by the active tab (no manual status select).
   const status = TAB_STATUS[tab];
+
+  const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
 
   const list = useQuery<Paginated<Trip>>(
     () =>
@@ -75,9 +94,10 @@ export function Trips() {
               search,
               page,
               per_page: perPage,
+              ...sortParams,
             })}`
           ),
-    [tab, warehouse, status, dateFrom, dateTo, search, page, perPage]
+    [tab, warehouse, status, dateFrom, dateTo, search, page, perPage, sort?.key, sort?.dir]
   );
 
   const detail = useQuery<TripDetail>(
@@ -98,21 +118,59 @@ export function Trips() {
   const completedCount = rows.filter((t) => t.status === "completed").length;
   const totalRevenue = rows.reduce((s, t) => s + (t.total_revenue || 0), 0);
 
-  const tabs: { id: TripsTab; label: string; show: boolean }[] = [
-    { id: "queue", label: "Queue", show: true },
-    { id: "drafts", label: "Drafts", show: canPlan },
-    { id: "live", label: "Live & Upcoming", show: true },
-    { id: "tracking", label: "Tracking", show: true },
-    { id: "events", label: "Events", show: true },
-    { id: "history", label: "History", show: true },
+  const tabs: { value: TripsTab; label: string; show: boolean }[] = [
+    { value: "queue", label: "Queue", show: true },
+    { value: "drafts", label: "Drafts", show: canPlan },
+    { value: "live", label: "Live & Upcoming", show: true },
+    { value: "tracking", label: "Tracking", show: true },
+    { value: "events", label: "Events", show: true },
+    { value: "history", label: "History", show: true },
   ];
+
+  // Per-tab header config so the page chrome reflects the active tab
+  // instead of a generic "Trips" label that's repeated across views.
+  const TAB_HEADER: Record<TripsTab, { title: string; description: string }> = {
+    queue: {
+      title: "Trip Queue",
+      description: "Sales orders ready to be scheduled into trips.",
+    },
+    drafts: {
+      title: "Trip Drafts",
+      description: "Proposals waiting on confirmation before they go live.",
+    },
+    live: {
+      title: "Live & Upcoming Trips",
+      description: "Active and scheduled trips. Click to view stops and progress.",
+    },
+    tracking: {
+      title: "Trip Tracking",
+      description: "Real-time location of in-progress trips.",
+    },
+    events: {
+      title: "Trip Events",
+      description: "Activity log across all trips — clock-ins, status changes, notes.",
+    },
+    history: {
+      title: "Trip History",
+      description: "Completed and cancelled trips.",
+    },
+  };
 
   return (
     <div>
+      <TabStrip<TripsTab>
+        value={tab}
+        onChange={(next) => {
+          setTab(next);
+          setPage(1);
+        }}
+        options={tabs}
+      />
+
       <PageHeader
         eyebrow="Operations · HC Delivery"
-        title="Trips"
-        description="Plan, assign, and monitor lorry trips."
+        title={TAB_HEADER[tab].title}
+        description={TAB_HEADER[tab].description}
         actions={
           <>
             {tab !== "events" && tab !== "tracking" && <BackfillButton />}
@@ -122,7 +180,7 @@ export function Trips() {
                   setNewTripSeed(null);
                   setShowNew(true);
                 }}
-                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-accent-ink shadow-sm"
+                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm"
               >
                 <Plus size={14} /> New Trip
               </button>
@@ -130,29 +188,6 @@ export function Trips() {
           </>
         }
       />
-
-      {/* Tab strip */}
-      <div className="mb-4 flex items-center gap-1 border-b border-border">
-        {tabs
-          .filter((t) => t.show)
-          .map((t) => (
-            <button
-              key={t.id}
-              onClick={() => {
-                setTab(t.id);
-                setPage(1);
-              }}
-              className={cn(
-                "relative -mb-px border-b-2 px-4 py-2.5 text-[12px] font-semibold transition-colors",
-                tab === t.id
-                  ? "border-accent text-accent"
-                  : "border-transparent text-ink-secondary hover:text-ink"
-              )}
-            >
-              {t.label}
-            </button>
-          ))}
-      </div>
 
       {tab === "queue" && (
         <QueueTab
@@ -233,13 +268,50 @@ export function Trips() {
           placeholder: "Search trip no, plate, driver…",
         }}
         columns={[
-          { key: "trip_no", label: "Trip No", render: (r: Trip) => <span className="font-mono">{r.trip_no}</span> },
-          { key: "trip_date", label: "Date", render: (r: Trip) => formatDate(r.trip_date) },
-          { key: "warehouse", label: "Warehouse", render: (r: Trip) => r.warehouse },
-          { key: "driver_name", label: "Driver", render: (r: Trip) => r.driver_name || "—" },
-          { key: "lorry_plate", label: "Lorry", render: (r: Trip) => <span className="font-mono">{r.lorry_plate || "—"}</span> },
-          { key: "stop_count", label: "Stops", render: (r: Trip) => r.stop_count.toString() },
-          { key: "total_revenue", label: "Revenue", render: (r: Trip) => formatCurrency(r.total_revenue) },
+          {
+            key: "trip_no",
+            label: "Trip No",
+            render: (r: Trip) => <span className="font-mono">{r.trip_no}</span>,
+            getValue: (r: Trip) => r.trip_no,
+          },
+          {
+            key: "trip_date",
+            label: "Date",
+            render: (r: Trip) => formatDate(r.trip_date),
+            getValue: (r: Trip) => r.trip_date,
+          },
+          {
+            key: "warehouse",
+            label: "Warehouse",
+            render: (r: Trip) => r.warehouse,
+            getValue: (r: Trip) => r.warehouse,
+          },
+          {
+            key: "driver_name",
+            label: "Driver",
+            render: (r: Trip) => r.driver_name || "—",
+            getValue: (r: Trip) => r.driver_name,
+          },
+          {
+            key: "lorry_plate",
+            label: "Lorry",
+            render: (r: Trip) => (
+              <span className="font-mono">{r.lorry_plate || "—"}</span>
+            ),
+            getValue: (r: Trip) => r.lorry_plate,
+          },
+          {
+            key: "stop_count",
+            label: "Stops",
+            render: (r: Trip) => r.stop_count.toString(),
+            getValue: (r: Trip) => r.stop_count,
+          },
+          {
+            key: "total_revenue",
+            label: "Revenue",
+            render: (r: Trip) => formatCurrency(r.total_revenue),
+            getValue: (r: Trip) => r.total_revenue,
+          },
           {
             key: "status",
             label: "Status",
@@ -257,6 +329,7 @@ export function Trips() {
                 {r.status.replace("_", " ")}
               </span>
             ),
+            getValue: (r: Trip) => r.status,
           },
         ] as any}
         rows={list.data?.data ?? null}
@@ -265,6 +338,8 @@ export function Trips() {
         emptyLabel="No trips"
         getRowKey={(r: Trip) => r.id}
         onRowClick={(r: Trip) => setSelected(r)}
+        serverSort
+        onSortChange={handleSortChange}
       />
 
       {list.data && (
@@ -661,7 +736,7 @@ function NewTripDialog({
           <button
             disabled={busy}
             onClick={submit}
-            className="ml-auto rounded-md bg-accent px-5 py-2.5 text-[12px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+            className="ml-auto rounded-md bg-accent px-5 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
           >
             {busy ? "Creating…" : "Create Trip"}
           </button>
@@ -685,6 +760,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // ── Backfill button ───────────────────────────────────────────────
 
 function BackfillButton() {
+  const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [last, setLast] = useState<{ geocoded: number; remaining: number } | null>(null);
 
@@ -697,7 +773,7 @@ function BackfillButton() {
       );
       setLast({ geocoded: r.geocoded, remaining: r.remaining });
     } catch (e: any) {
-      alert(e?.message || "Backfill failed");
+      toast.error(e?.message || "Backfill failed");
     } finally {
       setBusy(false);
     }
@@ -891,7 +967,7 @@ function RoutePanel({
           <button
             disabled={routeBusy || geoStops.length < 2}
             onClick={() => fetchRoute(true)}
-            className="rounded bg-accent px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+            className="rounded bg-accent px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
           >
             <Wand2 size={11} className="mr-1 inline" />
             Optimize

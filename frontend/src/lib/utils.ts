@@ -42,8 +42,13 @@ export function parseDate(d: string | null | undefined): Date | null {
 
 export function formatDate(d: string | null | undefined): string {
   if (!d) return "—";
-  // Already in yyyy-mm-dd or full ISO
-  return d.slice(0, 10);
+  // Accept yyyy-mm-dd or full ISO. Render as DD/MM/YYYY (Malaysian convention).
+  const iso = d.slice(0, 10);
+  const parts = iso.split("-");
+  if (parts.length === 3 && parts[0].length === 4) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return iso;
 }
 
 export function relativeTime(d: string | null | undefined): string {

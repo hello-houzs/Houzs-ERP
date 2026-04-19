@@ -1,20 +1,145 @@
 import { useState } from "react";
-import { Plus, Copy, Trash2, UserX, UserCheck, X } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound } from "lucide-react";
 import { PageHeader } from "../components/Layout";
+import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
 import { Panel, PanelSection } from "../components/Panel";
 import { StatusDot } from "../components/StatusDot";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
+import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { cn, relativeTime } from "../lib/utils";
+import { relativeTime } from "../lib/utils";
 import type { TeamMember, Invitation, Role } from "../types";
+import { RolesTab } from "./Roles";
 
+type TeamTabValue = "members" | "roles";
+
+/**
+ * Unified Team page — two tabs (Members, Roles) sharing a single header.
+ * Members lists users + pending invitations and lets admins invite /
+ * reset / disable / remove. Roles is a grid of role cards with an editor
+ * panel for permissions.
+ *
+ * The wrapper owns the primary action button for each tab (Invite Member
+ * / New Role) so they live consistently in the PageHeader's `actions`
+ * slot — not duplicated inside each tab body.
+ */
 export function Team() {
+  const { can } = useAuth();
+  const [params, setParams] = useSearchParams();
+
+  const canUsers = can("users.read");
+  const canRoles = can("roles.read");
+  const canManageUsers = can("users.manage");
+  const canManageRoles = can("roles.manage");
+
+  const raw = params.get("tab") as TeamTabValue | null;
+  const active: TeamTabValue =
+    raw && ["members", "roles"].includes(raw)
+      ? raw
+      : canUsers
+      ? "members"
+      : "roles";
+
+  function setTab(next: TeamTabValue) {
+    const p = new URLSearchParams(params);
+    p.set("tab", next);
+    setParams(p, { replace: true });
+  }
+
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [creatingRole, setCreatingRole] = useState(false);
+
+  const tabs: TabOption<TeamTabValue>[] = [
+    { value: "members", label: "Members", show: canUsers },
+    { value: "roles", label: "Roles", show: canRoles },
+  ];
+
+  const TAB_HEADER: Record<
+    TeamTabValue,
+    { eyebrow: string; title: string; description: string }
+  > = {
+    members: {
+      eyebrow: "Workspace · Members",
+      title: "Members",
+      description: "Manage who can access this workspace and what they can do.",
+    },
+    roles: {
+      eyebrow: "Workspace · Access Control",
+      title: "Roles",
+      description:
+        "Define what each role can access. System roles are locked; create custom roles for fine-grained control.",
+    },
+  };
+
+  const actions =
+    active === "members" ? (
+      canManageUsers ? (
+        <Button
+          variant="brass"
+          icon={<Plus size={14} />}
+          onClick={() => setInviteOpen(true)}
+        >
+          Invite Member
+        </Button>
+      ) : null
+    ) : canManageRoles ? (
+      <Button
+        variant="brass"
+        icon={<Plus size={14} />}
+        onClick={() => setCreatingRole(true)}
+      >
+        New Role
+      </Button>
+    ) : null;
+
+  return (
+    <div>
+      <TabStrip<TeamTabValue>
+        value={active}
+        onChange={setTab}
+        options={tabs}
+      />
+
+      <PageHeader
+        eyebrow={TAB_HEADER[active].eyebrow}
+        title={TAB_HEADER[active].title}
+        description={TAB_HEADER[active].description}
+        actions={actions}
+      />
+
+      {active === "members" && canUsers && (
+        <MembersTab
+          inviteOpen={inviteOpen}
+          onCloseInvite={() => setInviteOpen(false)}
+        />
+      )}
+      {active === "roles" && canRoles && (
+        <RolesTab
+          creating={creatingRole}
+          onCloseCreate={() => setCreatingRole(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Members tab — active users + pending invitations
+// ──────────────────────────────────────────────────────────
+function MembersTab({
+  inviteOpen,
+  onCloseInvite,
+}: {
+  inviteOpen: boolean;
+  onCloseInvite: () => void;
+}) {
   const { user: me, can } = useAuth();
   const toast = useToast();
-  const [inviteOpen, setInviteOpen] = useState(false);
+  const dialog = useDialog();
 
   const members = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users"));
   const invites = useQuery<{ invitations: Invitation[] }>(() =>
@@ -39,6 +164,33 @@ export function Team() {
     }
   }
 
+  async function sendReset(u: TeamMember) {
+    if (
+      !(await dialog.confirm(
+        `Send a password reset link to ${u.email}?\n\nTheir current password will keep working until they complete the reset. Active sessions will be logged out.`
+      ))
+    )
+      return;
+    try {
+      const res = await api.post<{
+        ok: boolean;
+        token: string;
+        reset_path: string;
+        expires_at: string;
+        email: string;
+      }>(`/api/users/${u.id}/reset-password`);
+      const link = `${window.location.origin}${res.reset_path}`;
+      try {
+        await navigator.clipboard.writeText(link);
+        toast.success(`Reset link sent to ${u.email} and copied to clipboard`);
+      } catch {
+        toast.success(`Reset link sent to ${u.email}`);
+      }
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to send reset");
+    }
+  }
+
   async function toggleStatus(u: TeamMember) {
     const next = u.status === "active" ? "disabled" : "active";
     try {
@@ -51,7 +203,7 @@ export function Team() {
   }
 
   async function removeUser(u: TeamMember) {
-    if (!confirm(`Remove ${u.email}? This cannot be undone.`)) return;
+    if (!(await dialog.confirm(`Remove ${u.email}? This cannot be undone.`))) return;
     try {
       await api.del(`/api/users/${u.id}`);
       toast.success(`${u.email} removed`);
@@ -62,7 +214,7 @@ export function Team() {
   }
 
   async function revokeInvite(inv: Invitation) {
-    if (!confirm(`Revoke invitation for ${inv.email}?`)) return;
+    if (!(await dialog.confirm(`Revoke invitation for ${inv.email}?`))) return;
     try {
       await api.del(`/api/users/invitations/${inv.id}`);
       toast.success("Invitation revoked");
@@ -82,23 +234,6 @@ export function Team() {
 
   return (
     <div>
-      <PageHeader
-        eyebrow="Workspace · Members"
-        title="Team"
-        description="Manage who can access this workspace and what they can do."
-        actions={
-          canManage && (
-            <Button
-              variant="brass"
-              icon={<Plus size={14} />}
-              onClick={() => setInviteOpen(true)}
-            >
-              Invite Member
-            </Button>
-          )
-        }
-      />
-
       {/* Active members */}
       <div className="mb-6">
         <div className="mb-3 flex items-center gap-2">
@@ -168,6 +303,16 @@ export function Team() {
               )}
               {canManage && u.id !== me?.id && (
                 <div className="flex items-center gap-1">
+                  {u.status !== "invited" && (
+                    <button
+                      onClick={() => sendReset(u)}
+                      className="rounded p-1.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
+                      aria-label="Send password reset"
+                      title="Send password reset link"
+                    >
+                      <KeyRound size={14} />
+                    </button>
+                  )}
                   <button
                     onClick={() => toggleStatus(u)}
                     className="rounded p-1.5 text-ink-muted transition-colors hover:bg-surface-dim hover:text-ink"
@@ -248,10 +393,10 @@ export function Team() {
 
       <InvitePanel
         open={inviteOpen}
-        onClose={() => setInviteOpen(false)}
+        onClose={onCloseInvite}
         roles={roles.data?.roles ?? []}
         onInvited={() => {
-          setInviteOpen(false);
+          onCloseInvite();
           reload();
         }}
       />
@@ -279,7 +424,6 @@ function InvitePanel({
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<{ token: string; email: string } | null>(null);
 
-  // Default to the first non-system role if available, otherwise the first role.
   if (roleId === "" && roles.length > 0) {
     const defaultRole = roles.find((r) => !r.is_system) || roles[0];
     setRoleId(defaultRole.id);

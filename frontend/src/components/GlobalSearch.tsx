@@ -1,0 +1,479 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
+import { Link, useNavigate } from "react-router-dom";
+import {
+  Search,
+  X,
+  ShoppingCart,
+  Truck,
+  Wrench,
+  Users,
+  Layers,
+  Building2,
+  CornerDownLeft,
+  ArrowUp,
+  ArrowDown,
+} from "lucide-react";
+import { api } from "../api/client";
+import { cn, formatDate } from "../lib/utils";
+
+/**
+ * Global Cmd+K palette.
+ *
+ * - GlobalSearchProvider mounts once near the top of the tree and
+ *   exposes an `open()` function via context. The palette overlay
+ *   itself is rendered via portal so it sits above any modal.
+ * - GlobalSearchTrigger is a button you can drop in the sidebar (or
+ *   any chrome) that opens the palette and reflects the keyboard
+ *   shortcut (⌘K / Ctrl+K).
+ * - Cmd+K / Ctrl+K opens it from anywhere; Esc dismisses; ↑/↓ moves
+ *   selection; Enter navigates to the selected hit.
+ *
+ * Backend: GET /api/search?q=… returns up to ~6 hits per source,
+ * each shaped like { type, id, title, subtitle?, date?, link }.
+ */
+
+export type SearchHitType =
+  | "sales_order"
+  | "purchase_order"
+  | "purchase_order_doc"
+  | "project"
+  | "assr_case"
+  | "creditor"
+  | "trip"
+  | "user";
+
+export interface SearchHit {
+  type: SearchHitType;
+  id: string | number;
+  title: string;
+  subtitle?: string | null;
+  date?: string | null;
+  link: string;
+}
+
+interface SearchContextValue {
+  open: () => void;
+  close: () => void;
+  toggle: () => void;
+}
+
+const SearchContext = createContext<SearchContextValue | null>(null);
+
+export function useGlobalSearch(): SearchContextValue {
+  const ctx = useContext(SearchContext);
+  if (!ctx) {
+    throw new Error("useGlobalSearch must be used within <GlobalSearchProvider>");
+  }
+  return ctx;
+}
+
+export function GlobalSearchProvider({ children }: { children: ReactNode }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  const value = useMemo<SearchContextValue>(
+    () => ({
+      open: () => setIsOpen(true),
+      close: () => setIsOpen(false),
+      toggle: () => setIsOpen((o) => !o),
+    }),
+    []
+  );
+
+  // Global hotkey: Cmd+K / Ctrl+K opens; "/" outside of inputs opens.
+  useEffect(() => {
+    function handler(e: KeyboardEvent) {
+      const isMeta = e.metaKey || e.ctrlKey;
+      if (isMeta && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setIsOpen((o) => !o);
+        return;
+      }
+      if (e.key === "/" && !isMeta) {
+        const t = e.target as HTMLElement | null;
+        const tag = t?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
+        e.preventDefault();
+        setIsOpen(true);
+      }
+    }
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  return (
+    <SearchContext.Provider value={value}>
+      {children}
+      {isOpen && <Palette onClose={() => setIsOpen(false)} />}
+    </SearchContext.Provider>
+  );
+}
+
+// ── Palette overlay ──────────────────────────────────────────
+
+function Palette({ onClose }: { onClose: () => void }) {
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+
+  // Focus the input on mount.
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  // Debounced fetch.
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) {
+      setHits([]);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.get<{ hits: SearchHit[] }>(
+          `/api/search?q=${encodeURIComponent(term)}`
+        );
+        setHits(res.hits);
+        setSelected(0);
+      } catch (e: any) {
+        setError(e?.message || String(e));
+      } finally {
+        setLoading(false);
+      }
+    }, 180);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  // Esc / arrows / enter
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelected((s) => Math.min(hits.length - 1, s + 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelected((s) => Math.max(0, s - 1));
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const hit = hits[selected];
+        if (hit) {
+          navigate(hit.link);
+          onClose();
+        }
+      }
+    },
+    [hits, selected, navigate, onClose]
+  );
+
+  // Keep the selected row scrolled into view.
+  useEffect(() => {
+    const el = listRef.current?.querySelector<HTMLElement>(`[data-idx="${selected}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [selected]);
+
+  // Group hits by type for visual sectioning, while keeping a flat
+  // index for keyboard nav.
+  const groups = useMemo(() => groupHits(hits), [hits]);
+
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-start justify-center bg-ink/40 px-4 pt-[12vh] backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-[640px] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl shadow-ink/20"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={onKeyDown}
+        role="dialog"
+        aria-label="Global search"
+      >
+        {/* Search input row */}
+        <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3">
+          <Search size={16} className="shrink-0 text-ink-muted" />
+          <input
+            ref={inputRef}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search orders, POs, projects, cases, suppliers, trips, people…"
+            className="flex-1 bg-transparent text-[14px] text-ink outline-none placeholder:text-ink-muted"
+          />
+          <kbd className="hidden rounded border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] text-ink-muted sm:inline">
+            Esc
+          </kbd>
+          <button
+            onClick={onClose}
+            className="rounded p-1 text-ink-muted transition-colors hover:bg-bg/60 hover:text-ink"
+            aria-label="Close"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Results */}
+        <div ref={listRef} className="max-h-[60vh] overflow-y-auto">
+          {q.trim().length < 2 && (
+            <EmptyHelp />
+          )}
+          {q.trim().length >= 2 && loading && (
+            <div className="px-4 py-6 text-center text-[12px] text-ink-muted">Searching…</div>
+          )}
+          {error && (
+            <div className="m-3 rounded-md border border-err/30 bg-err/5 px-3 py-2 text-[12px] text-err">
+              Search failed: {error}
+            </div>
+          )}
+          {q.trim().length >= 2 && !loading && hits.length === 0 && !error && (
+            <div className="flex flex-col items-center gap-1 px-4 py-10 text-center">
+              <Search size={20} className="text-ink-muted" />
+              <div className="text-[12.5px] text-ink">No matches for “{q}”.</div>
+              <div className="text-[10.5px] text-ink-muted">Try a different keyword.</div>
+            </div>
+          )}
+          {hits.length > 0 &&
+            groups.map((g) => (
+              <div key={g.type}>
+                <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border-subtle bg-bg/80 px-4 py-1.5 backdrop-blur-sm">
+                  <span className="text-ink-muted">{TYPE_META[g.type].icon}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-ink-muted">
+                    {TYPE_META[g.type].label}
+                  </span>
+                  <span className="text-[10px] text-ink-muted">· {g.items.length}</span>
+                </div>
+                {g.items.map((item) => (
+                  <HitRow
+                    key={`${item.type}-${item.id}`}
+                    item={item}
+                    isSelected={item._idx === selected}
+                    onHover={() => setSelected(item._idx)}
+                    onSelect={() => {
+                      navigate(item.link);
+                      onClose();
+                    }}
+                  />
+                ))}
+              </div>
+            ))}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between gap-3 border-t border-border-subtle bg-bg/50 px-4 py-2 text-[10px] text-ink-muted">
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1">
+              <kbd className="rounded border border-border bg-surface px-1 py-px font-mono text-[9px]">
+                <ArrowUp size={9} className="inline" />
+                <ArrowDown size={9} className="inline" />
+              </kbd>
+              navigate
+            </span>
+            <span className="flex items-center gap-1">
+              <kbd className="rounded border border-border bg-surface px-1 py-px font-mono text-[9px]">
+                <CornerDownLeft size={9} className="inline" />
+              </kbd>
+              open
+            </span>
+          </div>
+          <div>{hits.length} result{hits.length === 1 ? "" : "s"}</div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function HitRow({
+  item,
+  isSelected,
+  onHover,
+  onSelect,
+}: {
+  item: SearchHit & { _idx: number };
+  isSelected: boolean;
+  onHover: () => void;
+  onSelect: () => void;
+}) {
+  const meta = TYPE_META[item.type];
+  return (
+    <button
+      data-idx={item._idx}
+      onMouseEnter={onHover}
+      onClick={onSelect}
+      className={cn(
+        "flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors",
+        isSelected
+          ? "bg-accent-soft/60"
+          : "hover:bg-accent-soft/30"
+      )}
+    >
+      <span className={cn("mt-0.5 shrink-0", isSelected ? "text-accent" : "text-ink-muted")}>
+        {meta.icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="truncate text-[12.5px] font-semibold text-ink">{item.title}</span>
+          {item.date && (
+            <span className="shrink-0 text-[10px] text-ink-muted">
+              {formatDate(item.date)}
+            </span>
+          )}
+        </div>
+        {item.subtitle && (
+          <div className="truncate text-[11px] text-ink-secondary">{item.subtitle}</div>
+        )}
+      </div>
+      {isSelected && (
+        <CornerDownLeft size={11} className="mt-1 shrink-0 text-accent" />
+      )}
+    </button>
+  );
+}
+
+function EmptyHelp() {
+  return (
+    <div className="px-4 py-6">
+      <div className="mb-3 text-[10px] font-bold uppercase tracking-wider text-ink-muted">
+        What you can search
+      </div>
+      <ul className="space-y-1.5 text-[12px] text-ink-secondary">
+        <li className="flex items-center gap-2">
+          <ShoppingCart size={12} className="text-accent/70" />
+          Sales orders by doc no, customer, or ref
+        </li>
+        <li className="flex items-center gap-2">
+          <ShoppingCart size={12} className="text-accent/70" />
+          Purchase orders by doc no, item, or supplier
+        </li>
+        <li className="flex items-center gap-2">
+          <Layers size={12} className="text-accent/70" />
+          Projects by code, name, venue, organizer
+        </li>
+        <li className="flex items-center gap-2">
+          <Wrench size={12} className="text-accent/70" />
+          Service cases by ASSR no, customer, phone, or issue
+        </li>
+        <li className="flex items-center gap-2">
+          <Building2 size={12} className="text-accent/70" />
+          Suppliers, <Truck size={12} className="text-accent/70" /> trips,
+          and <Users size={12} className="text-accent/70" /> teammates
+        </li>
+      </ul>
+    </div>
+  );
+}
+
+// Group hits by type while preserving a flat index used for keyboard
+// navigation. The flat index is attached as `_idx` on each item.
+function groupHits(hits: SearchHit[]): Array<{
+  type: SearchHitType;
+  items: Array<SearchHit & { _idx: number }>;
+}> {
+  const order: SearchHitType[] = [
+    "sales_order",
+    "purchase_order_doc",
+    "purchase_order",
+    "project",
+    "assr_case",
+    "creditor",
+    "trip",
+    "user",
+  ];
+  const map = new Map<SearchHitType, Array<SearchHit & { _idx: number }>>();
+  hits.forEach((h, i) => {
+    const arr = map.get(h.type) ?? [];
+    arr.push({ ...h, _idx: i });
+    map.set(h.type, arr);
+  });
+  const out: Array<{ type: SearchHitType; items: Array<SearchHit & { _idx: number }> }> = [];
+  for (const t of order) {
+    const items = map.get(t);
+    if (items && items.length > 0) out.push({ type: t, items });
+  }
+  return out;
+}
+
+const TYPE_META: Record<SearchHitType, { label: string; icon: ReactNode }> = {
+  sales_order: { label: "Sales Orders", icon: <ShoppingCart size={13} /> },
+  purchase_order_doc: { label: "Purchase Orders", icon: <ShoppingCart size={13} /> },
+  purchase_order: { label: "PO Lines", icon: <ShoppingCart size={13} /> },
+  project: { label: "Projects", icon: <Layers size={13} /> },
+  assr_case: { label: "Service Cases", icon: <Wrench size={13} /> },
+  creditor: { label: "Creditors", icon: <Building2 size={13} /> },
+  trip: { label: "Trips", icon: <Truck size={13} /> },
+  user: { label: "Team", icon: <Users size={13} /> },
+};
+
+// ── Trigger button ─────────────────────────────────────────
+
+export function GlobalSearchTrigger({
+  collapsed,
+  className,
+}: {
+  collapsed?: boolean;
+  className?: string;
+}) {
+  const { open } = useGlobalSearch();
+  const isMac =
+    typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+  const shortcut = isMac ? "⌘K" : "Ctrl+K";
+
+  if (collapsed) {
+    return (
+      <button
+        onClick={open}
+        className={cn(
+          "flex h-9 w-9 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/50 hover:text-accent",
+          className
+        )}
+        title={`Search (${shortcut})`}
+        aria-label="Open global search"
+      >
+        <Search size={15} />
+      </button>
+    );
+  }
+
+  return (
+    <button
+      onClick={open}
+      className={cn(
+        "group flex h-9 w-full items-center gap-2 rounded-md border border-border bg-surface px-2.5 text-left text-[12px] text-ink-muted transition-colors hover:border-accent/50 hover:text-ink",
+        className
+      )}
+      title={`Search (${shortcut})`}
+    >
+      <Search size={13} className="shrink-0 group-hover:text-accent" />
+      <span className="flex-1 truncate">Search…</span>
+      <kbd className="rounded border border-border bg-bg px-1 py-0.5 font-mono text-[9.5px] text-ink-muted">
+        {shortcut}
+      </kbd>
+    </button>
+  );
+}

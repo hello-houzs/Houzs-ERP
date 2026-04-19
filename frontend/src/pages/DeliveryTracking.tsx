@@ -17,6 +17,7 @@ import { Panel, PanelSection, FieldRow } from "../components/Panel";
 import { StatCard } from "../components/StatCard";
 import { DashboardGrid } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
+import { useToast } from "../hooks/useToast";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
@@ -277,6 +278,7 @@ function DeliveryPanel({
   onClose: () => void;
   onUpdated: () => void;
 }) {
+  const toast = useToast();
   const detail = useQuery<DeliveryDetail>(
     () => (docNo ? api.get(`/api/delivery/${docNo}`) : Promise.resolve(null as any)),
     [docNo]
@@ -302,7 +304,7 @@ function DeliveryPanel({
       detail.reload();
       onUpdated();
     } catch (e: any) {
-      alert(e?.message || "Advance failed");
+      toast.error(e?.message || "Advance failed");
     } finally {
       setBusy(false);
     }
@@ -318,7 +320,7 @@ function DeliveryPanel({
       detail.reload();
       onUpdated();
     } catch (e: any) {
-      alert(e?.message || "Save failed");
+      toast.error(e?.message || "Save failed");
     } finally {
       setBusy(false);
     }
@@ -383,7 +385,7 @@ function DeliveryPanel({
                       "flex items-center gap-1.5 rounded-md px-3 py-2 text-[12px] font-bold uppercase tracking-wide disabled:opacity-50",
                       ns === "failed" ? "bg-err/10 text-err border border-err/30"
                         : ns === "delivered" ? "bg-ok text-white"
-                        : "bg-accent text-accent-ink"
+                        : "bg-accent text-white"
                     )}
                   >
                     <ArrowRight size={13} />
@@ -467,7 +469,7 @@ function DeliveryPanel({
                 <CostField label="Customer Transport Fee" value={form.customer_transport_fee} onChange={(v) => setForm({ ...form, customer_transport_fee: v })} />
                 <div className="flex gap-2">
                   <button onClick={() => { setEditMode(false); setForm({}); }} className="rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink">Cancel</button>
-                  <button disabled={busy} onClick={saveFields} className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold text-accent-ink disabled:opacity-50">{busy ? "Saving…" : "Save"}</button>
+                  <button disabled={busy} onClick={saveFields} className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-50">{busy ? "Saving…" : "Save"}</button>
                 </div>
               </div>
             )}
@@ -523,7 +525,7 @@ function StatusPipeline({ region, current }: { region: string; current: string }
               className={cn(
                 "whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
                 isDone && "bg-ok/10 text-ok",
-                isCurrent && "bg-accent text-accent-ink",
+                isCurrent && "bg-accent text-white",
                 !isDone && !isCurrent && "bg-ink/5 text-ink-secondary"
               )}
             >

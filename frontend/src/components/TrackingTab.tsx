@@ -13,6 +13,7 @@ import { FilterPills } from "./FilterPills";
 import { StatCard } from "./StatCard";
 import { DashboardGrid } from "./Dashboard";
 import { useQuery } from "../hooks/useQuery";
+import { useToast } from "../hooks/useToast";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
@@ -216,7 +217,7 @@ export function TrackingTab() {
             className={cn(
               "rounded px-2 py-1",
               view === "board"
-                ? "bg-accent text-accent-ink"
+                ? "bg-accent text-white"
                 : "text-ink-secondary hover:text-ink"
             )}
           >
@@ -227,7 +228,7 @@ export function TrackingTab() {
             className={cn(
               "rounded px-2 py-1",
               view === "table"
-                ? "bg-accent text-accent-ink"
+                ? "bg-accent text-white"
                 : "text-ink-secondary hover:text-ink"
             )}
           >
@@ -609,6 +610,7 @@ function DeliveryPanel({
   onClose: () => void;
   onUpdated: () => void;
 }) {
+  const toast = useToast();
   const detail = useQuery<DeliveryDetail>(
     () =>
       docNo
@@ -637,7 +639,7 @@ function DeliveryPanel({
       detail.reload();
       onUpdated();
     } catch (e: any) {
-      alert(e?.message || "Advance failed");
+      toast.error(e?.message || "Advance failed");
     } finally {
       setBusy(false);
     }
@@ -653,7 +655,7 @@ function DeliveryPanel({
       detail.reload();
       onUpdated();
     } catch (e: any) {
-      alert(e?.message || "Save failed");
+      toast.error(e?.message || "Save failed");
     } finally {
       setBusy(false);
     }
@@ -749,7 +751,7 @@ function DeliveryPanel({
                         ? "border border-err/30 bg-err/10 text-err"
                         : ns === "delivered"
                         ? "bg-ok text-white"
-                        : "bg-accent text-accent-ink"
+                        : "bg-accent text-white"
                     )}
                   >
                     <ArrowRight size={13} />
@@ -911,7 +913,7 @@ function DeliveryPanel({
                   <button
                     disabled={busy}
                     onClick={saveFields}
-                    className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold text-accent-ink disabled:opacity-50"
+                    className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-50"
                   >
                     {busy ? "Saving…" : "Save"}
                   </button>
@@ -991,7 +993,7 @@ function StatusPipeline({
               className={cn(
                 "whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
                 isDone && "bg-ok/10 text-ok",
-                isCurrent && "bg-accent text-accent-ink",
+                isCurrent && "bg-accent text-white",
                 !isDone && !isCurrent && "bg-ink/5 text-ink-secondary"
               )}
             >

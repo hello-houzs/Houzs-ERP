@@ -91,11 +91,23 @@ export default {
           "0%": { backgroundPosition: "-400px 0" },
           "100%": { backgroundPosition: "400px 0" },
         },
+        // Toast: slide down from above + fade in.
+        toastIn: {
+          "0%": { opacity: "0", transform: "translateY(-12px) scale(0.97)" },
+          "100%": { opacity: "1", transform: "translateY(0) scale(1)" },
+        },
+        // Modal panel: scale-up + fade.
+        modalIn: {
+          "0%": { opacity: "0", transform: "scale(0.96)" },
+          "100%": { opacity: "1", transform: "scale(1)" },
+        },
       },
       animation: {
         rise: "rise 420ms cubic-bezier(0.16, 1, 0.3, 1) both",
         "fade-in": "fadeIn 600ms ease both",
         shimmer: "shimmer 1.6s linear infinite",
+        "toast-in": "toastIn 220ms cubic-bezier(0.16, 1, 0.3, 1) both",
+        "modal-in": "modalIn 180ms cubic-bezier(0.16, 1, 0.3, 1) both",
       },
     },
   },

@@ -9,6 +9,7 @@ import { StatCard } from "../components/StatCard";
 import { DashboardGrid, DashboardPanels, DashboardBreakdown } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useServerSort } from "../hooks/useServerSort";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
 import { getSalesOrderColumns } from "../lib/orderColumns";
@@ -35,6 +36,8 @@ export function DeliveryOrders() {
   const [perPage, setPerPage] = useLocalStorage<number>("pp:delivery-orders", 50);
   const [selected, setSelected] = useState<SalesOrder | null>(null);
 
+  const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
+
   const list = useQuery<Paginated<SalesOrder>>(
     () =>
       api.get(
@@ -44,9 +47,10 @@ export function DeliveryOrders() {
           search,
           page,
           per_page: perPage,
+          ...sortParams,
         })}`
       ),
-    [region, search, page, perPage]
+    [region, search, page, perPage, sort?.key, sort?.dir]
   );
 
   const summary = useQuery<OrdersSummary>(() => api.get("/api/orders/summary"));
@@ -175,6 +179,8 @@ export function DeliveryOrders() {
         emptyLabel="No delivery orders"
         getRowKey={(r) => r.doc_no}
         onRowClick={(r) => setSelected(r)}
+        serverSort
+        onSortChange={handleSortChange}
       />
 
       {list.data && (

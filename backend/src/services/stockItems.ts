@@ -1,0 +1,296 @@
+import type { Env } from "../types";
+import { AutoCountClient } from "./autocount";
+import { writeLog } from "./logger";
+
+/**
+ * Local cache layer over AutoCount /StockItem/getSingle.
+ *
+ * Why cache: the item → creditor link (`MainSupplier`) is read every
+ * time a service case is opened, listed, or grouped. Hitting AutoCount
+ * for every row is slow and flaky. We pull once, store in `stock_items`,
+ * and rely on the refresh endpoint (or the nightly cron if we add one)
+ * to keep it fresh.
+ *
+ * `resolveCreditorForCase` is the glue that writes `creditor_code` onto
+ * a case row using the cached item's `main_supplier`.
+ */
+
+export interface StockItemRow {
+  item_code: string;
+  main_supplier: string | null;
+  description: string | null;
+  desc2: string | null;
+  item_group: string | null;
+  is_active: number;
+  cost: number | null;
+  price: number | null;
+  last_modified: string | null;
+  fetched_at: string;
+  raw: string | null;
+}
+
+const INSERT_SQL = `INSERT INTO stock_items (
+  item_code, auto_key, doc_key, description, desc2,
+  item_group, item_type, item_brand, item_class, item_category,
+  base_uom, sales_uom, purchase_uom,
+  main_supplier, is_active, is_sales_item, is_purchase_item,
+  lead_time, cost, price, tax_code, purchase_tax_code,
+  barcode2, cost_code, last_modified, raw, fetched_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+ON CONFLICT(item_code) DO UPDATE SET
+  auto_key = excluded.auto_key,
+  doc_key = excluded.doc_key,
+  description = excluded.description,
+  desc2 = excluded.desc2,
+  item_group = excluded.item_group,
+  item_type = excluded.item_type,
+  item_brand = excluded.item_brand,
+  item_class = excluded.item_class,
+  item_category = excluded.item_category,
+  base_uom = excluded.base_uom,
+  sales_uom = excluded.sales_uom,
+  purchase_uom = excluded.purchase_uom,
+  main_supplier = excluded.main_supplier,
+  is_active = excluded.is_active,
+  is_sales_item = excluded.is_sales_item,
+  is_purchase_item = excluded.is_purchase_item,
+  lead_time = excluded.lead_time,
+  cost = excluded.cost,
+  price = excluded.price,
+  tax_code = excluded.tax_code,
+  purchase_tax_code = excluded.purchase_tax_code,
+  barcode2 = excluded.barcode2,
+  cost_code = excluded.cost_code,
+  last_modified = excluded.last_modified,
+  raw = excluded.raw,
+  fetched_at = datetime('now'),
+  updated_at = datetime('now')`;
+
+function bool01(v: unknown): number {
+  return v === true || v === 1 || String(v).toUpperCase() === "T" || String(v).toLowerCase() === "true"
+    ? 1
+    : 0;
+}
+
+async function upsertStockItem(env: Env, o: Record<string, any>): Promise<void> {
+  await env.DB.prepare(INSERT_SQL)
+    .bind(
+      o.ItemCode,
+      o.AutoKey ?? null,
+      o.DocKey ?? null,
+      o.Description ?? null,
+      o.Desc2 ?? null,
+      o.ItemGroup ?? null,
+      o.ItemType ?? null,
+      o.ItemBrand ?? null,
+      o.ItemClass ?? null,
+      o.ItemCategory ?? null,
+      o.BaseUOM ?? null,
+      o.SalesUOM ?? null,
+      o.PurchaseUOM ?? null,
+      o.MainSupplier ?? null,
+      bool01(o.IsActive),
+      bool01(o.IsSalesItem),
+      bool01(o.IsPurchaseItem),
+      typeof o.LeadTimeDay === "number" ? o.LeadTimeDay : (typeof o.LeadTime === "number" ? o.LeadTime : null),
+      typeof o.Cost === "number" ? o.Cost : null,
+      typeof o.Price === "number" ? o.Price : null,
+      o.TaxCode ?? null,
+      o.PurchaseTaxCode ?? null,
+      o.UDF_Barcode2 ?? null,
+      o.UDF_CostCode ?? null,
+      o.LastModified ?? null,
+      JSON.stringify(o)
+    )
+    .run();
+}
+
+/**
+ * Read-through cache. Returns the cached row when it exists and is
+ * younger than maxAgeHours; otherwise calls AutoCount, upserts, and
+ * returns the fresh row. Returns null if AutoCount doesn't know the
+ * item — caller treats that as "creditor unknown".
+ */
+export async function getStockItemCached(
+  env: Env,
+  itemCode: string,
+  opts: { maxAgeHours?: number } = {}
+): Promise<StockItemRow | null> {
+  if (!itemCode) return null;
+  const maxAgeHours = opts.maxAgeHours ?? 24;
+
+  const cached = await env.DB.prepare(
+    `SELECT * FROM stock_items
+      WHERE item_code = ?
+        AND fetched_at > datetime('now', '-' || ? || ' hours')
+      LIMIT 1`
+  )
+    .bind(itemCode, maxAgeHours)
+    .first<StockItemRow>();
+  if (cached) return cached;
+
+  // Miss or stale — pull fresh. Failures bubble; caller may swallow.
+  const client = new AutoCountClient(env);
+  const fresh = await client.getStockItem(itemCode);
+  if (!fresh) return null;
+  await upsertStockItem(env, fresh);
+
+  return (await env.DB.prepare(
+    `SELECT * FROM stock_items WHERE item_code = ? LIMIT 1`
+  )
+    .bind(itemCode)
+    .first<StockItemRow>()) ?? null;
+}
+
+/**
+ * Resolves the creditor for a single case by looking up its item_code
+ * in the stock_items cache (fetching if needed) and writing the
+ * resulting `main_supplier` into `assr_cases.creditor_code`. Logs an
+ * activity row on change so the case's audit trail shows it.
+ *
+ * Called from `createAssrCase` (fire-and-forget — a failed resolve
+ * must not block case creation) and from `patchAssrCase` when the
+ * item_code changes.
+ */
+export async function resolveCreditorForCase(
+  env: Env,
+  caseId: number,
+  itemCode: string | null | undefined
+): Promise<string | null> {
+  if (!itemCode) return null;
+  let creditorCode: string | null = null;
+  try {
+    const item = await getStockItemCached(env, itemCode);
+    creditorCode = item?.main_supplier ?? null;
+  } catch (e: any) {
+    console.warn(
+      `[resolveCreditorForCase] case=${caseId} item=${itemCode} lookup failed:`,
+      e?.message || e
+    );
+    return null;
+  }
+
+  // Find the current creditor_code so we only write + log on change.
+  const existing = await env.DB.prepare(
+    `SELECT creditor_code FROM assr_cases WHERE id = ? LIMIT 1`
+  )
+    .bind(caseId)
+    .first<{ creditor_code: string | null }>();
+  if (!existing) return creditorCode; // case was deleted
+  if ((existing.creditor_code ?? null) === (creditorCode ?? null)) return creditorCode;
+
+  await env.DB.prepare(
+    `UPDATE assr_cases SET creditor_code = ?, updated_at = datetime('now') WHERE id = ?`
+  )
+    .bind(creditorCode, caseId)
+    .run();
+
+  // Activity trail — mirrors other auto-resolved transitions.
+  await env.DB.prepare(
+    `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, created_by)
+     VALUES (?, 'creditor_resolved', ?, ?, ?, NULL)`
+  )
+    .bind(
+      caseId,
+      existing.creditor_code ?? null,
+      creditorCode,
+      `Auto-resolved from item ${itemCode}`
+    )
+    .run()
+    .catch(() => {
+      // assr_activity may not exist in older deployments; don't break.
+    });
+
+  return creditorCode;
+}
+
+export interface RefreshResult {
+  fetched: number;
+  upserted: number;
+  cases_updated: number;
+  message: string;
+}
+
+/**
+ * Bulk refresh: pull stock_items for every distinct item_code
+ * referenced by non-archived cases (optionally constrained to a
+ * caller-provided list), then recompute `assr_cases.creditor_code`
+ * for any case whose item_code's main_supplier changed.
+ */
+export async function runStockItemsRefresh(
+  env: Env,
+  opts: { itemCodes?: string[] } = {}
+): Promise<RefreshResult> {
+  const rid = crypto.randomUUID();
+  const startedAt = new Date();
+  const client = new AutoCountClient(env, rid);
+
+  try {
+    let itemCodes: string[];
+    if (opts.itemCodes && opts.itemCodes.length > 0) {
+      itemCodes = opts.itemCodes.filter(Boolean);
+    } else {
+      const rows = await env.DB.prepare(
+        `SELECT DISTINCT item_code FROM assr_cases
+          WHERE item_code IS NOT NULL AND item_code != ''
+            AND archived_at IS NULL`
+      ).all<{ item_code: string }>();
+      itemCodes = (rows.results ?? []).map((r) => r.item_code);
+    }
+
+    let fetched = 0;
+    let upserted = 0;
+    for (const code of itemCodes) {
+      try {
+        const item = await client.getStockItem(code);
+        fetched++;
+        if (item) {
+          await upsertStockItem(env, item);
+          upserted++;
+        }
+      } catch (e: any) {
+        console.warn(`[stockItemsRefresh][${rid}] ${code} failed:`, e?.message || e);
+      }
+    }
+
+    // Re-point creditor_code for every case whose item is now in the
+    // cache. Single UPDATE — cheap compared to N round-trips.
+    const update = await env.DB.prepare(
+      `UPDATE assr_cases
+          SET creditor_code = (
+            SELECT si.main_supplier FROM stock_items si
+             WHERE si.item_code = assr_cases.item_code
+          ),
+              updated_at = datetime('now')
+        WHERE item_code IS NOT NULL AND item_code != ''
+          AND archived_at IS NULL
+          AND (
+            COALESCE(creditor_code, '') != COALESCE(
+              (SELECT si.main_supplier FROM stock_items si
+                WHERE si.item_code = assr_cases.item_code), ''
+            )
+          )`
+    ).run();
+    const casesUpdated = update.meta.changes ?? 0;
+
+    const message = `Refreshed ${fetched}/${itemCodes.length} items (${upserted} upserted); updated ${casesUpdated} cases.`;
+    await writeLog(env, {
+      requestId: rid,
+      type: "STOCK_ITEMS_REFRESH",
+      startedAt,
+      status: "SYNCED",
+      message,
+    });
+    return { fetched, upserted, cases_updated: casesUpdated, message };
+  } catch (err: any) {
+    const message = err?.message || String(err);
+    await writeLog(env, {
+      requestId: rid,
+      type: "STOCK_ITEMS_REFRESH",
+      startedAt,
+      status: "FAILED",
+      message,
+    });
+    throw err;
+  }
+}

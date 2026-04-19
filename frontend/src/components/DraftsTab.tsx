@@ -18,6 +18,7 @@ import { Panel, PanelSection, FieldRow } from "./Panel";
 import { StatCard } from "./StatCard";
 import { DashboardGrid } from "./Dashboard";
 import { useQuery } from "../hooks/useQuery";
+import { useDialog } from "../hooks/useDialog";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
 import type {
@@ -36,6 +37,7 @@ import type {
  * add / remove stops, and change date / lorry / driver.
  */
 export function DraftsTab({ onConfirmed }: { onConfirmed?: () => void }) {
+  const dialog = useDialog();
   const [horizon, setHorizon] = useState(7);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,7 +69,7 @@ export function DraftsTab({ onConfirmed }: { onConfirmed?: () => void }) {
 
   async function generate() {
     if (
-      !window.confirm(
+      !await dialog.confirm(
         `Generate proposals for the next ${horizon} days? Any current draft will be discarded.`
       )
     )
@@ -88,7 +90,7 @@ export function DraftsTab({ onConfirmed }: { onConfirmed?: () => void }) {
 
   async function discard() {
     if (!proposal) return;
-    if (!window.confirm("Discard the current draft?")) return;
+    if (!await dialog.confirm("Discard the current draft?")) return;
     setBusy(true);
     try {
       await api.post(`/api/planner/${proposal.id}/discard`);
@@ -106,7 +108,7 @@ export function DraftsTab({ onConfirmed }: { onConfirmed?: () => void }) {
     const count = ids.length || planned.length;
     const isAll = ids.length === 0 || ids.length === planned.length;
     if (
-      !window.confirm(
+      !await dialog.confirm(
         `Confirm ${count} trip${count === 1 ? "" : "s"}? They'll appear under Live & Upcoming and drivers will see them.`
       )
     )
@@ -156,7 +158,7 @@ export function DraftsTab({ onConfirmed }: { onConfirmed?: () => void }) {
         <button
           disabled={busy}
           onClick={generate}
-          className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-accent-ink shadow-sm disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm disabled:opacity-50"
         >
           <Sparkles size={14} />
           {busy ? "Generating…" : proposal ? "Re-generate" : "Generate"}
@@ -399,6 +401,7 @@ function ProposalPanel({
   onChanged: () => void;
   onDeleted: () => void;
 }) {
+  const dialog = useDialog();
   // Local editable state — reset when the trip changes.
   const [local, setLocal] = useState<{
     trip_date: string;
@@ -606,7 +609,7 @@ function ProposalPanel({
 
   async function removeTrip() {
     if (!trip) return;
-    if (!window.confirm("Drop this proposed trip?")) return;
+    if (!await dialog.confirm("Drop this proposed trip?")) return;
     setBusy(true);
     try {
       await api.del(`/api/planner/trips/${trip.id}`);
@@ -646,7 +649,7 @@ function ProposalPanel({
             <button
               disabled={busy || !hasChanges}
               onClick={save}
-              className="ml-auto rounded-md bg-accent px-5 py-2.5 text-[12px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+              className="ml-auto rounded-md bg-accent px-5 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
             >
               {busy ? "Saving…" : "Save Changes"}
             </button>
@@ -1025,7 +1028,7 @@ function AddStopModal({
           <button
             onClick={() => onPick(Object.values(picked))}
             disabled={!Object.keys(picked).length}
-            className="ml-auto rounded-md bg-accent px-4 py-2 text-[12px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+            className="ml-auto rounded-md bg-accent px-4 py-2 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
           >
             Add to trip
           </button>

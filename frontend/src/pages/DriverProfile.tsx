@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Clock, ClipboardCheck, DollarSign, LogOut, ChevronRight } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { useQuery } from "../hooks/useQuery";
+import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
 
@@ -11,6 +12,7 @@ import { formatCurrency, formatDate, cn } from "../lib/utils";
  */
 export function DriverProfile() {
   const { user, logout } = useAuth();
+  const toast = useToast();
   const [tab, setTab] = useState<"profile" | "salary" | "clock">("profile");
 
   const profile = useQuery<any>(() => api.get("/api/fleet/me"));
@@ -108,6 +110,7 @@ function ClockCard({
   isClockedIn: boolean;
   onReload: () => void;
 }) {
+  const toast = useToast();
   const [busy, setBusy] = useState(false);
 
   async function toggle() {
@@ -120,7 +123,7 @@ function ClockCard({
       }
       onReload();
     } catch (e: any) {
-      alert(e?.message || "Clock failed");
+      toast.error(e?.message || "Clock failed");
     } finally {
       setBusy(false);
     }
@@ -167,6 +170,7 @@ function ClockCard({
 // ── Profile tab ───────────────────────────────────────────────────
 
 function ProfileTab({ profile, onUpdated }: { profile: any; onUpdated: () => void }) {
+  const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
     phone: "",
@@ -191,7 +195,7 @@ function ProfileTab({ profile, onUpdated }: { profile: any; onUpdated: () => voi
       setEditing(false);
       onUpdated();
     } catch (e: any) {
-      alert(e?.message || "Save failed");
+      toast.error(e?.message || "Save failed");
     } finally {
       setBusy(false);
     }
@@ -254,7 +258,7 @@ function ProfileTab({ profile, onUpdated }: { profile: any; onUpdated: () => voi
             <button
               disabled={busy}
               onClick={save}
-              className="flex-1 rounded-md bg-accent py-2.5 text-[12px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+              className="flex-1 rounded-md bg-accent py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
             >
               {busy ? "Saving…" : "Save"}
             </button>

@@ -7,6 +7,7 @@ import { StatCard } from "../components/StatCard";
 import { DashboardGrid, DashboardPanels, DashboardBreakdown } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useServerSort } from "../hooks/useServerSort";
 import { api, buildQuery } from "../api/client";
 import { cn, formatCurrency, formatDate, isExpired, isExpiringSoon } from "../lib/utils";
 import type { Paginated, SalesOrder, BalanceSummary } from "../types";
@@ -19,6 +20,8 @@ export function Balance() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:balance", 100);
 
+  const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
+
   const list = useQuery<Paginated<SalesOrder>>(
     () =>
       api.get(
@@ -27,9 +30,10 @@ export function Balance() {
           search,
           page,
           per_page: perPage,
+          ...sortParams,
         })}`
       ),
-    [filter, search, page, perPage]
+    [filter, search, page, perPage, sort?.key, sort?.dir]
   );
 
   const summary = useQuery<BalanceSummary>(() => api.get("/api/balance/summary"));
@@ -213,6 +217,8 @@ export function Balance() {
           if (isExpiringSoon(r.expiry_date)) return "bg-warning-bg/60 hover:bg-warning-bg";
           return undefined;
         }}
+        serverSort
+        onSortChange={handleSortChange}
       />
 
       {list.data && (

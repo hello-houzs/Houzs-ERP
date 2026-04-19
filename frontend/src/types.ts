@@ -93,15 +93,151 @@ export interface PurchaseOrder {
   supplier_date2: string | null;
   supplier_date3: string | null;
   overdue_days: string | null;
+  // Cost fields used by P&L. amount_source distinguishes 'sync' (from
+  // AutoCount payload) vs 'manual' (typed by a user) so the next sync
+  // knows whether to overwrite. (Line-level amounts only — doc totals
+  // live on PurchaseOrderDoc.)
+  unit_price?: number | null;
+  amount?: number | null;
+  amount_source?: string | null;
+  amount_updated_at?: string | null;
+  amount_updated_by?: number | null;
 }
+
+/**
+ * Creditor (procurement supplier) mirrored locally from AutoCount
+ * /Creditor/getAll. Read-only — AutoCount is the system of record.
+ * po_count / open_po_count / total_local_ex_tax come from a join
+ * against purchase_order_docs in the list endpoint.
+ */
+export interface Creditor {
+  creditor_code: string;
+  company_name: string | null;
+  desc2: string | null;
+  address1: string | null;
+  address2: string | null;
+  address3: string | null;
+  address4: string | null;
+  post_code: string | null;
+  deliver_address1: string | null;
+  deliver_address2: string | null;
+  deliver_address3: string | null;
+  deliver_address4: string | null;
+  deliver_post_code: string | null;
+  attention: string | null;
+  phone1: string | null;
+  phone2: string | null;
+  mobile: string | null;
+  fax1: string | null;
+  fax2: string | null;
+  email: string | null;
+  web_url: string | null;
+  contact_info: string | null;
+  nature_of_business: string | null;
+  currency_code: string | null;
+  display_term: string | null;
+  rounding_method: string | null;
+  inclusive_tax: number | null;
+  price_category: string | null;
+  statement_type: string | null;
+  aging_on: string | null;
+  credit_limit: number | null;
+  overdue_limit: number | null;
+  tax_code: string | null;
+  tax_register_no: string | null;
+  gst_register_no: string | null;
+  sst_register_no: string | null;
+  self_billed_approval_no: string | null;
+  exempt_no: string | null;
+  exempt_expiry_date: string | null;
+  register_no: string | null;
+  gst_status_verified_date: string | null;
+  area_code: string | null;
+  area_description: string | null;
+  area_desc2: string | null;
+  type: string | null;
+  type_description: string | null;
+  type_desc2: string | null;
+  purchase_agent: string | null;
+  purchase_agent_description: string | null;
+  parent_acc_no: string | null;
+  note: string | null;
+  last_modified: string | null;
+  last_modified_user_id: string | null;
+  created_timestamp: string | null;
+  created_user_id: string | null;
+  is_active: number;
+  raw: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined aggregates from purchase_order_docs:
+  po_count?: number;
+  open_po_count?: number;
+  total_local_ex_tax?: number;
+}
+
+export interface CreditorSummary {
+  totals: {
+    total: number;
+    currency_count: number;
+    type_count: number;
+  };
+  top_by_spend: Array<{
+    creditor_code: string;
+    creditor_name: string;
+    po_count: number;
+    total_spend: number;
+  }>;
+}
+
+/**
+ * Doc-level Purchase Order from /api/po/docs (mirrors AutoCount
+ * /PurchaseOrder/getAll). One row per PO header — the source of truth
+ * for cost roll-ups (P&L) and the "Documents" view.
+ */
+export interface PurchaseOrderDoc {
+  doc_no: string;
+  doc_date: string | null;
+  ref: string | null;
+  so_doc_no: string | null;
+  creditor_code: string | null;
+  creditor_name: string | null;
+  purchase_location: string | null;
+  doc_status: string | null;
+  cancelled: number;
+  local_ex_tax: number | null;
+  local_tax: number | null;
+  local_net_total: number | null;
+  final_total: number | null;
+  currency_code: string | null;
+  currency_rate: number | null;
+  remark1: string | null;
+  remark2: string | null;
+  remark3: string | null;
+  remark4: string | null;
+  note: string | null;
+  last_modified: string | null;
+  amount_source: string | null;
+  amount_updated_at: string | null;
+  amount_updated_by: number | null;
+  /** Full AutoCount /PurchaseOrder/getAll payload as a JSON string. */
+  raw: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type AssrStage = "registration" | "triage" | "action" | "logistics" | "resolution" | "closed";
+export type ResolutionMethod = "replace_unit" | "supplier_repair" | "field_service_own" | "field_service_supplier" | "return_visit";
 
 export interface AssrCase {
   id: number;
   assr_no: string;
   status: string;
+  stage: AssrStage;
   doc_no: string;
   complained_date: string | null;
   customer_name: string | null;
+  customer_email: string | null;
   phone: string | null;
   location: string | null;
   sales_agent: string | null;
@@ -112,12 +248,111 @@ export interface AssrCase {
   supplier: string | null;
   completion_date: string | null;
   po_no: string | null;
+  resolution_method: ResolutionMethod | null;
+  issue_category: string | null;
+  priority: string;
+  assigned_to: number | null;
+  assigned_to_name?: string | null;
+  ref_no: string | null;
+  delivery_order: string | null;
+  do_date: string | null;
+  closed_at: string | null;
+  created_by: number | null;
+  created_by_name?: string | null;
+  satisfaction_rating: number | null;
+  satisfaction_notes: string | null;
+  // AutoCount-derived creditor (procurement supplier). Auto-resolved
+  // from the case's item_code via StockItem.MainSupplier.
+  creditor_code?: string | null;
+  creditor_name?: string | null;
+  creditor_email?: string | null;
+  creditor_phone?: string | null;
+  creditor_mobile?: string | null;
+  creditor_attention?: string | null;
+  // QMS: manager sign-off + NCR
+  approved_by?: number | null;
+  approved_at?: string | null;
+  approved_by_name?: string | null;
+  quality_review_passed?: number | null; // 0 | 1 | null
+  ncr_category?: string | null;
+  // QMS: cost tracking
+  po_amount?: number | null;
+  supplier_invoice_ref?: string | null;
+  cost_notes?: string | null;
+  // SLA tracking
+  sla_hours?: number | null;
+  deadline_at?: string | null;
+  escalated_at?: string | null;
+  hours_to_deadline?: number | null; // negative = past deadline
+  is_breached?: number | null;       // 0 | 1
+  // Aging fields (populated on list/detail reads — computed from activity log)
+  stage_since?: string | null;
+  days_in_stage?: number | null;
+  // Soft-delete
+  archived_at?: string | null;
+  archived_by?: number | null;
   addr1: string | null;
   addr2: string | null;
   addr3: string | null;
   addr4: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface AssrItem {
+  id: number;
+  assr_id: number;
+  item_code: string;
+  item_description: string | null;
+  qty: number;
+}
+
+export interface AssrAttachment {
+  id: number;
+  assr_id: number;
+  r2_key: string;
+  file_name: string | null;
+  content_type: string | null;
+  category: "complaint" | "evidence" | "completion" | "signature";
+  uploaded_by: number | null;
+  created_at: string;
+}
+
+export interface AssrActivity {
+  id: number;
+  assr_id: number;
+  action: string;
+  from_value: string | null;
+  to_value: string | null;
+  note: string | null;
+  user_id: number | null;
+  user_name?: string | null;
+  created_at: string;
+}
+
+export interface AssrLogistics {
+  id: number;
+  assr_id: number;
+  type: "pickup" | "delivery";
+  scheduled_date: string | null;
+  scheduled_time_range: string | null;
+  assigned_to: number | null;
+  assigned_to_name?: string | null;
+  status: string;
+  notes: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssrDetail {
+  case: AssrCase;
+  items: AssrItem[];
+  attachments: AssrAttachment[];
+  activity: AssrActivity[];
+  logistics: AssrLogistics[];
+  related_pos: PurchaseOrder[];
+  portal_token?: string | null;
 }
 
 export interface OverdueHistoryRow {
@@ -130,6 +365,13 @@ export interface OverdueHistoryRow {
   balance: number | null;
   original_expiry_date: string | null;
   extended_to: string | null;
+}
+
+/** Grouped overdue row: sales_order + extension stats */
+export interface OverdueOrderRow extends SalesOrder {
+  extension_count: number;
+  last_extended_at: string;
+  first_original_expiry: string | null;
 }
 
 export interface ExecutionLog {
@@ -191,6 +433,9 @@ export interface POSummary {
     po_count: number;
     supplier_count: number;
     remaining_qty: number;
+    outstanding_count?: number;
+    delivered_count?: number;
+    cancelled_count?: number;
   };
   overdue: number;
   missing_supplier_date: number;
@@ -205,12 +450,42 @@ export interface BalanceSummary {
   top_debtors: Array<{ name: string; total: number }>;
 }
 
+export interface AssrMetrics {
+  since_days: number;
+  headline: {
+    total: number;
+    closed: number;
+    open_count: number;
+    breached: number;
+    qa_passed: number;
+    avg_resolution_hours: number | null;
+    avg_satisfaction: number | null;
+  };
+  ncr: Array<{ category: string; count: number }>;
+  resolutions: Array<{ method: string; count: number }>;
+  repeat_items: Array<{ item_code: string; cases: number; latest: string }>;
+  repeat_customers: Array<{ customer_name: string; phone: string | null; cases: number; latest: string }>;
+  creditor_performance: Array<{
+    creditor_code: string;
+    name: string | null;
+    total_cases: number;
+    closed_cases: number;
+    breached: number;
+    avg_rating: number | null;
+    avg_resolution_hours: number | null;
+  }>;
+  monthly_trend: Array<{ month: string; opened: number; closed: number }>;
+}
+
 export interface AssrSummary {
   total: number;
+  by_stage: Array<{ stage: string; count: number }>;
   by_status: Array<{ status: string; count: number }>;
   by_location: Array<{ location: string; count: number }>;
   by_category: Array<{ name: string; count: number }>;
   recent_30d: number;
+  aging_count: number;
+  breach_count: number;
 }
 
 export interface OverdueSummary {
@@ -231,6 +506,8 @@ export interface AuthUser {
   role_name: string;
   status: string;
   permissions: string[];
+  joined_at?: string | null;
+  last_login_at?: string | null;
 }
 
 export interface TeamMember {

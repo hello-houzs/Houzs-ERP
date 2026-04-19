@@ -17,6 +17,8 @@ import {
   X,
 } from "lucide-react";
 import { useQuery } from "../hooks/useQuery";
+import { useToast } from "../hooks/useToast";
+import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
 import { formatCurrency, cn } from "../lib/utils";
 import { SignaturePad, type SignaturePadHandle } from "../components/SignaturePad";
@@ -36,6 +38,8 @@ import type { TripDetail, TripStop } from "../types";
  * roughly every 30s.
  */
 export function DriverTrip() {
+  const toast = useToast();
+  const dialog = useDialog();
   const { id } = useParams<{ id: string }>();
   const tripId = parseInt(id || "0", 10);
   const detail = useQuery<TripDetail>(() => api.get(`/api/trips/${tripId}`), [tripId]);
@@ -76,7 +80,7 @@ export function DriverTrip() {
 
   async function endTrip() {
     if (!endOdo) {
-      alert("Please enter the end odometer reading.");
+      toast.error("Please enter the end odometer reading.");
       return;
     }
     setBusy(true);
@@ -164,7 +168,7 @@ export function DriverTrip() {
             {isAssigned && !showStartForm && (
               <button
                 onClick={() => setShowStartForm(true)}
-                className="flex w-full items-center justify-center gap-2 rounded-md bg-accent py-3 text-[13px] font-bold uppercase tracking-wide text-accent-ink shadow-sm active:bg-accent/90"
+                className="flex w-full items-center justify-center gap-2 rounded-md bg-accent py-3 text-[13px] font-bold uppercase tracking-wide text-white shadow-sm active:bg-accent/90"
               >
                 <Play size={16} /> Start Trip
               </button>
@@ -198,7 +202,7 @@ export function DriverTrip() {
                   <button
                     disabled={busy}
                     onClick={startTrip}
-                    className="flex-1 rounded-md bg-accent py-2.5 text-[12px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+                    className="flex-1 rounded-md bg-accent py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
                   >
                     {busy ? "Starting…" : "Confirm Start"}
                   </button>
@@ -362,7 +366,7 @@ export function DriverTrip() {
             }}
             onOpenPod={() => setPodStop(stop)}
             onMarkFailed={async () => {
-              const reason = window.prompt("Reason for failed delivery?");
+              const reason = await dialog.prompt("Reason for failed delivery?");
               if (reason == null) return;
               await api.patch(`/api/trips/${tripId}/stops/${stop.id}`, {
                 status: "failed",
@@ -396,6 +400,7 @@ export function DriverTrip() {
 // ── Daily inspection card ─────────────────────────────────────────
 
 function InspectionCard({ lorryId, lorryPlate }: { lorryId: number; lorryPlate?: string }) {
+  const toast = useToast();
   const inspection = useQuery<{ record: any }>(
     () => api.get(`/api/fleet/inspection/today/${lorryId}`),
     [lorryId]
@@ -430,7 +435,7 @@ function InspectionCard({ lorryId, lorryPlate }: { lorryId: number; lorryPlate?:
       inspection.reload();
       setOpen(false);
     } catch (e: any) {
-      alert(e?.message || "Submit failed");
+      toast.error(e?.message || "Submit failed");
     } finally {
       setBusy(false);
     }
@@ -518,7 +523,7 @@ function InspectionCard({ lorryId, lorryPlate }: { lorryId: number; lorryPlate?:
       <button
         disabled={busy}
         onClick={submit}
-        className="mt-3 w-full rounded-md bg-accent py-2.5 text-[12px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+        className="mt-3 w-full rounded-md bg-accent py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
       >
         {busy ? "Submitting…" : "Submit Inspection"}
       </button>
@@ -882,7 +887,7 @@ function PodSheet({
         <button
           disabled={busy}
           onClick={submit}
-          className="w-full rounded-md bg-accent py-3 text-[13px] font-bold uppercase tracking-wide text-accent-ink disabled:opacity-50"
+          className="w-full rounded-md bg-accent py-3 text-[13px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
         >
           {busy ? "Submitting…" : "Confirm Delivery"}
         </button>

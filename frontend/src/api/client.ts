@@ -118,6 +118,50 @@ export const api = {
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },
+
+  /**
+   * Fetch an auth-protected HTML document and open it in a new tab via
+   * blob: URL. Used for the ASSR print/PDF view where we can't just
+   * window.open() the endpoint directly (no way to attach the bearer).
+   */
+  /**
+   * Download a server-generated file (e.g. CSV export) honoring the
+   * bearer token. Browsers can't attach Authorization to a plain
+   * <a download>, so we fetch + blob: + click an off-DOM anchor.
+   */
+  async downloadFile(path: string, fallbackName = "download"): Promise<void> {
+    const token = tokenStore.get();
+    const res = await fetch(`${baseUrl}${path}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+    const name = m ? decodeURIComponent(m[1]) : fallbackName;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  },
+
+  async openHtml(path: string): Promise<void> {
+    const token = tokenStore.get();
+    const res = await fetch(`${baseUrl}${path}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+    const html = await res.text();
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    // Revoke after the new tab has had time to parse; instant revoke breaks some browsers.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  },
 };
 
 export function buildQuery(params: Record<string, string | number | undefined | null>): string {

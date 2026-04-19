@@ -1,20 +1,18 @@
 {
-  "name": "autocount-sync",
+  "name": "houzs-erp",
   "version": "2.0.0",
   "private": true,
+  "description": "Houzs Century ERP — Cloudflare Workers backend + React/Vite frontend. Each sub-app (backend/, frontend/) has its own package.json and deploys itself.",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "db:reset": "wrangler d1 execute autocount-sync --file=./src/db/schema.sql --remote",
-    "db:reset:local": "wrangler d1 execute autocount-sync --local --file=./src/db/schema.sql",
-    "build": "cd frontend && npm run build"
-  },
-  "dependencies": {
-    "hono": "^4.6.0"
-  },
-  "devDependencies": {
-    "@cloudflare/workers-types": "^4.20241218.0",
-    "typescript": "^5.7.0",
-    "wrangler": "^4.81.0"
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
+    "deploy:backend": "npm --prefix backend run deploy",
+    "deploy:frontend": "npm --prefix frontend run deploy",
+    "deploy:all": "npm run deploy:frontend && npm run deploy:backend",
+    "db:reset": "npm --prefix backend run db:reset",
+    "db:reset:local": "npm --prefix backend run db:reset:local",
+    "db:migrate": "npm --prefix backend run db:migrate",
+    "install:all": "npm --prefix backend install && npm --prefix frontend install"
   }
 }

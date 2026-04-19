@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, type To } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { DriverLayout } from "./components/DriverLayout";
 import { Overview } from "./pages/Overview";
@@ -6,28 +6,58 @@ import { Orders } from "./pages/Orders";
 import { DeliveryOrders } from "./pages/DeliveryOrders";
 import { PurchaseOrders } from "./pages/PurchaseOrders";
 import { ServiceCases } from "./pages/ServiceCases";
-import { Balance } from "./pages/Balance";
-import { Overdue } from "./pages/Overdue";
-import { Logs } from "./pages/Logs";
+import { Projects } from "./pages/Projects";
+import { Profile } from "./pages/Profile";
 import { Settings } from "./pages/Settings";
 import { Team } from "./pages/Team";
-import { Roles } from "./pages/Roles";
-import { Trips } from "./pages/Trips";
-import { Fleet } from "./pages/Fleet";
+import { Logistics } from "./pages/Logistics";
 import { DriverHome } from "./pages/DriverHome";
 import { DriverTrip } from "./pages/DriverTrip";
 import { DriverProfile } from "./pages/DriverProfile";
 import { useAuth } from "./auth/AuthContext";
+import { GlobalSearchProvider } from "./components/GlobalSearch";
 
 /**
  * Wraps a route element in a permission check. Routes the user can't
  * access redirect home — the sidebar already hides them, but this is a
  * defense-in-depth in case someone navigates by URL.
  */
-function Guard({ perm, children }: { perm: string; children: React.ReactNode }) {
+function Guard({
+  perm,
+  anyPerm,
+  children,
+}: {
+  perm?: string;
+  anyPerm?: string[];
+  children: React.ReactNode;
+}) {
   const { can } = useAuth();
-  if (!can(perm)) return <Navigate to="/" replace />;
+  if (perm && !can(perm)) return <Navigate to="/" replace />;
+  if (anyPerm && !anyPerm.some((p) => can(p))) return <Navigate to="/" replace />;
   return <>{children}</>;
+}
+
+/**
+ * Navigate that carries the current ?query= string through, plus any
+ * extra params the caller wants to add. Used for the /trips → /logistics
+ * redirect so `?focus=…` deep links (from inbox, search, cron emails)
+ * keep working.
+ */
+function RedirectKeepQuery({
+  to,
+  extraParams,
+}: {
+  to: string;
+  extraParams?: Record<string, string>;
+}) {
+  const loc = useLocation();
+  const search = new URLSearchParams(loc.search);
+  if (extraParams) {
+    for (const [k, v] of Object.entries(extraParams)) search.set(k, v);
+  }
+  const qs = search.toString();
+  const next: To = { pathname: to, search: qs ? `?${qs}` : "" };
+  return <Navigate to={next} replace />;
 }
 
 /**
@@ -73,8 +103,9 @@ export default function App() {
   }
 
   return (
-    <Layout>
-      <Routes>
+    <GlobalSearchProvider>
+      <Layout>
+        <Routes>
         <Route path="/" element={<Overview />} />
         <Route
           path="/orders"
@@ -93,20 +124,21 @@ export default function App() {
           }
         />
         <Route
-          path="/trips"
+          path="/logistics"
           element={
-            <Guard perm="trips.read.all">
-              <Trips />
+            <Guard anyPerm={["trips.read.all", "fleet.read"]}>
+              <Logistics />
             </Guard>
           }
         />
+        {/* Legacy deep-links — preserve query string (?focus=…) */}
+        <Route
+          path="/trips"
+          element={<RedirectKeepQuery to="/logistics" extraParams={{ tab: "trips" }} />}
+        />
         <Route
           path="/fleet"
-          element={
-            <Guard perm="fleet.read">
-              <Fleet />
-            </Guard>
-          }
+          element={<RedirectKeepQuery to="/logistics" extraParams={{ tab: "fleet" }} />}
         />
         <Route
           path="/po"
@@ -116,6 +148,11 @@ export default function App() {
             </Guard>
           }
         />
+        {/* Legacy /creditors → Purchase Orders' Creditors tab */}
+        <Route
+          path="/creditors"
+          element={<Navigate to="/po?view=creditors" replace />}
+        />
         <Route
           path="/assr"
           element={
@@ -124,27 +161,18 @@ export default function App() {
             </Guard>
           }
         />
+        {/* Legacy /suppliers → Creditors tab under Purchase Orders.
+            Phase 3 dropped the local Suppliers module; kept as redirect
+            for existing bookmarks. */}
         <Route
-          path="/balance"
-          element={
-            <Guard perm="balance.read">
-              <Balance />
-            </Guard>
-          }
+          path="/suppliers"
+          element={<Navigate to="/po?view=creditors" replace />}
         />
         <Route
-          path="/overdue"
+          path="/projects"
           element={
-            <Guard perm="overdue.read">
-              <Overdue />
-            </Guard>
-          }
-        />
-        <Route
-          path="/logs"
-          element={
-            <Guard perm="logs.read">
-              <Logs />
+            <Guard perm="projects.read">
+              <Projects />
             </Guard>
           }
         />
@@ -159,20 +187,19 @@ export default function App() {
         <Route
           path="/team"
           element={
-            <Guard perm="users.read">
+            <Guard anyPerm={["users.read", "roles.read"]}>
               <Team />
             </Guard>
           }
         />
+        {/* Legacy /roles → Team page's Roles tab */}
         <Route
           path="/roles"
-          element={
-            <Guard perm="roles.read">
-              <Roles />
-            </Guard>
-          }
+          element={<Navigate to="/team?tab=roles" replace />}
         />
-      </Routes>
-    </Layout>
+        <Route path="/profile" element={<Profile />} />
+        </Routes>
+      </Layout>
+    </GlobalSearchProvider>
   );
 }

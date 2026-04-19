@@ -9,10 +9,12 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANTS: Record<Variant, string> = {
-  // Primary — Nature Black slab with brass right-edge underline on hover.
+  // Primary — brass fill. The brand's "Colour X" hardware accent,
+  // same palette as TabStrip/FilterPills active states so every
+  // emphasis in the app reads as one family.
   primary:
-    "bg-ink text-bg hover:bg-[#1a221a] border border-ink shadow-stone disabled:bg-ink/40 disabled:border-ink/40",
-  // Brass — used for the highest-priority actions (Sync, etc.).
+    "bg-accent text-white hover:bg-accent-hover border border-accent shadow-brass disabled:bg-accent/40 disabled:border-accent/40",
+  // Brass — legacy alias kept for existing callers; identical to primary.
   brass:
     "bg-accent text-white hover:bg-accent-hover border border-accent shadow-brass disabled:bg-accent/40 disabled:border-accent/40",
   secondary:
