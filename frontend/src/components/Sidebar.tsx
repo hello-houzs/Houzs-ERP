@@ -117,6 +117,12 @@ const TABS: Tab[] = [
         icon: DollarSign,
         perm: "service_cases.read",
       },
+      {
+        to: "/assr?view=settings",
+        label: "Service Settings",
+        icon: Wrench,
+        perm: "service_cases.manage",
+      },
     ],
   },
   {

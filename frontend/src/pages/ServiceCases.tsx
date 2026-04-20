@@ -55,6 +55,7 @@ import { useAuth } from "../auth/AuthContext";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
 import { ServiceMetrics } from "./ServiceMetrics";
+import { ServiceSettingsView } from "./ServiceSettings";
 import type {
   Paginated,
   AssrCase,
@@ -111,12 +112,22 @@ const NEXT_STAGE: Record<string, { stage: AssrStage; label: string }> = {
 // The metrics used to live at /service-metrics as its own sidebar
 // entry; it's just a report about cases so it belongs here alongside
 // them rather than as a top-level module.
-type ServiceView = "cases" | "by_creditor" | "metrics" | "pnl";
+type ServiceView = "cases" | "by_creditor" | "metrics" | "pnl" | "settings";
 
-const SERVICE_VIEWS: ServiceView[] = ["cases", "by_creditor", "metrics", "pnl"];
+const SERVICE_VIEWS: ServiceView[] = [
+  "cases",
+  "by_creditor",
+  "metrics",
+  "pnl",
+  "settings",
+];
 
 // Per-view header config so each view gets its own dedicated title.
-const VIEW_HEADER: Record<ServiceView, { title: string; description: string }> = {
+// (settings view owns its own PageHeader, so it's not in this map.)
+const VIEW_HEADER: Record<
+  Exclude<ServiceView, "settings">,
+  { title: string; description: string }
+> = {
   cases: {
     title: "Service Cases",
     description: "After-sales service request workflow.",
@@ -162,22 +173,24 @@ export function ServiceCases() {
 
   return (
     <div>
-      <PageHeader
-        eyebrow="Operations · Service"
-        title={VIEW_HEADER[view].title}
-        description={VIEW_HEADER[view].description}
-        actions={
-          view === "cases" ? (
-            <Button
-              variant="primary"
-              icon={<Plus size={14} />}
-              onClick={() => setShowCreate(true)}
-            >
-              New Case
-            </Button>
-          ) : undefined
-        }
-      />
+      {view !== "settings" && (
+        <PageHeader
+          eyebrow="Operations · Service"
+          title={VIEW_HEADER[view].title}
+          description={VIEW_HEADER[view].description}
+          actions={
+            view === "cases" ? (
+              <Button
+                variant="primary"
+                icon={<Plus size={14} />}
+                onClick={() => setShowCreate(true)}
+              >
+                New Case
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
 
       {view === "cases" && (
         <CasesView showCreate={showCreate} setShowCreate={setShowCreate} />
@@ -193,6 +206,7 @@ export function ServiceCases() {
           subtitle="Supplier PO payments from closed cases, grouped by month."
         />
       )}
+      {view === "settings" && <ServiceSettingsView />}
     </div>
   );
 }
