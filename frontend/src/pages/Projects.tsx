@@ -412,6 +412,88 @@ function OrganizerPicker({
   );
 }
 
+// Same pattern as OrganizerPicker but for project_venues. Includes an
+// optional `state` callback that fires when the picked venue carries a
+// state hint, so the create form can pre-fill the state field.
+function VenuePicker({
+  value,
+  onChange,
+  onStateHint,
+  className,
+}: {
+  value: string | null | undefined;
+  onChange: (next: string | null) => void;
+  onStateHint?: (state: string | null) => void;
+  className?: string;
+}) {
+  const dialog = useDialog();
+  const toast = useToast();
+  const q = useQuery<{
+    data: { id: number; name: string; state: string | null }[];
+  }>(() => api.get("/api/projects/venues"), []);
+  const options = q.data?.data ?? [];
+
+  async function addNew() {
+    const name = await dialog.prompt({
+      title: "Add venue",
+      message:
+        "Add a new venue to the picker. Subsequent projects will see it too.",
+      placeholder: "e.g. KLCC Convention Centre",
+      required: true,
+      confirmLabel: "Add",
+    });
+    if (!name) return;
+    try {
+      const r = await api.post<{ id: number; name: string; state: string | null }>(
+        "/api/projects/venues",
+        { name }
+      );
+      await q.reload();
+      onChange(r.name);
+      if (r.state && onStateHint) onStateHint(r.state);
+      toast.success(`Added ${r.name}`);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to add");
+    }
+  }
+
+  const SENTINEL_NEW = "__add_new__";
+
+  return (
+    <select
+      value={value || ""}
+      onChange={(e) => {
+        const v = e.target.value;
+        if (v === SENTINEL_NEW) {
+          addNew();
+          return;
+        }
+        onChange(v || null);
+        if (v && onStateHint) {
+          const match = options.find((o) => o.name === v);
+          if (match?.state) onStateHint(match.state);
+        }
+      }}
+      className={
+        className ??
+        "w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
+      }
+    >
+      <option value="">— select venue —</option>
+      {value && !options.some((o) => o.name === value) && (
+        <option value={value}>{value}</option>
+      )}
+      {options.map((o) => (
+        <option key={o.id} value={o.name}>
+          {o.name}
+          {o.state ? ` · ${o.state}` : ""}
+        </option>
+      ))}
+      <option value={SENTINEL_NEW}>＋ Add new venue…</option>
+    </select>
+  );
+}
+
 function composeEventName(p: {
   state?: string | null;
   brand?: string | null;
@@ -1808,11 +1890,12 @@ function CreateProjectPanel({
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
             Venue
           </div>
-          <input
-            value={venue}
-            onChange={(e) => setVenue(e.target.value)}
-            placeholder="e.g. KLCC Hall 3"
-            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
+          <VenuePicker
+            value={venue || null}
+            onChange={(v) => setVenue(v ?? "")}
+            onStateHint={(s) => {
+              if (s && !state) setState(s);
+            }}
           />
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -2282,7 +2365,18 @@ function ProjectDetailContent({
           </PanelSection>
 
           <PanelSection title="Venue">
-            <InlineEdit label="Venue" value={p.venue} onSave={(v) => patch({ venue: v })} />
+            <div>
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                Venue
+              </div>
+              <VenuePicker
+                value={p.venue}
+                onChange={(v) => patch({ venue: v })}
+                onStateHint={(s) => {
+                  if (s && !p.state) patch({ state: s });
+                }}
+              />
+            </div>
             <InlineEdit
               label="State"
               value={p.state}

@@ -192,6 +192,244 @@ app.delete("/organizers/:id", requirePermission("projects.manage"), async (c) =>
   return c.json({ ok: true });
 });
 
+// ── Venues ────────────────────────────────────────────────────
+// Same shape as organizers — picker-backed lookup, free-text column on
+// `projects.venue` stays valid so legacy data still renders.
+
+app.get("/venues", requirePermission("projects.read"), async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT id, name, state, notes, active FROM project_venues
+      WHERE active = 1 ORDER BY name`
+  ).all();
+  return c.json({ data: rows.results ?? [] });
+});
+
+app.post("/venues", requirePermission("projects.write"), async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json<{
+    name?: string;
+    state?: string | null;
+    notes?: string | null;
+  }>();
+  const name = (body.name || "").trim();
+  if (!name) return c.json({ error: "name required" }, 400);
+  const existing = await c.env.DB.prepare(
+    `SELECT id, name, state FROM project_venues WHERE name = ? COLLATE NOCASE`
+  )
+    .bind(name)
+    .first<{ id: number; name: string; state: string | null }>();
+  if (existing) {
+    // Reactivate + update state/notes if user supplied them.
+    await c.env.DB.prepare(
+      `UPDATE project_venues
+          SET active = 1,
+              state  = COALESCE(?, state),
+              notes  = COALESCE(?, notes)
+        WHERE id = ?`
+    )
+      .bind(body.state ?? null, body.notes ?? null, existing.id)
+      .run();
+    return c.json({ id: existing.id, name: existing.name, state: existing.state }, 200);
+  }
+  const r = await c.env.DB.prepare(
+    `INSERT INTO project_venues (name, state, notes, created_by)
+     VALUES (?, ?, ?, ?)`
+  )
+    .bind(name, body.state ?? null, body.notes ?? null, user?.id ?? null)
+    .run();
+  return c.json({ id: r.meta.last_row_id, name, state: body.state ?? null }, 201);
+});
+
+app.patch("/venues/:id", requirePermission("projects.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const body = await c.req.json<{
+    name?: string;
+    state?: string | null;
+    notes?: string | null;
+  }>();
+  const sets: string[] = [];
+  const binds: any[] = [];
+  if ("name" in body) {
+    const next = (body.name || "").trim();
+    if (!next) return c.json({ error: "name cannot be empty" }, 400);
+    sets.push("name = ?");
+    binds.push(next);
+  }
+  if ("state" in body) {
+    sets.push("state = ?");
+    binds.push(body.state ?? null);
+  }
+  if ("notes" in body) {
+    sets.push("notes = ?");
+    binds.push(body.notes ?? null);
+  }
+  if (sets.length === 0) return c.json({ ok: true });
+  await c.env.DB.prepare(
+    `UPDATE project_venues SET ${sets.join(", ")} WHERE id = ?`
+  )
+    .bind(...binds, id)
+    .run();
+  return c.json({ ok: true });
+});
+
+app.delete("/venues/:id", requirePermission("projects.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  await c.env.DB.prepare(`UPDATE project_venues SET active = 0 WHERE id = ?`)
+    .bind(id)
+    .run();
+  return c.json({ ok: true });
+});
+
+// ── Default checklist templates ───────────────────────────────
+// Each project_event_type has a default_template_id pointing at a
+// project_checklist_templates row. Items live in
+// project_checklist_template_items. These routes let admins manage
+// the template body that gets cloned into every new project.
+
+app.get("/checklist-templates", requirePermission("projects.read"), async (c) => {
+  const templates = await c.env.DB.prepare(
+    `SELECT t.id, t.name, t.description,
+            (SELECT COUNT(*) FROM project_checklist_template_items WHERE template_id = t.id) AS item_count,
+            (SELECT GROUP_CONCAT(et.name, ', ')
+               FROM project_event_types et
+              WHERE et.default_template_id = t.id) AS used_by
+       FROM project_checklist_templates t
+      ORDER BY t.name`
+  ).all();
+  return c.json({ data: templates.results ?? [] });
+});
+
+app.get(
+  "/checklist-templates/:id/items",
+  requirePermission("projects.read"),
+  async (c) => {
+    const id = parseInt(c.req.param("id"), 10);
+    if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+    const rows = await c.env.DB.prepare(
+      `SELECT id, seq, title, description, required_perm, due_offset_days
+         FROM project_checklist_template_items
+        WHERE template_id = ?
+        ORDER BY seq, id`
+    )
+      .bind(id)
+      .all();
+    return c.json({ data: rows.results ?? [] });
+  }
+);
+
+app.post(
+  "/checklist-templates/:id/items",
+  requirePermission("projects.manage"),
+  async (c) => {
+    const id = parseInt(c.req.param("id"), 10);
+    if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+    const body = await c.req.json<{
+      title?: string;
+      description?: string | null;
+      required_perm?: string | null;
+      due_offset_days?: number | null;
+      seq?: number;
+    }>();
+    const title = (body.title || "").trim();
+    if (!title) return c.json({ error: "title required" }, 400);
+    // If no seq given, append at end.
+    let seq = body.seq;
+    if (seq == null) {
+      const maxRow = await c.env.DB.prepare(
+        `SELECT MAX(seq) AS s FROM project_checklist_template_items WHERE template_id = ?`
+      )
+        .bind(id)
+        .first<{ s: number | null }>();
+      seq = (maxRow?.s ?? 0) + 10;
+    }
+    const r = await c.env.DB.prepare(
+      `INSERT INTO project_checklist_template_items
+         (template_id, seq, title, description, required_perm, due_offset_days)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        id,
+        seq,
+        title,
+        body.description ?? null,
+        body.required_perm ?? null,
+        body.due_offset_days ?? null
+      )
+      .run();
+    return c.json({ id: r.meta.last_row_id, seq }, 201);
+  }
+);
+
+app.patch(
+  "/checklist-templates/items/:itemId",
+  requirePermission("projects.manage"),
+  async (c) => {
+    const id = parseInt(c.req.param("itemId"), 10);
+    if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+    const body = await c.req.json<{
+      title?: string;
+      description?: string | null;
+      required_perm?: string | null;
+      due_offset_days?: number | null;
+      seq?: number;
+    }>();
+    const sets: string[] = [];
+    const binds: any[] = [];
+    if ("title" in body) {
+      const t = (body.title || "").trim();
+      if (!t) return c.json({ error: "title cannot be empty" }, 400);
+      sets.push("title = ?");
+      binds.push(t);
+    }
+    for (const k of ["description", "required_perm", "due_offset_days", "seq"] as const) {
+      if (k in body) {
+        sets.push(`${k} = ?`);
+        binds.push((body as any)[k] ?? null);
+      }
+    }
+    if (sets.length === 0) return c.json({ ok: true });
+    await c.env.DB.prepare(
+      `UPDATE project_checklist_template_items SET ${sets.join(", ")} WHERE id = ?`
+    )
+      .bind(...binds, id)
+      .run();
+    return c.json({ ok: true });
+  }
+);
+
+app.delete(
+  "/checklist-templates/items/:itemId",
+  requirePermission("projects.manage"),
+  async (c) => {
+    const id = parseInt(c.req.param("itemId"), 10);
+    if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+    await c.env.DB.prepare(
+      `DELETE FROM project_checklist_template_items WHERE id = ?`
+    )
+      .bind(id)
+      .run();
+    return c.json({ ok: true });
+  }
+);
+
+app.put(
+  "/event-types/:id/default-template",
+  requirePermission("projects.manage"),
+  async (c) => {
+    const id = parseInt(c.req.param("id"), 10);
+    if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+    const body = await c.req.json<{ template_id: number | null }>();
+    await c.env.DB.prepare(
+      `UPDATE project_event_types SET default_template_id = ? WHERE id = ?`
+    )
+      .bind(body.template_id ?? null, id)
+      .run();
+    return c.json({ ok: true });
+  }
+);
+
 // ── Analytics / profitability ────────────────────────────────
 // Aggregates the finance ledger across non-archived projects. All
 // slices (by brand / state / event type / month) share a common
