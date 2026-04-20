@@ -31,7 +31,6 @@ import {
 } from "../components/DetailLayout";
 import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
-import { TabStrip } from "../components/TabStrip";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
 import {
@@ -114,50 +113,59 @@ const NEXT_STAGE: Record<string, { stage: AssrStage; label: string }> = {
 // them rather than as a top-level module.
 type ServiceView = "cases" | "by_creditor" | "metrics" | "pnl";
 
-// Per-tab header config so each tab gets its own dedicated title.
-const TAB_HEADER: Record<ServiceView, { title: string; description: string }> = {
+const SERVICE_VIEWS: ServiceView[] = ["cases", "by_creditor", "metrics", "pnl"];
+
+// Per-view header config so each view gets its own dedicated title.
+const VIEW_HEADER: Record<ServiceView, { title: string; description: string }> = {
   cases: {
-    title: "Service Cases (ASSR)",
+    title: "Service Cases",
     description: "After-sales service request workflow.",
   },
   by_creditor: {
-    title: "Service Cases by Creditor",
+    title: "By Creditor",
     description:
       "Grouped by the AutoCount creditor who supplies the item. Click a row to see their cases.",
   },
   metrics: {
-    title: "Service Quality Metrics",
+    title: "Quality Metrics",
     description: "Performance breakdown — SLA, supplier ratings, resolution times.",
   },
   pnl: {
-    title: "Service Cost — P&L",
+    title: "Finances",
     description: "Supplier PO payments from closed cases, grouped by month.",
   },
 };
 
 export function ServiceCases() {
-  const [view, setView] = useLocalStorage<ServiceView>("assr:view", "cases");
-  // Lifted from CasesView so the parent PageHeader can host the
-  // "New Case" action when the cases tab is active.
+  // URL-driven (`?view=…`). The sidebar's Quality Management group has
+  // one entry per view, so the page itself doesn't render a tab strip
+  // — view selection lives in the sidebar.
+  const [params] = useSearchParams();
+  const navigate = useNavigate();
+  const [storedView, setStoredView] = useLocalStorage<ServiceView>(
+    "assr:view",
+    "cases"
+  );
+  const urlView = params.get("view") as ServiceView | null;
+  const view: ServiceView =
+    urlView && SERVICE_VIEWS.includes(urlView) ? urlView : storedView;
+
+  // Persist whatever view was rendered so a bare `/assr` lands back
+  // where the user left off.
+  useEffect(() => {
+    if (view !== storedView) setStoredView(view);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
+  // "New Case" action lives on the Cases view's header.
   const [showCreate, setShowCreate] = useState(false);
 
   return (
     <div>
-      <TabStrip
-        value={view}
-        onChange={setView}
-        options={[
-          { value: "cases" as const, label: "Cases" },
-          { value: "by_creditor" as const, label: "By Creditor" },
-          { value: "metrics" as const, label: "Quality Metrics" },
-          { value: "pnl" as const, label: "P&L" },
-        ]}
-      />
-
       <PageHeader
         eyebrow="Operations · Service"
-        title={TAB_HEADER[view].title}
-        description={TAB_HEADER[view].description}
+        title={VIEW_HEADER[view].title}
+        description={VIEW_HEADER[view].description}
         actions={
           view === "cases" ? (
             <Button
@@ -174,7 +182,9 @@ export function ServiceCases() {
       {view === "cases" && (
         <CasesView showCreate={showCreate} setShowCreate={setShowCreate} />
       )}
-      {view === "by_creditor" && <ByCreditorView onPickCreditor={() => setView("cases")} />}
+      {view === "by_creditor" && (
+        <ByCreditorView onPickCreditor={() => navigate("/assr?view=cases")} />
+      )}
       {view === "metrics" && <ServiceMetrics />}
       {view === "pnl" && (
         <PnlCalendar

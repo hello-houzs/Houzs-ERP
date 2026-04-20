@@ -17,6 +17,7 @@ import {
   DollarSign,
   Wrench,
   FolderKanban,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -86,7 +87,38 @@ const TABS: Tab[] = [
     anyPerm: ["trips.read.all", "fleet.read"],
   },
   { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read" },
-  { to: "/assr", label: "Service", icon: Zap, perm: "service_cases.read" },
+  {
+    label: "Quality Management",
+    icon: Zap,
+    groupId: "quality-mgmt",
+    anyPerm: ["service_cases.read"],
+    children: [
+      {
+        to: "/assr?view=cases",
+        label: "Service Cases",
+        icon: ClipboardList,
+        perm: "service_cases.read",
+      },
+      {
+        to: "/assr?view=by_creditor",
+        label: "By Creditor",
+        icon: Package,
+        perm: "service_cases.read",
+      },
+      {
+        to: "/assr?view=metrics",
+        label: "Quality Metrics",
+        icon: ShieldCheck,
+        perm: "service_cases.read",
+      },
+      {
+        to: "/assr?view=pnl",
+        label: "Finances",
+        icon: DollarSign,
+        perm: "service_cases.read",
+      },
+    ],
+  },
   {
     label: "Project Management",
     icon: FolderKanban,
