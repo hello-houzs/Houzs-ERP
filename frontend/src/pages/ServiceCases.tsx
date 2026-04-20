@@ -1318,10 +1318,10 @@ function DetailContent({
               options={[...PRIORITY_OPTIONS]}
               onSave={(v) => patch({ priority: v })}
             />
-            <InlineEdit
-              label="Service Category"
+            <ServiceCategoryField
               value={c.service_category}
               onSave={(v) => patch({ service_category: v })}
+              dialog={dialog}
             />
             {/* Creditor (AutoCount) — derived from item_code via
                 StockItem.MainSupplier. Read-only; re-resolved when
@@ -1738,27 +1738,7 @@ function DetailContent({
 
           {/* Cost Tracking */}
           <PanelSection title="Cost Tracking">
-            <div className="mb-2 flex items-center gap-1.5 text-[10px] text-ink-muted">
-              <DollarSign size={11} />
-              PO amounts and reconciliation
-            </div>
-            <InlineEdit
-              label="PO Amount"
-              type="number"
-              value={c.po_amount}
-              onSave={(v) => patch({ po_amount: v ? Number(v) : null })}
-            />
-            <InlineEdit
-              label="Supplier Invoice Ref"
-              value={c.supplier_invoice_ref}
-              onSave={(v) => patch({ supplier_invoice_ref: v })}
-            />
-            <InlineEdit
-              label="Cost Notes"
-              textarea
-              value={c.cost_notes}
-              onSave={(v) => patch({ cost_notes: v })}
-            />
+            <CostTrackingPanel c={c} patch={patch} toast={toast} id={id} />
           </PanelSection>
 
           {/* Manager Approval / Quality Review */}
@@ -1951,6 +1931,297 @@ function IssueCategoryField({
         ))}
         <option value={OTHER_SENTINEL}>
           Other{showsOther ? ` — ${value}` : "…"}
+        </option>
+      </select>
+      {showsOther && (
+        <div className="mt-1 text-[10px] text-ink-muted">
+          Custom label.{" "}
+          <button
+            onClick={() => onChange(OTHER_SENTINEL)}
+            className="text-accent hover:underline"
+          >
+            Edit
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Cost tracking panel ──────────────────────────────────────
+// The case carries `customer_amount` (revenue side) and `po_amount`
+// (supplier cost). Both can be auto-filled from the linked SO + PO via
+// /api/assr/:id/cost-suggestion — staff click "Auto-fill" to fetch a
+// suggestion, review the values, then Apply (or edit manually).
+
+interface CostSuggestion {
+  customer_amount: number | null;
+  po_amount: number | null;
+  sources: {
+    so: { doc_no: string; unit_price: number; qty: number } | null;
+    po: { doc_no: string; unit_price: number; qty: number } | null;
+  };
+  reason?: string;
+}
+
+function CostTrackingPanel({
+  c,
+  patch,
+  toast,
+  id,
+}: {
+  c: AssrCase;
+  patch: (body: Record<string, any>) => Promise<void>;
+  toast: ReturnType<typeof useToast>;
+  id: number;
+}) {
+  const [suggestion, setSuggestion] = useState<CostSuggestion | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const customer = c.customer_amount ?? null;
+  const supplier = c.po_amount ?? null;
+  const margin =
+    customer != null && supplier != null ? customer - supplier : null;
+
+  async function fetchSuggestion() {
+    setFetching(true);
+    try {
+      const res = await api.get<CostSuggestion>(
+        `/api/assr/${id}/cost-suggestion`
+      );
+      setSuggestion(res);
+    } catch (e: any) {
+      toast.error(e?.message || "Lookup failed");
+    } finally {
+      setFetching(false);
+    }
+  }
+
+  async function applySuggestion(which: "all" | "customer" | "supplier") {
+    if (!suggestion) return;
+    const body: Record<string, any> = {};
+    if (
+      (which === "all" || which === "customer") &&
+      suggestion.customer_amount != null
+    )
+      body.customer_amount = suggestion.customer_amount;
+    if ((which === "all" || which === "supplier") && suggestion.po_amount != null)
+      body.po_amount = suggestion.po_amount;
+    if (Object.keys(body).length === 0) return;
+    setApplying(true);
+    try {
+      await patch(body);
+      toast.success("Cost updated");
+      setSuggestion(null);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-[10px] text-ink-muted">
+          <DollarSign size={11} />
+          Auto-filled from SO + PO; edit anytime
+        </div>
+        <button
+          onClick={fetchSuggestion}
+          disabled={fetching}
+          className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/40 px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-accent hover:bg-accent-soft disabled:opacity-50"
+        >
+          <RefreshCw
+            size={10}
+            className={fetching ? "animate-spin" : undefined}
+          />
+          {fetching ? "Looking up…" : "Auto-fill"}
+        </button>
+      </div>
+
+      {suggestion && (
+        <div className="mb-3 rounded-md border border-accent/30 bg-accent-soft/20 p-3">
+          {suggestion.reason && (
+            <div className="mb-2 text-[11px] text-warning-text">
+              {suggestion.reason}
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3 text-[11px]">
+            <div>
+              <div className="font-mono text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
+                Suggested Customer
+              </div>
+              <div className="font-mono text-[13px] font-bold text-ink">
+                {suggestion.customer_amount != null
+                  ? formatCurrency(suggestion.customer_amount)
+                  : "—"}
+              </div>
+              {suggestion.sources.so && (
+                <div className="text-[10px] text-ink-muted">
+                  SO {suggestion.sources.so.doc_no} · qty {suggestion.sources.so.qty} ×{" "}
+                  {formatCurrency(suggestion.sources.so.unit_price)}
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="font-mono text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
+                Suggested Supplier
+              </div>
+              <div className="font-mono text-[13px] font-bold text-ink">
+                {suggestion.po_amount != null
+                  ? formatCurrency(suggestion.po_amount)
+                  : "—"}
+              </div>
+              {suggestion.sources.po && (
+                <div className="text-[10px] text-ink-muted">
+                  PO {suggestion.sources.po.doc_no} · qty {suggestion.sources.po.qty} ×{" "}
+                  {formatCurrency(suggestion.sources.po.unit_price)}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            <button
+              onClick={() => applySuggestion("all")}
+              disabled={
+                applying ||
+                (suggestion.customer_amount == null &&
+                  suggestion.po_amount == null)
+              }
+              className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-white disabled:opacity-50"
+            >
+              {applying ? "Applying…" : "Apply both"}
+            </button>
+            {suggestion.customer_amount != null && (
+              <button
+                onClick={() => applySuggestion("customer")}
+                disabled={applying}
+                className="inline-flex items-center rounded-md border border-border bg-surface px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-ink-secondary hover:border-accent/40 hover:text-accent disabled:opacity-50"
+              >
+                Customer only
+              </button>
+            )}
+            {suggestion.po_amount != null && (
+              <button
+                onClick={() => applySuggestion("supplier")}
+                disabled={applying}
+                className="inline-flex items-center rounded-md border border-border bg-surface px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-ink-secondary hover:border-accent/40 hover:text-accent disabled:opacity-50"
+              >
+                Supplier only
+              </button>
+            )}
+            <button
+              onClick={() => setSuggestion(null)}
+              className="ml-auto inline-flex items-center rounded-md px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted hover:text-ink"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      <InlineEdit
+        label="Customer Amount (revenue)"
+        type="number"
+        value={c.customer_amount}
+        onSave={(v) => patch({ customer_amount: v ? Number(v) : null })}
+      />
+      <InlineEdit
+        label="PO Amount (supplier cost)"
+        type="number"
+        value={c.po_amount}
+        onSave={(v) => patch({ po_amount: v ? Number(v) : null })}
+      />
+      {margin != null && (
+        <div className="mt-1 flex items-baseline justify-between text-[11px]">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-ink-muted">
+            Gross margin
+          </span>
+          <span
+            className={cn(
+              "font-mono text-[12.5px] font-bold",
+              margin >= 0 ? "text-synced" : "text-err"
+            )}
+          >
+            {formatCurrency(margin)}
+          </span>
+        </div>
+      )}
+      <InlineEdit
+        label="Supplier Invoice Ref"
+        value={c.supplier_invoice_ref}
+        onSave={(v) => patch({ supplier_invoice_ref: v })}
+      />
+      <InlineEdit
+        label="Cost Notes"
+        textarea
+        value={c.cost_notes}
+        onSave={(v) => patch({ cost_notes: v })}
+      />
+    </div>
+  );
+}
+
+// Fixed list of service categories. "Others" branches to a free-text
+// dialog so non-standard cases can still be tagged.
+const SERVICE_CATEGORIES = [
+  "Product defect",
+  "Incorrect item delivered",
+  "Missing / short item",
+  "Warranty service request",
+  "Installation / assembly issue",
+] as const;
+
+function ServiceCategoryField({
+  value,
+  onSave,
+  dialog,
+}: {
+  value: string | null | undefined;
+  onSave: (next: string | null) => Promise<void>;
+  dialog: ReturnType<typeof useDialog>;
+}) {
+  const isCanonical =
+    !!value && (SERVICE_CATEGORIES as readonly string[]).includes(value);
+  const showsOther = !!value && !isCanonical;
+
+  async function onChange(next: string) {
+    if (next === OTHER_SENTINEL) {
+      const custom = await dialog.prompt({
+        title: "Other service category",
+        message: "Describe the service category in a few words.",
+        placeholder: "e.g. retainer top-up",
+        defaultValue: showsOther ? value || "" : "",
+        required: true,
+        confirmLabel: "Save",
+      });
+      if (!custom) return;
+      await onSave(custom);
+      return;
+    }
+    await onSave(next || null);
+  }
+
+  return (
+    <div>
+      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        Service Category
+      </div>
+      <select
+        value={isCanonical ? (value as string) : showsOther ? OTHER_SENTINEL : ""}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+      >
+        <option value="">— select —</option>
+        {SERVICE_CATEGORIES.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+        <option value={OTHER_SENTINEL}>
+          Others{showsOther ? ` — ${value}` : "…"}
         </option>
       </select>
       {showsOther && (

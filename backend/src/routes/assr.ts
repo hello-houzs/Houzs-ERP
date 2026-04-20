@@ -21,8 +21,136 @@ import {
 import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
+import { AutoCountClient } from "../services/autocount";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// ── Module-level settings (default assignee) ──────────────────
+//
+// Stored in `system_settings` under key `assr_default_assignee_id`.
+// Read on each create_case call so changes take effect immediately
+// without a deploy.
+
+app.get("/settings", async (c) => {
+  const row = await c.env.DB.prepare(
+    `SELECT s.value AS value, u.id AS user_id, u.name AS user_name, u.email AS user_email
+       FROM system_settings s
+       LEFT JOIN users u ON CAST(s.value AS INTEGER) = u.id
+      WHERE s.key = 'assr_default_assignee_id'`
+  ).first<{
+    value: string | null;
+    user_id: number | null;
+    user_name: string | null;
+    user_email: string | null;
+  }>();
+  return c.json({
+    default_assignee_id: row?.user_id ?? null,
+    default_assignee_name: row?.user_name ?? null,
+    default_assignee_email: row?.user_email ?? null,
+  });
+});
+
+app.put("/settings", async (c) => {
+  const body = await c.req.json<{ default_assignee_id?: number | null }>();
+  const id = body.default_assignee_id;
+  if (id === null || id === undefined) {
+    await c.env.DB.prepare(
+      `DELETE FROM system_settings WHERE key = 'assr_default_assignee_id'`
+    ).run();
+  } else {
+    if (typeof id !== "number" || isNaN(id)) {
+      return c.json({ error: "default_assignee_id must be a number or null" }, 400);
+    }
+    // INSERT OR REPLACE so we don't care whether the row exists yet.
+    await c.env.DB.prepare(
+      `INSERT INTO system_settings (key, value) VALUES ('assr_default_assignee_id', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+      .bind(String(id))
+      .run();
+  }
+  return c.json({ ok: true });
+});
+
+// ── Cost auto-fill suggestion ─────────────────────────────────
+//
+// Looks up the case's item_code in (a) the linked sales order's lines,
+// and (b) the linked purchase order's lines. Returns the unit-price ×
+// qty for each side so the frontend can offer to populate
+// customer_amount and po_amount in one click. The user can still edit
+// after — this is a suggestion, not a write.
+
+app.get("/:id/cost-suggestion", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+
+  const caseRow = await c.env.DB.prepare(
+    `SELECT doc_no, po_no, item_code FROM assr_cases WHERE id = ?`
+  )
+    .bind(id)
+    .first<{ doc_no: string | null; po_no: string | null; item_code: string | null }>();
+  if (!caseRow) return c.json({ error: "Not found" }, 404);
+
+  const itemCode = (caseRow.item_code || "").trim();
+  if (!itemCode) {
+    return c.json({
+      customer_amount: null,
+      po_amount: null,
+      sources: { so: null, po: null },
+      reason: "Case has no item_code — set one before auto-filling.",
+    });
+  }
+
+  // ── Sales order lookup (revenue side) ──────────────────────────
+  // SO line detail isn't cached in D1; fetch live from AutoCount.
+  let customerAmount: number | null = null;
+  let soSource: { doc_no: string; unit_price: number; qty: number } | null = null;
+  if (caseRow.doc_no) {
+    try {
+      const client = new AutoCountClient(c.env);
+      const lines = await client.getDetail(caseRow.doc_no);
+      const match = matchLine(lines as any[], itemCode);
+      if (match) {
+        const qty = num((match as any).Qty) ?? 1;
+        const price = num((match as any).UnitPrice) ?? 0;
+        const amount = num((match as any).Amount) ?? qty * price;
+        customerAmount = amount;
+        soSource = { doc_no: caseRow.doc_no, unit_price: price, qty };
+      }
+    } catch (e: any) {
+      console.warn(`[assr.cost-suggestion] SO lookup failed for ${caseRow.doc_no}:`, e?.message || e);
+    }
+  }
+
+  // ── Purchase order lookup (supplier cost side) ─────────────────
+  let poAmount: number | null = null;
+  let poSource: { doc_no: string; unit_price: number; qty: number } | null = null;
+  if (caseRow.po_no) {
+    // PO line table is purchase_orders (one row per outstanding line),
+    // keyed by (doc_no, item_code). Pull the matching line.
+    const poRow = await c.env.DB.prepare(
+      `SELECT remaining_qty AS qty,
+              ordered_qty   AS ord_qty,
+              unit_price    AS price
+         FROM purchase_orders
+        WHERE doc_no = ? AND item_code = ?
+        LIMIT 1`
+    )
+      .bind(caseRow.po_no, itemCode)
+      .first<{ qty: number | null; ord_qty: number | null; price: number | null }>();
+    if (poRow && poRow.price != null) {
+      const qty = poRow.ord_qty ?? poRow.qty ?? 1;
+      poAmount = qty * poRow.price;
+      poSource = { doc_no: caseRow.po_no, unit_price: poRow.price, qty };
+    }
+  }
+
+  return c.json({
+    customer_amount: customerAmount,
+    po_amount: poAmount,
+    sources: { so: soSource, po: poSource },
+  });
+});
 
 // ── Summary ───────────────────────────────────────────────────
 
@@ -975,5 +1103,27 @@ app.patch("/:id/logistics/:logId", async (c) => {
   if (!ok) return c.json({ error: "Not found" }, 404);
   return c.json({ ok: true });
 });
+
+// ── Cost-suggestion helpers ───────────────────────────────────
+
+/** Parse the AutoCount line set: case-insensitive ItemCode match. */
+function matchLine(
+  lines: Array<Record<string, any>> | null | undefined,
+  itemCode: string
+): Record<string, any> | null {
+  if (!lines || !Array.isArray(lines)) return null;
+  const target = itemCode.toLowerCase();
+  for (const ln of lines) {
+    const code = String(ln.ItemCode ?? ln.itemCode ?? ln.item_code ?? "").toLowerCase();
+    if (code === target) return ln;
+  }
+  return null;
+}
+
+function num(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = typeof v === "number" ? v : parseFloat(String(v));
+  return isNaN(n) ? null : n;
+}
 
 export default app;

@@ -123,12 +123,28 @@ export async function createAssrCase(
   const slaHours = slaHoursFor("normal");
   const deadlineAt = new Date(Date.now() + slaHours * 3600 * 1000).toISOString();
 
+  // Optional default assignee — admin sets this in Settings → Service.
+  // Read it on every create so a setting change takes effect without a
+  // deploy. Falls back to NULL (unassigned) if missing or malformed.
+  let defaultAssigneeId: number | null = null;
+  try {
+    const r = await env.DB.prepare(
+      `SELECT value FROM system_settings WHERE key = 'assr_default_assignee_id'`
+    ).first<{ value: string | null }>();
+    if (r?.value != null) {
+      const n = parseInt(r.value, 10);
+      if (!isNaN(n)) defaultAssigneeId = n;
+    }
+  } catch (e) {
+    console.warn("[assr.create] could not read default assignee:", e);
+  }
+
   const result = await env.DB.prepare(
     `INSERT INTO assr_cases (
        assr_no, status, stage, doc_no, complained_date, customer_name, phone, location,
        sales_agent, item_code, complaint_issue, po_no, addr1, addr2, addr3, addr4, created_by,
-       sla_hours, deadline_at
-     ) VALUES (?, 'Open', 'registration', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       assigned_to, sla_hours, deadline_at
+     ) VALUES (?, 'Open', 'registration', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       assrNo,
@@ -146,6 +162,7 @@ export async function createAssrCase(
       context?.InvAddr3 ?? null,
       context?.InvAddr4 ?? null,
       input.created_by ?? null,
+      defaultAssigneeId,
       slaHours,
       deadlineAt
     )
@@ -165,6 +182,19 @@ export async function createAssrCase(
 
   // Activity log
   await logActivity(env, assrId, "created", null, "registration", null, input.created_by);
+
+  // Log the default assignment so the timeline reflects who got it.
+  if (defaultAssigneeId != null) {
+    await logActivity(
+      env,
+      assrId,
+      "assignment",
+      null,
+      String(defaultAssigneeId),
+      "default assignee",
+      input.created_by
+    );
+  }
 
   // Fire-and-forget creditor resolution from the primary item. A
   // failed lookup (item unknown upstream, network, etc.) must not
@@ -319,7 +349,7 @@ const PATCH_FIELDS = [
   "addr1", "addr2", "addr3", "addr4",
   // QMS additions
   "ncr_category", "quality_review_passed",
-  "po_amount", "supplier_invoice_ref", "cost_notes",
+  "po_amount", "customer_amount", "supplier_invoice_ref", "cost_notes",
   // SLA fields — allow manual override (ops can extend a deadline)
   "sla_hours", "deadline_at",
 ] as const;

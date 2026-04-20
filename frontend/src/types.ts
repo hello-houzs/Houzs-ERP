@@ -277,6 +277,7 @@ export interface AssrCase {
   ncr_category?: string | null;
   // QMS: cost tracking
   po_amount?: number | null;
+  customer_amount?: number | null;
   supplier_invoice_ref?: string | null;
   cost_notes?: string | null;
   // SLA tracking
