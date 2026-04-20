@@ -3,14 +3,20 @@ import { Layout } from "./components/Layout";
 import { DriverLayout } from "./components/DriverLayout";
 import { Overview } from "./pages/Overview";
 import { Orders } from "./pages/Orders";
+import { OrderDetail } from "./pages/OrderDetail";
 import { DeliveryOrders } from "./pages/DeliveryOrders";
-import { PurchaseOrders } from "./pages/PurchaseOrders";
-import { ServiceCases } from "./pages/ServiceCases";
-import { Projects } from "./pages/Projects";
+import { PurchaseOrders, PurchaseOrderDetail } from "./pages/PurchaseOrders";
+import { CreditorDetail } from "./pages/CreditorDetail";
+import { ServiceCases, ServiceCaseDetail } from "./pages/ServiceCases";
+import { Projects, ProjectDetail } from "./pages/Projects";
 import { Profile } from "./pages/Profile";
 import { Settings } from "./pages/Settings";
 import { Team } from "./pages/Team";
 import { Logistics } from "./pages/Logistics";
+import { TripDetail } from "./pages/TripDetail";
+import { StaffDetail } from "./pages/StaffDetail";
+import { LorryDetail } from "./pages/LorryDetail";
+import { DeliveryDetail } from "./pages/DeliveryTracking";
 import { DriverHome } from "./pages/DriverHome";
 import { DriverTrip } from "./pages/DriverTrip";
 import { DriverProfile } from "./pages/DriverProfile";
@@ -116,6 +122,14 @@ export default function App() {
           }
         />
         <Route
+          path="/orders/:docNo"
+          element={
+            <Guard perm="sales_orders.read">
+              <OrderDetail />
+            </Guard>
+          }
+        />
+        <Route
           path="/delivery-orders"
           element={
             <Guard perm="delivery_orders.read">
@@ -128,6 +142,38 @@ export default function App() {
           element={
             <Guard anyPerm={["trips.read.all", "fleet.read"]}>
               <Logistics />
+            </Guard>
+          }
+        />
+        <Route
+          path="/trips/:id"
+          element={
+            <Guard anyPerm={["trips.read.all", "trips.read.own"]}>
+              <TripDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/staff/:id"
+          element={
+            <Guard perm="fleet.read">
+              <StaffDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/lorries/:id"
+          element={
+            <Guard perm="fleet.read">
+              <LorryDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/delivery/:docNo"
+          element={
+            <Guard perm="delivery_orders.read">
+              <DeliveryDetail />
             </Guard>
           }
         />
@@ -148,16 +194,40 @@ export default function App() {
             </Guard>
           }
         />
+        <Route
+          path="/po/:docNo"
+          element={
+            <Guard perm="purchase_orders.read">
+              <PurchaseOrderDetail />
+            </Guard>
+          }
+        />
         {/* Legacy /creditors → Purchase Orders' Creditors tab */}
         <Route
           path="/creditors"
           element={<Navigate to="/po?view=creditors" replace />}
         />
         <Route
+          path="/creditors/:code"
+          element={
+            <Guard perm="purchase_orders.read">
+              <CreditorDetail />
+            </Guard>
+          }
+        />
+        <Route
           path="/assr"
           element={
             <Guard perm="service_cases.read">
               <ServiceCases />
+            </Guard>
+          }
+        />
+        <Route
+          path="/assr/:id"
+          element={
+            <Guard perm="service_cases.read">
+              <ServiceCaseDetail />
             </Guard>
           }
         />
@@ -173,6 +243,14 @@ export default function App() {
           element={
             <Guard perm="projects.read">
               <Projects />
+            </Guard>
+          }
+        />
+        <Route
+          path="/projects/:id"
+          element={
+            <Guard perm="projects.read">
+              <ProjectDetail />
             </Guard>
           }
         />

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { RefreshCw, Send } from "lucide-react";
+import { useSearchParams, useNavigate, useParams, Navigate } from "react-router-dom";
+import { RefreshCw, Send, ArrowLeft } from "lucide-react";
 import { PageHeader } from "../components/Layout";
+import { Breadcrumbs } from "../components/Breadcrumbs";
 import { Button } from "../components/Button";
 import { DataTable, type Column } from "../components/DataTable";
 import { Pagination } from "../components/Pagination";
@@ -52,7 +53,7 @@ export function PurchaseOrders() {
   const [docPerPage, setDocPerPage] = useLocalStorage<number>("pp:purchase-order-docs", 50);
   const docSortHook = useServerSort(() => setDocPage(1));
   const [pulling, setPulling] = useState(false);
-  const [openDoc, setOpenDoc] = useState<PurchaseOrderDoc | null>(null);
+  const navigate = useNavigate();
   // Bumped on Refresh to force the embedded CreditorsTab to re-fetch.
   const [creditorsRefreshKey, setCreditorsRefreshKey] = useState(0);
 
@@ -219,7 +220,7 @@ export function PurchaseOrders() {
             setPage={setDocPage}
             perPage={docPerPage}
             setPerPage={setDocPerPage}
-            onRowClick={setOpenDoc}
+            onRowClick={(d) => navigate(`/po/${encodeURIComponent(d.doc_no)}`)}
             onSortChange={docSortHook.handleSortChange}
           />
         </>
@@ -237,13 +238,6 @@ export function PurchaseOrders() {
         />
       )}
 
-      {openDoc && (
-        <PoLinesPanel
-          doc={openDoc}
-          onClose={() => setOpenDoc(null)}
-          onChanged={() => docs.reload()}
-        />
-      )}
     </div>
   );
 }
@@ -695,15 +689,14 @@ function DocumentsView(props: DocsViewProps) {
 // items pulled from /getOutstanding (purchase_orders) so users can
 // edit supplier dates and push them back to AutoCount.
 
-function PoLinesPanel({
+function PoLinesContent({
   doc,
-  onClose,
   onChanged,
 }: {
   doc: PurchaseOrderDoc;
-  onClose: () => void;
   onChanged: () => void;
 }) {
+  const navigate = useNavigate();
   const toast = useToast();
   const [lines, setLines] = useState<PurchaseOrder[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -804,13 +797,26 @@ function PoLinesPanel({
   const isOutstanding = status === "Outstanding";
 
   return (
-    <Panel
-      open
-      onClose={onClose}
-      title={doc.doc_no}
-      subtitle={`${doc.creditor_name || doc.creditor_code || "Supplier"} · ${formatDate(doc.doc_date)}`}
-      width={720}
-    >
+    <div>
+      <Breadcrumbs
+        items={[
+          { label: "Purchase Orders", to: "/po" },
+          { label: doc.doc_no },
+        ]}
+      />
+      <PageHeader
+        eyebrow={`PO · ${doc.doc_no}`}
+        title={doc.creditor_name || doc.creditor_code || "Supplier"}
+        description={`Doc date ${formatDate(doc.doc_date)}`}
+        actions={
+          <button
+            onClick={() => navigate("/po")}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+          >
+            <ArrowLeft size={13} /> Back
+          </button>
+        }
+      />
       <PanelSection title="Summary">
         <div className="grid grid-cols-2 gap-3 text-[12px] sm:grid-cols-4">
           <Stat label="Status" value={status} />
@@ -1020,8 +1026,43 @@ function PoLinesPanel({
           </div>
         )}
       </PanelSection>
-    </Panel>
+    </div>
   );
+}
+
+/**
+ * Page wrapper — mounted at /po/:docNo. Fetches the doc by number and
+ * mounts the existing PO content view. Direct URL loads (deep link
+ * from creditors page) work via the new GET /api/po/docs/:docNo route.
+ */
+export function PurchaseOrderDetail() {
+  const { docNo = "" } = useParams<{ docNo: string }>();
+  const [doc, setDoc] = useState<PurchaseOrderDoc | null>(null);
+  const [loading, setLoading] = useState(true);
+  const toast = useToast();
+
+  useEffect(() => {
+    if (!docNo) return;
+    let cancelled = false;
+    setLoading(true);
+    api
+      .get<{ data: PurchaseOrderDoc }>(`/api/po/docs/${encodeURIComponent(docNo)}`)
+      .then((r) => {
+        if (!cancelled) setDoc(r.data);
+      })
+      .catch((e: any) => toast.error(`Failed to load PO: ${e?.message || e}`))
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docNo]);
+
+  if (loading) return <div className="text-[12px] text-ink-muted">Loading…</div>;
+  if (!doc) return <Navigate to="/po" replace />;
+  return <PoLinesContent doc={doc} onChanged={() => {}} />;
 }
 
 function DateInput({

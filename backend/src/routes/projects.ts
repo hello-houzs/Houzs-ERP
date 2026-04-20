@@ -412,6 +412,22 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
   return c.json({ ok: true });
 });
 
+// ── Chat / notes ──────────────────────────────────────────────
+// Free-text messages from team members. Posted into the same
+// project_activity table as system entries (stage_change, finance_edit,
+// …) so the timeline interleaves human chat and system events in one
+// view. Mirrors POST /api/assr/:id/notes.
+
+app.post("/:id/notes", requirePermission("projects.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
+  const body = await c.req.json<{ note: string }>();
+  if (!body.note?.trim()) return c.json({ error: "note is required" }, 400);
+  await logProjectActivity(c.env, id, "note", null, null, body.note.trim(), user?.id);
+  return c.json({ ok: true });
+});
+
 // ── Archive / restore (soft delete) ───────────────────────────
 
 app.post("/:id/archive", requirePermission("projects.manage"), async (c) => {

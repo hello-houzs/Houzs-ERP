@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Plus, X, Wand2, RefreshCw, ExternalLink } from "lucide-react";
 import { MapView, type MapPin } from "../components/MapView";
 import { PageHeader } from "../components/Layout";
@@ -60,21 +61,11 @@ export function Trips() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:trips", 50);
-  const [selected, setSelected] = useState<Trip | null>(null);
   const [showNew, setShowNew] = useState(false);
+  const navigate = useNavigate();
 
-  // ?focus=ID — opened from the Overview inbox. /api/trips/:id returns
-  // { trip, stops, locations }, we need the trip header to seed
-  // setSelected so the detail panel renders correctly.
-  useFocusFromUrl((id) => {
-    // Force the Live tab so the trips list shell is visible behind
-    // the panel; tracking/events tabs hide the table entirely.
-    if (tab !== "live" && tab !== "history") setTab("live");
-    api
-      .get<{ trip: Trip }>(`/api/trips/${id}`)
-      .then((r) => setSelected(r.trip))
-      .catch(() => {});
-  });
+  // ?focus=ID — Overview inbox deep-links straight to the trip detail page.
+  useFocusFromUrl((id) => navigate(`/trips/${id}`, { replace: true }));
 
   // The status filter is driven by the active tab (no manual status select).
   const status = TAB_STATUS[tab];
@@ -98,14 +89,6 @@ export function Trips() {
             })}`
           ),
     [tab, warehouse, status, dateFrom, dateTo, search, page, perPage, sort?.key, sort?.dir]
-  );
-
-  const detail = useQuery<TripDetail>(
-    () =>
-      selected
-        ? api.get(`/api/trips/${selected.id}`)
-        : Promise.resolve(null as any),
-    [selected?.id]
   );
 
   const warehouses = useQuery<{ data: Warehouse[] }>(() => api.get("/api/warehouses"));
@@ -337,7 +320,7 @@ export function Trips() {
         error={list.error}
         emptyLabel="No trips"
         getRowKey={(r: Trip) => r.id}
-        onRowClick={(r: Trip) => setSelected(r)}
+        onRowClick={(r: Trip) => navigate(`/trips/${r.id}`)}
         serverSort
         onSortChange={handleSortChange}
       />
@@ -356,112 +339,6 @@ export function Trips() {
       )}
         </>
       )}
-
-      {/* Detail panel */}
-      <Panel
-        open={!!selected}
-        onClose={() => setSelected(null)}
-        title={selected?.trip_no || ""}
-        subtitle={selected ? `${selected.warehouse} · ${formatDate(selected.trip_date)}` : ""}
-        width={520}
-      >
-        {detail.data && (
-          <>
-            <PanelSection title="Trip" muted>
-              <FieldRow label="Status">{detail.data.trip.status.replace("_", " ")}</FieldRow>
-              <FieldRow label="Driver">{detail.data.trip.driver_name || "—"}</FieldRow>
-              <FieldRow label="Lorry" mono>
-                {detail.data.trip.lorry_plate || "—"}
-              </FieldRow>
-              <FieldRow label="Type">{detail.data.trip.trip_type}</FieldRow>
-              <FieldRow label="Outsourced">{detail.data.trip.is_outsourced ? "Yes" : "No"}</FieldRow>
-              <FieldRow label="Started">{formatDate(detail.data.trip.started_at)}</FieldRow>
-              <FieldRow label="Completed">{formatDate(detail.data.trip.completed_at)}</FieldRow>
-            </PanelSection>
-
-            <PanelSection title="Logistics">
-              <FieldRow label="Revenue" mono>
-                {formatCurrency(detail.data.trip.total_revenue)}
-              </FieldRow>
-              <FieldRow label="Distance" mono>
-                {detail.data.trip.total_distance_km
-                  ? `${detail.data.trip.total_distance_km.toFixed(1)} km`
-                  : "—"}
-              </FieldRow>
-              <FieldRow label="GPS pings">{detail.data.locations.length}</FieldRow>
-            </PanelSection>
-
-            <PanelSection title="Route">
-              <RoutePanel detail={detail.data} onUpdated={() => detail.reload()} />
-            </PanelSection>
-
-            <PanelSection title={`Stops (${detail.data.stops.length})`}>
-              <div className="space-y-2">
-                {detail.data.stops.map((s: any, i: number) => (
-                  <div key={s.id} className="rounded-md border border-border bg-paper p-2.5">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-[12px] font-bold text-ink">
-                          {i + 1}. {s.debtor_name || s.doc_no}
-                        </div>
-                        <div className="font-mono text-[10px] text-ink-secondary">{s.doc_no}</div>
-                      </div>
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-0.5 text-[9px] font-bold uppercase",
-                          s.status === "delivered" && "bg-ok/10 text-ok",
-                          s.status === "failed" && "bg-err/10 text-err",
-                          s.status === "arrived" && "bg-warning-bg text-warning-text",
-                          s.status === "pending" && "bg-ink/10 text-ink-secondary"
-                        )}
-                      >
-                        {s.status}
-                      </span>
-                    </div>
-                    {/* Delivery tracking status */}
-                    {s.delivery_status && s.delivery_status !== s.status && (
-                      <div className="mt-1 flex items-center gap-1.5">
-                        <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
-                          Delivery
-                        </span>
-                        <span
-                          className={cn(
-                            "rounded-full px-1.5 py-0.5 text-[8px] font-bold uppercase",
-                            s.delivery_status === "delivered" && "bg-ok/10 text-ok",
-                            s.delivery_status === "failed" && "bg-err/10 text-err",
-                            s.delivery_status === "out_for_delivery" && "bg-accent/10 text-accent",
-                            s.delivery_status === "in_transit" && "bg-warning-bg text-warning-text",
-                            s.delivery_status === "at_warehouse" && "bg-warning-bg text-warning-text",
-                            s.delivery_status === "shipped" && "bg-accent/10 text-accent",
-                            s.delivery_status === "pending_shipout" && "bg-accent/10 text-accent",
-                            s.delivery_status === "do_ready" && "bg-ink/10 text-ink-secondary"
-                          )}
-                        >
-                          {s.delivery_status.replace(/_/g, " ")}
-                        </span>
-                        {s.est_delivery_date && (
-                          <span className="text-[9px] text-ink-secondary">
-                            Est. {formatDate(s.est_delivery_date)}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    {s.recipient_name && (
-                      <div className="mt-1 text-[11px] text-ink-secondary">
-                        Received by{" "}
-                        <span className="font-semibold text-ink">{s.recipient_name}</span>
-                      </div>
-                    )}
-                    {s.failure_reason && (
-                      <div className="mt-1 text-[11px] text-err">{s.failure_reason}</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </PanelSection>
-          </>
-        )}
-      </Panel>
 
       {showNew && (
         <NewTripDialog
@@ -798,7 +675,7 @@ function BackfillButton() {
 
 // ── Route panel inside trip detail ────────────────────────────────
 
-function RoutePanel({
+export function RoutePanel({
   detail,
   onUpdated,
 }: {

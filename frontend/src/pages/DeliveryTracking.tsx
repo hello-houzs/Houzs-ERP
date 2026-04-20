@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { useNavigate, useParams, Navigate } from "react-router-dom";
 import {
   ArrowRight,
+  ArrowLeft,
   AlertTriangle,
   Package,
   Ship,
@@ -10,6 +12,7 @@ import {
   Clock,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
+import { Breadcrumbs } from "../components/Breadcrumbs";
 import { DataTable } from "../components/DataTable";
 import { FilterPills } from "../components/FilterPills";
 import { Pagination } from "../components/Pagination";
@@ -99,7 +102,7 @@ export function DeliveryTracking() {
   const [overdueOnly, setOverdueOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:delivery", 50);
-  const [selected, setSelected] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   const list = useQuery<Paginated<DeliveryRecord>>(
     () =>
@@ -245,7 +248,7 @@ export function DeliveryTracking() {
         error={list.error}
         emptyLabel="No delivery records"
         getRowKey={(r: DeliveryRecord) => r.doc_no}
-        onRowClick={(r: DeliveryRecord) => setSelected(r.doc_no)}
+        onRowClick={(r: DeliveryRecord) => navigate(`/delivery/${encodeURIComponent(r.doc_no)}`)}
       />
 
       {list.data && (
@@ -258,29 +261,33 @@ export function DeliveryTracking() {
         />
       )}
 
-      <DeliveryPanel
-        docNo={selected}
-        onClose={() => setSelected(null)}
-        onUpdated={() => { list.reload(); overdue.reload(); }}
-      />
     </div>
   );
 }
 
-// ── Detail panel ──────────────────────────────────────────────────
+// ── Detail page ──────────────────────────────────────────────────
+// Mounted at /delivery/:docNo. Replaces the old slide-over panel.
 
-function DeliveryPanel({
+export function DeliveryDetail() {
+  const { docNo: rawDocNo = "" } = useParams<{ docNo: string }>();
+  const docNo = decodeURIComponent(rawDocNo);
+  const navigate = useNavigate();
+  if (!docNo) return <Navigate to="/delivery-tracking" replace />;
+  return <DeliveryDetailContent docNo={docNo} onUpdated={() => {}} navigate={navigate} />;
+}
+
+function DeliveryDetailContent({
   docNo,
-  onClose,
   onUpdated,
+  navigate,
 }: {
-  docNo: string | null;
-  onClose: () => void;
+  docNo: string;
   onUpdated: () => void;
+  navigate: ReturnType<typeof useNavigate>;
 }) {
   const toast = useToast();
   const detail = useQuery<DeliveryDetail>(
-    () => (docNo ? api.get(`/api/delivery/${docNo}`) : Promise.resolve(null as any)),
+    () => api.get(`/api/delivery/${docNo}`),
     [docNo]
   );
   const [busy, setBusy] = useState(false);
@@ -291,7 +298,6 @@ function DeliveryPanel({
   const d = detail.data;
 
   async function advance(newStatus: string) {
-    if (!docNo) return;
     setBusy(true);
     try {
       await api.post(`/api/delivery/${docNo}/advance`, {
@@ -311,7 +317,6 @@ function DeliveryPanel({
   }
 
   async function saveFields() {
-    if (!docNo) return;
     setBusy(true);
     try {
       await api.patch(`/api/delivery/${docNo}`, form);
@@ -327,13 +332,25 @@ function DeliveryPanel({
   }
 
   return (
-    <Panel
-      open={!!docNo}
-      onClose={() => { onClose(); setEditMode(false); setForm({}); }}
-      title={docNo || ""}
-      subtitle={d ? `${d.region} · ${STATUS_LABELS[d.status] || d.status}` : ""}
-      width={520}
-    >
+    <div>
+      <Breadcrumbs
+        items={[
+          { label: "Delivery Tracking", to: "/delivery-tracking" },
+          { label: docNo },
+        ]}
+      />
+      <PageHeader
+        eyebrow={`Delivery · ${docNo}`}
+        title={d ? `${d.region} · ${STATUS_LABELS[d.status] || d.status}` : "Loading…"}
+        actions={
+          <button
+            onClick={() => navigate(-1)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+          >
+            <ArrowLeft size={13} /> Back
+          </button>
+        }
+      />
       {d && (
         <>
           {/* Status pipeline visualization */}
@@ -496,7 +513,7 @@ function DeliveryPanel({
           )}
         </>
       )}
-    </Panel>
+    </div>
   );
 }
 

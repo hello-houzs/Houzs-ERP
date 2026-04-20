@@ -229,6 +229,33 @@ app.get("/docs", async (c) => {
 
 // Lines for a single PO doc — used by the side-panel expand on the
 // unified PO view to show item codes, supplier dates, etc.
+// Single PO doc by number — feeds the dedicated /po/:docNo detail page.
+// Same shape as one row from /docs (header + outstanding_line_count +
+// next_delivery + total_remaining_qty) so the page can drop straight in.
+app.get("/docs/:docNo", async (c) => {
+  const docNo = c.req.param("docNo");
+  const row = await c.env.DB.prepare(
+    `SELECT d.*,
+            COALESCE(po.line_count, 0) AS outstanding_line_count,
+            po.next_delivery,
+            po.total_remaining_qty
+       FROM purchase_order_docs d
+       LEFT JOIN (
+         SELECT doc_no,
+                COUNT(*) AS line_count,
+                MIN(delivery_date) AS next_delivery,
+                SUM(remaining_qty) AS total_remaining_qty
+           FROM purchase_orders
+          GROUP BY doc_no
+       ) po ON po.doc_no = d.doc_no
+      WHERE d.doc_no = ?`
+  )
+    .bind(docNo)
+    .first();
+  if (!row) return c.json({ error: "Not found" }, 404);
+  return c.json({ data: row });
+});
+
 app.get("/lines/:docNo", async (c) => {
   const docNo = c.req.param("docNo");
   const rows = await c.env.DB.prepare(

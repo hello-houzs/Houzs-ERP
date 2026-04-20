@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { useNavigate, useParams, Navigate } from "react-router-dom";
 import {
   Plus,
   Calendar,
@@ -28,6 +29,8 @@ import {
   BarChart3,
   Download,
   Pencil,
+  Send,
+  ArrowLeft,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
@@ -39,6 +42,7 @@ import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
 import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
+import { Breadcrumbs } from "../components/Breadcrumbs";
 import { InlineEdit } from "../components/InlineEdit";
 import { StatCard } from "../components/StatCard";
 import { DashboardGrid } from "../components/Dashboard";
@@ -50,7 +54,7 @@ import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
 import { api, buildQuery } from "../api/client";
-import { formatDate, formatCurrency, cn } from "../lib/utils";
+import { formatDate, formatCurrency, cn, relativeTime } from "../lib/utils";
 
 // ── Types (module-local) ─────────────────────────────────────
 // Kept in this file until something else imports them. Promoting to
@@ -507,6 +511,7 @@ export function Projects() {
 function ProjectsListView() {
   const { can } = useAuth();
   const toast = useToast();
+  const navigate = useNavigate();
   const [stage, setStage] = useState<"ALL" | ProjectStage>("ALL");
   const [search, setSearch] = useState("");
   const [brand, setBrand] = useState<string>("");
@@ -515,13 +520,12 @@ function ProjectsListView() {
   const [state, setState] = useState<string>("");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showArchived, setShowArchived] = useLocalStorage<boolean>("projects:showArchived", false);
 
-  // ?focus=ID — opened from the Overview inbox.
-  useFocusFromUrl(setSelectedId);
+  // ?focus=ID — Overview inbox deep-links straight to the detail page.
+  useFocusFromUrl((id) => navigate(`/projects/${id}`, { replace: true }));
 
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
 
@@ -829,7 +833,7 @@ function ProjectsListView() {
         emptyLabel="No projects yet"
         getRowKey={(r) => r.id}
         getRowClassName={(r) => (r.archived_at ? "opacity-60" : undefined)}
-        onRowClick={(r) => setSelectedId(r.id)}
+        onRowClick={(r) => navigate(`/projects/${r.id}`)}
         serverSort
         onSortChange={handleSortChange}
       />
@@ -847,26 +851,12 @@ function ProjectsListView() {
         />
       )}
 
-      {selectedId && (
-        <ProjectDetailPanel
-          id={selectedId}
-          onClose={() => setSelectedId(null)}
-          onUpdated={() => {
-            list.reload();
-            summary.reload();
-          }}
-          toast={toast}
-          brands={brands.data?.data ?? []}
-          eventTypes={eventTypes.data?.data ?? []}
-        />
-      )}
-
       {showCreate && (
         <CreateProjectPanel
           onClose={() => setShowCreate(false)}
           onCreated={(id) => {
             setShowCreate(false);
-            setSelectedId(id);
+            navigate(`/projects/${id}`);
             list.reload();
             summary.reload();
           }}
@@ -1073,12 +1063,12 @@ interface ProfitabilityResponse {
 function ProjectsAnalyticsView() {
   // Date range default: current year. User can clear or change.
   const thisYear = new Date().getFullYear();
+  const navigate = useNavigate();
   const [dateFrom, setDateFrom] = useState<string>(`${thisYear}-01-01`);
   const [dateTo, setDateTo] = useState<string>(`${thisYear}-12-31`);
   const [brand, setBrand] = useState<string>("");
   const [organizer, setOrganizer] = useState<string>("");
   const [eventTypeId, setEventTypeId] = useState<string>("");
-  const [selectedId, setSelectedId] = useState<number | null>(null);
   const toast = useToast();
 
   const brands = useQuery<{ data: string[] }>(() => api.get("/api/projects/brands"));
@@ -1240,27 +1230,16 @@ function ProjectsAnalyticsView() {
               title="Top 5 by profit"
               tone="synced"
               rows={d.top}
-              onOpen={setSelectedId}
+              onOpen={(id) => navigate(`/projects/${id}`)}
             />
             <RankedCard
               title="Bottom 5 by profit"
               tone="err"
               rows={d.bottom}
-              onOpen={setSelectedId}
+              onOpen={(id) => navigate(`/projects/${id}`)}
             />
           </div>
         </>
-      )}
-
-      {selectedId && (
-        <ProjectDetailPanel
-          id={selectedId}
-          onClose={() => setSelectedId(null)}
-          onUpdated={() => q.reload()}
-          toast={toast}
-          brands={brands.data?.data ?? []}
-          eventTypes={eventTypes.data?.data ?? []}
-        />
       )}
     </div>
   );
@@ -1430,16 +1409,12 @@ function formatMonth(yyyy_mm: string): string {
 
 function ProjectsCalendarView() {
   const toast = useToast();
+  const navigate = useNavigate();
   const [anchor, setAnchor] = useState<Date>(() => {
     const d = new Date();
     d.setDate(1);
     return d;
   });
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const brands = useQuery<{ data: string[] }>(() => api.get("/api/projects/brands"));
-  const eventTypes = useQuery<{ data: EventType[] }>(() =>
-    api.get("/api/projects/event-types")
-  );
 
   // First of month → last of month. Cover 6 weeks (42 cells) starting
   // from the first Sunday on/before the 1st.
@@ -1598,7 +1573,7 @@ function ProjectsCalendarView() {
                   {cellProjects.slice(0, 2).map((p) => (
                     <button
                       key={p.id}
-                      onClick={() => setSelectedId(p.id)}
+                      onClick={() => navigate(`/projects/${p.id}`)}
                       title={`${p.code} — ${p.name}${p.venue ? ` · ${p.venue}` : ""}`}
                       className={cn(
                         "block w-full truncate rounded px-1 py-0.5 text-left text-[9px] font-semibold",
@@ -1622,7 +1597,7 @@ function ProjectsCalendarView() {
                       <CalendarTaskChip
                         key={t.id}
                         task={t}
-                        onOpen={() => setSelectedId(t.project_id)}
+                        onOpen={() => navigate(`/projects/${t.project_id}`)}
                       />
                     ))}
                     {cellTasks.length > 2 && (
@@ -1631,7 +1606,7 @@ function ProjectsCalendarView() {
                           // Open the project of the first remaining task — best
                           // we can do without a tasks-per-day modal.
                           const first = cellTasks[2];
-                          if (first) setSelectedId(first.project_id);
+                          if (first) navigate(`/projects/${first.project_id}`);
                         }}
                         title={cellTasks
                           .slice(2)
@@ -1650,16 +1625,6 @@ function ProjectsCalendarView() {
         </div>
       </div>
 
-      {selectedId && (
-        <ProjectDetailPanel
-          id={selectedId}
-          onClose={() => setSelectedId(null)}
-          onUpdated={() => q.reload()}
-          toast={toast}
-          brands={brands.data?.data ?? []}
-          eventTypes={eventTypes.data?.data ?? []}
-        />
-      )}
     </div>
   );
 }
@@ -1880,16 +1845,14 @@ function CreateProjectPanel({
 
 // ── Detail Panel ─────────────────────────────────────────────
 
-function ProjectDetailPanel({
+function ProjectDetailContent({
   id,
-  onClose,
   onUpdated,
   toast,
   brands,
   eventTypes,
 }: {
   id: number;
-  onClose: () => void;
   onUpdated: () => void;
   toast: ReturnType<typeof useToast>;
   brands: string[];
@@ -1897,6 +1860,7 @@ function ProjectDetailPanel({
 }) {
   const { can } = useAuth();
   const dialog = useDialog();
+  const navigate = useNavigate();
   const detail = useQuery<ProjectDetail>(() => api.get(`/api/projects/${id}`), [id]);
   // Users list — fetched once per open panel, reused for owner pickers
   // in the logistics section, checklist add form, and reassign dropdowns.
@@ -1959,62 +1923,72 @@ function ProjectDetailPanel({
   const nextStage = p ? NEXT_STAGE[p.stage] : null;
 
   return (
-    <Panel
-      open
-      onClose={onClose}
-      title={p?.code || "Loading…"}
-      subtitle={p?.name || ""}
-      width={560}
-      footer={
-        p ? (
-          <div className="flex items-center gap-2">
-            {p.archived_at ? (
+    <div>
+      <Breadcrumbs
+        items={[
+          { label: "Projects", to: "/projects" },
+          { label: p?.code || "Loading…" },
+        ]}
+      />
+      <PageHeader
+        eyebrow={p?.code ? `Project · ${p.code}` : "Project"}
+        title={p?.name || "Loading…"}
+        actions={
+          p ? (
+            <>
               <button
-                onClick={async () => {
-                  try {
-                    await api.post(`/api/projects/${id}/unarchive`);
-                    toast.success("Restored");
-                    detail.reload();
-                    onUpdated();
-                  } catch (e: any) {
-                    toast.error(e?.message || "Failed");
-                  }
-                }}
-                className="rounded-md border border-synced/40 bg-synced/5 px-3 py-2 text-[12px] font-semibold text-synced"
+                onClick={() => navigate("/projects")}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
               >
-                Restore
+                <ArrowLeft size={13} /> Back
               </button>
-            ) : (
-              <button
-                onClick={async () => {
-                  if (!await dialog.confirm("Archive this project?")) return;
-                  try {
-                    await api.post(`/api/projects/${id}/archive`);
-                    toast.success("Archived");
-                    detail.reload();
-                    onUpdated();
-                  } catch (e: any) {
-                    toast.error(e?.message || "Failed");
-                  }
-                }}
-                className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-muted hover:border-err/40 hover:text-err"
-              >
-                Archive
-              </button>
-            )}
-            {nextStage && !p.archived_at && (
-              <button
-                disabled={transitioning}
-                onClick={() => transition(nextStage.stage)}
-                className="ml-auto flex items-center gap-1.5 rounded-md bg-accent px-4 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
-              >
-                {transitioning ? "…" : nextStage.label}
-              </button>
-            )}
-          </div>
-        ) : undefined
-      }
-    >
+              {p.archived_at ? (
+                <button
+                  onClick={async () => {
+                    try {
+                      await api.post(`/api/projects/${id}/unarchive`);
+                      toast.success("Restored");
+                      detail.reload();
+                      onUpdated();
+                    } catch (e: any) {
+                      toast.error(e?.message || "Failed");
+                    }
+                  }}
+                  className="rounded-md border border-synced/40 bg-synced/5 px-3 py-2 text-[12px] font-semibold text-synced"
+                >
+                  Restore
+                </button>
+              ) : (
+                <button
+                  onClick={async () => {
+                    if (!(await dialog.confirm("Archive this project?"))) return;
+                    try {
+                      await api.post(`/api/projects/${id}/archive`);
+                      toast.success("Archived");
+                      detail.reload();
+                      onUpdated();
+                    } catch (e: any) {
+                      toast.error(e?.message || "Failed");
+                    }
+                  }}
+                  className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-muted hover:border-err/40 hover:text-err"
+                >
+                  Archive
+                </button>
+              )}
+              {nextStage && !p.archived_at && (
+                <button
+                  disabled={transitioning}
+                  onClick={() => transition(nextStage.stage)}
+                  className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
+                >
+                  {transitioning ? "…" : nextStage.label}
+                </button>
+              )}
+            </>
+          ) : undefined
+        }
+      />
       {detail.loading && <div className="p-6 text-sm text-ink-muted">Loading…</div>}
       {detail.error && !detail.loading && (
         <div className="m-5 rounded-md border border-err/40 bg-err/5 p-4 text-sm">
@@ -2358,42 +2332,45 @@ function ProjectDetailPanel({
             </PanelSection>
           )}
 
-          <PanelSection title="Activity" muted>
-            {activity.length === 0 ? (
-              <div className="text-[11px] text-ink-muted">No activity yet.</div>
-            ) : (
-              <div className="space-y-1">
-                {activity.map((a) => (
-                  <div
-                    key={a.id}
-                    className="flex items-start gap-2 text-[11px] text-ink-secondary"
-                  >
-                    <span className="font-mono text-[10px] text-ink-muted">
-                      {formatDate(a.created_at)}
-                    </span>
-                    <span className="flex-1">
-                      <span className="font-semibold text-ink">{actionLabel(a.action)}</span>
-                      {a.from_value && a.to_value && a.from_value !== a.to_value && (
-                        <span className="ml-1 text-ink-muted">
-                          {a.from_value} → {a.to_value}
-                        </span>
-                      )}
-                      {a.to_value && !a.from_value && (
-                        <span className="ml-1 text-ink-muted">{a.to_value}</span>
-                      )}
-                      {a.note && <span className="ml-1 text-ink-muted">· {a.note}</span>}
-                      {a.user_name && (
-                        <span className="ml-1 text-ink-muted">· {a.user_name}</span>
-                      )}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
+          <PanelSection title="Chat">
+            <ProjectChat
+              projectId={id}
+              activity={activity}
+              canPost={can("projects.write")}
+              onPosted={() => detail.reload()}
+              toast={toast}
+            />
           </PanelSection>
         </>
       )}
-    </Panel>
+    </div>
+  );
+}
+
+/**
+ * Page wrapper — mounted at /projects/:id. Reads the URL, fetches the
+ * brand + event-type lookup lists once, hands the inner content the
+ * project id and a no-op `onUpdated` (the page owns its own queries).
+ */
+export function ProjectDetail() {
+  const { id: idStr } = useParams<{ id: string }>();
+  const id = idStr ? parseInt(idStr, 10) : NaN;
+  const toast = useToast();
+  const brandsQ = useQuery<{ data: string[] }>(() => api.get("/api/projects/brands"));
+  const eventTypesQ = useQuery<{ data: EventType[] }>(() =>
+    api.get("/api/projects/event-types")
+  );
+
+  if (isNaN(id)) return <Navigate to="/projects" replace />;
+
+  return (
+    <ProjectDetailContent
+      id={id}
+      onUpdated={() => {}}
+      toast={toast}
+      brands={brandsQ.data?.data ?? []}
+      eventTypes={eventTypesQ.data?.data ?? []}
+    />
   );
 }
 
@@ -5047,6 +5024,129 @@ function ImportCsvPanel({
   );
 }
 
+// ── Chat panel ───────────────────────────────────────────────
+// Free-text messages interleaved with the project's system activity
+// (stage transitions, finance edits, checklist changes…). Mirrors the
+// ASSR notes pattern — same backend table (project_activity), one
+// composer that POSTs to /api/projects/:id/notes with action="note".
+
+function ProjectChat({
+  projectId,
+  activity,
+  canPost,
+  onPosted,
+  toast,
+}: {
+  projectId: number;
+  activity: ActivityRow[];
+  canPost: boolean;
+  onPosted: () => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+
+  async function send() {
+    const note = draft.trim();
+    if (!note || sending) return;
+    setSending(true);
+    try {
+      await api.post(`/api/projects/${projectId}/notes`, { note });
+      setDraft("");
+      onPosted();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to send");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      send();
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {canPost && (
+        <div className="rounded-md border border-border bg-surface p-2">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKey}
+            placeholder="Write a message…"
+            rows={2}
+            className="w-full resize-none border-0 bg-transparent p-1 text-[12px] text-ink outline-none placeholder:text-ink-muted"
+          />
+          <div className="mt-1 flex items-center justify-between">
+            <span className="text-[10px] text-ink-muted">⌘/Ctrl + Enter to send</span>
+            <button
+              onClick={send}
+              disabled={sending || !draft.trim()}
+              className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-white shadow-sm disabled:bg-surface-dim disabled:text-ink-muted disabled:shadow-none"
+            >
+              <Send size={11} /> Send
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activity.length === 0 ? (
+        <div className="text-[11px] text-ink-muted">No messages yet.</div>
+      ) : (
+        <div className="space-y-2">
+          {activity.map((a) =>
+            a.action === "note" ? (
+              <div
+                key={a.id}
+                className="rounded-md border border-border bg-surface px-3 py-2"
+              >
+                <div className="mb-0.5 flex items-baseline justify-between gap-2">
+                  <span className="text-[11.5px] font-semibold text-ink">
+                    {a.user_name || "Unknown"}
+                  </span>
+                  <span
+                    className="font-mono text-[9.5px] text-ink-muted"
+                    title={a.created_at}
+                  >
+                    {relativeTime(a.created_at)}
+                  </span>
+                </div>
+                <div className="whitespace-pre-wrap text-[12px] text-ink-secondary">
+                  {a.note}
+                </div>
+              </div>
+            ) : (
+              <div
+                key={a.id}
+                className="flex items-start gap-2 px-1 text-[10.5px] italic text-ink-muted"
+              >
+                <span
+                  className="font-mono not-italic"
+                  title={a.created_at}
+                >
+                  {relativeTime(a.created_at)}
+                </span>
+                <span className="flex-1">
+                  {actionLabel(a.action)}
+                  {a.from_value && a.to_value && a.from_value !== a.to_value && (
+                    <span> · {a.from_value} → {a.to_value}</span>
+                  )}
+                  {a.to_value && !a.from_value && <span> · {a.to_value}</span>}
+                  {a.note && <span> · {a.note}</span>}
+                  {a.user_name && <span> · {a.user_name}</span>}
+                </span>
+              </div>
+            )
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function actionLabel(action: string): string {
   switch (action) {
     case "created":
@@ -5065,6 +5165,8 @@ function actionLabel(action: string): string {
       return "Archived";
     case "restored":
       return "Restored";
+    case "note":
+      return "Message";
     default:
       return action;
   }

@@ -1,40 +1,27 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { PageHeader } from "../components/Layout";
 import { FilterPills } from "../components/FilterPills";
 import { DataTable } from "../components/DataTable";
 import { Pagination } from "../components/Pagination";
-import { Panel, PanelSection, FieldRow } from "../components/Panel";
-import { InlineEdit } from "../components/InlineEdit";
 import { StatCard } from "../components/StatCard";
 import { DashboardGrid, DashboardPanels, DashboardBreakdown } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
 import { api, buildQuery } from "../api/client";
-import { formatCurrency, formatDate, cn } from "../lib/utils";
+import { formatCurrency } from "../lib/utils";
 import { getSalesOrderColumns } from "../lib/orderColumns";
-import type { Paginated, SalesOrder, OrderDetails, Region, OrdersSummary } from "../types";
+import type { Paginated, SalesOrder, Region, OrdersSummary } from "../types";
 
 type RegionFilter = "ALL" | Region;
 
-// Same option list used by the Sales Orders page — kept here so updates flow
-// to both dropdowns. If this list grows, lift it into a shared module.
-const DELIVERY_MESSAGE_STATUSES = [
-  "to send delivery date",
-  "pending customer reply (D)",
-  "pending reschedule (D)",
-  "done scheduling",
-  "not sent (D)",
-  "Pending Reschedule (A)",
-  "Not sent (A)",
-] as const;
-
 export function DeliveryOrders() {
+  const navigate = useNavigate();
   const [region, setRegion] = useState<RegionFilter>("ALL");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:delivery-orders", 50);
-  const [selected, setSelected] = useState<SalesOrder | null>(null);
 
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
 
@@ -55,30 +42,11 @@ export function DeliveryOrders() {
 
   const summary = useQuery<OrdersSummary>(() => api.get("/api/orders/summary"));
 
-  const detail = useQuery<{ order: SalesOrder; details: OrderDetails | null }>(
-    () =>
-      selected
-        ? api.get(`/api/orders/${encodeURIComponent(selected.doc_no)}`)
-        : Promise.resolve({ order: null as any, details: null }),
-    [selected?.doc_no]
-  );
-
-  async function patchOrder(docNo: string, body: Record<string, any>) {
-    const res: any = await api.patch(`/api/orders/${encodeURIComponent(docNo)}`, body);
-    if (res?.sync_status === "ERROR") {
-      throw new Error(res.sync_error || "Push failed");
-    }
-    list.reload();
-    detail.reload();
-  }
-
   // Same column set as Sales Orders — both views read the same D1 sales_orders
   // table, so the column count, identifiers, and CSV shape stay aligned. Users
   // can hide the columns they don't want via the column chooser; choices
   // persist per page in localStorage.
   const columns = getSalesOrderColumns();
-
-  const order = detail.data?.order ?? selected;
 
   return (
     <div>
@@ -178,7 +146,7 @@ export function DeliveryOrders() {
         error={list.error}
         emptyLabel="No delivery orders"
         getRowKey={(r) => r.doc_no}
-        onRowClick={(r) => setSelected(r)}
+        onRowClick={(r) => navigate(`/orders/${encodeURIComponent(r.doc_no)}`)}
         serverSort
         onSortChange={handleSortChange}
       />
@@ -195,66 +163,6 @@ export function DeliveryOrders() {
           }}
         />
       )}
-
-      <Panel
-        open={!!selected}
-        onClose={() => setSelected(null)}
-        title={selected?.doc_no || ""}
-        subtitle={selected?.debtor_name || ""}
-      >
-        {order && (
-          <>
-            <PanelSection title="Order" muted>
-              <FieldRow label="Doc No" mono>
-                {order.doc_no}
-              </FieldRow>
-              <FieldRow label="D/O">{order.transfer_to || "—"}</FieldRow>
-              <FieldRow label="Date">{formatDate(order.doc_date)}</FieldRow>
-              <FieldRow label="Customer">{order.debtor_name || "—"}</FieldRow>
-              <FieldRow label="Phone" mono>
-                {order.phone || "—"}
-              </FieldRow>
-              <FieldRow label="Loc">{order.sales_location || "—"}</FieldRow>
-              <FieldRow label="Agent">{order.sales_agent || "—"}</FieldRow>
-              <FieldRow label="Balance" mono>
-                <span className={cn(order.balance > 0 && "font-semibold text-err")}>
-                  {formatCurrency(order.balance)}
-                </span>
-              </FieldRow>
-            </PanelSection>
-
-            <PanelSection title="Delivery (auto-pushed)">
-              <InlineEdit
-                label="Delivery Message Status"
-                value={order.remark4}
-                options={DELIVERY_MESSAGE_STATUSES}
-                onSave={(v) => patchOrder(order.doc_no, { remark4: v })}
-              />
-              <InlineEdit
-                label="Expiry Date"
-                type="date"
-                value={order.expiry_date}
-                onSave={(v) => patchOrder(order.doc_no, { expiry_date: v })}
-              />
-            </PanelSection>
-
-            <PanelSection title="Address" muted>
-              <div className="space-y-1 text-sm text-ink-secondary">
-                <div>{order.inv_addr1 || "—"}</div>
-                <div>{order.inv_addr2 || ""}</div>
-                <div>{order.inv_addr3 || ""}</div>
-                <div>{order.inv_addr4 || ""}</div>
-              </div>
-            </PanelSection>
-
-            <PanelSection title="Notes" muted>
-              <FieldRow label="Remark 2">{order.remark2 || "—"}</FieldRow>
-              <FieldRow label="Remark 3">{order.remark3 || "—"}</FieldRow>
-              <FieldRow label="Note">{order.note || "—"}</FieldRow>
-            </PanelSection>
-          </>
-        )}
-      </Panel>
     </div>
   );
 }

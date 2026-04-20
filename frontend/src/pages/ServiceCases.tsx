@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams, useNavigate, useParams, Navigate } from "react-router-dom";
 import {
   Plus,
   RefreshCw,
@@ -20,8 +20,10 @@ import {
   Printer,
   Download,
   X,
+  ArrowLeft,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
+import { Breadcrumbs } from "../components/Breadcrumbs";
 import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
 import { TabStrip } from "../components/TabStrip";
@@ -189,12 +191,12 @@ function CasesView({
 }) {
   const toast = useToast();
   const dialog = useDialog();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const [stage, setStage] = useState<StageFilter>("ALL");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:assr", 50);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showArchived, setShowArchived] = useLocalStorage<boolean>("assr:showArchived", false);
   const [myCases, setMyCases] = useLocalStorage<boolean>("assr:myCases", false);
   const [bulkSelected, setBulkSelected] = useState<Set<number>>(new Set());
@@ -202,10 +204,8 @@ function CasesView({
   const [params, setParams] = useSearchParams();
   const creditorFilter = params.get("creditor_code");
 
-  // ?focus=ID — opened from the Overview inbox. Pop the panel for
-  // the matching case on mount and clear the param so a refresh or
-  // back-nav doesn't keep re-opening it.
-  useFocusFromUrl(setSelectedId);
+  // ?focus=ID — Overview inbox deep-links straight to the detail page.
+  useFocusFromUrl((id) => navigate(`/assr/${id}`, { replace: true }));
 
   const list = useQuery<Paginated<AssrCase>>(
     () =>
@@ -585,7 +585,7 @@ function CasesView({
         emptyLabel="No service cases"
         getRowKey={(r) => r.id}
         getRowClassName={(r) => (r.archived_at ? "opacity-60" : undefined)}
-        onRowClick={(r) => setSelectedId(r.id)}
+        onRowClick={(r) => navigate(`/assr/${r.id}`)}
         serverSort
         onSortChange={handleSortChange}
       />
@@ -600,23 +600,13 @@ function CasesView({
         />
       )}
 
-      {/* Detail panel */}
-      {selectedId && (
-        <DetailPanel
-          id={selectedId}
-          onClose={() => setSelectedId(null)}
-          onUpdated={() => { list.reload(); summary.reload(); }}
-          toast={toast}
-        />
-      )}
-
       {/* Create panel */}
       {showCreate && (
         <CreatePanel
           onClose={() => setShowCreate(false)}
           onCreated={(id) => {
             setShowCreate(false);
-            setSelectedId(id);
+            navigate(`/assr/${id}`);
             list.reload();
             summary.reload();
           }}
@@ -961,18 +951,17 @@ function CreatePanel({
 
 // ── Detail Panel ──────────────────────────────────────────────
 
-function DetailPanel({
+function DetailContent({
   id,
-  onClose,
   onUpdated,
   toast,
 }: {
   id: number;
-  onClose: () => void;
   onUpdated: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
   const dialog = useDialog();
+  const navigate = useNavigate();
   const detail = useQuery<AssrDetail>(
     () => api.get(`/api/assr/${id}`),
     [id]
@@ -1080,85 +1069,92 @@ function DetailPanel({
     : [];
 
   return (
-    <Panel
-      open
-      onClose={onClose}
-      title={c?.assr_no || "Loading..."}
-      subtitle={c?.customer_name || ""}
-      width={540}
-      footer={
-        c ? (
-          <div className="flex items-center gap-2">
-            {/* Archive / restore. Closed cases in particular benefit
-                from being archived once they're off the active board. */}
-            {c.archived_at ? (
+    <div>
+      <Breadcrumbs
+        items={[
+          { label: "Service Cases", to: "/assr" },
+          { label: c?.assr_no || "Loading…" },
+        ]}
+      />
+      <PageHeader
+        eyebrow={c?.assr_no ? `Service Case · ${c.assr_no}` : "Service Case"}
+        title={c?.customer_name || "Loading…"}
+        actions={
+          c ? (
+            <>
               <button
-                onClick={async () => {
-                  try {
-                    await api.post(`/api/assr/${id}/unarchive`);
-                    toast.success("Case restored");
-                    detail.reload();
-                    onUpdated();
-                  } catch (e: any) {
-                    toast.error(e?.message || "Failed");
-                  }
-                }}
-                className="rounded-md border border-synced/40 bg-synced/5 px-3 py-2 text-[12px] font-semibold text-synced"
+                onClick={() => navigate("/assr")}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
               >
-                Restore
+                <ArrowLeft size={13} /> Back
               </button>
-            ) : (
-              <button
-                onClick={async () => {
-                  if (!await dialog.confirm("Archive this case? It will be hidden from the default list but kept on record.")) return;
-                  try {
-                    await api.post(`/api/assr/${id}/archive`);
-                    toast.success("Case archived");
-                    detail.reload();
-                    onUpdated();
-                  } catch (e: any) {
-                    toast.error(e?.message || "Failed");
-                  }
-                }}
-                className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-muted hover:border-err/40 hover:text-err"
-              >
-                Archive
-              </button>
-            )}
-
-            {c.stage !== "closed" && !c.archived_at && c.stage !== "resolution" && (
-              <button
-                disabled={transitioning}
-                onClick={handleCloseClick}
-                className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink hover:border-err/40"
-              >
-                Close Case
-              </button>
-            )}
-            {c.stage === "resolution" && !c.archived_at && (
-              <button
-                disabled={transitioning}
-                onClick={handleCloseClick}
-                className="ml-auto flex items-center gap-1.5 rounded-md bg-accent px-4 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
-              >
-                {transitioning ? "..." : "Close Case"}
-                <ChevronRight size={14} />
-              </button>
-            )}
-            {nextStage && c.stage !== "resolution" && !c.archived_at && (
-              <button
-                disabled={transitioning}
-                onClick={() => transition(nextStage.stage)}
-                className="ml-auto flex items-center gap-1.5 rounded-md bg-accent px-4 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
-              >
-                {transitioning ? "..." : nextStage.label}
-                <ChevronRight size={14} />
-              </button>
-            )}
-          </div>
-        ) : undefined
-      }
-    >
+              {c.archived_at ? (
+                <button
+                  onClick={async () => {
+                    try {
+                      await api.post(`/api/assr/${id}/unarchive`);
+                      toast.success("Case restored");
+                      detail.reload();
+                      onUpdated();
+                    } catch (e: any) {
+                      toast.error(e?.message || "Failed");
+                    }
+                  }}
+                  className="rounded-md border border-synced/40 bg-synced/5 px-3 py-2 text-[12px] font-semibold text-synced"
+                >
+                  Restore
+                </button>
+              ) : (
+                <button
+                  onClick={async () => {
+                    if (!(await dialog.confirm("Archive this case? It will be hidden from the default list but kept on record."))) return;
+                    try {
+                      await api.post(`/api/assr/${id}/archive`);
+                      toast.success("Case archived");
+                      detail.reload();
+                      onUpdated();
+                    } catch (e: any) {
+                      toast.error(e?.message || "Failed");
+                    }
+                  }}
+                  className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-muted hover:border-err/40 hover:text-err"
+                >
+                  Archive
+                </button>
+              )}
+              {c.stage !== "closed" && !c.archived_at && c.stage !== "resolution" && (
+                <button
+                  disabled={transitioning}
+                  onClick={handleCloseClick}
+                  className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink hover:border-err/40"
+                >
+                  Close Case
+                </button>
+              )}
+              {c.stage === "resolution" && !c.archived_at && (
+                <button
+                  disabled={transitioning}
+                  onClick={handleCloseClick}
+                  className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
+                >
+                  {transitioning ? "..." : "Close Case"}
+                  <ChevronRight size={14} />
+                </button>
+              )}
+              {nextStage && c.stage !== "resolution" && !c.archived_at && (
+                <button
+                  disabled={transitioning}
+                  onClick={() => transition(nextStage.stage)}
+                  className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
+                >
+                  {transitioning ? "..." : nextStage.label}
+                  <ChevronRight size={14} />
+                </button>
+              )}
+            </>
+          ) : undefined
+        }
+      />
       {detail.loading && <div className="p-6 text-sm text-ink-muted">Loading...</div>}
       {detail.error && !detail.loading && (
         <div className="m-5 rounded-md border border-err/40 bg-err/5 p-4 text-sm">
@@ -1851,8 +1847,23 @@ function DetailPanel({
           onClose={() => setLightboxIndex(null)}
         />
       )}
-    </Panel>
+    </div>
   );
+}
+
+/**
+ * Page wrapper — mounted at /assr/:id. Reads the URL, hands the inner
+ * content the case id and a no-op `onUpdated` (the page owns its own
+ * queries).
+ */
+export function ServiceCaseDetail() {
+  const { id: idStr } = useParams<{ id: string }>();
+  const id = idStr ? parseInt(idStr, 10) : NaN;
+  const toast = useToast();
+
+  if (isNaN(id)) return <Navigate to="/assr" replace />;
+
+  return <DetailContent id={id} onUpdated={() => {}} toast={toast} />;
 }
 
 // ── Customer history ─────────────────────────────────────────
