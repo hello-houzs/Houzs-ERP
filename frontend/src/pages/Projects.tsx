@@ -771,7 +771,7 @@ function ProjectsListView() {
     <div>
       <PageHeader
         eyebrow="Operations · Projects"
-        title="Project Management"
+        title="Project List"
         description="Exhibitions and solo events — lifecycle, checklist, logistics, finance"
         actions={
           <div className="flex items-center gap-2">
@@ -1157,13 +1157,20 @@ interface ProfitabilityResponse {
 // users see the time-series trend first, then the per-project drill-in.
 function ProjectsFinancesView() {
   return (
-    <div className="space-y-8">
-      <PnlCalendar
-        scope="projects"
-        title="Project Cost — Monthly"
-        subtitle="Ledger costs across all projects, grouped by month."
+    <div>
+      <PageHeader
+        eyebrow="Operations · Projects"
+        title="Finances"
+        description="Monthly P&L trend on top, per-project profitability breakdown below."
       />
-      <ProjectsAnalyticsView />
+      <div className="space-y-8">
+        <PnlCalendar
+          scope="projects"
+          title="Project Cost — Monthly"
+          subtitle="Ledger costs across all projects, grouped by month."
+        />
+        <ProjectsAnalyticsView />
+      </div>
     </div>
   );
 }
@@ -1205,11 +1212,12 @@ function ProjectsAnalyticsView() {
 
   return (
     <div>
-      <PageHeader
-        eyebrow="Operations · Projects"
-        title="Profitability"
-        description="Income, cost, and margin across every event — sliced by brand, venue, type, and month."
-      />
+      <div className="mb-3 flex items-center gap-2">
+        <span className="h-px w-6 bg-accent" />
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-brand text-accent">
+          Profitability breakdown
+        </span>
+      </div>
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div>
@@ -1577,7 +1585,7 @@ function ProjectsCalendarView() {
     <div>
       <PageHeader
         eyebrow="Operations · Projects"
-        title="Project Calendar"
+        title="Calendar"
         description="Event spans and checklist due dates across all brands"
       />
 

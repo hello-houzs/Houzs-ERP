@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
@@ -47,10 +48,17 @@ interface ChecklistTemplateItem {
 
 export function ProjectMaintenanceView() {
   return (
-    <div className="space-y-6">
-      <OrganizerManager />
-      <VenueManager />
-      <ChecklistManager />
+    <div>
+      <PageHeader
+        eyebrow="Operations · Projects"
+        title="Project Maintenance"
+        description="Picker lists (organizers, venues) and the default checklist that gets cloned into every new project."
+      />
+      <div className="space-y-6">
+        <OrganizerManager />
+        <VenueManager />
+        <ChecklistManager />
+      </div>
     </div>
   );
 }
