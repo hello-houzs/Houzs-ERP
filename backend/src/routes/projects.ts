@@ -721,10 +721,162 @@ app.get("/finance/categories", (c) => {
   });
 });
 
-// Cross-project finance lines list — feeds the Finances → List tab.
-// Joins each line back to its project for code/name/brand display, and
-// supports the usual paginated/filter pattern: date range, kind, brand,
-// category, project_id, free-text search.
+// Per-project finance summary — feeds the Finances → List tab. One row
+// per project; SUMs income / cost / net out of project_finance_lines
+// and joins back to projects for display fields (code, name, brand,
+// stage, dates). Filters: date range constrains which lines are summed
+// (a project shows up as long as it has any matching activity within
+// the range, OR has its start/end inside the range); brand + search
+// filter the project itself.
+app.get("/finance/by-project", requirePermission("projects.read"), async (c) => {
+  const dateFrom = c.req.query("date_from") || "";
+  const dateTo = c.req.query("date_to") || "";
+  const brand = c.req.query("brand") || "";
+  const stage = c.req.query("stage") || "";
+  const search = c.req.query("search") || "";
+  const includeArchived = c.req.query("include_archived") === "1";
+  const page = parseInt(c.req.query("page") || "1", 10);
+  const perPage = Math.min(
+    parseInt(c.req.query("per_page") || "50", 10),
+    200
+  );
+  const offset = (page - 1) * perPage;
+
+  // Date filter applied INSIDE the SUM aggregations so a project with
+  // older lines still surfaces (it just shows zero for the window).
+  const dateClauseParts: string[] = [];
+  const dateBinds: any[] = [];
+  if (dateFrom) {
+    dateClauseParts.push("COALESCE(l.occurred_at, l.created_at) >= ?");
+    dateBinds.push(dateFrom);
+  }
+  if (dateTo) {
+    dateClauseParts.push("COALESCE(l.occurred_at, l.created_at) <= ?");
+    dateBinds.push(`${dateTo}T23:59:59`);
+  }
+  const dateClause = dateClauseParts.length
+    ? `AND ${dateClauseParts.join(" AND ")}`
+    : "";
+
+  // Project-level WHERE.
+  const where: string[] = [];
+  const projectBinds: any[] = [];
+  if (!includeArchived) where.push("p.archived_at IS NULL");
+  if (brand) {
+    where.push("p.brand = ?");
+    projectBinds.push(brand);
+  }
+  if (stage) {
+    where.push("p.stage = ?");
+    projectBinds.push(stage);
+  }
+  if (search) {
+    where.push(
+      "(p.code LIKE ? OR p.name LIKE ? OR p.venue LIKE ? OR p.organizer LIKE ?)"
+    );
+    const like = `%${search}%`;
+    projectBinds.push(like, like, like, like);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+  const sortBy = c.req.query("sort_by") || "net";
+  const sortDir =
+    (c.req.query("sort_dir") || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+  const sortMap: Record<string, string> = {
+    project: "p.code",
+    brand: "p.brand",
+    stage: "p.stage",
+    start: "p.start_date",
+    income: "income",
+    cost: "cost",
+    net: "net",
+    margin_pct: "margin_pct",
+    lines: "line_count",
+  };
+  const orderBy = `ORDER BY ${sortMap[sortBy] ?? sortMap.net} ${sortDir}, p.id DESC`;
+
+  // The aggregate row per project. Date filter only applies inside
+  // each SUM; the project row itself is selected by the project-level
+  // WHERE (so projects with zero matching lines still show with 0s).
+  const baseSelect = `
+    SELECT p.id,
+           p.code,
+           p.name,
+           p.brand,
+           p.stage,
+           p.start_date,
+           p.end_date,
+           p.venue,
+           p.organizer,
+           COALESCE(SUM(CASE WHEN l.kind = 'income' AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS income,
+           COALESCE(SUM(CASE WHEN l.kind = 'cost'   AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS cost,
+           COUNT(CASE WHEN l.archived_at IS NULL ${dateClause} THEN l.id END) AS line_count
+      FROM projects p
+      LEFT JOIN project_finance_lines l ON l.project_id = p.id
+      ${whereSql}
+      GROUP BY p.id
+  `;
+
+  // Build derived columns net + margin_pct on top of the aggregate so
+  // we can sort by them.
+  const wrapped = `
+    SELECT *,
+           (income - cost) AS net,
+           CASE WHEN income > 0
+                THEN ((income - cost) * 100.0 / income)
+                ELSE NULL
+           END AS margin_pct
+      FROM (${baseSelect}) sub
+  `;
+
+  // Each occurrence of `dateClause` adds the same dateBinds to the
+  // bind sequence. Two occurrences in baseSelect (income / cost), then
+  // a third inside the COUNT(CASE …). Plus projectBinds for whereSql.
+  const aggregateBinds = [
+    ...dateBinds,
+    ...dateBinds,
+    ...dateBinds,
+    ...projectBinds,
+  ];
+
+  const total = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM (${wrapped}) outerSub`
+  )
+    .bind(...aggregateBinds)
+    .first<{ count: number }>();
+
+  const rows = await c.env.DB.prepare(
+    `${wrapped} ${orderBy} LIMIT ? OFFSET ?`
+  )
+    .bind(...aggregateBinds, perPage, offset)
+    .all();
+
+  // Filtered grand totals so the header cards recompute server-side.
+  const totals = await c.env.DB.prepare(
+    `SELECT
+       COALESCE(SUM(income), 0) AS total_income,
+       COALESCE(SUM(cost),   0) AS total_cost
+     FROM (${wrapped}) tot`
+  )
+    .bind(...aggregateBinds)
+    .first<{ total_income: number; total_cost: number }>();
+
+  return c.json({
+    data: rows.results ?? [],
+    page,
+    per_page: perPage,
+    total: total?.count ?? 0,
+    totals: {
+      income: totals?.total_income ?? 0,
+      cost: totals?.total_cost ?? 0,
+      net: (totals?.total_income ?? 0) - (totals?.total_cost ?? 0),
+    },
+  });
+});
+
+// Cross-project finance lines list — kept as a secondary endpoint for
+// callers that want the raw ledger (audit, exports). Same filter shape
+// as /finance/by-project plus kind + category.
 app.get("/finance/lines", requirePermission("projects.read"), async (c) => {
   const dateFrom = c.req.query("date_from") || "";
   const dateTo = c.req.query("date_to") || "";

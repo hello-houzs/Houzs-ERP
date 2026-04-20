@@ -1219,45 +1219,55 @@ function ProjectsFinancesView() {
   );
 }
 
-// ── Finance List view (cross-project ledger) ─────────────────
+// ── Finance List view (per-project aggregate) ────────────────
 
-interface FinanceLineRow {
+interface FinanceProjectRow {
   id: number;
-  project_id: number;
-  kind: "income" | "cost";
-  category: string;
-  description: string | null;
-  amount: number;
-  occurred_at: string | null;
-  notes: string | null;
-  created_at: string;
-  r2_key: string | null;
-  file_name: string | null;
-  project_code: string;
-  project_name: string;
-  project_brand: string | null;
+  code: string;
+  name: string;
+  brand: string | null;
+  stage: string;
+  start_date: string | null;
+  end_date: string | null;
+  venue: string | null;
+  organizer: string | null;
+  income: number;
+  cost: number;
+  net: number;
+  margin_pct: number | null;
+  line_count: number;
 }
 
-interface FinanceLinesResponse {
-  data: FinanceLineRow[];
+interface FinanceByProjectResponse {
+  data: FinanceProjectRow[];
   page: number;
   per_page: number;
   total: number;
   totals: { income: number; cost: number; net: number };
 }
 
+const FINANCE_STAGE_OPTIONS = [
+  "draft",
+  "planning",
+  "build",
+  "live",
+  "teardown",
+  "closed",
+  "cancelled",
+] as const;
+
 function FinanceListView() {
   const navigate = useNavigate();
   const thisYear = new Date().getFullYear();
   const [dateFrom, setDateFrom] = useState(`${thisYear}-01-01`);
   const [dateTo, setDateTo] = useState(`${thisYear}-12-31`);
-  const [kind, setKind] = useState<"all" | "income" | "cost">("all");
   const [brand, setBrand] = useState("");
-  const [category, setCategory] = useState("");
+  const [stage, setStage] = useState("");
   const [search, setSearch] = useState("");
+  const [includeArchived, setIncludeArchived] = useState(false);
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>(
-    "pp:project-finance-lines",
+    "pp:project-finance-by-project",
     50
   );
   const { sort, sortParams, handleSortChange } = useServerSort(() =>
@@ -1267,132 +1277,154 @@ function FinanceListView() {
   const brandsQ = useQuery<{ data: string[] }>(() =>
     api.get("/api/projects/brands")
   );
-  const categoriesQ = useQuery<{ cost: string[]; income: string[] }>(() =>
-    api.get("/api/projects/finance/categories")
-  );
 
-  const list = useQuery<FinanceLinesResponse>(
+  const list = useQuery<FinanceByProjectResponse>(
     () =>
       api.get(
-        `/api/projects/finance/lines${buildQuery({
+        `/api/projects/finance/by-project${buildQuery({
           date_from: dateFrom || undefined,
           date_to: dateTo || undefined,
-          kind: kind !== "all" ? kind : undefined,
           brand: brand || undefined,
-          category: category || undefined,
+          stage: stage || undefined,
           search: search || undefined,
+          include_archived: includeArchived ? "1" : undefined,
           page,
           per_page: perPage,
           ...sortParams,
         })}`
       ),
-    [dateFrom, dateTo, kind, brand, category, search, page, perPage, sort?.key, sort?.dir]
+    [dateFrom, dateTo, brand, stage, search, includeArchived, page, perPage, sort?.key, sort?.dir]
   );
 
-  const allCategories = [
-    ...(categoriesQ.data?.cost ?? []),
-    ...(categoriesQ.data?.income ?? []),
-  ];
-
-  const columns: Column<FinanceLineRow>[] = [
-    {
-      key: "occurred_at",
-      label: "Date",
-      alwaysVisible: true,
-      render: (r) => (
-        <span className="font-mono text-[11px] text-ink-secondary">
-          {formatDate(r.occurred_at || r.created_at)}
-        </span>
-      ),
-      getValue: (r) => r.occurred_at || r.created_at,
-    },
+  const columns: Column<FinanceProjectRow>[] = [
     {
       key: "project",
       label: "Project",
       alwaysVisible: true,
       render: (r) => (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/projects/${r.project_id}`);
-          }}
-          className="text-left hover:text-accent"
-        >
-          <div className="font-mono text-[11px] font-semibold">
-            {r.project_code}
+        <div>
+          <div className="font-mono text-[11.5px] font-semibold text-ink">
+            {r.code}
           </div>
-          <div className="truncate text-[11px] text-ink-muted">
-            {r.project_name}
+          <div className="truncate text-[11.5px] text-ink-secondary">
+            {r.name}
           </div>
-        </button>
+          {r.venue && (
+            <div className="truncate text-[10.5px] text-ink-muted">
+              {r.venue}
+              {r.organizer ? ` · ${r.organizer}` : ""}
+            </div>
+          )}
+        </div>
       ),
-      getValue: (r) => r.project_code,
+      getValue: (r) => r.code,
     },
     {
       key: "brand",
       label: "Brand",
       render: (r) =>
-        r.project_brand ? (
+        r.brand ? (
           <span className="rounded-full bg-accent/10 px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-wider text-accent">
-            {r.project_brand}
+            {r.brand}
           </span>
         ) : (
           <span className="text-ink-muted">—</span>
         ),
-      getValue: (r) => r.project_brand ?? "",
+      getValue: (r) => r.brand ?? "",
     },
     {
-      key: "kind",
-      label: "Kind",
+      key: "stage",
+      label: "Stage",
       render: (r) => (
-        <span
-          className={cn(
-            "rounded-full px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-wider",
-            r.kind === "income"
-              ? "bg-synced/15 text-synced"
-              : "bg-err/10 text-err"
+        <span className="font-mono text-[10.5px] uppercase tracking-wider text-ink-secondary">
+          {r.stage}
+        </span>
+      ),
+      getValue: (r) => r.stage,
+    },
+    {
+      key: "start",
+      label: "Dates",
+      render: (r) => (
+        <div className="text-[11px] text-ink-secondary">
+          <div>{formatDate(r.start_date)}</div>
+          {r.end_date && (
+            <div className="text-ink-muted">to {formatDate(r.end_date)}</div>
           )}
-        >
-          {r.kind}
+        </div>
+      ),
+      getValue: (r) => r.start_date,
+    },
+    {
+      key: "income",
+      label: "Income",
+      align: "right",
+      alwaysVisible: true,
+      render: (r) => (
+        <span className="font-mono text-[12px] font-semibold text-synced">
+          {formatCurrency(r.income)}
         </span>
       ),
-      getValue: (r) => r.kind,
+      getValue: (r) => r.income,
     },
     {
-      key: "category",
-      label: "Category",
+      key: "cost",
+      label: "Cost",
+      align: "right",
+      alwaysVisible: true,
       render: (r) => (
-        <span className="text-[11.5px] text-ink-secondary">{r.category}</span>
-      ),
-      getValue: (r) => r.category,
-    },
-    {
-      key: "description",
-      label: "Description",
-      render: (r) => (
-        <span className="text-[11.5px] text-ink-secondary">
-          {r.description || "—"}
+        <span className="font-mono text-[12px] font-semibold text-err">
+          {formatCurrency(r.cost)}
         </span>
       ),
-      getValue: (r) => r.description,
+      getValue: (r) => r.cost,
     },
     {
-      key: "amount",
-      label: "Amount",
+      key: "net",
+      label: "Net",
       align: "right",
       alwaysVisible: true,
       render: (r) => (
         <span
           className={cn(
-            "font-mono text-[12px] font-semibold",
-            r.kind === "income" ? "text-synced" : "text-err"
+            "font-mono text-[12.5px] font-bold",
+            r.net >= 0 ? "text-synced" : "text-err"
           )}
         >
-          {r.kind === "cost" ? "−" : "+"}
-          {formatCurrency(r.amount)}
+          {formatCurrency(r.net)}
         </span>
       ),
-      getValue: (r) => r.amount,
+      getValue: (r) => r.net,
+    },
+    {
+      key: "margin_pct",
+      label: "Margin %",
+      align: "right",
+      render: (r) =>
+        r.margin_pct == null ? (
+          <span className="text-ink-muted">—</span>
+        ) : (
+          <span
+            className={cn(
+              "font-mono text-[12px] font-semibold",
+              r.margin_pct >= 0 ? "text-synced" : "text-err"
+            )}
+          >
+            {r.margin_pct.toFixed(1)}%
+          </span>
+        ),
+      getValue: (r) => r.margin_pct ?? -9999,
+    },
+    {
+      key: "lines",
+      label: "Lines",
+      align: "right",
+      render: (r) => (
+        <span className="font-mono text-[11px] text-ink-muted">
+          {r.line_count.toLocaleString()}
+        </span>
+      ),
+      getValue: (r) => r.line_count,
     },
   ];
 
@@ -1447,20 +1479,6 @@ function FinanceListView() {
             className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
           />
         </FilterField>
-        <FilterField label="Kind">
-          <select
-            value={kind}
-            onChange={(e) => {
-              setPage(1);
-              setKind(e.target.value as any);
-            }}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-          >
-            <option value="all">All</option>
-            <option value="income">Income</option>
-            <option value="cost">Cost</option>
-          </select>
-        </FilterField>
         <FilterField label="Brand">
           <select
             value={brand}
@@ -1478,19 +1496,19 @@ function FinanceListView() {
             ))}
           </select>
         </FilterField>
-        <FilterField label="Category">
+        <FilterField label="Stage">
           <select
-            value={category}
+            value={stage}
             onChange={(e) => {
               setPage(1);
-              setCategory(e.target.value);
+              setStage(e.target.value);
             }}
             className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
           >
             <option value="">All</option>
-            {allCategories.map((c) => (
-              <option key={c} value={c}>
-                {c}
+            {FINANCE_STAGE_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
               </option>
             ))}
           </select>
@@ -1510,26 +1528,40 @@ function FinanceListView() {
             <option value={200}>200</option>
           </select>
         </FilterField>
+        <FilterField label="Archived">
+          <label className="flex h-8 items-center gap-2 rounded-md border border-border bg-surface px-2 text-[11px]">
+            <input
+              type="checkbox"
+              checked={includeArchived}
+              onChange={(e) => {
+                setPage(1);
+                setIncludeArchived(e.target.checked);
+              }}
+              className="accent-accent"
+            />
+            Include archived
+          </label>
+        </FilterField>
       </div>
 
       <DataTable
-        tableId="project-finance-lines"
-        exportName="project-finance-lines"
+        tableId="project-finance-by-project"
+        exportName="project-finance-by-project"
         search={{
           value: search,
           onChange: (v) => {
             setPage(1);
             setSearch(v);
           },
-          placeholder: "Search description, project, notes…",
+          placeholder: "Search project code, name, venue, organizer…",
         }}
         columns={columns}
         rows={list.data?.data ?? null}
         loading={list.loading}
         error={list.error}
-        emptyLabel="No finance lines match these filters"
+        emptyLabel="No projects match these filters"
         getRowKey={(r) => r.id}
-        onRowClick={(r) => navigate(`/projects/${r.project_id}`)}
+        onRowClick={(r) => navigate(`/projects/${r.id}`)}
         serverSort
         onSortChange={handleSortChange}
       />
