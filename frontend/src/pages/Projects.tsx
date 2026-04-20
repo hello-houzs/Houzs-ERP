@@ -37,6 +37,7 @@ import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
 import { ProjectMaintenanceView } from "./ProjectMaintenance";
 import { TabStrip } from "../components/TabStrip";
+import { getHolidaysOn } from "../lib/holidays";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
@@ -1950,6 +1951,19 @@ function formatMonth(yyyy_mm: string): string {
 function ProjectsCalendarView() {
   const toast = useToast();
   const navigate = useNavigate();
+  const [brand, setBrand] = useLocalStorage<string>("projects:cal:brand", "");
+  const [stage, setStage] = useLocalStorage<string>("projects:cal:stage", "");
+  const [showTasks, setShowTasks] = useLocalStorage<boolean>(
+    "projects:cal:showTasks",
+    true
+  );
+  const [showHolidays, setShowHolidays] = useLocalStorage<boolean>(
+    "projects:cal:showHolidays",
+    true
+  );
+  const brandsQ = useQuery<{ data: string[] }>(() =>
+    api.get("/api/projects/brands")
+  );
   const [anchor, setAnchor] = useState<Date>(() => {
     const d = new Date();
     d.setDate(1);
@@ -1980,8 +1994,29 @@ function ProjectsCalendarView() {
     cells.push({ date: d, iso: d.toISOString().slice(0, 10) });
   }
 
-  const projects = q.data?.projects ?? [];
-  const tasks = q.data?.tasks ?? [];
+  const allProjects = q.data?.projects ?? [];
+  const allTasks = q.data?.tasks ?? [];
+
+  // Client-side filter so the server call stays cacheable at the
+  // month granularity. Projects that don't match are excluded; tasks
+  // inherit their project's brand via the join server-side already.
+  const projects = allProjects.filter((p) => {
+    if (brand && p.brand !== brand) return false;
+    if (stage && p.stage !== stage) return false;
+    return true;
+  });
+  const tasks = showTasks
+    ? allTasks.filter((t) => {
+        if (brand && t.brand !== brand) return false;
+        // Tasks don't carry project stage on the wire — match via the
+        // filtered project set.
+        if (stage) {
+          const match = projects.find((p) => p.id === t.project_id);
+          if (!match) return false;
+        }
+        return true;
+      })
+    : [];
 
   // Group tasks by date for fast lookup
   const tasksByDate = new Map<string, CalendarTask[]>();
@@ -2013,7 +2048,7 @@ function ProjectsCalendarView() {
         description="Event spans and checklist due dates across all brands"
       />
 
-      <div className="mb-4 flex items-center gap-2">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         <button
           onClick={() => {
             const d = new Date(anchor);
@@ -2045,14 +2080,81 @@ function ProjectsCalendarView() {
           →
         </button>
         <span className="ml-2 font-display text-lg font-bold">{monthLabel}</span>
-        <div className="ml-auto flex flex-wrap items-center gap-1.5 text-[10px]">
-          {Object.entries(BRAND_COLORS).map(([b, cls]) => (
-            <span key={b} className="inline-flex items-center gap-1">
-              <span className={cn("h-2 w-2 rounded-full", cls.split(" ")[0])} />
-              <span className="text-ink-muted">{b}</span>
-            </span>
-          ))}
+
+        {/* Filters */}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <select
+            value={brand}
+            onChange={(e) => setBrand(e.target.value)}
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            title="Filter by brand"
+          >
+            <option value="">All brands</option>
+            {(brandsQ.data?.data ?? []).map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
+          <select
+            value={stage}
+            onChange={(e) => setStage(e.target.value)}
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            title="Filter by stage"
+          >
+            <option value="">All stages</option>
+            {FINANCE_STAGE_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => setShowTasks(!showTasks)}
+            className={cn(
+              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider transition-colors",
+              showTasks
+                ? "border-accent/40 bg-accent-soft/40 text-accent"
+                : "border-border bg-surface text-ink-muted hover:text-ink"
+            )}
+            title="Toggle task chips"
+          >
+            {showTasks ? "✓" : "○"} Tasks
+          </button>
+          <button
+            onClick={() => setShowHolidays(!showHolidays)}
+            className={cn(
+              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider transition-colors",
+              showHolidays
+                ? "border-accent/40 bg-accent-soft/40 text-accent"
+                : "border-border bg-surface text-ink-muted hover:text-ink"
+            )}
+            title="Show Malaysian federal public holidays"
+          >
+            {showHolidays ? "✓" : "○"} MY Holidays
+          </button>
+          {(brand || stage) && (
+            <button
+              onClick={() => {
+                setBrand("");
+                setStage("");
+              }}
+              className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
+            >
+              Clear
+            </button>
+          )}
         </div>
+      </div>
+
+      {/* Brand legend */}
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-[10px]">
+        {Object.entries(BRAND_COLORS).map(([b, cls]) => (
+          <span key={b} className="inline-flex items-center gap-1">
+            <span className={cn("h-2 w-2 rounded-full", cls.split(" ")[0])} />
+            <span className="text-ink-muted">{b}</span>
+          </span>
+        ))}
       </div>
 
       {q.loading && <div className="text-[12px] text-ink-muted">Loading calendar…</div>}
@@ -2080,12 +2182,15 @@ function ProjectsCalendarView() {
             const cellProjects = projectsOn(cell.iso);
             const cellTasks = tasksByDate.get(cell.iso) ?? [];
             const isToday = cell.iso === today;
+            const holidays = showHolidays ? getHolidaysOn(cell.iso) : [];
+            const isHolidayCell = holidays.length > 0;
             return (
               <div
                 key={idx}
                 className={cn(
                   "min-h-[110px] border-b border-r border-border px-1.5 py-1 text-[10px]",
                   !inMonth && "bg-bg/40 text-ink-muted",
+                  isHolidayCell && inMonth && "bg-err/5",
                   isToday && "bg-accent-soft/30"
                 )}
               >
@@ -2107,6 +2212,17 @@ function ProjectsCalendarView() {
                     </span>
                   )}
                 </div>
+
+                {/* Holiday chip(s) */}
+                {isHolidayCell && (
+                  <div
+                    className="mb-1 truncate rounded bg-err/15 px-1 py-0.5 text-[9px] font-semibold text-err"
+                    title={holidays.map((h) => h.name).join(", ")}
+                  >
+                    🎌 {holidays[0].name}
+                    {holidays.length > 1 && ` +${holidays.length - 1}`}
+                  </div>
+                )}
 
                 {/* Project event bars (existing) */}
                 <div className="space-y-0.5">
