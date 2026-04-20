@@ -54,7 +54,7 @@ import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
 import { api, buildQuery } from "../api/client";
-import { formatDate, cn } from "../lib/utils";
+import { formatCurrency, formatDate, cn } from "../lib/utils";
 import { ServiceMetrics } from "./ServiceMetrics";
 import type {
   Paginated,
