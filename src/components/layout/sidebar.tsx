@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   LayoutDashboard,
   Briefcase,
@@ -16,6 +16,8 @@ import {
   ShieldCheck,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Check,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -64,9 +66,55 @@ const navigationGroups: NavGroup[] = [
   },
 ];
 
+// ---------- users ----------
+interface AppUser {
+  name: string;
+  role: string;
+}
+
+const APP_USERS: AppUser[] = [
+  { name: "Ummu", role: "Director" },
+  { name: "Nico", role: "Director" },
+];
+
+const USER_STORAGE_KEY = "houzs-current-user";
+
 export function Sidebar() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const [currentUser, setCurrentUser] = useState<AppUser>(APP_USERS[0]);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  // Load saved user from localStorage on mount (client only)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(USER_STORAGE_KEY);
+    if (stored) {
+      const match = APP_USERS.find((u) => u.name === stored);
+      if (match) setCurrentUser(match);
+    }
+  }, []);
+
+  // Close user menu when clicking outside
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [userMenuOpen]);
+
+  const selectUser = (u: AppUser) => {
+    setCurrentUser(u);
+    setUserMenuOpen(false);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(USER_STORAGE_KEY, u.name);
+    }
+  };
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
@@ -156,24 +204,76 @@ export function Sidebar() {
       </div>
 
       {/* User */}
-      <div className="border-t border-white/10 px-2 py-2 shrink-0">
+      <div className="border-t border-white/10 px-2 py-2 shrink-0 relative" ref={userMenuRef}>
         {collapsed ? (
-          <div className="flex items-center justify-center">
+          <button
+            type="button"
+            onClick={() => setUserMenuOpen((o) => !o)}
+            className="flex w-full items-center justify-center hover:opacity-80 transition"
+            title={`${currentUser.name} — ${currentUser.role}`}
+          >
             <div className="h-8 w-8 rounded-full bg-[#0F766E]/40 flex items-center justify-center text-xs font-semibold text-white">
-              L
+              {currentUser.name[0]}
             </div>
-          </div>
+          </button>
         ) : (
-          <div className="flex items-center gap-2.5 px-1">
+          <button
+            type="button"
+            onClick={() => setUserMenuOpen((o) => !o)}
+            className="flex w-full items-center gap-2.5 px-1 py-0.5 rounded hover:bg-white/5 transition text-left"
+          >
             <div className="h-8 w-8 rounded-full bg-[#0F766E]/40 flex items-center justify-center text-xs font-semibold text-white shrink-0">
-              L
+              {currentUser.name[0]}
             </div>
-            <div className="flex flex-col min-w-0">
-              <span className="text-[13px] font-semibold text-white truncate">Lim</span>
+            <div className="flex flex-col min-w-0 flex-1">
+              <span className="text-[13px] font-semibold text-white truncate">{currentUser.name}</span>
               <span className="inline-flex items-center self-start rounded-full bg-[#0F766E]/30 text-[10px] text-gray-300 px-2 py-[2px]">
-                Director
+                {currentUser.role}
               </span>
             </div>
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 text-gray-400 shrink-0 transition-transform",
+                userMenuOpen && "rotate-180"
+              )}
+              strokeWidth={2}
+            />
+          </button>
+        )}
+
+        {userMenuOpen && (
+          <div
+            className={cn(
+              "absolute bottom-full mb-2 bg-[#122C3D] border border-white/10 rounded-md shadow-lg overflow-hidden z-50",
+              collapsed ? "left-1 w-40" : "left-2 right-2"
+            )}
+          >
+            <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500 border-b border-white/5">
+              Switch user
+            </div>
+            {APP_USERS.map((u) => {
+              const selected = u.name === currentUser.name;
+              return (
+                <button
+                  key={u.name}
+                  type="button"
+                  onClick={() => selectUser(u)}
+                  className={cn(
+                    "flex items-center gap-2.5 px-3 py-2 w-full text-left transition",
+                    selected ? "bg-[#0F766E]/20" : "hover:bg-white/5"
+                  )}
+                >
+                  <div className="h-6 w-6 rounded-full bg-[#0F766E]/40 flex items-center justify-center text-[10px] font-semibold text-white shrink-0">
+                    {u.name[0]}
+                  </div>
+                  <div className="flex flex-col flex-1 min-w-0">
+                    <span className="text-[12px] font-semibold text-white truncate">{u.name}</span>
+                    <span className="text-[10px] text-gray-400 truncate">{u.role}</span>
+                  </div>
+                  {selected && <Check className="h-3.5 w-3.5 text-[#14B8A6] shrink-0" strokeWidth={3} />}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
