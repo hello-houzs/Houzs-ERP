@@ -782,18 +782,20 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
   const sortBy = c.req.query("sort_by") || "net";
   const sortDir =
     (c.req.query("sort_dir") || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+  // Sort runs on the OUTER wrapped subquery, so all columns are
+  // unaliased (the `p.` prefix only exists inside `baseSelect`).
   const sortMap: Record<string, string> = {
-    project: "p.code",
-    brand: "p.brand",
-    stage: "p.stage",
-    start: "p.start_date",
+    project: "code",
+    brand: "brand",
+    stage: "stage",
+    start: "start_date",
     income: "income",
     cost: "cost",
     net: "net",
     margin_pct: "margin_pct",
     lines: "line_count",
   };
-  const orderBy = `ORDER BY ${sortMap[sortBy] ?? sortMap.net} ${sortDir}, p.id DESC`;
+  const orderBy = `ORDER BY ${sortMap[sortBy] ?? sortMap.net} ${sortDir}, id DESC`;
 
   // The aggregate row per project. Date filter only applies inside
   // each SUM; the project row itself is selected by the project-level
