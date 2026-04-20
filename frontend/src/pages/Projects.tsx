@@ -30,7 +30,6 @@ import {
   Download,
   Pencil,
   Send,
-  ArrowLeft,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
@@ -42,7 +41,7 @@ import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
 import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
-import { Breadcrumbs } from "../components/Breadcrumbs";
+import { DetailLayout, HeaderButton } from "../components/DetailLayout";
 import { InlineEdit } from "../components/InlineEdit";
 import { StatCard } from "../components/StatCard";
 import { DashboardGrid } from "../components/Dashboard";
@@ -1860,7 +1859,6 @@ function ProjectDetailContent({
 }) {
   const { can } = useAuth();
   const dialog = useDialog();
-  const navigate = useNavigate();
   const detail = useQuery<ProjectDetail>(() => api.get(`/api/projects/${id}`), [id]);
   // Users list — fetched once per open panel, reused for owner pickers
   // in the logistics section, checklist add form, and reassign dropdowns.
@@ -1923,72 +1921,69 @@ function ProjectDetailContent({
   const nextStage = p ? NEXT_STAGE[p.stage] : null;
 
   return (
-    <div>
-      <Breadcrumbs
-        items={[
-          { label: "Projects", to: "/projects" },
-          { label: p?.code || "Loading…" },
-        ]}
-      />
-      <PageHeader
-        eyebrow={p?.code ? `Project · ${p.code}` : "Project"}
-        title={p?.name || "Loading…"}
-        actions={
-          p ? (
-            <>
-              <button
-                onClick={() => navigate("/projects")}
-                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+    <DetailLayout
+      breadcrumbs={[
+        { label: "Projects", to: "/projects" },
+        { label: p?.code || "Loading…" },
+      ]}
+      eyebrow={p?.code ? `Project · ${p.code}` : "Project"}
+      title={p?.name || "Loading…"}
+      description={p ? `${STAGE_LABEL[p.stage]}${p.brand ? ` · ${p.brand}` : ""}${p.venue ? ` · ${p.venue}` : ""}${p.duration_days ? ` · ${p.duration_days} day${p.duration_days === 1 ? "" : "s"}` : ""}` : undefined}
+      backTo="/projects"
+      loading={detail.loading && !p}
+      error={detail.error}
+      actions={
+        p ? (
+          <>
+            {p.archived_at ? (
+              <HeaderButton
+                variant="ghost"
+                onClick={async () => {
+                  try {
+                    await api.post(`/api/projects/${id}/unarchive`);
+                    toast.success("Restored");
+                    detail.reload();
+                    onUpdated();
+                  } catch (e: any) {
+                    toast.error(e?.message || "Failed");
+                  }
+                }}
               >
-                <ArrowLeft size={13} /> Back
-              </button>
-              {p.archived_at ? (
-                <button
-                  onClick={async () => {
-                    try {
-                      await api.post(`/api/projects/${id}/unarchive`);
-                      toast.success("Restored");
-                      detail.reload();
-                      onUpdated();
-                    } catch (e: any) {
-                      toast.error(e?.message || "Failed");
-                    }
-                  }}
-                  className="rounded-md border border-synced/40 bg-synced/5 px-3 py-2 text-[12px] font-semibold text-synced"
-                >
-                  Restore
-                </button>
-              ) : (
-                <button
-                  onClick={async () => {
-                    if (!(await dialog.confirm("Archive this project?"))) return;
-                    try {
-                      await api.post(`/api/projects/${id}/archive`);
-                      toast.success("Archived");
-                      detail.reload();
-                      onUpdated();
-                    } catch (e: any) {
-                      toast.error(e?.message || "Failed");
-                    }
-                  }}
-                  className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-muted hover:border-err/40 hover:text-err"
-                >
-                  Archive
-                </button>
-              )}
-              {nextStage && !p.archived_at && (
-                <button
-                  disabled={transitioning}
-                  onClick={() => transition(nextStage.stage)}
-                  className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
-                >
-                  {transitioning ? "…" : nextStage.label}
-                </button>
-              )}
-            </>
-          ) : undefined
-        }
-      />
+                Restore
+              </HeaderButton>
+            ) : (
+              <HeaderButton
+                variant="ghost"
+                onClick={async () => {
+                  if (!(await dialog.confirm("Archive this project?"))) return;
+                  try {
+                    await api.post(`/api/projects/${id}/archive`);
+                    toast.success("Archived");
+                    detail.reload();
+                    onUpdated();
+                  } catch (e: any) {
+                    toast.error(e?.message || "Failed");
+                  }
+                }}
+              >
+                Archive
+              </HeaderButton>
+            )}
+            {nextStage && !p.archived_at && (
+              <HeaderButton
+                variant="primary"
+                onClick={() => transition(nextStage.stage)}
+                disabled={transitioning}
+              >
+                {transitioning ? "…" : nextStage.label}
+              </HeaderButton>
+            )}
+          </>
+        ) : undefined
+      }
+    >
+      {/* DetailLayout owns the loading/error chrome — keep this no-op for legacy in-page loading hint */}
+      {false && <div className="hidden">noop</div>}
       {detail.loading && <div className="p-6 text-sm text-ink-muted">Loading…</div>}
       {detail.error && !detail.loading && (
         <div className="m-5 rounded-md border border-err/40 bg-err/5 p-4 text-sm">
@@ -2343,7 +2338,7 @@ function ProjectDetailContent({
           </PanelSection>
         </>
       )}
-    </div>
+    </DetailLayout>
   );
 }
 

@@ -20,10 +20,9 @@ import {
   Printer,
   Download,
   X,
-  ArrowLeft,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
-import { Breadcrumbs } from "../components/Breadcrumbs";
+import { DetailLayout, HeaderButton } from "../components/DetailLayout";
 import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
 import { TabStrip } from "../components/TabStrip";
@@ -961,7 +960,6 @@ function DetailContent({
   toast: ReturnType<typeof useToast>;
 }) {
   const dialog = useDialog();
-  const navigate = useNavigate();
   const detail = useQuery<AssrDetail>(
     () => api.get(`/api/assr/${id}`),
     [id]
@@ -1069,92 +1067,86 @@ function DetailContent({
     : [];
 
   return (
-    <div>
-      <Breadcrumbs
-        items={[
-          { label: "Service Cases", to: "/assr" },
-          { label: c?.assr_no || "Loading…" },
-        ]}
-      />
-      <PageHeader
-        eyebrow={c?.assr_no ? `Service Case · ${c.assr_no}` : "Service Case"}
-        title={c?.customer_name || "Loading…"}
-        actions={
-          c ? (
-            <>
-              <button
-                onClick={() => navigate("/assr")}
-                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+    <DetailLayout
+      breadcrumbs={[
+        { label: "Service Cases", to: "/assr" },
+        { label: c?.assr_no || "Loading…" },
+      ]}
+      eyebrow={c?.assr_no ? `Service Case · ${c.assr_no}` : "Service Case"}
+      title={c?.customer_name || "Loading…"}
+      description={c ? `Stage: ${c.stage}${c.priority ? ` · Priority ${c.priority}` : ""}${c.assigned_to_name ? ` · Assigned ${c.assigned_to_name}` : ""}` : undefined}
+      backTo="/assr"
+      loading={detail.loading && !c}
+      error={detail.error}
+      actions={
+        c ? (
+          <>
+            {c.archived_at ? (
+              <HeaderButton
+                variant="ghost"
+                onClick={async () => {
+                  try {
+                    await api.post(`/api/assr/${id}/unarchive`);
+                    toast.success("Case restored");
+                    detail.reload();
+                    onUpdated();
+                  } catch (e: any) {
+                    toast.error(e?.message || "Failed");
+                  }
+                }}
               >
-                <ArrowLeft size={13} /> Back
-              </button>
-              {c.archived_at ? (
-                <button
-                  onClick={async () => {
-                    try {
-                      await api.post(`/api/assr/${id}/unarchive`);
-                      toast.success("Case restored");
-                      detail.reload();
-                      onUpdated();
-                    } catch (e: any) {
-                      toast.error(e?.message || "Failed");
-                    }
-                  }}
-                  className="rounded-md border border-synced/40 bg-synced/5 px-3 py-2 text-[12px] font-semibold text-synced"
-                >
-                  Restore
-                </button>
-              ) : (
-                <button
-                  onClick={async () => {
-                    if (!(await dialog.confirm("Archive this case? It will be hidden from the default list but kept on record."))) return;
-                    try {
-                      await api.post(`/api/assr/${id}/archive`);
-                      toast.success("Case archived");
-                      detail.reload();
-                      onUpdated();
-                    } catch (e: any) {
-                      toast.error(e?.message || "Failed");
-                    }
-                  }}
-                  className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-muted hover:border-err/40 hover:text-err"
-                >
-                  Archive
-                </button>
+                Restore
+              </HeaderButton>
+            ) : (
+              <HeaderButton
+                variant="ghost"
+                onClick={async () => {
+                  if (!(await dialog.confirm("Archive this case? It will be hidden from the default list but kept on record."))) return;
+                  try {
+                    await api.post(`/api/assr/${id}/archive`);
+                    toast.success("Case archived");
+                    detail.reload();
+                    onUpdated();
+                  } catch (e: any) {
+                    toast.error(e?.message || "Failed");
+                  }
+                }}
+              >
+                Archive
+              </HeaderButton>
+            )}
+            {c.stage !== "closed" &&
+              !c.archived_at &&
+              c.stage !== "resolution" && (
+                <HeaderButton variant="ghost" onClick={handleCloseClick}>
+                  Close
+                </HeaderButton>
               )}
-              {c.stage !== "closed" && !c.archived_at && c.stage !== "resolution" && (
-                <button
-                  disabled={transitioning}
-                  onClick={handleCloseClick}
-                  className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink hover:border-err/40"
-                >
-                  Close Case
-                </button>
-              )}
-              {c.stage === "resolution" && !c.archived_at && (
-                <button
-                  disabled={transitioning}
-                  onClick={handleCloseClick}
-                  className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
-                >
-                  {transitioning ? "..." : "Close Case"}
-                  <ChevronRight size={14} />
-                </button>
-              )}
-              {nextStage && c.stage !== "resolution" && !c.archived_at && (
-                <button
-                  disabled={transitioning}
-                  onClick={() => transition(nextStage.stage)}
-                  className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-2.5 text-[12px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
-                >
-                  {transitioning ? "..." : nextStage.label}
-                  <ChevronRight size={14} />
-                </button>
-              )}
-            </>
-          ) : undefined
-        }
-      />
+            {c.stage === "resolution" && !c.archived_at && (
+              <HeaderButton
+                variant="primary"
+                onClick={handleCloseClick}
+                disabled={transitioning}
+              >
+                {transitioning ? "…" : "Close Case"}
+                <ChevronRight size={12} />
+              </HeaderButton>
+            )}
+            {nextStage && c.stage !== "resolution" && !c.archived_at && (
+              <HeaderButton
+                variant="primary"
+                onClick={() => transition(nextStage.stage)}
+                disabled={transitioning}
+              >
+                {transitioning ? "…" : nextStage.label}
+                <ChevronRight size={12} />
+              </HeaderButton>
+            )}
+          </>
+        ) : undefined
+      }
+    >
+      {false && <div className="hidden">{/* loading handled by DetailLayout */}</div>}
       {detail.loading && <div className="p-6 text-sm text-ink-muted">Loading...</div>}
       {detail.error && !detail.loading && (
         <div className="m-5 rounded-md border border-err/40 bg-err/5 p-4 text-sm">
@@ -1847,7 +1839,7 @@ function DetailContent({
           onClose={() => setLightboxIndex(null)}
         />
       )}
-    </div>
+    </DetailLayout>
   );
 }
 

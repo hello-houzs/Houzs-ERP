@@ -1,8 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, useNavigate, useParams, Navigate } from "react-router-dom";
-import { RefreshCw, Send, ArrowLeft } from "lucide-react";
+import { RefreshCw, Send, ChevronDown, ChevronUp } from "lucide-react";
 import { PageHeader } from "../components/Layout";
-import { Breadcrumbs } from "../components/Breadcrumbs";
+import {
+  DetailLayout,
+  DetailGrid,
+  DetailMain,
+  DetailAside,
+  Section,
+  StatStrip,
+  DefinitionList,
+  HeaderButton,
+} from "../components/DetailLayout";
 import { Button } from "../components/Button";
 import { DataTable, type Column } from "../components/DataTable";
 import { Pagination } from "../components/Pagination";
@@ -696,7 +705,6 @@ function PoLinesContent({
   doc: PurchaseOrderDoc;
   onChanged: () => void;
 }) {
-  const navigate = useNavigate();
   const toast = useToast();
   const [lines, setLines] = useState<PurchaseOrder[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -797,62 +805,70 @@ function PoLinesContent({
   const isOutstanding = status === "Outstanding";
 
   return (
-    <div>
-      <Breadcrumbs
+    <DetailLayout
+      breadcrumbs={[
+        { label: "Purchase Orders", to: "/po" },
+        { label: doc.doc_no },
+      ]}
+      eyebrow={`PO · ${doc.doc_no}`}
+      title={doc.creditor_name || doc.creditor_code || "Supplier"}
+      description={`Doc date ${formatDate(doc.doc_date)}${doc.creditor_code ? ` · Creditor ${doc.creditor_code}` : ""}`}
+      backTo="/po"
+      actions={
+        isOutstanding && lines && lines.length > 0 ? (
+          <HeaderButton variant="primary" onClick={pushDates} disabled={pushing}>
+            <Send size={12} /> {pushing ? "Pushing…" : "Push Dates"}
+          </HeaderButton>
+        ) : null
+      }
+    >
+      <StatStrip
         items={[
-          { label: "Purchase Orders", to: "/po" },
-          { label: doc.doc_no },
+          {
+            label: "Status",
+            value: status,
+            tone:
+              status === "Outstanding"
+                ? "warn"
+                : status === "Cancelled"
+                ? "default"
+                : "ok",
+          },
+          { label: "Cost (RM ex-tax)", value: formatCurrency(doc.local_ex_tax) },
+          { label: "Final Total", value: formatCurrency(doc.final_total) },
+          { label: "Currency", value: doc.currency_code || "—" },
         ]}
       />
-      <PageHeader
-        eyebrow={`PO · ${doc.doc_no}`}
-        title={doc.creditor_name || doc.creditor_code || "Supplier"}
-        description={`Doc date ${formatDate(doc.doc_date)}`}
-        actions={
-          <button
-            onClick={() => navigate("/po")}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
-          >
-            <ArrowLeft size={13} /> Back
-          </button>
-        }
-      />
-      <PanelSection title="Summary">
-        <div className="grid grid-cols-2 gap-3 text-[12px] sm:grid-cols-4">
-          <Stat label="Status" value={status} />
-          <Stat label="Cost (RM ex-tax)" value={formatCurrency(doc.local_ex_tax)} />
-          <Stat label="Final Total" value={formatCurrency(doc.final_total)} />
-          <Stat label="Currency" value={doc.currency_code || "—"} />
-        </div>
-      </PanelSection>
 
-      {/* Header details — collapsible because it can be ~150 fields */}
-      <PanelSection title="Header Details">
-        <button
-          onClick={() => setShowHeader((s) => !s)}
-          className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-accent hover:underline"
-        >
-          {showHeader ? "Hide" : "Show"} {Object.keys(headerFields).length} fields
-        </button>
-        {showHeader && (
-          <FieldGrid fields={headerFields} groups={HEADER_GROUPS} />
-        )}
-      </PanelSection>
-
-      {/* Line item details from AutoCount /getDetail */}
-      <PanelSection
-        title={`Line Item Details${details ? ` (${details.length})` : ""}`}
-      >
+      <div className="mt-5">
+        <DetailGrid>
+          <DetailMain>
+            {/* Line item details from AutoCount /getDetail */}
+            <Section
+              title={`Line Item Details${details ? ` · ${details.length}` : ""}`}
+              dense
+              actions={
+                details && details.length > 0 ? (
+                  <button
+                    onClick={() => setShowRawDetail((s) => !s)}
+                    className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent hover:underline"
+                  >
+                    {showRawDetail ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                    {showRawDetail ? "Hide raw" : "Raw fields"}
+                  </button>
+                ) : null
+              }
+            >
         {detailsLoading && (
-          <div className="text-[12px] text-ink-muted">Loading from AutoCount…</div>
+          <div className="px-4 py-4 text-[12px] text-ink-muted">Loading from AutoCount…</div>
         )}
         {detailsError && (
-          <div className="rounded-md border border-err/30 bg-err/5 px-3 py-2 text-[12px] text-err">
+          <div className="m-4 rounded-md border border-err/30 bg-err/5 px-3 py-2 text-[12px] text-err">
             {detailsError}
           </div>
         )}
         {details && details.length === 0 && !detailsLoading && (
-          <div className="text-[12px] text-ink-muted">
+          <div className="px-4 py-4 text-[12px] text-ink-muted">
             AutoCount returned no line details.
           </div>
         )}
@@ -860,7 +876,7 @@ function PoLinesContent({
           <>
             <div className="overflow-x-auto">
               <table className="w-full text-[11px]">
-                <thead className="bg-bg/60 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+                <thead className="bg-bg/50 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
                   <tr>
                     <th className="px-2 py-2 text-left">#</th>
                     <th className="px-2 py-2 text-left">Item</th>
@@ -926,20 +942,14 @@ function PoLinesContent({
                 </tbody>
               </table>
             </div>
-            <button
-              onClick={() => setShowRawDetail((s) => !s)}
-              className="mt-3 inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-accent hover:underline"
-            >
-              {showRawDetail ? "Hide" : "Show"} all fields per line
-            </button>
             {showRawDetail && (
-              <div className="mt-2 space-y-3">
+              <div className="space-y-3 border-t border-border-subtle bg-bg/30 p-4">
                 {details.map((d, i) => (
                   <div
                     key={`raw-${d.DtlKey ?? i}`}
-                    className="rounded-md border border-border bg-bg/40 p-3"
+                    className="rounded-md border border-border bg-surface p-3"
                   >
-                    <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-accent">
+                    <div className="mb-2 font-mono text-[10px] font-bold uppercase tracking-wider text-accent">
                       Line {d.Seq ?? i + 1} · {d.ItemCode || "—"}
                     </div>
                     <FieldGrid fields={d} />
@@ -949,24 +959,12 @@ function PoLinesContent({
             )}
           </>
         )}
-      </PanelSection>
+        </Section>
 
-      <PanelSection title={`Outstanding Lines${lines ? ` (${lines.length})` : ""}`}>
-        {isOutstanding && lines && lines.length > 0 && (
-          <div className="mb-2 flex justify-end">
-            <Button
-              variant="primary"
-              icon={<Send size={13} />}
-              onClick={pushDates}
-              disabled={pushing}
-            >
-              {pushing ? "Pushing…" : "Push Dates to AutoCount"}
-            </Button>
-          </div>
-        )}
-        {loading && <div className="text-[12px] text-ink-muted">Loading lines…</div>}
+        <Section title={`Outstanding Lines${lines ? ` · ${lines.length}` : ""}`} dense>
+        {loading && <div className="px-4 py-4 text-[12px] text-ink-muted">Loading lines…</div>}
         {!loading && (!lines || lines.length === 0) && (
-          <div className="rounded-md border border-dashed border-border bg-bg/60 px-4 py-6 text-center text-[12px] text-ink-muted">
+          <div className="m-4 rounded-md border border-dashed border-border bg-bg/60 px-4 py-6 text-center text-[12px] text-ink-muted">
             No outstanding lines for this PO.
             {!isOutstanding && " (Header is closed/delivered.)"}
           </div>
@@ -974,7 +972,7 @@ function PoLinesContent({
         {lines && lines.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-[12px]">
-              <thead className="bg-bg/60 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              <thead className="bg-bg/50 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                 <tr>
                   <th className="px-2 py-2 text-left">Item</th>
                   <th className="px-2 py-2 text-right">Qty Rem</th>
@@ -1025,8 +1023,34 @@ function PoLinesContent({
             </table>
           </div>
         )}
-      </PanelSection>
-    </div>
+            </Section>
+          </DetailMain>
+
+          <DetailAside>
+            <Section
+              title={`Header Fields · ${Object.keys(headerFields).length}`}
+              actions={
+                <button
+                  onClick={() => setShowHeader((s) => !s)}
+                  className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent hover:underline"
+                >
+                  {showHeader ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                  {showHeader ? "Hide" : "Show"}
+                </button>
+              }
+            >
+              {showHeader ? (
+                <FieldGrid fields={headerFields} groups={HEADER_GROUPS} />
+              ) : (
+                <div className="text-[11.5px] text-ink-muted">
+                  Tap “Show” to expand the AutoCount header payload.
+                </div>
+              )}
+            </Section>
+          </DetailAside>
+        </DetailGrid>
+      </div>
+    </DetailLayout>
   );
 }
 
@@ -1084,15 +1108,6 @@ function DateInput({
       }}
       className="h-7 w-32 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
     />
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-[9px] font-semibold uppercase tracking-wider text-ink-muted">{label}</div>
-      <div className="font-mono text-[12.5px] font-bold text-ink">{value}</div>
-    </div>
   );
 }
 

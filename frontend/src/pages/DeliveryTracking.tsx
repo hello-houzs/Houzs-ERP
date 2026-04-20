@@ -2,7 +2,6 @@ import { useState } from "react";
 import { useNavigate, useParams, Navigate } from "react-router-dom";
 import {
   ArrowRight,
-  ArrowLeft,
   AlertTriangle,
   Package,
   Ship,
@@ -12,7 +11,16 @@ import {
   Clock,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
-import { Breadcrumbs } from "../components/Breadcrumbs";
+import {
+  DetailLayout,
+  DetailGrid,
+  DetailMain,
+  DetailAside,
+  Section,
+  StatStrip,
+  DefinitionList,
+  HeaderButton,
+} from "../components/DetailLayout";
 import { DataTable } from "../components/DataTable";
 import { FilterPills } from "../components/FilterPills";
 import { Pagination } from "../components/Pagination";
@@ -271,19 +279,16 @@ export function DeliveryTracking() {
 export function DeliveryDetail() {
   const { docNo: rawDocNo = "" } = useParams<{ docNo: string }>();
   const docNo = decodeURIComponent(rawDocNo);
-  const navigate = useNavigate();
   if (!docNo) return <Navigate to="/delivery-tracking" replace />;
-  return <DeliveryDetailContent docNo={docNo} onUpdated={() => {}} navigate={navigate} />;
+  return <DeliveryDetailContent docNo={docNo} onUpdated={() => {}} />;
 }
 
 function DeliveryDetailContent({
   docNo,
   onUpdated,
-  navigate,
 }: {
   docNo: string;
   onUpdated: () => void;
-  navigate: ReturnType<typeof useNavigate>;
 }) {
   const toast = useToast();
   const detail = useQuery<DeliveryDetail>(
@@ -332,188 +337,372 @@ function DeliveryDetailContent({
   }
 
   return (
-    <div>
-      <Breadcrumbs
-        items={[
-          { label: "Delivery Tracking", to: "/delivery-tracking" },
-          { label: docNo },
-        ]}
-      />
-      <PageHeader
-        eyebrow={`Delivery · ${docNo}`}
-        title={d ? `${d.region} · ${STATUS_LABELS[d.status] || d.status}` : "Loading…"}
-        actions={
-          <button
-            onClick={() => navigate(-1)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+    <DetailLayout
+      breadcrumbs={[
+        { label: "Delivery Tracking", to: "/delivery-tracking" },
+        { label: docNo },
+      ]}
+      eyebrow={`Delivery · ${docNo}`}
+      title={d ? `${d.debtor_name || "Customer"} · ${d.region}` : "Loading…"}
+      description={d ? STATUS_LABELS[d.status] || d.status : undefined}
+      backTo="/delivery-tracking"
+      loading={detail.loading && !d}
+      actions={
+        d && !editMode ? (
+          <HeaderButton
+            variant="ghost"
+            onClick={() => {
+              setEditMode(true);
+              setForm({
+                freight_cost: d.freight_cost,
+                last_mile_cost: d.last_mile_cost,
+                customer_transport_fee: d.customer_transport_fee,
+              });
+            }}
           >
-            <ArrowLeft size={13} /> Back
-          </button>
-        }
-      />
+            Edit Costs
+          </HeaderButton>
+        ) : d && editMode ? (
+          <>
+            <HeaderButton
+              variant="ghost"
+              onClick={() => {
+                setEditMode(false);
+                setForm({});
+              }}
+            >
+              Cancel
+            </HeaderButton>
+            <HeaderButton
+              variant="primary"
+              onClick={saveFields}
+              disabled={busy}
+            >
+              {busy ? "Saving…" : "Save"}
+            </HeaderButton>
+          </>
+        ) : null
+      }
+    >
       {d && (
         <>
-          {/* Status pipeline visualization */}
-          <PanelSection title="Pipeline">
+          <Section title="Pipeline">
             <StatusPipeline region={d.region} current={d.status} />
-          </PanelSection>
+          </Section>
 
-          {/* Advance actions */}
           {d.next_statuses.length > 0 && (
-            <PanelSection title="Next Step">
-              {/* Optional fields depending on the next status */}
-              {d.next_statuses.includes("pending_shipout") && (
-                <label className="block mb-2">
-                  <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-secondary">Shipout Date</span>
-                  <input type="date" value={form.shipout_date || ""} onChange={(e) => setForm({ ...form, shipout_date: e.target.value })}
-                    className="w-full rounded border border-border bg-paper px-2 py-1.5 text-[12px]" />
-                </label>
-              )}
-              {d.next_statuses.includes("in_transit") && (
-                <label className="block mb-2">
-                  <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-secondary">Est. Arrival at Warehouse</span>
-                  <input type="date" value={form.est_arrival_date || ""} onChange={(e) => setForm({ ...form, est_arrival_date: e.target.value })}
-                    className="w-full rounded border border-border bg-paper px-2 py-1.5 text-[12px]" />
-                </label>
-              )}
-              {d.next_statuses.includes("out_for_delivery") && (
-                <label className="block mb-2">
-                  <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-secondary">Est. Delivery Date</span>
-                  <input type="date" value={form.est_delivery_date || ""} onChange={(e) => setForm({ ...form, est_delivery_date: e.target.value })}
-                    className="w-full rounded border border-border bg-paper px-2 py-1.5 text-[12px]" />
-                </label>
-              )}
-
-              <textarea
-                value={advanceNotes}
-                onChange={(e) => setAdvanceNotes(e.target.value)}
-                placeholder="Notes (optional)"
-                rows={2}
-                className="mb-2 w-full rounded border border-border bg-paper px-2 py-1.5 text-[12px]"
-              />
-
-              <div className="flex flex-wrap gap-2">
-                {d.next_statuses.map((ns) => (
-                  <button
-                    key={ns}
-                    disabled={busy}
-                    onClick={() => advance(ns)}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-md px-3 py-2 text-[12px] font-bold uppercase tracking-wide disabled:opacity-50",
-                      ns === "failed" ? "bg-err/10 text-err border border-err/30"
-                        : ns === "delivered" ? "bg-ok text-white"
-                        : "bg-accent text-white"
-                    )}
-                  >
-                    <ArrowRight size={13} />
-                    {STATUS_LABELS[ns] || ns}
-                  </button>
-                ))}
-              </div>
-            </PanelSection>
-          )}
-
-          {/* Order info */}
-          <PanelSection title="Order" muted>
-            <FieldRow label="Customer">{d.debtor_name || "—"}</FieldRow>
-            <FieldRow label="Phone">{d.phone || "—"}</FieldRow>
-            <FieldRow label="Location">{d.sales_location || "—"}</FieldRow>
-            {d.inv_addr1 && <FieldRow label="Address">{[d.inv_addr1, d.inv_addr2, d.inv_addr3, d.inv_addr4].filter(Boolean).join(", ")}</FieldRow>}
-          </PanelSection>
-
-          {/* Milestones */}
-          <PanelSection title="Milestones">
-            <FieldRow label="DO Ready">{formatDate(d.do_ready_at)}</FieldRow>
-            {d.region !== "WEST" && (
-              <>
-                <FieldRow label="Shipout Date">{formatDate(d.shipout_date)}</FieldRow>
-                <FieldRow label="Pickup Confirmed">{formatDate(d.pickup_confirmed_at)}</FieldRow>
-              </>
-            )}
-            {d.region === "EAST" && (
-              <>
-                <FieldRow label="Est. Arrival">{formatDate(d.est_arrival_date)}</FieldRow>
-                <FieldRow label="Arrived Warehouse">{formatDate(d.arrived_warehouse_at)}</FieldRow>
-                <FieldRow label="EM Warehouse">{d.em_warehouse || "—"}</FieldRow>
-              </>
-            )}
-            <FieldRow label="Est. Delivery">{formatDate(d.est_delivery_date)}</FieldRow>
-            <FieldRow label="Out for Delivery">{formatDate(d.out_for_delivery_at)}</FieldRow>
-            <FieldRow label="Delivered">{formatDate(d.delivered_at)}</FieldRow>
-            {d.failed_at && (
-              <>
-                <FieldRow label="Failed">{formatDate(d.failed_at)}</FieldRow>
-                <FieldRow label="Reason">{d.failure_reason || "—"}</FieldRow>
-              </>
-            )}
-          </PanelSection>
-
-          {/* Costing */}
-          <PanelSection title="Costing">
-            <FieldRow label="Revenue" mono>{formatCurrency(d.order_revenue)}</FieldRow>
-            <FieldRow label={`Budget (${d.budget_pct}%)`} mono>{formatCurrency(d.budget_amount)}</FieldRow>
-            <FieldRow label="Freight Cost" mono>{formatCurrency(d.freight_cost)}</FieldRow>
-            <FieldRow label="Last Mile Cost" mono>{formatCurrency(d.last_mile_cost)}</FieldRow>
-            <FieldRow label="Total Cost" mono>
-              <span className={cn("font-bold", d.total_cost > d.budget_amount ? "text-err" : "text-ok")}>
-                {formatCurrency(d.total_cost)}
-              </span>
-            </FieldRow>
-            {d.customer_transport_fee > 0 && (
-              <>
-                <FieldRow label="Customer Charged" mono>{formatCurrency(d.customer_transport_fee)}</FieldRow>
-                <FieldRow label="Fee vs Cost" mono>
-                  <span className={cn("font-bold", d.customer_transport_fee >= d.total_cost ? "text-ok" : "text-err")}>
-                    {formatCurrency(d.customer_transport_fee - d.total_cost)}
-                  </span>
-                </FieldRow>
-              </>
-            )}
-            <FieldRow label="Method">{d.delivery_method}</FieldRow>
-            {d.vendor_name && <FieldRow label="Vendor">{d.vendor_name}</FieldRow>}
-
-            {!editMode ? (
-              <button
-                onClick={() => { setEditMode(true); setForm({ freight_cost: d.freight_cost, last_mile_cost: d.last_mile_cost, customer_transport_fee: d.customer_transport_fee }); }}
-                className="mt-2 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink"
-              >
-                Edit Costs
-              </button>
-            ) : (
-              <div className="mt-2 space-y-2 rounded-md border border-accent/30 bg-accent/5 p-3">
-                <CostField label="Freight Cost" value={form.freight_cost} onChange={(v) => setForm({ ...form, freight_cost: v })} />
-                <CostField label="Last Mile Cost" value={form.last_mile_cost} onChange={(v) => setForm({ ...form, last_mile_cost: v })} />
-                <CostField label="Customer Transport Fee" value={form.customer_transport_fee} onChange={(v) => setForm({ ...form, customer_transport_fee: v })} />
-                <div className="flex gap-2">
-                  <button onClick={() => { setEditMode(false); setForm({}); }} className="rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink">Cancel</button>
-                  <button disabled={busy} onClick={saveFields} className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-50">{busy ? "Saving…" : "Save"}</button>
-                </div>
-              </div>
-            )}
-          </PanelSection>
-
-          {/* Status log */}
-          {d.log.length > 0 && (
-            <PanelSection title="History">
-              <div className="space-y-1">
-                {d.log.map((l, i) => (
-                  <div key={i} className="flex items-start gap-2 text-[11px]">
-                    <span className="shrink-0 text-ink-secondary">{formatDate(l.created_at)}</span>
-                    <span>
-                      {l.from_status && (
-                        <span className="text-ink-secondary">{STATUS_LABELS[l.from_status] || l.from_status} → </span>
-                      )}
-                      <span className="font-semibold text-ink">{STATUS_LABELS[l.to_status] || l.to_status}</span>
-                      {l.changed_by_name && <span className="text-ink-secondary"> by {l.changed_by_name}</span>}
-                    </span>
+            <div className="mt-5">
+              <Section title="Advance to next step">
+                <div className="space-y-3">
+                  {d.next_statuses.includes("pending_shipout") && (
+                    <DateField
+                      label="Shipout Date"
+                      value={form.shipout_date}
+                      onChange={(v) => setForm({ ...form, shipout_date: v })}
+                    />
+                  )}
+                  {d.next_statuses.includes("in_transit") && (
+                    <DateField
+                      label="Est. Arrival at Warehouse"
+                      value={form.est_arrival_date}
+                      onChange={(v) =>
+                        setForm({ ...form, est_arrival_date: v })
+                      }
+                    />
+                  )}
+                  {d.next_statuses.includes("out_for_delivery") && (
+                    <DateField
+                      label="Est. Delivery Date"
+                      value={form.est_delivery_date}
+                      onChange={(v) =>
+                        setForm({ ...form, est_delivery_date: v })
+                      }
+                    />
+                  )}
+                  <textarea
+                    value={advanceNotes}
+                    onChange={(e) => setAdvanceNotes(e.target.value)}
+                    placeholder="Notes (optional)"
+                    rows={2}
+                    className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    {d.next_statuses.map((ns) => (
+                      <button
+                        key={ns}
+                        disabled={busy}
+                        onClick={() => advance(ns)}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-[11.5px] font-bold uppercase tracking-wider disabled:opacity-50",
+                          ns === "failed"
+                            ? "bg-err/10 text-err border border-err/30 hover:bg-err/15"
+                            : ns === "delivered"
+                            ? "bg-synced text-white hover:bg-synced/90"
+                            : "bg-accent text-white hover:bg-accent-hover"
+                        )}
+                      >
+                        <ArrowRight size={12} />
+                        {STATUS_LABELS[ns] || ns}
+                      </button>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </PanelSection>
+                </div>
+              </Section>
+            </div>
           )}
+
+          <div className="mt-5">
+            <DetailGrid>
+              <DetailMain>
+                <Section title="Milestones">
+                  <DefinitionList
+                    items={[
+                      {
+                        label: "DO Ready",
+                        value: formatDate(d.do_ready_at),
+                      },
+                      ...(d.region !== "WEST"
+                        ? [
+                            {
+                              label: "Shipout Date",
+                              value: formatDate(d.shipout_date),
+                            },
+                            {
+                              label: "Pickup Confirmed",
+                              value: formatDate(d.pickup_confirmed_at),
+                            },
+                          ]
+                        : []),
+                      ...(d.region === "EAST"
+                        ? [
+                            {
+                              label: "Est. Arrival",
+                              value: formatDate(d.est_arrival_date),
+                            },
+                            {
+                              label: "Arrived Warehouse",
+                              value: formatDate(d.arrived_warehouse_at),
+                            },
+                            {
+                              label: "EM Warehouse",
+                              value: d.em_warehouse,
+                            },
+                          ]
+                        : []),
+                      {
+                        label: "Est. Delivery",
+                        value: formatDate(d.est_delivery_date),
+                      },
+                      {
+                        label: "Out for Delivery",
+                        value: formatDate(d.out_for_delivery_at),
+                      },
+                      {
+                        label: "Delivered",
+                        value: formatDate(d.delivered_at),
+                      },
+                      ...(d.failed_at
+                        ? [
+                            {
+                              label: "Failed",
+                              value: formatDate(d.failed_at),
+                            },
+                            {
+                              label: "Reason",
+                              value: d.failure_reason,
+                              full: true,
+                            },
+                          ]
+                        : []),
+                    ]}
+                  />
+                </Section>
+
+                <Section title="Costing">
+                  {!editMode ? (
+                    <DefinitionList
+                      items={[
+                        {
+                          label: "Revenue",
+                          value: formatCurrency(d.order_revenue),
+                          mono: true,
+                        },
+                        {
+                          label: `Budget (${d.budget_pct}%)`,
+                          value: formatCurrency(d.budget_amount),
+                          mono: true,
+                        },
+                        {
+                          label: "Freight",
+                          value: formatCurrency(d.freight_cost),
+                          mono: true,
+                        },
+                        {
+                          label: "Last Mile",
+                          value: formatCurrency(d.last_mile_cost),
+                          mono: true,
+                        },
+                        {
+                          label: "Total Cost",
+                          mono: true,
+                          value: (
+                            <span
+                              className={cn(
+                                "font-bold",
+                                d.total_cost > d.budget_amount
+                                  ? "text-err"
+                                  : "text-synced"
+                              )}
+                            >
+                              {formatCurrency(d.total_cost)}
+                            </span>
+                          ),
+                        },
+                        ...(d.customer_transport_fee > 0
+                          ? [
+                              {
+                                label: "Customer Charged",
+                                value: formatCurrency(d.customer_transport_fee),
+                                mono: true,
+                              },
+                              {
+                                label: "Fee vs Cost",
+                                mono: true,
+                                value: (
+                                  <span
+                                    className={cn(
+                                      "font-bold",
+                                      d.customer_transport_fee >= d.total_cost
+                                        ? "text-synced"
+                                        : "text-err"
+                                    )}
+                                  >
+                                    {formatCurrency(
+                                      d.customer_transport_fee - d.total_cost
+                                    )}
+                                  </span>
+                                ),
+                              },
+                            ]
+                          : []),
+                        { label: "Method", value: d.delivery_method },
+                        { label: "Vendor", value: d.vendor_name },
+                      ]}
+                    />
+                  ) : (
+                    <div className="space-y-2 rounded-md border border-accent/30 bg-accent-soft/40 p-3">
+                      <CostField
+                        label="Freight Cost"
+                        value={form.freight_cost}
+                        onChange={(v) =>
+                          setForm({ ...form, freight_cost: v })
+                        }
+                      />
+                      <CostField
+                        label="Last Mile Cost"
+                        value={form.last_mile_cost}
+                        onChange={(v) =>
+                          setForm({ ...form, last_mile_cost: v })
+                        }
+                      />
+                      <CostField
+                        label="Customer Transport Fee"
+                        value={form.customer_transport_fee}
+                        onChange={(v) =>
+                          setForm({ ...form, customer_transport_fee: v })
+                        }
+                      />
+                    </div>
+                  )}
+                </Section>
+              </DetailMain>
+
+              <DetailAside>
+                <Section title="Order">
+                  <DefinitionList
+                    items={[
+                      { label: "Customer", value: d.debtor_name },
+                      { label: "Phone", value: d.phone, mono: true },
+                      { label: "Location", value: d.sales_location },
+                      {
+                        label: "Address",
+                        full: true,
+                        value: [
+                          d.inv_addr1,
+                          d.inv_addr2,
+                          d.inv_addr3,
+                          d.inv_addr4,
+                        ]
+                          .filter(Boolean)
+                          .join(", "),
+                      },
+                    ]}
+                  />
+                </Section>
+
+                {d.log.length > 0 && (
+                  <Section title="History">
+                    <ul className="space-y-1.5">
+                      {d.log.map((l, i) => (
+                        <li
+                          key={i}
+                          className="flex items-start gap-2 text-[11.5px]"
+                        >
+                          <span className="font-mono text-[10px] text-ink-muted shrink-0">
+                            {formatDate(l.created_at)}
+                          </span>
+                          <span className="min-w-0">
+                            {l.from_status && (
+                              <span className="text-ink-muted">
+                                {STATUS_LABELS[l.from_status] || l.from_status}{" "}
+                                →{" "}
+                              </span>
+                            )}
+                            <span className="font-semibold text-ink">
+                              {STATUS_LABELS[l.to_status] || l.to_status}
+                            </span>
+                            {l.changed_by_name && (
+                              <span className="text-ink-muted">
+                                {" "}
+                                · {l.changed_by_name}
+                              </span>
+                            )}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </Section>
+                )}
+              </DetailAside>
+            </DetailGrid>
+          </div>
         </>
       )}
-    </div>
+    </DetailLayout>
+  );
+}
+
+function DateField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string | undefined;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        {label}
+      </span>
+      <input
+        type="date"
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+      />
+    </label>
   );
 }
 

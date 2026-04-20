@@ -1,14 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { ExternalLink, ArrowLeft } from "lucide-react";
-import { Breadcrumbs } from "../components/Breadcrumbs";
-import { PageHeader } from "../components/Layout";
+import { Link, useParams } from "react-router-dom";
+import { ExternalLink, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  DetailLayout,
+  DetailGrid,
+  DetailMain,
+  DetailAside,
+  Section,
+  StatStrip,
+  DefinitionList,
+} from "../components/DetailLayout";
 import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
 import { formatCurrency, formatDate } from "../lib/utils";
 import type { Creditor } from "../types";
 
-interface CreditorDetail {
+interface CreditorDetailData {
   creditor: Creditor;
   po_stats: {
     total: number;
@@ -35,22 +42,28 @@ interface CreditorDetail {
  */
 export function CreditorDetail() {
   const { code = "" } = useParams<{ code: string }>();
-  const navigate = useNavigate();
   const toast = useToast();
-  const [data, setData] = useState<CreditorDetail | null>(null);
+  const [data, setData] = useState<CreditorDetailData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [showAllFields, setShowAllFields] = useState(false);
 
   useEffect(() => {
     if (!code) return;
     let cancelled = false;
     setLoading(true);
+    setError(null);
     api
-      .get<CreditorDetail>(`/api/creditors/${encodeURIComponent(code)}`)
+      .get<CreditorDetailData>(`/api/creditors/${encodeURIComponent(code)}`)
       .then((r) => {
         if (!cancelled) setData(r);
       })
-      .catch((e: any) => toast.error(`Failed to load: ${e?.message || e}`))
+      .catch((e: any) => {
+        if (cancelled) return;
+        const msg = e?.message || String(e);
+        setError(msg);
+        toast.error(`Failed to load: ${msg}`);
+      })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
@@ -69,202 +82,253 @@ export function CreditorDetail() {
     }
   }, [data?.creditor.raw]);
 
+  const c = data?.creditor;
+
   return (
-    <div>
-      <Breadcrumbs
-        items={[
-          { label: "Purchase Orders", to: "/po" },
-          { label: "Creditors", to: "/po?view=creditors" },
-          { label: data?.creditor.company_name || code },
-        ]}
-      />
-
-      <PageHeader
-        eyebrow={`Creditor · ${code}${data?.creditor.currency_code ? ` · ${data.creditor.currency_code}` : ""}`}
-        title={data?.creditor.company_name || code}
-        description="AutoCount mirror — read-only. Header fields, contact details, recent POs."
-        actions={
-          <button
-            onClick={() => navigate(-1)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
-          >
-            <ArrowLeft size={13} /> Back
-          </button>
-        }
-      />
-
-      {loading && <div className="text-[12px] text-ink-muted">Loading…</div>}
-
+    <DetailLayout
+      breadcrumbs={[
+        { label: "Purchase Orders", to: "/po" },
+        { label: "Creditors", to: "/po?view=creditors" },
+        { label: c?.company_name || code },
+      ]}
+      eyebrow={`Creditor · ${code}${c?.currency_code ? ` · ${c.currency_code}` : ""}`}
+      title={c?.company_name || code}
+      description={c?.desc2 && c.desc2 !== c.company_name ? c.desc2 : undefined}
+      backTo="/po?view=creditors"
+      loading={loading && !data}
+      error={error}
+    >
       {data && (
-        <div className="space-y-6">
-          <Section title="Summary">
-            <div className="grid grid-cols-2 gap-3 text-[12px] sm:grid-cols-4">
-              <Stat label="POs" value={data.po_stats.total.toLocaleString()} />
-              <Stat label="Open" value={data.po_stats.open_count.toLocaleString()} />
-              <Stat
-                label="Spend (ex-tax)"
-                value={formatCurrency(data.po_stats.total_spend, { compact: true })}
-              />
-              <Stat label="Currency" value={data.creditor.currency_code || "—"} />
-            </div>
-          </Section>
+        <>
+          <StatStrip
+            items={[
+              { label: "Total POs", value: data.po_stats.total.toLocaleString() },
+              {
+                label: "Open",
+                value: data.po_stats.open_count.toLocaleString(),
+                tone: data.po_stats.open_count > 0 ? "warn" : "default",
+              },
+              {
+                label: "Spend (ex-tax)",
+                value: formatCurrency(data.po_stats.total_spend, { compact: true }),
+              },
+              {
+                label: "Currency",
+                value: c?.currency_code || "—",
+              },
+            ]}
+          />
 
-          <Section title="Contact">
-            <FieldGrid
-              fields={{
-                Email: data.creditor.email,
-                Phone1: data.creditor.phone1,
-                Phone2: data.creditor.phone2,
-                Mobile: data.creditor.mobile,
-                Fax: data.creditor.fax1,
-                Web: data.creditor.web_url,
-                Attention: data.creditor.attention,
-                Address: [
-                  data.creditor.address1,
-                  data.creditor.address2,
-                  data.creditor.address3,
-                  data.creditor.address4,
-                  data.creditor.post_code,
-                ]
-                  .filter(Boolean)
-                  .join(", "),
-              }}
-            />
-          </Section>
+          <div className="mt-5">
+            <DetailGrid>
+              <DetailMain>
+                <Section
+                  title={`Recent Purchase Orders (${data.recent_pos.length})`}
+                  dense
+                >
+                  {data.recent_pos.length === 0 ? (
+                    <div className="px-4 py-6 text-[12px] text-ink-muted">
+                      No POs from this creditor.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[11.5px]">
+                        <thead className="bg-bg/50 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+                          <tr>
+                            <th className="px-4 py-2.5 text-left">PO No</th>
+                            <th className="px-3 py-2.5 text-left">Date</th>
+                            <th className="px-3 py-2.5 text-left">Ref</th>
+                            <th className="px-3 py-2.5 text-left">Status</th>
+                            <th className="px-3 py-2.5 text-right">Cost (ex-tax)</th>
+                            <th className="px-3 py-2.5"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {data.recent_pos.map((p) => {
+                            const status = p.cancelled
+                              ? "Cancelled"
+                              : (p.doc_status || "").toUpperCase() === "C"
+                              ? "Closed"
+                              : "Open";
+                            return (
+                              <tr
+                                key={p.doc_no}
+                                className="border-t border-border-subtle hover:bg-bg/40"
+                              >
+                                <td className="px-4 py-2 font-mono font-medium">
+                                  <Link
+                                    to={`/po/${encodeURIComponent(p.doc_no)}`}
+                                    className="hover:text-accent"
+                                  >
+                                    {p.doc_no}
+                                  </Link>
+                                </td>
+                                <td className="px-3 py-2 text-ink-secondary">
+                                  {formatDate(p.doc_date)}
+                                </td>
+                                <td className="px-3 py-2 text-ink-muted">
+                                  {p.ref || "—"}
+                                </td>
+                                <td className="px-3 py-2">
+                                  <StatusPill status={status} />
+                                </td>
+                                <td className="px-3 py-2 text-right font-mono">
+                                  {formatCurrency(p.local_ex_tax)}
+                                </td>
+                                <td className="px-3 py-2 text-right">
+                                  <Link
+                                    to={`/po/${encodeURIComponent(p.doc_no)}`}
+                                    className="text-ink-muted hover:text-accent"
+                                    title="Open PO"
+                                  >
+                                    <ExternalLink size={11} />
+                                  </Link>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Section>
 
-          <Section title="Tax & Terms">
-            <FieldGrid
-              fields={{
-                "Tax Code": data.creditor.tax_code,
-                "Tax Register No": data.creditor.tax_register_no,
-                "GST Register No": data.creditor.gst_register_no,
-                "SST Register No": data.creditor.sst_register_no,
-                "Credit Limit": data.creditor.credit_limit
-                  ? formatCurrency(data.creditor.credit_limit)
-                  : null,
-                "Overdue Limit": data.creditor.overdue_limit
-                  ? formatCurrency(data.creditor.overdue_limit)
-                  : null,
-                "Display Term": data.creditor.display_term,
-                "Purchase Agent": data.creditor.purchase_agent,
-                Type: data.creditor.type_description || data.creditor.type,
-                Area: data.creditor.area_description || data.creditor.area_code,
-              }}
-            />
-          </Section>
+                <Section
+                  title={`All Header Fields (${Object.keys(headerFields).length})`}
+                  actions={
+                    <button
+                      onClick={() => setShowAllFields((s) => !s)}
+                      className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent hover:underline"
+                    >
+                      {showAllFields ? (
+                        <>
+                          <ChevronUp size={11} /> Hide
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown size={11} /> Show
+                        </>
+                      )}
+                    </button>
+                  }
+                >
+                  {showAllFields ? (
+                    <DefinitionList
+                      items={Object.entries(headerFields).map(([k, v]) => ({
+                        label: k,
+                        mono: true,
+                        value:
+                          typeof v === "object"
+                            ? JSON.stringify(v)
+                            : v != null
+                            ? String(v)
+                            : null,
+                      }))}
+                    />
+                  ) : (
+                    <div className="text-[11.5px] text-ink-muted">
+                      Tap “Show” to expand the full AutoCount payload — useful for
+                      debugging upstream field changes.
+                    </div>
+                  )}
+                </Section>
+              </DetailMain>
 
-          <Section title={`Recent Purchase Orders (${data.recent_pos.length})`}>
-            {data.recent_pos.length === 0 ? (
-              <div className="text-[12px] text-ink-muted">No POs from this creditor.</div>
-            ) : (
-              <div className="overflow-x-auto rounded-md border border-border bg-surface">
-                <table className="w-full text-[11px]">
-                  <thead className="bg-bg/60 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-                    <tr>
-                      <th className="px-3 py-2 text-left">PO No</th>
-                      <th className="px-3 py-2 text-left">Date</th>
-                      <th className="px-3 py-2 text-left">Ref</th>
-                      <th className="px-3 py-2 text-left">Status</th>
-                      <th className="px-3 py-2 text-right">Cost (ex-tax)</th>
-                      <th className="px-3 py-2"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.recent_pos.map((p) => {
-                      const status = p.cancelled
-                        ? "Cancelled"
-                        : (p.doc_status || "").toUpperCase() === "C"
-                        ? "Closed"
-                        : "Open";
-                      return (
-                        <tr key={p.doc_no} className="border-t border-border-subtle">
-                          <td className="px-3 py-1.5 font-mono">{p.doc_no}</td>
-                          <td className="px-3 py-1.5">{formatDate(p.doc_date)}</td>
-                          <td className="px-3 py-1.5 text-ink-muted">{p.ref || "—"}</td>
-                          <td className="px-3 py-1.5">{status}</td>
-                          <td className="px-3 py-1.5 text-right font-mono">
-                            {formatCurrency(p.local_ex_tax)}
-                          </td>
-                          <td className="px-3 py-1.5">
-                            <Link
-                              to={`/po?focus=${encodeURIComponent(p.doc_no)}`}
-                              className="text-ink-muted hover:text-accent"
-                              title="Open PO"
-                            >
-                              <ExternalLink size={11} />
-                            </Link>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Section>
+              <DetailAside>
+                <Section title="Contact">
+                  <DefinitionList
+                    items={[
+                      { label: "Email", value: c?.email },
+                      { label: "Phone 1", value: c?.phone1, mono: true },
+                      { label: "Phone 2", value: c?.phone2, mono: true },
+                      { label: "Mobile", value: c?.mobile, mono: true },
+                      { label: "Fax", value: c?.fax1, mono: true },
+                      { label: "Web", value: c?.web_url },
+                      { label: "Attention", value: c?.attention },
+                      {
+                        label: "Address",
+                        full: true,
+                        value: [
+                          c?.address1,
+                          c?.address2,
+                          c?.address3,
+                          c?.address4,
+                          c?.post_code,
+                        ]
+                          .filter(Boolean)
+                          .join(", "),
+                      },
+                    ]}
+                  />
+                </Section>
 
-          <Section title="All Header Fields">
-            <button
-              onClick={() => setShowAllFields((s) => !s)}
-              className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-accent hover:underline"
-            >
-              {showAllFields ? "Hide" : "Show"} all fields ({Object.keys(headerFields).length})
-            </button>
-            {showAllFields && <FieldGrid fields={headerFields} />}
-          </Section>
-        </div>
+                <Section title="Tax & Terms">
+                  <DefinitionList
+                    items={[
+                      { label: "Tax Code", value: c?.tax_code, mono: true },
+                      {
+                        label: "Tax Reg No",
+                        value: c?.tax_register_no,
+                        mono: true,
+                      },
+                      {
+                        label: "GST Reg",
+                        value: c?.gst_register_no,
+                        mono: true,
+                      },
+                      {
+                        label: "SST Reg",
+                        value: c?.sst_register_no,
+                        mono: true,
+                      },
+                      {
+                        label: "Credit Limit",
+                        value: c?.credit_limit
+                          ? formatCurrency(c.credit_limit)
+                          : null,
+                        mono: true,
+                      },
+                      {
+                        label: "Overdue Limit",
+                        value: c?.overdue_limit
+                          ? formatCurrency(c.overdue_limit)
+                          : null,
+                        mono: true,
+                      },
+                      { label: "Term", value: c?.display_term },
+                      { label: "Agent", value: c?.purchase_agent },
+                      {
+                        label: "Type",
+                        value: c?.type_description || c?.type,
+                      },
+                      {
+                        label: "Area",
+                        value: c?.area_description || c?.area_code,
+                      },
+                    ]}
+                  />
+                </Section>
+              </DetailAside>
+            </DetailGrid>
+          </div>
+        </>
       )}
-    </div>
+    </DetailLayout>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function StatusPill({ status }: { status: string }) {
+  const tone =
+    status === "Closed"
+      ? "bg-synced/10 text-synced"
+      : status === "Cancelled"
+      ? "bg-ink/10 text-ink-muted"
+      : "bg-warning-bg text-warning-text";
   return (
-    <section className="rounded-md border border-border bg-surface p-5 shadow-stone">
-      <div className="mb-4 flex items-center gap-2">
-        <span className="h-px w-5 bg-accent" />
-        <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
-          {title}
-        </h2>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-        {label}
-      </div>
-      <div className="font-mono text-[12.5px] font-bold text-ink">{value}</div>
-    </div>
-  );
-}
-
-function FieldGrid({ fields }: { fields: Record<string, unknown> }) {
-  const entries = Object.entries(fields).filter(
-    ([, v]) => v !== null && v !== undefined && v !== ""
-  );
-  if (entries.length === 0) {
-    return <div className="text-[11px] text-ink-muted">—</div>;
-  }
-  return (
-    <dl className="grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2">
-      {entries.map(([k, v]) => (
-        <div
-          key={k}
-          className="flex items-baseline gap-2 border-b border-border-subtle/60 py-0.5"
-        >
-          <dt className="min-w-[140px] truncate font-mono text-[10px] text-ink-muted">
-            {k}
-          </dt>
-          <dd className="flex-1 truncate font-mono text-[11px] text-ink">
-            {typeof v === "object" ? JSON.stringify(v) : String(v)}
-          </dd>
-        </div>
-      ))}
-    </dl>
+    <span
+      className={`inline-block rounded-full px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-wider ${tone}`}
+    >
+      {status}
+    </span>
   );
 }
