@@ -36,6 +36,7 @@ import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
 import { ProjectMaintenanceView } from "./ProjectMaintenance";
+import { TabStrip } from "../components/TabStrip";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
@@ -1152,26 +1153,417 @@ interface ProfitabilityResponse {
   bottom: ProfitabilityResponse["top"];
 }
 
-// Combined Finances view — what the sidebar exposes as "Finances".
-// Stacks the monthly P&L calendar above the analytics breakdown so
-// users see the time-series trend first, then the per-project drill-in.
+// Finances view — tabbed: List (raw ledger lines) / Analytics
+// (per-project profitability) / P&L (monthly trend).
+type FinanceTab = "list" | "analytics" | "pnl";
+const FINANCE_TABS: FinanceTab[] = ["list", "analytics", "pnl"];
+
+const FINANCE_TAB_HEADER: Record<
+  FinanceTab,
+  { title: string; description: string }
+> = {
+  list: {
+    title: "Finance Lines",
+    description:
+      "Every income and cost line across every project. Filter by date, brand, kind, category — or search.",
+  },
+  analytics: {
+    title: "Profitability",
+    description:
+      "Income, cost, and margin per project — sliced by brand, venue, type, and month.",
+  },
+  pnl: {
+    title: "P&L Calendar",
+    description: "Ledger costs across all projects, grouped by month.",
+  },
+};
+
 function ProjectsFinancesView() {
+  const [params, setParams] = useSearchParams();
+  const rawTab = params.get("tab") as FinanceTab | null;
+  const tab: FinanceTab =
+    rawTab && FINANCE_TABS.includes(rawTab) ? rawTab : "list";
+  function setTab(next: FinanceTab) {
+    const p = new URLSearchParams(params);
+    p.set("tab", next);
+    setParams(p, { replace: true });
+  }
+
   return (
     <div>
       <PageHeader
-        eyebrow="Operations · Projects"
-        title="Finances"
-        description="Monthly P&L trend on top, per-project profitability breakdown below."
+        eyebrow="Operations · Projects · Finances"
+        title={FINANCE_TAB_HEADER[tab].title}
+        description={FINANCE_TAB_HEADER[tab].description}
       />
-      <div className="space-y-8">
+      <TabStrip<FinanceTab>
+        value={tab}
+        onChange={setTab}
+        options={[
+          { value: "list", label: "List" },
+          { value: "analytics", label: "Analytics" },
+          { value: "pnl", label: "P&L" },
+        ]}
+      />
+
+      {tab === "list" && <FinanceListView />}
+      {tab === "analytics" && <ProjectsAnalyticsView />}
+      {tab === "pnl" && (
         <PnlCalendar
           scope="projects"
           title="Project Cost — Monthly"
           subtitle="Ledger costs across all projects, grouped by month."
         />
-        <ProjectsAnalyticsView />
-      </div>
+      )}
     </div>
+  );
+}
+
+// ── Finance List view (cross-project ledger) ─────────────────
+
+interface FinanceLineRow {
+  id: number;
+  project_id: number;
+  kind: "income" | "cost";
+  category: string;
+  description: string | null;
+  amount: number;
+  occurred_at: string | null;
+  notes: string | null;
+  created_at: string;
+  r2_key: string | null;
+  file_name: string | null;
+  project_code: string;
+  project_name: string;
+  project_brand: string | null;
+}
+
+interface FinanceLinesResponse {
+  data: FinanceLineRow[];
+  page: number;
+  per_page: number;
+  total: number;
+  totals: { income: number; cost: number; net: number };
+}
+
+function FinanceListView() {
+  const navigate = useNavigate();
+  const thisYear = new Date().getFullYear();
+  const [dateFrom, setDateFrom] = useState(`${thisYear}-01-01`);
+  const [dateTo, setDateTo] = useState(`${thisYear}-12-31`);
+  const [kind, setKind] = useState<"all" | "income" | "cost">("all");
+  const [brand, setBrand] = useState("");
+  const [category, setCategory] = useState("");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useLocalStorage<number>(
+    "pp:project-finance-lines",
+    50
+  );
+  const { sort, sortParams, handleSortChange } = useServerSort(() =>
+    setPage(1)
+  );
+
+  const brandsQ = useQuery<{ data: string[] }>(() =>
+    api.get("/api/projects/brands")
+  );
+  const categoriesQ = useQuery<{ cost: string[]; income: string[] }>(() =>
+    api.get("/api/projects/finance/categories")
+  );
+
+  const list = useQuery<FinanceLinesResponse>(
+    () =>
+      api.get(
+        `/api/projects/finance/lines${buildQuery({
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+          kind: kind !== "all" ? kind : undefined,
+          brand: brand || undefined,
+          category: category || undefined,
+          search: search || undefined,
+          page,
+          per_page: perPage,
+          ...sortParams,
+        })}`
+      ),
+    [dateFrom, dateTo, kind, brand, category, search, page, perPage, sort?.key, sort?.dir]
+  );
+
+  const allCategories = [
+    ...(categoriesQ.data?.cost ?? []),
+    ...(categoriesQ.data?.income ?? []),
+  ];
+
+  const columns: Column<FinanceLineRow>[] = [
+    {
+      key: "occurred_at",
+      label: "Date",
+      alwaysVisible: true,
+      render: (r) => (
+        <span className="font-mono text-[11px] text-ink-secondary">
+          {formatDate(r.occurred_at || r.created_at)}
+        </span>
+      ),
+      getValue: (r) => r.occurred_at || r.created_at,
+    },
+    {
+      key: "project",
+      label: "Project",
+      alwaysVisible: true,
+      render: (r) => (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            navigate(`/projects/${r.project_id}`);
+          }}
+          className="text-left hover:text-accent"
+        >
+          <div className="font-mono text-[11px] font-semibold">
+            {r.project_code}
+          </div>
+          <div className="truncate text-[11px] text-ink-muted">
+            {r.project_name}
+          </div>
+        </button>
+      ),
+      getValue: (r) => r.project_code,
+    },
+    {
+      key: "brand",
+      label: "Brand",
+      render: (r) =>
+        r.project_brand ? (
+          <span className="rounded-full bg-accent/10 px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-wider text-accent">
+            {r.project_brand}
+          </span>
+        ) : (
+          <span className="text-ink-muted">—</span>
+        ),
+      getValue: (r) => r.project_brand ?? "",
+    },
+    {
+      key: "kind",
+      label: "Kind",
+      render: (r) => (
+        <span
+          className={cn(
+            "rounded-full px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-wider",
+            r.kind === "income"
+              ? "bg-synced/15 text-synced"
+              : "bg-err/10 text-err"
+          )}
+        >
+          {r.kind}
+        </span>
+      ),
+      getValue: (r) => r.kind,
+    },
+    {
+      key: "category",
+      label: "Category",
+      render: (r) => (
+        <span className="text-[11.5px] text-ink-secondary">{r.category}</span>
+      ),
+      getValue: (r) => r.category,
+    },
+    {
+      key: "description",
+      label: "Description",
+      render: (r) => (
+        <span className="text-[11.5px] text-ink-secondary">
+          {r.description || "—"}
+        </span>
+      ),
+      getValue: (r) => r.description,
+    },
+    {
+      key: "amount",
+      label: "Amount",
+      align: "right",
+      alwaysVisible: true,
+      render: (r) => (
+        <span
+          className={cn(
+            "font-mono text-[12px] font-semibold",
+            r.kind === "income" ? "text-synced" : "text-err"
+          )}
+        >
+          {r.kind === "cost" ? "−" : "+"}
+          {formatCurrency(r.amount)}
+        </span>
+      ),
+      getValue: (r) => r.amount,
+    },
+  ];
+
+  const totals = list.data?.totals;
+
+  return (
+    <div>
+      {totals && (
+        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <StatCard
+            label="Income"
+            value={formatCurrency(totals.income, { compact: true })}
+            subtitle="Filtered total"
+            tone="success"
+          />
+          <StatCard
+            label="Cost"
+            value={formatCurrency(totals.cost, { compact: true })}
+            subtitle="Filtered total"
+            tone="error"
+          />
+          <StatCard
+            label="Net"
+            value={formatCurrency(totals.net, { compact: true })}
+            subtitle={totals.net >= 0 ? "Surplus" : "Deficit"}
+            tone={totals.net >= 0 ? "success" : "error"}
+          />
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-6">
+        <FilterField label="From">
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => {
+              setPage(1);
+              setDateFrom(e.target.value);
+            }}
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          />
+        </FilterField>
+        <FilterField label="To">
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => {
+              setPage(1);
+              setDateTo(e.target.value);
+            }}
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          />
+        </FilterField>
+        <FilterField label="Kind">
+          <select
+            value={kind}
+            onChange={(e) => {
+              setPage(1);
+              setKind(e.target.value as any);
+            }}
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          >
+            <option value="all">All</option>
+            <option value="income">Income</option>
+            <option value="cost">Cost</option>
+          </select>
+        </FilterField>
+        <FilterField label="Brand">
+          <select
+            value={brand}
+            onChange={(e) => {
+              setPage(1);
+              setBrand(e.target.value);
+            }}
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          >
+            <option value="">All</option>
+            {(brandsQ.data?.data ?? []).map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Category">
+          <select
+            value={category}
+            onChange={(e) => {
+              setPage(1);
+              setCategory(e.target.value);
+            }}
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          >
+            <option value="">All</option>
+            {allCategories.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Per page">
+          <select
+            value={perPage}
+            onChange={(e) => {
+              setPerPage(parseInt(e.target.value, 10));
+              setPage(1);
+            }}
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          >
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+            <option value={200}>200</option>
+          </select>
+        </FilterField>
+      </div>
+
+      <DataTable
+        tableId="project-finance-lines"
+        exportName="project-finance-lines"
+        search={{
+          value: search,
+          onChange: (v) => {
+            setPage(1);
+            setSearch(v);
+          },
+          placeholder: "Search description, project, notes…",
+        }}
+        columns={columns}
+        rows={list.data?.data ?? null}
+        loading={list.loading}
+        error={list.error}
+        emptyLabel="No finance lines match these filters"
+        getRowKey={(r) => r.id}
+        onRowClick={(r) => navigate(`/projects/${r.project_id}`)}
+        serverSort
+        onSortChange={handleSortChange}
+      />
+
+      {list.data && (
+        <Pagination
+          page={page}
+          perPage={perPage}
+          total={list.data.total}
+          onPageChange={setPage}
+          onPerPageChange={(n) => {
+            setPerPage(n);
+            setPage(1);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FilterField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block font-mono text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
+        {label}
+      </span>
+      {children}
+    </label>
   );
 }
 

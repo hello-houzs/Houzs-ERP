@@ -721,6 +721,128 @@ app.get("/finance/categories", (c) => {
   });
 });
 
+// Cross-project finance lines list — feeds the Finances → List tab.
+// Joins each line back to its project for code/name/brand display, and
+// supports the usual paginated/filter pattern: date range, kind, brand,
+// category, project_id, free-text search.
+app.get("/finance/lines", requirePermission("projects.read"), async (c) => {
+  const dateFrom = c.req.query("date_from") || "";
+  const dateTo = c.req.query("date_to") || "";
+  const kind = (c.req.query("kind") || "all").toLowerCase();
+  const brand = c.req.query("brand") || "";
+  const category = c.req.query("category") || "";
+  const projectId = parseInt(c.req.query("project_id") || "", 10);
+  const search = c.req.query("search") || "";
+  const page = parseInt(c.req.query("page") || "1", 10);
+  const perPage = Math.min(
+    parseInt(c.req.query("per_page") || "50", 10),
+    200
+  );
+  const offset = (page - 1) * perPage;
+
+  const where: string[] = ["l.archived_at IS NULL"];
+  const binds: any[] = [];
+
+  if (dateFrom) {
+    where.push("COALESCE(l.occurred_at, l.created_at) >= ?");
+    binds.push(dateFrom);
+  }
+  if (dateTo) {
+    where.push("COALESCE(l.occurred_at, l.created_at) <= ?");
+    binds.push(`${dateTo}T23:59:59`);
+  }
+  if (kind === "income" || kind === "cost") {
+    where.push("l.kind = ?");
+    binds.push(kind);
+  }
+  if (brand) {
+    where.push("p.brand = ?");
+    binds.push(brand);
+  }
+  if (category) {
+    where.push("l.category = ?");
+    binds.push(category);
+  }
+  if (!isNaN(projectId)) {
+    where.push("l.project_id = ?");
+    binds.push(projectId);
+  }
+  if (search) {
+    where.push(
+      "(l.description LIKE ? OR l.notes LIKE ? OR p.code LIKE ? OR p.name LIKE ?)"
+    );
+    const like = `%${search}%`;
+    binds.push(like, like, like, like);
+  }
+
+  const sortBy = c.req.query("sort_by") || "occurred_at";
+  const sortDir =
+    (c.req.query("sort_dir") || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+  const sortMap: Record<string, string> = {
+    occurred_at: "COALESCE(l.occurred_at, l.created_at)",
+    amount: "l.amount",
+    project: "p.code",
+    category: "l.category",
+    kind: "l.kind",
+  };
+  const orderBy = `ORDER BY ${sortMap[sortBy] ?? sortMap.occurred_at} ${sortDir}, l.id DESC`;
+
+  const baseFrom = `
+    FROM project_finance_lines l
+    JOIN projects p ON p.id = l.project_id
+    WHERE ${where.join(" AND ")}
+  `;
+
+  const total = await c.env.DB.prepare(`SELECT COUNT(*) as count ${baseFrom}`)
+    .bind(...binds)
+    .first<{ count: number }>();
+
+  const rows = await c.env.DB.prepare(
+    `SELECT l.id,
+            l.project_id,
+            l.kind,
+            l.category,
+            l.description,
+            l.amount,
+            l.occurred_at,
+            l.notes,
+            l.created_at,
+            l.r2_key,
+            l.file_name,
+            p.code   AS project_code,
+            p.name   AS project_name,
+            p.brand  AS project_brand
+     ${baseFrom}
+     ${orderBy}
+     LIMIT ? OFFSET ?`
+  )
+    .bind(...binds, perPage, offset)
+    .all();
+
+  // Lightweight totals across the filtered set so the page can show
+  // "income X, cost Y, net Z" without a second round trip.
+  const totals = await c.env.DB.prepare(
+    `SELECT
+       COALESCE(SUM(CASE WHEN l.kind = 'income' THEN l.amount ELSE 0 END), 0) AS total_income,
+       COALESCE(SUM(CASE WHEN l.kind = 'cost'   THEN l.amount ELSE 0 END), 0) AS total_cost
+     ${baseFrom}`
+  )
+    .bind(...binds)
+    .first<{ total_income: number; total_cost: number }>();
+
+  return c.json({
+    data: rows.results ?? [],
+    page,
+    per_page: perPage,
+    total: total?.count ?? 0,
+    totals: {
+      income: totals?.total_income ?? 0,
+      cost: totals?.total_cost ?? 0,
+      net: (totals?.total_income ?? 0) - (totals?.total_cost ?? 0),
+    },
+  });
+});
+
 app.post("/:id/finance/lines", requirePermission("projects.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
