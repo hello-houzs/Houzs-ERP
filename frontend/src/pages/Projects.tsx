@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { useNavigate, useParams, Navigate } from "react-router-dom";
+import { useNavigate, useParams, Navigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
   Calendar,
@@ -559,16 +559,33 @@ const NEXT_STAGE: Partial<Record<ProjectStage, { stage: ProjectStage; label: str
 
 type ProjectsView = "list" | "calendar" | "analytics" | "pnl";
 
+const PROJECTS_VIEWS: ProjectsView[] = ["list", "calendar", "analytics", "pnl"];
+
 export function Projects() {
-  const [view, setView] = useLocalStorage<ProjectsView>("projects:view", "list");
-  // Inbox deep-link arrives on whatever view was last open; force the
-  // List view so the detail panel actually mounts (only ProjectsListView
-  // owns the panel state).
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.has("focus") && view !== "list") setView("list");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // URL-driven so sidebar entries can deep-link to a specific view
+  // (e.g. /projects?view=calendar). localStorage persists the last
+  // view a user chose so a bare `/projects` lands where they left off.
+  const [params, setParams] = useSearchParams();
+  const [storedView, setStoredView] = useLocalStorage<ProjectsView>(
+    "projects:view",
+    "list"
+  );
+  const urlView = params.get("view") as ProjectsView | null;
+  const view: ProjectsView =
+    urlView && PROJECTS_VIEWS.includes(urlView)
+      ? urlView
+      : params.has("focus")
+      ? "list"
+      : storedView;
+
+  function setView(next: ProjectsView) {
+    setStoredView(next);
+    const p = new URLSearchParams(params);
+    p.set("view", next);
+    p.delete("focus");
+    setParams(p, { replace: true });
+  }
+
   return (
     <div>
       <TabStrip

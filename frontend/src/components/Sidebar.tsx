@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
   ClipboardList,
@@ -11,10 +11,14 @@ import {
   PanelLeftOpen,
   Building2,
   ChevronDown,
+  ChevronRight,
   Users,
   Shield,
   LogOut,
   Calendar,
+  DollarSign,
+  Wrench,
+  FolderKanban,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -35,7 +39,8 @@ interface Props {
 }
 
 interface Tab {
-  to: string;
+  /** Click target. Omit when this is a pure group header with `children`. */
+  to?: string;
   label: string;
   icon: LucideIcon;
   end?: boolean;
@@ -49,6 +54,12 @@ interface Tab {
    *  flat Delivery list from dispatchers who already have the Trips Queue
    *  tab). */
   hidePerm?: string;
+  /** Optional sub-entries. When present, this tab renders as an
+   *  expandable group header instead of a click target. */
+  children?: Tab[];
+  /** Stable id used for the per-group expanded/collapsed memory. Only
+   *  required when `children` is present. */
+  groupId?: string;
 }
 
 interface Workspace {
@@ -98,7 +109,38 @@ const WORKSPACES: Workspace[] = [
       },
       { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read" },
       { to: "/assr", label: "Service", icon: Zap, perm: "service_cases.read" },
-      { to: "/projects", label: "Projects", icon: Calendar, perm: "projects.read" },
+      {
+        label: "Project Management",
+        icon: FolderKanban,
+        groupId: "project-mgmt",
+        anyPerm: ["projects.read", "settings.manage"],
+        children: [
+          {
+            to: "/projects?view=list",
+            label: "Project List",
+            icon: ClipboardList,
+            perm: "projects.read",
+          },
+          {
+            to: "/projects?view=calendar",
+            label: "Calendar",
+            icon: Calendar,
+            perm: "projects.read",
+          },
+          {
+            to: "/projects?view=pnl",
+            label: "Finances",
+            icon: DollarSign,
+            perm: "projects.read",
+          },
+          {
+            to: "/settings?tab=projects",
+            label: "Project Maintenance",
+            icon: Wrench,
+            perm: "settings.manage",
+          },
+        ],
+      },
     ],
   },
   {
@@ -122,6 +164,7 @@ const LOGO_WORDMARK_SRC = "/logo-wordmark.png"; // 1:4 horizontal — expanded s
 
 export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Props) {
   const { user, can, logout } = useAuth();
+  const location = useLocation();
   // On mobile the drawer is always full-width — collapsed state is
   // a desktop-only concept.
   const effectiveCollapsed = collapsed;
@@ -135,6 +178,37 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     defaultExpanded
   );
 
+  // Per-group (nested) collapsed memory. Defaults open.
+  const [groupExpanded, setGroupExpanded] = useLocalStorage<Record<string, boolean>>(
+    "sidebar:groups:expanded",
+    {}
+  );
+  function toggleGroup(id: string) {
+    setGroupExpanded((prev) => ({ ...prev, [id]: prev[id] === false ? true : false }));
+  }
+  function isGroupOpen(id: string): boolean {
+    return groupExpanded[id] !== false;
+  }
+
+  /** True when a tab's `to` matches the current pathname + relevant query
+   *  params. NavLink doesn't compare query strings on its own, so for
+   *  entries like /projects?view=calendar we have to match manually. */
+  function tabIsActive(to: string, end?: boolean): boolean {
+    const [path, search] = to.split("?");
+    if (end ? location.pathname !== path : !location.pathname.startsWith(path)) {
+      // For non-end matches, allow startsWith for nested routes (e.g.
+      // /projects/123 still highlights /projects).
+      if (location.pathname !== path) return false;
+    }
+    if (!search) return true;
+    const wanted = new URLSearchParams(search);
+    const have = new URLSearchParams(location.search);
+    for (const [k, v] of wanted.entries()) {
+      if (have.get(k) !== v) return false;
+    }
+    return true;
+  }
+
   function toggleWorkspace(id: string) {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
   }
@@ -142,16 +216,112 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   // Filter tabs the current user can't access, plus tabs explicitly
   // suppressed by hidePerm (used to remove redundant entries when a
   // richer replacement is available). Whole workspaces with no visible
-  // tabs collapse out of the sidebar entirely.
+  // tabs collapse out of the sidebar entirely. Same rules apply
+  // recursively to nested children — a group with no visible children
+  // is itself hidden.
+  function filterTab(t: Tab): Tab | null {
+    if (t.perm && !can(t.perm)) return null;
+    if (t.anyPerm && !t.anyPerm.some((p) => can(p))) return null;
+    if (t.hidePerm && can(t.hidePerm)) return null;
+    if (t.children) {
+      const kids = t.children
+        .map(filterTab)
+        .filter((x): x is Tab => x !== null);
+      if (kids.length === 0) return null;
+      return { ...t, children: kids };
+    }
+    return t;
+  }
+
   const visibleWorkspaces = WORKSPACES.map((ws) => ({
     ...ws,
-    tabs: ws.tabs.filter((t) => {
-      if (t.perm && !can(t.perm)) return false;
-      if (t.anyPerm && !t.anyPerm.some((p) => can(p))) return false;
-      if (t.hidePerm && can(t.hidePerm)) return false;
-      return true;
-    }),
+    tabs: ws.tabs.map(filterTab).filter((t): t is Tab => t !== null),
   })).filter((ws) => ws.tabs.length > 0);
+
+  // Recursive renderer for tabs — handles plain links and nested groups.
+  function renderTab(tab: Tab, depth = 0): React.ReactNode {
+    const Icon = tab.icon;
+
+    // Group header (has children) — render as expandable section.
+    if (tab.children && tab.children.length > 0) {
+      const open = isGroupOpen(tab.groupId || tab.label);
+      // Group is "active" if any child is active — keep the brass tint
+      // on the parent so the user knows where they are.
+      const childActive = tab.children.some(
+        (k) => k.to && tabIsActive(k.to, k.end)
+      );
+      if (collapsed) {
+        // In collapsed mode, render children flat with no group header.
+        return (
+          <div key={tab.groupId || tab.label}>
+            {tab.children.map((k) => renderTab(k, depth))}
+          </div>
+        );
+      }
+      return (
+        <div key={tab.groupId || tab.label} className="my-0.5">
+          <button
+            onClick={() => toggleGroup(tab.groupId || tab.label)}
+            className={cn(
+              "group relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-[12.5px] font-medium transition-all duration-150",
+              childActive
+                ? "text-sidebar-ink"
+                : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink"
+            )}
+          >
+            <Icon
+              size={15}
+              strokeWidth={childActive ? 2.4 : 2}
+              className={childActive ? "text-accent" : ""}
+            />
+            <span className="flex-1">{tab.label}</span>
+            {open ? (
+              <ChevronDown size={12} className="text-sidebar-ink-muted" />
+            ) : (
+              <ChevronRight size={12} className="text-sidebar-ink-muted" />
+            )}
+          </button>
+          {open && (
+            <div className="ml-3 border-l border-sidebar-border pl-2">
+              {tab.children.map((k) => renderTab(k, depth + 1))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Leaf — needs `to`. (filterTab + types ensure it.)
+    if (!tab.to) return null;
+    const to = tab.to;
+    const active = tabIsActive(to, tab.end);
+    return (
+      <NavLink
+        key={to}
+        to={to}
+        end={tab.end}
+        // We compute active state ourselves so query strings match.
+        className={() =>
+          cn(
+            "group relative my-0.5 flex items-center gap-3 rounded-md px-3 py-2 text-[12.5px] font-medium transition-all duration-150",
+            active
+              ? "bg-sidebar-active text-accent-ink shadow-[inset_0_0_0_1px_rgba(161,106,46,0.2)]"
+              : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink",
+            collapsed && "mx-1 justify-center px-2"
+          )
+        }
+      >
+        {active && !collapsed && (
+          <span className="absolute -left-[10px] top-2 bottom-2 w-[2px] rounded-r bg-accent" />
+        )}
+        <Icon
+          size={15}
+          strokeWidth={active ? 2.4 : 2}
+          className={active ? "text-accent" : ""}
+        />
+        {!collapsed && <span>{tab.label}</span>}
+      </NavLink>
+    );
+  }
 
   return (
     <>
@@ -310,36 +480,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
                     !collapsed && "ml-3 border-l border-sidebar-border pl-2"
                   )}
                 >
-                  {ws.tabs.map(({ to, label, icon: Icon, end }) => (
-                    <NavLink
-                      key={to}
-                      to={to}
-                      end={end}
-                      className={({ isActive }) =>
-                        cn(
-                          "group relative my-0.5 flex items-center gap-3 rounded-md px-3 py-2 text-[12.5px] font-medium transition-all duration-150",
-                          isActive
-                            ? "bg-sidebar-active text-accent-ink shadow-[inset_0_0_0_1px_rgba(161,106,46,0.2)]"
-                            : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink",
-                          collapsed && "mx-1 justify-center px-2"
-                        )
-                      }
-                    >
-                      {({ isActive }) => (
-                        <>
-                          {isActive && !collapsed && (
-                            <span className="absolute -left-[10px] top-2 bottom-2 w-[2px] rounded-r bg-accent" />
-                          )}
-                          <Icon
-                            size={15}
-                            strokeWidth={isActive ? 2.4 : 2}
-                            className={isActive ? "text-accent" : ""}
-                          />
-                          {!collapsed && <span>{label}</span>}
-                        </>
-                      )}
-                    </NavLink>
-                  ))}
+                  {ws.tabs.map((tab) => renderTab(tab))}
                 </div>
               )}
             </div>
