@@ -9,11 +9,9 @@ import {
   Settings as SettingsIcon,
   PanelLeftClose,
   PanelLeftOpen,
-  Building2,
   ChevronDown,
   ChevronRight,
   Users,
-  Shield,
   LogOut,
   Calendar,
   DollarSign,
@@ -62,97 +60,67 @@ interface Tab {
   groupId?: string;
 }
 
-interface Workspace {
-  id: string;
-  label: string;
-  /** A short uppercase code shown in collapsed mode and as a section badge. */
-  code: string;
-  icon: LucideIcon;
-  tabs: Tab[];
-}
-
 /**
- * Workspace registry. Each entry is a sibling group of tabs under the
- * sidebar's two-tier hierarchy. Add a new company by appending another
- * Workspace here — the sidebar will render it as a separate collapsible
- * section automatically.
- *
- * Tabs declare their required permission via `perm`. The sidebar filters
- * them based on the current user's permissions, so members with limited
- * roles only see what they can actually use.
+ * Sidebar tab registry — flat root list. Use `children` on a tab to
+ * nest sub-entries under an expandable group header (see Project
+ * Management). Tabs declare permission via `perm` / `anyPerm`; the
+ * filter recurses so groups with no visible kids hide entirely.
  */
-const WORKSPACES: Workspace[] = [
+const TABS: Tab[] = [
+  { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
+  { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read" },
+  // Members with delivery_orders.read but no trips.read.all still see
+  // the flat Delivery list. Dispatchers with trips.read.all get the
+  // richer Queue tab inside Trips, so this entry hides for them.
   {
-    id: "houzs",
-    label: "Houzs Workspace",
-    code: "HC",
-    icon: Building2,
-    tabs: [
-      { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
-      { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read" },
-      // Members with delivery_orders.read but no trips.read.all still
-      // see the flat Delivery list. Dispatchers with trips.read.all
-      // get the richer Queue tab inside Trips, so this entry hides
-      // for them to avoid the duplicate-page confusion.
+    to: "/delivery-orders",
+    label: "Delivery",
+    icon: Truck,
+    perm: "delivery_orders.read",
+    hidePerm: "trips.read.all",
+  },
+  {
+    to: "/logistics",
+    label: "Logistics",
+    icon: Route,
+    anyPerm: ["trips.read.all", "fleet.read"],
+  },
+  { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read" },
+  { to: "/assr", label: "Service", icon: Zap, perm: "service_cases.read" },
+  {
+    label: "Project Management",
+    icon: FolderKanban,
+    groupId: "project-mgmt",
+    anyPerm: ["projects.read"],
+    children: [
       {
-        to: "/delivery-orders",
-        label: "Delivery",
-        icon: Truck,
-        perm: "delivery_orders.read",
-        hidePerm: "trips.read.all",
+        to: "/projects?view=list",
+        label: "Project List",
+        icon: ClipboardList,
+        perm: "projects.read",
       },
       {
-        to: "/logistics",
-        label: "Logistics",
-        icon: Route,
-        anyPerm: ["trips.read.all", "fleet.read"],
+        to: "/projects?view=calendar",
+        label: "Calendar",
+        icon: Calendar,
+        perm: "projects.read",
       },
-      { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read" },
-      { to: "/assr", label: "Service", icon: Zap, perm: "service_cases.read" },
       {
-        label: "Project Management",
-        icon: FolderKanban,
-        groupId: "project-mgmt",
-        anyPerm: ["projects.read", "settings.manage"],
-        children: [
-          {
-            to: "/projects?view=list",
-            label: "Project List",
-            icon: ClipboardList,
-            perm: "projects.read",
-          },
-          {
-            to: "/projects?view=calendar",
-            label: "Calendar",
-            icon: Calendar,
-            perm: "projects.read",
-          },
-          {
-            to: "/projects?view=pnl",
-            label: "Finances",
-            icon: DollarSign,
-            perm: "projects.read",
-          },
-          {
-            to: "/settings?tab=projects",
-            label: "Project Maintenance",
-            icon: Wrench,
-            perm: "settings.manage",
-          },
-        ],
+        to: "/projects?view=finances",
+        label: "Finances",
+        icon: DollarSign,
+        perm: "projects.read",
+      },
+      {
+        to: "/projects?view=maintenance",
+        label: "Project Maintenance",
+        icon: Wrench,
+        perm: "projects.write",
       },
     ],
   },
-  {
-    id: "admin",
-    label: "Administration",
-    code: "AD",
-    icon: Shield,
-    tabs: [
-      { to: "/team", label: "Team", icon: Users, anyPerm: ["users.read", "roles.read"] },
-      { to: "/settings", label: "Settings", icon: SettingsIcon, perm: "settings.manage" },
-    ],
-  },
+  { to: "/team", label: "Team", icon: Users, anyPerm: ["users.read", "roles.read"] },
+  { to: "/settings", label: "Settings", icon: SettingsIcon, perm: "settings.manage" },
 ];
 
 // Brand assets — drop the source files into frontend/public/. The paths
@@ -168,15 +136,6 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   // On mobile the drawer is always full-width — collapsed state is
   // a desktop-only concept.
   const effectiveCollapsed = collapsed;
-
-  // Track which workspaces are expanded. Default: every workspace open.
-  const defaultExpanded: Record<string, boolean> = Object.fromEntries(
-    WORKSPACES.map((w) => [w.id, true])
-  );
-  const [expanded, setExpanded] = useLocalStorage<Record<string, boolean>>(
-    "sidebar:workspaces:expanded",
-    defaultExpanded
-  );
 
   // Per-group (nested) collapsed memory. Defaults open.
   const [groupExpanded, setGroupExpanded] = useLocalStorage<Record<string, boolean>>(
@@ -209,16 +168,10 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     return true;
   }
 
-  function toggleWorkspace(id: string) {
-    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
-  }
-
   // Filter tabs the current user can't access, plus tabs explicitly
   // suppressed by hidePerm (used to remove redundant entries when a
-  // richer replacement is available). Whole workspaces with no visible
-  // tabs collapse out of the sidebar entirely. Same rules apply
-  // recursively to nested children — a group with no visible children
-  // is itself hidden.
+  // richer replacement is available). Recursive — a group with no
+  // visible children is itself hidden.
   function filterTab(t: Tab): Tab | null {
     if (t.perm && !can(t.perm)) return null;
     if (t.anyPerm && !t.anyPerm.some((p) => can(p))) return null;
@@ -233,10 +186,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     return t;
   }
 
-  const visibleWorkspaces = WORKSPACES.map((ws) => ({
-    ...ws,
-    tabs: ws.tabs.map(filterTab).filter((t): t is Tab => t !== null),
-  })).filter((ws) => ws.tabs.length > 0);
+  const visibleTabs = TABS.map(filterTab).filter((t): t is Tab => t !== null);
 
   // Recursive renderer for tabs — handles plain links and nested groups.
   function renderTab(tab: Tab, depth = 0): React.ReactNode {
@@ -418,75 +368,9 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
         <GlobalSearchTrigger collapsed={collapsed} />
       </div>
 
-      {/* ── Section label ────────────────────────────────────── */}
-      {!collapsed && (
-        <div className="flex items-center justify-between px-5 pb-2 pt-5">
-          <span className="text-[10px] font-semibold uppercase tracking-brand text-sidebar-ink-muted">
-            Workspaces
-          </span>
-          <span className="font-mono text-[10px] text-sidebar-ink-muted">
-            {visibleWorkspaces.length}
-          </span>
-        </div>
-      )}
-
-      {/* ── Two-tier workspace nav ─────────────────────────── */}
-      <nav className="no-scrollbar flex-1 overflow-y-auto px-2 pb-4">
-        {visibleWorkspaces.map((ws) => {
-          const isExpanded = expanded[ws.id] ?? true;
-          const WsIcon = ws.icon;
-          return (
-            <div key={ws.id} className="mb-2">
-              {/* Workspace header — clickable, collapses children */}
-              {collapsed ? (
-                // Collapsed sidebar: show the workspace icon as a divider,
-                // then render the tabs flat below it.
-                <div
-                  className="mx-auto mb-1 mt-2 flex h-8 w-8 items-center justify-center rounded-md bg-sidebar-active text-accent-ink"
-                  title={ws.label}
-                >
-                  <WsIcon size={14} strokeWidth={2.2} />
-                </div>
-              ) : (
-                <button
-                  onClick={() => toggleWorkspace(ws.id)}
-                  className="group flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left transition-colors hover:bg-sidebar-hover"
-                  aria-expanded={isExpanded}
-                >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-sidebar-active text-accent-ink shadow-[inset_0_0_0_1px_rgba(161,106,46,0.2)]">
-                    <WsIcon size={13} strokeWidth={2.4} />
-                  </span>
-                  <span className="flex-1 truncate text-[13px] font-bold text-sidebar-ink">
-                    {ws.label}
-                  </span>
-                  <span className="rounded bg-sidebar-active px-1.5 py-px font-mono text-[9px] font-bold uppercase tracking-wider text-accent-ink">
-                    {ws.code}
-                  </span>
-                  <ChevronDown
-                    size={14}
-                    className={cn(
-                      "text-sidebar-ink-muted transition-transform duration-200",
-                      isExpanded ? "rotate-0" : "-rotate-90"
-                    )}
-                  />
-                </button>
-              )}
-
-              {/* Workspace tabs — second tier */}
-              {(isExpanded || collapsed) && (
-                <div
-                  className={cn(
-                    "mt-1",
-                    !collapsed && "ml-3 border-l border-sidebar-border pl-2"
-                  )}
-                >
-                  {ws.tabs.map((tab) => renderTab(tab))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
+      {/* ── Flat root nav ─────────────────────────────────────── */}
+      <nav className="no-scrollbar flex-1 overflow-y-auto px-2 pb-4 pt-3">
+        {visibleTabs.map((tab) => renderTab(tab))}
       </nav>
 
       {/* ── Active members (presence) ───────────────────────── */}

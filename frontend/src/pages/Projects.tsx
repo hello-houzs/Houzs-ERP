@@ -35,7 +35,7 @@ import {
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
-import { TabStrip } from "../components/TabStrip";
+import { ProjectMaintenanceView } from "./ProjectMaintenance";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
@@ -557,15 +557,20 @@ const NEXT_STAGE: Partial<Record<ProjectStage, { stage: ProjectStage; label: str
 
 // ── Main page ────────────────────────────────────────────────
 
-type ProjectsView = "list" | "calendar" | "analytics" | "pnl";
+type ProjectsView = "list" | "calendar" | "finances" | "maintenance";
 
-const PROJECTS_VIEWS: ProjectsView[] = ["list", "calendar", "analytics", "pnl"];
+const PROJECTS_VIEWS: ProjectsView[] = [
+  "list",
+  "calendar",
+  "finances",
+  "maintenance",
+];
 
 export function Projects() {
-  // URL-driven so sidebar entries can deep-link to a specific view
-  // (e.g. /projects?view=calendar). localStorage persists the last
-  // view a user chose so a bare `/projects` lands where they left off.
-  const [params, setParams] = useSearchParams();
+  // URL-driven (`?view=…`). The sidebar's Project Management group has
+  // one entry per view, so the page itself doesn't render a tab strip
+  // — view selection lives in the sidebar.
+  const [params] = useSearchParams();
   const [storedView, setStoredView] = useLocalStorage<ProjectsView>(
     "projects:view",
     "list"
@@ -578,36 +583,19 @@ export function Projects() {
       ? "list"
       : storedView;
 
-  function setView(next: ProjectsView) {
-    setStoredView(next);
-    const p = new URLSearchParams(params);
-    p.set("view", next);
-    p.delete("focus");
-    setParams(p, { replace: true });
-  }
+  // Persist whatever view was rendered so a bare `/projects` lands
+  // back where the user left off.
+  useEffect(() => {
+    if (view !== storedView) setStoredView(view);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
 
   return (
     <div>
-      <TabStrip
-        value={view}
-        onChange={setView}
-        options={[
-          { value: "list" as const, label: "List" },
-          { value: "calendar" as const, label: "Calendar" },
-          { value: "analytics" as const, label: "Analytics" },
-          { value: "pnl" as const, label: "P&L" },
-        ]}
-      />
       {view === "list" && <ProjectsListView />}
       {view === "calendar" && <ProjectsCalendarView />}
-      {view === "analytics" && <ProjectsAnalyticsView />}
-      {view === "pnl" && (
-        <PnlCalendar
-          scope="projects"
-          title="Project Cost — Monthly"
-          subtitle="Ledger costs across all projects, grouped by month."
-        />
-      )}
+      {view === "finances" && <ProjectsFinancesView />}
+      {view === "maintenance" && <ProjectMaintenanceView />}
     </div>
   );
 }
@@ -1162,6 +1150,22 @@ interface ProfitabilityResponse {
     margin: number | null;
   }>;
   bottom: ProfitabilityResponse["top"];
+}
+
+// Combined Finances view — what the sidebar exposes as "Finances".
+// Stacks the monthly P&L calendar above the analytics breakdown so
+// users see the time-series trend first, then the per-project drill-in.
+function ProjectsFinancesView() {
+  return (
+    <div className="space-y-8">
+      <PnlCalendar
+        scope="projects"
+        title="Project Cost — Monthly"
+        subtitle="Ledger costs across all projects, grouped by month."
+      />
+      <ProjectsAnalyticsView />
+    </div>
+  );
 }
 
 function ProjectsAnalyticsView() {
