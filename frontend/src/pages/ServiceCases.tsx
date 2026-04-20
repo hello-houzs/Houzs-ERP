@@ -22,7 +22,13 @@ import {
   X,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
-import { DetailLayout, HeaderButton } from "../components/DetailLayout";
+import {
+  DetailLayout,
+  DetailGrid,
+  DetailMain,
+  DetailAside,
+  HeaderButton,
+} from "../components/DetailLayout";
 import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
 import { TabStrip } from "../components/TabStrip";
@@ -1225,54 +1231,8 @@ function DetailContent({
               <Printer size={11} /> Print
             </button>
           </div>
-
-          {/* Customer & Order */}
-          <PanelSection title="Customer & Order" muted>
-            <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
-            <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
-            <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
-            <InlineEdit
-              label="Email (for survey)"
-              value={c.customer_email}
-              onSave={(v) => patch({ customer_email: v })}
-              placeholder="customer@example.com"
-            />
-            <FieldRow label="Location">{c.location || "—"}</FieldRow>
-            <FieldRow label="Agent">{c.sales_agent || "—"}</FieldRow>
-            <FieldRow label="Date">{formatDate(c.complained_date)}</FieldRow>
-            {c.addr1 && <FieldRow label="Address">{[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}</FieldRow>}
-            <PortalLinkRow
-              id={id}
-              existingToken={detail.data?.portal_token ?? null}
-              toast={toast}
-              onGenerated={() => detail.reload()}
-            />
-          </PanelSection>
-
-          <CustomerHistory id={id} />
-
-          {/* Assigned To */}
-          <PanelSection title="Assignment">
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-                Assigned To
-              </div>
-              <select
-                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
-                value={c.assigned_to ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  patch({ assigned_to: v ? parseInt(v, 10) : null });
-                }}
-              >
-                <option value="">— unassigned —</option>
-                {userOptions.map((u) => (
-                  <option key={u.id} value={u.id}>{u.name}</option>
-                ))}
-              </select>
-            </div>
-          </PanelSection>
-
+          <DetailGrid>
+            <DetailMain>
           {/* Items */}
           <PanelSection title={`Items (${items.length})`}>
             {items.length === 0 ? (
@@ -1463,108 +1423,6 @@ function DetailContent({
               onSave={(v) => patch({ action_remark: v })}
             />
           </PanelSection>
-
-          {/* Cost Tracking */}
-          <PanelSection title="Cost Tracking">
-            <div className="mb-2 flex items-center gap-1.5 text-[10px] text-ink-muted">
-              <DollarSign size={11} />
-              PO amounts and reconciliation
-            </div>
-            <InlineEdit
-              label="PO Amount"
-              type="number"
-              value={c.po_amount}
-              onSave={(v) => patch({ po_amount: v ? Number(v) : null })}
-            />
-            <InlineEdit
-              label="Supplier Invoice Ref"
-              value={c.supplier_invoice_ref}
-              onSave={(v) => patch({ supplier_invoice_ref: v })}
-            />
-            <InlineEdit
-              label="Cost Notes"
-              textarea
-              value={c.cost_notes}
-              onSave={(v) => patch({ cost_notes: v })}
-            />
-          </PanelSection>
-
-          {/* Manager Approval / Quality Review */}
-          <PanelSection title="Quality Review">
-            <div className="mb-2 flex items-center gap-1.5 text-[10px] text-ink-muted">
-              <ShieldCheck size={11} />
-              Manager sign-off and NCR classification
-            </div>
-            <InlineEdit
-              label="NCR Category"
-              value={c.ncr_category}
-              options={[...NCR_OPTIONS]}
-              onSave={(v) => patch({ ncr_category: v })}
-            />
-            {c.approved_at ? (
-              <div className="rounded-md border border-synced/40 bg-synced/5 p-3 text-[12px]">
-                <div className="flex items-center gap-1.5 text-synced">
-                  <ShieldCheck size={12} />
-                  <span className="font-semibold">
-                    {c.quality_review_passed ? "Quality Review Passed" : "Approved"}
-                  </span>
-                </div>
-                <div className="mt-1 text-ink-secondary">
-                  By {c.approved_by_name || `user #${c.approved_by}`} ·{" "}
-                  {c.approved_at.slice(0, 16).replace("T", " ")}
-                </div>
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                <button
-                  onClick={async () => {
-                    await api.post(`/api/assr/${id}/approve`, { quality_review_passed: true });
-                    detail.reload();
-                    onUpdated();
-                  }}
-                  className="rounded-md bg-synced px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-90"
-                >
-                  Approve &amp; Pass QA
-                </button>
-                <button
-                  onClick={async () => {
-                    await api.post(`/api/assr/${id}/approve`, { quality_review_passed: false });
-                    detail.reload();
-                    onUpdated();
-                  }}
-                  className="rounded-md border border-border px-3 py-1.5 text-[11px] font-semibold text-ink"
-                >
-                  Mark Reviewed
-                </button>
-              </div>
-            )}
-          </PanelSection>
-
-          {/* Satisfaction (shown when closed) */}
-          {c.stage === "closed" && (
-            <PanelSection title="Customer Satisfaction">
-              {c.satisfaction_rating ? (
-                <>
-                  <div className="flex items-center gap-1">
-                    {[1, 2, 3, 4, 5].map((n) => (
-                      <Star
-                        key={n}
-                        size={16}
-                        className={n <= c.satisfaction_rating! ? "fill-amber-400 text-amber-400" : "text-ink-muted"}
-                      />
-                    ))}
-                    <span className="ml-2 text-sm font-semibold">{c.satisfaction_rating}/5</span>
-                  </div>
-                  {c.satisfaction_notes && (
-                    <div className="mt-2 text-[12px] text-ink-secondary">{c.satisfaction_notes}</div>
-                  )}
-                </>
-              ) : (
-                <div className="text-[12px] text-ink-muted">No rating yet. Send the customer a survey link:</div>
-              )}
-              <SurveyLinkButton id={id} toast={toast} />
-            </PanelSection>
-          )}
 
           {/* Attachments */}
           <PanelSection title={`Attachments (${attachments.length})`}>
@@ -1828,6 +1686,159 @@ function DetailContent({
               )}
             </div>
           </PanelSection>
+            </DetailMain>
+
+            <DetailAside>
+          {/* Customer & Order */}
+          <PanelSection title="Customer & Order" muted>
+            <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
+            <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
+            <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
+            <InlineEdit
+              label="Email (for survey)"
+              value={c.customer_email}
+              onSave={(v) => patch({ customer_email: v })}
+              placeholder="customer@example.com"
+            />
+            <FieldRow label="Location">{c.location || "—"}</FieldRow>
+            <FieldRow label="Agent">{c.sales_agent || "—"}</FieldRow>
+            <FieldRow label="Date">{formatDate(c.complained_date)}</FieldRow>
+            {c.addr1 && <FieldRow label="Address">{[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}</FieldRow>}
+            <PortalLinkRow
+              id={id}
+              existingToken={detail.data?.portal_token ?? null}
+              toast={toast}
+              onGenerated={() => detail.reload()}
+            />
+          </PanelSection>
+
+          <CustomerHistory id={id} />
+
+          {/* Assigned To */}
+          <PanelSection title="Assignment">
+            <div>
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                Assigned To
+              </div>
+              <select
+                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+                value={c.assigned_to ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  patch({ assigned_to: v ? parseInt(v, 10) : null });
+                }}
+              >
+                <option value="">— unassigned —</option>
+                {userOptions.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            </div>
+          </PanelSection>
+
+          {/* Cost Tracking */}
+          <PanelSection title="Cost Tracking">
+            <div className="mb-2 flex items-center gap-1.5 text-[10px] text-ink-muted">
+              <DollarSign size={11} />
+              PO amounts and reconciliation
+            </div>
+            <InlineEdit
+              label="PO Amount"
+              type="number"
+              value={c.po_amount}
+              onSave={(v) => patch({ po_amount: v ? Number(v) : null })}
+            />
+            <InlineEdit
+              label="Supplier Invoice Ref"
+              value={c.supplier_invoice_ref}
+              onSave={(v) => patch({ supplier_invoice_ref: v })}
+            />
+            <InlineEdit
+              label="Cost Notes"
+              textarea
+              value={c.cost_notes}
+              onSave={(v) => patch({ cost_notes: v })}
+            />
+          </PanelSection>
+
+          {/* Manager Approval / Quality Review */}
+          <PanelSection title="Quality Review">
+            <div className="mb-2 flex items-center gap-1.5 text-[10px] text-ink-muted">
+              <ShieldCheck size={11} />
+              Manager sign-off and NCR classification
+            </div>
+            <InlineEdit
+              label="NCR Category"
+              value={c.ncr_category}
+              options={[...NCR_OPTIONS]}
+              onSave={(v) => patch({ ncr_category: v })}
+            />
+            {c.approved_at ? (
+              <div className="rounded-md border border-synced/40 bg-synced/5 p-3 text-[12px]">
+                <div className="flex items-center gap-1.5 text-synced">
+                  <ShieldCheck size={12} />
+                  <span className="font-semibold">
+                    {c.quality_review_passed ? "Quality Review Passed" : "Approved"}
+                  </span>
+                </div>
+                <div className="mt-1 text-ink-secondary">
+                  By {c.approved_by_name || `user #${c.approved_by}`} ·{" "}
+                  {c.approved_at.slice(0, 16).replace("T", " ")}
+                </div>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    await api.post(`/api/assr/${id}/approve`, { quality_review_passed: true });
+                    detail.reload();
+                    onUpdated();
+                  }}
+                  className="rounded-md bg-synced px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-90"
+                >
+                  Approve &amp; Pass QA
+                </button>
+                <button
+                  onClick={async () => {
+                    await api.post(`/api/assr/${id}/approve`, { quality_review_passed: false });
+                    detail.reload();
+                    onUpdated();
+                  }}
+                  className="rounded-md border border-border px-3 py-1.5 text-[11px] font-semibold text-ink"
+                >
+                  Mark Reviewed
+                </button>
+              </div>
+            )}
+          </PanelSection>
+
+          {/* Satisfaction (shown when closed) */}
+          {c.stage === "closed" && (
+            <PanelSection title="Customer Satisfaction">
+              {c.satisfaction_rating ? (
+                <>
+                  <div className="flex items-center gap-1">
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <Star
+                        key={n}
+                        size={16}
+                        className={n <= c.satisfaction_rating! ? "fill-amber-400 text-amber-400" : "text-ink-muted"}
+                      />
+                    ))}
+                    <span className="ml-2 text-sm font-semibold">{c.satisfaction_rating}/5</span>
+                  </div>
+                  {c.satisfaction_notes && (
+                    <div className="mt-2 text-[12px] text-ink-secondary">{c.satisfaction_notes}</div>
+                  )}
+                </>
+              ) : (
+                <div className="text-[12px] text-ink-muted">No rating yet. Send the customer a survey link:</div>
+              )}
+              <SurveyLinkButton id={id} toast={toast} />
+            </PanelSection>
+          )}
+            </DetailAside>
+          </DetailGrid>
         </>
       )}
 

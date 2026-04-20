@@ -41,7 +41,13 @@ import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
 import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
-import { DetailLayout, HeaderButton } from "../components/DetailLayout";
+import {
+  DetailLayout,
+  DetailGrid,
+  DetailMain,
+  DetailAside,
+  HeaderButton,
+} from "../components/DetailLayout";
 import { InlineEdit } from "../components/InlineEdit";
 import { StatCard } from "../components/StatCard";
 import { DashboardGrid } from "../components/Dashboard";
@@ -2025,103 +2031,8 @@ function ProjectDetailContent({
               <Printer size={11} /> Print
             </button>
           </div>
-
-          <PanelSection title="Basics" muted>
-            <InlineEdit label="Name" value={p.name} onSave={(v) => patch({ name: v })} />
-            {(() => {
-              const suggested = composeEventName({
-                state: p.state,
-                brand: p.brand,
-                event_type_name: p.event_type_name,
-                venue: p.venue,
-              });
-              if (!suggested || suggested === p.name) return null;
-              return (
-                <button
-                  onClick={() => patch({ name: suggested })}
-                  className="-mt-1 inline-flex items-center gap-1 self-start rounded-md border border-dashed border-accent/40 bg-accent-soft/20 px-2 py-1 text-[10px] font-semibold text-accent hover:bg-accent-soft/40"
-                  title="Replace name with STATE - BRAND - TYPE - VENUE"
-                >
-                  Use convention: {suggested}
-                </button>
-              );
-            })()}
-            <InlineEdit
-              label="Brand"
-              value={p.brand}
-              options={brands}
-              onSave={(v) => patch({ brand: v })}
-            />
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-                Event Type
-              </div>
-              <select
-                value={p.event_type_id ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  patch({ event_type_id: v ? parseInt(v, 10) : null });
-                }}
-                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
-              >
-                <option value="">— none —</option>
-                {eventTypes.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <FieldRow label="Code" mono>{p.code}</FieldRow>
-            <FieldRow label="Created">
-              {formatDate(p.created_at)} · {p.created_by_name || "—"}
-            </FieldRow>
-          </PanelSection>
-
-          <PanelSection title="Dates" muted>
-            <InlineEdit
-              label="Start Date"
-              type="date"
-              value={p.start_date}
-              onSave={(v) => patch({ start_date: v })}
-            />
-            <InlineEdit
-              label="End Date"
-              type="date"
-              value={p.end_date}
-              onSave={(v) => patch({ end_date: v })}
-            />
-          </PanelSection>
-
-          <PanelSection title="Venue">
-            <InlineEdit label="Venue" value={p.venue} onSave={(v) => patch({ venue: v })} />
-            <InlineEdit
-              label="State"
-              value={p.state}
-              options={MALAYSIA_STATES}
-              onSave={(v) => patch({ state: v })}
-            />
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-                Organizer
-              </div>
-              <OrganizerPicker
-                value={p.organizer}
-                onChange={(v) => patch({ organizer: v })}
-              />
-            </div>
-          </PanelSection>
-
-          <PanelSection title="Booth">
-            <InlineEdit label="Booth No" value={p.booth_no} onSave={(v) => patch({ booth_no: v })} />
-            <InlineEdit
-              label="Size (m²)"
-              type="number"
-              value={p.size_sqm}
-              onSave={(v) => patch({ size_sqm: v ? parseFloat(v) : null })}
-            />
-          </PanelSection>
-
+          <DetailGrid>
+            <DetailMain>
           <PaymentSection
             projectId={id}
             project={p}
@@ -2150,25 +2061,6 @@ function ProjectDetailContent({
             onChange={() => detail.reload()}
             toast={toast}
           />
-
-          <PanelSection title="External Links">
-            <InlineEdit
-              label="Notion URL"
-              value={p.notion_url}
-              onSave={(v) => patch({ notion_url: v })}
-              placeholder="https://notion.so/…"
-            />
-            {p.notion_url && (
-              <a
-                href={p.notion_url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-[12px] text-accent underline"
-              >
-                Open in Notion ↗
-              </a>
-            )}
-          </PanelSection>
 
           <PanelSection title={`Checklist (${checklist.length})`}>
             <div className="space-y-1.5">
@@ -2310,6 +2202,133 @@ function ProjectDetailContent({
             )}
           </PanelSection>
 
+          <PanelSection title="Chat">
+            <ProjectChat
+              projectId={id}
+              activity={activity}
+              canPost={can("projects.write")}
+              onPosted={() => detail.reload()}
+              toast={toast}
+            />
+          </PanelSection>
+            </DetailMain>
+
+            <DetailAside>
+          <PanelSection title="Basics" muted>
+            <InlineEdit label="Name" value={p.name} onSave={(v) => patch({ name: v })} />
+            {(() => {
+              const suggested = composeEventName({
+                state: p.state,
+                brand: p.brand,
+                event_type_name: p.event_type_name,
+                venue: p.venue,
+              });
+              if (!suggested || suggested === p.name) return null;
+              return (
+                <button
+                  onClick={() => patch({ name: suggested })}
+                  className="-mt-1 inline-flex items-center gap-1 self-start rounded-md border border-dashed border-accent/40 bg-accent-soft/20 px-2 py-1 text-[10px] font-semibold text-accent hover:bg-accent-soft/40"
+                  title="Replace name with STATE - BRAND - TYPE - VENUE"
+                >
+                  Use convention: {suggested}
+                </button>
+              );
+            })()}
+            <InlineEdit
+              label="Brand"
+              value={p.brand}
+              options={brands}
+              onSave={(v) => patch({ brand: v })}
+            />
+            <div>
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                Event Type
+              </div>
+              <select
+                value={p.event_type_id ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  patch({ event_type_id: v ? parseInt(v, 10) : null });
+                }}
+                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
+              >
+                <option value="">— none —</option>
+                {eventTypes.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <FieldRow label="Code" mono>{p.code}</FieldRow>
+            <FieldRow label="Created">
+              {formatDate(p.created_at)} · {p.created_by_name || "—"}
+            </FieldRow>
+          </PanelSection>
+
+          <PanelSection title="Dates" muted>
+            <InlineEdit
+              label="Start Date"
+              type="date"
+              value={p.start_date}
+              onSave={(v) => patch({ start_date: v })}
+            />
+            <InlineEdit
+              label="End Date"
+              type="date"
+              value={p.end_date}
+              onSave={(v) => patch({ end_date: v })}
+            />
+          </PanelSection>
+
+          <PanelSection title="Venue">
+            <InlineEdit label="Venue" value={p.venue} onSave={(v) => patch({ venue: v })} />
+            <InlineEdit
+              label="State"
+              value={p.state}
+              options={MALAYSIA_STATES}
+              onSave={(v) => patch({ state: v })}
+            />
+            <div>
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                Organizer
+              </div>
+              <OrganizerPicker
+                value={p.organizer}
+                onChange={(v) => patch({ organizer: v })}
+              />
+            </div>
+          </PanelSection>
+
+          <PanelSection title="Booth">
+            <InlineEdit label="Booth No" value={p.booth_no} onSave={(v) => patch({ booth_no: v })} />
+            <InlineEdit
+              label="Size (m²)"
+              type="number"
+              value={p.size_sqm}
+              onSave={(v) => patch({ size_sqm: v ? parseFloat(v) : null })}
+            />
+          </PanelSection>
+
+          <PanelSection title="External Links">
+            <InlineEdit
+              label="Notion URL"
+              value={p.notion_url}
+              onSave={(v) => patch({ notion_url: v })}
+              placeholder="https://notion.so/…"
+            />
+            {p.notion_url && (
+              <a
+                href={p.notion_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[12px] text-accent underline"
+              >
+                Open in Notion ↗
+              </a>
+            )}
+          </PanelSection>
+
           {p.start_date && (
             <PanelSection title="Add to Calendar" muted>
               <a
@@ -2327,15 +2346,8 @@ function ProjectDetailContent({
             </PanelSection>
           )}
 
-          <PanelSection title="Chat">
-            <ProjectChat
-              projectId={id}
-              activity={activity}
-              canPost={can("projects.write")}
-              onPosted={() => detail.reload()}
-              toast={toast}
-            />
-          </PanelSection>
+            </DetailAside>
+          </DetailGrid>
         </>
       )}
     </DetailLayout>
