@@ -226,23 +226,25 @@ export default function PmsPage() {
                       </div>
                     </div>
 
-                    {/* Financial — compact single row */}
-                    <div className="px-4 pb-3 pt-1 flex items-end justify-between gap-2 border-t border-[#F0F3F3]">
-                      <div className="text-[10px] text-gray-500">
-                        Sales <span className="text-[#0A1F2E] font-semibold tabular-nums">{fmtRM(e.totalSalesRm)}</span>
-                        <span className="text-gray-300 mx-1">·</span>
-                        Cost <span className="text-[#0A1F2E] font-semibold tabular-nums">{fmtRM(c.totalCost)}</span>
+                    {/* Financial — admin only */}
+                    {userIsAdmin && (
+                      <div className="px-4 pb-3 pt-1 flex items-end justify-between gap-2 border-t border-[#F0F3F3]">
+                        <div className="text-[10px] text-gray-500">
+                          Sales <span className="text-[#0A1F2E] font-semibold tabular-nums">{fmtRM(e.totalSalesRm)}</span>
+                          <span className="text-gray-300 mx-1">·</span>
+                          Cost <span className="text-[#0A1F2E] font-semibold tabular-nums">{fmtRM(c.totalCost)}</span>
+                        </div>
+                        <div className="text-[10px] text-gray-500 text-right">
+                          Net
+                          <span className={`ml-1 font-bold tabular-nums ${np >= 0 ? "text-[#0F766E]" : "text-red-600"}`}>
+                            {fmtRM(np)}
+                          </span>
+                          <span className={`ml-1 text-[9px] ${np >= 0 ? "text-[#0F766E]/70" : "text-red-400"}`}>
+                            ({npPct.toFixed(0)}%)
+                          </span>
+                        </div>
                       </div>
-                      <div className="text-[10px] text-gray-500 text-right">
-                        Net
-                        <span className={`ml-1 font-bold tabular-nums ${np >= 0 ? "text-[#0F766E]" : "text-red-600"}`}>
-                          {fmtRM(np)}
-                        </span>
-                        <span className={`ml-1 text-[9px] ${np >= 0 ? "text-[#0F766E]/70" : "text-red-400"}`}>
-                          ({npPct.toFixed(0)}%)
-                        </span>
-                      </div>
-                    </div>
+                    )}
                   </Link>
                 );
               })}
