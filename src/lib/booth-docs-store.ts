@@ -18,7 +18,9 @@ export type BoothDocType =
   | "TWO_D_WITH_DISPLAY"
   | "SETUP_IMAGE_DRIVER"
   | "SETUP_IMAGE_SALES"
-  | "DEFECT_ITEM"
+  | "DEFECT_LIST"
+  | "EXCHANGE_LIST"
+  | "EVENT_COMPLETE_IMAGE"
   | "DRIVER_RECORD"
   | "EXPO_MAP"
   | "EXPO_MAP_FILLED"
@@ -26,43 +28,73 @@ export type BoothDocType =
   | "AGREEMENT"
   | "BD_RECORD";
 
+// Position / responsibility for each doc type
+export type DocPosition = "Driver" | "Sales" | "BD" | "Any";
+
 export const BOOTH_DOC_LABELS: Record<BoothDocType, string> = {
-  STOCK_TRANSFER:      "Stock Transfer Record",
-  DISPLAY_FLOORPLAN:   "Display Floorplan",
-  FLOORPLAN_INTERNAL:  "Floorplan (Internal)",
-  THREE_D_DESIGN:      "3D Design",
-  TWO_D_WITH_DISPLAY:  "2D Design with Display",
-  SETUP_IMAGE_DRIVER:  "Setup Image — Driver",
-  SETUP_IMAGE_SALES:   "Setup Image — Sales",
-  DEFECT_ITEM:         "Defect Item",
-  DRIVER_RECORD:       "Driver Record",
-  EXPO_MAP:            "Expo Map (Blank Base Floorplan)",
-  EXPO_MAP_FILLED:     "Expo Map (Filled with Competitors)",
-  PERMIT_FILE:         "Permit File",
-  AGREEMENT:           "Agreement / Quotation",
-  BD_RECORD:           "BD Record",
+  STOCK_TRANSFER:       "Stock Transfer Record",
+  DISPLAY_FLOORPLAN:    "Display Floorplan",
+  FLOORPLAN_INTERNAL:   "Floorplan (Internal)",
+  THREE_D_DESIGN:       "3D Design",
+  TWO_D_WITH_DISPLAY:   "2D Design with Display",
+  SETUP_IMAGE_DRIVER:   "Setup Image",
+  SETUP_IMAGE_SALES:    "Setup Image",
+  DEFECT_LIST:          "Defect List",
+  EXCHANGE_LIST:        "Exchange List",
+  EVENT_COMPLETE_IMAGE: "Event Complete Image",
+  DRIVER_RECORD:        "Driver Record",
+  EXPO_MAP:             "Expo Map (Blank Base Floorplan)",
+  EXPO_MAP_FILLED:      "Expo Map (Filled with Competitors)",
+  PERMIT_FILE:          "Permit File",
+  AGREEMENT:            "Agreement / Quotation",
+  BD_RECORD:            "BD Record",
 };
 
-// Grouped for separate UI sections
-export const PREPARATION_DOCS: BoothDocType[] = [
-  "AGREEMENT",
-  "PERMIT_FILE",
-  "BD_RECORD",
-];
+// Short helper text explaining when/what each doc is for
+export const BOOTH_DOC_HINTS: Partial<Record<BoothDocType, string>> = {
+  DEFECT_LIST:          "Check after setup",
+  EXCHANGE_LIST:        "After event completes",
+  EVENT_COMPLETE_IMAGE: "After event completes",
+  SETUP_IMAGE_DRIVER:   "Taken by driver on arrival",
+  SETUP_IMAGE_SALES:    "Taken by sales at showroom",
+};
+
+export const BOOTH_DOC_POSITION: Record<BoothDocType, DocPosition> = {
+  STOCK_TRANSFER:       "Sales",
+  DISPLAY_FLOORPLAN:    "Sales",
+  FLOORPLAN_INTERNAL:   "Sales",
+  THREE_D_DESIGN:       "Sales",
+  TWO_D_WITH_DISPLAY:   "Sales",
+  SETUP_IMAGE_DRIVER:   "Driver",
+  SETUP_IMAGE_SALES:    "Sales",
+  DEFECT_LIST:          "Sales",
+  EXCHANGE_LIST:        "Sales",
+  EVENT_COMPLETE_IMAGE: "Sales",
+  DRIVER_RECORD:        "Driver",
+  EXPO_MAP:             "Sales",
+  EXPO_MAP_FILLED:      "Sales",
+  PERMIT_FILE:          "BD",
+  AGREEMENT:            "BD",
+  BD_RECORD:            "BD",
+};
+
+// Grouped for separate UI sections.
+// NOTE: Agreement, Permits, Floorplan, 3D are already tracked (with file
+// attachments via workflow-attachment-dialog) under PM Workflow — we don't
+// duplicate them here.
+export const PREPARATION_DOCS: BoothDocType[] = [];
 
 export const BOOTH_LAYOUT_DOCS: BoothDocType[] = [
   "STOCK_TRANSFER",
-  "DISPLAY_FLOORPLAN",
-  "FLOORPLAN_INTERNAL",
-  "THREE_D_DESIGN",
   "TWO_D_WITH_DISPLAY",
 ];
 
 export const SETUP_DISMANTLE_DOCS: BoothDocType[] = [
   "SETUP_IMAGE_DRIVER",
   "SETUP_IMAGE_SALES",
-  "DEFECT_ITEM",
-  "DRIVER_RECORD",
+  "DEFECT_LIST",
+  "EXCHANGE_LIST",
+  "EVENT_COMPLETE_IMAGE",
 ];
 
 export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED";

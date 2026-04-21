@@ -14,7 +14,8 @@ import {
 } from "@/lib/mock-data";
 import {
   useBoothDocs, createBoothDoc, updateBoothDoc, deleteBoothDoc, setApproval,
-  BOOTH_DOC_LABELS, BOOTH_LAYOUT_DOCS, SETUP_DISMANTLE_DOCS, PREPARATION_DOCS,
+  BOOTH_DOC_LABELS, BOOTH_DOC_HINTS, BOOTH_DOC_POSITION,
+  BOOTH_LAYOUT_DOCS, SETUP_DISMANTLE_DOCS, PREPARATION_DOCS,
   type BoothDoc, type BoothDocType, type ApprovalStatus,
 } from "@/lib/booth-docs-store";
 import {
@@ -1040,24 +1041,13 @@ export default function EventDetailPage() {
         )}
       </div>
 
-      {/* ─────── PREPARATION DOCUMENTS ────────────────────────── */}
-      <BoothDocSection
-        title="PREPARATION DOCUMENTS"
-        subtitle="Agreement / quotation, permits, and BD records — signed off before event"
-        docTypes={PREPARATION_DOCS}
-        boothDocs={boothDocs}
-        eventA42={a42}
-        currentUser={currentUser}
-        hasFullAccess={hasFullAccess}
-        onOpenDoc={setOpenBoothDoc}
-        onOpenAttach={setOpenAttach}
-        allPhotos={allPhotos}
-      />
+      {/* Preparation documents (Agreement, Permit) are tracked in PM Workflow above
+          — file attachments via the paperclip icons there. No separate section here. */}
 
       {/* ─────── BOOTH LAYOUT & SETUP ─────────────────────────── */}
       <BoothDocSection
         title="BOOTH LAYOUT & SETUP"
-        subtitle="Floor plans, 3D renders, and stock transfer records"
+        subtitle="Stock transfer records and 2D display layout (Floorplan / 3D already in PM Workflow)"
         docTypes={BOOTH_LAYOUT_DOCS}
         boothDocs={boothDocs}
         eventA42={a42}
@@ -1405,9 +1395,25 @@ function BoothDocSection({
               return (
                 <tr key={type} className="hover:bg-[#FAFBFB] transition-colors">
                   <td className="px-4 py-2.5">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <FileText className="h-3.5 w-3.5 text-gray-400 shrink-0" />
                       <span className="font-medium text-[#0A1F2E]">{BOOTH_DOC_LABELS[type]}</span>
+                      {(() => {
+                        const pos = BOOTH_DOC_POSITION[type];
+                        const color =
+                          pos === "Driver" ? "bg-blue-100 text-blue-700 border-blue-200" :
+                          pos === "Sales"  ? "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/30" :
+                          pos === "BD"     ? "bg-purple-100 text-purple-700 border-purple-200" :
+                                             "bg-gray-100 text-gray-600 border-gray-200";
+                        return (
+                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-semibold uppercase tracking-wider ${color}`}>
+                            {pos}
+                          </span>
+                        );
+                      })()}
+                      {BOOTH_DOC_HINTS[type] && (
+                        <span className="text-[9px] text-gray-400 italic">· {BOOTH_DOC_HINTS[type]}</span>
+                      )}
                     </div>
                   </td>
                   <td className="px-3 py-2.5 text-gray-500 max-w-[140px]">
