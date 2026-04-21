@@ -186,7 +186,14 @@ export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; o
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-3 scrollbar-thin">
-        {navigationGroups.map((group) => (
+        {navigationGroups
+          .filter((group) => {
+            // Non-admin users (non Sales Director) only see PROJECT MANAGEMENT.
+            // Admins see everything.
+            if (userIsAdmin) return true;
+            return group.label === "PROJECT MANAGEMENT";
+          })
+          .map((group) => (
           <div key={group.label}>
             {!collapsed && (
               <div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-gray-500 select-none">

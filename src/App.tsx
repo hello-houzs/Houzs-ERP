@@ -1,6 +1,7 @@
 import { Routes, Route } from 'react-router-dom';
 import DashboardLayout from './layouts/DashboardLayout';
 import PortalLayout from './layouts/PortalLayout';
+import { AdminRoute } from './components/layout/admin-route';
 
 // Pages
 import DashboardPage from './pages/DashboardPage';
@@ -29,21 +30,26 @@ export default function App() {
       {/* Dashboard layout with sidebar */}
       <Route element={<DashboardLayout />}>
         <Route path="/" element={<DashboardPage />} />
-        <Route path="/bd" element={<BdPage />} />
+        {/* Admin-only: SALES */}
+        <Route path="/sales" element={<AdminRoute><SalesPage /></AdminRoute>} />
+        <Route path="/sales/details" element={<AdminRoute><SODetailsPage /></AdminRoute>} />
+        <Route path="/sales/orders" element={<AdminRoute><SalesOrderPage /></AdminRoute>} />
+        <Route path="/sales/sku-costing" element={<AdminRoute><SKUCostingPage /></AdminRoute>} />
+        {/* Admin-only: QMS */}
+        <Route path="/qms" element={<AdminRoute><QmsPage /></AdminRoute>} />
+        <Route path="/qms/:id" element={<AdminRoute><QmsDetailPage /></AdminRoute>} />
+        {/* Admin-only: DEPARTMENTS */}
+        <Route path="/bd" element={<AdminRoute><BdPage /></AdminRoute>} />
+        <Route path="/operation" element={<AdminRoute><OperationPage /></AdminRoute>} />
+        <Route path="/driver" element={<AdminRoute><DriverPage /></AdminRoute>} />
+        {/* Admin-only: Finance */}
+        <Route path="/finance" element={<AdminRoute><FinancePage /></AdminRoute>} />
+        {/* Shared: PROJECT MANAGEMENT module (all sales can access) */}
         <Route path="/calendar" element={<CalendarPage />} />
-        <Route path="/driver" element={<DriverPage />} />
+        <Route path="/pms" element={<PmsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
         <Route path="/events/new" element={<NewEventPage />} />
         <Route path="/events/:id" element={<EventDetailPage />} />
-        <Route path="/finance" element={<FinancePage />} />
-        <Route path="/operation" element={<OperationPage />} />
-        <Route path="/pms" element={<PmsPage />} />
-        <Route path="/qms" element={<QmsPage />} />
-        <Route path="/qms/:id" element={<QmsDetailPage />} />
-        <Route path="/sales" element={<SalesPage />} />
-        <Route path="/sales/details" element={<SODetailsPage />} />
-        <Route path="/sales/orders" element={<SalesOrderPage />} />
-        <Route path="/sales/sku-costing" element={<SKUCostingPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
       </Route>
 
       {/* Print pages — no sidebar */}
