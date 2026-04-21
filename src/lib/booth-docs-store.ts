@@ -19,6 +19,7 @@ export type BoothDocType =
   | "TWO_D_WITH_DISPLAY"
   | "SETUP_IMAGE_DRIVER"
   | "SETUP_IMAGE_SALES"
+  | "DISMANTLE_IMAGE_DRIVER"
   | "DEFECT_LIST"
   | "EXCHANGE_LIST"
   | "EVENT_COMPLETE_IMAGE"
@@ -41,6 +42,7 @@ export const BOOTH_DOC_LABELS: Record<BoothDocType, string> = {
   TWO_D_WITH_DISPLAY:   "2D Design with Display",
   SETUP_IMAGE_DRIVER:   "Setup Image",
   SETUP_IMAGE_SALES:    "Setup Image",
+  DISMANTLE_IMAGE_DRIVER: "Dismantle Image",
   DEFECT_LIST:          "Defect List",
   EXCHANGE_LIST:        "Exchange List",
   EVENT_COMPLETE_IMAGE: "Event Complete Image",
@@ -59,6 +61,7 @@ export const BOOTH_DOC_HINTS: Partial<Record<BoothDocType, string>> = {
   EVENT_COMPLETE_IMAGE: "After event completes",
   SETUP_IMAGE_DRIVER:   "Taken by driver on arrival",
   SETUP_IMAGE_SALES:    "Taken by sales at showroom",
+  DISMANTLE_IMAGE_DRIVER: "Taken by driver after dismantle",
 };
 
 export const BOOTH_DOC_POSITION: Record<BoothDocType, DocPosition> = {
@@ -70,6 +73,7 @@ export const BOOTH_DOC_POSITION: Record<BoothDocType, DocPosition> = {
   TWO_D_WITH_DISPLAY:   "PC",
   SETUP_IMAGE_DRIVER:   "Driver",
   SETUP_IMAGE_SALES:    "Sales",
+  DISMANTLE_IMAGE_DRIVER: "Driver",
   DEFECT_LIST:          "Sales",
   EXCHANGE_LIST:        "Sales",
   EVENT_COMPLETE_IMAGE: "Sales",
@@ -100,6 +104,7 @@ export const SETUP_DISMANTLE_DOCS: BoothDocType[] = [
   "DEFECT_LIST",
   "EXCHANGE_LIST",
   "EVENT_COMPLETE_IMAGE",
+  "DISMANTLE_IMAGE_DRIVER",
 ];
 
 export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED";
@@ -127,6 +132,7 @@ export const BOOTH_DOC_CONTENT: Record<BoothDocType, DocContentMode> = {
   TWO_D_WITH_DISPLAY:   "IMAGE_ONLY",
   SETUP_IMAGE_DRIVER:   "IMAGE_ONLY",
   SETUP_IMAGE_SALES:    "IMAGE_ONLY",
+  DISMANTLE_IMAGE_DRIVER: "IMAGE_ONLY",
   DEFECT_LIST:          "IMAGE_TEXT",
   EXCHANGE_LIST:        "IMAGE_TEXT",
   EVENT_COMPLETE_IMAGE: "IMAGE_ONLY",

@@ -55,26 +55,58 @@ const WORKFLOW_FIELDS: { key: keyof HouzsEvent; label: string; stage: string }[]
   { key: "secDepoRefund",           label: "Security Deposit",               stage: "Closeout" },
 ];
 
-// Custom button labels for specific workflow rows (override the generic FLAG labels)
-const FIELD_LABEL_OVERRIDE: Partial<Record<keyof HouzsEvent, Partial<Record<WorkflowFlag, string>>>> = {
-  secDepoRefund: {
-    "NO NEED": "NONE",
-    "FALSE":   "UNPAID",
-    "TRUE":    "PAID",
-    "DONE":    "REFUNDED",
-  },
-};
 
 const FLAG_OPTIONS: { value: WorkflowFlag; label: string; color: string }[] = [
-  { value: "",        label: "—",       color: "bg-white text-gray-400 border-[#DDE5E5]" },
-  { value: "TRUE",    label: "TRUE",    color: "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/30" },
+  { value: "",        label: "PENDING", color: "bg-amber-100 text-amber-700 border-amber-300" },
   { value: "DONE",    label: "DONE",    color: "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/30" },
-  { value: "FALSE",   label: "FALSE",   color: "bg-amber-100 text-amber-700 border-amber-300" },
-  { value: "NO NEED", label: "NO NEED", color: "bg-gray-100 text-gray-500 border-gray-300" },
+  { value: "NO NEED", label: "N/A",     color: "bg-gray-100 text-gray-500 border-gray-300" },
 ];
 
-function isDone(v: WorkflowFlag) { return v === "TRUE" || v === "DONE"; }
+// Security Deposit has 4 states (NONE / UNPAID / PAID / REFUNDED)
+const SEC_DEPO_OPTIONS: { value: WorkflowFlag; label: string; color: string }[] = [
+  { value: "NO NEED", label: "NONE",     color: "bg-gray-100 text-gray-500 border-gray-300" },
+  { value: "",        label: "UNPAID",   color: "bg-amber-100 text-amber-700 border-amber-300" },
+  { value: "TRUE",    label: "PAID",     color: "bg-blue-100 text-blue-700 border-blue-300" },
+  { value: "DONE",    label: "REFUNDED", color: "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/30" },
+];
+
+// TRUE kept for backward-compat with legacy mock data — treated as DONE
+function isDone(v: WorkflowFlag) { return v === "DONE" || v === "TRUE"; }
 function isSkipped(v: WorkflowFlag) { return v === "NO NEED"; }
+
+// Auto-derive Preparation Condition from doc upload state + workflow flags.
+// Walks the sequence; returns the first pending step, or DONE PREPARED.
+function derivePreparationCondition(
+  event: HouzsEvent,
+  hasDoc: (type: BoothDocType) => boolean,
+): PreparationCondition {
+  if (!isDone(event.floorplan as WorkflowFlag))                       return "PENDING FLOORPLAN";
+  if (!isDone(event.threeDCheckedByMgt as WorkflowFlag) && !hasDoc("THREE_D_DESIGN"))  return "PENDING 3D";
+  if (!hasDoc("STOCKS_REQUEST_LIST"))                                 return "PENDING STOCKS REQUEST LISTING";
+  if (!hasDoc("STOCK_TRANSFER"))                                      return "PENDING STOCKS TRANSFER LISTING";
+  const hasDriverInfo = (event.setupDrivers?.length ?? 0) > 0 || !!event.setupDriver || !!event.setupDatetime;
+  if (!hasDriverInfo)                                                 return "PENDING DRIVER INFORMATION";
+  if (!hasDoc("SETUP_IMAGE_DRIVER") || !hasDoc("SETUP_IMAGE_SALES"))  return "PENDING SETUP IMAGE";
+  if (event.eventType === "EXHIBITION" && !hasDoc("EXPO_MAP_FILLED")) return "PENDING FILLED FLOORPLAN";
+  if (!hasDoc("EVENT_COMPLETE_IMAGE"))                                return "PENDING EVENT COMPLETE IMAGE";
+  return "DONE PREPARED";
+}
+
+// Auto-derive Setup / Dismantle Status:
+// - DISMANTLE DONE: driver uploaded dismantle image
+// - SETUP DONE: both driver AND sales setup images uploaded
+// - PREPARED: driver/lori/datetime info filled
+// - "": nothing yet
+function deriveSetupDismantleStatus(
+  event: HouzsEvent,
+  hasDoc: (type: BoothDocType) => boolean,
+): "" | "PREPARED" | "SETUP DONE" | "DISMANTLE DONE" {
+  if (hasDoc("DISMANTLE_IMAGE_DRIVER")) return "DISMANTLE DONE";
+  if (hasDoc("SETUP_IMAGE_DRIVER") && hasDoc("SETUP_IMAGE_SALES")) return "SETUP DONE";
+  const hasDriverInfo = (event.setupDrivers?.length ?? 0) > 0 || !!event.setupDriver || !!event.setupDatetime;
+  if (hasDriverInfo) return "PREPARED";
+  return "";
+}
 
 export default function EventDetailPage() {
   const navigate = useNavigate();
@@ -96,6 +128,26 @@ export default function EventDetailPage() {
   // Booth docs & competitor state
   const boothDocs = useBoothDocs(a42);
   const competitors = useCompetitors(a42);
+
+  // Helper: does a booth doc of this type exist AND have at least one file?
+  const hasDoc = useMemo(() => {
+    return (type: BoothDocType): boolean => {
+      const doc = boothDocs.find((d) => d.type === type);
+      if (!doc) return false;
+      const fileCount = allPhotos.filter((p) => p.workflowKey === `booth:${doc.id}`).length;
+      return fileCount > 0;
+    };
+  }, [boothDocs, allPhotos]);
+
+  const autoPrepCondition = useMemo(
+    () => event ? derivePreparationCondition(event, hasDoc) : null,
+    [event, hasDoc]
+  );
+  const autoSdStatus = useMemo(
+    () => event ? deriveSetupDismantleStatus(event, hasDoc) : "",
+    [event, hasDoc]
+  );
+
   const [openBoothDoc, setOpenBoothDoc] = useState<BoothDoc | null>(null);
   const [attendanceEdit, setAttendanceEdit] = useState(false);
   const [attendanceSearch, setAttendanceSearch] = useState("");
@@ -668,26 +720,42 @@ export default function EventDetailPage() {
         )}
       </div>
 
-      {/* Preparation Condition (stage) */}
+      {/* Preparation Condition (stage) — auto-derived from doc uploads + workflow */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
         <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
           <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Project Stage</h2>
-          <p className="text-[10px] text-gray-500 mt-0.5">Preparation pipeline status</p>
+          <p className="text-[10px] text-gray-500 mt-0.5">Auto-detected from documents + workflow progress</p>
         </div>
         <div className="px-5 py-4">
           <div className={FIELD_LABEL}>Preparation Condition</div>
-          {userIsAdmin ? (
-            <select
-              value={event.preparationCondition ?? ""}
-              onChange={(e) => updateEvent(a42, { preparationCondition: (e.target.value || undefined) as PreparationCondition | undefined })}
-              className={`${FIELD_SELECT} max-w-sm`}
-            >
-              <option value="">— Not set —</option>
-              {PREPARATION_CONDITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-          ) : (
-            <div className="text-[12px] font-semibold text-[#0A1F2E]">{event.preparationCondition ?? <span className="text-gray-300 font-normal">—</span>}</div>
-          )}
+          <div className="mt-1 flex items-center gap-2">
+            {(() => {
+              const done = autoPrepCondition === "DONE PREPARED";
+              return (
+                <span className={`inline-flex items-center px-3 py-1 rounded-full text-[11px] font-semibold ${
+                  done ? "bg-[#0F766E]/10 text-[#0F766E]" : "bg-amber-100 text-amber-700"
+                }`}>
+                  {autoPrepCondition}
+                </span>
+              );
+            })()}
+            <span className="text-[9px] text-gray-400 italic">auto</span>
+          </div>
+          {/* Progress bar showing position in pipeline */}
+          <div className="mt-3 max-w-md">
+            {(() => {
+              const idx = PREPARATION_CONDITIONS.indexOf(autoPrepCondition ?? "PENDING FLOORPLAN");
+              const pct = ((idx + 1) / PREPARATION_CONDITIONS.length) * 100;
+              return (
+                <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+                  <div
+                    className={`h-full transition-all ${pct === 100 ? "bg-[#0F766E]" : "bg-amber-400"}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              );
+            })()}
+          </div>
         </div>
       </div>
 
@@ -757,21 +825,18 @@ export default function EventDetailPage() {
                             {attachCount > 0 ? attachCount : ""}
                           </button>
                           <span className="w-px h-5 bg-[#F0F3F3] mx-0.5" />
-                          {FLAG_OPTIONS.map((opt) => {
-                            const label = FIELD_LABEL_OVERRIDE[f.key]?.[opt.value] ?? opt.label;
-                            return (
-                              <button
-                                key={opt.value || "empty"}
-                                type="button"
-                                onClick={() => setFlag(f.key, opt.value)}
-                                className={`h-6 px-2 rounded border text-[9px] font-semibold transition ${
-                                  v === opt.value ? opt.color : "bg-white text-gray-400 border-[#DDE5E5] hover:border-[#0F766E]"
-                                }`}
-                              >
-                                {label}
-                              </button>
-                            );
-                          })}
+                          {(f.key === "secDepoRefund" ? SEC_DEPO_OPTIONS : FLAG_OPTIONS).map((opt) => (
+                            <button
+                              key={opt.value || "empty"}
+                              type="button"
+                              onClick={() => setFlag(f.key, opt.value)}
+                              className={`h-6 px-2 rounded border text-[9px] font-semibold transition ${
+                                v === opt.value ? opt.color : "bg-white text-gray-400 border-[#DDE5E5] hover:border-[#0F766E]"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
                         </div>
                       </div>
                     );
@@ -790,13 +855,16 @@ export default function EventDetailPage() {
             <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Setup &amp; Dismantle</h2>
             <p className="text-[10px] text-gray-500 mt-0.5">Driver team, lorries, schedule</p>
           </div>
-          {event.setupDismantleStatus && (
-            <span className={`px-2 py-[2px] rounded text-[10px] font-semibold ${
-              event.setupDismantleStatus === "DISMANTLE DONE" ? "bg-emerald-100 text-emerald-700" :
-              event.setupDismantleStatus === "SETUP DONE"     ? "bg-sky-100 text-sky-700" :
-              event.setupDismantleStatus === "PREPARED"       ? "bg-amber-100 text-amber-700" :
-                                                                 "bg-gray-100 text-gray-500"
-            }`}>{event.setupDismantleStatus}</span>
+          {autoSdStatus && (
+            <div className="flex items-center gap-1.5">
+              <span className={`px-2 py-[2px] rounded text-[10px] font-semibold ${
+                autoSdStatus === "DISMANTLE DONE" ? "bg-emerald-100 text-emerald-700" :
+                autoSdStatus === "SETUP DONE"     ? "bg-sky-100 text-sky-700" :
+                autoSdStatus === "PREPARED"       ? "bg-amber-100 text-amber-700" :
+                                                    "bg-gray-100 text-gray-500"
+              }`}>{autoSdStatus}</span>
+              <span className="text-[9px] text-gray-400 italic">auto</span>
+            </div>
           )}
         </div>
         {!isEditing ? (
@@ -879,14 +947,10 @@ export default function EventDetailPage() {
                 />
               </div>
               <div>
-                <div className={FIELD_LABEL}>Setup/Dismantle Status</div>
-                <select
-                  value={draft.setupDismantleStatus ?? ""}
-                  onChange={(e) => patchDraft("setupDismantleStatus", e.target.value as HouzsEvent["setupDismantleStatus"])}
-                  className={FIELD_SELECT}
-                >
-                  {SD_STATUSES.map((s) => <option key={s || "none"} value={s}>{s || "—"}</option>)}
-                </select>
+                <div className={FIELD_LABEL}>Status</div>
+                <div className="text-[11px] text-gray-500 italic mt-1">
+                  Auto-detected from documents — not manually editable
+                </div>
               </div>
             </div>
 
@@ -1437,9 +1501,10 @@ function BoothDocSection({
                           pos === "Sales"  ? "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/30" :
                           pos === "PC"     ? "bg-purple-100 text-purple-700 border-purple-200" :
                                              "bg-gray-100 text-gray-600 border-gray-200";
+                        const label = pos === "Sales" ? "Sales PIC" : pos;
                         return (
                           <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-semibold uppercase tracking-wider ${color}`}>
-                            {pos}
+                            {label}
                           </span>
                         );
                       })()}
