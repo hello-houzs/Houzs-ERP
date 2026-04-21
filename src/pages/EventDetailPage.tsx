@@ -7,14 +7,14 @@ import {
 } from "lucide-react";
 import {
   calendarTitle, fmtRM, fmtPct, computeCosts,
-  BRANDS, STATES,
+  BRANDS, STATES, PREPARATION_CONDITIONS,
   type HouzsEvent, type WorkflowFlag, type Brand, type EventType,
   type EventStatus, type EventProgress, type MalaysianState,
-  type EventDriver,
+  type EventDriver, type PreparationCondition,
 } from "@/lib/mock-data";
 import {
   useBoothDocs, createBoothDoc, updateBoothDoc, deleteBoothDoc, setApproval,
-  BOOTH_DOC_LABELS, BOOTH_LAYOUT_DOCS, SETUP_DISMANTLE_DOCS,
+  BOOTH_DOC_LABELS, BOOTH_LAYOUT_DOCS, SETUP_DISMANTLE_DOCS, PREPARATION_DOCS,
   type BoothDoc, type BoothDocType, type ApprovalStatus,
 } from "@/lib/booth-docs-store";
 import {
@@ -647,6 +647,59 @@ export default function EventDetailPage() {
         )}
       </div>
 
+      {/* Project Stage & PICs (Notion "Preparation Condition" + BD/Sales PIC split) */}
+      <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
+          <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Project Stage & PICs</h2>
+          <p className="text-[10px] text-gray-500 mt-0.5">Preparation pipeline + responsible persons</p>
+        </div>
+        <div className="px-5 py-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <div className={FIELD_LABEL}>Preparation Condition</div>
+            {userIsAdmin ? (
+              <select
+                value={event.preparationCondition ?? ""}
+                onChange={(e) => updateEvent(a42, { preparationCondition: (e.target.value || undefined) as PreparationCondition | undefined })}
+                className={FIELD_SELECT}
+              >
+                <option value="">— Not set —</option>
+                {PREPARATION_CONDITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            ) : (
+              <div className="text-[12px] font-semibold text-[#0A1F2E]">{event.preparationCondition ?? <span className="text-gray-300 font-normal">—</span>}</div>
+            )}
+          </div>
+          <div>
+            <div className={FIELD_LABEL}>BD PIC</div>
+            {userIsAdmin ? (
+              <Combo
+                value={event.bdPic ?? ""}
+                options={activeSalesMembers.map((m) => m.name)}
+                onChange={(v) => updateEvent(a42, { bdPic: v || undefined })}
+                onCreate={(v) => { addPic(v); updateEvent(a42, { bdPic: v }); }}
+                placeholder="BD PIC…"
+              />
+            ) : (
+              <div className="text-[12px] font-semibold text-[#0A1F2E]">{event.bdPic ?? <span className="text-gray-300 font-normal">—</span>}</div>
+            )}
+          </div>
+          <div>
+            <div className={FIELD_LABEL}>Sales PIC</div>
+            {userIsAdmin ? (
+              <Combo
+                value={event.salesPic ?? event.pic ?? ""}
+                options={activeSalesMembers.map((m) => m.name)}
+                onChange={(v) => updateEvent(a42, { salesPic: v || undefined })}
+                onCreate={(v) => { addPic(v); updateEvent(a42, { salesPic: v }); }}
+                placeholder="Sales PIC…"
+              />
+            ) : (
+              <div className="text-[12px] font-semibold text-[#0A1F2E]">{event.salesPic ?? event.pic ?? <span className="text-gray-300 font-normal">—</span>}</div>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Workflow (Notion-style stages) */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
         <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between gap-3">
@@ -986,6 +1039,20 @@ export default function EventDetailPage() {
           </div>
         )}
       </div>
+
+      {/* ─────── PREPARATION DOCUMENTS ────────────────────────── */}
+      <BoothDocSection
+        title="PREPARATION DOCUMENTS"
+        subtitle="Agreement / quotation, permits, and BD records — signed off before event"
+        docTypes={PREPARATION_DOCS}
+        boothDocs={boothDocs}
+        eventA42={a42}
+        currentUser={currentUser}
+        hasFullAccess={hasFullAccess}
+        onOpenDoc={setOpenBoothDoc}
+        onOpenAttach={setOpenAttach}
+        allPhotos={allPhotos}
+      />
 
       {/* ─────── BOOTH LAYOUT & SETUP ─────────────────────────── */}
       <BoothDocSection

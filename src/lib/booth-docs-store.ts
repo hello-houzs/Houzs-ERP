@@ -20,7 +20,10 @@ export type BoothDocType =
   | "SETUP_IMAGE_SALES"
   | "DEFECT_ITEM"
   | "DRIVER_RECORD"
-  | "EXPO_MAP";
+  | "EXPO_MAP"
+  | "PERMIT_FILE"
+  | "AGREEMENT"
+  | "BD_RECORD";
 
 export const BOOTH_DOC_LABELS: Record<BoothDocType, string> = {
   STOCK_TRANSFER:      "Stock Transfer Record",
@@ -33,9 +36,18 @@ export const BOOTH_DOC_LABELS: Record<BoothDocType, string> = {
   DEFECT_ITEM:         "Defect Item",
   DRIVER_RECORD:       "Driver Record",
   EXPO_MAP:            "Expo Map (Base Floorplan)",
+  PERMIT_FILE:         "Permit File",
+  AGREEMENT:           "Agreement / Quotation",
+  BD_RECORD:           "BD Record",
 };
 
-// Grouped for two separate UI sections
+// Grouped for separate UI sections
+export const PREPARATION_DOCS: BoothDocType[] = [
+  "AGREEMENT",
+  "PERMIT_FILE",
+  "BD_RECORD",
+];
+
 export const BOOTH_LAYOUT_DOCS: BoothDocType[] = [
   "STOCK_TRANSFER",
   "DISPLAY_FLOORPLAN",

@@ -13,6 +13,20 @@ export type Brand = "AKEMI" | "ZANOTTI" | "ERGOTEX" | "DUNLOPILLO";
 export type EventType = "SOLO" | "EXHIBITION";
 export type EventStatus = "CONFIRMED" | "PENDING" | "CANCELLED";
 export type EventProgress = "NOT STARTED" | "IN PROGRESS" | "COMPLETED";
+
+// Preparation pipeline — status of pre-event readiness (mirrors Notion "Preparation Condition")
+export type PreparationCondition =
+  | "PENDING AGREEMENT"
+  | "AGREEMENT APPROVED"
+  | "PAYMENT PENDING"
+  | "PAYMENT DONE"
+  | "PERMIT PENDING"
+  | "DONE PREPARED";
+
+export const PREPARATION_CONDITIONS: PreparationCondition[] = [
+  "PENDING AGREEMENT", "AGREEMENT APPROVED", "PAYMENT PENDING",
+  "PAYMENT DONE", "PERMIT PENDING", "DONE PREPARED",
+];
 export type MalaysianState =
   | "KL" | "JOHOR" | "PENANG" | "SABAH" | "SARAWAK" | "MELAKA" | "KEDAH"
   | "TERENGGANU" | "PUTRAJAYA" | "N.SEMBILAN" | "KUANTAN" | "IPOH" | "SEREMBAN";
@@ -63,8 +77,13 @@ export interface HouzsEvent {
   // Integration keys
   linkNotion?: string;
   gcalId?: string;
-  // PIC (from calendar title format, not in sheet but displayed)
+  // PIC (from calendar title format, not in sheet but displayed) — legacy single field
   pic?: string;
+  // Split PICs (mirrors Notion): BD (business-development) + Sales leads
+  bdPic?: string;
+  salesPic?: string;
+  // Preparation pipeline status (Notion "Preparation Condition")
+  preparationCondition?: PreparationCondition;
   // Setup & Dismantle logistics (Notion "Driver" block)
   setupDriver?: string;          // e.g. "YUNUS"
   setupLori?: string;            // e.g. "VPC9058"
