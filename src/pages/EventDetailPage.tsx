@@ -3,18 +3,29 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft, Calendar as CalIcon, MapPin, Building2, User, Hash,
   Check, Minus, AlertCircle, Trash2, ExternalLink, Paperclip, Pencil, X as XIcon,
+  Plus, FileText, ShieldCheck, Truck,
 } from "lucide-react";
 import {
   calendarTitle, fmtRM, fmtPct, computeCosts,
   BRANDS, STATES,
   type HouzsEvent, type WorkflowFlag, type Brand, type EventType,
   type EventStatus, type EventProgress, type MalaysianState,
+  type EventDriver,
 } from "@/lib/mock-data";
+import {
+  useBoothDocs, createBoothDoc, updateBoothDoc, deleteBoothDoc, setApproval,
+  BOOTH_DOC_LABELS, BOOTH_LAYOUT_DOCS, SETUP_DISMANTLE_DOCS,
+  type BoothDoc, type BoothDocType, type ApprovalStatus,
+} from "@/lib/booth-docs-store";
+import {
+  useCompetitors, addCompetitor, updateCompetitor, removeCompetitor,
+  type CompetitorEntry,
+} from "@/lib/expo-map-store";
 import {
   useAllEvents, updateEvent, deleteUserEvent,
 } from "@/lib/events-store";
-import { useSalesMembers } from "@/lib/sales-store";
-import { useEventPhotos } from "@/lib/photos-store";
+import { useSalesMembers, type SalesMember } from "@/lib/sales-store";
+import { useEventPhotos, type PhotoRecord } from "@/lib/photos-store";
 import { useCurrentUser, canViewEvent, canViewFullEvent, isAdmin } from "@/lib/auth-store";
 import {
   useMasterData,
@@ -74,6 +85,20 @@ export default function EventDetailPage() {
   const userIsAdmin = isAdmin(currentUser);
   const activeSalesMembers = useMemo(() => salesMembers.filter(m => m.status === "ACTIVE").sort((a, b) => a.name.localeCompare(b.name)), [salesMembers]);
 
+  // Booth docs & competitor state
+  const boothDocs = useBoothDocs(a42);
+  const competitors = useCompetitors(a42);
+  const [openBoothDoc, setOpenBoothDoc] = useState<BoothDoc | null>(null);
+  const [openCompetitorForm, setOpenCompetitorForm] = useState<CompetitorEntry | "new" | null>(null);
+  const [approvalNotesDraft, setApprovalNotesDraft] = useState("");
+
+  // Draft drivers/loris in edit mode
+  const [draftDrivers, setDraftDrivers] = useState<EventDriver[]>([]);
+  const [draftLoris, setDraftLoris] = useState<string[]>([]);
+  const [newDriverName, setNewDriverName] = useState("");
+  const [newDriverPhone, setNewDriverPhone] = useState("");
+  const [newLoriPlate, setNewLoriPlate] = useState("");
+
   // Seed draft whenever we enter edit mode (or event changes while editing)
   useEffect(() => {
     if (isEditing && event) {
@@ -100,6 +125,11 @@ export default function EventDetailPage() {
         setupDismantleStatus: event.setupDismantleStatus ?? "",
         assignedSales: event.assignedSales ?? [],
       });
+      setDraftDrivers(event.setupDrivers ?? []);
+      setDraftLoris(event.setupLoris ?? []);
+      setNewDriverName("");
+      setNewDriverPhone("");
+      setNewLoriPlate("");
     }
   }, [isEditing, event]);
   const countByKey = useMemo(() => {
@@ -315,6 +345,9 @@ export default function EventDetailPage() {
       const en = new Date(draft.endDate);
       patch.durationDays = Math.max(1, Math.round((en.getTime() - s.getTime()) / 86400000) + 1);
     }
+    // persist multi-driver/lori arrays
+    patch.setupDrivers = draftDrivers;
+    patch.setupLoris = draftLoris;
     updateEvent(a42, patch);
     setIsEditing(false);
   }
@@ -708,7 +741,7 @@ export default function EventDetailPage() {
         <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between">
           <div>
             <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Setup &amp; Dismantle</h2>
-            <p className="text-[10px] text-gray-500 mt-0.5">Driver, lori, schedule, setup crew</p>
+            <p className="text-[10px] text-gray-500 mt-0.5">Driver team, lorries, schedule</p>
           </div>
           {event.setupDismantleStatus && (
             <span className={`px-2 py-[2px] rounded text-[10px] font-semibold ${
@@ -721,15 +754,8 @@ export default function EventDetailPage() {
         </div>
         {!isEditing ? (
           <div className="px-5 py-4 space-y-4">
+            {/* Schedule */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <div className={FIELD_LABEL}>Setup Driver</div>
-                <div className="text-[12px] font-semibold text-[#0A1F2E] mt-0.5">{event.setupDriver || <span className="text-gray-300 font-normal">—</span>}</div>
-              </div>
-              <div>
-                <div className={FIELD_LABEL}>Setup Lori</div>
-                <div className="text-[12px] font-semibold text-[#0A1F2E] mt-0.5 tabular-nums">{event.setupLori || <span className="text-gray-300 font-normal">—</span>}</div>
-              </div>
               <div>
                 <div className={FIELD_LABEL}>Setup Time</div>
                 <div className="text-[11px] text-[#0A1F2E] mt-0.5 tabular-nums">
@@ -743,30 +769,50 @@ export default function EventDetailPage() {
                 </div>
               </div>
             </div>
+
+            {/* Drivers (prefer new array; fall back to legacy string) */}
+            <div>
+              <div className={FIELD_LABEL}>Driver Team</div>
+              {(event.setupDrivers && event.setupDrivers.length > 0) ? (
+                <div className="flex flex-wrap gap-2 mt-1">
+                  {event.setupDrivers.map((d) => (
+                    <div key={d.id} className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#F4F7F7] border border-[#DDE5E5]">
+                      <User className="h-3 w-3 text-[#0F766E]" />
+                      <span className="text-[11px] font-semibold text-[#0A1F2E]">{d.name}</span>
+                      {d.phone && <span className="text-[10px] text-gray-500">{d.phone}</span>}
+                    </div>
+                  ))}
+                </div>
+              ) : event.setupDriver ? (
+                <div className="text-[12px] font-semibold text-[#0A1F2E] mt-0.5">{event.setupDriver}</div>
+              ) : (
+                <div className="text-[11px] text-gray-300 mt-0.5">— No drivers assigned —</div>
+              )}
+            </div>
+
+            {/* Loris (prefer new array; fall back to legacy string) */}
+            <div>
+              <div className={FIELD_LABEL}>Lorry / Vehicle</div>
+              {(event.setupLoris && event.setupLoris.length > 0) ? (
+                <div className="flex flex-wrap gap-2 mt-1">
+                  {event.setupLoris.map((plate) => (
+                    <div key={plate} className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#F4F7F7] border border-[#DDE5E5]">
+                      <Truck className="h-3 w-3 text-[#0F766E]" />
+                      <span className="text-[11px] font-semibold text-[#0A1F2E] tabular-nums">{plate}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : event.setupLori ? (
+                <div className="text-[12px] font-semibold text-[#0A1F2E] mt-0.5 tabular-nums">{event.setupLori}</div>
+              ) : (
+                <div className="text-[11px] text-gray-300 mt-0.5">— No lorry assigned —</div>
+              )}
+            </div>
           </div>
         ) : (
           <div className="px-5 py-4 space-y-4">
+            {/* Schedule */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div>
-                <div className={FIELD_LABEL}>Setup Driver</div>
-                <Combo
-                  value={draft.setupDriver ?? ""}
-                  options={master.drivers.map((d) => d.name)}
-                  onChange={(v) => patchDraft("setupDriver", v)}
-                  onCreate={(v) => addDriver(v, "")}
-                  placeholder="Driver…"
-                />
-              </div>
-              <div>
-                <div className={FIELD_LABEL}>Setup Lori</div>
-                <Combo
-                  value={draft.setupLori ?? ""}
-                  options={master.lori}
-                  onChange={(v) => patchDraft("setupLori", v)}
-                  onCreate={(v) => addLori(v)}
-                  placeholder="Plate…"
-                />
-              </div>
               <div>
                 <div className={FIELD_LABEL}>Setup Time</div>
                 <input
@@ -785,8 +831,6 @@ export default function EventDetailPage() {
                   className={FIELD_INPUT}
                 />
               </div>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div>
                 <div className={FIELD_LABEL}>Setup/Dismantle Status</div>
                 <select
@@ -796,6 +840,99 @@ export default function EventDetailPage() {
                 >
                   {SD_STATUSES.map((s) => <option key={s || "none"} value={s}>{s || "—"}</option>)}
                 </select>
+              </div>
+            </div>
+
+            {/* Multi-driver */}
+            <div>
+              <div className={FIELD_LABEL}>Driver Team</div>
+              <div className="space-y-1.5 mt-1">
+                {draftDrivers.map((d) => (
+                  <div key={d.id} className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-[#DDE5E5] bg-[#FAFBFB]">
+                    <User className="h-3 w-3 text-[#0F766E] shrink-0" />
+                    <span className="text-[11px] font-semibold text-[#0A1F2E] flex-1">{d.name}</span>
+                    {d.phone && <span className="text-[10px] text-gray-500">{d.phone}</span>}
+                    <button type="button" onClick={() => setDraftDrivers(prev => prev.filter(x => x.id !== d.id))}
+                      className="h-5 w-5 rounded inline-flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50">
+                      <XIcon className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newDriverName}
+                    onChange={(e) => setNewDriverName(e.target.value)}
+                    placeholder="Driver name…"
+                    className={`${FIELD_INPUT} flex-1`}
+                  />
+                  <input
+                    type="text"
+                    value={newDriverPhone}
+                    onChange={(e) => setNewDriverPhone(e.target.value)}
+                    placeholder="Phone…"
+                    className={`${FIELD_INPUT} flex-1`}
+                  />
+                  <button
+                    type="button"
+                    disabled={!newDriverName.trim()}
+                    onClick={() => {
+                      if (!newDriverName.trim()) return;
+                      setDraftDrivers(prev => [...prev, { id: crypto.randomUUID(), name: newDriverName.trim().toUpperCase(), phone: newDriverPhone.trim() }]);
+                      setNewDriverName("");
+                      setNewDriverPhone("");
+                    }}
+                    className="h-8 px-2.5 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1"
+                  >
+                    <Plus className="h-3 w-3" /> Add
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Multi-lori */}
+            <div>
+              <div className={FIELD_LABEL}>Lorry / Vehicle</div>
+              <div className="space-y-1.5 mt-1">
+                {draftLoris.map((plate) => (
+                  <div key={plate} className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-[#DDE5E5] bg-[#FAFBFB]">
+                    <Truck className="h-3 w-3 text-[#0F766E] shrink-0" />
+                    <span className="text-[11px] font-semibold text-[#0A1F2E] tabular-nums flex-1">{plate}</span>
+                    <button type="button" onClick={() => setDraftLoris(prev => prev.filter(x => x !== plate))}
+                      className="h-5 w-5 rounded inline-flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50">
+                      <XIcon className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newLoriPlate}
+                    onChange={(e) => setNewLoriPlate(e.target.value)}
+                    placeholder="Plate number e.g. NCN 6553…"
+                    className={`${FIELD_INPUT} flex-1`}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newLoriPlate.trim()) {
+                        const plate = newLoriPlate.trim().toUpperCase();
+                        if (!draftLoris.includes(plate)) setDraftLoris(prev => [...prev, plate]);
+                        setNewLoriPlate("");
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={!newLoriPlate.trim()}
+                    onClick={() => {
+                      if (!newLoriPlate.trim()) return;
+                      const plate = newLoriPlate.trim().toUpperCase();
+                      if (!draftLoris.includes(plate)) setDraftLoris(prev => [...prev, plate]);
+                      setNewLoriPlate("");
+                    }}
+                    className="h-8 px-2.5 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1"
+                  >
+                    <Plus className="h-3 w-3" /> Add
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -849,6 +986,46 @@ export default function EventDetailPage() {
           </div>
         )}
       </div>
+
+      {/* ─────── BOOTH LAYOUT & SETUP ─────────────────────────── */}
+      <BoothDocSection
+        title="BOOTH LAYOUT & SETUP"
+        subtitle="Floor plans, 3D renders, and stock transfer records"
+        docTypes={BOOTH_LAYOUT_DOCS}
+        boothDocs={boothDocs}
+        eventA42={a42}
+        currentUser={currentUser}
+        hasFullAccess={hasFullAccess}
+        onOpenDoc={setOpenBoothDoc}
+        onOpenAttach={setOpenAttach}
+        allPhotos={allPhotos}
+      />
+
+      {/* ─────── SETUP & DISMANTLE DOCUMENTS ─────────────────── */}
+      <BoothDocSection
+        title="SETUP & DISMANTLE DOCUMENTS"
+        subtitle="On-site documentation during setup and dismantle phases"
+        docTypes={SETUP_DISMANTLE_DOCS}
+        boothDocs={boothDocs}
+        eventA42={a42}
+        currentUser={currentUser}
+        hasFullAccess={hasFullAccess}
+        onOpenDoc={setOpenBoothDoc}
+        onOpenAttach={setOpenAttach}
+        allPhotos={allPhotos}
+      />
+
+      {/* ─────── EXPO MAP — COMPETITOR RESEARCH ──────────────── */}
+      <ExpoMapSection
+        eventA42={a42}
+        boothDocs={boothDocs}
+        competitors={competitors}
+        currentUser={currentUser}
+        hasFullAccess={hasFullAccess}
+        onOpenAttach={setOpenAttach}
+        onOpenCompetitorForm={setOpenCompetitorForm}
+        allPhotos={allPhotos}
+      />
 
       {/* Event Chat */}
       <EventChat
@@ -1033,6 +1210,651 @@ export default function EventDetailPage() {
           onClose={() => setOpenAttach(null)}
         />
       )}
+
+      {/* Booth doc detail modal */}
+      {openBoothDoc && (
+        <BoothDocModal
+          doc={openBoothDoc}
+          eventA42={a42}
+          currentUser={currentUser}
+          hasFullAccess={hasFullAccess}
+          allPhotos={allPhotos}
+          approvalNotesDraft={approvalNotesDraft}
+          onApprovalNotesChange={setApprovalNotesDraft}
+          onClose={() => { setOpenBoothDoc(null); setApprovalNotesDraft(""); }}
+          onOpenAttach={setOpenAttach}
+        />
+      )}
+
+      {/* Competitor form modal */}
+      {openCompetitorForm && (
+        <CompetitorFormModal
+          eventA42={a42}
+          entry={openCompetitorForm === "new" ? null : openCompetitorForm}
+          currentUser={currentUser}
+          hasFullAccess={hasFullAccess}
+          allPhotos={allPhotos}
+          onOpenAttach={setOpenAttach}
+          onClose={() => setOpenCompetitorForm(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-components (defined after default export to keep main function readable)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Approval badge ────────────────────────────────────────────────────────────
+
+function ApprovalBadge({ status }: { status: ApprovalStatus }) {
+  if (status === "APPROVED") return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#0F766E]/10 text-[#0F766E] text-[9px] font-semibold">
+      <ShieldCheck className="h-2.5 w-2.5" /> APPROVED
+    </span>
+  );
+  if (status === "REJECTED") return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-[9px] font-semibold">
+      <XIcon className="h-2.5 w-2.5" /> REJECTED
+    </span>
+  );
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[9px] font-semibold">
+      <AlertCircle className="h-2.5 w-2.5" /> PENDING
+    </span>
+  );
+}
+
+// ── BoothDocSection ───────────────────────────────────────────────────────────
+
+function BoothDocSection({
+  title, subtitle, docTypes, boothDocs, eventA42,
+  currentUser, hasFullAccess, onOpenDoc, onOpenAttach, allPhotos,
+}: {
+  title: string;
+  subtitle: string;
+  docTypes: BoothDocType[];
+  boothDocs: BoothDoc[];
+  eventA42: string;
+  currentUser: SalesMember | null;
+  hasFullAccess: boolean;
+  onOpenDoc: (doc: BoothDoc) => void;
+  onOpenAttach: (a: { key: string; label: string }) => void;
+  allPhotos: PhotoRecord[];
+}) {
+  // Count photos per doc id
+  const photoCounts = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const p of allPhotos) {
+      if (p.workflowKey?.startsWith("booth:")) {
+        const docId = p.workflowKey.slice(6);
+        map[docId] = (map[docId] ?? 0) + 1;
+      }
+    }
+    return map;
+  }, [allPhotos]);
+
+  function getOrCreate(type: BoothDocType): BoothDoc | undefined {
+    return boothDocs.find((d) => d.type === type);
+  }
+
+  function handleAddDoc(type: BoothDocType) {
+    if (!currentUser) return;
+    const doc = createBoothDoc(eventA42, type, currentUser.id, currentUser.name);
+    onOpenDoc(doc);
+  }
+
+  return (
+    <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
+        <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">{title}</h2>
+        <p className="text-[10px] text-gray-500 mt-0.5">{subtitle}</p>
+      </div>
+
+      {!hasFullAccess && (
+        <div className="px-4 py-2 flex items-center gap-2 bg-amber-50 border-b border-amber-100">
+          <AlertCircle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+          <span className="text-[10px] text-amber-800">Read-only — you are not assigned to this event</span>
+        </div>
+      )}
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px]">
+          <thead>
+            <tr className="bg-[#F4F7F7] text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+              <th className="text-left px-4 py-2 whitespace-nowrap">Document</th>
+              <th className="text-left px-3 py-2 whitespace-nowrap">Remarks</th>
+              <th className="text-center px-3 py-2 whitespace-nowrap">Files</th>
+              <th className="text-left px-3 py-2 whitespace-nowrap">Uploaded by</th>
+              <th className="text-left px-3 py-2 whitespace-nowrap">Approval</th>
+              <th className="text-center px-3 py-2 whitespace-nowrap">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#F0F3F3]">
+            {docTypes.map((type) => {
+              const doc = getOrCreate(type);
+              const fileCount = doc ? (photoCounts[doc.id] ?? 0) : 0;
+              return (
+                <tr key={type} className="hover:bg-[#FAFBFB] transition-colors">
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-1.5">
+                      <FileText className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                      <span className="font-medium text-[#0A1F2E]">{BOOTH_DOC_LABELS[type]}</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-gray-500 max-w-[140px]">
+                    <span className="truncate block">{doc?.remarks || <span className="text-gray-300">—</span>}</span>
+                  </td>
+                  <td className="px-3 py-2.5 text-center">
+                    {doc ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenAttach({ key: `booth:${doc.id}`, label: BOOTH_DOC_LABELS[type] })}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-semibold transition ${
+                          fileCount > 0
+                            ? "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/30 hover:bg-[#0F766E]/20"
+                            : "bg-white text-gray-400 border-[#DDE5E5] hover:border-[#0F766E] hover:text-[#0F766E]"
+                        }`}
+                      >
+                        <Paperclip className="h-2.5 w-2.5" />
+                        {fileCount > 0 ? fileCount : "0"}
+                      </button>
+                    ) : <span className="text-gray-300 text-[10px]">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-gray-500">
+                    {doc ? (
+                      <div>
+                        <div className="font-medium text-[#0A1F2E]">{doc.uploadedByName}</div>
+                        <div className="text-[9px] text-gray-400">
+                          {new Date(doc.uploadedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
+                        </div>
+                      </div>
+                    ) : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {doc ? <ApprovalBadge status={doc.approvalStatus} /> : <span className="text-gray-300 text-[10px]">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-center">
+                    {doc ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenDoc(doc)}
+                        className="h-6 px-2 rounded border border-[#DDE5E5] text-[10px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E] transition"
+                      >
+                        View
+                      </button>
+                    ) : hasFullAccess ? (
+                      <button
+                        type="button"
+                        onClick={() => handleAddDoc(type)}
+                        className="inline-flex items-center gap-0.5 h-6 px-2 rounded border border-dashed border-[#DDE5E5] text-[10px] font-semibold text-gray-400 hover:border-[#0F766E] hover:text-[#0F766E] transition"
+                      >
+                        <Plus className="h-3 w-3" /> Add
+                      </button>
+                    ) : (
+                      <span className="text-gray-300 text-[10px]">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── BoothDocModal ─────────────────────────────────────────────────────────────
+
+function BoothDocModal({
+  doc, eventA42, currentUser, hasFullAccess, allPhotos,
+  approvalNotesDraft, onApprovalNotesChange, onClose, onOpenAttach,
+}: {
+  doc: BoothDoc;
+  eventA42: string;
+  currentUser: SalesMember | null;
+  hasFullAccess: boolean;
+  allPhotos: PhotoRecord[];
+  approvalNotesDraft: string;
+  onApprovalNotesChange: (v: string) => void;
+  onClose: () => void;
+  onOpenAttach: (a: { key: string; label: string }) => void;
+}) {
+  const [remarks, setRemarks] = useState(doc.remarks ?? "");
+  const [saving, setSaving] = useState(false);
+  const fileCount = useMemo(() =>
+    allPhotos.filter((p) => p.workflowKey === `booth:${doc.id}`).length,
+    [allPhotos, doc.id]
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function saveRemarks() {
+    setSaving(true);
+    updateBoothDoc(doc.id, { remarks });
+    setTimeout(() => setSaving(false), 400);
+  }
+
+  function handleApproval(status: ApprovalStatus) {
+    if (!currentUser) return;
+    setApproval(doc.id, status, currentUser.id, currentUser.name, approvalNotesDraft.trim() || undefined);
+    onApprovalNotesChange("");
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-start justify-between gap-3 shrink-0">
+          <div className="min-w-0">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Booth Document</div>
+            <h3 className="text-[14px] font-bold text-[#0A1F2E] truncate">{BOOTH_DOC_LABELS[doc.type]}</h3>
+            <div className="mt-1"><ApprovalBadge status={doc.approvalStatus} /></div>
+          </div>
+          <button type="button" onClick={onClose}
+            className="h-8 w-8 rounded inline-flex items-center justify-center text-gray-400 hover:text-[#0A1F2E] hover:bg-gray-100 shrink-0">
+            <XIcon className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4 space-y-4 flex-1">
+          {/* Remarks */}
+          <div>
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 block mb-1">Remarks</label>
+            {hasFullAccess ? (
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={remarks}
+                  onChange={(e) => setRemarks(e.target.value)}
+                  placeholder="e.g. Booth B34"
+                  className="flex-1 h-8 rounded-md border border-[#DDE5E5] px-2 text-[11px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E]"
+                />
+                <button type="button" onClick={saveRemarks} disabled={saving}
+                  className="h-8 px-3 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] disabled:opacity-50">
+                  {saving ? "Saved" : "Save"}
+                </button>
+              </div>
+            ) : (
+              <div className="text-[11px] text-[#0A1F2E]">{doc.remarks || <span className="text-gray-300">—</span>}</div>
+            )}
+          </div>
+
+          {/* Files */}
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-2">Files</div>
+            <button
+              type="button"
+              onClick={() => onOpenAttach({ key: `booth:${doc.id}`, label: BOOTH_DOC_LABELS[doc.type] })}
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-md border transition ${
+                fileCount > 0
+                  ? "border-[#0F766E]/30 bg-[#0F766E]/5 hover:bg-[#0F766E]/10"
+                  : "border-dashed border-[#DDE5E5] hover:border-[#0F766E] hover:bg-[#F4F7F7]"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Paperclip className="h-4 w-4 text-[#0F766E]" />
+                <span className="text-[12px] font-semibold text-[#0A1F2E]">
+                  {fileCount > 0 ? `${fileCount} file${fileCount === 1 ? "" : "s"} attached` : "Upload files"}
+                </span>
+              </div>
+              {hasFullAccess && <Plus className="h-4 w-4 text-gray-400" />}
+            </button>
+          </div>
+
+          {/* Approval (only for full access users) */}
+          {hasFullAccess && (
+            <div className="border-t border-[#F0F3F3] pt-4">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-2">Approval</div>
+              {doc.approvedByName && (
+                <div className="text-[10px] text-gray-500 mb-2">
+                  {doc.approvalStatus} by {doc.approvedByName}
+                  {doc.approvedAt && ` · ${new Date(doc.approvedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}`}
+                  {doc.approvalNotes && <div className="italic mt-0.5">"{doc.approvalNotes}"</div>}
+                </div>
+              )}
+              <textarea
+                value={approvalNotesDraft}
+                onChange={(e) => onApprovalNotesChange(e.target.value)}
+                placeholder="Approval notes (optional)…"
+                rows={2}
+                className="w-full rounded-md border border-[#DDE5E5] px-2 py-1.5 text-[11px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E] resize-y mb-2"
+              />
+              <div className="flex gap-2">
+                <button type="button" onClick={() => handleApproval("APPROVED")}
+                  className="flex-1 h-8 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] inline-flex items-center justify-center gap-1">
+                  <Check className="h-3.5 w-3.5" /> Approve
+                </button>
+                <button type="button" onClick={() => handleApproval("REJECTED")}
+                  className="flex-1 h-8 rounded-md border border-red-200 bg-white text-red-600 text-[11px] font-semibold hover:bg-red-50 inline-flex items-center justify-center gap-1">
+                  <XIcon className="h-3.5 w-3.5" /> Reject
+                </button>
+                <button type="button" onClick={() => handleApproval("PENDING")}
+                  className="h-8 px-3 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-500 hover:bg-gray-50">
+                  Reset
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Delete */}
+          {hasFullAccess && (
+            <div className="border-t border-[#F0F3F3] pt-3">
+              <button type="button"
+                onClick={() => { deleteBoothDoc(doc.id); onClose(); }}
+                className="text-[10px] text-red-400 hover:text-red-600 hover:underline">
+                Delete this document record
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ExpoMapSection ────────────────────────────────────────────────────────────
+
+function ExpoMapSection({
+  eventA42, boothDocs, competitors, currentUser, hasFullAccess,
+  onOpenAttach, onOpenCompetitorForm, allPhotos,
+}: {
+  eventA42: string;
+  boothDocs: BoothDoc[];
+  competitors: CompetitorEntry[];
+  currentUser: SalesMember | null;
+  hasFullAccess: boolean;
+  onOpenAttach: (a: { key: string; label: string }) => void;
+  onOpenCompetitorForm: (e: CompetitorEntry | "new") => void;
+  allPhotos: PhotoRecord[];
+}) {
+  const expoMapDoc = boothDocs.find((d) => d.type === "EXPO_MAP");
+  const expoMapFileCount = useMemo(() =>
+    allPhotos.filter((p) => p.workflowKey === `booth:${expoMapDoc?.id}`).length,
+    [allPhotos, expoMapDoc]
+  );
+  const competitorPhotoCounts = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const p of allPhotos) {
+      if (p.workflowKey?.startsWith("expo:")) {
+        const id = p.workflowKey.slice(5);
+        map[id] = (map[id] ?? 0) + 1;
+      }
+    }
+    return map;
+  }, [allPhotos]);
+
+  function handleAddExpoMap() {
+    if (!currentUser) return;
+    const doc = createBoothDoc(eventA42, "EXPO_MAP", currentUser.id, currentUser.name, "Base venue floorplan");
+    onOpenAttach({ key: `booth:${doc.id}`, label: "Expo Map (Base Floorplan)" });
+  }
+
+  return (
+    <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
+        <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Expo Map — Competitor Research</h2>
+        <p className="text-[10px] text-gray-500 mt-0.5">During the fair, record competitor booths spotted at the venue</p>
+      </div>
+
+      {!hasFullAccess && (
+        <div className="px-4 py-2 flex items-center gap-2 bg-amber-50 border-b border-amber-100">
+          <AlertCircle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+          <span className="text-[10px] text-amber-800">Read-only — you are not assigned to this event</span>
+        </div>
+      )}
+
+      <div className="px-5 py-4 space-y-4">
+        {/* Base floorplan slot */}
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-2">Base Venue Floorplan</div>
+          {expoMapDoc ? (
+            <button
+              type="button"
+              onClick={() => onOpenAttach({ key: `booth:${expoMapDoc.id}`, label: "Expo Map (Base Floorplan)" })}
+              className="flex items-center gap-2 px-3 py-2 rounded-md border border-[#0F766E]/30 bg-[#0F766E]/5 hover:bg-[#0F766E]/10 transition"
+            >
+              <MapPin className="h-4 w-4 text-[#0F766E]" />
+              <span className="text-[12px] font-semibold text-[#0A1F2E]">Venue Floorplan</span>
+              <span className={`ml-2 text-[10px] px-2 py-0.5 rounded font-semibold ${
+                expoMapFileCount > 0 ? "bg-[#0F766E]/10 text-[#0F766E]" : "bg-gray-100 text-gray-500"
+              }`}>
+                {expoMapFileCount} file{expoMapFileCount === 1 ? "" : "s"}
+              </span>
+            </button>
+          ) : hasFullAccess ? (
+            <button
+              type="button"
+              onClick={handleAddExpoMap}
+              className="flex items-center gap-2 px-3 py-2 rounded-md border border-dashed border-[#DDE5E5] hover:border-[#0F766E] hover:text-[#0F766E] text-gray-400 transition"
+            >
+              <Plus className="h-4 w-4" />
+              <span className="text-[12px] font-semibold">Upload base floorplan</span>
+            </button>
+          ) : (
+            <div className="text-[11px] text-gray-300">— No floorplan uploaded —</div>
+          )}
+        </div>
+
+        {/* Competitor list header */}
+        <div className="flex items-center justify-between">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+            Competitors Spotted ({competitors.length})
+          </div>
+          {hasFullAccess && (
+            <button
+              type="button"
+              onClick={() => onOpenCompetitorForm("new")}
+              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59]"
+            >
+              <Plus className="h-3 w-3" /> Add Competitor
+            </button>
+          )}
+        </div>
+
+        {competitors.length === 0 ? (
+          <div className="py-6 text-center text-[11px] text-gray-400 border border-dashed border-[#DDE5E5] rounded-md">
+            No competitors recorded yet
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="bg-[#F4F7F7] text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                  <th className="text-left px-3 py-2">Booth</th>
+                  <th className="text-left px-3 py-2">Brand</th>
+                  <th className="text-left px-3 py-2">Company</th>
+                  <th className="text-left px-3 py-2">Notes</th>
+                  <th className="text-center px-3 py-2">Photos</th>
+                  <th className="text-left px-3 py-2">Recorded by</th>
+                  <th className="text-center px-3 py-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#F0F3F3]">
+                {competitors.map((c) => (
+                  <tr key={c.id} className="hover:bg-[#FAFBFB] transition-colors">
+                    <td className="px-3 py-2 font-semibold text-[#0A1F2E] tabular-nums">{c.boothNo}</td>
+                    <td className="px-3 py-2 font-medium text-[#0A1F2E]">{c.brand}</td>
+                    <td className="px-3 py-2 text-gray-600">{c.company || <span className="text-gray-300">—</span>}</td>
+                    <td className="px-3 py-2 text-gray-500 max-w-[140px]">
+                      <span className="truncate block">{c.notes || <span className="text-gray-300">—</span>}</span>
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      <button
+                        type="button"
+                        onClick={() => onOpenAttach({ key: `expo:${c.id}`, label: `${c.brand} — Booth ${c.boothNo}` })}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-semibold transition ${
+                          (competitorPhotoCounts[c.id] ?? 0) > 0
+                            ? "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/30 hover:bg-[#0F766E]/20"
+                            : "bg-white text-gray-400 border-[#DDE5E5] hover:border-[#0F766E] hover:text-[#0F766E]"
+                        }`}
+                      >
+                        <Paperclip className="h-2.5 w-2.5" />
+                        {competitorPhotoCounts[c.id] ?? 0}
+                      </button>
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="text-[#0A1F2E] font-medium">{c.recordedByName}</div>
+                      <div className="text-[9px] text-gray-400">
+                        {new Date(c.recordedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        {hasFullAccess && (
+                          <>
+                            <button type="button"
+                              onClick={() => onOpenCompetitorForm(c)}
+                              className="h-6 px-2 rounded border border-[#DDE5E5] text-[10px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E] transition">
+                              Edit
+                            </button>
+                            <button type="button"
+                              onClick={() => removeCompetitor(c.id)}
+                              className="h-6 w-6 rounded inline-flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 transition">
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── CompetitorFormModal ───────────────────────────────────────────────────────
+
+function CompetitorFormModal({
+  eventA42, entry, currentUser, hasFullAccess, allPhotos, onOpenAttach, onClose,
+}: {
+  eventA42: string;
+  entry: CompetitorEntry | null;
+  currentUser: SalesMember | null;
+  hasFullAccess: boolean;
+  allPhotos: PhotoRecord[];
+  onOpenAttach: (a: { key: string; label: string }) => void;
+  onClose: () => void;
+}) {
+  const [boothNo, setBoothNo] = useState(entry?.boothNo ?? "");
+  const [brand, setBrand] = useState(entry?.brand ?? "");
+  const [company, setCompany] = useState(entry?.company ?? "");
+  const [notes, setNotes] = useState(entry?.notes ?? "");
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const photoCount = useMemo(() =>
+    entry ? allPhotos.filter((p) => p.workflowKey === `expo:${entry.id}`).length : 0,
+    [allPhotos, entry]
+  );
+
+  function handleSave() {
+    if (!boothNo.trim() || !brand.trim()) return;
+    if (!currentUser) return;
+    if (entry) {
+      updateCompetitor(entry.id, { boothNo: boothNo.trim().toUpperCase(), brand: brand.trim(), company: company.trim() || undefined, notes: notes.trim() || undefined });
+    } else {
+      addCompetitor(eventA42, {
+        boothNo: boothNo.trim().toUpperCase(),
+        brand: brand.trim(),
+        company: company.trim() || undefined,
+        notes: notes.trim() || undefined,
+        recordedById: currentUser.id,
+        recordedByName: currentUser.name,
+      });
+    }
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-3 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between shrink-0">
+          <h3 className="text-[14px] font-bold text-[#0A1F2E]">{entry ? "Edit Competitor" : "Add Competitor"}</h3>
+          <button type="button" onClick={onClose}
+            className="h-8 w-8 rounded inline-flex items-center justify-center text-gray-400 hover:text-[#0A1F2E] hover:bg-gray-100">
+            <XIcon className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-3 flex-1">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 block mb-1">Booth No *</label>
+              <input type="text" value={boothNo} onChange={(e) => setBoothNo(e.target.value)}
+                placeholder="e.g. A12" className="w-full h-8 rounded-md border border-[#DDE5E5] px-2 text-[11px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E]" />
+            </div>
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 block mb-1">Brand *</label>
+              <input type="text" value={brand} onChange={(e) => setBrand(e.target.value)}
+                placeholder="e.g. King Koil" className="w-full h-8 rounded-md border border-[#DDE5E5] px-2 text-[11px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E]" />
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 block mb-1">Company</label>
+            <input type="text" value={company} onChange={(e) => setCompany(e.target.value)}
+              placeholder="Company name…" className="w-full h-8 rounded-md border border-[#DDE5E5] px-2 text-[11px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E]" />
+          </div>
+          <div>
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 block mb-1">Notes</label>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
+              placeholder="Observations, pricing, products…" rows={2}
+              className="w-full rounded-md border border-[#DDE5E5] px-2 py-1.5 text-[11px] bg-white focus:outline-none focus:ring-2 focus:ring-[#0F766E]/30 focus:border-[#0F766E] resize-y" />
+          </div>
+
+          {/* Photos (only available when editing an existing entry) */}
+          {entry && (
+            <div>
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 block mb-1">Photos</label>
+              <button type="button"
+                onClick={() => onOpenAttach({ key: `expo:${entry.id}`, label: `${entry.brand} — Booth ${entry.boothNo}` })}
+                className={`flex items-center gap-2 px-3 py-2 rounded-md border w-full transition ${
+                  photoCount > 0 ? "border-[#0F766E]/30 bg-[#0F766E]/5 hover:bg-[#0F766E]/10" : "border-dashed border-[#DDE5E5] hover:border-[#0F766E]"
+                }`}
+              >
+                <Paperclip className="h-4 w-4 text-[#0F766E]" />
+                <span className="text-[12px] font-semibold text-[#0A1F2E]">
+                  {photoCount > 0 ? `${photoCount} photo${photoCount === 1 ? "" : "s"} attached` : "Upload photos"}
+                </span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-[#DDE5E5] flex justify-end gap-2 shrink-0">
+          <button type="button" onClick={onClose}
+            className="h-8 px-3 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 hover:bg-gray-50">
+            Cancel
+          </button>
+          <button type="button" onClick={handleSave}
+            disabled={!boothNo.trim() || !brand.trim()}
+            className="h-8 px-3 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] disabled:opacity-40">
+            {entry ? "Save Changes" : "Add Competitor"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

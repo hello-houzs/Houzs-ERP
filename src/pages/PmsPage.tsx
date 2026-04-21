@@ -62,11 +62,62 @@ export default function PmsPage() {
     });
   }, [visibleEvents, brand, eventType, status, state, query]);
 
-  const groups = useMemo(() => ({
-    inProgress: filtered.filter((e) => e.progress === "IN PROGRESS"),
-    notStarted: filtered.filter((e) => e.progress === "NOT STARTED"),
-    completed:  filtered.filter((e) => e.progress === "COMPLETED"),
-  }), [filtered]);
+  // Time-bucket grouping based on event start date relative to today.
+  // Buckets: This Week | Next Week | Week 3-4 | Next Month | Later | Past (completed)
+  const groups = useMemo(() => {
+    // Anchor "today" at start of day for stable comparisons
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    // "This week" = today through end of this Sunday.
+    // getDay() returns 0=Sun..6=Sat. Convert so Monday starts the week.
+    const dow = today.getDay();               // 0..6
+    const daysToSunday = (7 - dow) % 7;       // 0 if today is Sunday
+    const endOfThisWeek = new Date(today);
+    endOfThisWeek.setDate(today.getDate() + daysToSunday);
+    endOfThisWeek.setHours(23, 59, 59, 999);
+
+    const endOfNextWeek = new Date(endOfThisWeek);
+    endOfNextWeek.setDate(endOfThisWeek.getDate() + 7);
+
+    const endOfWeek34 = new Date(endOfThisWeek);
+    endOfWeek34.setDate(endOfThisWeek.getDate() + 28); // +3 weeks = weeks 3+4
+
+    // End of next calendar month
+    const endOfNextMonth = new Date(today.getFullYear(), today.getMonth() + 2, 0, 23, 59, 59, 999);
+
+    const thisWeek: typeof filtered = [];
+    const nextWeek: typeof filtered = [];
+    const week34: typeof filtered = [];
+    const nextMonth: typeof filtered = [];
+    const later: typeof filtered = [];
+    const past: typeof filtered = [];
+
+    for (const e of filtered) {
+      const end = new Date(e.endDate);
+      end.setHours(23, 59, 59, 999);
+      // Past (fully ended + completed)
+      if (end < today) { past.push(e); continue; }
+
+      const start = new Date(e.startDate);
+      start.setHours(0, 0, 0, 0);
+      // Events already running count as "this week"
+      if (start <= endOfThisWeek) { thisWeek.push(e); continue; }
+      if (start <= endOfNextWeek) { nextWeek.push(e); continue; }
+      if (start <= endOfWeek34)   { week34.push(e); continue; }
+      if (start <= endOfNextMonth){ nextMonth.push(e); continue; }
+      later.push(e);
+    }
+
+    // Sort each bucket chronologically
+    const byStart = (a: typeof filtered[number], b: typeof filtered[number]) =>
+      a.startDate.localeCompare(b.startDate);
+    thisWeek.sort(byStart); nextWeek.sort(byStart); week34.sort(byStart);
+    nextMonth.sort(byStart); later.sort(byStart);
+    // Past: most recent first
+    past.sort((a, b) => b.endDate.localeCompare(a.endDate));
+
+    return { thisWeek, nextWeek, week34, nextMonth, later, past };
+  }, [filtered]);
 
   const activeFilterCount =
     (brand !== "ALL" ? 1 : 0) + (eventType !== "ALL" ? 1 : 0) + (status !== "ALL" ? 1 : 0) +
@@ -144,11 +195,14 @@ export default function PmsPage() {
         )}
       </div>
 
-      {/* Groups */}
+      {/* Time-bucket groups */}
       {[
-        { title: "In Progress", rows: groups.inProgress, accent: "bg-amber-500" },
-        { title: "Not Started", rows: groups.notStarted, accent: "bg-gray-400" },
-        { title: "Completed",   rows: groups.completed,  accent: "bg-blue-500" },
+        { title: "This Week",  rows: groups.thisWeek,  accent: "bg-[#0F766E]" },
+        { title: "Next Week",  rows: groups.nextWeek,  accent: "bg-amber-500" },
+        { title: "Week 3–4",   rows: groups.week34,    accent: "bg-blue-500" },
+        { title: "Next Month", rows: groups.nextMonth, accent: "bg-purple-500" },
+        { title: "Later",      rows: groups.later,     accent: "bg-gray-400" },
+        { title: "Past",       rows: groups.past,      accent: "bg-gray-300" },
       ].map((grp) => (
         <div key={grp.title}>
           <div className="flex items-center gap-2 mb-2">

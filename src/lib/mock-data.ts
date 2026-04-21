@@ -2,6 +2,13 @@
 // Source: EVENT SCHEDULE tab of Exhibition & Solo Analysis spreadsheet
 // Schema mirrors the 32-column sheet verbatim
 
+// ---------- Driver entity ----------
+export interface EventDriver {
+  id: string;    // uid
+  name: string;  // e.g. "MURU"
+  phone: string; // e.g. "018-257 7543"
+}
+
 export type Brand = "AKEMI" | "ZANOTTI" | "ERGOTEX" | "DUNLOPILLO";
 export type EventType = "SOLO" | "EXHIBITION";
 export type EventStatus = "CONFIRMED" | "PENDING" | "CANCELLED";
@@ -67,6 +74,9 @@ export interface HouzsEvent {
   // Assigned team
   assignedSales?: string[];     // sales member IDs assigned to work this fair
   setupCrew?: string[];         // sales member IDs assigned for setup/dismantle
+  // Multi-driver / multi-lori (additive — prefer over single strings when set)
+  setupDrivers?: EventDriver[]; // team of drivers
+  setupLoris?: string[];        // array of plate numbers e.g. ["NCN 6553", "BLY8678"]
 }
 
 function mkEvent(e: Omit<HouzsEvent, "durationDays">): HouzsEvent {
