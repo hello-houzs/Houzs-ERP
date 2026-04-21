@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus, Search, X, Flag, GraduationCap } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Search, X, Flag, GraduationCap, Filter } from "lucide-react";
 import {
   BRANDS, STATES, calendarTitle,
   type Brand, type HouzsEvent, type EventType, type EventStatus,
@@ -166,6 +166,7 @@ export default function CalendarPage() {
   const [stateFilter, setStateFilter] = useState<MalaysianState | "ALL">("ALL");
   const [statusFilter, setStatusFilter] = useState<EventStatus | "ALL">("ALL");
   const [progressFilter, setProgressFilter] = useState<EventProgress | "ALL">("ALL");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [organizerFilter, setOrganizerFilter] = useState<string>("ALL");
   const [search, setSearch] = useState("");
   const [showPublicHolidays, setShowPublicHolidays] = useState(true);
@@ -363,8 +364,30 @@ export default function CalendarPage() {
         </div>
         </div>
 
-        {/* Row 2: search + filter dropdowns */}
-        <div className="flex flex-wrap gap-2 items-center">
+        {/* Row 2: search bar + mobile filter toggle (always visible) */}
+        <div className="flex gap-2 items-center md:hidden">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search…"
+              className="w-full h-8 pl-8 pr-3 rounded-md border border-[#DDE5E5] bg-white text-[11px]"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setFiltersOpen((v) => !v)}
+            className="h-8 px-3 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600 inline-flex items-center gap-1"
+          >
+            <Filter className="h-3 w-3" /> Filters
+            {activeFilterCount > 0 && <span className="h-4 min-w-[16px] px-1 rounded-full bg-amber-100 text-amber-700 text-[9px]">{activeFilterCount}</span>}
+          </button>
+        </div>
+
+        {/* Row 2: desktop filter dropdowns + mobile (when filtersOpen) */}
+        <div className={`${filtersOpen ? "flex" : "hidden"} md:flex flex-wrap gap-2 items-center`}>
           <div className="relative flex-1 min-w-[220px] max-w-md">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
             <input
@@ -417,18 +440,6 @@ export default function CalendarPage() {
             <option value="CONFIRMED">CONFIRMED</option>
             <option value="PENDING">PENDING</option>
             <option value="CANCELLED">CANCELLED</option>
-          </select>
-
-          <select
-            value={progressFilter}
-            onChange={(e) => setProgressFilter(e.target.value as EventProgress | "ALL")}
-            className={FILTER_SELECT}
-            title="Progress"
-          >
-            <option value="ALL">All progress</option>
-            <option value="NOT STARTED">NOT STARTED</option>
-            <option value="IN PROGRESS">IN PROGRESS</option>
-            <option value="COMPLETED">COMPLETED</option>
           </select>
 
           <select
