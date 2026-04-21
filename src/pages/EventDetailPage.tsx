@@ -48,7 +48,6 @@ const WORKFLOW_FIELDS: { key: keyof HouzsEvent; label: string; stage: string }[]
   { key: "agreementApproval",       label: "Agreement / Quotation",          stage: "Contract" },
   { key: "threeDCheckedByMgt",      label: "3D Checked by MGT",              stage: "3D Approval" },
   { key: "threeDApprovedByPeter",   label: "3D Approved by Peter",           stage: "3D Approval" },
-  { key: "threeDUploadedInNotion",  label: "3D Uploaded in Notion",          stage: "3D Approval" },
   { key: "weekendActivityTheme",    label: "Weekend Activity (Theme)",       stage: "Operation" },
   { key: "licenseMajlis",           label: "License (from Majlis)",          stage: "Operation" },
   { key: "workLoadingBayPermit",    label: "Work / Loading Bay Permit",      stage: "Operation" },
