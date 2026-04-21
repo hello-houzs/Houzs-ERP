@@ -204,7 +204,17 @@ export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; o
             {collapsed && <div className="my-1 mx-2 border-t border-white/10" />}
             <div className="space-y-0.5">
               {group.items
-                .filter((item) => item.href !== "/finance" || userCanViewFinance)
+                .filter((item) => {
+                  // Non-admin: hide Master Data, PM Dashboard, Finance
+                  if (!userIsAdmin) {
+                    const adminOnlyHrefs = ["/finance", "/settings", "/"];
+                    if (adminOnlyHrefs.includes(item.href)) return false;
+                  } else {
+                    // Admin: finance gated by finance permission
+                    if (item.href === "/finance" && !userCanViewFinance) return false;
+                  }
+                  return true;
+                })
                 .map((item) => {
                 const active = isActive(item.href);
                 return (
