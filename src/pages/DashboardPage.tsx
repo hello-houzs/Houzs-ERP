@@ -10,8 +10,7 @@ import {
   type MalaysianState, type WorkflowFlag, type HouzsEvent,
 } from "@/lib/mock-data";
 import { useAllEvents, updateEvent } from "@/lib/events-store";
-import { useBoothDocs, type BoothDoc, type BoothDocType } from "@/lib/booth-docs-store";
-import { useEventPhotos } from "@/lib/photos-store";
+import { useAllBoothDocs, type BoothDocType } from "@/lib/booth-docs-store";
 import { FILTER_SELECT } from "@/lib/ui-tokens";
 import { useCurrentUser, canViewEvent, isAdmin } from "@/lib/auth-store";
 
