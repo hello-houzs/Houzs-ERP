@@ -215,6 +215,11 @@ export function useBoothDocs(eventA42: string): BoothDoc[] {
   return all.filter((d) => d.eventA42 === eventA42);
 }
 
+/** Reactive list of ALL booth docs across all events (for dashboards). */
+export function useAllBoothDocs(): BoothDoc[] {
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
+
 export function createBoothDoc(
   eventA42: string,
   type: BoothDocType,

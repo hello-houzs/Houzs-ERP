@@ -10,6 +10,8 @@ import {
   type MalaysianState, type WorkflowFlag, type HouzsEvent,
 } from "@/lib/mock-data";
 import { useAllEvents, updateEvent } from "@/lib/events-store";
+import { useBoothDocs, type BoothDoc, type BoothDocType } from "@/lib/booth-docs-store";
+import { useEventPhotos } from "@/lib/photos-store";
 import { FILTER_SELECT } from "@/lib/ui-tokens";
 import { useCurrentUser, canViewEvent, isAdmin } from "@/lib/auth-store";
 
@@ -21,6 +23,12 @@ function isPending(v: WorkflowFlag) { return v === "" || v === "FALSE"; }
 function WorkflowCell({ v }: { v: WorkflowFlag }) {
   if (isDone(v)) return <Check className="h-3.5 w-3.5 text-[#0F766E] mx-auto" strokeWidth={3} />;
   if (isSkipped(v)) return <Minus className="h-3.5 w-3.5 text-gray-300 mx-auto" />;
+  return <span className="inline-block h-2 w-2 rounded-full bg-amber-400" title="pending" />;
+}
+
+// Doc cell — shows teal check if a BoothDoc exists for this type on this event
+function DocCell({ has }: { has: boolean }) {
+  if (has) return <Check className="h-3.5 w-3.5 text-[#0F766E] mx-auto" strokeWidth={3} />;
   return <span className="inline-block h-2 w-2 rounded-full bg-amber-400" title="pending" />;
 }
 
@@ -71,12 +79,12 @@ function DateCell({
 interface Col {
   key: string;               // unique id
   label: string;             // header text
-  kind: "base" | "workflow";
+  kind: "base" | "workflow" | "doc";
   sortable?: boolean;
   numeric?: boolean;
   align?: "right" | "center";
   sortValue?: (e: HouzsEvent) => string | number;
-  render: (e: HouzsEvent) => ReactNode;
+  render: (e: HouzsEvent, ctx: { docsByEvent: Map<string, Set<BoothDocType>> }) => ReactNode;
   tooltip?: string;
   defaultHidden?: boolean;
 }
@@ -176,6 +184,31 @@ const ALL_COLUMNS: Col[] = [
     render: (e) => <WorkflowCell v={e.decoCoffeeTable} /> },
   { key: "secDepoRefund", label: "DEPO", tooltip: "Security Deposit", kind: "workflow", align: "center",
     render: (e) => <WorkflowCell v={e.secDepoRefund} /> },
+  // ── Booth docs (completion at a glance) ─────────────────────────
+  { key: "doc_STOCKS_REQUEST_LIST", label: "SREQ", tooltip: "Stocks Request Listing", kind: "doc", align: "center",
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("STOCKS_REQUEST_LIST")} /> },
+  { key: "doc_STOCK_TRANSFER", label: "STRF", tooltip: "Stock Transfer Record", kind: "doc", align: "center",
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("STOCK_TRANSFER")} /> },
+  { key: "doc_THREE_D_DESIGN", label: "3D", tooltip: "3D Design file", kind: "doc", align: "center",
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("THREE_D_DESIGN")} /> },
+  { key: "doc_TWO_D_WITH_DISPLAY", label: "2D", tooltip: "2D Design with Display", kind: "doc", align: "center",
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("TWO_D_WITH_DISPLAY")} /> },
+  { key: "doc_SETUP_DRIVER", label: "SID", tooltip: "Setup Image — Driver", kind: "doc", align: "center",
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("SETUP_IMAGE_DRIVER")} /> },
+  { key: "doc_SETUP_SALES", label: "SIS", tooltip: "Setup Image — Sales", kind: "doc", align: "center",
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("SETUP_IMAGE_SALES")} /> },
+  { key: "doc_DEFECT", label: "DEF", tooltip: "Defect List", kind: "doc", align: "center",
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("DEFECT_LIST")} /> },
+  { key: "doc_EXCHANGE", label: "EXC", tooltip: "Exchange List", kind: "doc", align: "center",
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("EXCHANGE_LIST")} /> },
+  { key: "doc_EVT_COMPLETE", label: "EVT", tooltip: "Event Complete Image", kind: "doc", align: "center",
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("EVENT_COMPLETE_IMAGE")} /> },
+  { key: "doc_DISMANTLE", label: "DIS", tooltip: "Dismantle Image", kind: "doc", align: "center",
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("DISMANTLE_IMAGE_DRIVER")} /> },
+  { key: "doc_EXPO_BLANK", label: "EMB", tooltip: "Expo Map (Blank)", kind: "doc", align: "center", defaultHidden: true,
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("EXPO_MAP")} /> },
+  { key: "doc_EXPO_FILLED", label: "EMF", tooltip: "Expo Map (Filled)", kind: "doc", align: "center", defaultHidden: true,
+    render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("EXPO_MAP_FILLED")} /> },
 ];
 
 const DEFAULT_ORDER = ALL_COLUMNS.map((c) => c.key);
@@ -254,6 +287,16 @@ export default function DashboardPage() {
 
   // Data pipeline — reactive events (mock + user-added + overrides)
   const allEvents = useAllEvents();
+  const allDocs = useAllBoothDocs();
+  // Map event a42 → set of doc types that exist for that event
+  const docsByEvent = useMemo(() => {
+    const map = new Map<string, Set<BoothDocType>>();
+    for (const d of allDocs) {
+      if (!map.has(d.eventA42)) map.set(d.eventA42, new Set());
+      map.get(d.eventA42)!.add(d.type);
+    }
+    return map;
+  }, [allDocs]);
   // RBAC: limit visible events for non-admin users
   const visibleEvents = useMemo(
     () => allEvents.filter((e) => canViewEvent(currentUser, e)),
@@ -601,11 +644,11 @@ export default function DashboardPage() {
                     <td
                       key={c.key}
                       className={`px-1.5 py-1.5
-                        ${c.kind === "workflow" ? "text-center border-l border-[#F0F3F3]" : ""}
+                        ${c.kind === "workflow" || c.kind === "doc" ? "text-center border-l border-[#F0F3F3]" : ""}
                         ${c.align === "right" ? "text-right" : c.align === "center" ? "text-center" : ""}
                       `}
                     >
-                      {c.render(e)}
+                      {c.render(e, { docsByEvent })}
                     </td>
                   ))}
                 </tr>
