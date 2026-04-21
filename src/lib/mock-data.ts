@@ -14,18 +14,29 @@ export type EventType = "SOLO" | "EXHIBITION";
 export type EventStatus = "CONFIRMED" | "PENDING" | "CANCELLED";
 export type EventProgress = "NOT STARTED" | "IN PROGRESS" | "COMPLETED";
 
-// Preparation pipeline — status of pre-event readiness (mirrors Notion "Preparation Condition")
+// Preparation pipeline — chronological status of pre-event readiness.
+// Ordered by workflow sequence; the last applicable step is the current status.
 export type PreparationCondition =
-  | "PENDING AGREEMENT"
-  | "AGREEMENT APPROVED"
-  | "PAYMENT PENDING"
-  | "PAYMENT DONE"
-  | "PERMIT PENDING"
+  | "PENDING FLOORPLAN"
+  | "PENDING 3D"
+  | "PENDING STOCKS REQUEST LISTING"
+  | "PENDING STOCKS TRANSFER LISTING"
+  | "PENDING DRIVER INFORMATION"
+  | "PENDING SETUP IMAGE"
+  | "PENDING FILLED FLOORPLAN"    // exhibition events only
+  | "PENDING EVENT COMPLETE IMAGE"
   | "DONE PREPARED";
 
 export const PREPARATION_CONDITIONS: PreparationCondition[] = [
-  "PENDING AGREEMENT", "AGREEMENT APPROVED", "PAYMENT PENDING",
-  "PAYMENT DONE", "PERMIT PENDING", "DONE PREPARED",
+  "PENDING FLOORPLAN",
+  "PENDING 3D",
+  "PENDING STOCKS REQUEST LISTING",
+  "PENDING STOCKS TRANSFER LISTING",
+  "PENDING DRIVER INFORMATION",
+  "PENDING SETUP IMAGE",
+  "PENDING FILLED FLOORPLAN",
+  "PENDING EVENT COMPLETE IMAGE",
+  "DONE PREPARED",
 ];
 export type MalaysianState =
   | "KL" | "JOHOR" | "PENANG" | "SABAH" | "SARAWAK" | "MELAKA" | "KEDAH"
