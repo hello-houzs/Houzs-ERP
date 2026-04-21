@@ -364,7 +364,9 @@ export default function EventDetailPage() {
   }
 
   return (
-    <div className="space-y-4 max-w-6xl">
+    <div className="grid grid-cols-1 xl:grid-cols-[1fr_280px] gap-4 max-w-[1400px]">
+      {/* ═══════════════ MAIN COLUMN ═══════════════ */}
+      <div className="space-y-4 min-w-0">
       {/* Back link */}
       <Link
         to="/pms"
@@ -469,27 +471,10 @@ export default function EventDetailPage() {
             </div>
             <div className="flex items-start gap-1.5">
               <User className="h-3 w-3 text-gray-400 mt-0.5 shrink-0" />
-              <div className="min-w-0 flex-1">
-                <div className={FIELD_LABEL}>Sales PIC</div>
-                <div className="text-[#0A1F2E] font-medium">{event.salesPic ?? event.pic ?? "—"}</div>
-                <div className="text-[10px] text-gray-500 truncate">Organizer: {event.organizer}</div>
-                <div className="mt-1.5">
-                  <div className={FIELD_LABEL}>Sales Attendance</div>
-                  <div className="flex flex-wrap gap-1 mt-0.5">
-                    {(event.assignedSales ?? []).length === 0 ? (
-                      <span className="text-[10px] text-gray-300">— No sales assigned —</span>
-                    ) : (
-                      (event.assignedSales ?? []).map((id) => {
-                        const m = salesMembers.find((x) => x.id === id);
-                        return m ? (
-                          <span key={id} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-[#0F766E]/10 text-[#0F766E] text-[9px] font-semibold">
-                            {m.name}
-                          </span>
-                        ) : null;
-                      })
-                    )}
-                  </div>
-                </div>
+              <div>
+                <div className={FIELD_LABEL}>Organizer</div>
+                <div className="text-[#0A1F2E] font-medium">{event.organizer}</div>
+                <div className="text-[10px] text-gray-500">{event.eventType}</div>
               </div>
             </div>
           </div>
@@ -1246,6 +1231,53 @@ export default function EventDetailPage() {
         </div>
       </div>
 
+      </div>
+      {/* ═══════════════ END MAIN COLUMN ═══════════════ */}
+
+      {/* ═══════════════ RIGHT SIDEBAR ═══════════════ */}
+      <aside className="space-y-4 xl:sticky xl:top-4 xl:self-start">
+        {/* Sales PIC + Attendance */}
+        <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
+            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Sales Team</h2>
+          </div>
+          <div className="px-4 py-3 space-y-3">
+            <div>
+              <div className={FIELD_LABEL}>Sales PIC</div>
+              {userIsAdmin ? (
+                <Combo
+                  value={event.salesPic ?? event.pic ?? ""}
+                  options={activeSalesMembers.map((m) => m.name)}
+                  onChange={(v) => updateEvent(a42, { salesPic: v || undefined })}
+                  onCreate={(v) => { addPic(v); updateEvent(a42, { salesPic: v }); }}
+                  placeholder="Sales PIC…"
+                />
+              ) : (
+                <div className="text-[12px] font-semibold text-[#0A1F2E]">{event.salesPic ?? event.pic ?? <span className="text-gray-300 font-normal">—</span>}</div>
+              )}
+            </div>
+            <div>
+              <div className={FIELD_LABEL}>Sales Attendance</div>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {(event.assignedSales ?? []).length === 0 ? (
+                  <span className="text-[11px] text-gray-300">— No sales assigned —</span>
+                ) : (
+                  (event.assignedSales ?? []).map((id) => {
+                    const m = salesMembers.find((x) => x.id === id);
+                    return m ? (
+                      <span key={id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#0F766E]/10 text-[#0F766E] text-[10px] font-semibold">
+                        <User className="h-2.5 w-2.5" />{m.name}
+                      </span>
+                    ) : null;
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* Modals rendered at grid root so they overlay properly */}
       {openAttach && (
         <WorkflowAttachmentDialog
           eventA42={a42}
@@ -1255,7 +1287,6 @@ export default function EventDetailPage() {
         />
       )}
 
-      {/* Booth doc detail modal */}
       {openBoothDoc && (
         <BoothDocModal
           doc={openBoothDoc}
@@ -1270,7 +1301,6 @@ export default function EventDetailPage() {
         />
       )}
 
-      {/* Competitor form modal */}
       {openCompetitorForm && (
         <CompetitorFormModal
           eventA42={a42}
@@ -1752,93 +1782,6 @@ function ExpoMapSection({
           </div>
         </div>
 
-        {/* Competitor list header */}
-        <div className="flex items-center justify-between">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-            Competitors Spotted ({competitors.length})
-          </div>
-          {hasFullAccess && (
-            <button
-              type="button"
-              onClick={() => onOpenCompetitorForm("new")}
-              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59]"
-            >
-              <Plus className="h-3 w-3" /> Add Competitor
-            </button>
-          )}
-        </div>
-
-        {competitors.length === 0 ? (
-          <div className="py-6 text-center text-[11px] text-gray-400 border border-dashed border-[#DDE5E5] rounded-md">
-            No competitors recorded yet
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[11px]">
-              <thead>
-                <tr className="bg-[#F4F7F7] text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                  <th className="text-left px-3 py-2">Booth</th>
-                  <th className="text-left px-3 py-2">Brand</th>
-                  <th className="text-left px-3 py-2">Company</th>
-                  <th className="text-left px-3 py-2">Notes</th>
-                  <th className="text-center px-3 py-2">Photos</th>
-                  <th className="text-left px-3 py-2">Recorded by</th>
-                  <th className="text-center px-3 py-2">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#F0F3F3]">
-                {competitors.map((c) => (
-                  <tr key={c.id} className="hover:bg-[#FAFBFB] transition-colors">
-                    <td className="px-3 py-2 font-semibold text-[#0A1F2E] tabular-nums">{c.boothNo}</td>
-                    <td className="px-3 py-2 font-medium text-[#0A1F2E]">{c.brand}</td>
-                    <td className="px-3 py-2 text-gray-600">{c.company || <span className="text-gray-300">—</span>}</td>
-                    <td className="px-3 py-2 text-gray-500 max-w-[140px]">
-                      <span className="truncate block">{c.notes || <span className="text-gray-300">—</span>}</span>
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      <button
-                        type="button"
-                        onClick={() => onOpenAttach({ key: `expo:${c.id}`, label: `${c.brand} — Booth ${c.boothNo}` })}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-semibold transition ${
-                          (competitorPhotoCounts[c.id] ?? 0) > 0
-                            ? "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/30 hover:bg-[#0F766E]/20"
-                            : "bg-white text-gray-400 border-[#DDE5E5] hover:border-[#0F766E] hover:text-[#0F766E]"
-                        }`}
-                      >
-                        <Paperclip className="h-2.5 w-2.5" />
-                        {competitorPhotoCounts[c.id] ?? 0}
-                      </button>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="text-[#0A1F2E] font-medium">{c.recordedByName}</div>
-                      <div className="text-[9px] text-gray-400">
-                        {new Date(c.recordedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        {hasFullAccess && (
-                          <>
-                            <button type="button"
-                              onClick={() => onOpenCompetitorForm(c)}
-                              className="h-6 px-2 rounded border border-[#DDE5E5] text-[10px] font-semibold text-gray-600 hover:border-[#0F766E] hover:text-[#0F766E] transition">
-                              Edit
-                            </button>
-                            <button type="button"
-                              onClick={() => removeCompetitor(c.id)}
-                              className="h-6 w-6 rounded inline-flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 transition">
-                              <Trash2 className="h-3 w-3" />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
     </div>
   );
