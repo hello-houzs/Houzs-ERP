@@ -79,18 +79,91 @@ export function isAdmin(user: SalesMember | null | undefined): boolean {
   return user?.position === "Sales Director";
 }
 
+/** Read all sales members from localStorage (non-reactive snapshot). */
+function readAllMembers(): SalesMember[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem("houzs_sales_members");
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Full access — Sales Director, PIC, or assigned sales member.
- * Can see everything on the event including financials, workflow, setup info.
+ * Returns the set of member ids in a user's downline (self + all descendants).
+ * Traverses BOTH parentId and additionalParentIds edges — so directors with
+ * multiple uplines appear as descendants of all their uplines.
+ */
+export function getDownlineIds(userId: string, members: SalesMember[]): Set<string> {
+  // Build parent→children map including additionalParentIds
+  const childrenMap = new Map<string, SalesMember[]>();
+  for (const m of members) {
+    const parents = new Set<string>();
+    if (m.parentId) parents.add(m.parentId);
+    for (const pid of m.additionalParentIds ?? []) parents.add(pid);
+    for (const p of parents) {
+      if (!childrenMap.has(p)) childrenMap.set(p, []);
+      childrenMap.get(p)!.push(m);
+    }
+  }
+  const result = new Set<string>([userId]);
+  const stack: string[] = [userId];
+  while (stack.length) {
+    const id = stack.pop()!;
+    const kids = childrenMap.get(id) ?? [];
+    for (const k of kids) {
+      if (!result.has(k.id)) {
+        result.add(k.id);
+        stack.push(k.id);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Returns the set of member names (UPPERCASE) in a user's downline,
+ * for matching against event.pic (which is stored as a name string).
+ */
+export function getDownlineNames(userId: string, members: SalesMember[]): Set<string> {
+  const ids = getDownlineIds(userId, members);
+  const names = new Set<string>();
+  for (const m of members) {
+    if (ids.has(m.id)) names.add(m.name.toUpperCase());
+  }
+  return names;
+}
+
+/**
+ * Full access — Sales Director (within their downline only), PIC, or
+ * assigned sales member.
+ * Directors only see events where themselves OR any downline member is the
+ * PIC or an assigned sales; they do NOT see events owned by OTHER directors'
+ * trees (except when they have multi-upline edges).
  */
 export function canViewFullEvent(
   user: SalesMember | null | undefined,
   event: { assignedSales?: string[]; pic?: string },
 ): boolean {
   if (!user) return false;
-  if (isAdmin(user)) return true;
+
+  // Self is assigned or PIC
   if (event.assignedSales?.includes(user.id)) return true;
   if (event.pic && user.name.toUpperCase() === event.pic.toUpperCase()) return true;
+
+  // Directors: also see events involving their downline (self + descendants)
+  if (isAdmin(user)) {
+    const members = readAllMembers();
+    const downlineIds = getDownlineIds(user.id, members);
+    if (event.assignedSales?.some((id) => downlineIds.has(id))) return true;
+    if (event.pic) {
+      const downlineNames = getDownlineNames(user.id, members);
+      if (downlineNames.has(event.pic.toUpperCase())) return true;
+    }
+  }
+
   return false;
 }
 

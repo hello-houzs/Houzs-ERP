@@ -22,7 +22,8 @@ export interface SalesMember {
   email: string;
   ic?: string;
   position: string;         // "Sales Director", "Sales Executive", custom
-  parentId: string;         // "" = root (no upline)
+  parentId: string;         // "" = root (no upline) — primary upline (used for commission)
+  additionalParentIds?: string[]; // secondary uplines (directors only) — grants them downline visibility
   joinDate: string;
   status: MemberStatus;
   assignedBrands: Brand[];  // which brands this person handles

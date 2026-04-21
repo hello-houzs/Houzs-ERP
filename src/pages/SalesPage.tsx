@@ -212,6 +212,7 @@ function EditMemberDialog({ member, members, positions, onClose }: {
   const [ic, setIc] = useState(member.ic ?? "");
   const [position, setPosition] = useState(member.position);
   const [parentId, setParentId] = useState(member.parentId);
+  const [additionalParentIds, setAdditionalParentIds] = useState<string[]>(member.additionalParentIds ?? []);
   const [status, setStatus] = useState(member.status);
   const [selectedBrands, setSelectedBrands] = useState<Brand[]>(member.assignedBrands);
   const [tiers, setTiers] = useState<CommissionTier[]>(member.commissionTiers);
@@ -243,12 +244,20 @@ function EditMemberDialog({ member, members, positions, onClose }: {
   }
 
   function save() {
+    const isDirector = position === "Sales Director";
     updateMember(member.id, {
       name: name.trim().toUpperCase(), code: code.trim(), phone: phone.trim(),
       email: email.trim(), ic: ic.trim() || undefined, position, parentId, status,
+      additionalParentIds: isDirector ? additionalParentIds.filter(Boolean) : undefined,
       assignedBrands: selectedBrands, commissionTiers: tiers, minRate,
     });
     onClose();
+  }
+
+  function toggleAdditionalParent(id: string) {
+    setAdditionalParentIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
   }
 
   // Preview commission — team sales (personal + group) with cost/net
@@ -308,13 +317,40 @@ function EditMemberDialog({ member, members, positions, onClose }: {
                   </select>
                 </div>
                 <div>
-                  <div className={FIELD_LABEL}>Upline</div>
+                  <div className={FIELD_LABEL}>Upline (primary)</div>
                   <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={FIELD_SELECT}>
                     <option value="">— No upline —</option>
                     {parentCandidates.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.position})</option>)}
                   </select>
                 </div>
               </div>
+              {position === "Sales Director" && (
+                <div className="rounded-md border border-[#DDE5E5] bg-[#FAFBFB] p-3">
+                  <div className={FIELD_LABEL}>Additional Uplines (for directors — grants downline visibility)</div>
+                  <div className="mt-1.5 space-y-1 max-h-[140px] overflow-y-auto">
+                    {parentCandidates
+                      .filter((m) => m.id !== parentId)
+                      .map((m) => {
+                        const checked = additionalParentIds.includes(m.id);
+                        return (
+                          <label key={m.id} className="flex items-center gap-2 px-2 py-1 hover:bg-white rounded cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleAdditionalParent(m.id)}
+                              className="h-3.5 w-3.5 rounded border-gray-300 text-[#0F766E] focus:ring-[#0F766E]"
+                            />
+                            <span className="text-[11px] font-semibold text-[#0A1F2E]">{m.name}</span>
+                            <span className="text-[9px] text-gray-500 ml-auto">{m.position}</span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                  <p className="text-[9px] text-gray-500 mt-1.5">
+                    This director will also appear as a child of the checked uplines in downline / event-visibility calculations.
+                  </p>
+                </div>
+              )}
               <div>
                 <div className={FIELD_LABEL}>Assigned Brands</div>
                 <div className="flex gap-1.5 mt-1">
