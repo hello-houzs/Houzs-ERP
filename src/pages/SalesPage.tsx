@@ -41,6 +41,26 @@ function PositionBadge({ position }: { position: string }) {
   );
 }
 
+function RoleBadge({ position }: { position: string }) {
+  const isDir = position.includes("Director");
+  const isMgr = position.includes("Manager");
+  if (isDir) return (
+    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold bg-[#0F766E] text-white">
+      <Crown className="h-2 w-2" /> ADMIN
+    </span>
+  );
+  if (isMgr) return (
+    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold bg-blue-600 text-white">
+      <Shield className="h-2 w-2" /> MANAGER
+    </span>
+  );
+  return (
+    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold bg-gray-400 text-white">
+      <UserIcon className="h-2 w-2" /> EXEC
+    </span>
+  );
+}
+
 function BrandDots({ brands }: { brands: Brand[] }) {
   if (brands.length === 0) return <span className="text-[9px] text-gray-300">&mdash;</span>;
   return (
@@ -551,9 +571,9 @@ function CommissionSettingsDialog({ onClose }: { onClose: () => void }) {
 
 // ─── Tree Row (List View) ───────────────────────────────────────────────────
 
-function TreeRow({ node, collapsed, onToggle, onEdit, isLast, parentGuides }: {
+function TreeRow({ node, collapsed, onToggle, onEdit, isLast, parentGuides, onQuickRole }: {
   node: MemberNode; collapsed: boolean; onToggle: () => void; onEdit: () => void;
-  isLast: boolean; parentGuides: boolean[];
+  isLast: boolean; parentGuides: boolean[]; onQuickRole?: (m: SalesMember) => void;
 }) {
   const m = node.member;
   const hasChildren = node.children.length > 0;
@@ -622,12 +642,29 @@ function TreeRow({ node, collapsed, onToggle, onEdit, isLast, parentGuides }: {
       </div>
 
       <BrandDots brands={m.assignedBrands} />
+      <RoleBadge position={m.position} />
       <PositionBadge position={m.position} />
 
       {node.descendantCount > 0 && (
         <span className="text-[9px] font-semibold text-[#0F766E] bg-[#0F766E]/10 rounded px-1.5 py-0.5 tabular-nums shrink-0">
           {node.descendantCount}
         </span>
+      )}
+
+      {/* Quick role toggle */}
+      {onQuickRole && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onQuickRole(m); }}
+          className={`h-6 px-2 rounded border text-[9px] font-semibold shrink-0 transition ${
+            m.position.includes("Director")
+              ? "border-red-200 text-red-600 hover:bg-red-50"
+              : "border-[#0F766E]/40 text-[#0F766E] hover:bg-[#0F766E]/10"
+          }`}
+          title={m.position.includes("Director") ? "Remove Admin" : "Make Admin"}
+        >
+          {m.position.includes("Director") ? "Remove Admin" : "Make Admin"}
+        </button>
       )}
     </div>
   );
@@ -638,7 +675,8 @@ function renderTreeRows(
   collapsedIds: Set<string>,
   onToggle: (id: string) => void,
   onEdit: (m: SalesMember) => void,
-  parentGuides: boolean[] = []
+  parentGuides: boolean[] = [],
+  onQuickRole?: (m: SalesMember) => void,
 ): React.ReactNode[] {
   const result: React.ReactNode[] = [];
   nodes.forEach((node, i) => {
@@ -652,11 +690,12 @@ function renderTreeRows(
         onEdit={() => onEdit(node.member)}
         isLast={isLast}
         parentGuides={parentGuides}
+        onQuickRole={onQuickRole}
       />
     );
     if (!collapsedIds.has(node.member.id) && node.children.length > 0) {
       const childGuides = [...parentGuides, !isLast];
-      result.push(...renderTreeRows(node.children, collapsedIds, onToggle, onEdit, childGuides));
+      result.push(...renderTreeRows(node.children, collapsedIds, onToggle, onEdit, childGuides, onQuickRole));
     }
   });
   return result;
@@ -806,6 +845,14 @@ export default function SalesPage() {
   const dirCount = members.filter((m) => m.position.includes("Director") && m.status === "ACTIVE").length;
   const brandedCount = members.filter((m) => m.assignedBrands.length > 0 && m.status === "ACTIVE").length;
 
+  function handleQuickRole(m: SalesMember) {
+    if (m.position.includes("Director")) {
+      updateMember(m.id, { position: "Sales Executive" });
+    } else {
+      updateMember(m.id, { position: "Sales Director" });
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-end justify-between gap-4 flex-wrap">
@@ -841,6 +888,65 @@ export default function SalesPage() {
           </div>
         </div>
       )}
+
+      {/* Roles & Permissions card */}
+      <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center gap-2">
+          <Shield className="h-3.5 w-3.5 text-[#0F766E]" />
+          <h2 className="text-[11px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Roles &amp; Permissions</h2>
+        </div>
+        <div className="p-4 space-y-3">
+          {/* Summary cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* Administrators */}
+            <div className="flex items-center gap-3 rounded-md border border-[#DDE5E5] px-4 py-3 bg-[#0F766E]/5">
+              <div className="h-9 w-9 rounded-full bg-[#0F766E]/20 flex items-center justify-center shrink-0">
+                <Crown className="h-4 w-4 text-[#0F766E]" />
+              </div>
+              <div>
+                <div className="text-[9px] font-semibold uppercase tracking-wider text-[#0F766E]">Administrators</div>
+                <div className="text-2xl font-bold text-[#0F766E] tabular-nums">
+                  {members.filter((m) => m.position.includes("Director")).length}
+                </div>
+                <div className="text-[9px] text-gray-400">Sales Director</div>
+              </div>
+            </div>
+            {/* Managers */}
+            <div className="flex items-center gap-3 rounded-md border border-[#DDE5E5] px-4 py-3 bg-blue-50">
+              <div className="h-9 w-9 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
+                <Shield className="h-4 w-4 text-blue-600" />
+              </div>
+              <div>
+                <div className="text-[9px] font-semibold uppercase tracking-wider text-blue-600">Managers</div>
+                <div className="text-2xl font-bold text-blue-700 tabular-nums">
+                  {members.filter((m) => m.position.includes("Manager")).length}
+                </div>
+                <div className="text-[9px] text-gray-400">Sales Manager</div>
+              </div>
+            </div>
+            {/* Executives */}
+            <div className="flex items-center gap-3 rounded-md border border-[#DDE5E5] px-4 py-3 bg-gray-50">
+              <div className="h-9 w-9 rounded-full bg-gray-200 flex items-center justify-center shrink-0">
+                <UserIcon className="h-4 w-4 text-gray-500" />
+              </div>
+              <div>
+                <div className="text-[9px] font-semibold uppercase tracking-wider text-gray-500">Executives</div>
+                <div className="text-2xl font-bold text-gray-700 tabular-nums">
+                  {members.filter((m) => !m.position.includes("Director") && !m.position.includes("Manager")).length}
+                </div>
+                <div className="text-[9px] text-gray-400">Other positions</div>
+              </div>
+            </div>
+          </div>
+          {/* Permission rules */}
+          <div className="rounded-md bg-[#F4F7F7] border border-[#DDE5E5] px-4 py-2.5 text-[10px] text-gray-500 space-y-1">
+            <div className="font-semibold text-[#0A1F2E] mb-1">Permission rules:</div>
+            <div className="flex items-start gap-1.5"><span className="text-[#0F766E] shrink-0">•</span><span><span className="font-semibold text-[#0A1F2E]">Administrator</span> — full access to all events, financial reports, and settings</span></div>
+            <div className="flex items-start gap-1.5"><span className="text-blue-500 shrink-0">•</span><span><span className="font-semibold text-[#0A1F2E]">Manager / Executive</span> — limited to events assigned to them, plus live events (floorplan + chat only)</span></div>
+            <div className="flex items-start gap-1.5"><span className="text-gray-400 shrink-0">•</span><span>Change someone's role by clicking <span className="font-semibold">Edit</span> on their row and selecting a different Position</span></div>
+          </div>
+        </div>
+      </div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -946,12 +1052,12 @@ export default function SalesPage() {
             </div>
           </div>
         ) : (
-          <div>
+          <div className="overflow-x-auto">
             {isFiltering
               ? visibleNodes.map((node) => (
-                  <TreeRow key={node.member.id} node={{...node, depth: 0}} collapsed={false} onToggle={() => {}} onEdit={() => setEditMember(node.member)} isLast={true} parentGuides={[]} />
+                  <TreeRow key={node.member.id} node={{...node, depth: 0}} collapsed={false} onToggle={() => {}} onEdit={() => setEditMember(node.member)} isLast={true} parentGuides={[]} onQuickRole={handleQuickRole} />
                 ))
-              : renderTreeRows(tree, collapsedIds, (id) => toggleCollapse(id), (m) => setEditMember(m))
+              : renderTreeRows(tree, collapsedIds, (id) => toggleCollapse(id), (m) => setEditMember(m), [], handleQuickRole)
             }
           </div>
         )}

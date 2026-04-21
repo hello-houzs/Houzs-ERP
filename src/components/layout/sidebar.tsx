@@ -20,6 +20,8 @@ import {
   UserCog,
   LogOut,
   ChevronDown,
+  Menu,
+  X as XIcon,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -73,7 +75,29 @@ const navigationGroups: NavGroup[] = [
   },
 ];
 
-export function Sidebar() {
+// Mobile top bar — shown only on small screens (md:hidden via DashboardLayout)
+export function MobileTopBar({ onOpen }: { onOpen: () => void }) {
+  return (
+    <header className="fixed top-0 left-0 right-0 z-50 h-14 bg-[#0A1F2E] flex items-center justify-between px-4 md:hidden">
+      <Link to="/" className="flex items-center gap-2">
+        <div className="h-8 w-8 rounded bg-gradient-to-br from-[#14B8A6] to-[#0F766E] flex items-center justify-center text-sm font-bold shrink-0 text-white">
+          H
+        </div>
+        <span className="text-[18px] font-[800] tracking-[2px] text-white">HOUZS</span>
+      </Link>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="h-9 w-9 rounded-md flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+        aria-label="Open menu"
+      >
+        <Menu className="h-5 w-5" />
+      </button>
+    </header>
+  );
+}
+
+export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; onMobileClose?: () => void }) {
   const { pathname } = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -118,12 +142,29 @@ export function Sidebar() {
     m.position.toLowerCase().includes(switcherQuery.toLowerCase())
   );
 
+  function handleNavClick() {
+    if (onMobileClose) onMobileClose();
+  }
+
   return (
+    <>
+      {/* Mobile backdrop */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          onClick={onMobileClose}
+        />
+      )}
     <aside
       className={cn(
-        "fixed left-0 top-0 z-40 h-screen bg-[#0A1F2E] text-white transition-all duration-300 flex flex-col",
-        collapsed ? "w-14" : "w-60"
+        "fixed left-0 top-0 z-50 h-screen bg-[#0A1F2E] text-white transition-all duration-300 flex flex-col",
+        // Desktop: always visible, collapsible
+        "hidden md:flex",
+        collapsed ? "w-14" : "w-60",
+        // Mobile: slide in from left when open
+        mobileOpen && "!flex w-60"
       )}
+      onClick={(e) => e.stopPropagation()}
     >
       {/* Brand */}
       <div className="flex h-14 items-center justify-between px-3 border-b border-white/10 shrink-0">
@@ -162,6 +203,7 @@ export function Sidebar() {
                   <Link
                     key={item.href}
                     to={item.href}
+                    onClick={handleNavClick}
                     className={cn(
                       "group relative flex items-center gap-3 rounded-md text-sm font-medium transition-colors",
                       "h-9 px-3",
@@ -319,5 +361,6 @@ export function Sidebar() {
         </button>
       </div>
     </aside>
+    </>
   );
 }

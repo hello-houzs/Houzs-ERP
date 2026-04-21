@@ -43,7 +43,7 @@ const CAT_COLOR: Record<SOCategory, string> = {
 function LineItemsSubTable({ lines }: { lines: SODetailLine[] }) {
   return (
     <div className="px-4 pb-3 pt-1">
-      <div className="rounded-md border border-[#DDE5E5] overflow-hidden">
+      <div className="rounded-md border border-[#DDE5E5] overflow-hidden overflow-x-auto">
         <table className="w-full text-[11px]">
           <thead>
             <tr className="bg-[#F4F7F7] text-[9px] font-semibold uppercase tracking-wider text-gray-500">

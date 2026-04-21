@@ -549,7 +549,7 @@ function NewCaseDialog({ onClose }: { onClose: () => void }) {
 
           {/* ── CASE INFO ── */}
           <SectionHeader title="Case Information" />
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div>
               <div className={FIELD_LABEL}>S/O (Sales Order)</div>
               <input value={salesOrderNo} onChange={(e) => setSalesOrderNo(e.target.value)} placeholder="SO-XXXXXX" className={FIELD_INPUT} />

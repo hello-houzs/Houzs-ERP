@@ -490,7 +490,7 @@ export function EventChat({
                 </div>
               )}
               <div
-                className={`max-w-[75%] px-3 py-1.5 rounded-lg text-[12px] leading-relaxed ${
+                className={`max-w-[85%] md:max-w-[75%] px-3 py-1.5 rounded-lg text-[12px] leading-relaxed ${
                   isMe
                     ? "bg-[#0F766E]/10 text-[#0A1F2E] rounded-tr-sm"
                     : "bg-white border border-[#DDE5E5] text-[#0A1F2E] rounded-tl-sm"
@@ -523,7 +523,7 @@ export function EventChat({
               <XIcon className="h-3 w-3" />
             </button>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             <div>
               <label className="text-[9px] font-semibold uppercase tracking-wider text-gray-500">Order No.</label>
               <input
