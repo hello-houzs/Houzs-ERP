@@ -45,9 +45,7 @@ const SD_STATUSES: NonNullable<HouzsEvent["setupDismantleStatus"]>[] = [
 ];
 
 const WORKFLOW_FIELDS: { key: keyof HouzsEvent; label: string; stage: string }[] = [
-  { key: "agreementApproval",       label: "Agreement / Quotation Approval", stage: "Contract" },
-  { key: "floorplan",               label: "Floorplan",                      stage: "Design" },
-  { key: "sendFloorplanToDesigner", label: "Send Floorplan to Designer",     stage: "Design" },
+  { key: "agreementApproval",       label: "Agreement / Quotation",          stage: "Contract" },
   { key: "threeDCheckedByMgt",      label: "3D Checked by MGT",              stage: "3D Approval" },
   { key: "threeDApprovedByPeter",   label: "3D Approved by Peter",           stage: "3D Approval" },
   { key: "threeDUploadedInNotion",  label: "3D Uploaded in Notion",          stage: "3D Approval" },
