@@ -74,21 +74,35 @@ const SEC_DEPO_OPTIONS: { value: WorkflowFlag; label: string; color: string }[] 
 function isDone(v: WorkflowFlag) { return v === "DONE" || v === "TRUE"; }
 function isSkipped(v: WorkflowFlag) { return v === "NO NEED"; }
 
-// Auto-derive Preparation Condition from doc upload state + workflow flags.
-// Walks the sequence; returns the first pending step, or DONE PREPARED.
+// Per-step completion check — each step evaluated INDEPENDENTLY so a later
+// step being done doesn't skip earlier pending ones (stays amber/red).
+function isStepDone(
+  step: PreparationCondition,
+  event: HouzsEvent,
+  hasDoc: (type: BoothDocType) => boolean,
+): boolean {
+  switch (step) {
+    case "PENDING FLOORPLAN":               return isDone(event.floorplan as WorkflowFlag);
+    case "PENDING 3D":                      return isDone(event.threeDCheckedByMgt as WorkflowFlag) || hasDoc("THREE_D_DESIGN");
+    case "PENDING STOCKS REQUEST LISTING":  return hasDoc("STOCKS_REQUEST_LIST");
+    case "PENDING STOCKS TRANSFER LISTING": return hasDoc("STOCK_TRANSFER");
+    case "PENDING DRIVER INFORMATION":      return (event.setupDrivers?.length ?? 0) > 0 || !!event.setupDriver || !!event.setupDatetime;
+    case "PENDING SETUP IMAGE":             return hasDoc("SETUP_IMAGE_DRIVER") && hasDoc("SETUP_IMAGE_SALES");
+    case "PENDING FILLED FLOORPLAN":        return event.eventType !== "EXHIBITION" || hasDoc("EXPO_MAP_FILLED");
+    case "PENDING EVENT COMPLETE IMAGE":    return hasDoc("EVENT_COMPLETE_IMAGE");
+    case "DONE PREPARED":                   return false; // final bucket — only "done" when all prior steps done
+  }
+}
+
+// Auto-derive current (first-pending) Preparation Condition.
 function derivePreparationCondition(
   event: HouzsEvent,
   hasDoc: (type: BoothDocType) => boolean,
 ): PreparationCondition {
-  if (!isDone(event.floorplan as WorkflowFlag))                       return "PENDING FLOORPLAN";
-  if (!isDone(event.threeDCheckedByMgt as WorkflowFlag) && !hasDoc("THREE_D_DESIGN"))  return "PENDING 3D";
-  if (!hasDoc("STOCKS_REQUEST_LIST"))                                 return "PENDING STOCKS REQUEST LISTING";
-  if (!hasDoc("STOCK_TRANSFER"))                                      return "PENDING STOCKS TRANSFER LISTING";
-  const hasDriverInfo = (event.setupDrivers?.length ?? 0) > 0 || !!event.setupDriver || !!event.setupDatetime;
-  if (!hasDriverInfo)                                                 return "PENDING DRIVER INFORMATION";
-  if (!hasDoc("SETUP_IMAGE_DRIVER") || !hasDoc("SETUP_IMAGE_SALES"))  return "PENDING SETUP IMAGE";
-  if (event.eventType === "EXHIBITION" && !hasDoc("EXPO_MAP_FILLED")) return "PENDING FILLED FLOORPLAN";
-  if (!hasDoc("EVENT_COMPLETE_IMAGE"))                                return "PENDING EVENT COMPLETE IMAGE";
+  for (const step of PREPARATION_CONDITIONS) {
+    if (step === "DONE PREPARED") continue;
+    if (!isStepDone(step, event, hasDoc)) return step;
+  }
   return "DONE PREPARED";
 }
 
@@ -474,12 +488,6 @@ export default function EventDetailPage() {
                     event.eventType === "EXHIBITION" ? "bg-[#0A1F2E] text-white" : "bg-gray-100 text-gray-700"}`}>
                     {event.eventType}
                   </span>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                    event.progress === "COMPLETED"   ? "bg-blue-100 text-blue-700" :
-                    event.progress === "IN PROGRESS" ? "bg-amber-100 text-amber-700" :
-                                                        "bg-gray-100 text-gray-600"}`}>
-                    {event.progress}
-                  </span>
                 </>
               )}
               {!isEditing ? (
@@ -563,16 +571,6 @@ export default function EventDetailPage() {
                   className={FIELD_SELECT}
                 >
                   {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div>
-                <div className={FIELD_LABEL}>Progress</div>
-                <select
-                  value={draft.progress ?? ""}
-                  onChange={(e) => patchDraft("progress", e.target.value as EventProgress)}
-                  className={FIELD_SELECT}
-                >
-                  {PROGRESS_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
               </div>
               <div>
@@ -882,6 +880,20 @@ export default function EventDetailPage() {
         </div>
       </div>
 
+      {/* ─────── BOOTH LAYOUT & SETUP (moved above Setup & Dismantle) ──── */}
+      <BoothDocSection
+        title="BOOTH LAYOUT & SETUP"
+        subtitle="Stocks listing, 3D / 2D design layouts"
+        docTypes={BOOTH_LAYOUT_DOCS}
+        boothDocs={boothDocs}
+        eventA42={a42}
+        currentUser={currentUser}
+        hasFullAccess={hasFullAccess}
+        onOpenDoc={setOpenBoothDoc}
+        onOpenAttach={setOpenAttach}
+        allPhotos={allPhotos}
+      />
+
       {/* Setup & Dismantle logistics */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
         <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7] flex items-center justify-between">
@@ -1085,20 +1097,6 @@ export default function EventDetailPage() {
       </div>
 
       {/* Assigned Sales moved to right sidebar — no separate card here */}
-
-      {/* ─────── BOOTH LAYOUT & SETUP ─────────────────────────── */}
-      <BoothDocSection
-        title="BOOTH LAYOUT & SETUP"
-        subtitle="Stock transfer records and 2D display layout (Floorplan / 3D already in PM Workflow)"
-        docTypes={BOOTH_LAYOUT_DOCS}
-        boothDocs={boothDocs}
-        eventA42={a42}
-        currentUser={currentUser}
-        hasFullAccess={hasFullAccess}
-        onOpenDoc={setOpenBoothDoc}
-        onOpenAttach={setOpenAttach}
-        allPhotos={allPhotos}
-      />
 
       {/* ─────── SETUP & DISMANTLE DOCUMENTS ─────────────────── */}
       <BoothDocSection

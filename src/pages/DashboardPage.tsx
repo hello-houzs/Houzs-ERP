@@ -104,14 +104,19 @@ const ALL_COLUMNS: Col[] = [
     ),
   },
   {
-    key: "progress", label: "Progress", kind: "base", sortable: true,
-    sortValue: (e) => e.progress,
-    render: (e) => (
-      <span className={`px-1.5 py-[1px] rounded text-[10px] font-semibold ${
-        e.progress === "COMPLETED" ? "bg-blue-100 text-blue-700" :
-        e.progress === "IN PROGRESS" ? "bg-amber-100 text-amber-700" :
-        "bg-gray-100 text-gray-600"}`}>{e.progress}</span>
-    ),
+    key: "preparationCondition", label: "Stage", kind: "base", sortable: true,
+    sortValue: (e) => e.preparationCondition ?? "",
+    render: (e) => {
+      const stage = e.preparationCondition;
+      if (!stage) return <span className="text-gray-300 text-[10px]">—</span>;
+      const short = stage === "DONE PREPARED" ? "Done" : stage.replace(/^PENDING /, "");
+      return (
+        <span className={`px-1.5 py-[1px] rounded text-[10px] font-semibold whitespace-nowrap ${
+          stage === "DONE PREPARED" ? "bg-[#0F766E]/10 text-[#0F766E]" :
+          "bg-amber-100 text-amber-700"
+        }`}>{short}</span>
+      );
+    },
   },
   { key: "startDate", label: "Start", kind: "base", sortable: true, sortValue: (e) => e.startDate,
     render: (e) => (
@@ -154,19 +159,13 @@ const ALL_COLUMNS: Col[] = [
     sortValue: (e) => e.year, render: (e) => e.year },
   { key: "month", label: "Month", kind: "base", sortable: true, defaultHidden: true,
     sortValue: (e) => e.month, render: (e) => e.month },
-  // Workflow columns
-  { key: "agreementApproval", label: "AGR", tooltip: "Agreement / Quotation Approval", kind: "workflow", align: "center",
+  // Workflow columns (removed Floorplan / Send Floorplan to Designer / 3D Uploaded — per spec)
+  { key: "agreementApproval", label: "AGR", tooltip: "Agreement / Quotation", kind: "workflow", align: "center",
     render: (e) => <WorkflowCell v={e.agreementApproval} /> },
-  { key: "floorplan", label: "FP", tooltip: "Floorplan", kind: "workflow", align: "center",
-    render: (e) => <WorkflowCell v={e.floorplan} /> },
-  { key: "sendFloorplanToDesigner", label: "FP\u2192D", tooltip: "Send Floorplan to Designer", kind: "workflow", align: "center",
-    render: (e) => <WorkflowCell v={e.sendFloorplanToDesigner} /> },
   { key: "threeDCheckedByMgt", label: "3D-M", tooltip: "3D Checked by MGT", kind: "workflow", align: "center",
     render: (e) => <WorkflowCell v={e.threeDCheckedByMgt} /> },
   { key: "threeDApprovedByPeter", label: "3D-P", tooltip: "3D Approved by Peter", kind: "workflow", align: "center",
     render: (e) => <WorkflowCell v={e.threeDApprovedByPeter} /> },
-  { key: "threeDUploadedInNotion", label: "3D-N", tooltip: "3D Uploaded in Notion", kind: "workflow", align: "center",
-    render: (e) => <WorkflowCell v={e.threeDUploadedInNotion} /> },
   { key: "weekendActivityTheme", label: "WKND", tooltip: "Weekend Activity (Theme)", kind: "workflow", align: "center",
     render: (e) => <WorkflowCell v={e.weekendActivityTheme} /> },
   { key: "licenseMajlis", label: "LIC", tooltip: "License (from Majlis)", kind: "workflow", align: "center",
@@ -175,7 +174,7 @@ const ALL_COLUMNS: Col[] = [
     render: (e) => <WorkflowCell v={e.workLoadingBayPermit} /> },
   { key: "decoCoffeeTable", label: "DECO", tooltip: "Deco / Coffee Table", kind: "workflow", align: "center",
     render: (e) => <WorkflowCell v={e.decoCoffeeTable} /> },
-  { key: "secDepoRefund", label: "DEPO", tooltip: "Sec Depo Refund", kind: "workflow", align: "center",
+  { key: "secDepoRefund", label: "DEPO", tooltip: "Security Deposit", kind: "workflow", align: "center",
     render: (e) => <WorkflowCell v={e.secDepoRefund} /> },
 ];
 
@@ -186,16 +185,16 @@ const STORAGE_KEY = "houzs-pm-columns-v1";
 // ---------- Needs filter ----------
 type NeedsFilter = "ALL" | "NEEDS_3D" | "NEEDS_FLOORPLAN" | "NEEDS_PERMIT" | "NEEDS_AGREEMENT" | "ANY_PENDING";
 const WORKFLOW_KEYS: (keyof HouzsEvent)[] = [
-  "agreementApproval", "floorplan", "sendFloorplanToDesigner", "threeDCheckedByMgt",
-  "threeDApprovedByPeter", "threeDUploadedInNotion", "weekendActivityTheme", "licenseMajlis",
-  "workLoadingBayPermit", "decoCoffeeTable", "secDepoRefund",
+  "agreementApproval", "threeDCheckedByMgt", "threeDApprovedByPeter",
+  "weekendActivityTheme", "licenseMajlis", "workLoadingBayPermit",
+  "decoCoffeeTable", "secDepoRefund",
 ];
 function matchesNeeds(e: HouzsEvent, f: NeedsFilter): boolean {
   switch (f) {
     case "ALL": return true;
     case "NEEDS_3D":
-      return isPending(e.threeDCheckedByMgt) || isPending(e.threeDApprovedByPeter) || isPending(e.threeDUploadedInNotion);
-    case "NEEDS_FLOORPLAN": return isPending(e.floorplan) || isPending(e.sendFloorplanToDesigner);
+      return isPending(e.threeDCheckedByMgt) || isPending(e.threeDApprovedByPeter);
+    case "NEEDS_FLOORPLAN": return false; // floorplan workflow removed
     case "NEEDS_PERMIT": return isPending(e.workLoadingBayPermit) || isPending(e.licenseMajlis);
     case "NEEDS_AGREEMENT": return isPending(e.agreementApproval);
     case "ANY_PENDING": return WORKFLOW_KEYS.some((k) => isPending(e[k] as WorkflowFlag));
