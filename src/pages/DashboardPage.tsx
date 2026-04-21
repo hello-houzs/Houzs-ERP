@@ -185,25 +185,25 @@ const ALL_COLUMNS: Col[] = [
   { key: "secDepoRefund", label: "DEPO", tooltip: "Security Deposit", kind: "workflow", align: "center",
     render: (e) => <WorkflowCell v={e.secDepoRefund} /> },
   // ── Booth docs (completion at a glance) ─────────────────────────
-  { key: "doc_STOCKS_REQUEST_LIST", label: "SREQ", tooltip: "Stocks Request Listing", kind: "doc", align: "center",
+  { key: "doc_STOCKS_REQUEST_LIST", label: "SREQ", tooltip: "Stocks Request Listing", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("STOCKS_REQUEST_LIST")} /> },
-  { key: "doc_STOCK_TRANSFER", label: "STRF", tooltip: "Stock Transfer Record", kind: "doc", align: "center",
+  { key: "doc_STOCK_TRANSFER", label: "STRF", tooltip: "Stock Transfer Record", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("STOCK_TRANSFER")} /> },
-  { key: "doc_THREE_D_DESIGN", label: "3D", tooltip: "3D Design file", kind: "doc", align: "center",
+  { key: "doc_THREE_D_DESIGN", label: "3D", tooltip: "3D Design file", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("THREE_D_DESIGN")} /> },
-  { key: "doc_TWO_D_WITH_DISPLAY", label: "2D", tooltip: "2D Design with Display", kind: "doc", align: "center",
+  { key: "doc_TWO_D_WITH_DISPLAY", label: "2D", tooltip: "2D Design with Display", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("TWO_D_WITH_DISPLAY")} /> },
-  { key: "doc_SETUP_DRIVER", label: "SID", tooltip: "Setup Image — Driver", kind: "doc", align: "center",
+  { key: "doc_SETUP_DRIVER", label: "SID", tooltip: "Setup Image — Driver", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("SETUP_IMAGE_DRIVER")} /> },
-  { key: "doc_SETUP_SALES", label: "SIS", tooltip: "Setup Image — Sales", kind: "doc", align: "center",
+  { key: "doc_SETUP_SALES", label: "SIS", tooltip: "Setup Image — Sales", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("SETUP_IMAGE_SALES")} /> },
-  { key: "doc_DEFECT", label: "DEF", tooltip: "Defect List", kind: "doc", align: "center",
+  { key: "doc_DEFECT", label: "DEF", tooltip: "Defect List", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("DEFECT_LIST")} /> },
-  { key: "doc_EXCHANGE", label: "EXC", tooltip: "Exchange List", kind: "doc", align: "center",
+  { key: "doc_EXCHANGE", label: "EXC", tooltip: "Exchange List", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("EXCHANGE_LIST")} /> },
-  { key: "doc_EVT_COMPLETE", label: "EVT", tooltip: "Event Complete Image", kind: "doc", align: "center",
+  { key: "doc_EVT_COMPLETE", label: "EVT", tooltip: "Event Complete Image", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("EVENT_COMPLETE_IMAGE")} /> },
-  { key: "doc_DISMANTLE", label: "DIS", tooltip: "Dismantle Image", kind: "doc", align: "center",
+  { key: "doc_DISMANTLE", label: "DIS", tooltip: "Dismantle Image", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("DISMANTLE_IMAGE_DRIVER")} /> },
   { key: "doc_EXPO_BLANK", label: "EMB", tooltip: "Expo Map (Blank)", kind: "doc", align: "center", defaultHidden: true,
     render: (e, ctx) => <DocCell has={!!ctx.docsByEvent.get(e.a42)?.has("EXPO_MAP")} /> },
@@ -427,17 +427,15 @@ export default function DashboardPage() {
         </Link>
       </div>
 
-      {/* Filter by Preparation Stage */}
-      <div className="rounded-lg border border-[#DDE5E5] bg-white p-2.5 flex flex-wrap gap-2 items-center">
-        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 px-1">
-          <AlertCircle className="h-3.5 w-3.5" /> FILTER BY STAGE
-        </div>
+      {/* Stage filter chip row — compact, one line */}
+      <div className="rounded-lg border border-[#DDE5E5] bg-white p-2 flex items-center gap-2 overflow-x-auto scrollbar-thin">
+        <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider shrink-0 px-1">Stage</span>
         {(() => {
           const shortLabel = (s: PreparationCondition): string =>
             s === "DONE PREPARED" ? "Done" : s.replace(/^PENDING /, "");
           const chips: { key: NeedsFilter; label: string; count: number | null }[] = [
-            { key: "ALL", label: "Show all", count: null },
-            { key: "ANY", label: "Any pending", count: stageCounters.ANY },
+            { key: "ALL", label: "All", count: null },
+            { key: "ANY", label: "Pending", count: stageCounters.ANY },
             ...PREPARATION_CONDITIONS.filter((s) => s !== "DONE PREPARED").map((s) => ({
               key: s as NeedsFilter,
               label: shortLabel(s),
@@ -447,16 +445,16 @@ export default function DashboardPage() {
           ];
           return chips.map(({ key, label, count }) => (
             <button key={key} onClick={() => setNeeds(key)}
-              className={`${pillBase} inline-flex items-center gap-1.5 ${
+              className={`h-7 px-2.5 rounded-md text-[10px] font-semibold border transition whitespace-nowrap shrink-0 inline-flex items-center gap-1 ${
                 needs === key
                   ? key === "DONE PREPARED"
                     ? "bg-[#0F766E] text-white border-[#0F766E]"
                     : "bg-amber-500 text-white border-amber-500"
-                  : pillOff
+                  : "bg-white text-gray-600 border-[#DDE5E5] hover:border-[#0F766E]"
               }`}>
               {label}
-              {count !== null && (
-                <span className={`h-4 min-w-[18px] px-1 rounded-full text-[9px] flex items-center justify-center ${
+              {count !== null && count > 0 && (
+                <span className={`h-4 min-w-[16px] px-1 rounded-full text-[9px] flex items-center justify-center ${
                   needs === key ? "bg-white/25 text-white" : "bg-gray-100 text-gray-500"
                 }`}>{count}</span>
               )}
