@@ -188,8 +188,9 @@ export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; o
       <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-3 scrollbar-thin">
         {navigationGroups
           .filter((group) => {
+            // QMS and DEPARTMENTS are temporarily hidden for everyone (including admin).
+            if (group.label === "QMS" || group.label === "DEPARTMENTS") return false;
             // Non-admin users (non Sales Director) only see PROJECT MANAGEMENT.
-            // Admins see everything.
             if (userIsAdmin) return true;
             return group.label === "PROJECT MANAGEMENT";
           })
