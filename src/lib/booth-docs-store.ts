@@ -12,6 +12,7 @@ const KEY = "houzs-booth-docs-v1";
 
 export type BoothDocType =
   | "STOCK_TRANSFER"
+  | "STOCKS_REQUEST_LIST"
   | "DISPLAY_FLOORPLAN"
   | "FLOORPLAN_INTERNAL"
   | "THREE_D_DESIGN"
@@ -29,10 +30,11 @@ export type BoothDocType =
   | "BD_RECORD";
 
 // Position / responsibility for each doc type
-export type DocPosition = "Driver" | "Sales" | "BD" | "Any";
+export type DocPosition = "Driver" | "Sales" | "PC";
 
 export const BOOTH_DOC_LABELS: Record<BoothDocType, string> = {
   STOCK_TRANSFER:       "Stock Transfer Record",
+  STOCKS_REQUEST_LIST:  "Stocks Request Listing",
   DISPLAY_FLOORPLAN:    "Display Floorplan",
   FLOORPLAN_INTERNAL:   "Floorplan (Internal)",
   THREE_D_DESIGN:       "3D Design",
@@ -61,21 +63,22 @@ export const BOOTH_DOC_HINTS: Partial<Record<BoothDocType, string>> = {
 
 export const BOOTH_DOC_POSITION: Record<BoothDocType, DocPosition> = {
   STOCK_TRANSFER:       "Sales",
-  DISPLAY_FLOORPLAN:    "Sales",
-  FLOORPLAN_INTERNAL:   "Sales",
-  THREE_D_DESIGN:       "Sales",
-  TWO_D_WITH_DISPLAY:   "Sales",
+  STOCKS_REQUEST_LIST:  "Sales",
+  DISPLAY_FLOORPLAN:    "PC",
+  FLOORPLAN_INTERNAL:   "PC",
+  THREE_D_DESIGN:       "PC",
+  TWO_D_WITH_DISPLAY:   "PC",
   SETUP_IMAGE_DRIVER:   "Driver",
   SETUP_IMAGE_SALES:    "Sales",
   DEFECT_LIST:          "Sales",
   EXCHANGE_LIST:        "Sales",
   EVENT_COMPLETE_IMAGE: "Sales",
   DRIVER_RECORD:        "Driver",
-  EXPO_MAP:             "Sales",
+  EXPO_MAP:             "PC",
   EXPO_MAP_FILLED:      "Sales",
-  PERMIT_FILE:          "BD",
-  AGREEMENT:            "BD",
-  BD_RECORD:            "BD",
+  PERMIT_FILE:          "PC",
+  AGREEMENT:            "PC",
+  BD_RECORD:            "PC",
 };
 
 // Grouped for separate UI sections.
@@ -85,7 +88,9 @@ export const BOOTH_DOC_POSITION: Record<BoothDocType, DocPosition> = {
 export const PREPARATION_DOCS: BoothDocType[] = [];
 
 export const BOOTH_LAYOUT_DOCS: BoothDocType[] = [
+  "STOCKS_REQUEST_LIST",
   "STOCK_TRANSFER",
+  "THREE_D_DESIGN",
   "TWO_D_WITH_DISPLAY",
 ];
 
@@ -99,12 +104,47 @@ export const SETUP_DISMANTLE_DOCS: BoothDocType[] = [
 
 export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED";
 
+// A single structured text-with-photo entry within a doc (for Defect List,
+// Exchange List — where each row needs a description + optional photos)
+export interface BoothDocItem {
+  id: string;
+  text: string;                 // description (e.g. "Leg scratched", "Wrong colour")
+  photoKey?: string;            // photos-store workflowKey scoped to this item
+  createdAt: string;
+  createdById: string;
+  createdByName: string;
+}
+
+// Doc content mode — determines what the modal renders
+export type DocContentMode = "IMAGE_ONLY" | "IMAGE_TEXT";
+
+export const BOOTH_DOC_CONTENT: Record<BoothDocType, DocContentMode> = {
+  STOCK_TRANSFER:       "IMAGE_TEXT",
+  STOCKS_REQUEST_LIST:  "IMAGE_TEXT",
+  DISPLAY_FLOORPLAN:    "IMAGE_ONLY",
+  FLOORPLAN_INTERNAL:   "IMAGE_ONLY",
+  THREE_D_DESIGN:       "IMAGE_ONLY",
+  TWO_D_WITH_DISPLAY:   "IMAGE_ONLY",
+  SETUP_IMAGE_DRIVER:   "IMAGE_ONLY",
+  SETUP_IMAGE_SALES:    "IMAGE_ONLY",
+  DEFECT_LIST:          "IMAGE_TEXT",
+  EXCHANGE_LIST:        "IMAGE_TEXT",
+  EVENT_COMPLETE_IMAGE: "IMAGE_ONLY",
+  DRIVER_RECORD:        "IMAGE_ONLY",
+  EXPO_MAP:             "IMAGE_ONLY",
+  EXPO_MAP_FILLED:      "IMAGE_ONLY",
+  PERMIT_FILE:          "IMAGE_ONLY",
+  AGREEMENT:            "IMAGE_ONLY",
+  BD_RECORD:            "IMAGE_TEXT",
+};
+
 export interface BoothDoc {
   id: string;
   eventA42: string;
   type: BoothDocType;
   remarks?: string;         // free text (e.g. booth no "B34")
   fileIds: string[];        // refs to photos-store entries
+  items?: BoothDocItem[];   // structured rows (for IMAGE_TEXT docs)
   uploadedById: string;
   uploadedByName: string;
   uploadedAt: string;       // ISO timestamp
