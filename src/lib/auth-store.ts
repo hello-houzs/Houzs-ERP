@@ -3,6 +3,7 @@
 
 import { useSyncExternalStore } from "react";
 import { type SalesMember } from "./sales-store";
+import { BRANDS, type Brand } from "./mock-data";
 
 const KEY = "houzs-current-user-id";
 const DEFAULT_ID = "dir-kingsley"; // out-of-box default
@@ -193,6 +194,22 @@ export function canViewEvent(
 
 export function canViewFinance(user: SalesMember | null | undefined): boolean {
   return isAdmin(user);
+}
+
+/**
+ * Brands this user has access to.
+ * Sales Directors automatically have access to ALL brands regardless of
+ * what's set on their `assignedBrands` field.
+ */
+export function getAccessibleBrands(user: SalesMember | null | undefined): Brand[] {
+  if (!user) return [];
+  if (isAdmin(user)) return [...BRANDS];
+  return user.assignedBrands ?? [];
+}
+
+export function canAccessBrand(user: SalesMember | null | undefined, brand: Brand): boolean {
+  if (isAdmin(user)) return true;
+  return (user?.assignedBrands ?? []).includes(brand);
 }
 
 // ─── Composite hook ───────────────────────────────────────────────────────────

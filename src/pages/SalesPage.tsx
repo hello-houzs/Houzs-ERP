@@ -677,7 +677,7 @@ function TreeRow({ node, collapsed, onToggle, onEdit, isLast, parentGuides, onQu
         </div>
       </div>
 
-      <BrandDots brands={m.assignedBrands} />
+      <BrandDots brands={m.position === "Sales Director" ? BRANDS : m.assignedBrands} />
       <RoleBadge position={m.position} />
       <PositionBadge position={m.position} />
 
@@ -781,7 +781,7 @@ function OrgChartNode({ node, onEdit }: {
           </span>
         </div>
         <div className="flex items-center justify-center gap-1.5 mt-1">
-          <BrandDotsCompact brands={m.assignedBrands} />
+          <BrandDotsCompact brands={m.position === "Sales Director" ? BRANDS : m.assignedBrands} />
           {node.descendantCount > 0 && (
             <span className="text-[8px] font-semibold text-[#0F766E] bg-[#0F766E]/10 rounded px-1 py-px tabular-nums">
               {node.descendantCount}
