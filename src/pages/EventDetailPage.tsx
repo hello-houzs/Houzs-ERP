@@ -1645,10 +1645,15 @@ function ExpoMapSection({
   onOpenCompetitorForm: (e: CompetitorEntry | "new") => void;
   allPhotos: PhotoRecord[];
 }) {
-  const expoMapDoc = boothDocs.find((d) => d.type === "EXPO_MAP");
-  const expoMapFileCount = useMemo(() =>
-    allPhotos.filter((p) => p.workflowKey === `booth:${expoMapDoc?.id}`).length,
-    [allPhotos, expoMapDoc]
+  const blankDoc = boothDocs.find((d) => d.type === "EXPO_MAP");
+  const filledDoc = boothDocs.find((d) => d.type === "EXPO_MAP_FILLED");
+  const blankFileCount = useMemo(() =>
+    allPhotos.filter((p) => p.workflowKey === `booth:${blankDoc?.id}`).length,
+    [allPhotos, blankDoc]
+  );
+  const filledFileCount = useMemo(() =>
+    allPhotos.filter((p) => p.workflowKey === `booth:${filledDoc?.id}`).length,
+    [allPhotos, filledDoc]
   );
   const competitorPhotoCounts = useMemo(() => {
     const map: Record<string, number> = {};
@@ -1661,10 +1666,15 @@ function ExpoMapSection({
     return map;
   }, [allPhotos]);
 
-  function handleAddExpoMap() {
+  function handleAddExpoBlank() {
     if (!currentUser) return;
-    const doc = createBoothDoc(eventA42, "EXPO_MAP", currentUser.id, currentUser.name, "Base venue floorplan");
-    onOpenAttach({ key: `booth:${doc.id}`, label: "Expo Map (Base Floorplan)" });
+    const doc = createBoothDoc(eventA42, "EXPO_MAP", currentUser.id, currentUser.name, "Blank base floorplan downloaded from venue");
+    onOpenAttach({ key: `booth:${doc.id}`, label: "Expo Map — Blank" });
+  }
+  function handleAddExpoFilled() {
+    if (!currentUser) return;
+    const doc = createBoothDoc(eventA42, "EXPO_MAP_FILLED", currentUser.id, currentUser.name, "Floorplan marked with competitor booths");
+    onOpenAttach({ key: `booth:${doc.id}`, label: "Expo Map — Filled" });
   }
 
   return (
@@ -1682,35 +1692,71 @@ function ExpoMapSection({
       )}
 
       <div className="px-5 py-4 space-y-4">
-        {/* Base floorplan slot */}
-        <div>
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-2">Base Venue Floorplan</div>
-          {expoMapDoc ? (
-            <button
-              type="button"
-              onClick={() => onOpenAttach({ key: `booth:${expoMapDoc.id}`, label: "Expo Map (Base Floorplan)" })}
-              className="flex items-center gap-2 px-3 py-2 rounded-md border border-[#0F766E]/30 bg-[#0F766E]/5 hover:bg-[#0F766E]/10 transition"
-            >
-              <MapPin className="h-4 w-4 text-[#0F766E]" />
-              <span className="text-[12px] font-semibold text-[#0A1F2E]">Venue Floorplan</span>
-              <span className={`ml-2 text-[10px] px-2 py-0.5 rounded font-semibold ${
-                expoMapFileCount > 0 ? "bg-[#0F766E]/10 text-[#0F766E]" : "bg-gray-100 text-gray-500"
-              }`}>
-                {expoMapFileCount} file{expoMapFileCount === 1 ? "" : "s"}
-              </span>
-            </button>
-          ) : hasFullAccess ? (
-            <button
-              type="button"
-              onClick={handleAddExpoMap}
-              className="flex items-center gap-2 px-3 py-2 rounded-md border border-dashed border-[#DDE5E5] hover:border-[#0F766E] hover:text-[#0F766E] text-gray-400 transition"
-            >
-              <Plus className="h-4 w-4" />
-              <span className="text-[12px] font-semibold">Upload base floorplan</span>
-            </button>
-          ) : (
-            <div className="text-[11px] text-gray-300">— No floorplan uploaded —</div>
-          )}
+        {/* Floorplan — 2 columns: blank vs filled */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {/* Column 1: BLANK base floorplan (downloaded, unmarked) */}
+          <div className="rounded-md border border-[#DDE5E5] bg-[#FAFBFB] p-3">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-2">Blank Floorplan</div>
+            <div className="text-[9px] text-gray-400 mb-2">Download from venue · no markings yet</div>
+            {blankDoc ? (
+              <button
+                type="button"
+                onClick={() => onOpenAttach({ key: `booth:${blankDoc.id}`, label: "Expo Map — Blank" })}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-md border border-[#0F766E]/30 bg-white hover:bg-[#0F766E]/10 transition"
+              >
+                <MapPin className="h-4 w-4 text-[#0F766E]" />
+                <span className="text-[12px] font-semibold text-[#0A1F2E]">Blank Venue Map</span>
+                <span className={`ml-auto text-[10px] px-2 py-0.5 rounded font-semibold ${
+                  blankFileCount > 0 ? "bg-[#0F766E]/10 text-[#0F766E]" : "bg-gray-100 text-gray-500"
+                }`}>
+                  {blankFileCount} file{blankFileCount === 1 ? "" : "s"}
+                </span>
+              </button>
+            ) : hasFullAccess ? (
+              <button
+                type="button"
+                onClick={handleAddExpoBlank}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-md border border-dashed border-[#DDE5E5] hover:border-[#0F766E] hover:text-[#0F766E] text-gray-400 transition"
+              >
+                <Plus className="h-4 w-4" />
+                <span className="text-[12px] font-semibold">Upload blank floorplan</span>
+              </button>
+            ) : (
+              <div className="text-[11px] text-gray-300 text-center py-3">— Not uploaded —</div>
+            )}
+          </div>
+
+          {/* Column 2: FILLED floorplan (annotated with competitors) */}
+          <div className="rounded-md border border-[#DDE5E5] bg-[#FAFBFB] p-3">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-2">Filled Floorplan</div>
+            <div className="text-[9px] text-gray-400 mb-2">Annotated with competitor booths during the fair</div>
+            {filledDoc ? (
+              <button
+                type="button"
+                onClick={() => onOpenAttach({ key: `booth:${filledDoc.id}`, label: "Expo Map — Filled" })}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-md border border-amber-300 bg-white hover:bg-amber-50 transition"
+              >
+                <MapPin className="h-4 w-4 text-amber-600" />
+                <span className="text-[12px] font-semibold text-[#0A1F2E]">Filled Map</span>
+                <span className={`ml-auto text-[10px] px-2 py-0.5 rounded font-semibold ${
+                  filledFileCount > 0 ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-500"
+                }`}>
+                  {filledFileCount} file{filledFileCount === 1 ? "" : "s"}
+                </span>
+              </button>
+            ) : hasFullAccess ? (
+              <button
+                type="button"
+                onClick={handleAddExpoFilled}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-md border border-dashed border-[#DDE5E5] hover:border-amber-500 hover:text-amber-600 text-gray-400 transition"
+              >
+                <Plus className="h-4 w-4" />
+                <span className="text-[12px] font-semibold">Upload filled floorplan</span>
+              </button>
+            ) : (
+              <div className="text-[11px] text-gray-300 text-center py-3">— Not uploaded —</div>
+            )}
+          </div>
         </div>
 
         {/* Competitor list header */}

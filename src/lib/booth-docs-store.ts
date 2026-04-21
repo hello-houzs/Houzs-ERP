@@ -21,6 +21,7 @@ export type BoothDocType =
   | "DEFECT_ITEM"
   | "DRIVER_RECORD"
   | "EXPO_MAP"
+  | "EXPO_MAP_FILLED"
   | "PERMIT_FILE"
   | "AGREEMENT"
   | "BD_RECORD";
@@ -35,7 +36,8 @@ export const BOOTH_DOC_LABELS: Record<BoothDocType, string> = {
   SETUP_IMAGE_SALES:   "Setup Image — Sales",
   DEFECT_ITEM:         "Defect Item",
   DRIVER_RECORD:       "Driver Record",
-  EXPO_MAP:            "Expo Map (Base Floorplan)",
+  EXPO_MAP:            "Expo Map (Blank Base Floorplan)",
+  EXPO_MAP_FILLED:     "Expo Map (Filled with Competitors)",
   PERMIT_FILE:         "Permit File",
   AGREEMENT:           "Agreement / Quotation",
   BD_RECORD:           "BD Record",
