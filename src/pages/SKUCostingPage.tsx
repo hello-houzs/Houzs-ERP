@@ -300,23 +300,25 @@ export default function SKUCostingPage() {
   return (
     <div className="min-h-screen bg-[#FAFBFB] p-4 space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <Package className="h-5 w-5 text-[#0F766E]" />
-          <h1 className={PAGE_TITLE}>All SKU Costing</h1>
-          <span className={COUNT_BADGE}>{skus.length} SKUs</span>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Package className="h-5 w-5 text-[#0F766E] shrink-0" />
+          <h1 className={`${PAGE_TITLE} truncate`}>All SKU Costing</h1>
+          <span className={`${COUNT_BADGE} shrink-0`}>{skus.length} SKUs</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => { if (window.confirm("Reset all SKU costings to seed data?")) { resetSKUCostings(); } }}
-            className={BTN_SECONDARY}
+            className={`${BTN_SECONDARY} whitespace-nowrap`}
           >
             <RotateCcw className="h-3.5 w-3.5" />
-            Reset Data
+            <span className="hidden sm:inline">Reset Data</span>
+            <span className="sm:hidden">Reset</span>
           </button>
-          <button onClick={() => setShowForm(true)} className={BTN_PRIMARY}>
+          <button onClick={() => setShowForm(true)} className={`${BTN_PRIMARY} whitespace-nowrap`}>
             <Plus className="h-4 w-4" />
-            New SKU
+            <span className="hidden sm:inline">New SKU</span>
+            <span className="sm:hidden">New</span>
           </button>
         </div>
       </div>

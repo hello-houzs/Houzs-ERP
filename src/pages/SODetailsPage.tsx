@@ -268,23 +268,25 @@ export default function SODetailsPage() {
   return (
     <div className="min-h-screen bg-[#FAFBFB] p-4 space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <FileText className="h-5 w-5 text-[#0F766E]" />
-          <h1 className={PAGE_TITLE}>Sales Order Details</h1>
-          <span className={COUNT_BADGE}>{lines.length} items</span>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <FileText className="h-5 w-5 text-[#0F766E] shrink-0" />
+          <h1 className={`${PAGE_TITLE} truncate`}>Sales Order Details</h1>
+          <span className={`${COUNT_BADGE} shrink-0`}>{lines.length} items</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => { if (window.confirm("Reset all SO lines to seed data?")) { resetSOLines(); } }}
-            className={BTN_SECONDARY}
+            className={`${BTN_SECONDARY} whitespace-nowrap`}
           >
             <RotateCcw className="h-3.5 w-3.5" />
-            Reset Data
+            <span className="hidden sm:inline">Reset Data</span>
+            <span className="sm:hidden">Reset</span>
           </button>
-          <button onClick={() => setShowForm(true)} className={BTN_PRIMARY}>
+          <button onClick={() => setShowForm(true)} className={`${BTN_PRIMARY} whitespace-nowrap`}>
             <Plus className="h-4 w-4" />
-            New Line Item
+            <span className="hidden sm:inline">New Line Item</span>
+            <span className="sm:hidden">New</span>
           </button>
         </div>
       </div>
