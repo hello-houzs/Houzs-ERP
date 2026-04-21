@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import {
   calendarTitle, fmtRM, fmtPct, computeCosts,
-  BRANDS, STATES, PREPARATION_CONDITIONS,
+  BRANDS, STATES, PREPARATION_CONDITIONS, PREPARATION_DEADLINES, PREPARATION_SHORT_LABELS,
   type HouzsEvent, type WorkflowFlag, type Brand, type EventType,
   type EventStatus, type EventProgress, type MalaysianState,
   type EventDriver, type PreparationCondition,
@@ -720,42 +720,76 @@ export default function EventDetailPage() {
         )}
       </div>
 
-      {/* Preparation Condition (stage) — auto-derived from doc uploads + workflow */}
+      {/* Preparation Condition — horizontal stepper timeline, auto-detected */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
         <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
           <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Project Stage</h2>
-          <p className="text-[10px] text-gray-500 mt-0.5">Auto-detected from documents + workflow progress</p>
+          <p className="text-[10px] text-gray-500 mt-0.5">
+            Auto-detected · <span className="text-[#0F766E]">● Done</span> · <span className="text-amber-600">● Pending</span> · <span className="text-red-600">● Overdue</span>
+          </p>
         </div>
-        <div className="px-5 py-4">
-          <div className={FIELD_LABEL}>Preparation Condition</div>
-          <div className="mt-1 flex items-center gap-2">
-            {(() => {
-              const done = autoPrepCondition === "DONE PREPARED";
-              return (
-                <span className={`inline-flex items-center px-3 py-1 rounded-full text-[11px] font-semibold ${
-                  done ? "bg-[#0F766E]/10 text-[#0F766E]" : "bg-amber-100 text-amber-700"
-                }`}>
-                  {autoPrepCondition}
-                </span>
-              );
-            })()}
-            <span className="text-[9px] text-gray-400 italic">auto</span>
-          </div>
-          {/* Progress bar showing position in pipeline */}
-          <div className="mt-3 max-w-md">
-            {(() => {
-              const idx = PREPARATION_CONDITIONS.indexOf(autoPrepCondition ?? "PENDING FLOORPLAN");
-              const pct = ((idx + 1) / PREPARATION_CONDITIONS.length) * 100;
-              return (
-                <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+        <div className="px-5 py-5 overflow-x-auto">
+          {(() => {
+            const steps = PREPARATION_CONDITIONS.filter(
+              (s) => event.eventType === "EXHIBITION" || s !== "PENDING FILLED FLOORPLAN"
+            );
+            const currentIdx = steps.indexOf(autoPrepCondition ?? steps[0]);
+            const todayMs = new Date().setHours(0, 0, 0, 0);
+            const startMs = new Date(event.startDate).setHours(0, 0, 0, 0);
+
+            return (
+              <div className="relative flex items-start min-w-fit gap-0">
+                {/* Continuous progress line — behind the nodes */}
+                <div className="absolute top-3 left-3 right-3 h-0.5 bg-gray-200" style={{ zIndex: 0 }} />
+                {currentIdx > 0 && (
                   <div
-                    className={`h-full transition-all ${pct === 100 ? "bg-[#0F766E]" : "bg-amber-400"}`}
-                    style={{ width: `${pct}%` }}
+                    className="absolute top-3 h-0.5 bg-[#0F766E]"
+                    style={{
+                      zIndex: 0,
+                      left: `calc(${(100 / steps.length) * 0.5}% + 0.75rem)`,
+                      width: `calc(${(100 / steps.length) * currentIdx}%)`,
+                    }}
                   />
-                </div>
-              );
-            })()}
-          </div>
+                )}
+
+                {steps.map((step, i) => {
+                  const deadlineDays = PREPARATION_DEADLINES[step];
+                  const deadlineMs = startMs + deadlineDays * 86400000;
+                  const overdue = i === currentIdx && todayMs > deadlineMs && step !== "DONE PREPARED";
+                  const done = i < currentIdx || step === "DONE PREPARED" && autoPrepCondition === "DONE PREPARED";
+                  const current = i === currentIdx;
+                  const color =
+                    done     ? "bg-[#0F766E] text-white border-[#0F766E]" :
+                    overdue  ? "bg-red-500 text-white border-red-500" :
+                    current  ? "bg-amber-400 text-white border-amber-400" :
+                               "bg-white text-gray-400 border-gray-300";
+                  const textColor =
+                    done     ? "text-[#0F766E]" :
+                    overdue  ? "text-red-600" :
+                    current  ? "text-amber-700" :
+                               "text-gray-400";
+                  return (
+                    <div key={step} className="flex-1 min-w-[80px] relative flex flex-col items-center text-center" style={{ zIndex: 1 }}>
+                      <div className={`h-6 w-6 rounded-full border-2 flex items-center justify-center text-[10px] font-bold ${color}`}>
+                        {done ? <Check className="h-3 w-3" strokeWidth={3} /> : i + 1}
+                      </div>
+                      <div className={`mt-2 text-[9px] font-semibold uppercase tracking-wider ${textColor}`}>
+                        {PREPARATION_SHORT_LABELS[step]}
+                      </div>
+                      <div className="text-[8px] text-gray-400 mt-0.5 tabular-nums">
+                        {deadlineDays >= 0 ? `T+${deadlineDays}` : `T${deadlineDays}`}d
+                      </div>
+                      {overdue && (
+                        <div className="text-[8px] text-red-600 font-semibold mt-0.5">
+                          {Math.round((todayMs - deadlineMs) / 86400000)}d late
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
       </div>
 

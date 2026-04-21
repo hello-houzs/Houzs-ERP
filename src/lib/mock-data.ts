@@ -38,6 +38,33 @@ export const PREPARATION_CONDITIONS: PreparationCondition[] = [
   "PENDING EVENT COMPLETE IMAGE",
   "DONE PREPARED",
 ];
+
+// Default deadline (days from event START date; negative = before, positive = after)
+// for each preparation step. Used to flag overdue steps.
+export const PREPARATION_DEADLINES: Record<PreparationCondition, number> = {
+  "PENDING FLOORPLAN":               -21,
+  "PENDING 3D":                      -14,
+  "PENDING STOCKS REQUEST LISTING":  -10,
+  "PENDING STOCKS TRANSFER LISTING": -7,
+  "PENDING DRIVER INFORMATION":      -3,
+  "PENDING SETUP IMAGE":             0,
+  "PENDING FILLED FLOORPLAN":        3,  // exhibition only
+  "PENDING EVENT COMPLETE IMAGE":    7,  // after event end
+  "DONE PREPARED":                   7,
+};
+
+// Short display labels for timeline
+export const PREPARATION_SHORT_LABELS: Record<PreparationCondition, string> = {
+  "PENDING FLOORPLAN":               "Floorplan",
+  "PENDING 3D":                      "3D",
+  "PENDING STOCKS REQUEST LISTING":  "Stocks Request",
+  "PENDING STOCKS TRANSFER LISTING": "Stocks Transfer",
+  "PENDING DRIVER INFORMATION":      "Driver Info",
+  "PENDING SETUP IMAGE":             "Setup Image",
+  "PENDING FILLED FLOORPLAN":        "Filled Floorplan",
+  "PENDING EVENT COMPLETE IMAGE":    "Event Complete",
+  "DONE PREPARED":                   "Done",
+};
 export type MalaysianState =
   | "KL" | "JOHOR" | "PENANG" | "SABAH" | "SARAWAK" | "MELAKA" | "KEDAH"
   | "TERENGGANU" | "PUTRAJAYA" | "N.SEMBILAN" | "KUANTAN" | "IPOH" | "SEREMBAN";
