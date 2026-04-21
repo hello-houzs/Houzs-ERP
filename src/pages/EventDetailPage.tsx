@@ -90,6 +90,17 @@ export default function EventDetailPage() {
   const boothDocs = useBoothDocs(a42);
   const competitors = useCompetitors(a42);
   const [openBoothDoc, setOpenBoothDoc] = useState<BoothDoc | null>(null);
+  const [attendanceEdit, setAttendanceEdit] = useState(false);
+  const [attendanceSearch, setAttendanceSearch] = useState("");
+
+  function toggleAttendance(memberId: string) {
+    if (!event) return;
+    const current = event.assignedSales ?? [];
+    const next = current.includes(memberId)
+      ? current.filter((x) => x !== memberId)
+      : [...current, memberId];
+    updateEvent(a42, { assignedSales: next });
+  }
   const [openCompetitorForm, setOpenCompetitorForm] = useState<CompetitorEntry | "new" | null>(null);
   const [approvalNotesDraft, setApprovalNotesDraft] = useState("");
 
@@ -965,56 +976,7 @@ export default function EventDetailPage() {
         )}
       </div>
 
-      {/* Assigned Sales */}
-      <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
-          <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Assigned Sales</h2>
-          <p className="text-[10px] text-gray-500 mt-0.5">Sales members working this fair</p>
-        </div>
-        {!isEditing ? (
-          <div className="px-5 py-4">
-            <div className="flex flex-wrap gap-1.5">
-              {(event.assignedSales ?? []).length > 0
-                ? (event.assignedSales ?? []).map(id => {
-                    const member = salesMembers.find(m => m.id === id);
-                    return member ? (
-                      <span key={id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#0F766E]/10 text-[#0F766E] text-[10px] font-semibold">
-                        <User className="h-2.5 w-2.5" />{member.name}
-                      </span>
-                    ) : null;
-                  })
-                : <span className="text-[11px] text-gray-300">— No sales assigned —</span>
-              }
-            </div>
-          </div>
-        ) : (
-          <div className="px-5 py-4">
-            <div className="rounded-md border border-[#DDE5E5] overflow-hidden">
-              <div className="px-3 py-1.5 border-b border-[#F0F3F3] bg-[#FAFBFB]">
-                <input type="text" value={salesSearch} onChange={(e) => setSalesSearch(e.target.value)}
-                  placeholder="Search name…" className="w-full h-6 text-[11px] bg-transparent outline-none placeholder:text-gray-400" />
-              </div>
-              <div className="max-h-[200px] overflow-y-auto divide-y divide-[#F0F3F3]">
-                {activeSalesMembers
-                  .filter(m => !salesSearch.trim() || m.name.toUpperCase().includes(salesSearch.trim().toUpperCase()))
-                  .map(m => {
-                    const checked = (draft.assignedSales ?? []).includes(m.id);
-                    return (
-                      <label key={m.id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-[#FAFBFB] cursor-pointer">
-                        <input type="checkbox" checked={checked} onChange={() => toggleAssignedSales(m.id)} className="h-3.5 w-3.5 rounded border-gray-300 text-[#0F766E] focus:ring-[#0F766E]" />
-                        <span className="text-[11px] font-semibold text-[#0A1F2E]">{m.name}</span>
-                        <span className="text-[9px] text-gray-400 ml-auto">{m.position}</span>
-                      </label>
-                    );
-                  })}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Preparation documents (Agreement, Permit) are tracked in PM Workflow above
-          — file attachments via the paperclip icons there. No separate section here. */}
+      {/* Assigned Sales moved to right sidebar — no separate card here */}
 
       {/* ─────── BOOTH LAYOUT & SETUP ─────────────────────────── */}
       <BoothDocSection
@@ -1257,21 +1219,64 @@ export default function EventDetailPage() {
               )}
             </div>
             <div>
-              <div className={FIELD_LABEL}>Sales Attendance</div>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {(event.assignedSales ?? []).length === 0 ? (
-                  <span className="text-[11px] text-gray-300">— No sales assigned —</span>
-                ) : (
-                  (event.assignedSales ?? []).map((id) => {
-                    const m = salesMembers.find((x) => x.id === id);
-                    return m ? (
-                      <span key={id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#0F766E]/10 text-[#0F766E] text-[10px] font-semibold">
-                        <User className="h-2.5 w-2.5" />{m.name}
-                      </span>
-                    ) : null;
-                  })
+              <div className="flex items-center justify-between">
+                <div className={FIELD_LABEL}>Sales Attendance</div>
+                {userIsAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setAttendanceEdit((v) => !v)}
+                    className="text-[9px] font-semibold text-gray-400 hover:text-[#0F766E] uppercase tracking-wider"
+                  >
+                    {attendanceEdit ? "Done" : "Edit"}
+                  </button>
                 )}
               </div>
+              {!attendanceEdit ? (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {(event.assignedSales ?? []).length === 0 ? (
+                    <span className="text-[11px] text-gray-300">— No sales assigned —</span>
+                  ) : (
+                    (event.assignedSales ?? []).map((id) => {
+                      const m = salesMembers.find((x) => x.id === id);
+                      return m ? (
+                        <span key={id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#0F766E]/10 text-[#0F766E] text-[10px] font-semibold">
+                          <User className="h-2.5 w-2.5" />{m.name}
+                        </span>
+                      ) : null;
+                    })
+                  )}
+                </div>
+              ) : (
+                <div className="mt-1 rounded-md border border-[#DDE5E5] overflow-hidden">
+                  <div className="px-2 py-1 border-b border-[#F0F3F3] bg-[#FAFBFB]">
+                    <input
+                      type="text"
+                      value={attendanceSearch}
+                      onChange={(e) => setAttendanceSearch(e.target.value)}
+                      placeholder="Search…"
+                      className="w-full h-5 text-[10px] bg-transparent outline-none placeholder:text-gray-400"
+                    />
+                  </div>
+                  <div className="max-h-[260px] overflow-y-auto divide-y divide-[#F0F3F3]">
+                    {activeSalesMembers
+                      .filter((m) => !attendanceSearch.trim() || m.name.toUpperCase().includes(attendanceSearch.trim().toUpperCase()))
+                      .map((m) => {
+                        const checked = (event.assignedSales ?? []).includes(m.id);
+                        return (
+                          <label key={m.id} className="flex items-center gap-1.5 px-2 py-1 hover:bg-[#FAFBFB] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleAttendance(m.id)}
+                              className="h-3 w-3 rounded border-gray-300 text-[#0F766E] focus:ring-[#0F766E]"
+                            />
+                            <span className="text-[10px] font-semibold text-[#0A1F2E]">{m.name}</span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
