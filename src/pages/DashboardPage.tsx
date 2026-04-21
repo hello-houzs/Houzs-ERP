@@ -5,9 +5,10 @@ import {
   Columns3, GripVertical, RotateCcw, Plus,
 } from "lucide-react";
 import {
-  BRANDS, STATES,
+  BRANDS, STATES, PREPARATION_CONDITIONS,
   type Brand, type EventType, type EventStatus, type EventProgress,
   type MalaysianState, type WorkflowFlag, type HouzsEvent,
+  type PreparationCondition,
 } from "@/lib/mock-data";
 import { useAllEvents, updateEvent } from "@/lib/events-store";
 import { useAllBoothDocs, type BoothDocType } from "@/lib/booth-docs-store";
@@ -214,24 +215,9 @@ const DEFAULT_ORDER = ALL_COLUMNS.map((c) => c.key);
 const DEFAULT_HIDDEN = ALL_COLUMNS.filter((c) => c.defaultHidden).map((c) => c.key);
 const STORAGE_KEY = "houzs-pm-columns-v1";
 
-// ---------- Needs filter ----------
-type NeedsFilter = "ALL" | "NEEDS_3D" | "NEEDS_FLOORPLAN" | "NEEDS_PERMIT" | "NEEDS_AGREEMENT" | "ANY_PENDING";
-const WORKFLOW_KEYS: (keyof HouzsEvent)[] = [
-  "agreementApproval", "threeDCheckedByMgt", "threeDApprovedByPeter",
-  "weekendActivityTheme", "licenseMajlis", "workLoadingBayPermit",
-  "decoCoffeeTable", "secDepoRefund",
-];
-function matchesNeeds(e: HouzsEvent, f: NeedsFilter): boolean {
-  switch (f) {
-    case "ALL": return true;
-    case "NEEDS_3D":
-      return isPending(e.threeDCheckedByMgt) || isPending(e.threeDApprovedByPeter);
-    case "NEEDS_FLOORPLAN": return false; // floorplan workflow removed
-    case "NEEDS_PERMIT": return isPending(e.workLoadingBayPermit) || isPending(e.licenseMajlis);
-    case "NEEDS_AGREEMENT": return isPending(e.agreementApproval);
-    case "ANY_PENDING": return WORKFLOW_KEYS.some((k) => isPending(e[k] as WorkflowFlag));
-  }
-}
+// ---------- Needs filter (Preparation Stage based) ----------
+// "ALL" | "ANY" | one of the PreparationCondition values
+type NeedsFilter = "ALL" | "ANY" | PreparationCondition;
 
 // ---------- Page ----------
 export default function DashboardPage() {
@@ -306,9 +292,17 @@ export default function DashboardPage() {
       if (brand !== "ALL" && e.brand !== brand) return false;
       if (eventType !== "ALL" && e.eventType !== eventType) return false;
       if (status !== "ALL" && e.status !== status) return false;
-      if (progress !== "ALL" && e.progress !== progress) return false;
       if (state !== "ALL" && e.state !== state) return false;
-      if (!matchesNeeds(e, needs)) return false;
+      // Preparation stage filter
+      if (needs !== "ALL") {
+        const stage = e.preparationCondition;
+        if (needs === "ANY") {
+          // Any pending = not Done Prepared
+          if (stage === "DONE PREPARED") return false;
+        } else {
+          if (stage !== needs) return false;
+        }
+      }
       if (query && !`${e.organizer} ${e.venue} ${e.a42} ${e.contractor} ${e.pic ?? ""}`.toLowerCase().includes(query.toLowerCase()))
         return false;
       return true;
@@ -384,13 +378,17 @@ export default function DashboardPage() {
     setProgress("ALL"); setState("ALL"); setQuery(""); setNeeds("ALL");
   }
 
-  const needsCounters = useMemo(() => ({
-    any: visibleEvents.filter((e) => matchesNeeds(e, "ANY_PENDING")).length,
-    agreement: visibleEvents.filter((e) => matchesNeeds(e, "NEEDS_AGREEMENT")).length,
-    floorplan: visibleEvents.filter((e) => matchesNeeds(e, "NEEDS_FLOORPLAN")).length,
-    threeD: visibleEvents.filter((e) => matchesNeeds(e, "NEEDS_3D")).length,
-    permit: visibleEvents.filter((e) => matchesNeeds(e, "NEEDS_PERMIT")).length,
-  }), [visibleEvents]);
+  // Count of events per preparation stage
+  const stageCounters = useMemo(() => {
+    const counts: Record<string, number> = { ANY: 0 };
+    for (const s of PREPARATION_CONDITIONS) counts[s] = 0;
+    for (const e of visibleEvents) {
+      const s = e.preparationCondition;
+      if (s && s !== "DONE PREPARED") counts.ANY += 1;
+      if (s && s in counts) counts[s] += 1;
+    }
+    return counts;
+  }, [visibleEvents]);
 
   const navigate = useNavigate();
 
@@ -429,29 +427,42 @@ export default function DashboardPage() {
         </Link>
       </div>
 
-      {/* Needs attention */}
+      {/* Filter by Preparation Stage */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white p-2.5 flex flex-wrap gap-2 items-center">
         <div className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 px-1">
-          <AlertCircle className="h-3.5 w-3.5" /> NEEDS ATTENTION
+          <AlertCircle className="h-3.5 w-3.5" /> FILTER BY STAGE
         </div>
-        {([
-          ["ALL", "Show all", null],
-          ["ANY_PENDING", "Any pending", needsCounters.any],
-          ["NEEDS_AGREEMENT", "No agreement", needsCounters.agreement],
-          ["NEEDS_FLOORPLAN", "No floorplan", needsCounters.floorplan],
-          ["NEEDS_3D", "No 3D done", needsCounters.threeD],
-          ["NEEDS_PERMIT", "No permit", needsCounters.permit],
-        ] as const).map(([k, label, count]) => (
-          <button key={k} onClick={() => setNeeds(k as NeedsFilter)}
-            className={`${pillBase} inline-flex items-center gap-1.5 ${needs === k ? "bg-amber-500 text-white border-amber-500" : pillOff}`}>
-            {label}
-            {count !== null && (
-              <span className={`h-4 min-w-[18px] px-1 rounded-full text-[9px] flex items-center justify-center ${
-                needs === k ? "bg-white/25 text-white" : "bg-gray-100 text-gray-500"
-              }`}>{count}</span>
-            )}
-          </button>
-        ))}
+        {(() => {
+          const shortLabel = (s: PreparationCondition): string =>
+            s === "DONE PREPARED" ? "Done" : s.replace(/^PENDING /, "");
+          const chips: { key: NeedsFilter; label: string; count: number | null }[] = [
+            { key: "ALL", label: "Show all", count: null },
+            { key: "ANY", label: "Any pending", count: stageCounters.ANY },
+            ...PREPARATION_CONDITIONS.filter((s) => s !== "DONE PREPARED").map((s) => ({
+              key: s as NeedsFilter,
+              label: shortLabel(s),
+              count: stageCounters[s] ?? 0,
+            })),
+            { key: "DONE PREPARED" as NeedsFilter, label: "Done", count: stageCounters["DONE PREPARED"] ?? 0 },
+          ];
+          return chips.map(({ key, label, count }) => (
+            <button key={key} onClick={() => setNeeds(key)}
+              className={`${pillBase} inline-flex items-center gap-1.5 ${
+                needs === key
+                  ? key === "DONE PREPARED"
+                    ? "bg-[#0F766E] text-white border-[#0F766E]"
+                    : "bg-amber-500 text-white border-amber-500"
+                  : pillOff
+              }`}>
+              {label}
+              {count !== null && (
+                <span className={`h-4 min-w-[18px] px-1 rounded-full text-[9px] flex items-center justify-center ${
+                  needs === key ? "bg-white/25 text-white" : "bg-gray-100 text-gray-500"
+                }`}>{count}</span>
+              )}
+            </button>
+          ));
+        })()}
       </div>
 
       {/* Main filter bar — compact dropdowns */}
@@ -476,13 +487,6 @@ export default function DashboardPage() {
           <option value="CONFIRMED">Confirmed</option>
           <option value="PENDING">Pending</option>
           <option value="CANCELLED">Cancelled</option>
-        </select>
-
-        <select value={progress} onChange={(e) => setProgress(e.target.value as EventProgress | "ALL")} className={FILTER_SELECT}>
-          <option value="ALL">All progress</option>
-          <option value="NOT STARTED">Not started</option>
-          <option value="IN PROGRESS">In progress</option>
-          <option value="COMPLETED">Completed</option>
         </select>
 
         <select value={eventType} onChange={(e) => setEventType(e.target.value as EventType | "ALL")} className={FILTER_SELECT}>
