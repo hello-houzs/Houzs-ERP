@@ -14,6 +14,9 @@ import {
   ShieldCheck,
   ChevronLeft,
   ChevronRight,
+  FileText,
+  Receipt,
+  Package,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -44,6 +47,9 @@ const navigationGroups: NavGroup[] = [
     label: "SALES",
     items: [
       { name: "Sales Team", href: "/sales", icon: Users },
+      { name: "Sales Order Details", href: "/sales/details", icon: FileText },
+      { name: "Sales Order", href: "/sales/orders", icon: Receipt },
+      { name: "All SKU Costing", href: "/sales/sku-costing", icon: Package },
     ],
   },
   {
@@ -68,7 +74,12 @@ export function Sidebar() {
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
-    return pathname === href || pathname.startsWith(href + "/");
+    // exact match first; for "/sales" don't highlight when on sub-routes like /sales/details
+    if (pathname === href) return true;
+    // only extend to sub-paths for routes that own a sub-tree (not the leaf SALES items)
+    const leafRoutes = ["/sales/details", "/sales/orders", "/sales/sku-costing", "/sales"];
+    if (leafRoutes.includes(href)) return pathname === href;
+    return pathname.startsWith(href + "/");
   };
 
   return (

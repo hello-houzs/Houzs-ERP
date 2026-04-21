@@ -17,6 +17,9 @@ import QmsDetailPage from './pages/QmsDetailPage';
 import PrintCustomerPage from './pages/PrintCustomerPage';
 import PrintSupplierPage from './pages/PrintSupplierPage';
 import SalesPage from './pages/SalesPage';
+import SODetailsPage from './pages/SODetailsPage';
+import SalesOrderPage from './pages/SalesOrderPage';
+import SKUCostingPage from './pages/SKUCostingPage';
 import SettingsPage from './pages/SettingsPage';
 import PortalPage from './pages/PortalPage';
 
@@ -37,6 +40,9 @@ export default function App() {
         <Route path="/qms" element={<QmsPage />} />
         <Route path="/qms/:id" element={<QmsDetailPage />} />
         <Route path="/sales" element={<SalesPage />} />
+        <Route path="/sales/details" element={<SODetailsPage />} />
+        <Route path="/sales/orders" element={<SalesOrderPage />} />
+        <Route path="/sales/sku-costing" element={<SKUCostingPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
 
