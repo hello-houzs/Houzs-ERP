@@ -48,20 +48,20 @@ export const FILTER_SELECT =
 // ─── Table / DataGrid ─────────────────────────────────────────────────────────
 
 /** Table wrapper */
-export const TABLE = "w-full text-[12px]";
+export const TABLE = "w-full text-[10px]";
 
 /** Table header row */
 export const TABLE_HEAD_ROW =
-  "bg-[#F4F7F7] text-[10px] font-semibold uppercase tracking-wider text-gray-500";
+  "bg-[#DCE4EE] text-[9px] font-semibold uppercase tracking-wider text-[#0A1F2E] border-b border-gray-400";
 
 /** Table header cell */
-export const TABLE_HEAD_CELL = "text-left px-3 py-2 whitespace-nowrap";
+export const TABLE_HEAD_CELL = "text-left px-1.5 py-1 whitespace-nowrap border-r border-gray-300 last:border-r-0";
 
 /** Table body divider */
-export const TABLE_BODY = "divide-y divide-[#F0F3F3]";
+export const TABLE_BODY = "divide-y divide-gray-200";
 
 /** Table body cell */
-export const TABLE_CELL = "px-3 py-2";
+export const TABLE_CELL = "px-1.5 py-0.5 whitespace-nowrap border-r border-gray-100 last:border-r-0";
 
 /** Table row hover + cursor for double-click nav */
 export const TABLE_ROW_INTERACTIVE = "hover:bg-[#F4F7F7] cursor-pointer transition-colors";

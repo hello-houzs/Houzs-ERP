@@ -1,69 +1,102 @@
-// Sales Order line-item store — localStorage-backed with subscriber pattern.
-// Schema matches the real Excel export: Sales Order Details.xlsx
+// Sales Order store — real Excel data (341 headers + 1,654 lines).
+// localStorage-backed with subscriber pattern.
 
 import { useSyncExternalStore } from "react";
+import soLinesRaw from "@/data/so-lines.json";
+import soHeadersRaw from "@/data/so-headers.json";
+import { getCostByItemCode } from "./sku-costing-store";
 import type { SalesMember } from "./sales-store";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ItemGroup = "MATTRESS" | "BEDFRAME" | "ACC" | "OTHERS";
+export type ItemGroup = "MATTRESS" | "BEDFRAME" | "SOFA" | "ACC" | "BEDLINES" | "DINING" | "OTHERS";
 export type SOUom = "UNIT" | "SET" | "PAIR" | "PCS";
 export type PaymentStatus = "Checked" | "Unchecked" | "Pending";
 
-export const ITEM_GROUPS: ItemGroup[] = ["MATTRESS", "BEDFRAME", "ACC", "OTHERS"];
+export const ITEM_GROUPS: ItemGroup[] = ["MATTRESS", "BEDFRAME", "SOFA", "ACC", "BEDLINES", "DINING", "OTHERS"];
 export const SO_UOMS: SOUom[] = ["UNIT", "SET", "PAIR", "PCS"];
 export const PAYMENT_STATUSES: PaymentStatus[] = ["Checked", "Unchecked", "Pending"];
 
-// Legacy compat for sku-costing-store which still imports SOCategory
+// Legacy compat
 export type SOCategory = "Mattress" | "Bedframe" | "Accessories" | "Pillow" | "Topper";
 export const SO_CATEGORIES: SOCategory[] = ["Mattress", "Bedframe", "Accessories", "Pillow", "Topper"];
 
 export interface SODetailLine {
   id: string;
-  docNo: string;          // e.g. "SO-011120"
-  date: string;           // ISO yyyy-mm-dd
-  debtorCode: string;     // e.g. "300-C002"
-  debtorName: string;     // customer name
-  agent: string;          // sales person name (text)
+  docNo: string;
+  date: string;
+  debtorCode: string;
+  debtorName: string;
+  agent: string;
   itemGroup: ItemGroup;
-  itemCode: string;       // SKU
+  itemCode: string;
   description: string;
   description2?: string;
   uom: SOUom;
-  location: string;       // e.g. "KL", "JHR"
+  location: string;
   qty: number;
   unitPrice: number;
-  discount: number;       // currency amount (not %)
-  total: number;          // qty * unitPrice - discount (pre-tax)
+  discount: number;
+  total: number;
   tax: number;
-  totalInc: number;       // total + tax
-  balance: number;        // outstanding
+  totalInc: number;
+  balance: number;
   paymentStatus: PaymentStatus;
   venue: string;
-  branding: string;       // brand name
+  branding: string;
   remark?: string;
   cancelled: boolean;
+  // Cost fields (derived from SKU master)
+  unitCost: number;
+  lineCost: number;
+  lineMargin: number;
 }
 
-export interface ConsolidatedSO {
+export interface SOHeader {
   docNo: string;
+  transferTo: string;
   date: string;
+  branding: string;
   debtorName: string;
-  debtorCode: string;
   agent: string;
   salesLocation: string;
-  reference: string;
-  branding: string;
-  venue: string;
+  ref: string;
   localTotal: number;
-  mattressSofa: number;
-  bedframe: number;
-  accessories: number;
+  mattressSofa: number;      // revenue
+  bedframe: number;          // revenue
+  accessories: number;       // revenue
+  // Cost breakdown per category (derived from line costs)
+  mattressSofaCost?: number;
+  bedframeCost?: number;
+  accessoriesCost?: number;
+  othersCost?: number;
   others: number;
   balance: number;
+  remark2: string;
+  remark4: string;
+  remark3: string;
+  processingDate: string;
+  salesExemptionExpiry: string;
+  note: string;
+  poDocNo: string;
+  address1: string;
+  address2: string;
+  address3: string;
+  address4: string;
+  phone: string;
+  venue: string;
+  // Enriched
+  totalCost: number;
+  totalRevenue: number;
+  totalMargin: number;
+  marginPct: number;
   lineCount: number;
-  phone?: string;
-  address?: string;
+}
+
+// ConsolidatedSO = SOHeader with some UI-friendly aliases
+export interface ConsolidatedSO extends SOHeader {
+  debtorCode: string;
+  reference: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -72,405 +105,397 @@ function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
-export function lineTotal(line: SODetailLine): number {
-  return line.total;
+function normGroup(g: string): ItemGroup {
+  const u = g.toUpperCase();
+  if (u === "MATTRESS" || u === "BEDFRAME" || u === "SOFA" || u === "ACC"
+      || u === "BEDLINES" || u === "DINING") return u as ItemGroup;
+  return "OTHERS";
 }
 
-// ─── Seed data ────────────────────────────────────────────────────────────────
+function normUom(u: string): SOUom {
+  const up = u.toUpperCase();
+  if (up === "UNIT" || up === "SET" || up === "PAIR" || up === "PCS") return up as SOUom;
+  return "UNIT";
+}
 
-const seedLines: SODetailLine[] = [
-  // SO-011120 — ZANOTTI, Tan Wei Liang, SHAWN, AEON MALL IPOH
-  {
-    id: "sol-001", docNo: "SO-011120", date: "2025-01-15", debtorCode: "300-C001",
-    debtorName: "Tan Wei Liang", agent: "SHAWN",
-    itemGroup: "MATTRESS", itemCode: "ZNT-K-DELUXE", description: "Zanotti King Deluxe Mattress",
-    description2: "King 180x200cm Dual-Comfort, 2-yr warranty", uom: "UNIT",
-    location: "PER", qty: 1, unitPrice: 5800, discount: 300, total: 5500, tax: 0, totalInc: 5500,
-    balance: 2750, paymentStatus: "Pending", venue: "AEON MALL IPOH", branding: "ZANOTTI",
-    remark: "King size, firm side out", cancelled: false,
-  },
-  {
-    id: "sol-002", docNo: "SO-011120", date: "2025-01-15", debtorCode: "300-C001",
-    debtorName: "Tan Wei Liang", agent: "SHAWN",
-    itemGroup: "BEDFRAME", itemCode: "ZNT-K-BF-ELENA", description: "Zanotti Elena King Bedframe",
-    description2: "King 180x200cm Fabric Upholstered", uom: "UNIT",
-    location: "PER", qty: 1, unitPrice: 3200, discount: 200, total: 3000, tax: 0, totalInc: 3000,
-    balance: 1500, paymentStatus: "Pending", venue: "AEON MALL IPOH", branding: "ZANOTTI",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-003", docNo: "SO-011120", date: "2025-01-15", debtorCode: "300-C001",
-    debtorName: "Tan Wei Liang", agent: "SHAWN",
-    itemGroup: "ACC", itemCode: "ZNT-PIL-LATEX", description: "Zanotti Latex Pillow Pair",
-    description2: "", uom: "PAIR",
-    location: "PER", qty: 2, unitPrice: 380, discount: 0, total: 760, tax: 0, totalInc: 760,
-    balance: 0, paymentStatus: "Checked", venue: "AEON MALL IPOH", branding: "ZANOTTI",
-    remark: "", cancelled: false,
-  },
+function normPayment(p: string): PaymentStatus {
+  if (p === "Checked" || p === "Unchecked" || p === "Pending") return p;
+  return "Unchecked";
+}
 
-  // SO-011121 — ZANOTTI, Lim Siew Peng, STANLEY, MITSUI OUTLET PARK
-  {
-    id: "sol-004", docNo: "SO-011121", date: "2025-01-20", debtorCode: "300-C002",
-    debtorName: "Lim Siew Peng", agent: "STANLEY",
-    itemGroup: "MATTRESS", itemCode: "ZNT-Q-SIGNATURE", description: "Zanotti Queen Signature Mattress",
-    description2: "Queen 160x200cm CoolGel Memory", uom: "UNIT",
-    location: "KL", qty: 1, unitPrice: 4200, discount: 200, total: 4000, tax: 0, totalInc: 4000,
-    balance: 4000, paymentStatus: "Unchecked", venue: "MITSUI OUTLET PARK", branding: "ZANOTTI",
-    remark: "Customer requested firm comfort", cancelled: false,
-  },
-  {
-    id: "sol-005", docNo: "SO-011121", date: "2025-01-20", debtorCode: "300-C002",
-    debtorName: "Lim Siew Peng", agent: "STANLEY",
-    itemGroup: "ACC", itemCode: "ZNT-TOP-COOL", description: "Zanotti CoolGel Topper Queen",
-    description2: "", uom: "UNIT",
-    location: "KL", qty: 1, unitPrice: 890, discount: 50, total: 840, tax: 0, totalInc: 840,
-    balance: 840, paymentStatus: "Unchecked", venue: "MITSUI OUTLET PARK", branding: "ZANOTTI",
-    remark: "", cancelled: false,
-  },
+// ─── Seed from Excel ──────────────────────────────────────────────────────────
 
-  // SO-011122 — AKEMI, Chong Hui Ying, ANTHONY, MYTOWN SHOPPING CENTRE
-  {
-    id: "sol-006", docNo: "SO-011122", date: "2025-02-03", debtorCode: "300-C003",
-    debtorName: "Chong Hui Ying", agent: "ANTHONY",
-    itemGroup: "MATTRESS", itemCode: "AK-Q-PURELATEX", description: "Akemi Pure Latex Queen Mattress",
-    description2: "Queen 160x200cm Natural Latex 22cm", uom: "UNIT",
-    location: "KL", qty: 1, unitPrice: 4600, discount: 400, total: 4200, tax: 0, totalInc: 4200,
-    balance: 2100, paymentStatus: "Pending", venue: "MYTOWN SHOPPING CENTRE", branding: "AKEMI",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-007", docNo: "SO-011122", date: "2025-02-03", debtorCode: "300-C003",
-    debtorName: "Chong Hui Ying", agent: "ANTHONY",
-    itemGroup: "BEDFRAME", itemCode: "AK-Q-BF-NORDIC", description: "Akemi Nordic Queen Bedframe",
-    description2: "Queen Nordic Solid Wood Base", uom: "UNIT",
-    location: "KL", qty: 1, unitPrice: 2800, discount: 150, total: 2650, tax: 0, totalInc: 2650,
-    balance: 1325, paymentStatus: "Pending", venue: "MYTOWN SHOPPING CENTRE", branding: "AKEMI",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-008", docNo: "SO-011122", date: "2025-02-03", debtorCode: "300-C003",
-    debtorName: "Chong Hui Ying", agent: "ANTHONY",
-    itemGroup: "ACC", itemCode: "AK-PILLOW-HYDRO", description: "Akemi Hydro Cool Pillow",
-    description2: "", uom: "PAIR",
-    location: "KL", qty: 2, unitPrice: 280, discount: 0, total: 560, tax: 0, totalInc: 560,
-    balance: 0, paymentStatus: "Checked", venue: "MYTOWN SHOPPING CENTRE", branding: "AKEMI",
-    remark: "", cancelled: false,
-  },
+interface RawLine {
+  id: string; docNo: string; date: string; debtorCode: string; debtorName: string;
+  agent: string; itemGroup: string; itemCode: string; description: string;
+  description2: string; uom: string; location: string; qty: number;
+  unitPrice: number; discount: number; total: number; tax: number;
+  totalInc: number; balance: number; payment: string; venue: string;
+  branding: string; cancelled: boolean; remark: string;
+  unitCost: number; lineCost: number; lineMargin: number;
+}
 
-  // SO-011123 — AKEMI, Ng Boon Seng, PEIFEN, IKEA CHERAS
-  {
-    id: "sol-009", docNo: "SO-011123", date: "2025-02-14", debtorCode: "300-C004",
-    debtorName: "Ng Boon Seng", agent: "PEIFEN",
-    itemGroup: "MATTRESS", itemCode: "AK-S-ORTHO", description: "Akemi Ortho Single Mattress",
-    description2: "Single 100x200cm Orthopaedic Support", uom: "UNIT",
-    location: "KL", qty: 2, unitPrice: 1800, discount: 100, total: 3500, tax: 0, totalInc: 3500,
-    balance: 1750, paymentStatus: "Pending", venue: "IKEA CHERAS", branding: "AKEMI",
-    remark: "Twin room setup", cancelled: false,
-  },
-  {
-    id: "sol-010", docNo: "SO-011123", date: "2025-02-14", debtorCode: "300-C004",
-    debtorName: "Ng Boon Seng", agent: "PEIFEN",
-    itemGroup: "ACC", itemCode: "AK-ACC-PROTECT", description: "Akemi Waterproof Mattress Protector Single",
-    description2: "", uom: "UNIT",
-    location: "KL", qty: 2, unitPrice: 160, discount: 0, total: 320, tax: 0, totalInc: 320,
-    balance: 0, paymentStatus: "Checked", venue: "IKEA CHERAS", branding: "AKEMI",
-    remark: "", cancelled: false,
-  },
+const seedLines: SODetailLine[] = (soLinesRaw as RawLine[]).map((r) => ({
+  id: r.id, docNo: r.docNo, date: r.date, debtorCode: r.debtorCode,
+  debtorName: r.debtorName, agent: r.agent,
+  itemGroup: normGroup(r.itemGroup), itemCode: r.itemCode,
+  description: r.description, description2: r.description2,
+  uom: normUom(r.uom), location: r.location,
+  qty: r.qty, unitPrice: r.unitPrice, discount: r.discount,
+  total: r.total, tax: r.tax, totalInc: r.totalInc,
+  balance: r.balance, paymentStatus: normPayment(r.payment),
+  venue: r.venue, branding: r.branding || "NONE", remark: r.remark,
+  cancelled: r.cancelled,
+  unitCost: r.unitCost, lineCost: r.lineCost, lineMargin: r.lineMargin,
+}));
 
-  // SO-011124 — DUNLOPILLO, Farah Nadia binti Aziz, SHAWN, AEON MALL SEREMBAN 2
-  {
-    id: "sol-011", docNo: "SO-011124", date: "2025-02-22", debtorCode: "300-C005",
-    debtorName: "Farah Nadia binti Aziz", agent: "SHAWN",
-    itemGroup: "MATTRESS", itemCode: "DUN-K-CLASSIC", description: "Dunlopillo Classic King Mattress",
-    description2: "King 180x200cm Natural Latex Core", uom: "UNIT",
-    location: "NS", qty: 1, unitPrice: 3900, discount: 250, total: 3650, tax: 0, totalInc: 3650,
-    balance: 3650, paymentStatus: "Unchecked", venue: "AEON MALL SEREMBAN 2", branding: "DUNLOPILLO",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-012", docNo: "SO-011124", date: "2025-02-22", debtorCode: "300-C005",
-    debtorName: "Farah Nadia binti Aziz", agent: "SHAWN",
-    itemGroup: "ACC", itemCode: "DUN-TOP-LATEX", description: "Dunlopillo Natural Latex Topper King",
-    description2: "", uom: "UNIT",
-    location: "NS", qty: 1, unitPrice: 1200, discount: 100, total: 1100, tax: 0, totalInc: 1100,
-    balance: 0, paymentStatus: "Checked", venue: "AEON MALL SEREMBAN 2", branding: "DUNLOPILLO",
-    remark: "", cancelled: false,
-  },
+const seedHeaders: SOHeader[] = soHeadersRaw as SOHeader[];
 
-  // SO-011125 — ERGOTEX, Ahmad Firdaus bin Khalid, LUIS, SUNWAY PYRAMID
-  {
-    id: "sol-013", docNo: "SO-011125", date: "2025-03-05", debtorCode: "300-C006",
-    debtorName: "Ahmad Firdaus bin Khalid", agent: "LUIS",
-    itemGroup: "MATTRESS", itemCode: "EGT-Q-ERGO3000", description: "Ergotex Ergo 3000 Queen Mattress",
-    description2: "Queen 160x200cm Dual Zone Pocket Spring", uom: "UNIT",
-    location: "SEL", qty: 1, unitPrice: 3600, discount: 300, total: 3300, tax: 0, totalInc: 3300,
-    balance: 1650, paymentStatus: "Pending", venue: "SUNWAY PYRAMID", branding: "ERGOTEX",
-    remark: "Delivery to Petaling Jaya", cancelled: false,
-  },
-  {
-    id: "sol-014", docNo: "SO-011125", date: "2025-03-05", debtorCode: "300-C006",
-    debtorName: "Ahmad Firdaus bin Khalid", agent: "LUIS",
-    itemGroup: "BEDFRAME", itemCode: "EGT-Q-BF-METRO", description: "Ergotex Metro Queen Bedframe",
-    description2: "Queen Metal Frame Storage Base", uom: "UNIT",
-    location: "SEL", qty: 1, unitPrice: 1900, discount: 0, total: 1900, tax: 0, totalInc: 1900,
-    balance: 950, paymentStatus: "Pending", venue: "SUNWAY PYRAMID", branding: "ERGOTEX",
-    remark: "", cancelled: false,
-  },
+// ─── localStorage persistence — lines ─────────────────────────────────────────
 
-  // SO-011126 — AKEMI, Wong Mei Lin, MELVIN CHONG, PAVILION BUKIT JALIL
-  {
-    id: "sol-015", docNo: "SO-011126", date: "2025-03-12", debtorCode: "300-C007",
-    debtorName: "Wong Mei Lin", agent: "MELVIN CHONG",
-    itemGroup: "MATTRESS", itemCode: "AK-K-CLOUDMAX", description: "Akemi CloudMax King Mattress",
-    description2: "King 180x200cm Pillow-Top Memory Foam", uom: "UNIT",
-    location: "KL", qty: 1, unitPrice: 6200, discount: 500, total: 5700, tax: 0, totalInc: 5700,
-    balance: 2850, paymentStatus: "Pending", venue: "PAVILION BUKIT JALIL", branding: "AKEMI",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-016", docNo: "SO-011126", date: "2025-03-12", debtorCode: "300-C007",
-    debtorName: "Wong Mei Lin", agent: "MELVIN CHONG",
-    itemGroup: "BEDFRAME", itemCode: "AK-K-BF-HAVEN", description: "Akemi Haven King Bedframe",
-    description2: "King Leather-wrapped Upholstered Base", uom: "UNIT",
-    location: "KL", qty: 1, unitPrice: 3500, discount: 200, total: 3300, tax: 0, totalInc: 3300,
-    balance: 1650, paymentStatus: "Pending", venue: "PAVILION BUKIT JALIL", branding: "AKEMI",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-017", docNo: "SO-011126", date: "2025-03-12", debtorCode: "300-C007",
-    debtorName: "Wong Mei Lin", agent: "MELVIN CHONG",
-    itemGroup: "ACC", itemCode: "AK-BOLSTER-LATEX", description: "Akemi Latex Bolster",
-    description2: "", uom: "UNIT",
-    location: "KL", qty: 2, unitPrice: 220, discount: 0, total: 440, tax: 0, totalInc: 440,
-    balance: 0, paymentStatus: "Checked", venue: "PAVILION BUKIT JALIL", branding: "AKEMI",
-    remark: "", cancelled: false,
-  },
+const K_LINES = "houzs-so-lines-v3";
+let listenersL: (() => void)[] = [];
+let cachedL: SODetailLine[] | null = null;
 
-  // SO-011127 — ZANOTTI, Nurul Ain binti Hassan, KINGSLEY, KLANG PARADE
-  {
-    id: "sol-018", docNo: "SO-011127", date: "2025-03-18", debtorCode: "300-C008",
-    debtorName: "Nurul Ain binti Hassan", agent: "KINGSLEY",
-    itemGroup: "MATTRESS", itemCode: "ZNT-S-PLUSH", description: "Zanotti Plush Super Single Mattress",
-    description2: "Super Single 107x200cm Euro-top Plush", uom: "UNIT",
-    location: "SEL", qty: 1, unitPrice: 3200, discount: 200, total: 3000, tax: 0, totalInc: 3000,
-    balance: 0, paymentStatus: "Checked", venue: "KLANG PARADE", branding: "ZANOTTI",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-019", docNo: "SO-011127", date: "2025-03-18", debtorCode: "300-C008",
-    debtorName: "Nurul Ain binti Hassan", agent: "KINGSLEY",
-    itemGroup: "BEDFRAME", itemCode: "ZNT-S-BF-GRACE", description: "Zanotti Grace Super Single Bedframe",
-    description2: "Super Single Fabric Headboard with Storage", uom: "UNIT",
-    location: "SEL", qty: 1, unitPrice: 2400, discount: 150, total: 2250, tax: 0, totalInc: 2250,
-    balance: 0, paymentStatus: "Checked", venue: "KLANG PARADE", branding: "ZANOTTI",
-    remark: "", cancelled: false,
-  },
-
-  // SO-011128 — DUNLOPILLO, Lee Chee Keat, PETER, PARADIGM MALL JB
-  {
-    id: "sol-020", docNo: "SO-011128", date: "2025-03-25", debtorCode: "300-C009",
-    debtorName: "Lee Chee Keat", agent: "PETER",
-    itemGroup: "MATTRESS", itemCode: "DUN-Q-PRESTIGE", description: "Dunlopillo Prestige Queen Mattress",
-    description2: "Queen 160x200cm Premium Latex & Springs", uom: "UNIT",
-    location: "JHR", qty: 1, unitPrice: 5200, discount: 400, total: 4800, tax: 0, totalInc: 4800,
-    balance: 4800, paymentStatus: "Unchecked", venue: "PARADIGM MALL JB", branding: "DUNLOPILLO",
-    remark: "Priority delivery requested", cancelled: false,
-  },
-  {
-    id: "sol-021", docNo: "SO-011128", date: "2025-03-25", debtorCode: "300-C009",
-    debtorName: "Lee Chee Keat", agent: "PETER",
-    itemGroup: "ACC", itemCode: "DUN-PIL-NATURAL", description: "Dunlopillo Natural Latex Pillow",
-    description2: "", uom: "PAIR",
-    location: "JHR", qty: 1, unitPrice: 520, discount: 0, total: 520, tax: 0, totalInc: 520,
-    balance: 520, paymentStatus: "Unchecked", venue: "PARADIGM MALL JB", branding: "DUNLOPILLO",
-    remark: "", cancelled: false,
-  },
-
-  // SO-011129 — AKEMI, Siti Rahmah binti Yusof, STANLEY, AEON KOTA BHARU
-  {
-    id: "sol-022", docNo: "SO-011129", date: "2025-04-02", debtorCode: "300-C010",
-    debtorName: "Siti Rahmah binti Yusof", agent: "STANLEY",
-    itemGroup: "MATTRESS", itemCode: "AK-Q-PURELATEX", description: "Akemi Pure Latex Queen Mattress",
-    description2: "Queen Natural Latex 22cm", uom: "UNIT",
-    location: "KEL", qty: 1, unitPrice: 4600, discount: 350, total: 4250, tax: 0, totalInc: 4250,
-    balance: 2125, paymentStatus: "Pending", venue: "AEON KOTA BHARU", branding: "AKEMI",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-023", docNo: "SO-011129", date: "2025-04-02", debtorCode: "300-C010",
-    debtorName: "Siti Rahmah binti Yusof", agent: "STANLEY",
-    itemGroup: "OTHERS", itemCode: "AK-SVC-DELIVERY", description: "Akemi Premium Delivery & Setup",
-    description2: "Delivery + old mattress removal", uom: "UNIT",
-    location: "KEL", qty: 1, unitPrice: 250, discount: 250, total: 0, tax: 0, totalInc: 0,
-    balance: 0, paymentStatus: "Checked", venue: "AEON KOTA BHARU", branding: "AKEMI",
-    remark: "Free delivery promo", cancelled: false,
-  },
-
-  // SO-011130 — ERGOTEX, Rajendran a/l Muthu, ANTHONY, SUNWAY CARNIVAL MALL
-  {
-    id: "sol-024", docNo: "SO-011130", date: "2025-04-10", debtorCode: "300-C011",
-    debtorName: "Rajendran a/l Muthu", agent: "ANTHONY",
-    itemGroup: "MATTRESS", itemCode: "EGT-K-ERGO5000", description: "Ergotex Ergo 5000 King Mattress",
-    description2: "King Luxury Hybrid Pocket Spring + Latex", uom: "UNIT",
-    location: "PEN", qty: 1, unitPrice: 5500, discount: 500, total: 5000, tax: 0, totalInc: 5000,
-    balance: 2500, paymentStatus: "Pending", venue: "SUNWAY CARNIVAL MALL", branding: "ERGOTEX",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-025", docNo: "SO-011130", date: "2025-04-10", debtorCode: "300-C011",
-    debtorName: "Rajendran a/l Muthu", agent: "ANTHONY",
-    itemGroup: "BEDFRAME", itemCode: "EGT-K-BF-COSMO", description: "Ergotex Cosmo King Bedframe",
-    description2: "King Wenge Wood Frame with Drawers", uom: "UNIT",
-    location: "PEN", qty: 1, unitPrice: 2600, discount: 100, total: 2500, tax: 0, totalInc: 2500,
-    balance: 1250, paymentStatus: "Pending", venue: "SUNWAY CARNIVAL MALL", branding: "ERGOTEX",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-026", docNo: "SO-011130", date: "2025-04-10", debtorCode: "300-C011",
-    debtorName: "Rajendran a/l Muthu", agent: "ANTHONY",
-    itemGroup: "ACC", itemCode: "EGT-ACC-SHEET-K", description: "Ergotex King Fitted Sheet Set",
-    description2: "", uom: "SET",
-    location: "PEN", qty: 1, unitPrice: 380, discount: 0, total: 380, tax: 0, totalInc: 380,
-    balance: 0, paymentStatus: "Checked", venue: "SUNWAY CARNIVAL MALL", branding: "ERGOTEX",
-    remark: "", cancelled: false,
-  },
-
-  // SO-011131 — ZANOTTI, Tan Boon Huat, LUIS, AEON BUKIT TINGGI
-  {
-    id: "sol-027", docNo: "SO-011131", date: "2025-04-15", debtorCode: "300-C012",
-    debtorName: "Tan Boon Huat", agent: "LUIS",
-    itemGroup: "MATTRESS", itemCode: "ZNT-Q-CLOUD", description: "Zanotti Cloud Queen Mattress",
-    description2: "Queen 160x200cm Plush Pillow-top", uom: "UNIT",
-    location: "SEL", qty: 1, unitPrice: 4800, discount: 300, total: 4500, tax: 0, totalInc: 4500,
-    balance: 0, paymentStatus: "Checked", venue: "AEON BUKIT TINGGI", branding: "ZANOTTI",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-028", docNo: "SO-011131", date: "2025-04-15", debtorCode: "300-C012",
-    debtorName: "Tan Boon Huat", agent: "LUIS",
-    itemGroup: "BEDFRAME", itemCode: "ZNT-Q-BF-ROYALE", description: "Zanotti Royale Queen Bedframe",
-    description2: "Queen Button-tufted Velvet Headboard", uom: "UNIT",
-    location: "SEL", qty: 1, unitPrice: 3800, discount: 300, total: 3500, tax: 0, totalInc: 3500,
-    balance: 1750, paymentStatus: "Pending", venue: "AEON BUKIT TINGGI", branding: "ZANOTTI",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-029", docNo: "SO-011131", date: "2025-04-15", debtorCode: "300-C012",
-    debtorName: "Tan Boon Huat", agent: "LUIS",
-    itemGroup: "ACC", itemCode: "ZNT-TOP-MEM-Q", description: "Zanotti Memory Foam Topper Queen",
-    description2: "", uom: "UNIT",
-    location: "SEL", qty: 1, unitPrice: 780, discount: 80, total: 700, tax: 0, totalInc: 700,
-    balance: 0, paymentStatus: "Checked", venue: "AEON BUKIT TINGGI", branding: "ZANOTTI",
-    remark: "", cancelled: false,
-  },
-  {
-    id: "sol-030", docNo: "SO-011131", date: "2025-04-15", debtorCode: "300-C012",
-    debtorName: "Tan Boon Huat", agent: "LUIS",
-    itemGroup: "OTHERS", itemCode: "SVC-DISPOSAL", description: "Old Mattress Disposal Service",
-    description2: "", uom: "UNIT",
-    location: "SEL", qty: 1, unitPrice: 150, discount: 0, total: 150, tax: 0, totalInc: 150,
-    balance: 150, paymentStatus: "Unchecked", venue: "AEON BUKIT TINGGI", branding: "ZANOTTI",
-    remark: "Awaiting confirmation", cancelled: false,
-  },
-];
-
-// ─── localStorage persistence ──────────────────────────────────────────────────
-
-const K = "houzs-so-lines-v2";
-let listeners: (() => void)[] = [];
-let cached: SODetailLine[] | null = null;
-
-function read(): SODetailLine[] {
+function readL(): SODetailLine[] {
   if (typeof window === "undefined") return seedLines;
-  const raw = localStorage.getItem(K);
-  if (!raw) { localStorage.setItem(K, JSON.stringify(seedLines)); return seedLines; }
+  const raw = localStorage.getItem(K_LINES);
+  if (!raw) { localStorage.setItem(K_LINES, JSON.stringify(seedLines)); return seedLines; }
   try { return JSON.parse(raw); } catch { return seedLines; }
 }
 
-function write(lines: SODetailLine[]) {
-  cached = lines;
-  localStorage.setItem(K, JSON.stringify(lines));
-  listeners.forEach((fn) => fn());
+function writeL(lines: SODetailLine[]) {
+  cachedL = lines;
+  localStorage.setItem(K_LINES, JSON.stringify(lines));
+  listenersL.forEach((fn) => fn());
 }
 
-function subscribe(fn: () => void) {
-  listeners.push(fn);
-  return () => { listeners = listeners.filter((l) => l !== fn); };
+function subscribeL(fn: () => void) {
+  listenersL.push(fn);
+  return () => { listenersL = listenersL.filter((l) => l !== fn); };
 }
 
-function getSnapshot(): SODetailLine[] {
-  if (!cached) cached = read();
-  return cached;
+function snapshotL(): SODetailLine[] {
+  if (!cachedL) cachedL = readL();
+  return cachedL;
 }
-
-// ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useSOLines(): SODetailLine[] {
-  return useSyncExternalStore(subscribe, getSnapshot, () => seedLines);
+  return useSyncExternalStore(subscribeL, snapshotL, () => seedLines);
 }
+
+// ─── localStorage persistence — headers ───────────────────────────────────────
+
+const K_HEADERS = "houzs-so-headers-v3";
+let listenersH: (() => void)[] = [];
+let cachedH: SOHeader[] | null = null;
+
+function readH(): SOHeader[] {
+  if (typeof window === "undefined") return seedHeaders;
+  const raw = localStorage.getItem(K_HEADERS);
+  if (!raw) { localStorage.setItem(K_HEADERS, JSON.stringify(seedHeaders)); return seedHeaders; }
+  try { return JSON.parse(raw); } catch { return seedHeaders; }
+}
+
+function subscribeH(fn: () => void) {
+  listenersH.push(fn);
+  return () => { listenersH = listenersH.filter((l) => l !== fn); };
+}
+
+function snapshotH(): SOHeader[] {
+  if (!cachedH) cachedH = readH();
+  return cachedH;
+}
+
+export function useSOHeaders(): SOHeader[] {
+  return useSyncExternalStore(subscribeH, snapshotH, () => seedHeaders);
+}
+
+// ─── Cost calc helpers ────────────────────────────────────────────────────────
+
+/** Recompute cost fields on a line using current SKU master. */
+export function recomputeLineCost(line: SODetailLine): SODetailLine {
+  const unitCost = getCostByItemCode(line.itemCode);
+  const lineCost = unitCost * line.qty;
+  return {
+    ...line,
+    unitCost,
+    lineCost,
+    lineMargin: line.total - lineCost,
+  };
+}
+
+/** Recompute cost rollup on a header from its lines. */
+export function recomputeHeaderCost(header: SOHeader, lines: SODetailLine[]): SOHeader {
+  const docLines = lines.filter((l) => l.docNo === header.docNo);
+  const totalCost = docLines.reduce((s, l) => s + l.lineCost, 0);
+  const totalRevenue = docLines.reduce((s, l) => s + l.total, 0);
+  const totalMargin = totalRevenue - totalCost;
+  const marginPct = totalRevenue > 0 ? (totalMargin / totalRevenue) * 100 : 0;
+  return {
+    ...header,
+    totalCost: round2(totalCost),
+    totalRevenue: round2(totalRevenue),
+    totalMargin: round2(totalMargin),
+    marginPct: round2(marginPct),
+    lineCount: docLines.length,
+  };
+}
+
+function round2(n: number): number { return Math.round(n * 100) / 100; }
 
 // ─── Mutations ────────────────────────────────────────────────────────────────
 
-export function addSOLine(line: Omit<SODetailLine, "id">): string {
+export function addSOLine(line: Omit<SODetailLine, "id" | "unitCost" | "lineCost" | "lineMargin">): string {
   const id = uid();
-  const all = read();
-  all.push({ ...line, id });
-  write(all);
+  const all = readL();
+  const complete = recomputeLineCost({ ...line, id, unitCost: 0, lineCost: 0, lineMargin: 0 });
+  all.push(complete);
+  writeL(all);
   return id;
 }
 
 export function updateSOLine(id: string, patch: Partial<SODetailLine>) {
-  const all = read();
+  const all = readL();
   const idx = all.findIndex((l) => l.id === id);
   if (idx < 0) return;
-  all[idx] = { ...all[idx], ...patch };
-  write(all);
+  const merged = { ...all[idx], ...patch };
+  all[idx] = recomputeLineCost(merged);
+  writeL(all);
 }
 
 export function removeSOLine(id: string) {
-  const all = read().filter((l) => l.id !== id);
-  write(all);
+  const all = readL().filter((l) => l.id !== id);
+  writeL(all);
 }
 
 export function resetSOLines() {
-  cached = null;
-  localStorage.removeItem(K);
-  listeners.forEach((fn) => fn());
+  cachedL = null;
+  localStorage.removeItem(K_LINES);
+  listenersL.forEach((fn) => fn());
+}
+
+export function resetSOHeaders() {
+  cachedH = null;
+  localStorage.removeItem(K_HEADERS);
+  listenersH.forEach((fn) => fn());
+}
+
+export function resetAllSOData() {
+  resetSOLines();
+  resetSOHeaders();
+}
+
+// ─── Header mutations (used by New Sales Order form) ──────────────────────────
+
+function writeH(headers: SOHeader[]) {
+  cachedH = headers;
+  localStorage.setItem(K_HEADERS, JSON.stringify(headers));
+  listenersH.forEach((fn) => fn());
+}
+
+export function addSOHeader(header: SOHeader): void {
+  const all = readH();
+  all.unshift(header); // newest first
+  writeH(all);
+}
+
+export function updateSOHeader(docNo: string, patch: Partial<SOHeader>): void {
+  const all = readH();
+  const idx = all.findIndex((h) => h.docNo === docNo);
+  if (idx < 0) return;
+  all[idx] = { ...all[idx], ...patch };
+  writeH(all);
+}
+
+export function nextSODocNo(): string {
+  const all = readH();
+  let max = 11500;
+  for (const h of all) {
+    const m = h.docNo.match(/SO-0*(\d+)/);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return `SO-${String(max + 1).padStart(6, "0")}`;
 }
 
 // ─── Consolidation helper ─────────────────────────────────────────────────────
 
+/**
+ * Merge SO headers (address/phone/PO/remarks) with cost rollup from lines.
+ * Returns one row per docNo containing all columns from sales order.xlsx plus cost/margin.
+ */
 export function getConsolidatedSOs(
   lines: SODetailLine[],
   _members?: SalesMember[],
+  headers?: SOHeader[],
 ): ConsolidatedSO[] {
-  const grouped = new Map<string, SODetailLine[]>();
-  for (const line of lines) {
-    const arr = grouped.get(line.docNo) ?? [];
-    arr.push(line);
-    grouped.set(line.docNo, arr);
+  const hs = headers ?? seedHeaders;
+  const linesByDoc = new Map<string, SODetailLine[]>();
+  for (const l of lines) {
+    const arr = linesByDoc.get(l.docNo) ?? [];
+    arr.push(l);
+    linesByDoc.set(l.docNo, arr);
   }
-  return Array.from(grouped.entries()).map(([docNo, soLines]) => {
-    const first = soLines[0];
+
+  // Start from headers (authoritative source of address/phone/PO/remarks).
+  const result: ConsolidatedSO[] = hs.map((h) => {
+    const docLines = linesByDoc.get(h.docNo) ?? [];
+
+    // Revenue breakdown per category (from line items — overrides header's pre-computed values)
+    const mattressSofa = docLines.filter((l) => l.itemGroup === "MATTRESS" || l.itemGroup === "SOFA").reduce((s, l) => s + l.total, 0);
+    const bedframe = docLines.filter((l) => l.itemGroup === "BEDFRAME").reduce((s, l) => s + l.total, 0);
+    const accessories = docLines.filter((l) => l.itemGroup === "ACC" || l.itemGroup === "BEDLINES").reduce((s, l) => s + l.total, 0);
+    const others = docLines.filter((l) => !["MATTRESS","SOFA","BEDFRAME","ACC","BEDLINES"].includes(l.itemGroup)).reduce((s, l) => s + l.total, 0);
+
+    // Cost breakdown per category
+    const mattressSofaCost = docLines.filter((l) => l.itemGroup === "MATTRESS" || l.itemGroup === "SOFA").reduce((s, l) => s + l.lineCost, 0);
+    const bedframeCost = docLines.filter((l) => l.itemGroup === "BEDFRAME").reduce((s, l) => s + l.lineCost, 0);
+    const accessoriesCost = docLines.filter((l) => l.itemGroup === "ACC" || l.itemGroup === "BEDLINES").reduce((s, l) => s + l.lineCost, 0);
+    const othersCost = docLines.filter((l) => !["MATTRESS","SOFA","BEDFRAME","ACC","BEDLINES"].includes(l.itemGroup)).reduce((s, l) => s + l.lineCost, 0);
+
+    const totalCost = mattressSofaCost + bedframeCost + accessoriesCost + othersCost;
+    const totalRevenue = docLines.length > 0
+      ? mattressSofa + bedframe + accessories + others
+      : h.totalRevenue;
+    const totalMargin = totalRevenue - totalCost;
+    const marginPct = totalRevenue > 0 ? (totalMargin / totalRevenue) * 100 : 0;
+    const firstLine = docLines[0];
+
     return {
-      docNo,
-      date: first.date,
-      debtorName: first.debtorName,
-      debtorCode: first.debtorCode,
-      agent: first.agent,
-      salesLocation: first.location,
-      reference: first.remark ?? "",
-      branding: first.branding,
-      venue: first.venue,
-      localTotal: soLines.reduce((s, l) => s + l.totalInc, 0),
-      mattressSofa: soLines.filter((l) => l.itemGroup === "MATTRESS").reduce((s, l) => s + l.total, 0),
-      bedframe: soLines.filter((l) => l.itemGroup === "BEDFRAME").reduce((s, l) => s + l.total, 0),
-      accessories: soLines.filter((l) => l.itemGroup === "ACC").reduce((s, l) => s + l.total, 0),
-      others: soLines.filter((l) => l.itemGroup === "OTHERS").reduce((s, l) => s + l.total, 0),
-      balance: soLines.reduce((s, l) => s + l.balance, 0),
-      lineCount: soLines.length,
-      phone: undefined,
-      address: undefined,
+      ...h,
+      debtorCode: firstLine?.debtorCode ?? "",
+      reference: h.ref,
+      // Revenue per category (computed from lines, fall back to header if no lines)
+      mattressSofa: docLines.length > 0 ? round2(mattressSofa) : h.mattressSofa,
+      bedframe: docLines.length > 0 ? round2(bedframe) : h.bedframe,
+      accessories: docLines.length > 0 ? round2(accessories) : h.accessories,
+      others: docLines.length > 0 ? round2(others) : h.others,
+      // Cost per category
+      mattressSofaCost: round2(mattressSofaCost),
+      bedframeCost: round2(bedframeCost),
+      accessoriesCost: round2(accessoriesCost),
+      othersCost: round2(othersCost),
+      // Totals
+      totalCost: round2(totalCost),
+      totalRevenue: round2(totalRevenue),
+      totalMargin: round2(totalMargin),
+      marginPct: round2(marginPct),
+      lineCount: docLines.length || h.lineCount,
     };
   });
+
+  // Include any docs that exist only in lines (not in headers)
+  const headerDocs = new Set(hs.map((h) => h.docNo));
+  for (const [docNo, docLines] of linesByDoc) {
+    if (headerDocs.has(docNo)) continue;
+    const first = docLines[0];
+    const totalRevenue = docLines.reduce((s, l) => s + l.total, 0);
+    const totalCost = docLines.reduce((s, l) => s + l.lineCost, 0);
+    result.push({
+      docNo,
+      transferTo: "",
+      date: first.date,
+      branding: first.branding,
+      debtorName: first.debtorName,
+      agent: first.agent,
+      salesLocation: first.location,
+      ref: "",
+      localTotal: totalRevenue,
+      mattressSofa: docLines.filter((l) => l.itemGroup === "MATTRESS" || l.itemGroup === "SOFA").reduce((s, l) => s + l.total, 0),
+      bedframe: docLines.filter((l) => l.itemGroup === "BEDFRAME").reduce((s, l) => s + l.total, 0),
+      accessories: docLines.filter((l) => l.itemGroup === "ACC").reduce((s, l) => s + l.total, 0),
+      others: docLines.filter((l) => !["MATTRESS","SOFA","BEDFRAME","ACC"].includes(l.itemGroup)).reduce((s, l) => s + l.total, 0),
+      balance: docLines[0]?.balance ?? 0, // balance is duplicated per line in Excel — take first
+      remark2: "", remark3: "", remark4: "",
+      processingDate: "", salesExemptionExpiry: "", note: "",
+      poDocNo: "",
+      address1: "", address2: "", address3: "", address4: "",
+      phone: "", venue: first.venue,
+      debtorCode: first.debtorCode,
+      reference: "",
+      totalCost: round2(totalCost),
+      totalRevenue: round2(totalRevenue),
+      totalMargin: round2(totalRevenue - totalCost),
+      marginPct: totalRevenue > 0 ? round2((totalRevenue - totalCost) / totalRevenue * 100) : 0,
+      lineCount: docLines.length,
+    });
+  }
+
+  return result;
+}
+
+// ─── Venue (project) roll-up ──────────────────────────────────────────────────
+
+export interface VenueRollup {
+  venue: string;
+  orderCount: number;
+  lineCount: number;
+  revenue: number;
+  cost: number;
+  margin: number;
+  marginPct: number;
+  balance: number;
+  brands: string[];
+}
+
+export function getVenueRollup(lines: SODetailLine[], headers?: SOHeader[]): VenueRollup[] {
+  const byVenue = new Map<string, { docs: Set<string>; lines: SODetailLine[]; brands: Set<string>; balance: number }>();
+  // Track first-seen balance per doc to avoid double-counting (balance is dup'd per line in Excel)
+  const balanceByDoc = new Map<string, number>();
+  for (const l of lines) {
+    const v = (l.venue || "—").trim() || "—";
+    let g = byVenue.get(v);
+    if (!g) { g = { docs: new Set(), lines: [], brands: new Set(), balance: 0 }; byVenue.set(v, g); }
+    g.docs.add(l.docNo);
+    g.lines.push(l);
+    if (l.branding) g.brands.add(l.branding);
+    if (!balanceByDoc.has(l.docNo)) {
+      balanceByDoc.set(l.docNo, l.balance);
+      g.balance += l.balance;
+    }
+  }
+
+  // If headers provided, pick up balance from headers too (covers docs with no lines)
+  if (headers) {
+    for (const h of headers) {
+      const v = (h.venue || "—").trim() || "—";
+      let g = byVenue.get(v);
+      if (!g) { g = { docs: new Set(), lines: [], brands: new Set(), balance: 0 }; byVenue.set(v, g); }
+      g.docs.add(h.docNo);
+      if (h.branding) g.brands.add(h.branding);
+    }
+  }
+
+  const rows: VenueRollup[] = [];
+  for (const [venue, g] of byVenue) {
+    const revenue = g.lines.reduce((s, l) => s + l.total, 0);
+    const cost = g.lines.reduce((s, l) => s + l.lineCost, 0);
+    const margin = revenue - cost;
+    rows.push({
+      venue,
+      orderCount: g.docs.size,
+      lineCount: g.lines.length,
+      revenue: round2(revenue),
+      cost: round2(cost),
+      margin: round2(margin),
+      marginPct: revenue > 0 ? round2((margin / revenue) * 100) : 0,
+      balance: round2(g.balance),
+      brands: [...g.brands].sort(),
+    });
+  }
+  rows.sort((a, b) => b.revenue - a.revenue);
+  return rows;
+}
+
+// ─── SKU → latest unit price lookup ───────────────────────────────────────────
+
+export function getLatestSellPrice(itemCode: string): number {
+  const lines = readL();
+  // Find the most-recent line with unitPrice > 0 for this item
+  let best: SODetailLine | null = null;
+  for (const l of lines) {
+    if (l.itemCode !== itemCode || l.unitPrice <= 0) continue;
+    if (!best || l.date > best.date) best = l;
+  }
+  return best?.unitPrice ?? 0;
 }

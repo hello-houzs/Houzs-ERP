@@ -9,7 +9,7 @@ import {
   ITEM_GROUPS, SO_UOMS, PAYMENT_STATUSES,
   type SODetailLine, type ItemGroup, type SOUom, type PaymentStatus,
 } from "@/lib/so-store";
-import { useSKUCostings } from "@/lib/sku-costing-store";
+import { useSKUCostings, type SKUCosting } from "@/lib/sku-costing-store";
 import { useColumnPrefs } from "@/lib/column-prefs";
 import {
   FIELD_LABEL, FIELD_INPUT, FIELD_SELECT, FILTER_SELECT,
@@ -29,10 +29,14 @@ function fmtDate(d: string) {
   return new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+// Spacious pill badges (original style)
 const ITEM_GROUP_COLOR: Record<ItemGroup, string> = {
   MATTRESS: "bg-amber-100 text-amber-700",
   BEDFRAME: "bg-blue-100 text-blue-700",
+  SOFA: "bg-violet-100 text-violet-700",
   ACC: "bg-purple-100 text-purple-700",
+  BEDLINES: "bg-sky-100 text-sky-700",
+  DINING: "bg-orange-100 text-orange-700",
   OTHERS: "bg-gray-100 text-gray-600",
 };
 
@@ -57,20 +61,21 @@ interface Col {
   sortable?: boolean;
   defaultHidden?: boolean;
   align?: "right" | "center";
-  sortValue?: (l: SODetailLine) => string | number;
+  sortValue?: (l: SODetailLine, ctx: ColCtx) => string | number;
   render: (l: SODetailLine, ctx: ColCtx) => ReactNode;
 }
 
 interface ColCtx {
   onEdit: (l: SODetailLine) => void;
   onDelete: (id: string) => void;
+  costByCode: Map<string, number>;  // live SKU cost lookup by item code
 }
 
 const ALL_COLUMNS: Col[] = [
   {
     key: "docNo", label: "Doc. No.", sortable: true,
     sortValue: (l) => l.docNo,
-    render: (l) => <span className="font-semibold text-[#0A1F2E] whitespace-nowrap font-mono text-[10px]">{l.docNo}</span>,
+    render: (l) => <span className="font-semibold text-[#0F766E] whitespace-nowrap font-mono text-[12px] tracking-tight">{l.docNo}</span>,
   },
   {
     key: "date", label: "Date", sortable: true,
@@ -95,18 +100,18 @@ const ALL_COLUMNS: Col[] = [
     key: "itemGroup", label: "Item Group", sortable: true,
     sortValue: (l) => l.itemGroup,
     render: (l) => (
-      <span className={`px-1.5 py-[1px] rounded text-[9px] font-bold ${ITEM_GROUP_COLOR[l.itemGroup]}`}>
+      <span className={`px-1.5 py-[1px] rounded text-[9px] font-semibold ${ITEM_GROUP_COLOR[l.itemGroup]}`}>
         {l.itemGroup}
       </span>
     ),
   },
   {
     key: "itemCode", label: "Item Code",
-    render: (l) => <span className="font-mono text-[10px] text-[#0F766E]">{l.itemCode}</span>,
+    render: (l) => <span className="text-[12px] font-semibold text-[#0A1F2E] whitespace-nowrap">{l.itemCode}</span>,
   },
   {
     key: "description", label: "Description",
-    render: (l) => <span className="max-w-[200px] truncate inline-block" title={l.description}>{l.description}</span>,
+    render: (l) => <span className="block max-w-full truncate whitespace-nowrap" title={l.description}>{l.description}</span>,
   },
   {
     key: "description2", label: "Description 2", defaultHidden: true,
@@ -137,7 +142,56 @@ const ALL_COLUMNS: Col[] = [
   {
     key: "total", label: "Total", align: "right",
     sortValue: (l) => l.total,
-    render: (l) => <span className="tabular-nums font-bold">{fmtRM(l.total)}</span>,
+    render: (l) => <span className="tabular-nums font-semibold">{fmtRM(l.total)}</span>,
+  },
+  {
+    key: "unitCost", label: "Unit Cost", align: "right", defaultHidden: true,
+    sortValue: (l, ctx) => ctx?.costByCode.get(l.itemCode) ?? 0,
+    render: (l, ctx) => {
+      const cost = ctx.costByCode.get(l.itemCode) ?? 0;
+      return <span className="tabular-nums text-gray-500">{cost > 0 ? fmtRM(cost) : "—"}</span>;
+    },
+  },
+  {
+    key: "lineCost", label: "Line Cost", align: "right",
+    sortValue: (l, ctx) => (ctx?.costByCode.get(l.itemCode) ?? 0) * l.qty,
+    render: (l, ctx) => {
+      const cost = (ctx.costByCode.get(l.itemCode) ?? 0) * l.qty;
+      return <span className="tabular-nums text-gray-600">{cost > 0 ? fmtRM(cost) : "—"}</span>;
+    },
+  },
+  {
+    key: "lineMargin", label: "Margin RM", align: "right",
+    sortValue: (l, ctx) => l.total - (ctx?.costByCode.get(l.itemCode) ?? 0) * l.qty,
+    render: (l, ctx) => {
+      const cost = (ctx.costByCode.get(l.itemCode) ?? 0) * l.qty;
+      const margin = l.total - cost;
+      return (
+        <span className={`tabular-nums font-semibold ${margin > 0 ? "text-[#0F766E]" : margin < 0 ? "text-red-600" : "text-gray-400"}`}>
+          {l.total > 0 ? fmtRM(margin) : "—"}
+        </span>
+      );
+    },
+  },
+  {
+    key: "marginPct", label: "Margin %", align: "right",
+    sortValue: (l, ctx) => {
+      if (l.total <= 0) return 0;
+      const cost = (ctx?.costByCode.get(l.itemCode) ?? 0) * l.qty;
+      return ((l.total - cost) / l.total) * 100;
+    },
+    render: (l, ctx) => {
+      if (l.total <= 0) return <span className="text-gray-400">—</span>;
+      const cost = (ctx.costByCode.get(l.itemCode) ?? 0) * l.qty;
+      const pct = ((l.total - cost) / l.total) * 100;
+      return (
+        <span className={`tabular-nums font-semibold ${
+          pct >= 50 ? "text-[#0F766E]" : pct >= 30 ? "text-amber-700" : "text-red-600"
+        }`}>
+          {pct.toFixed(1)}%
+        </span>
+      );
+    },
   },
   {
     key: "tax", label: "Tax", align: "right", defaultHidden: true,
@@ -159,7 +213,7 @@ const ALL_COLUMNS: Col[] = [
   {
     key: "paymentStatus", label: "Payment",
     render: (l) => (
-      <span className={`px-1.5 py-[1px] rounded text-[9px] font-bold ${PAYMENT_COLOR[l.paymentStatus]}`}>
+      <span className={`px-1.5 py-[1px] rounded text-[9px] font-semibold ${PAYMENT_COLOR[l.paymentStatus]}`}>
         {l.paymentStatus}
       </span>
     ),
@@ -173,7 +227,7 @@ const ALL_COLUMNS: Col[] = [
     key: "branding", label: "Branding", sortable: true,
     sortValue: (l) => l.branding,
     render: (l) => (
-      <span className={`px-1.5 py-[1px] rounded text-[9px] font-bold ${BRAND_CHIP[l.branding] ?? "bg-gray-100 text-gray-600"}`}>
+      <span className={`px-1.5 py-[1px] rounded text-[9px] font-semibold ${BRAND_CHIP[l.branding] ?? "bg-gray-100 text-gray-600"}`}>
         {l.branding}
       </span>
     ),
@@ -240,13 +294,16 @@ function LineForm({ initial, onClose }: LineFormProps) {
   const [remark, setRemark] = useState(initial?.remark ?? "");
   const [cancelled, setCancelled] = useState(initial?.cancelled ?? false);
 
-  function handleSkuChange(selectedSku: string) {
-    setItemCode(selectedSku);
-    const found = skus.find((s) => s.sku === selectedSku);
+  function handleSkuChange(selectedCode: string) {
+    setItemCode(selectedCode);
+    const found = skus.find((s: SKUCosting) => s.itemCode === selectedCode);
     if (found) {
       setDescription(found.description);
-      setBranding(found.brand);
-      setUnitPrice(String(found.sellingPrice));
+      // Only override brand if it looks like a valid SO branding
+      if (["AKEMI", "ZANOTTI", "ERGOTEX", "DUNLOPILLO"].includes(found.brand)) {
+        setBranding(found.brand);
+      }
+      if (found.sellingPrice > 0) setUnitPrice(String(found.sellingPrice));
     }
   }
 
@@ -298,7 +355,7 @@ function LineForm({ initial, onClose }: LineFormProps) {
     <div className={DIALOG_OVERLAY}>
       <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
         <div className={DIALOG_HEADER}>
-          <span className="text-[13px] font-bold text-[#0A1F2E]">
+          <span className="text-[13px] font-semibold text-[#0A1F2E]">
             {initial ? "Edit Line Item" : "New Line Item"}
           </span>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
@@ -363,10 +420,18 @@ function LineForm({ initial, onClose }: LineFormProps) {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <p className={FIELD_LABEL}>Item Code / SKU *</p>
-              <select className={FIELD_SELECT} value={itemCode} onChange={(e) => handleSkuChange(e.target.value)}>
-                <option value="">— Select SKU —</option>
-                {skus.map((s) => <option key={s.id} value={s.sku}>{s.sku}</option>)}
-              </select>
+              <input
+                className={FIELD_INPUT}
+                list="sku-options"
+                value={itemCode}
+                onChange={(e) => handleSkuChange(e.target.value)}
+                placeholder="Type to search SKU…"
+              />
+              <datalist id="sku-options">
+                {skus.slice(0, 500).map((s: SKUCosting) => (
+                  <option key={s.id} value={s.itemCode}>{s.description}</option>
+                ))}
+              </datalist>
             </div>
             <div>
               <p className={FIELD_LABEL}>Description</p>
@@ -400,7 +465,7 @@ function LineForm({ initial, onClose }: LineFormProps) {
           {unitPrice && (
             <div className="rounded-md bg-[#F4F7F7] border border-[#DDE5E5] px-4 py-2 flex items-center justify-between">
               <span className="text-[11px] text-gray-500">Line Total Preview</span>
-              <span className="text-[14px] font-bold text-[#0F766E]">{fmtRM(computedTotal())}</span>
+              <span className="text-[14px] font-semibold text-[#0F766E]">{fmtRM(computedTotal())}</span>
             </div>
           )}
 
@@ -463,6 +528,7 @@ function LineForm({ initial, onClose }: LineFormProps) {
 
 export default function SODetailsPage() {
   const lines = useSOLines();
+  const skusMaster = useSKUCostings();
 
   // column prefs
   const { order, hidden, setOrder, setHidden, resetColumns } = useColumnPrefs(
@@ -471,6 +537,20 @@ export default function SODetailsPage() {
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
+
+  // per-column widths (px) — persisted
+  const COL_WIDTH_KEY = "houzs-so-details-widths-v1";
+  const [colWidths, setColWidths] = useState<Record<string, number>>(() => {
+    if (typeof window === "undefined") return {};
+    try { return JSON.parse(localStorage.getItem(COL_WIDTH_KEY) || "{}"); } catch { return {}; }
+  });
+  function setColWidth(key: string, w: number) {
+    setColWidths((prev) => {
+      const next = { ...prev, [key]: Math.max(32, Math.min(600, w)) };
+      try { localStorage.setItem(COL_WIDTH_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
 
   // sort
   const [sortKey, setSortKey] = useState<string>("date");
@@ -490,6 +570,8 @@ export default function SODetailsPage() {
   const [showForm, setShowForm] = useState(false);
   const [editLine, setEditLine] = useState<SODetailLine | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const PAGE_SIZE = 150;
 
   // unique option lists
   const uniqueAgents = useMemo(() => [...new Set(lines.map((l) => l.agent))].sort(), [lines]);
@@ -557,7 +639,14 @@ export default function SODetailsPage() {
 
   // summary
   const totalRevenue = useMemo(() => sorted.reduce((s, l) => s + l.total, 0), [sorted]);
-  const totalBalance = useMemo(() => sorted.reduce((s, l) => s + l.balance, 0), [sorted]);
+  const totalCost = useMemo(() => sorted.reduce((s, l) => s + l.lineCost, 0), [sorted]);
+  const totalMargin = totalRevenue - totalCost;
+  // Balance is duplicated per line in Excel — dedupe by docNo
+  const totalBalance = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const l of sorted) if (!seen.has(l.docNo)) seen.set(l.docNo, l.balance);
+    return [...seen.values()].reduce((s, b) => s + b, 0);
+  }, [sorted]);
   const uniqueOrders = useMemo(() => new Set(sorted.map((l) => l.docNo)).size, [sorted]);
 
   const hasFilters = !!(search || filterBranding || filterGroup || filterAgent || filterVenue || filterPayment || filterFrom || filterTo);
@@ -571,9 +660,17 @@ export default function SODetailsPage() {
   const pillOff = "bg-white text-gray-600 border-[#DDE5E5] hover:border-[#0F766E]";
   const pillOn = "bg-[#0F766E] text-white border-[#0F766E]";
 
+  // Live cost lookup by item code — reflects SKU Costing master in real time
+  const costByCode = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of skusMaster) m.set(s.itemCode, s.costPrice);
+    return m;
+  }, [skusMaster]);
+
   const ctx: ColCtx = {
     onEdit: (l) => setEditLine(l),
     onDelete: (id) => setConfirmDelete(id),
+    costByCode,
   };
 
   return (
@@ -581,7 +678,7 @@ export default function SODetailsPage() {
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[#0A1F2E]">Sales Order Details</h1>
+          <h1 className="text-2xl font-semibold text-[#0A1F2E]">Sales Order Details</h1>
           <p className="text-sm text-gray-500 mt-0.5">
             Line-item view · {lines.length} items · drag <GripVertical className="inline h-3 w-3" /> to reorder columns
           </p>
@@ -602,16 +699,18 @@ export default function SODetailsPage() {
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         {[
           { label: "Total Lines", value: sorted.length.toString() },
-          { label: "Total Revenue", value: fmtRM(totalRevenue) },
-          { label: "Outstanding Balance", value: fmtRM(totalBalance) },
           { label: "Unique Orders", value: uniqueOrders.toString() },
+          { label: "Revenue", value: fmtRM(totalRevenue) },
+          { label: "Cost", value: fmtRM(totalCost) },
+          { label: "Margin", value: fmtRM(totalMargin) + (totalRevenue > 0 ? ` (${(totalMargin / totalRevenue * 100).toFixed(1)}%)` : "") },
+          { label: "Outstanding", value: fmtRM(totalBalance) },
         ].map(({ label, value }) => (
-          <div key={label} className={`${CARD} px-4 py-3`}>
+          <div key={label} className={`${CARD} px-3 py-2`}>
             <p className={STAT_LABEL}>{label}</p>
-            <p className={`${STAT_VALUE} text-[#0A1F2E]`}>{value}</p>
+            <p className={`${STAT_VALUE} text-[#0A1F2E] text-[12px]`}>{value}</p>
           </div>
         ))}
       </div>
@@ -619,8 +718,6 @@ export default function SODetailsPage() {
       {/* Filter Bar */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white p-2.5 flex flex-wrap gap-2 items-center">
         <Filter className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-
-        {/* Search */}
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-gray-400 pointer-events-none" />
           <input
@@ -635,43 +732,34 @@ export default function SODetailsPage() {
             </button>
           )}
         </div>
-
         <select className={FILTER_SELECT} value={filterBranding} onChange={(e) => setFilterBranding(e.target.value)}>
           <option value="">All Brands</option>
           {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
         </select>
-
         <select className={FILTER_SELECT} value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)}>
           <option value="">All Groups</option>
           {ITEM_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
         </select>
-
         <select className={FILTER_SELECT} value={filterAgent} onChange={(e) => setFilterAgent(e.target.value)}>
           <option value="">All Agents</option>
           {uniqueAgents.map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
-
         <select className={FILTER_SELECT} value={filterVenue} onChange={(e) => setFilterVenue(e.target.value)}>
           <option value="">All Venues</option>
           {uniqueVenues.map((v) => <option key={v} value={v}>{v}</option>)}
         </select>
-
         <select className={FILTER_SELECT} value={filterPayment} onChange={(e) => setFilterPayment(e.target.value)}>
           <option value="">All Payment</option>
           {PAYMENT_STATUSES.map((p) => <option key={p} value={p}>{p}</option>)}
         </select>
-
         <input type="date" className={FILTER_SELECT} value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} title="From date" />
         <input type="date" className={FILTER_SELECT} value={filterTo} onChange={(e) => setFilterTo(e.target.value)} title="To date" />
-
         {hasFilters && (
           <button onClick={clearFilters}
             className="h-8 px-2 rounded-md text-[10px] font-semibold text-gray-500 hover:text-red-600 inline-flex items-center gap-1">
             <X className="h-3 w-3" /> Clear
           </button>
         )}
-
-        {/* Columns button */}
         <div className="relative ml-auto">
           <button
             onClick={() => setColumnsOpen(!columnsOpen)}
@@ -685,7 +773,6 @@ export default function SODetailsPage() {
               {visibleColumns.length}/{ALL_COLUMNS.length}
             </span>
           </button>
-
           {columnsOpen && (
             <>
               <div className="fixed inset-0 z-20" onClick={() => setColumnsOpen(false)} />
@@ -725,7 +812,7 @@ export default function SODetailsPage() {
       {/* Table */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-[11px]">
+          <table className="w-full text-[12px]">
             <thead className="bg-[#F4F7F7] text-[#0A1F2E] border-b border-[#DDE5E5]">
               <tr className="text-left">
                 {visibleColumns.map((c) => {
@@ -742,7 +829,8 @@ export default function SODetailsPage() {
                       onDrop={() => handleDrop(c.key)}
                       onDragEnd={handleDragEnd}
                       onClick={() => toggleSort(c)}
-                      className={`group px-1.5 py-1.5 font-semibold whitespace-nowrap select-none text-[10px] transition
+                      style={colWidths[c.key] ? { width: colWidths[c.key], minWidth: colWidths[c.key], maxWidth: colWidths[c.key] } : undefined}
+                      className={`group relative px-1.5 py-1.5 font-semibold whitespace-nowrap select-none text-[10px] transition
                         ${c.align === "right" ? "text-right" : c.align === "center" ? "text-center" : ""}
                         ${isSorted ? "text-[#0F766E]" : ""}
                         ${isDragging ? "opacity-30" : ""}
@@ -759,6 +847,29 @@ export default function SODetailsPage() {
                             : <ArrowUpDown className="h-3 w-3 text-gray-300" />
                         )}
                       </span>
+                      {/* Resize handle (drag right edge) */}
+                      <span
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          const th = (e.currentTarget.parentElement as HTMLElement);
+                          const startX = e.clientX;
+                          const startW = th.getBoundingClientRect().width;
+                          function onMove(ev: MouseEvent) {
+                            setColWidth(c.key, startW + (ev.clientX - startX));
+                          }
+                          function onUp() {
+                            document.removeEventListener("mousemove", onMove);
+                            document.removeEventListener("mouseup", onUp);
+                          }
+                          document.addEventListener("mousemove", onMove);
+                          document.addEventListener("mouseup", onUp);
+                        }}
+                        onDragStart={(e) => e.preventDefault()}
+                        onClick={(e) => e.stopPropagation()}
+                        className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-[#0F766E]/60"
+                        title="Drag to resize column"
+                      />
                     </th>
                   );
                 })}
@@ -772,7 +883,7 @@ export default function SODetailsPage() {
                   </td>
                 </tr>
               )}
-              {sorted.map((l) => (
+              {(showAll ? sorted : sorted.slice(0, PAGE_SIZE)).map((l) => (
                 <tr
                   key={l.id}
                   className={`border-b border-[#F0F3F3] hover:bg-[#F4F7F7] transition-colors ${l.cancelled ? "opacity-40" : ""}`}
@@ -780,7 +891,7 @@ export default function SODetailsPage() {
                   {visibleColumns.map((c) => (
                     <td
                       key={c.key}
-                      className={`px-1.5 py-1.5
+                      className={`px-1.5 py-1.5 whitespace-nowrap
                         ${c.align === "right" ? "text-right" : c.align === "center" ? "text-center" : ""}
                       `}
                     >
@@ -793,7 +904,19 @@ export default function SODetailsPage() {
           </table>
         </div>
         <div className="px-3 py-2 text-[11px] text-gray-500 border-t border-[#DDE5E5] bg-[#FAFBFB] flex items-center justify-between">
-          <span>{sorted.length} record(s) · {visibleColumns.length} column(s) · preferences saved to this browser</span>
+          <span>
+            Showing {Math.min(showAll ? sorted.length : PAGE_SIZE, sorted.length)} of {sorted.length} · {visibleColumns.length} col(s)
+            {!showAll && sorted.length > PAGE_SIZE && (
+              <button onClick={() => setShowAll(true)} className="ml-3 text-[#0F766E] font-semibold hover:underline">
+                Show all {sorted.length}
+              </button>
+            )}
+            {showAll && sorted.length > PAGE_SIZE && (
+              <button onClick={() => setShowAll(false)} className="ml-3 text-[#0F766E] font-semibold hover:underline">
+                Show first {PAGE_SIZE}
+              </button>
+            )}
+          </span>
           <span className="font-semibold text-[#0A1F2E]">Total: {fmtRM(totalRevenue)}</span>
         </div>
       </div>

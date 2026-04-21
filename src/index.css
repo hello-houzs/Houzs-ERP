@@ -20,8 +20,11 @@
   --color-accent-blue: #2563EB;
   --color-accent-amber: #D97706;
   --color-accent-red: #DC2626;
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+  /* AutoCount / Windows-accounting-system look — sans-serif everywhere, Tahoma first */
+  --font-sans: Tahoma, "Segoe UI", Arial, Verdana, sans-serif;
+  /* "Monospace" slot — we DON'T actually want Consolas (its 0 has a dot that looks wrong).
+     Use a tabular-number sans-serif instead, same font as body. */
+  --font-mono: Tahoma, "Segoe UI", Arial, sans-serif;
 }
 
 body {
@@ -30,6 +33,19 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "tnum" 1, "lnum" 1; /* tabular + lining numerals globally */
+}
+
+/* Override Tailwind's default font-mono — use same sans so digits are clean */
+.font-mono {
+  font-family: var(--font-mono) !important;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  letter-spacing: 0;
+}
+
+/* Tabular digits in tables and numeric inputs */
+table, .tabular-nums, input[type="number"] {
+  font-variant-numeric: tabular-nums lining-nums;
 }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }

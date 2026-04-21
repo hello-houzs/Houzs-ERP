@@ -35,6 +35,11 @@ export default function App() {
         <Route path="/sales/details" element={<AdminRoute><SODetailsPage /></AdminRoute>} />
         <Route path="/sales/orders" element={<AdminRoute><SalesOrderPage /></AdminRoute>} />
         <Route path="/sales/sku-costing" element={<AdminRoute><SKUCostingPage /></AdminRoute>} />
+        {/* Legacy deep links: pre-select category */}
+        <Route path="/sales/sku/bedframe" element={<AdminRoute><SKUCostingPage category="BEDFRAME" /></AdminRoute>} />
+        <Route path="/sales/sku/sofa" element={<AdminRoute><SKUCostingPage category="SOFA" /></AdminRoute>} />
+        <Route path="/sales/sku/matt-acc" element={<AdminRoute><SKUCostingPage category="MATT_ACC" /></AdminRoute>} />
+        <Route path="/sales/sku/others" element={<AdminRoute><SKUCostingPage category="OTHERS" /></AdminRoute>} />
         {/* Admin-only: QMS */}
         <Route path="/qms" element={<AdminRoute><QmsPage /></AdminRoute>} />
         <Route path="/qms/:id" element={<AdminRoute><QmsDetailPage /></AdminRoute>} />
