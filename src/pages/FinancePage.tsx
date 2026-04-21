@@ -7,6 +7,7 @@ import {
 } from "@/lib/mock-data";
 import { useAllEvents } from "@/lib/events-store";
 import { FILTER_SELECT } from "@/lib/ui-tokens";
+import { useCurrentUser, canViewFinance } from "@/lib/auth-store";
 
 interface FinancialRow extends HouzsEvent {
   cogsTotal: number;
@@ -85,6 +86,25 @@ const COLUMNS: { key: SortKey; label: string; align?: "right" | "center"; numeri
 
 export default function FinancePage() {
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
+
+  // Guard: only admins (Sales Directors) can view this page
+  if (!canViewFinance(currentUser)) {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h1 className="text-2xl font-bold text-[#0A1F2E]">Project Financial Report</h1>
+        </div>
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-10 text-center">
+          <div className="text-4xl mb-3">🔒</div>
+          <div className="text-[15px] font-semibold text-amber-800">Admin Only</div>
+          <div className="text-[12px] text-amber-700 mt-1">
+            The Project Financial Report is only accessible to Sales Directors.
+          </div>
+        </div>
+      </div>
+    );
+  }
   const [brand, setBrand] = useState<Brand | "ALL">("ALL");
   const [eventType, setEventType] = useState<EventType | "ALL">("ALL");
   const [status, setStatus] = useState<EventStatus | "ALL">("ALL");

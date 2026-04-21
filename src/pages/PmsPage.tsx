@@ -7,6 +7,7 @@ import {
 } from "@/lib/mock-data";
 import { useAllEvents } from "@/lib/events-store";
 import { FILTER_SELECT } from "@/lib/ui-tokens";
+import { useCurrentUser, canViewEvent, isAdmin } from "@/lib/auth-store";
 
 const WORKFLOW_KEYS: (keyof HouzsEvent)[] = [
   "agreementApproval", "floorplan", "sendFloorplanToDesigner", "threeDCheckedByMgt",
@@ -40,10 +41,17 @@ export default function PmsPage() {
   const [state, setState] = useState<MalaysianState | "ALL">("ALL");
   const [query, setQuery] = useState("");
 
+  const currentUser = useCurrentUser();
+  const userIsAdmin = isAdmin(currentUser);
+
   const allEvents = useAllEvents();
+  const visibleEvents = useMemo(
+    () => allEvents.filter((e) => canViewEvent(currentUser, e)),
+    [allEvents, currentUser]
+  );
 
   const filtered = useMemo(() => {
-    return allEvents.filter((e) => {
+    return visibleEvents.filter((e) => {
       if (brand !== "ALL" && e.brand !== brand) return false;
       if (eventType !== "ALL" && e.eventType !== eventType) return false;
       if (status !== "ALL" && e.status !== status) return false;
@@ -52,7 +60,7 @@ export default function PmsPage() {
         return false;
       return true;
     });
-  }, [allEvents, brand, eventType, status, state, query]);
+  }, [visibleEvents, brand, eventType, status, state, query]);
 
   const groups = useMemo(() => ({
     inProgress: filtered.filter((e) => e.progress === "IN PROGRESS"),
@@ -70,12 +78,19 @@ export default function PmsPage() {
 
   return (
     <div className="space-y-4">
+      {/* RBAC banner for limited users */}
+      {!userIsAdmin && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 flex items-center gap-2 text-[12px] text-amber-800">
+          <span className="font-semibold">ℹ</span>
+          Showing {visibleEvents.length} event{visibleEvents.length === 1 ? "" : "s"} assigned to you.
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-[#0A1F2E]">Project Details</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            {filtered.length} of {allEvents.length} projects
+            {filtered.length} of {visibleEvents.length} projects
           </p>
         </div>
         <Link

@@ -9,6 +9,7 @@ import {
 import { useAllEvents } from "@/lib/events-store";
 import { buildHolidayIndex } from "@/lib/holidays";
 import { FILTER_SELECT } from "@/lib/ui-tokens";
+import { useCurrentUser, canViewEvent, isAdmin } from "@/lib/auth-store";
 
 // Google-Calendar style brand palette (all blue-purple family on the real sheet,
 // but we tint per-brand for quick visual scan while staying close to the look).
@@ -147,7 +148,14 @@ function layoutWeek(week: Date[], events: HouzsEvent[]): Segment[] {
 const MAX_VISIBLE_TRACKS = 4;
 
 export default function CalendarPage() {
+  const currentUser = useCurrentUser();
+  const userIsAdmin = isAdmin(currentUser);
+
   const allEvents = useAllEvents();
+  const visibleEvents = useMemo(
+    () => allEvents.filter((e) => canViewEvent(currentUser, e)),
+    [allEvents, currentUser]
+  );
   const today = new Date();
   const [cursor, setCursor] = useState<{ y: number; m: number }>({
     y: today.getFullYear(),
@@ -165,13 +173,13 @@ export default function CalendarPage() {
 
   const organizerOptions = useMemo(() => {
     const set = new Set<string>();
-    for (const e of allEvents) if (e.organizer) set.add(e.organizer);
+    for (const e of visibleEvents) if (e.organizer) set.add(e.organizer);
     return Array.from(set).sort();
-  }, [allEvents]);
+  }, [visibleEvents]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toUpperCase();
-    return allEvents.filter((e) => {
+    return visibleEvents.filter((e) => {
       if (brandFilter !== "ALL" && e.brand !== brandFilter) return false;
       if (typeFilter !== "ALL" && e.eventType !== typeFilter) return false;
       if (stateFilter !== "ALL" && e.state !== stateFilter) return false;
@@ -188,7 +196,7 @@ export default function CalendarPage() {
       return true;
     });
   }, [
-    allEvents, brandFilter, typeFilter, stateFilter, statusFilter,
+    visibleEvents, brandFilter, typeFilter, stateFilter, statusFilter,
     progressFilter, organizerFilter, search,
   ]);
 
@@ -257,6 +265,13 @@ export default function CalendarPage() {
   const pillOn = "bg-[#0F766E] text-white border-[#0F766E]";
   return (
     <div className="space-y-4">
+      {/* RBAC banner for limited users */}
+      {!userIsAdmin && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 flex items-center gap-2 text-[12px] text-amber-800">
+          <span className="font-semibold">ℹ</span>
+          Showing {visibleEvents.length} event{visibleEvents.length === 1 ? "" : "s"} assigned to you.
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
@@ -438,7 +453,7 @@ export default function CalendarPage() {
           )}
 
           <div className="ml-auto text-[10px] text-gray-500 tabular-nums">
-            {filtered.length} / {allEvents.length} events
+            {filtered.length} / {visibleEvents.length} events
           </div>
         </div>
       </div>

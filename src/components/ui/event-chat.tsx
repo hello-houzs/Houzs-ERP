@@ -21,6 +21,7 @@ import {
   getChatRoom, markAsRead,
 } from "@/lib/chat-store";
 import { useSalesMembers } from "@/lib/sales-store";
+import { useCurrentUser } from "@/lib/auth-store";
 import {
   appendSystemMessageIfMissing,
   hasSystemMessage,
@@ -79,11 +80,14 @@ export function EventChat({
   assignedSales,
   eventStatus,
   pic,
-  currentUserId = "dir-kingsley",
+  currentUserId: currentUserIdProp,
 }: EventChatProps) {
   const allRooms = useChatRooms();
   const messages = useChatMessages(eventA42);
   const salesMembers = useSalesMembers();
+  // Resolve actual logged-in user; fall back to prop or director default
+  const _authUser = useCurrentUser();
+  const currentUserId = currentUserIdProp ?? _authUser?.id ?? "dir-kingsley";
   const [input, setInput] = useState("");
   const [showMembers, setShowMembers] = useState(false);
   const [showOrderForm, setShowOrderForm] = useState(false);
@@ -156,9 +160,16 @@ export function EventChat({
   }, [currentUserId, picId]);
 
   const fullRosterMembers = useMemo(() => {
-    const ids = [currentUserId, ...(picId ? [picId] : []), ...assignedSales];
-    return [...new Set(ids)];
-  }, [currentUserId, picId, assignedSales]);
+    // T-3 .. T-1 (activation window): assigned sales + PIC + management
+    // T-0 .. end (live): ALL active sales — non-assigned members can view floorplan + chat
+    const base = [currentUserId, ...(picId ? [picId] : []), ...assignedSales];
+    if (isEventRunning) {
+      // Add all active sales members (they get limited floorplan-only view)
+      const allActive = salesMembers.filter((m) => m.status === "ACTIVE").map((m) => m.id);
+      return [...new Set([...base, ...allActive])];
+    }
+    return [...new Set(base)];
+  }, [currentUserId, picId, assignedSales, isEventRunning, salesMembers]);
 
   // Resolve member names for display
   const memberNames = useMemo(() => {

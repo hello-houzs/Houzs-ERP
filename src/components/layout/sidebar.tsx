@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { useLocation } from "react-router-dom";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   LayoutDashboard,
   Briefcase,
@@ -17,9 +17,14 @@ import {
   FileText,
   Receipt,
   Package,
+  UserCog,
+  LogOut,
+  ChevronDown,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCurrentUser, setCurrentUserId, logout, isAdmin, canViewFinance } from "@/lib/auth-store";
+import { useSalesMembers } from "@/lib/sales-store";
 
 interface NavItem {
   name: string;
@@ -71,6 +76,15 @@ const navigationGroups: NavGroup[] = [
 export function Sidebar() {
   const { pathname } = useLocation();
   const [collapsed, setCollapsed] = useState(false);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [switcherQuery, setSwitcherQuery] = useState("");
+  const switcherRef = useRef<HTMLDivElement>(null);
+
+  const currentUser = useCurrentUser();
+  const allMembers = useSalesMembers();
+  const activeMembers = allMembers.filter((m) => m.status === "ACTIVE");
+  const userIsAdmin = isAdmin(currentUser);
+  const userCanViewFinance = canViewFinance(currentUser);
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
@@ -81,6 +95,28 @@ export function Sidebar() {
     if (leafRoutes.includes(href)) return pathname === href;
     return pathname.startsWith(href + "/");
   };
+
+  const avatarLetter = (currentUser?.name ?? "?")[0].toUpperCase();
+  const displayName = currentUser
+    ? currentUser.name.charAt(0) + currentUser.name.slice(1).toLowerCase()
+    : "Guest";
+
+  function handleSelectUser(id: string) {
+    setCurrentUserId(id);
+    setSwitcherOpen(false);
+    setSwitcherQuery("");
+  }
+
+  function handleLogout() {
+    logout();
+    setSwitcherOpen(false);
+  }
+
+  const filteredMembers = activeMembers.filter((m) =>
+    !switcherQuery.trim() ||
+    m.name.toLowerCase().includes(switcherQuery.toLowerCase()) ||
+    m.position.toLowerCase().includes(switcherQuery.toLowerCase())
+  );
 
   return (
     <aside
@@ -118,7 +154,9 @@ export function Sidebar() {
             )}
             {collapsed && <div className="my-1 mx-2 border-t border-white/10" />}
             <div className="space-y-0.5">
-              {group.items.map((item) => {
+              {group.items
+                .filter((item) => item.href !== "/finance" || userCanViewFinance)
+                .map((item) => {
                 const active = isActive(item.href);
                 return (
                   <Link
@@ -164,27 +202,110 @@ export function Sidebar() {
         )}
       </div>
 
-      {/* User */}
-      <div className="border-t border-white/10 px-2 py-2 shrink-0">
-        {collapsed ? (
-          <div className="flex items-center justify-center">
-            <div className="h-8 w-8 rounded-full bg-[#0F766E]/40 flex items-center justify-center text-xs font-semibold text-white">
-              L
+      {/* User switcher */}
+      <div className="border-t border-white/10 px-2 py-2 shrink-0 relative" ref={switcherRef}>
+        {/* Dropdown panel — rendered above the trigger */}
+        {switcherOpen && !collapsed && (
+          <div className="absolute bottom-full left-2 right-2 mb-1 rounded-lg border border-white/10 bg-[#0E2D40] shadow-xl z-50 overflow-hidden">
+            {/* Search */}
+            <div className="px-3 py-2 border-b border-white/10">
+              <input
+                type="text"
+                value={switcherQuery}
+                onChange={(e) => setSwitcherQuery(e.target.value)}
+                placeholder="Search members…"
+                autoFocus
+                className="w-full h-6 bg-transparent text-[11px] text-white placeholder:text-gray-500 outline-none"
+              />
             </div>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2.5 px-1">
-            <div className="h-8 w-8 rounded-full bg-[#0F766E]/40 flex items-center justify-center text-xs font-semibold text-white shrink-0">
-              L
+            {/* Member list */}
+            <div className="max-h-[200px] overflow-y-auto">
+              {filteredMembers.map((m) => {
+                const isSelected = m.id === currentUser?.id;
+                const memberIsAdmin = m.position === "Sales Director";
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => handleSelectUser(m.id)}
+                    className={cn(
+                      "w-full flex items-center gap-2 px-3 py-2 text-left transition-colors",
+                      isSelected
+                        ? "bg-[#0F766E]/30 text-white"
+                        : "text-gray-300 hover:bg-white/5 hover:text-white"
+                    )}
+                  >
+                    <div className="h-6 w-6 rounded-full bg-[#0F766E]/40 flex items-center justify-center text-[10px] font-bold text-white shrink-0">
+                      {m.name[0].toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[11px] font-semibold truncate">{m.name}</div>
+                    </div>
+                    <span className={cn(
+                      "text-[9px] font-semibold px-1.5 py-[2px] rounded-full shrink-0",
+                      memberIsAdmin
+                        ? "bg-[#0F766E] text-white"
+                        : "bg-amber-500/20 text-amber-300"
+                    )}>
+                      {memberIsAdmin ? "Admin" : m.position.replace("Sales ", "")}
+                    </span>
+                  </button>
+                );
+              })}
+              {filteredMembers.length === 0 && (
+                <div className="px-3 py-3 text-[11px] text-gray-500 text-center">No members found</div>
+              )}
             </div>
-            <div className="flex flex-col min-w-0">
-              <span className="text-[13px] font-semibold text-white truncate">Lim</span>
-              <span className="inline-flex items-center self-start rounded-full bg-[#0F766E]/30 text-[10px] text-gray-300 px-2 py-[2px]">
-                Director
-              </span>
+            {/* Sign out */}
+            <div className="border-t border-white/10">
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="w-full flex items-center gap-2 px-3 py-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+              >
+                <LogOut className="h-3.5 w-3.5 shrink-0" />
+                <span className="text-[11px] font-medium">Sign out</span>
+              </button>
             </div>
           </div>
         )}
+
+        {/* Trigger button */}
+        <button
+          type="button"
+          onClick={() => setSwitcherOpen((o) => !o)}
+          className={cn(
+            "w-full rounded-md hover:bg-white/5 transition-colors",
+            collapsed ? "flex items-center justify-center p-1" : "flex items-center gap-2.5 px-1 py-1"
+          )}
+          title={collapsed ? (currentUser?.name ?? "Switch user") : undefined}
+        >
+          <div className="h-8 w-8 rounded-full bg-[#0F766E]/40 flex items-center justify-center text-xs font-semibold text-white shrink-0">
+            {avatarLetter}
+          </div>
+          {!collapsed && (
+            <>
+              <div className="flex flex-col min-w-0 flex-1 text-left">
+                <span className="text-[13px] font-semibold text-white truncate">{displayName}</span>
+                <span className={cn(
+                  "inline-flex items-center self-start rounded-full text-[10px] px-2 py-[2px] mt-0.5",
+                  userIsAdmin
+                    ? "bg-[#0F766E]/30 text-[#5EEAD4]"
+                    : "bg-amber-500/20 text-amber-300"
+                )}>
+                  {userIsAdmin ? "Admin" : (currentUser?.position ?? "Guest")}
+                </span>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <UserCog className="h-3.5 w-3.5 text-gray-500" />
+                <ChevronDown className={cn(
+                  "h-3 w-3 text-gray-500 transition-transform",
+                  switcherOpen && "rotate-180"
+                )} />
+              </div>
+            </>
+          )}
+        </button>
       </div>
 
       {/* Collapse toggle */}

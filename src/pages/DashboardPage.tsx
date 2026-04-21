@@ -11,6 +11,7 @@ import {
 } from "@/lib/mock-data";
 import { useAllEvents, updateEvent } from "@/lib/events-store";
 import { FILTER_SELECT } from "@/lib/ui-tokens";
+import { useCurrentUser, canViewEvent, isAdmin } from "@/lib/auth-store";
 
 // ---------- helpers ----------
 function isDone(v: WorkflowFlag) { return v === "TRUE" || v === "DONE"; }
@@ -248,10 +249,19 @@ export default function DashboardPage() {
     } catch { /* ignore */ }
   }, [order, hidden]);
 
+  // Auth
+  const currentUser = useCurrentUser();
+  const userIsAdmin = isAdmin(currentUser);
+
   // Data pipeline — reactive events (mock + user-added + overrides)
   const allEvents = useAllEvents();
+  // RBAC: limit visible events for non-admin users
+  const visibleEvents = useMemo(
+    () => allEvents.filter((e) => canViewEvent(currentUser, e)),
+    [allEvents, currentUser]
+  );
   const filtered = useMemo(() => {
-    return allEvents.filter((e) => {
+    return visibleEvents.filter((e) => {
       if (brand !== "ALL" && e.brand !== brand) return false;
       if (eventType !== "ALL" && e.eventType !== eventType) return false;
       if (status !== "ALL" && e.status !== status) return false;
@@ -262,7 +272,7 @@ export default function DashboardPage() {
         return false;
       return true;
     });
-  }, [allEvents, brand, eventType, status, progress, state, query, needs]);
+  }, [visibleEvents, brand, eventType, status, progress, state, query, needs]);
 
   const sorted = useMemo(() => {
     const col = ALL_COLUMNS.find((c) => c.key === sortKey);
@@ -334,12 +344,12 @@ export default function DashboardPage() {
   }
 
   const needsCounters = useMemo(() => ({
-    any: allEvents.filter((e) => matchesNeeds(e, "ANY_PENDING")).length,
-    agreement: allEvents.filter((e) => matchesNeeds(e, "NEEDS_AGREEMENT")).length,
-    floorplan: allEvents.filter((e) => matchesNeeds(e, "NEEDS_FLOORPLAN")).length,
-    threeD: allEvents.filter((e) => matchesNeeds(e, "NEEDS_3D")).length,
-    permit: allEvents.filter((e) => matchesNeeds(e, "NEEDS_PERMIT")).length,
-  }), [allEvents]);
+    any: visibleEvents.filter((e) => matchesNeeds(e, "ANY_PENDING")).length,
+    agreement: visibleEvents.filter((e) => matchesNeeds(e, "NEEDS_AGREEMENT")).length,
+    floorplan: visibleEvents.filter((e) => matchesNeeds(e, "NEEDS_FLOORPLAN")).length,
+    threeD: visibleEvents.filter((e) => matchesNeeds(e, "NEEDS_3D")).length,
+    permit: visibleEvents.filter((e) => matchesNeeds(e, "NEEDS_PERMIT")).length,
+  }), [visibleEvents]);
 
   const navigate = useNavigate();
 
@@ -354,6 +364,13 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-4">
+      {/* RBAC banner for limited users */}
+      {!userIsAdmin && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 flex items-center gap-2 text-[12px] text-amber-800">
+          <AlertCircle className="h-4 w-4 text-amber-500 shrink-0" />
+          Showing {visibleEvents.length} event{visibleEvents.length === 1 ? "" : "s"} assigned to you.
+        </div>
+      )}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-[#0A1F2E]">Project Management</h1>

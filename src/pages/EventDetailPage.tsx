@@ -15,6 +15,7 @@ import {
 } from "@/lib/events-store";
 import { useSalesMembers } from "@/lib/sales-store";
 import { useEventPhotos } from "@/lib/photos-store";
+import { useCurrentUser, canViewEvent, canViewFullEvent, isAdmin } from "@/lib/auth-store";
 import {
   useMasterData,
   addOrganizer, addVenue, addPic, addContractor, addDriver, addLori,
@@ -69,6 +70,8 @@ export default function EventDetailPage() {
   const [draft, setDraft] = useState<Partial<HouzsEvent>>({});
   const { photos: allPhotos } = useEventPhotos(a42);
   const salesMembers = useSalesMembers();
+  const currentUser = useCurrentUser();
+  const userIsAdmin = isAdmin(currentUser);
   const activeSalesMembers = useMemo(() => salesMembers.filter(m => m.status === "ACTIVE").sort((a, b) => a.name.localeCompare(b.name)), [salesMembers]);
 
   // Seed draft whenever we enter edit mode (or event changes while editing)
@@ -118,6 +121,161 @@ export default function EventDetailPage() {
           <div className="text-[13px] font-semibold text-red-700">Event not found</div>
           <div className="text-[11px] text-red-600 mt-1 font-mono">{a42}</div>
         </div>
+      </div>
+    );
+  }
+
+  if (!canViewEvent(currentUser, event)) {
+    return (
+      <div className="space-y-4">
+        <Link to="/pms" className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 hover:text-[#0F766E]">
+          <ArrowLeft className="h-3.5 w-3.5" /> Back to Project Details
+        </Link>
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-8 text-center">
+          <AlertCircle className="h-8 w-8 text-amber-400 mx-auto mb-3" />
+          <div className="text-[14px] font-semibold text-amber-800">Access Denied</div>
+          <div className="text-[12px] text-amber-700 mt-1">
+            This event is not assigned to you.
+          </div>
+          <Link
+            to="/pms"
+            className="mt-4 inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#0F766E] hover:underline"
+          >
+            <ArrowLeft className="h-3 w-3" /> Return to Project Details
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const hasFullAccess = canViewFullEvent(currentUser, event);
+
+  // Limited view for non-assigned sales during LIVE events —
+  // they can only see basic info, floorplan section (with upload), and chat.
+  if (!hasFullAccess) {
+    const floorplanCount = countByKey["floorplan"] ?? 0;
+    const sendFpCount = countByKey["sendFloorplanToDesigner"] ?? 0;
+    return (
+      <div className="space-y-4 max-w-6xl">
+        <Link
+          to="/pms"
+          className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 hover:text-[#0F766E]"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" /> Back to Project Details
+        </Link>
+
+        {/* Limited-access banner */}
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-2 flex items-start gap-2">
+          <AlertCircle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+          <div className="text-[11px] text-amber-800">
+            <span className="font-semibold">Limited view</span> — you are not assigned to this event.
+            You can see the floorplan and chat while the event is running.
+          </div>
+        </div>
+
+        {/* Basic header (read-only, no edit button) */}
+        <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
+          <div className="px-5 py-4 border-b border-[#F0F3F3]">
+            <div className="flex items-center gap-1 text-[10px] font-mono text-gray-400">
+              <Hash className="h-2.5 w-2.5 shrink-0" />
+              <span className="truncate">{event.a42}</span>
+            </div>
+            <h1 className="text-2xl font-bold text-[#0A1F2E] mt-1 leading-tight">
+              {calendarTitle(event)}
+            </h1>
+          </div>
+          <div className="px-5 py-3 bg-[#FAFBFB] grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px]">
+            <div className="flex items-start gap-1.5">
+              <CalIcon className="h-3 w-3 text-gray-400 mt-0.5 shrink-0" />
+              <div>
+                <div className={FIELD_LABEL}>Dates</div>
+                <div className="text-[#0A1F2E] font-medium">{event.startDate} → {event.endDate}</div>
+              </div>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <MapPin className="h-3 w-3 text-gray-400 mt-0.5 shrink-0" />
+              <div>
+                <div className={FIELD_LABEL}>Venue</div>
+                <div className="text-[#0A1F2E] font-medium truncate">{event.venue}</div>
+                <div className="text-[10px] text-gray-500">{event.state}</div>
+              </div>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <Building2 className="h-3 w-3 text-gray-400 mt-0.5 shrink-0" />
+              <div>
+                <div className={FIELD_LABEL}>Booth</div>
+                <div className="text-[#0A1F2E] font-medium">{event.boothNo}</div>
+              </div>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <User className="h-3 w-3 text-gray-400 mt-0.5 shrink-0" />
+              <div>
+                <div className={FIELD_LABEL}>PIC</div>
+                <div className="text-[#0A1F2E] font-medium">{event.pic ?? "—"}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Floorplan section — view + upload */}
+        <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
+            <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Floorplan</h2>
+            <p className="text-[10px] text-gray-500 mt-0.5">View or upload booth floorplan files</p>
+          </div>
+          <div className="px-5 py-4 space-y-2">
+            <button
+              type="button"
+              onClick={() => setOpenAttach({ key: "floorplan", label: "Floorplan" })}
+              className="w-full flex items-center justify-between px-3 py-2.5 rounded-md border border-[#DDE5E5] bg-white hover:border-[#0F766E] hover:bg-[#F4F7F7] transition"
+            >
+              <div className="flex items-center gap-2">
+                <Paperclip className="h-4 w-4 text-[#0F766E]" />
+                <span className="text-[12px] font-semibold text-[#0A1F2E]">Floorplan files</span>
+              </div>
+              <span className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
+                floorplanCount > 0 ? "bg-[#0F766E]/10 text-[#0F766E]" : "bg-gray-100 text-gray-500"
+              }`}>
+                {floorplanCount} file{floorplanCount === 1 ? "" : "s"}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpenAttach({ key: "sendFloorplanToDesigner", label: "Send Floorplan to Designer" })}
+              className="w-full flex items-center justify-between px-3 py-2.5 rounded-md border border-[#DDE5E5] bg-white hover:border-[#0F766E] hover:bg-[#F4F7F7] transition"
+            >
+              <div className="flex items-center gap-2">
+                <Paperclip className="h-4 w-4 text-[#0F766E]" />
+                <span className="text-[12px] font-semibold text-[#0A1F2E]">Designer-ready Floorplan</span>
+              </div>
+              <span className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
+                sendFpCount > 0 ? "bg-[#0F766E]/10 text-[#0F766E]" : "bg-gray-100 text-gray-500"
+              }`}>
+                {sendFpCount} file{sendFpCount === 1 ? "" : "s"}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {/* Chat */}
+        <EventChat
+          eventA42={a42}
+          eventTitle={calendarTitle(event)}
+          eventStartDate={event.startDate}
+          eventEndDate={event.endDate}
+          assignedSales={event.assignedSales ?? []}
+          eventStatus={event.progress}
+          pic={event.pic}
+        />
+
+        {openAttach && (
+          <WorkflowAttachmentDialog
+            eventA42={a42}
+            workflowKey={openAttach.key}
+            label={openAttach.label}
+            onClose={() => setOpenAttach(null)}
+          />
+        )}
       </div>
     );
   }
@@ -701,11 +859,11 @@ export default function EventDetailPage() {
         assignedSales={event.assignedSales ?? []}
         eventStatus={event.progress}
         pic={event.pic}
-        currentUserId="dir-kingsley"
+        currentUserId={currentUser?.id ?? "dir-kingsley"}
       />
 
-      {/* Financial snapshot */}
-      <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
+      {/* Financial snapshot — directors only */}
+      {userIsAdmin && <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
         <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
           <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Financial Snapshot</h2>
           <p className="text-[10px] text-gray-500 mt-0.5">
@@ -805,7 +963,7 @@ export default function EventDetailPage() {
             </table>
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* Integration + actions */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
