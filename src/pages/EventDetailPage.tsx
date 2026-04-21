@@ -469,10 +469,27 @@ export default function EventDetailPage() {
             </div>
             <div className="flex items-start gap-1.5">
               <User className="h-3 w-3 text-gray-400 mt-0.5 shrink-0" />
-              <div>
-                <div className={FIELD_LABEL}>PIC</div>
-                <div className="text-[#0A1F2E] font-medium">{event.pic ?? "—"}</div>
-                <div className="text-[10px] text-gray-500">Organizer: {event.organizer}</div>
+              <div className="min-w-0 flex-1">
+                <div className={FIELD_LABEL}>Sales PIC</div>
+                <div className="text-[#0A1F2E] font-medium">{event.salesPic ?? event.pic ?? "—"}</div>
+                <div className="text-[10px] text-gray-500 truncate">Organizer: {event.organizer}</div>
+                <div className="mt-1.5">
+                  <div className={FIELD_LABEL}>Sales Attendance</div>
+                  <div className="flex flex-wrap gap-1 mt-0.5">
+                    {(event.assignedSales ?? []).length === 0 ? (
+                      <span className="text-[10px] text-gray-300">— No sales assigned —</span>
+                    ) : (
+                      (event.assignedSales ?? []).map((id) => {
+                        const m = salesMembers.find((x) => x.id === id);
+                        return m ? (
+                          <span key={id} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-[#0F766E]/10 text-[#0F766E] text-[9px] font-semibold">
+                            {m.name}
+                          </span>
+                        ) : null;
+                      })
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -648,64 +665,26 @@ export default function EventDetailPage() {
         )}
       </div>
 
-      {/* Project Stage & PICs (Notion "Preparation Condition" + Sales PIC + Sales Attendance) */}
+      {/* Preparation Condition (stage) */}
       <div className="rounded-lg border border-[#DDE5E5] bg-white overflow-hidden">
         <div className="px-4 py-2.5 border-b border-[#DDE5E5] bg-[#F4F7F7]">
-          <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Project Stage & PICs</h2>
-          <p className="text-[10px] text-gray-500 mt-0.5">Preparation pipeline + responsible persons</p>
+          <h2 className="text-[12px] font-semibold uppercase tracking-wider text-[#0A1F2E]">Project Stage</h2>
+          <p className="text-[10px] text-gray-500 mt-0.5">Preparation pipeline status</p>
         </div>
-        <div className="px-5 py-4 grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* LEFT — Preparation Condition */}
-          <div>
-            <div className={FIELD_LABEL}>Preparation Condition</div>
-            {userIsAdmin ? (
-              <select
-                value={event.preparationCondition ?? ""}
-                onChange={(e) => updateEvent(a42, { preparationCondition: (e.target.value || undefined) as PreparationCondition | undefined })}
-                className={FIELD_SELECT}
-              >
-                <option value="">— Not set —</option>
-                {PREPARATION_CONDITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
-              </select>
-            ) : (
-              <div className="text-[12px] font-semibold text-[#0A1F2E]">{event.preparationCondition ?? <span className="text-gray-300 font-normal">—</span>}</div>
-            )}
-          </div>
-
-          {/* RIGHT — Sales PIC + Sales Attendance stacked */}
-          <div className="space-y-3">
-            <div>
-              <div className={FIELD_LABEL}>Sales PIC</div>
-              {userIsAdmin ? (
-                <Combo
-                  value={event.salesPic ?? event.pic ?? ""}
-                  options={activeSalesMembers.map((m) => m.name)}
-                  onChange={(v) => updateEvent(a42, { salesPic: v || undefined })}
-                  onCreate={(v) => { addPic(v); updateEvent(a42, { salesPic: v }); }}
-                  placeholder="Sales PIC…"
-                />
-              ) : (
-                <div className="text-[12px] font-semibold text-[#0A1F2E]">{event.salesPic ?? event.pic ?? <span className="text-gray-300 font-normal">—</span>}</div>
-              )}
-            </div>
-            <div>
-              <div className={FIELD_LABEL}>Sales Attendance</div>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {(event.assignedSales ?? []).length === 0 ? (
-                  <span className="text-[11px] text-gray-300">— No sales assigned —</span>
-                ) : (
-                  (event.assignedSales ?? []).map((id) => {
-                    const m = salesMembers.find((x) => x.id === id);
-                    return m ? (
-                      <span key={id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#0F766E]/10 text-[#0F766E] text-[10px] font-semibold">
-                        <User className="h-2.5 w-2.5" />{m.name}
-                      </span>
-                    ) : null;
-                  })
-                )}
-              </div>
-            </div>
-          </div>
+        <div className="px-5 py-4">
+          <div className={FIELD_LABEL}>Preparation Condition</div>
+          {userIsAdmin ? (
+            <select
+              value={event.preparationCondition ?? ""}
+              onChange={(e) => updateEvent(a42, { preparationCondition: (e.target.value || undefined) as PreparationCondition | undefined })}
+              className={`${FIELD_SELECT} max-w-sm`}
+            >
+              <option value="">— Not set —</option>
+              {PREPARATION_CONDITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          ) : (
+            <div className="text-[12px] font-semibold text-[#0A1F2E]">{event.preparationCondition ?? <span className="text-gray-300 font-normal">—</span>}</div>
+          )}
         </div>
       </div>
 
