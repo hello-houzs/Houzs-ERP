@@ -64,8 +64,8 @@ export function DetailLayout({
     // it spans the full canvas, then re-pad the inner row.
     <div>
       {/* ── Sticky top chrome — back button + breadcrumb + actions ─── */}
-      <div className="sticky top-0 z-30 -mx-4 -mt-6 mb-6 border-b border-border bg-bg/85 backdrop-blur-md sm:-mx-6 sm:-mt-8 lg:-mx-10 lg:-mt-10">
-        <div className="mx-auto flex h-12 max-w-[1400px] items-center gap-3 px-4 sm:px-6 lg:px-10">
+      <div className="sticky top-0 z-30 -mx-4 -mt-6 mb-4 border-b border-border bg-bg/85 backdrop-blur-md sm:-mx-6 sm:-mt-8 lg:-mx-10 lg:-mt-10">
+        <div className="mx-auto flex h-10 max-w-[1400px] items-center gap-3 px-4 sm:px-6 lg:px-10">
           <button
             onClick={goBack}
             className="group flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-ink-muted transition-all hover:-translate-x-0.5 hover:border-accent/50 hover:text-accent"
@@ -120,32 +120,32 @@ export function DetailLayout({
       </div>
 
       {/* ── Title block ──────────────────────────────────────────────── */}
-      <header className="mb-7">
+      <header className="mb-4">
         {eyebrow && (
-          <div className="mb-2 flex items-center gap-2">
-            <span className="h-px w-6 bg-accent" />
-            <span className="font-mono text-[10px] font-semibold uppercase tracking-brand text-accent">
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="h-px w-5 bg-accent" />
+            <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-accent">
               {eyebrow}
             </span>
           </div>
         )}
-        <h1 className="font-display text-[24px] font-extrabold leading-tight tracking-tight text-ink sm:text-[28px] lg:text-[32px]">
+        <h1 className="font-display text-[20px] font-extrabold leading-tight tracking-tight text-ink sm:text-[22px] lg:text-[24px]">
           {title}
         </h1>
         {description && (
-          <p className="mt-2 max-w-2xl text-[12.5px] leading-relaxed text-ink-secondary sm:text-[13px]">
+          <p className="mt-1 max-w-2xl text-[12px] leading-snug text-ink-secondary">
             {description}
           </p>
         )}
       </header>
 
       {loading && (
-        <div className="rounded-md border border-border bg-surface px-4 py-6 text-[12px] text-ink-muted">
+        <div className="rounded-md border border-border bg-surface px-3 py-3 text-[12px] text-ink-muted">
           Loading…
         </div>
       )}
       {error && (
-        <div className="rounded-md border border-err/40 bg-err/5 px-4 py-3 text-[12px] text-err">
+        <div className="rounded-md border border-err/40 bg-err/5 px-3 py-2 text-[12px] text-err">
           {error}
         </div>
       )}
@@ -162,7 +162,7 @@ export function DetailLayout({
  */
 export function DetailGrid({ children }: { children: ReactNode }) {
   return (
-    <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 lg:gap-6">
+    <div className="grid grid-cols-1 gap-3 lg:grid-cols-12 lg:gap-4">
       {children}
     </div>
   );
@@ -170,13 +170,13 @@ export function DetailGrid({ children }: { children: ReactNode }) {
 
 export function DetailMain({ children }: { children: ReactNode }) {
   return (
-    <div className="lg:col-span-8 space-y-5">{children}</div>
+    <div className="lg:col-span-8 space-y-3">{children}</div>
   );
 }
 
 export function DetailAside({ children }: { children: ReactNode }) {
   return (
-    <aside className="lg:col-span-4 space-y-5">{children}</aside>
+    <aside className="lg:col-span-4 space-y-3">{children}</aside>
   );
 }
 
@@ -198,16 +198,16 @@ export function Section({
 }) {
   return (
     <section className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
-      <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-4 py-2.5">
+      <div className="flex items-center justify-between gap-3 border-b border-border-subtle px-3 py-1.5">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="h-px w-4 shrink-0 bg-accent" />
-          <h2 className="truncate font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+          <span className="h-px w-3 shrink-0 bg-accent" />
+          <h2 className="truncate font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-secondary">
             {title}
           </h2>
         </div>
         {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
       </div>
-      <div className={cn(dense ? "p-0" : "p-4")}>{children}</div>
+      <div className={cn(dense ? "p-0" : "p-3")}>{children}</div>
     </section>
   );
 }
@@ -229,13 +229,13 @@ export function StatStrip({ items }: { items: StatItem[] }) {
   return (
     <div className="grid grid-cols-2 divide-x divide-border-subtle overflow-hidden rounded-md border border-border bg-surface shadow-stone sm:grid-cols-4">
       {items.map((s, i) => (
-        <div key={i} className="px-4 py-3">
+        <div key={i} className="px-3 py-2">
           <div className="font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
             {s.label}
           </div>
           <div
             className={cn(
-              "mt-1 font-mono text-[15px] font-bold leading-tight",
+              "mt-0.5 font-mono text-[13.5px] font-bold leading-tight",
               s.tone === "ok" && "text-synced",
               s.tone === "err" && "text-err",
               s.tone === "warn" && "text-warning-text",
@@ -245,7 +245,7 @@ export function StatStrip({ items }: { items: StatItem[] }) {
             {s.value}
           </div>
           {s.hint && (
-            <div className="mt-0.5 text-[10.5px] text-ink-muted">{s.hint}</div>
+            <div className="mt-0.5 text-[10px] text-ink-muted">{s.hint}</div>
           )}
         </div>
       ))}
@@ -277,22 +277,22 @@ export function DefinitionList({ items }: { items: DefnItem[] }) {
     return <div className="text-[11px] text-ink-muted">—</div>;
   }
   return (
-    <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+    <dl className="grid grid-cols-1 gap-x-5 gap-y-1 sm:grid-cols-2">
       {visible.map((item, i) => (
         <div
           key={`${item.label}-${i}`}
           className={cn(
-            "flex items-baseline gap-3 border-b border-border-subtle/60 pb-1.5",
+            "flex items-baseline gap-2.5 border-b border-border-subtle/60 pb-1",
             item.full && "sm:col-span-2"
           )}
         >
-          <dt className="min-w-[120px] shrink-0 font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <dt className="min-w-[100px] shrink-0 font-mono text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
             {item.label}
           </dt>
           <dd
             className={cn(
-              "flex-1 truncate text-[12.5px] text-ink",
-              item.mono && "font-mono text-[12px]"
+              "flex-1 truncate text-[12px] text-ink",
+              item.mono && "font-mono text-[11.5px]"
             )}
           >
             {item.value}

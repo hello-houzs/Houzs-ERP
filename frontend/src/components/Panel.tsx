@@ -93,17 +93,17 @@ export function PanelSection({ title, children, muted }: SectionProps) {
   return (
     <section
       className={cn(
-        "mb-5 rounded-md border border-border p-4",
+        "mb-3 rounded-md border border-border p-3",
         muted ? "bg-bg/60" : "bg-surface"
       )}
     >
-      <div className="mb-3 flex items-center gap-2">
-        <span className="h-px w-4 bg-accent/60" />
+      <div className="mb-2 flex items-center gap-2">
+        <span className="h-px w-3 bg-accent/60" />
         <div className="text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
           {title}
         </div>
       </div>
-      <div className="space-y-3">{children}</div>
+      <div className="space-y-2">{children}</div>
     </section>
   );
 }
