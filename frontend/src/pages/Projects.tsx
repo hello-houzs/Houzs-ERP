@@ -37,7 +37,7 @@ import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
 import { ProjectMaintenanceView } from "./ProjectMaintenance";
 import { TabStrip } from "../components/TabStrip";
-import { getHolidaysOn } from "../lib/holidays";
+import { getHolidaysOn, isHoliday } from "../lib/holidays";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
@@ -1948,6 +1948,12 @@ function formatMonth(yyyy_mm: string): string {
   return d.toLocaleDateString("en-MY", { month: "short", year: "numeric" });
 }
 
+function daysBetween(fromIso: string, toIso: string): number {
+  const a = Date.UTC(+fromIso.slice(0, 4), +fromIso.slice(5, 7) - 1, +fromIso.slice(8, 10));
+  const b = Date.UTC(+toIso.slice(0, 4), +toIso.slice(5, 7) - 1, +toIso.slice(8, 10));
+  return Math.round((b - a) / 86400000);
+}
+
 function ProjectsCalendarView() {
   const toast = useToast();
   const navigate = useNavigate();
@@ -2025,16 +2031,6 @@ function ProjectsCalendarView() {
     const arr = tasksByDate.get(key) ?? [];
     arr.push(t);
     tasksByDate.set(key, arr);
-  }
-
-  // Projects that touch each cell — include events that span multiple
-  // cells by checking both start and end.
-  function projectsOn(iso: string): CalendarProject[] {
-    return projects.filter((p) => {
-      const s = p.start_date.slice(0, 10);
-      const e = (p.end_date || p.start_date).slice(0, 10);
-      return iso >= s && iso <= e;
-    });
   }
 
   const monthLabel = anchor.toLocaleDateString("en-MY", { month: "long", year: "numeric" });
@@ -2176,79 +2172,185 @@ function ProjectsCalendarView() {
             </div>
           ))}
         </div>
-        <div className="grid grid-cols-7">
-          {cells.map((cell, idx) => {
-            const inMonth = cell.date.getUTCMonth() === anchor.getMonth();
-            const cellProjects = projectsOn(cell.iso);
-            const cellTasks = tasksByDate.get(cell.iso) ?? [];
-            const isToday = cell.iso === today;
-            const holidays = showHolidays ? getHolidaysOn(cell.iso) : [];
-            const isHolidayCell = holidays.length > 0;
-            return (
-              <div
-                key={idx}
-                className={cn(
-                  "min-h-[110px] border-b border-r border-border px-1.5 py-1 text-[10px]",
-                  !inMonth && "bg-bg/40 text-ink-muted",
-                  isHolidayCell && inMonth && "bg-err/5",
-                  isToday && "bg-accent-soft/30"
-                )}
-              >
-                <div className="mb-1 flex items-center justify-between">
-                  <span className={cn("font-mono", isToday && "font-bold text-accent")}>
-                    {cell.date.getUTCDate()}
-                  </span>
-                  {cellTasks.length > 0 && (
-                    <span
-                      title={`${cellTasks.length} task(s) due`}
-                      className={cn(
-                        "inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-bold",
-                        cellTasks.some((t) => t.is_overdue)
-                          ? "bg-err text-white"
-                          : "bg-amber-100 text-amber-800"
-                      )}
-                    >
-                      {cellTasks.length}
-                    </span>
-                  )}
-                </div>
+        {Array.from({ length: 6 }, (_, weekIdx) => {
+          const weekCells = cells.slice(weekIdx * 7, weekIdx * 7 + 7);
+          const weekStartIso = weekCells[0].iso;
+          const weekEndIso = weekCells[6].iso;
 
-                {/* Holiday chip(s) */}
-                {isHolidayCell && (
+          // Build segments per project that touch this week. A segment
+          // carries its column range within the week + whether it was
+          // clipped on either edge (for corner rounding + ‹ › chevrons).
+          type Seg = {
+            project: CalendarProject;
+            startCol: number;
+            endCol: number;
+            clipLeft: boolean;
+            clipRight: boolean;
+          };
+          const segs: Seg[] = [];
+          for (const p of projects) {
+            const s = p.start_date.slice(0, 10);
+            const e = (p.end_date || p.start_date).slice(0, 10);
+            if (e < weekStartIso || s > weekEndIso) continue;
+            const clipLeft = s < weekStartIso;
+            const clipRight = e > weekEndIso;
+            const startCol = clipLeft ? 0 : daysBetween(weekStartIso, s);
+            const endCol = clipRight ? 6 : daysBetween(weekStartIso, e);
+            segs.push({ project: p, startCol, endCol, clipLeft, clipRight });
+          }
+          // Longer + earlier first → better greedy lane packing.
+          segs.sort(
+            (a, b) =>
+              a.startCol - b.startCol ||
+              b.endCol - b.startCol - (a.endCol - a.startCol)
+          );
+          const lanes: Seg[][] = [];
+          for (const seg of segs) {
+            let placed = false;
+            for (const lane of lanes) {
+              if (lane.every((s) => s.endCol < seg.startCol || s.startCol > seg.endCol)) {
+                lane.push(seg);
+                placed = true;
+                break;
+              }
+            }
+            if (!placed) lanes.push([seg]);
+          }
+          const MAX_LANES = 2;
+          const visibleLanes = lanes.slice(0, MAX_LANES);
+          const overflowPerCol = Array(7).fill(0);
+          for (const lane of lanes.slice(MAX_LANES)) {
+            for (const seg of lane) {
+              for (let c = seg.startCol; c <= seg.endCol; c++) overflowPerCol[c]++;
+            }
+          }
+
+          return (
+            <div
+              key={weekIdx}
+              className="relative grid grid-cols-7 border-b border-border last:border-b-0"
+              style={{ minHeight: "110px" }}
+            >
+              {/* Background tiles: one per day, span all content rows so today/holiday tint covers the whole column */}
+              {weekCells.map((cell, ci) => {
+                const inMonth = cell.date.getUTCMonth() === anchor.getMonth();
+                const isToday = cell.iso === today;
+                const isHolidayCell = showHolidays && isHoliday(cell.iso);
+                return (
                   <div
-                    className="mb-1 truncate rounded bg-err/15 px-1 py-0.5 text-[9px] font-semibold text-err"
-                    title={holidays.map((h) => h.name).join(", ")}
+                    key={`bg-${ci}`}
+                    aria-hidden
+                    style={{ gridRow: "1 / -1", gridColumn: ci + 1 }}
+                    className={cn(
+                      "border-r border-border last:border-r-0",
+                      !inMonth && "bg-bg/40",
+                      isHolidayCell && inMonth && "bg-err/5",
+                      isToday && "bg-accent-soft/30"
+                    )}
+                  />
+                );
+              })}
+
+              {/* Row 1: date header + task count badge + holiday chip */}
+              {weekCells.map((cell, ci) => {
+                const inMonth = cell.date.getUTCMonth() === anchor.getMonth();
+                const cellTasks = tasksByDate.get(cell.iso) ?? [];
+                const isToday = cell.iso === today;
+                const holidays = showHolidays ? getHolidaysOn(cell.iso) : [];
+                const isHolidayCell = holidays.length > 0;
+                return (
+                  <div
+                    key={`hdr-${ci}`}
+                    style={{ gridRow: 1, gridColumn: ci + 1 }}
+                    className="relative z-10 px-1.5 pt-1 text-[10px]"
                   >
-                    🎌 {holidays[0].name}
-                    {holidays.length > 1 && ` +${holidays.length - 1}`}
-                  </div>
-                )}
-
-                {/* Project event bars (existing) */}
-                <div className="space-y-0.5">
-                  {cellProjects.slice(0, 2).map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => navigate(`/projects/${p.id}`)}
-                      title={`${p.code} — ${p.name}${p.venue ? ` · ${p.venue}` : ""}`}
-                      className={cn(
-                        "block w-full truncate rounded px-1 py-0.5 text-left text-[9px] font-semibold",
-                        brandClass(p.brand)
+                    <div className="flex items-center justify-between">
+                      <span
+                        className={cn(
+                          "font-mono",
+                          !inMonth && "text-ink-muted",
+                          isToday && "font-bold text-accent"
+                        )}
+                      >
+                        {cell.date.getUTCDate()}
+                      </span>
+                      {cellTasks.length > 0 && (
+                        <span
+                          title={`${cellTasks.length} task(s) due`}
+                          className={cn(
+                            "inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-bold",
+                            cellTasks.some((t) => t.is_overdue)
+                              ? "bg-err text-white"
+                              : "bg-amber-100 text-amber-800"
+                          )}
+                        >
+                          {cellTasks.length}
+                        </span>
                       )}
-                    >
-                      {p.name}
-                    </button>
-                  ))}
-                  {cellProjects.length > 2 && (
-                    <div className="text-[9px] text-ink-muted">
-                      +{cellProjects.length - 2} more event{cellProjects.length - 2 === 1 ? "" : "s"}
                     </div>
-                  )}
-                </div>
+                    {isHolidayCell && (
+                      <div
+                        className="mt-0.5 truncate rounded bg-err/15 px-1 py-0.5 text-[9px] font-semibold text-err"
+                        title={holidays.map((h) => h.name).join(", ")}
+                      >
+                        🎌 {holidays[0].name}
+                        {holidays.length > 1 && ` +${holidays.length - 1}`}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
 
-                {/* Task chips — clickable, brand-tinted, owner initial */}
-                {cellTasks.length > 0 && (
-                  <div className="mt-1 space-y-0.5 border-t border-border-subtle pt-1">
+              {/* Project bar segments — span columns via grid-column */}
+              {visibleLanes.flatMap((lane, li) =>
+                lane.map((seg) => (
+                  <button
+                    key={`seg-${weekIdx}-${li}-${seg.project.id}`}
+                    onClick={() => navigate(`/projects/${seg.project.id}`)}
+                    title={`${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`}
+                    style={{
+                      gridColumn: `${seg.startCol + 1} / ${seg.endCol + 2}`,
+                      gridRow: li + 2,
+                      marginLeft: seg.clipLeft ? 0 : 2,
+                      marginRight: seg.clipRight ? 0 : 2,
+                    }}
+                    className={cn(
+                      "relative z-10 mt-0.5 min-w-0 truncate px-1 py-0.5 text-left text-[9px] font-semibold",
+                      brandClass(seg.project.brand),
+                      !seg.clipLeft && "rounded-l",
+                      !seg.clipRight && "rounded-r"
+                    )}
+                  >
+                    {seg.clipLeft && "‹ "}
+                    {seg.project.name}
+                    {seg.clipRight && " ›"}
+                  </button>
+                ))
+              )}
+
+              {/* Overflow indicator per column */}
+              {overflowPerCol.map((count, ci) =>
+                count ? (
+                  <div
+                    key={`ov-${ci}`}
+                    style={{ gridColumn: ci + 1, gridRow: MAX_LANES + 2 }}
+                    className="relative z-10 px-1 text-[9px] text-ink-muted"
+                  >
+                    +{count} more
+                  </div>
+                ) : null
+              )}
+
+              {/* Task chips per day (bottom) */}
+              {weekCells.map((cell, ci) => {
+                const cellTasks = tasksByDate.get(cell.iso) ?? [];
+                if (cellTasks.length === 0) return null;
+                return (
+                  <div
+                    key={`tsk-${ci}`}
+                    style={{ gridColumn: ci + 1, gridRow: MAX_LANES + 3 }}
+                    className="relative z-10 mt-1 space-y-0.5 border-t border-border-subtle px-1 pb-1 pt-1"
+                  >
                     {cellTasks.slice(0, 2).map((t) => (
                       <CalendarTaskChip
                         key={t.id}
@@ -2259,8 +2361,6 @@ function ProjectsCalendarView() {
                     {cellTasks.length > 2 && (
                       <button
                         onClick={() => {
-                          // Open the project of the first remaining task — best
-                          // we can do without a tasks-per-day modal.
                           const first = cellTasks[2];
                           if (first) navigate(`/projects/${first.project_id}`);
                         }}
@@ -2274,11 +2374,11 @@ function ProjectsCalendarView() {
                       </button>
                     )}
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
+          );
+        })}
       </div>
 
     </div>
