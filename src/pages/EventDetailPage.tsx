@@ -55,8 +55,18 @@ const WORKFLOW_FIELDS: { key: keyof HouzsEvent; label: string; stage: string }[]
   { key: "licenseMajlis",           label: "License (from Majlis)",          stage: "Operation" },
   { key: "workLoadingBayPermit",    label: "Work / Loading Bay Permit",      stage: "Operation" },
   { key: "decoCoffeeTable",         label: "Deco / Coffee Table",            stage: "Operation" },
-  { key: "secDepoRefund",           label: "Sec Depo Refund",                stage: "Closeout" },
+  { key: "secDepoRefund",           label: "Security Deposit",               stage: "Closeout" },
 ];
+
+// Custom button labels for specific workflow rows (override the generic FLAG labels)
+const FIELD_LABEL_OVERRIDE: Partial<Record<keyof HouzsEvent, Partial<Record<WorkflowFlag, string>>>> = {
+  secDepoRefund: {
+    "NO NEED": "NONE",
+    "FALSE":   "UNPAID",
+    "TRUE":    "PAID",
+    "DONE":    "REFUNDED",
+  },
+};
 
 const FLAG_OPTIONS: { value: WorkflowFlag; label: string; color: string }[] = [
   { value: "",        label: "—",       color: "bg-white text-gray-400 border-[#DDE5E5]" },
@@ -750,18 +760,21 @@ export default function EventDetailPage() {
                             {attachCount > 0 ? attachCount : ""}
                           </button>
                           <span className="w-px h-5 bg-[#F0F3F3] mx-0.5" />
-                          {FLAG_OPTIONS.map((opt) => (
-                            <button
-                              key={opt.value || "empty"}
-                              type="button"
-                              onClick={() => setFlag(f.key, opt.value)}
-                              className={`h-6 px-2 rounded border text-[9px] font-semibold transition ${
-                                v === opt.value ? opt.color : "bg-white text-gray-400 border-[#DDE5E5] hover:border-[#0F766E]"
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
+                          {FLAG_OPTIONS.map((opt) => {
+                            const label = FIELD_LABEL_OVERRIDE[f.key]?.[opt.value] ?? opt.label;
+                            return (
+                              <button
+                                key={opt.value || "empty"}
+                                type="button"
+                                onClick={() => setFlag(f.key, opt.value)}
+                                className={`h-6 px-2 rounded border text-[9px] font-semibold transition ${
+                                  v === opt.value ? opt.color : "bg-white text-gray-400 border-[#DDE5E5] hover:border-[#0F766E]"
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
                     );
