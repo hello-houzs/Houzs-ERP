@@ -281,12 +281,14 @@ export default function CalendarPage() {
             Monthly view · {monthlyCount} event{monthlyCount === 1 ? "" : "s"} starting in {MONTH_NAMES[cursor.m]}
           </p>
         </div>
-        <Link
-          to="/events/new"
-          className="h-9 px-3.5 rounded-md bg-[#0F766E] text-white text-[12px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1.5"
-        >
-          <Plus className="h-4 w-4" /> New Event
-        </Link>
+        {userIsAdmin && (
+          <Link
+            to="/events/new"
+            className="h-9 px-3.5 rounded-md bg-[#0F766E] text-white text-[12px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1.5"
+          >
+            <Plus className="h-4 w-4" /> New Event
+          </Link>
+        )}
       </div>
 
       {/* Toolbar */}
@@ -317,7 +319,7 @@ export default function CalendarPage() {
 
         <div className="text-[14px] font-bold text-[#0A1F2E] px-2">{monthLabel}</div>
 
-        <div className="flex gap-1 ml-auto items-center">
+        <div className="flex flex-wrap gap-1 ml-auto items-center">
           {/* Holiday toggles */}
           <button
             type="button"

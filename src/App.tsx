@@ -47,7 +47,7 @@ export default function App() {
         {/* Shared: PROJECT MANAGEMENT module (all sales can access) */}
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/pms" element={<PmsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>} />
         <Route path="/events/new" element={<AdminRoute><NewEventPage /></AdminRoute>} />
         <Route path="/events/:id" element={<EventDetailPage />} />
       </Route>
