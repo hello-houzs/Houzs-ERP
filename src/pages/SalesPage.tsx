@@ -641,9 +641,15 @@ function TreeRow({ node, collapsed, onToggle, onEdit, isLast, parentGuides, onQu
         </div>
       </div>
 
-      <BrandDots brands={m.position === "Sales Director" ? BRANDS : m.assignedBrands} />
+      {/* Hide brand dots on mobile (too cluttered) */}
+      <div className="hidden md:flex items-center">
+        <BrandDots brands={m.position === "Sales Director" ? BRANDS : m.assignedBrands} />
+      </div>
       <RoleBadge position={m.position} />
-      <PositionBadge position={m.position} />
+      {/* Hide full PositionBadge on mobile — RoleBadge already conveys role */}
+      <div className="hidden md:block">
+        <PositionBadge position={m.position} />
+      </div>
 
       {node.descendantCount > 0 && (
         <span className="text-[9px] font-semibold text-[#0F766E] bg-[#0F766E]/10 rounded px-1.5 py-0.5 tabular-nums shrink-0">
@@ -651,7 +657,7 @@ function TreeRow({ node, collapsed, onToggle, onEdit, isLast, parentGuides, onQu
         </span>
       )}
 
-      {/* Quick role toggle */}
+      {/* Quick role toggle — shorter label on mobile */}
       {onQuickRole && (
         <button
           type="button"
@@ -663,7 +669,8 @@ function TreeRow({ node, collapsed, onToggle, onEdit, isLast, parentGuides, onQu
           }`}
           title={m.position.includes("Director") ? "Remove Admin" : "Make Admin"}
         >
-          {m.position.includes("Director") ? "Remove Admin" : "Make Admin"}
+          <span className="hidden md:inline">{m.position.includes("Director") ? "Remove Admin" : "Make Admin"}</span>
+          <span className="md:hidden">{m.position.includes("Director") ? "−" : "+"}</span>
         </button>
       )}
     </div>

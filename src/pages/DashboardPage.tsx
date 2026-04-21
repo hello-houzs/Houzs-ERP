@@ -419,16 +419,18 @@ export default function DashboardPage() {
             to show/hide columns · click any date to edit
           </p>
         </div>
-        <Link
-          to="/events/new"
-          className="h-9 px-3.5 rounded-md bg-[#0F766E] text-white text-[12px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1.5 shrink-0"
-        >
-          <Plus className="h-4 w-4" /> New Event
-        </Link>
+        {userIsAdmin && (
+          <Link
+            to="/events/new"
+            className="h-9 px-3.5 rounded-md bg-[#0F766E] text-white text-[12px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1.5 shrink-0"
+          >
+            <Plus className="h-4 w-4" /> New Event
+          </Link>
+        )}
       </div>
 
-      {/* Stage filter chip row — compact, one line */}
-      <div className="rounded-lg border border-[#DDE5E5] bg-white p-2 flex items-center gap-2 overflow-x-auto scrollbar-thin">
+      {/* Stage filter chip row — compact, one line, desktop only */}
+      <div className="hidden md:flex rounded-lg border border-[#DDE5E5] bg-white p-2 items-center gap-2 overflow-x-auto scrollbar-thin">
         <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider shrink-0 px-1">Stage</span>
         {(() => {
           const shortLabel = (s: PreparationCondition): string =>

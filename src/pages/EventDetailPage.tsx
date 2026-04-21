@@ -295,7 +295,7 @@ export default function EventDetailPage() {
               <Hash className="h-2.5 w-2.5 shrink-0" />
               <span className="truncate">{event.a42}</span>
             </div>
-            <h1 className="text-2xl font-bold text-[#0A1F2E] mt-1 leading-tight">
+            <h1 className="text-lg md:text-2xl font-bold text-[#0A1F2E] mt-1 leading-tight break-words">
               {calendarTitle(event)}
             </h1>
           </div>
@@ -468,7 +468,7 @@ export default function EventDetailPage() {
                 <Hash className="h-2.5 w-2.5 shrink-0" />
                 <span className="truncate">{event.a42}</span>
               </div>
-              <h1 className="text-2xl font-bold text-[#0A1F2E] mt-1 leading-tight">
+              <h1 className="text-lg md:text-2xl font-bold text-[#0A1F2E] mt-1 leading-tight break-words">
                 {calendarTitle(event)}
               </h1>
             </div>
@@ -1505,7 +1505,7 @@ function BoothDocSection({
       )}
 
       <div className="overflow-x-auto">
-        <table className="w-full text-[11px]">
+        <table className="w-full min-w-[620px] text-[11px]">
           <thead>
             <tr className="bg-[#F4F7F7] text-[10px] font-semibold uppercase tracking-wider text-gray-500">
               <th className="text-left px-4 py-2 whitespace-nowrap">Document</th>

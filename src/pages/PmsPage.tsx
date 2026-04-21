@@ -144,12 +144,14 @@ export default function PmsPage() {
             {filtered.length} of {visibleEvents.length} projects
           </p>
         </div>
-        <Link
-          to="/events/new"
-          className="h-9 px-3.5 rounded-md bg-[#0F766E] text-white text-[12px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1.5"
-        >
-          <Plus className="h-4 w-4" /> New Event
-        </Link>
+        {userIsAdmin && (
+          <Link
+            to="/events/new"
+            className="h-9 px-3.5 rounded-md bg-[#0F766E] text-white text-[12px] font-semibold hover:bg-[#0c5f59] inline-flex items-center gap-1.5"
+          >
+            <Plus className="h-4 w-4" /> New Event
+          </Link>
+        )}
       </div>
 
       {/* Filter bar — search + dropdowns */}

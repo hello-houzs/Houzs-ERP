@@ -48,7 +48,7 @@ export default function App() {
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/pms" element={<PmsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/events/new" element={<NewEventPage />} />
+        <Route path="/events/new" element={<AdminRoute><NewEventPage /></AdminRoute>} />
         <Route path="/events/:id" element={<EventDetailPage />} />
       </Route>
 

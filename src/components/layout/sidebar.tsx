@@ -217,6 +217,8 @@ export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; o
                 })
                 .map((item) => {
                 const active = isActive(item.href);
+                // Hide PM Dashboard + Financial Report on mobile (tables too wide to be useful)
+                const hideOnMobile = item.href === "/" || item.href === "/finance";
                 return (
                   <Link
                     key={item.href}
@@ -228,7 +230,8 @@ export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; o
                       active
                         ? "bg-[rgba(15,118,110,.22)] text-white border-l-[3px] border-[#0F766E]"
                         : "text-gray-400 hover:bg-white/5 hover:text-gray-300 border-l-[3px] border-transparent",
-                      collapsed && "justify-center px-0"
+                      collapsed && "justify-center px-0",
+                      hideOnMobile && "hidden md:flex"
                     )}
                     title={collapsed ? item.name : undefined}
                   >
