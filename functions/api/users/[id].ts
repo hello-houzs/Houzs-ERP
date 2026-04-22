@@ -59,6 +59,9 @@ export const onRequestPatch: PagesFunction<Env> = async ({ env, request, params 
   return json({ ok: true });
 };
 
+// Delete re-parents any direct children to the deleted user's own parent_id
+// (so the hierarchy stays connected) before removing the row. This mirrors
+// the pre-migration client-side behavior in sales-store.ts.
 export const onRequestDelete: PagesFunction<Env> = async ({ env, request, params }) => {
   const admin = await requireAuth(request, env);
   if (admin instanceof Response) return admin;
@@ -68,8 +71,15 @@ export const onRequestDelete: PagesFunction<Env> = async ({ env, request, params
   const id = params.id as string;
   if (id === admin.id) return error("You cannot delete yourself", 400);
 
-  const before = await env.DB.prepare(`SELECT id, name, email FROM users WHERE id = ?`).bind(id).first<{ id: string; name: string; email: string }>();
+  const before = await env.DB.prepare(
+    `SELECT id, name, email, parent_id FROM users WHERE id = ?`
+  ).bind(id).first<{ id: string; name: string; email: string; parent_id: string | null }>();
   if (!before) return error("User not found", 404);
+
+  const newParent = before.parent_id ?? null;
+  const reparent = await env.DB.prepare(
+    `UPDATE users SET parent_id = ? WHERE parent_id = ?`
+  ).bind(newParent, id).run();
 
   const r = await env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(id).run();
 
@@ -77,8 +87,8 @@ export const onRequestDelete: PagesFunction<Env> = async ({ env, request, params
     action: "delete",
     entityType: "user",
     entityId: id,
-    changes: { name: before.name, email: before.email },
+    changes: { name: before.name, email: before.email, reparentedChildren: reparent.meta.changes },
   });
 
-  return json({ ok: true, changes: r.meta.changes });
+  return json({ ok: true, changes: r.meta.changes, reparented: reparent.meta.changes });
 };

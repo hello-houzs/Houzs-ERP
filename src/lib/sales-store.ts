@@ -1,6 +1,22 @@
-// Sales team member store — localStorage-backed with subscriber pattern.
-// Supports MLM-style tree hierarchy with position, brand assignment, and
-// commission tiers.
+// Sales team store — D1-backed via /api/users + /api/settings, with an
+// in-memory + localStorage cache for instant paint. Pattern mirrors
+// events-store.ts / so-store.ts.
+//
+// Public surface is unchanged so existing consumers (SalesPage,
+// EventDetailPage, event-chat) don't have to change:
+//
+//   useSalesMembers() → SalesMember[]        — reactive hook
+//   addMember(m)      → Promise<string>      — POST /api/users
+//   updateMember(id, patch) → Promise<void>  — PATCH /api/users/:id
+//   removeMember(id)        → Promise<void>  — DELETE /api/users/:id
+//   readPositions() → string[]               — sync cache read
+//   writePositions(list)    → Promise<void>  — PUT /api/settings/positions
+//   readDefaultCommission() → CommissionTier[]
+//   writeDefaultCommission(tiers) → Promise<void>
+//   resetSalesMembers()     → force refetch
+//   getAllMemberNames()     → string[]
+//
+// Pure helpers (buildTree, flattenTree, calc*) are unchanged.
 
 import { useSyncExternalStore } from "react";
 import type { Brand } from "./mock-data";
@@ -10,29 +26,29 @@ import type { Brand } from "./mock-data";
 export type MemberStatus = "ACTIVE" | "INACTIVE";
 
 export interface CommissionTier {
-  threshold: number;  // if total sales >= threshold, pct applies to ALL sales
-  pct: number;        // e.g. 5 (means 5%)
+  threshold: number;
+  pct: number;
 }
 
 export interface SalesMember {
   id: string;
   name: string;
-  code: string;             // short code (e.g. "SHAWN", "Hwasheng")
+  code: string;
   phone: string;
   email: string;
   ic?: string;
-  position: string;         // "Sales Director", "Sales Executive", custom
-  parentId: string;         // "" = root (no upline) — primary upline (used for commission)
-  additionalParentIds?: string[]; // secondary uplines (directors only) — grants them downline visibility
+  position: string;
+  parentId: string;
+  additionalParentIds?: string[];
   joinDate: string;
   status: MemberStatus;
-  assignedBrands: Brand[];  // which brands this person handles
-  commissionTiers: CommissionTier[];  // personal commission structure
-  minRate: number;  // personal minimum commission rate %, e.g. 5
+  assignedBrands: Brand[];
+  commissionTiers: CommissionTier[];
+  minRate: number;
   notes?: string;
 }
 
-// ─── Positions ───────────────────────────────────────────────────────────────
+// ─── Defaults (used as fallback until /api/settings responds) ────────────────
 
 export const DEFAULT_POSITIONS = [
   "Sales Director",
@@ -41,171 +57,217 @@ export const DEFAULT_POSITIONS = [
   "Sales Trainee",
 ];
 
-// ─── Default commission tiers ────────────────────────────────────────────────
-
 export const DEFAULT_COMMISSION: CommissionTier[] = [
-  { threshold: 0,      pct: 5 },   // 保底 5%，任何 sales 都有
+  { threshold: 0,      pct: 5 },
   { threshold: 300000, pct: 6 },
   { threshold: 500000, pct: 7 },
 ];
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Cache + subscribe ───────────────────────────────────────────────────────
 
-function uid(): string {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const MEMBERS_KEY    = "houzs-sales-members-cache-v1";
+const POSITIONS_KEY  = "houzs-sales-positions-cache-v1";
+const COMMISSION_KEY = "houzs-sales-default-commission-cache-v1";
+
+const listeners = new Set<() => void>();
+let membersCache: SalesMember[] | null = null;
+let positionsCache: string[] | null = null;
+let commissionCache: CommissionTier[] | null = null;
+let bootstrapped = false;
+let fetchingMembers = false;
+let fetchingSettings = false;
+
+function emit() { listeners.forEach((l) => l()); }
+
+function readLS<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  const raw = localStorage.getItem(key);
+  if (!raw) return fallback;
+  try { return JSON.parse(raw) as T; } catch { return fallback; }
 }
 
-// ─── Seed data from Excel exports ────────────────────────────────────────────
-
-const seedMembers: SalesMember[] = [
-  // === Sales Directors (from export (1).xlsx) ===
-  { id: "dir-kingsley", name: "KINGSLEY", code: "KINGSLEY", phone: "+60123570401",  email: "shopckingsley@gmail.com",   ic: "", position: "Sales Director", parentId: "",                joinDate: "2024-01-01", status: "ACTIVE", assignedBrands: ["AKEMI", "ZANOTTI"], commissionTiers: [{ threshold: 0, pct: 14 }], minRate: 0 },
-  { id: "dir-peter",    name: "PETER",    code: "PETER",    phone: "+601128858819", email: "yzhe212@gmail.com",         ic: "", position: "Sales Director", parentId: "dir-kingsley",    joinDate: "2024-01-01", status: "ACTIVE", assignedBrands: ["AKEMI"],    commissionTiers: [{ threshold: 0, pct: 12 }], minRate: 0 },
-  { id: "dir-kris",     name: "KRIS",     code: "KRIS",     phone: "+60126008198",  email: "suihor00@gmail.com",        ic: "", position: "Sales Director", parentId: "dir-kingsley",    joinDate: "2024-01-01", status: "ACTIVE", assignedBrands: [],           commissionTiers: [{ threshold: 0, pct: 12 }], minRate: 0 },
-
-  // === Sales Executives (from export.xlsx) — with upline ===
-  { id: "exe-shawn",     name: "SHAWN",              code: "SHAWN",          phone: "+60109820330",   email: "gajeel333@gmail.com",          ic: "", position: "Sales Executive", parentId: "dir-peter",    joinDate: "2024-01-15", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-stanley",   name: "STANLEY",            code: "STANLEY",        phone: "+601127139334",  email: "shopcstanley@gmail.com",       ic: "", position: "Sales Executive", parentId: "dir-kingsley", joinDate: "2024-01-15", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-anthony",   name: "ANTHONY",            code: "ANTHONY",        phone: "+60164078555",   email: "hongchang6666@gmail.com",      ic: "", position: "Sales Executive", parentId: "dir-peter",    joinDate: "2024-02-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-lawrence",  name: "LAWRENCE",           code: "LAWRENCE",       phone: "+60164600347",   email: "Jiankhuan01@gmail.com",        ic: "", position: "Sales Executive", parentId: "dir-peter",    joinDate: "2024-02-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-junie",     name: "JUNIE",              code: "JUNIE",          phone: "+60174701988",   email: "junie.nini910@gmail.com",      ic: "", position: "Sales Executive", parentId: "dir-peter",    joinDate: "2024-02-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-meiting",   name: "MEI TING",           code: "MEI TING",       phone: "+60163375592",   email: "ymting3943@gmail.com",         ic: "", position: "Sales Executive", parentId: "dir-peter",    joinDate: "2024-03-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-cheahuan",  name: "CHEA HUAN",          code: "CHEA HUAN",      phone: "+60164207508",   email: "cheahuan520@gmail.com",        ic: "", position: "Sales Executive", parentId: "dir-kingsley", joinDate: "2024-03-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-yang",      name: "YANG",               code: "YANG",           phone: "+60162143943",   email: "somenoe98@gmail.com",          ic: "", position: "Sales Executive", parentId: "dir-kingsley", joinDate: "2024-03-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-yuny",      name: "YUNY",               code: "YUNY",           phone: "+60165590827",   email: "ziyunc90@gmail.com",           ic: "", position: "Sales Executive", parentId: "exe-anthony",  joinDate: "2024-04-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-rachael",   name: "RACHAEL",            code: "RACHAEL",        phone: "+601111225524",  email: "Rachael.Lim01@gmail.com",      ic: "", position: "Sales Executive", parentId: "dir-kingsley", joinDate: "2024-04-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-weihow",    name: "WEI HOW",            code: "WEI HOW",        phone: "+60175269363",   email: "ganweihow0703@gmail.com",      ic: "", position: "Sales Executive", parentId: "dir-kingsley", joinDate: "2024-04-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Under SHAWN ---
-  { id: "exe-weipin",    name: "WEIPIN NGIAU",       code: "WEIPIN",         phone: "+60177371838",   email: "ngiauweipin01@gmail.com",      ic: "", position: "Sales Executive", parentId: "exe-shawn",    joinDate: "2024-05-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-peifen",    name: "PEIFEN",             code: "Peifen",         phone: "+60164748893",   email: "peifenv1228@gmail.com",        ic: "", position: "Sales Executive", parentId: "exe-shawn",    joinDate: "2024-05-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-sally",     name: "SALLY",              code: "SALLY",          phone: "+60139821886",   email: "k.c.thing.kct@gmail.com",      ic: "", position: "Sales Executive", parentId: "exe-shawn",    joinDate: "2024-06-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-jane",      name: "JANE",               code: "JANE",           phone: "+601111411606",  email: "ooij121@gmail.com",            ic: "", position: "Sales Executive", parentId: "exe-shawn",    joinDate: "2024-06-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Under STANLEY ---
-  { id: "exe-chongyee",  name: "CHONG CHAN YEE",     code: "MELVIN CHONG",   phone: "+60122895355",   email: "Ahzhang0408@gmail.com",        ic: "", position: "Sales Executive", parentId: "exe-stanley",  joinDate: "2024-05-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-soojia",    name: "SOO JIA XIAN",       code: "ETHAN SOO",      phone: "+60165210308",   email: "xianxian0610@gmail.com",       ic: "", position: "Sales Executive", parentId: "exe-stanley",  joinDate: "2024-05-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-sheldon",   name: "SHELDON TAN",        code: "SHELDON",        phone: "+60108274584",   email: "donghongtan@gmail.com",        ic: "", position: "Sales Executive", parentId: "exe-stanley",  joinDate: "2024-05-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-james",     name: "JAMES SEOW AIK HOOI",code: "JAMES SEOW",    phone: "+60168423662",   email: "aikhooi456@gmail.com",         ic: "", position: "Sales Executive", parentId: "exe-stanley",  joinDate: "2024-05-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-lucas",     name: "TAN JIA HOU",        code: "LUCAS",          phone: "+60164863706",   email: "shopc.jhou@gmail.com",         ic: "", position: "Sales Executive", parentId: "exe-stanley",  joinDate: "2024-06-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-esther",    name: "ESTHER CHONG",       code: "ESTHER CHONG",   phone: "+60194720066",   email: "estherchong8188@gmail.com",    ic: "", position: "Sales Executive", parentId: "exe-stanley",  joinDate: "2024-06-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-adrian",    name: "ADRIAN",             code: "ADRIAN",         phone: "+601161406162",  email: "adrianleejialiang000125@gmail.com", ic: "", position: "Sales Executive", parentId: "exe-stanley",  joinDate: "2024-07-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-karjiun",   name: "TAN KAR JIUN",       code: "TAN KAR JIUN",  phone: "+601120420427",  email: "shopckarjiun@gmail.com",       ic: "", position: "Sales Executive", parentId: "exe-stanley",  joinDate: "2024-07-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Under ANTHONY ---
-  { id: "exe-stephy",    name: "STEPHY",             code: "STEPHY",         phone: "+60174113223",   email: "jxuan060298@gmail.com",        ic: "", position: "Sales Executive", parentId: "exe-anthony",  joinDate: "2024-06-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-jonas",     name: "SIA JONAS",          code: "SIA JONAS",      phone: "+60195714625",   email: "jonassia040212@gmail.com",     ic: "", position: "Sales Executive", parentId: "exe-anthony",  joinDate: "2024-07-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Under LAWRENCE ---
-  { id: "exe-luis",      name: "LUIS",               code: "LUIS",           phone: "+601110938255",  email: "teochinghuan@gmail.com",       ic: "", position: "Sales Executive", parentId: "exe-lawrence", joinDate: "2024-07-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Under JUNIE ---
-  { id: "exe-phoebe",   name: "YEAP MIN HUA",       code: "Phoebe",         phone: "+60165236652",   email: "minhua1607@gmail.com",         ic: "", position: "Sales Executive", parentId: "exe-junie",    joinDate: "2024-08-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Under CHEA HUAN ---
-  { id: "exe-yauwei",   name: "LIM YAU WEI",        code: "Lim Yau Wei",    phone: "+60124007602",   email: "limyauwei7602@gmail.com",      ic: "", position: "Sales Executive", parentId: "exe-cheahuan", joinDate: "2024-06-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-zack",     name: "ONG ZI MIN",          code: "Zack",           phone: "+60165109198",   email: "ongzimin@gmail.com",           ic: "", position: "Sales Executive", parentId: "exe-cheahuan", joinDate: "2024-08-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Under YANG ---
-  { id: "exe-shiting",  name: "CHANG SHI TING",      code: "CHANG SHI TING", phone: "+60169508618",   email: "cshiting35@gmail.com",         ic: "", position: "Sales Executive", parentId: "exe-yang",     joinDate: "2024-08-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Under YUNY ---
-  { id: "exe-wenggi",   name: "WENGGI",             code: "WENGGI",         phone: "+60125131162",   email: "foowenggi@gmail.com",          ic: "", position: "Sales Executive", parentId: "exe-yuny",     joinDate: "2024-05-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Under PETER (direct) ---
-  { id: "exe-hwasheng", name: "TEH HWA SHENG",      code: "Hwasheng",       phone: "+601127441525",  email: "tehhwasheng25052001@gmail.com", ic: "", position: "Sales Executive", parentId: "dir-peter",    joinDate: "2024-04-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Under KINGSLEY (direct) ---
-  { id: "exe-xiaorou",  name: "LEE SZE ROU",         code: "XIAO ROU",      phone: "+601110887296",  email: "bbxiaorou.0709@gmail.com",     ic: "", position: "Sales Executive", parentId: "dir-kingsley", joinDate: "2024-06-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-
-  // --- Unassigned (no upline) ---
-  { id: "exe-others",   name: "OTHERS",             code: "OTHERS",         phone: "",               email: "",                             ic: "", position: "Sales Executive", parentId: "",             joinDate: "2024-01-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-siang",    name: "SIANG",              code: "SIANG",          phone: "",               email: "",                             ic: "", position: "Sales Executive", parentId: "",             joinDate: "2024-01-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-alvin",    name: "ALVIN",              code: "ALVIN",          phone: "",               email: "",                             ic: "", position: "Sales Executive", parentId: "",             joinDate: "2024-01-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-alex",     name: "ALEX",               code: "ALEX",           phone: "",               email: "",                             ic: "", position: "Sales Executive", parentId: "",             joinDate: "2024-01-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-ww",       name: "WW",                 code: "WW",             phone: "",               email: "",                             ic: "", position: "Sales Executive", parentId: "",             joinDate: "2024-01-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-mk",       name: "MK",                 code: "MK",             phone: "",               email: "",                             ic: "", position: "Sales Executive", parentId: "",             joinDate: "2024-01-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-  { id: "exe-liang",    name: "LIANG",              code: "LIANG",          phone: "",               email: "",                             ic: "", position: "Sales Executive", parentId: "",             joinDate: "2024-01-01", status: "ACTIVE", assignedBrands: [], commissionTiers: [], minRate: 0 },
-];
-
-// ─── localStorage persistence ────────────────────────────────────────────────
-
-const K = "houzs_sales_members";
-const K_POS = "houzs_sales_positions";
-const K_COMM = "houzs_sales_default_commission";
-let listeners: (() => void)[] = [];
-
-function read(): SalesMember[] {
-  if (typeof window === "undefined") return seedMembers;
-  const raw = localStorage.getItem(K);
-  if (!raw) { localStorage.setItem(K, JSON.stringify(seedMembers)); return seedMembers; }
-  try { return JSON.parse(raw); } catch { return seedMembers; }
+function writeLS(key: string, value: unknown) {
+  if (typeof window === "undefined") return;
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* quota */ }
 }
 
-let cached: SalesMember[] | null = null;
+// ─── Wire → domain mapping ───────────────────────────────────────────────────
+// /api/users returns a row with extras (hasPassword, lastLogin, etc.) — we
+// project down to SalesMember. Missing / null fields get sensible defaults.
 
-function write(members: SalesMember[]) {
-  cached = members;
-  localStorage.setItem(K, JSON.stringify(members));
-  listeners.forEach((fn) => fn());
+interface ApiUserRow {
+  id: string;
+  name: string;
+  code: string;
+  phone: string;
+  email: string;
+  position: string;
+  parentId: string;
+  additionalParentIds?: string[];
+  joinDate: string;
+  status: "ACTIVE" | "INACTIVE" | "PENDING";
+  assignedBrands: string[];
+  commissionTiers: { threshold: number; pct: number }[];
+  minRate: number;
+  notes?: string | null;
 }
 
-function subscribe(fn: () => void) {
-  listeners.push(fn);
-  return () => { listeners = listeners.filter((l) => l !== fn); };
+function rowToMember(r: ApiUserRow): SalesMember {
+  return {
+    id: r.id,
+    name: r.name,
+    code: r.code ?? "",
+    phone: r.phone ?? "",
+    email: r.email ?? "",
+    position: r.position ?? "Sales Executive",
+    parentId: r.parentId ?? "",
+    additionalParentIds: r.additionalParentIds ?? [],
+    joinDate: r.joinDate ?? "",
+    status: (r.status === "INACTIVE" ? "INACTIVE" : "ACTIVE"),
+    assignedBrands: (r.assignedBrands ?? []) as Brand[],
+    commissionTiers: r.commissionTiers ?? [],
+    minRate: Number(r.minRate ?? 0),
+    notes: r.notes ?? undefined,
+  };
 }
 
-function getSnapshot(): SalesMember[] {
-  if (!cached) cached = read();
-  return cached;
+// ─── API fetchers ────────────────────────────────────────────────────────────
+
+async function fetchMembersFromApi(): Promise<void> {
+  if (fetchingMembers) return;
+  fetchingMembers = true;
+  try {
+    const r = await fetch("/api/users", { credentials: "include" });
+    if (!r.ok) throw new Error(String(r.status));
+    const rows = (await r.json()) as ApiUserRow[];
+    const members = rows.map(rowToMember);
+    membersCache = members;
+    writeLS(MEMBERS_KEY, members);
+    emit();
+  } catch (e) {
+    console.warn("[sales-store] members fetch failed, keeping cache:", e);
+  } finally {
+    fetchingMembers = false;
+  }
 }
 
-// ─── Positions persistence ───────────────────────────────────────────────────
+async function fetchSettingsFromApi(): Promise<void> {
+  if (fetchingSettings) return;
+  fetchingSettings = true;
+  try {
+    const r = await fetch("/api/settings", { credentials: "include" });
+    if (!r.ok) throw new Error(String(r.status));
+    const data = (await r.json()) as Record<string, unknown>;
+    if (Array.isArray(data.positions)) {
+      positionsCache = data.positions as string[];
+      writeLS(POSITIONS_KEY, positionsCache);
+    }
+    if (Array.isArray(data.default_commission)) {
+      commissionCache = data.default_commission as CommissionTier[];
+      writeLS(COMMISSION_KEY, commissionCache);
+    }
+    emit();
+  } catch (e) {
+    console.warn("[sales-store] settings fetch failed, keeping cache:", e);
+  } finally {
+    fetchingSettings = false;
+  }
+}
+
+function bootstrap() {
+  if (bootstrapped || typeof window === "undefined") return;
+  bootstrapped = true;
+  // Prime from localStorage synchronously so first render has data
+  if (!membersCache)    membersCache    = readLS<SalesMember[]>(MEMBERS_KEY, []);
+  if (!positionsCache)  positionsCache  = readLS<string[]>(POSITIONS_KEY, DEFAULT_POSITIONS);
+  if (!commissionCache) commissionCache = readLS<CommissionTier[]>(COMMISSION_KEY, DEFAULT_COMMISSION);
+  // Then fetch the real data
+  fetchMembersFromApi();
+  fetchSettingsFromApi();
+}
+
+function subscribe(cb: () => void): () => void {
+  listeners.add(cb);
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === MEMBERS_KEY)    { membersCache = null; cb(); }
+    if (e.key === POSITIONS_KEY)  { positionsCache = null; cb(); }
+    if (e.key === COMMISSION_KEY) { commissionCache = null; cb(); }
+  };
+  if (typeof window !== "undefined") window.addEventListener("storage", onStorage);
+  return () => {
+    listeners.delete(cb);
+    if (typeof window !== "undefined") window.removeEventListener("storage", onStorage);
+  };
+}
+
+function getMembersSnapshot(): SalesMember[] {
+  if (!membersCache) membersCache = readLS<SalesMember[]>(MEMBERS_KEY, []);
+  return membersCache;
+}
+
+function getServerSnapshot(): SalesMember[] { return []; }
+
+// ─── Positions (sync reads, async writes) ────────────────────────────────────
 
 export function readPositions(): string[] {
   if (typeof window === "undefined") return DEFAULT_POSITIONS;
-  const raw = localStorage.getItem(K_POS);
-  if (!raw) return DEFAULT_POSITIONS;
-  try { return JSON.parse(raw); } catch { return DEFAULT_POSITIONS; }
+  if (!positionsCache) positionsCache = readLS<string[]>(POSITIONS_KEY, DEFAULT_POSITIONS);
+  return positionsCache;
 }
 
-export function writePositions(positions: string[]) {
-  localStorage.setItem(K_POS, JSON.stringify(positions));
-  listeners.forEach((fn) => fn());
+export async function writePositions(positions: string[]): Promise<void> {
+  positionsCache = positions;
+  writeLS(POSITIONS_KEY, positions);
+  emit();
+  try {
+    await fetch("/api/settings/positions", {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(positions),
+    });
+  } catch (err) {
+    console.warn("[sales-store] writePositions API failed:", err);
+  }
 }
-
-// ─── Default commission persistence ──────────────────────────────────────────
 
 export function readDefaultCommission(): CommissionTier[] {
   if (typeof window === "undefined") return DEFAULT_COMMISSION;
-  const raw = localStorage.getItem(K_COMM);
-  if (!raw) return DEFAULT_COMMISSION;
-  try { return JSON.parse(raw); } catch { return DEFAULT_COMMISSION; }
+  if (!commissionCache) commissionCache = readLS<CommissionTier[]>(COMMISSION_KEY, DEFAULT_COMMISSION);
+  return commissionCache;
 }
 
-export function writeDefaultCommission(tiers: CommissionTier[]) {
-  localStorage.setItem(K_COMM, JSON.stringify(tiers));
-  listeners.forEach((fn) => fn());
+export async function writeDefaultCommission(tiers: CommissionTier[]): Promise<void> {
+  commissionCache = tiers;
+  writeLS(COMMISSION_KEY, tiers);
+  emit();
+  try {
+    await fetch("/api/settings/default_commission", {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(tiers),
+    });
+  } catch (err) {
+    console.warn("[sales-store] writeDefaultCommission API failed:", err);
+  }
 }
 
-/** Find the commission rate (pct) for a given sales amount.
- *  Threshold-based: find the highest threshold where sales >= threshold. */
+// ─── Commission math (pure) ──────────────────────────────────────────────────
+
 export function findCommissionRate(sales: number, tiers: CommissionTier[], minRate: number = 0): number {
   const effective = tiers.length > 0 ? tiers : readDefaultCommission();
   const sorted = [...effective].sort((a, b) => b.threshold - a.threshold);
   for (const t of sorted) {
     if (sales >= t.threshold) return Math.max(t.pct, minRate);
   }
-  return minRate; // fallback to personal minimum
+  return minRate;
 }
 
-/** Calculate commission = teamSales × rate%.
- *  teamSales = personal sales + ALL downline sales (recursive rollup). */
 export function calcCommission(sales: number, tiers: CommissionTier[]): number {
   return sales * (findCommissionRate(sales, tiers) / 100);
 }
 
-/** Sum a member's personal sales + all descendants' sales (recursive). */
 export function calcTeamSales(
   memberId: string,
   personalSalesMap: Map<string, number>,
@@ -219,11 +281,6 @@ export function calcTeamSales(
   );
 }
 
-/** Full commission breakdown for a member:
- *  - gross = teamTotal × rate%  (the full pie)
- *  - cost  = sum of each direct downline's gross commission (they each calc their own teamTotal)
- *  - net   = gross - cost  (what you actually keep)
- */
 export interface CommissionBreakdown {
   teamTotal: number;
   rate: number;
@@ -244,7 +301,6 @@ export function calcCommissionBreakdown(
   const rate = findCommissionRate(teamTotal, tiers, memberMinRate);
   const gross = teamTotal * (rate / 100);
 
-  // Cost = sum of each direct child's gross (not net — each child keeps their own net)
   const directChildren = members.filter((m) => m.parentId === memberId);
   const cost = directChildren.reduce((sum, child) => {
     const childBreakdown = calcCommissionBreakdown(child.id, personalSalesMap, members);
@@ -257,46 +313,119 @@ export function calcCommissionBreakdown(
 // ─── Hook ────────────────────────────────────────────────────────────────────
 
 export function useSalesMembers(): SalesMember[] {
-  return useSyncExternalStore(subscribe, getSnapshot, () => seedMembers);
+  if (typeof window !== "undefined") bootstrap();
+  return useSyncExternalStore(subscribe, getMembersSnapshot, getServerSnapshot);
 }
 
-// ─── Mutations ───────────────────────────────────────────────────────────────
+// ─── Mutations (optimistic cache + API) ──────────────────────────────────────
 
-export function addMember(m: Omit<SalesMember, "id">): string {
-  const id = uid();
-  const all = read();
-  all.push({ ...m, id });
-  write(all);
-  return id;
+/** Create a new user in D1. Fires an invite email by default; pass
+ *  sendInvite=false for "register now, invite later" flows. Returns the
+ *  new user's id. */
+export async function addMember(
+  m: Omit<SalesMember, "id">,
+  opts: { sendInvite?: boolean } = {},
+): Promise<string> {
+  const r = await fetch("/api/users", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: m.name,
+      code: m.code,
+      email: m.email,
+      phone: m.phone,
+      ic: m.ic,
+      department: "SALES",
+      position: m.position,
+      parentId: m.parentId,
+      additionalParentIds: m.additionalParentIds ?? [],
+      assignedBrands: m.assignedBrands,
+      commissionTiers: m.commissionTiers,
+      minRate: m.minRate,
+      joinDate: m.joinDate,
+      sendInvite: opts.sendInvite ?? true,
+    }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({})) as { error?: string };
+    throw new Error(err.error ?? `POST /api/users failed (${r.status})`);
+  }
+  const data = (await r.json()) as { id: string };
+  await fetchMembersFromApi();
+  return data.id;
 }
 
-export function updateMember(id: string, patch: Partial<SalesMember>) {
-  const all = read();
-  const idx = all.findIndex((m) => m.id === id);
-  if (idx < 0) return;
-  all[idx] = { ...all[idx], ...patch };
-  write(all);
+export async function updateMember(id: string, patch: Partial<SalesMember>): Promise<void> {
+  // Optimistic cache write
+  if (!membersCache) membersCache = readLS<SalesMember[]>(MEMBERS_KEY, []);
+  const idx = membersCache.findIndex((m) => m.id === id);
+  if (idx >= 0) {
+    const next = [...membersCache];
+    next[idx] = { ...next[idx], ...patch };
+    membersCache = next;
+    writeLS(MEMBERS_KEY, next);
+    emit();
+  }
+  try {
+    const r = await fetch(`/api/users/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (!r.ok) throw new Error(String(r.status));
+  } catch (err) {
+    console.warn("[sales-store] updateMember API failed:", err);
+    // Re-fetch to reconcile
+    fetchMembersFromApi();
+  }
 }
 
-export function removeMember(id: string) {
-  let all = read();
-  const removed = all.find((m) => m.id === id);
+export async function removeMember(id: string): Promise<void> {
+  // Optimistic: remove + reparent children to the deleted member's parent,
+  // mirroring the server-side behavior.
+  if (!membersCache) membersCache = readLS<SalesMember[]>(MEMBERS_KEY, []);
+  const removed = membersCache.find((m) => m.id === id);
   if (!removed) return;
-  // Re-parent children to removed member's parent
-  all = all.map((m) => m.parentId === id ? { ...m, parentId: removed.parentId } : m);
-  all = all.filter((m) => m.id !== id);
-  write(all);
+  let next = membersCache.map((m) => m.parentId === id ? { ...m, parentId: removed.parentId } : m);
+  next = next.filter((m) => m.id !== id);
+  membersCache = next;
+  writeLS(MEMBERS_KEY, next);
+  emit();
+
+  try {
+    const r = await fetch(`/api/users/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!r.ok) throw new Error(String(r.status));
+  } catch (err) {
+    console.warn("[sales-store] removeMember API failed:", err);
+    fetchMembersFromApi();
+  }
 }
 
-export function resetSalesMembers() {
-  cached = null;
-  localStorage.removeItem(K);
-  localStorage.removeItem(K_POS);
-  localStorage.removeItem(K_COMM);
-  listeners.forEach((fn) => fn());
+export async function resetSalesMembers(): Promise<void> {
+  membersCache = null;
+  positionsCache = null;
+  commissionCache = null;
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(MEMBERS_KEY);
+    localStorage.removeItem(POSITIONS_KEY);
+    localStorage.removeItem(COMMISSION_KEY);
+  }
+  emit();
+  await Promise.all([fetchMembersFromApi(), fetchSettingsFromApi()]);
 }
 
-// ─── Tree helpers ────────────────────────────────────────────────────────────
+/** Force a refetch of members + settings. Used after external mutations
+ *  (e.g. the Sales Team register modal that calls usersApi.invite directly). */
+export async function refreshMembers(): Promise<void> {
+  await Promise.all([fetchMembersFromApi(), fetchSettingsFromApi()]);
+}
+
+// ─── Tree helpers (pure) ─────────────────────────────────────────────────────
 
 export interface MemberNode {
   member: SalesMember;
@@ -319,7 +448,6 @@ export function buildTree(members: SalesMember[]): MemberNode[] {
     const kids = childrenMap.get(key) ?? [];
     return kids
       .sort((a, b) => {
-        // Directors first, then by name
         if (a.position !== b.position) {
           if (a.position === "Sales Director") return -1;
           if (b.position === "Sales Director") return 1;
@@ -346,5 +474,6 @@ export function flattenTree(nodes: MemberNode[]): MemberNode[] {
 }
 
 export function getAllMemberNames(): string[] {
-  return read().filter((m) => m.status === "ACTIVE").map((m) => m.name).sort();
+  const cache = membersCache ?? readLS<SalesMember[]>(MEMBERS_KEY, []);
+  return cache.filter((m) => m.status === "ACTIVE").map((m) => m.name).sort();
 }

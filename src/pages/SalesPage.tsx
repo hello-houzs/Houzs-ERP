@@ -7,7 +7,8 @@ import {
 } from "lucide-react";
 import { BRANDS, type Brand } from "@/lib/mock-data";
 import {
-  useSalesMembers, addMember, updateMember, removeMember, resetSalesMembers,
+  useSalesMembers, updateMember, removeMember, resetSalesMembers,
+  refreshMembers,
   buildTree, flattenTree, readPositions, writePositions,
   readDefaultCommission, writeDefaultCommission, calcCommission, findCommissionRate,
   DEFAULT_POSITIONS, DEFAULT_COMMISSION,
@@ -141,13 +142,8 @@ function AddMemberForm({ members, positions, onClose }: {
     });
     setBusy(false);
     if (!r.ok) return setErr(r.error);
-    // 2. Mirror into local sales-store so the Sales Team list shows it
-    //    immediately (until we fully migrate sales-store to D1).
-    addMember({
-      name: n, code: code.trim() || n, phone: phone.trim(), email: email.trim(),
-      ic: ic.trim() || undefined, position, parentId, joinDate,
-      status: "ACTIVE", assignedBrands: selectedBrands, commissionTiers: [], minRate: 0,
-    });
+    // 2. Refresh the D1-backed cache so the new row appears immediately.
+    await refreshMembers();
     onClose();
   }
 

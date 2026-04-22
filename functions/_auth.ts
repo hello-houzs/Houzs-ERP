@@ -220,7 +220,7 @@ export async function requireAuth(request: Request, env: Env): Promise<AuthUser 
 
 /** 403 unless the user is a Sales Director. */
 export function requireRole(user: AuthUser, role: "Sales Director"): Response | null {
-  if (user.position !== role) return error(`Requires role: ${role}`, 403);
+  if (!isAdmin(user)) return error(`Requires role: ${role}`, 403);
   return null;
 }
 
