@@ -4,7 +4,7 @@
 
 import { useState, useMemo, type ReactNode } from "react";
 import {
-  X, Plus, Trash2, Check, ShoppingCart, Package,
+  X, Plus, Trash2, Check, ShoppingCart, Package, ChevronRight,
   Calendar as CalIcon, User as UserIcon, Phone, Mail, MapPin,
   Tag, Hash, Home, Briefcase, FileText, DollarSign,
 } from "lucide-react";
@@ -16,15 +16,55 @@ import {
 } from "@/lib/so-store";
 import { useSKUCostings } from "@/lib/sku-costing-store";
 
+type LineCategory = "BEDFRAME" | "SOFA" | "MATT_ACC" | "OTHERS";
+
 interface LineRow {
   uid: string;
+  category: LineCategory;   // drives which variant fields show
   itemCode: string;
   description: string;
   itemGroup: ItemGroup;
   uom: string;
   qty: number;
-  unitPrice: number;
+  unitPrice: number;        // base price (user fills)
   remarks: string;
+  // Bedframe variant fields
+  fabric: string;
+  fabricTier: "PRICE_1" | "PRICE_2" | "";
+  gap: string;
+  divanHeight: string;
+  divanSurcharge: number;
+  legHeight: string;
+  legSurcharge: number;
+  // Sofa variant fields
+  model: string;
+  moduleStr: string;
+  seatSize: string;
+  sofaLeg: string;
+  sofaLegSurcharge: number;
+  // Both: special orders
+  specialOrders: { value: string; priceSen: number }[];
+}
+
+// Read Variant Maintenance config from localStorage
+interface PricedOption { value: string; priceSen: number }
+interface FabricItem { id: string; fabricCode: string; priceTier: "PRICE_1" | "PRICE_2"; price: number }
+interface MaintCfg {
+  divanHeights: PricedOption[]; legHeights: PricedOption[]; totalHeights: PricedOption[];
+  gaps: string[]; specials: PricedOption[];
+  sofaLegHeights: PricedOption[]; sofaSpecials: PricedOption[]; sofaSizes: string[];
+}
+function loadMaintCfg(): MaintCfg | null {
+  try {
+    const raw = localStorage.getItem("houzs-variants-config");
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function loadFabrics(): FabricItem[] {
+  try {
+    const raw = localStorage.getItem("houzs-fabric-tracking");
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
 }
 
 interface PaymentRow {
@@ -47,8 +87,40 @@ function uid(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-function blankLine(): LineRow {
-  return { uid: uid(), itemCode: "", description: "", itemGroup: "MATTRESS", uom: "UNIT", qty: 1, unitPrice: 0, remarks: "" };
+function blankLine(category: LineCategory = "MATT_ACC"): LineRow {
+  const defaultGroup: ItemGroup =
+    category === "BEDFRAME" ? "BEDFRAME" :
+    category === "SOFA" ? "SOFA" :
+    category === "OTHERS" ? "OTHERS" : "MATTRESS";
+  return {
+    uid: uid(), category, itemCode: "", description: "",
+    itemGroup: defaultGroup, uom: "UNIT",
+    qty: 1, unitPrice: 0, remarks: "",
+    fabric: "", fabricTier: "", gap: "", divanHeight: "", divanSurcharge: 0, legHeight: "", legSurcharge: 0,
+    model: "", moduleStr: "", seatSize: "", sofaLeg: "", sofaLegSurcharge: 0,
+    specialOrders: [],
+  };
+}
+
+// Map LineCategory → filterable ItemGroup list for SKU dropdown filter
+const CATEGORY_GROUPS: Record<LineCategory, ItemGroup[]> = {
+  BEDFRAME: ["BEDFRAME"],
+  SOFA: ["SOFA"],
+  MATT_ACC: ["MATTRESS", "ACC", "BEDLINES"],
+  OTHERS: ["DINING", "OTHERS"],
+};
+
+// Compute total unit price = base (user input) + all surcharges
+function computeUnitPrice(l: LineRow): number {
+  let p = l.unitPrice || 0;
+  if (l.category === "BEDFRAME") {
+    p += l.divanSurcharge || 0;
+    p += l.legSurcharge || 0;
+  } else if (l.category === "SOFA") {
+    p += l.sofaLegSurcharge || 0;
+  }
+  p += l.specialOrders.reduce((s, o) => s + (o.priceSen || 0) / 100, 0);
+  return p;
 }
 
 function blankPayment(): PaymentRow {
@@ -89,6 +161,309 @@ function Sel(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   );
 }
 
+// ─── LineCard — category-aware line item editor ─────────────────────────────
+
+function groupChip(g: ItemGroup): string {
+  return g === "MATTRESS" ? "bg-amber-100 text-amber-700"
+       : g === "BEDFRAME" ? "bg-blue-100 text-blue-700"
+       : g === "SOFA"     ? "bg-violet-100 text-violet-700"
+       : g === "ACC"      ? "bg-purple-100 text-purple-700"
+       : g === "BEDLINES" ? "bg-sky-100 text-sky-700"
+       : g === "DINING"   ? "bg-orange-100 text-orange-700"
+       : "bg-gray-100 text-gray-600";
+}
+
+interface LineCardProps {
+  l: LineRow;
+  idx: number;
+  skus: ReturnType<typeof useSKUCostings>;
+  maintCfg: MaintCfg | null;
+  fabrics: FabricItem[];
+  update: (patch: Partial<LineRow>) => void;
+  onRemove: () => void;
+  canRemove: boolean;
+}
+
+function LineCard({ l, idx, skus, maintCfg, fabrics, update, onRemove, canRemove }: LineCardProps) {
+  // Only SKUs belonging to this line's category
+  const filteredSkus = useMemo(() => {
+    const groups = CATEGORY_GROUPS[l.category];
+    return skus.filter((s) => (groups as readonly string[]).includes(s.itemGroup));
+  }, [skus, l.category]);
+
+  function pickProduct(code: string) {
+    const sku = skus.find((s) => s.itemCode === code);
+    if (!sku) { update({ itemCode: code }); return; }
+    const ig = sku.itemGroup as ItemGroup;
+    update({ itemCode: sku.itemCode, description: sku.description, itemGroup: ig, uom: sku.uom || "UNIT" });
+  }
+
+  function toggleSpecial(opt: PricedOption) {
+    const exists = l.specialOrders.find((o) => o.value === opt.value);
+    const next = exists
+      ? l.specialOrders.filter((o) => o.value !== opt.value)
+      : [...l.specialOrders, { value: opt.value, priceSen: opt.priceSen }];
+    update({ specialOrders: next });
+  }
+  const isSpecialSelected = (v: string) => l.specialOrders.some((o) => o.value === v);
+
+  const unitPriceComputed = computeUnitPrice(l);
+  const lineTotal = l.qty * unitPriceComputed;
+
+  return (
+    <div className="border border-[#E5E7EB] rounded-lg bg-white p-3">
+      {/* Card header */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[13px] font-semibold text-[#0A1F2E]">Line {idx + 1}</span>
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${groupChip(l.itemGroup)}`}>
+            {l.itemGroup}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-[13px] font-semibold tabular-nums text-[#0A1F2E]">
+            RM {lineTotal.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+          <button onClick={onRemove} disabled={!canRemove}
+                  className="h-5 w-5 rounded flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 disabled:opacity-30"
+                  title="Remove">
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Row 1 — Category | Product | Size/Model | Fabric */}
+      <div className="grid grid-cols-[120px_1fr_120px_1fr] gap-3 mb-2">
+        <div>
+          <label className="block text-[10px] text-gray-500 mb-0.5">Category *</label>
+          <select value={l.category}
+                  onChange={(e) => update({ category: e.target.value as LineCategory, itemCode: "", description: "" })}
+                  className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+            <option value="BEDFRAME">Bedframe</option>
+            <option value="SOFA">Sofa</option>
+            <option value="MATT_ACC">Mattress / Accessories</option>
+            <option value="OTHERS">Others</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] text-gray-500 mb-0.5">
+            {l.category === "SOFA" ? "Model *" : "Product *"}
+          </label>
+          <input list={`skus-${l.uid}`} value={l.itemCode}
+                 onChange={(e) => pickProduct(e.target.value)}
+                 placeholder={`Select ${l.category === "SOFA" ? "model" : "product"}…`}
+                 className="w-full h-8 px-2 text-[12px] text-[#0F766E] font-medium bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]" />
+          <datalist id={`skus-${l.uid}`}>
+            {filteredSkus.slice(0, 800).map((s) => (
+              <option key={s.id} value={s.itemCode}>{s.description}</option>
+            ))}
+          </datalist>
+          {l.description && <div className="text-[10px] text-gray-400 mt-0.5 truncate" title={l.description}>{l.description}</div>}
+        </div>
+        {l.category === "BEDFRAME" && (
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Size</label>
+            <input value={l.description ? (l.description.match(/\(([^)]+)\)/) || [,""])[1] : "—"} readOnly
+                   className="w-full h-8 px-2 text-[12px] bg-[#F9FAFB] border border-[#E5E7EB] rounded text-gray-500 text-center" />
+          </div>
+        )}
+        {l.category !== "BEDFRAME" && <div />}
+        {(l.category === "BEDFRAME" || l.category === "SOFA") && (
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Fabrics *</label>
+            <select value={l.fabric}
+                    onChange={(e) => {
+                      const fab = fabrics.find((f) => f.fabricCode === e.target.value);
+                      update({ fabric: e.target.value, fabricTier: fab?.priceTier ?? "" });
+                    }}
+                    className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+              <option value="">Select fabric…</option>
+              {fabrics.map((f) => (
+                <option key={f.id} value={f.fabricCode}>{f.fabricCode} ({f.priceTier})</option>
+              ))}
+            </select>
+          </div>
+        )}
+        {l.category !== "BEDFRAME" && l.category !== "SOFA" && <div />}
+      </div>
+
+      {/* Row 2 — category-specific variant fields */}
+      {l.category === "BEDFRAME" && (
+        <div className="grid grid-cols-6 gap-3 mb-2">
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Qty</label>
+            <input type="number" className="w-full h-8 px-2 text-[12px] text-right tabular-nums bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]"
+                   value={l.qty === 0 ? "" : l.qty}
+                   onChange={(e) => { const v = e.target.value; update({ qty: v === "" ? 0 : (parseInt(v) || 0) }); }}
+                   onBlur={(e) => { if (!e.target.value || parseInt(e.target.value) <= 0) update({ qty: 1 }); }} />
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Base Price (RM)</label>
+            <input type="number" step="0.01"
+                   className={`w-full h-8 px-2 text-[12px] text-right tabular-nums border rounded focus:outline-none focus:border-[#0F766E] ${
+                     !l.fabric ? "bg-amber-50 border-amber-200 text-amber-700" : "bg-white border-[#E5E7EB]"
+                   }`}
+                   value={l.unitPrice || ""} onChange={(e) => update({ unitPrice: parseFloat(e.target.value) || 0 })}
+                   placeholder={l.fabric ? "0.00" : "Select fabric"}
+                   disabled={!l.fabric} />
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Gaps</label>
+            <select value={l.gap} onChange={(e) => update({ gap: e.target.value })}
+                    className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+              <option value="">—</option>
+              {maintCfg?.gaps.map((g) => <option key={g} value={g}>{g}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Divan Heights</label>
+            <select value={l.divanHeight}
+                    onChange={(e) => {
+                      const opt = maintCfg?.divanHeights.find((o) => o.value === e.target.value);
+                      update({ divanHeight: e.target.value, divanSurcharge: (opt?.priceSen ?? 0) / 100 });
+                    }}
+                    className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+              <option value="">—</option>
+              {maintCfg?.divanHeights.map((o) => (
+                <option key={o.value} value={o.value}>{o.value}{o.priceSen ? ` (+RM ${(o.priceSen/100).toFixed(2)})` : ""}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Leg Heights</label>
+            <select value={l.legHeight}
+                    onChange={(e) => {
+                      const opt = maintCfg?.legHeights.find((o) => o.value === e.target.value);
+                      update({ legHeight: e.target.value, legSurcharge: (opt?.priceSen ?? 0) / 100 });
+                    }}
+                    className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+              <option value="">—</option>
+              {maintCfg?.legHeights.map((o) => (
+                <option key={o.value} value={o.value}>{o.value}{o.priceSen ? ` (+RM ${(o.priceSen/100).toFixed(2)})` : ""}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Total Height</label>
+            <input readOnly value="—" className="w-full h-8 px-2 text-[12px] bg-[#F9FAFB] border border-[#E5E7EB] rounded text-gray-500 text-center" />
+          </div>
+        </div>
+      )}
+
+      {l.category === "SOFA" && (
+        <div className="grid grid-cols-5 gap-3 mb-2">
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Qty</label>
+            <input type="number" className="w-full h-8 px-2 text-[12px] text-right tabular-nums bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]"
+                   value={l.qty === 0 ? "" : l.qty}
+                   onChange={(e) => { const v = e.target.value; update({ qty: v === "" ? 0 : (parseInt(v) || 0) }); }}
+                   onBlur={(e) => { if (!e.target.value || parseInt(e.target.value) <= 0) update({ qty: 1 }); }} />
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Sizes *</label>
+            <select value={l.seatSize} onChange={(e) => update({ seatSize: e.target.value })}
+                    className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+              <option value="">—</option>
+              {maintCfg?.sofaSizes.map((s) => <option key={s} value={s}>{s}"</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Leg Heights</label>
+            <select value={l.sofaLeg}
+                    onChange={(e) => {
+                      const opt = maintCfg?.sofaLegHeights.find((o) => o.value === e.target.value);
+                      update({ sofaLeg: e.target.value, sofaLegSurcharge: (opt?.priceSen ?? 0) / 100 });
+                    }}
+                    className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+              <option value="">—</option>
+              {maintCfg?.sofaLegHeights.map((o) => (
+                <option key={o.value} value={o.value}>{o.value}{o.priceSen ? ` (+RM ${(o.priceSen/100).toFixed(2)})` : ""}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Base Price (RM)</label>
+            <input type="number" step="0.01"
+                   className="w-full h-8 px-2 text-[12px] text-right tabular-nums bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]"
+                   value={l.unitPrice || ""} onChange={(e) => update({ unitPrice: parseFloat(e.target.value) || 0 })} placeholder="0.00" />
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Module</label>
+            <input value={l.moduleStr} onChange={(e) => update({ moduleStr: e.target.value })}
+                   className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]" placeholder="—" />
+          </div>
+        </div>
+      )}
+
+      {(l.category === "MATT_ACC" || l.category === "OTHERS") && (
+        <div className="grid grid-cols-[80px_140px_1fr] gap-3 mb-2">
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Qty</label>
+            <input type="number" className="w-full h-8 px-2 text-[12px] text-right tabular-nums bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]"
+                   value={l.qty === 0 ? "" : l.qty}
+                   onChange={(e) => { const v = e.target.value; update({ qty: v === "" ? 0 : (parseInt(v) || 0) }); }}
+                   onBlur={(e) => { if (!e.target.value || parseInt(e.target.value) <= 0) update({ qty: 1 }); }} />
+          </div>
+          <div>
+            <label className="block text-[10px] text-gray-500 mb-0.5">Unit Price (RM)</label>
+            <input type="number" step="0.01"
+                   className="w-full h-8 px-2 text-[12px] text-right tabular-nums bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]"
+                   value={l.unitPrice || ""} onChange={(e) => update({ unitPrice: parseFloat(e.target.value) || 0 })} placeholder="0.00" />
+          </div>
+          <div />
+        </div>
+      )}
+
+      {/* Special Orders — Bedframe + Sofa only */}
+      {(l.category === "BEDFRAME" || l.category === "SOFA") && maintCfg && (
+        <details className="mb-2 border border-[#E5E7EB] rounded">
+          <summary className="cursor-pointer px-3 py-2 text-[11px] font-semibold text-gray-600 hover:bg-[#F9FAFB]">
+            Special Orders ({l.specialOrders.length} selected)
+          </summary>
+          <div className="p-3 grid grid-cols-3 gap-2 border-t border-[#E5E7EB] bg-[#FAFBFB]">
+            {(l.category === "BEDFRAME" ? maintCfg.specials : maintCfg.sofaSpecials).map((opt) => (
+              <label key={opt.value} className="flex items-start gap-2 cursor-pointer hover:bg-white p-1 rounded">
+                <input type="checkbox" checked={isSpecialSelected(opt.value)}
+                       onChange={() => toggleSpecial(opt)}
+                       className="h-3.5 w-3.5 mt-0.5 accent-[#0F766E]" />
+                <div>
+                  <div className="text-[11px] text-[#0A1F2E]">{opt.value}</div>
+                  <div className="text-[10px] text-amber-600">
+                    {opt.priceSen > 0 ? `+RM ${(opt.priceSen / 100).toFixed(2)}` : "RM 0"}
+                  </div>
+                </div>
+              </label>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {/* Line Notes */}
+      <div>
+        <label className="block text-[10px] text-gray-500 mb-0.5">Line Notes</label>
+        <input value={l.remarks} onChange={(e) => update({ remarks: e.target.value })}
+               placeholder="Optional notes for this line…"
+               className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]" />
+      </div>
+
+      {/* Base + Unit Price summary */}
+      <div className="mt-2 pt-2 border-t border-[#F3F4F6] flex items-center justify-between text-[11px]">
+        <span className="text-gray-500">
+          Base: <span className="tabular-nums font-semibold text-[#0A1F2E]">RM {(l.unitPrice || 0).toFixed(2)}</span>
+          {(l.divanSurcharge || l.legSurcharge || l.sofaLegSurcharge || l.specialOrders.length > 0) && (
+            <>
+              {" "}+ surcharges RM {(unitPriceComputed - (l.unitPrice || 0)).toFixed(2)}
+            </>
+          )}
+        </span>
+        <span className="text-gray-500">
+          Unit Price: <span className="tabular-nums font-semibold text-[#0F766E]">RM {unitPriceComputed.toFixed(2)}</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function NewSalesOrderForm({ onClose }: Props) {
   const skus = useSKUCostings();
 
@@ -123,8 +498,12 @@ export default function NewSalesOrderForm({ onClose }: Props) {
   const [lines, setLines] = useState<LineRow[]>([blankLine()]);
   const [payments, setPayments] = useState<PaymentRow[]>([]);
 
+  // Variant Maintenance config (divan heights, fabrics, etc.)
+  const [maintCfg] = useState<MaintCfg | null>(() => loadMaintCfg());
+  const [fabrics] = useState<FabricItem[]>(() => loadFabrics());
+
   const subtotal = useMemo(() =>
-    lines.reduce((s, l) => s + l.qty * l.unitPrice, 0), [lines]);
+    lines.reduce((s, l) => s + l.qty * computeUnitPrice(l), 0), [lines]);
 
   const depositPaid = useMemo(() =>
     payments.reduce((s, p) => s + (p.amount || 0), 0), [payments]);
@@ -139,9 +518,14 @@ export default function NewSalesOrderForm({ onClose }: Props) {
     if (!sku) { updateLine(uidKey, { itemCode }); return; }
     const ig: ItemGroup = (ITEM_GROUPS as readonly string[]).includes(sku.itemGroup)
       ? (sku.itemGroup as ItemGroup) : "OTHERS";
+    // Switching SKU resets variant fields so old selections don't leak across items
     updateLine(uidKey, {
       itemCode: sku.itemCode, description: sku.description,
       itemGroup: ig, uom: sku.uom || "UNIT",
+      fabric: "", fabricTier: "",
+      gap: "", divanHeight: "", divanSurcharge: 0, legHeight: "", legSurcharge: 0,
+      seatSize: "", sofaLeg: "", sofaLegSurcharge: 0,
+      specialOrders: [],
     });
   }
   function addLine() { setLines((prev) => [...prev, blankLine()]); }
@@ -183,16 +567,31 @@ export default function NewSalesOrderForm({ onClose }: Props) {
     };
     addSOHeader(header);
     for (const l of validLines) {
+      const linePrice = computeUnitPrice(l);  // base + variant surcharges
+      // Variants payload (only for BEDFRAME / SOFA)
+      const variants = (l.category === "BEDFRAME" || l.category === "SOFA") ? {
+        fabric: l.fabric || undefined,
+        fabricTier: l.fabricTier || undefined,
+        gap: l.gap || undefined,
+        divanHeight: l.divanHeight || undefined,
+        divanSurcharge: l.divanSurcharge || undefined,
+        legHeight: l.legHeight || undefined,
+        legSurcharge: l.legSurcharge || undefined,
+        seatSize: l.seatSize || undefined,
+        sofaLeg: l.sofaLeg || undefined,
+        sofaLegSurcharge: l.sofaLegSurcharge || undefined,
+        specialOrders: l.specialOrders.length > 0 ? l.specialOrders : undefined,
+      } : undefined;
       addSOLine({
         docNo, date: orderDate, debtorCode: debtorCode.trim(),
         debtorName: debtorName.trim(), agent: agent.trim(),
         itemGroup: l.itemGroup, itemCode: l.itemCode.trim().toUpperCase(),
         description: l.description, description2: "",
         uom: (l.uom === "UNIT" || l.uom === "SET" || l.uom === "PAIR" || l.uom === "PCS") ? l.uom : "UNIT",
-        location: warehouse, qty: l.qty, unitPrice: l.unitPrice, discount: 0,
-        total: l.qty * l.unitPrice, tax: 0, totalInc: l.qty * l.unitPrice,
+        location: warehouse, qty: l.qty, unitPrice: linePrice, discount: 0,
+        total: l.qty * linePrice, tax: 0, totalInc: l.qty * linePrice,
         balance: Math.max(0, balanceOutstanding), paymentStatus: derivedStatus, venue, branding,
-        remark: l.remarks, cancelled: false,
+        remark: l.remarks, cancelled: false, variants,
       });
     }
     // Store payments (future enhancement: persist to a payments store)
@@ -323,7 +722,7 @@ export default function NewSalesOrderForm({ onClose }: Props) {
             </div>
           </div>
 
-          {/* Items grid — styled like Inistate's items table */}
+          {/* Items — flat grid, auto-expand variant fields for Bedframe/Sofa */}
           <div className="mt-4">
             <div className="flex items-center gap-2 mb-1">
               <Package className="h-3.5 w-3.5 text-gray-500" />
@@ -334,7 +733,7 @@ export default function NewSalesOrderForm({ onClose }: Props) {
               </button>
             </div>
             <div className="border-t border-[#E5E7EB]">
-              <div className="grid grid-cols-[40px_2fr_2fr_70px_90px_100px_90px_30px] text-[11px] text-[#9CA3AF] bg-transparent">
+              <div className="grid grid-cols-[40px_2fr_2fr_70px_90px_100px_90px_30px] text-[11px] text-[#9CA3AF]">
                 <div className="py-2 border-b border-[#E5E7EB] inline-flex items-center gap-1">No <Hash className="h-3 w-3" /></div>
                 <div className="py-2 border-b border-[#E5E7EB] inline-flex items-center gap-1">Item <Package className="h-3 w-3" /></div>
                 <div className="py-2 border-b border-[#E5E7EB] inline-flex items-center gap-1">Remarks <FileText className="h-3 w-3" /></div>
@@ -344,52 +743,231 @@ export default function NewSalesOrderForm({ onClose }: Props) {
                 <div className="py-2 border-b border-[#E5E7EB]">Group</div>
                 <div className="py-2 border-b border-[#E5E7EB]" />
               </div>
-              {lines.map((l, idx) => (
-                <div key={l.uid} className="grid grid-cols-[40px_2fr_2fr_70px_90px_100px_90px_30px] text-[12px] border-b border-[#F3F4F6] items-center hover:bg-[#FAFBFB]">
-                  <div className="py-2 text-center text-[12px] tabular-nums text-gray-500">{idx + 1}</div>
-                  <div className="py-1 pr-2">
-                    <input className="w-full h-6 px-0 text-[12px] text-[#0F766E] bg-transparent border-0 focus:outline-none focus:border-b focus:border-[#0F766E]"
-                           list="newso-skus" value={l.itemCode}
-                           onChange={(e) => pickSKU(l.uid, e.target.value)}
-                           placeholder="Select item…" />
-                    {l.description && <div className="text-[10px] text-gray-400 truncate">{l.description}</div>}
+              {lines.map((l, idx) => {
+                const unit = computeUnitPrice(l);
+                const needsBedframe = l.itemGroup === "BEDFRAME";
+                const needsSofa = l.itemGroup === "SOFA";
+                return (
+                  <div key={l.uid}>
+                    {/* Main row (always visible) */}
+                    <div className="grid grid-cols-[40px_2fr_2fr_70px_90px_100px_90px_30px] text-[12px] border-b border-[#F3F4F6] items-center hover:bg-[#FAFBFB]">
+                      <div className="py-2 text-center text-[12px] tabular-nums text-gray-500">{idx + 1}</div>
+                      <div className="py-1 pr-2 min-w-0 overflow-hidden">
+                        <input className="w-full h-6 px-0 text-[12px] text-[#0F766E] bg-transparent border-0 focus:outline-none focus:border-b focus:border-[#0F766E] cursor-pointer"
+                               list="newso-skus" value={l.itemCode}
+                               onChange={(e) => pickSKU(l.uid, e.target.value)}
+                               onFocus={(e) => e.currentTarget.select()}
+                               onClick={(e) => (e.currentTarget as HTMLInputElement).select()}
+                               placeholder="Click to select / type to search…"
+                               title="Click to replace — typing will overwrite" />
+                        {l.description && <div className="text-[10px] text-gray-400 truncate whitespace-nowrap overflow-hidden" title={l.description}>{l.description}</div>}
+                      </div>
+                      <div className="py-1 pr-2 min-w-0">
+                        <input className="w-full h-7 px-1.5 text-[12px] bg-[#F9FAFB] border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E] focus:bg-white"
+                               value={l.remarks}
+                               onChange={(e) => updateLine(l.uid, { remarks: e.target.value })}
+                               placeholder="Type remarks…" />
+                      </div>
+                      <div className="py-1 pr-2 text-right">
+                        <input type="number"
+                               className="w-full h-7 px-1.5 text-[12px] text-right tabular-nums bg-[#F9FAFB] border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E] focus:bg-white"
+                               value={l.qty === 0 ? "" : l.qty}
+                               onChange={(e) => { const v = e.target.value; updateLine(l.uid, { qty: v === "" ? 0 : (parseInt(v) || 0) }); }}
+                               onBlur={(e) => { if (!e.target.value || parseInt(e.target.value) <= 0) updateLine(l.uid, { qty: 1 }); }}
+                               placeholder="1" />
+                      </div>
+                      <div className="py-1 pr-2 text-right">
+                        <input type="number" min={0} step="0.01"
+                               className="w-full h-7 px-1.5 text-[12px] text-right tabular-nums bg-[#F9FAFB] border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E] focus:bg-white"
+                               value={l.unitPrice || ""}
+                               onChange={(e) => updateLine(l.uid, { unitPrice: parseFloat(e.target.value) || 0 })}
+                               placeholder="0.00" />
+                      </div>
+                      <div className="py-2 pr-2 text-right text-[12px] tabular-nums font-semibold text-[#0A1F2E]">
+                        {(l.qty * unit).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </div>
+                      <div className="py-1 pr-2 flex items-center" title="Group derived from SKU — locked">
+                        <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${groupChip(l.itemGroup)}`}>
+                          {l.itemGroup}
+                        </span>
+                      </div>
+                      <div className="py-1 flex items-center justify-center">
+                        <button onClick={() => removeLine(l.uid)} disabled={lines.length <= 1}
+                                className="h-5 w-5 rounded flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50"
+                                title="Remove">
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Always-visible variant fields — BEDFRAME (Specials is the only collapsible) */}
+                    {needsBedframe && (
+                      <div className="border-b border-[#F3F4F6] bg-[#FAFBFB]">
+                        <div className="px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider">Bedframe Variants</div>
+                        <div className="px-4 pb-2 grid grid-cols-4 gap-3">
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-0.5">Fabrics</label>
+                            <select value={l.fabric}
+                                    onChange={(e) => {
+                                      const fab = fabrics.find((f) => f.fabricCode === e.target.value);
+                                      updateLine(l.uid, { fabric: e.target.value, fabricTier: fab?.priceTier ?? "" });
+                                    }}
+                                    className="w-full h-7 px-1.5 text-[11px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+                              <option value="">Select fabric…</option>
+                              {fabrics.map((f) => (
+                                <option key={f.id} value={f.fabricCode}>{f.fabricCode} ({f.priceTier})</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-0.5">Gaps</label>
+                            <select value={l.gap} onChange={(e) => updateLine(l.uid, { gap: e.target.value })}
+                                    className="w-full h-7 px-1.5 text-[11px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+                              <option value="">—</option>
+                              {maintCfg?.gaps.map((g) => <option key={g} value={g}>{g}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-0.5">Divan Heights</label>
+                            <select value={l.divanHeight}
+                                    onChange={(e) => {
+                                      const opt = maintCfg?.divanHeights.find((o) => o.value === e.target.value);
+                                      updateLine(l.uid, { divanHeight: e.target.value, divanSurcharge: (opt?.priceSen ?? 0) / 100 });
+                                    }}
+                                    className="w-full h-7 px-1.5 text-[11px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+                              <option value="">—</option>
+                              {maintCfg?.divanHeights.map((o) => (
+                                <option key={o.value} value={o.value}>{o.value}{o.priceSen ? ` (+${(o.priceSen/100).toFixed(0)})` : ""}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-0.5">Leg Heights</label>
+                            <select value={l.legHeight}
+                                    onChange={(e) => {
+                                      const opt = maintCfg?.legHeights.find((o) => o.value === e.target.value);
+                                      updateLine(l.uid, { legHeight: e.target.value, legSurcharge: (opt?.priceSen ?? 0) / 100 });
+                                    }}
+                                    className="w-full h-7 px-1.5 text-[11px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+                              <option value="">—</option>
+                              {maintCfg?.legHeights.map((o) => (
+                                <option key={o.value} value={o.value}>{o.value}{o.priceSen ? ` (+${(o.priceSen/100).toFixed(0)})` : ""}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Special Orders — full width, collapsed by default, expand to reveal 3-col checkbox grid */}
+                        <details className="mx-4 mb-3 bg-white border border-[#E5E7EB] rounded">
+                          <summary className="cursor-pointer px-3 py-2 text-[12px] font-semibold text-[#0A1F2E] hover:bg-[#FAFBFB] flex items-center gap-1.5">
+                            <ChevronRight className="h-3.5 w-3.5 text-gray-400 transition-transform group-open:rotate-90" />
+                            Special Orders ({l.specialOrders.length} selected)
+                          </summary>
+                          <div className="px-4 py-3 border-t border-[#E5E7EB] grid grid-cols-3 gap-x-6 gap-y-2">
+                            {maintCfg?.specials.map((opt) => {
+                              const selected = l.specialOrders.some((o) => o.value === opt.value);
+                              return (
+                                <label key={opt.value} className="flex items-start gap-2 cursor-pointer hover:bg-[#FAFBFB] px-1 py-1 rounded">
+                                  <input type="checkbox" checked={selected}
+                                         onChange={() => {
+                                           const next = selected
+                                             ? l.specialOrders.filter((o) => o.value !== opt.value)
+                                             : [...l.specialOrders, { value: opt.value, priceSen: opt.priceSen }];
+                                           updateLine(l.uid, { specialOrders: next });
+                                         }}
+                                         className="h-3.5 w-3.5 mt-0.5 accent-[#0F766E]" />
+                                  <div className="min-w-0">
+                                    <div className="text-[12px] text-[#0A1F2E]">{opt.value}</div>
+                                    <div className={`text-[11px] ${opt.priceSen > 0 ? "text-amber-600" : "text-gray-400"}`}>
+                                      {opt.priceSen > 0 ? `+RM ${(opt.priceSen / 100).toFixed(2)}` : "RM 0"}
+                                    </div>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </details>
+                      </div>
+                    )}
+
+                    {/* Always-visible variant fields — SOFA (Specials is the only collapsible) */}
+                    {needsSofa && (
+                      <div className="border-b border-[#F3F4F6] bg-[#FAFBFB]">
+                        <div className="px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider">Sofa Variants</div>
+                        <div className="px-4 pb-2 grid grid-cols-3 gap-3">
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-0.5">Fabrics</label>
+                            <select value={l.fabric}
+                                    onChange={(e) => {
+                                      const fab = fabrics.find((f) => f.fabricCode === e.target.value);
+                                      updateLine(l.uid, { fabric: e.target.value, fabricTier: fab?.priceTier ?? "" });
+                                    }}
+                                    className="w-full h-7 px-1.5 text-[11px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+                              <option value="">Select fabric…</option>
+                              {fabrics.map((f) => (
+                                <option key={f.id} value={f.fabricCode}>{f.fabricCode} ({f.priceTier})</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-0.5">Sizes</label>
+                            <select value={l.seatSize} onChange={(e) => updateLine(l.uid, { seatSize: e.target.value })}
+                                    className="w-full h-7 px-1.5 text-[11px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+                              <option value="">—</option>
+                              {maintCfg?.sofaSizes.map((s) => <option key={s} value={s}>{s}"</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-gray-500 mb-0.5">Leg Heights</label>
+                            <select value={l.sofaLeg}
+                                    onChange={(e) => {
+                                      const opt = maintCfg?.sofaLegHeights.find((o) => o.value === e.target.value);
+                                      updateLine(l.uid, { sofaLeg: e.target.value, sofaLegSurcharge: (opt?.priceSen ?? 0) / 100 });
+                                    }}
+                                    className="w-full h-7 px-1.5 text-[11px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+                              <option value="">—</option>
+                              {maintCfg?.sofaLegHeights.map((o) => (
+                                <option key={o.value} value={o.value}>{o.value}{o.priceSen ? ` (+${(o.priceSen/100).toFixed(0)})` : ""}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Special Orders — full width, collapsed by default */}
+                        <details className="mx-4 mb-3 bg-white border border-[#E5E7EB] rounded">
+                          <summary className="cursor-pointer px-3 py-2 text-[12px] font-semibold text-[#0A1F2E] hover:bg-[#FAFBFB] flex items-center gap-1.5">
+                            <ChevronRight className="h-3.5 w-3.5 text-gray-400" />
+                            Special Orders ({l.specialOrders.length} selected)
+                          </summary>
+                          <div className="px-4 py-3 border-t border-[#E5E7EB] grid grid-cols-3 gap-x-6 gap-y-2">
+                            {maintCfg?.sofaSpecials.map((opt) => {
+                              const selected = l.specialOrders.some((o) => o.value === opt.value);
+                              return (
+                                <label key={opt.value} className="flex items-start gap-2 cursor-pointer hover:bg-[#FAFBFB] px-1 py-1 rounded">
+                                  <input type="checkbox" checked={selected}
+                                         onChange={() => {
+                                           const next = selected
+                                             ? l.specialOrders.filter((o) => o.value !== opt.value)
+                                             : [...l.specialOrders, { value: opt.value, priceSen: opt.priceSen }];
+                                           updateLine(l.uid, { specialOrders: next });
+                                         }}
+                                         className="h-3.5 w-3.5 mt-0.5 accent-[#0F766E]" />
+                                  <div className="min-w-0">
+                                    <div className="text-[12px] text-[#0A1F2E]">{opt.value}</div>
+                                    <div className={`text-[11px] ${opt.priceSen > 0 ? "text-amber-600" : "text-gray-400"}`}>
+                                      {opt.priceSen > 0 ? `+RM ${(opt.priceSen / 100).toFixed(2)}` : "RM 0"}
+                                    </div>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </details>
+                      </div>
+                    )}
                   </div>
-                  <div className="py-1 pr-2">
-                    <input className="w-full h-6 px-0 text-[12px] bg-transparent border-0 focus:outline-none focus:border-b focus:border-[#0F766E]"
-                           value={l.remarks}
-                           onChange={(e) => updateLine(l.uid, { remarks: e.target.value })}
-                           placeholder="—" />
-                  </div>
-                  <div className="py-1 pr-2 text-right">
-                    <input type="number" min={1} className="w-full h-6 px-0 text-[12px] text-right tabular-nums bg-transparent border-0 focus:outline-none focus:border-b focus:border-[#0F766E]"
-                           value={l.qty}
-                           onChange={(e) => updateLine(l.uid, { qty: Math.max(1, parseInt(e.target.value) || 1) })} />
-                  </div>
-                  <div className="py-1 pr-2 text-right">
-                    <input type="number" min={0} step="0.01" className="w-full h-6 px-0 text-[12px] text-right tabular-nums bg-transparent border-0 focus:outline-none focus:border-b focus:border-[#0F766E]"
-                           value={l.unitPrice}
-                           onChange={(e) => updateLine(l.uid, { unitPrice: parseFloat(e.target.value) || 0 })} />
-                  </div>
-                  <div className="py-2 pr-2 text-right text-[12px] tabular-nums font-semibold text-[#0A1F2E]">
-                    {(l.qty * l.unitPrice).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </div>
-                  <div className="py-1 pr-2">
-                    <select className="w-full h-6 px-0 text-[11px] bg-transparent border-0 focus:outline-none focus:border-b focus:border-[#0F766E]"
-                            value={l.itemGroup}
-                            onChange={(e) => updateLine(l.uid, { itemGroup: e.target.value as ItemGroup })}>
-                      {ITEM_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
-                    </select>
-                  </div>
-                  <div className="py-1 flex items-center justify-center">
-                    <button onClick={() => removeLine(l.uid)}
-                            disabled={lines.length <= 1}
-                            className="h-5 w-5 rounded flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50"
-                            title="Remove">
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
               <div className="grid grid-cols-[40px_2fr_2fr_70px_90px_100px_90px_30px] text-[12px] font-semibold pt-2">
                 <div className="col-span-5 text-right text-gray-500">Subtotal</div>
                 <div className="text-right tabular-nums text-[#0A1F2E]">

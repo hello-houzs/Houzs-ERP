@@ -142,6 +142,34 @@ const ALL_COLUMNS: Col[] = [
     sortValue: (so) => so.localTotal,
     render: (so) => <span className="tabular-nums font-semibold">{fmtRM(so.localTotal)}</span>,
   },
+  // Revenue per category (paired side-by-side with cost per category)
+  {
+    key: "mattressSofa", label: "Mattress/Sofa", align: "right", sortable: true,
+    sortValue: (so) => so.mattressSofa,
+    render: (so) => (
+      <span className={`tabular-nums ${so.mattressSofa > 0 ? "text-amber-700 font-semibold" : "text-gray-300"}`}>
+        {so.mattressSofa > 0 ? fmtRM(so.mattressSofa) : "—"}
+      </span>
+    ),
+  },
+  {
+    key: "bedframe", label: "Bedframe", align: "right", sortable: true,
+    sortValue: (so) => so.bedframe,
+    render: (so) => (
+      <span className={`tabular-nums ${so.bedframe > 0 ? "text-blue-700 font-semibold" : "text-gray-300"}`}>
+        {so.bedframe > 0 ? fmtRM(so.bedframe) : "—"}
+      </span>
+    ),
+  },
+  {
+    key: "accessories", label: "Accessories", align: "right", sortable: true,
+    sortValue: (so) => so.accessories,
+    render: (so) => (
+      <span className={`tabular-nums ${so.accessories > 0 ? "text-purple-700 font-semibold" : "text-gray-300"}`}>
+        {so.accessories > 0 ? fmtRM(so.accessories) : "—"}
+      </span>
+    ),
+  },
   {
     key: "mattressSofaCost", label: "Mattress/Sofa Cost", align: "right", sortable: true,
     sortValue: (so) => so.mattressSofaCost ?? 0,

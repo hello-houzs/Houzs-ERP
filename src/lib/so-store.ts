@@ -50,6 +50,24 @@ export interface SODetailLine {
   unitCost: number;
   lineCost: number;
   lineMargin: number;
+  // Variant selections (only set for BEDFRAME / SOFA lines)
+  // Enables SO Details to compute accurate costing per variant
+  variants?: {
+    fabric?: string;
+    fabricTier?: "PRICE_1" | "PRICE_2" | "";
+    // Bedframe
+    gap?: string;
+    divanHeight?: string;
+    divanSurcharge?: number;   // RM amount added to selling + cost
+    legHeight?: string;
+    legSurcharge?: number;
+    // Sofa
+    seatSize?: string;
+    sofaLeg?: string;
+    sofaLegSurcharge?: number;
+    // Both
+    specialOrders?: { value: string; priceSen: number }[];
+  };
 }
 
 export interface SOHeader {
@@ -213,9 +231,28 @@ export function useSOHeaders(): SOHeader[] {
 
 // ─── Cost calc helpers ────────────────────────────────────────────────────────
 
-/** Recompute cost fields on a line using current SKU master. */
+/** Sum of variant surcharges (RM, per-unit) on a line. Applies to both selling and cost. */
+export function variantSurchargeRM(line: SODetailLine): number {
+  const v = line.variants;
+  if (!v) return 0;
+  let s = 0;
+  s += v.divanSurcharge ?? 0;
+  s += v.legSurcharge ?? 0;
+  s += v.sofaLegSurcharge ?? 0;
+  if (v.specialOrders) {
+    s += v.specialOrders.reduce((sum, o) => sum + (o.priceSen || 0) / 100, 0);
+  }
+  return s;
+}
+
+/** Recompute cost fields on a line using current SKU master.
+ *  Line cost = (SKU base cost + variant surcharges) × qty.
+ *  Variant surcharges flow through to cost because adding a drawer / taller divan
+ *  costs the factory extra materials — so cost tracks sell. */
 export function recomputeLineCost(line: SODetailLine): SODetailLine {
-  const unitCost = getCostByItemCode(line.itemCode);
+  const skuCost = getCostByItemCode(line.itemCode);
+  const surcharge = variantSurchargeRM(line);
+  const unitCost = skuCost + surcharge;
   const lineCost = unitCost * line.qty;
   return {
     ...line,
@@ -347,11 +384,15 @@ export function getConsolidatedSOs(
     const accessories = docLines.filter((l) => l.itemGroup === "ACC" || l.itemGroup === "BEDLINES").reduce((s, l) => s + l.total, 0);
     const others = docLines.filter((l) => !["MATTRESS","SOFA","BEDFRAME","ACC","BEDLINES"].includes(l.itemGroup)).reduce((s, l) => s + l.total, 0);
 
-    // Cost breakdown per category
-    const mattressSofaCost = docLines.filter((l) => l.itemGroup === "MATTRESS" || l.itemGroup === "SOFA").reduce((s, l) => s + l.lineCost, 0);
-    const bedframeCost = docLines.filter((l) => l.itemGroup === "BEDFRAME").reduce((s, l) => s + l.lineCost, 0);
-    const accessoriesCost = docLines.filter((l) => l.itemGroup === "ACC" || l.itemGroup === "BEDLINES").reduce((s, l) => s + l.lineCost, 0);
-    const othersCost = docLines.filter((l) => !["MATTRESS","SOFA","BEDFRAME","ACC","BEDLINES"].includes(l.itemGroup)).reduce((s, l) => s + l.lineCost, 0);
+    // Cost breakdown per category — live SKU master + variant surcharges
+    const lineCostLive = (l: SODetailLine) => {
+      const skuCost = getCostByItemCode(l.itemCode);
+      return (skuCost + variantSurchargeRM(l)) * l.qty;
+    };
+    const mattressSofaCost = docLines.filter((l) => l.itemGroup === "MATTRESS" || l.itemGroup === "SOFA").reduce((s, l) => s + lineCostLive(l), 0);
+    const bedframeCost = docLines.filter((l) => l.itemGroup === "BEDFRAME").reduce((s, l) => s + lineCostLive(l), 0);
+    const accessoriesCost = docLines.filter((l) => l.itemGroup === "ACC" || l.itemGroup === "BEDLINES").reduce((s, l) => s + lineCostLive(l), 0);
+    const othersCost = docLines.filter((l) => !["MATTRESS","SOFA","BEDFRAME","ACC","BEDLINES"].includes(l.itemGroup)).reduce((s, l) => s + lineCostLive(l), 0);
 
     const totalCost = mattressSofaCost + bedframeCost + accessoriesCost + othersCost;
     const totalRevenue = docLines.length > 0

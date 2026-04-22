@@ -6,7 +6,7 @@ import {
 import { BRANDS } from "@/lib/mock-data";
 import {
   useSOLines, addSOLine, updateSOLine, removeSOLine, resetSOLines,
-  ITEM_GROUPS, SO_UOMS, PAYMENT_STATUSES,
+  ITEM_GROUPS, SO_UOMS, PAYMENT_STATUSES, variantSurchargeRM,
   type SODetailLine, type ItemGroup, type SOUom, type PaymentStatus,
 } from "@/lib/so-store";
 import { useSKUCostings, type SKUCosting } from "@/lib/sku-costing-store";
@@ -146,25 +146,27 @@ const ALL_COLUMNS: Col[] = [
   },
   {
     key: "unitCost", label: "Unit Cost", align: "right", defaultHidden: true,
-    sortValue: (l, ctx) => ctx?.costByCode.get(l.itemCode) ?? 0,
+    sortValue: (l, ctx) => (ctx?.costByCode.get(l.itemCode) ?? 0) + variantSurchargeRM(l),
     render: (l, ctx) => {
-      const cost = ctx.costByCode.get(l.itemCode) ?? 0;
+      const cost = (ctx.costByCode.get(l.itemCode) ?? 0) + variantSurchargeRM(l);
       return <span className="tabular-nums text-gray-500">{cost > 0 ? fmtRM(cost) : "—"}</span>;
     },
   },
   {
     key: "lineCost", label: "Line Cost", align: "right",
-    sortValue: (l, ctx) => (ctx?.costByCode.get(l.itemCode) ?? 0) * l.qty,
+    sortValue: (l, ctx) => ((ctx?.costByCode.get(l.itemCode) ?? 0) + variantSurchargeRM(l)) * l.qty,
     render: (l, ctx) => {
-      const cost = (ctx.costByCode.get(l.itemCode) ?? 0) * l.qty;
+      const unitCost = (ctx.costByCode.get(l.itemCode) ?? 0) + variantSurchargeRM(l);
+      const cost = unitCost * l.qty;
       return <span className="tabular-nums text-gray-600">{cost > 0 ? fmtRM(cost) : "—"}</span>;
     },
   },
   {
     key: "lineMargin", label: "Margin RM", align: "right",
-    sortValue: (l, ctx) => l.total - (ctx?.costByCode.get(l.itemCode) ?? 0) * l.qty,
+    sortValue: (l, ctx) => l.total - ((ctx?.costByCode.get(l.itemCode) ?? 0) + variantSurchargeRM(l)) * l.qty,
     render: (l, ctx) => {
-      const cost = (ctx.costByCode.get(l.itemCode) ?? 0) * l.qty;
+      const unitCost = (ctx.costByCode.get(l.itemCode) ?? 0) + variantSurchargeRM(l);
+      const cost = unitCost * l.qty;
       const margin = l.total - cost;
       return (
         <span className={`tabular-nums font-semibold ${margin > 0 ? "text-[#0F766E]" : margin < 0 ? "text-red-600" : "text-gray-400"}`}>
@@ -177,12 +179,14 @@ const ALL_COLUMNS: Col[] = [
     key: "marginPct", label: "Margin %", align: "right",
     sortValue: (l, ctx) => {
       if (l.total <= 0) return 0;
-      const cost = (ctx?.costByCode.get(l.itemCode) ?? 0) * l.qty;
+      const unitCost = (ctx?.costByCode.get(l.itemCode) ?? 0) + variantSurchargeRM(l);
+      const cost = unitCost * l.qty;
       return ((l.total - cost) / l.total) * 100;
     },
     render: (l, ctx) => {
       if (l.total <= 0) return <span className="text-gray-400">—</span>;
-      const cost = (ctx.costByCode.get(l.itemCode) ?? 0) * l.qty;
+      const unitCost = (ctx.costByCode.get(l.itemCode) ?? 0) + variantSurchargeRM(l);
+      const cost = unitCost * l.qty;
       const pct = ((l.total - cost) / l.total) * 100;
       return (
         <span className={`tabular-nums font-semibold ${
@@ -235,6 +239,76 @@ const ALL_COLUMNS: Col[] = [
   {
     key: "remark", label: "Remark", defaultHidden: true,
     render: (l) => <span className="text-gray-500 max-w-[160px] truncate inline-block">{l.remark || "—"}</span>,
+  },
+  // ── Variant columns (populated when SO was created via New SO form with Bedframe/Sofa SKU) ──
+  {
+    key: "varFabric", label: "Fabric",
+    sortValue: (l) => l.variants?.fabric ?? "",
+    render: (l) => l.variants?.fabric
+      ? <span className="font-semibold text-[#0A1F2E]">{l.variants.fabric} <span className="text-gray-400 text-[10px]">({l.variants.fabricTier || "—"})</span></span>
+      : <span className="text-gray-300">—</span>,
+  },
+  {
+    key: "varGap", label: "Gap", defaultHidden: true,
+    sortValue: (l) => l.variants?.gap ?? "",
+    render: (l) => l.variants?.gap
+      ? <span>{l.variants.gap}</span>
+      : <span className="text-gray-300">—</span>,
+  },
+  {
+    key: "varDivan", label: "Divan Height",
+    sortValue: (l) => l.variants?.divanHeight ?? "",
+    render: (l) => l.variants?.divanHeight
+      ? (
+        <span>
+          {l.variants.divanHeight}
+          {(l.variants.divanSurcharge ?? 0) > 0 && (
+            <span className="text-amber-600 text-[10px] ml-1">+{(l.variants.divanSurcharge ?? 0).toFixed(0)}</span>
+          )}
+        </span>
+      )
+      : <span className="text-gray-300">—</span>,
+  },
+  {
+    key: "varLeg", label: "Leg Height",
+    sortValue: (l) => l.variants?.legHeight ?? l.variants?.sofaLeg ?? "",
+    render: (l) => {
+      const leg = l.variants?.legHeight || l.variants?.sofaLeg;
+      const sur = l.variants?.legSurcharge || l.variants?.sofaLegSurcharge || 0;
+      if (!leg) return <span className="text-gray-300">—</span>;
+      return (
+        <span>
+          {leg}
+          {sur > 0 && <span className="text-amber-600 text-[10px] ml-1">+{sur.toFixed(0)}</span>}
+        </span>
+      );
+    },
+  },
+  {
+    key: "varSize", label: "Sizes", defaultHidden: true,
+    sortValue: (l) => l.variants?.seatSize ?? "",
+    render: (l) => l.variants?.seatSize
+      ? <span>{l.variants.seatSize}"</span>
+      : <span className="text-gray-300">—</span>,
+  },
+  {
+    key: "varSpecials", label: "Specials",
+    sortValue: (l) => (l.variants?.specialOrders?.length ?? 0),
+    render: (l) => {
+      const sp = l.variants?.specialOrders;
+      if (!sp || sp.length === 0) return <span className="text-gray-300">—</span>;
+      const total = sp.reduce((s, o) => s + (o.priceSen || 0) / 100, 0);
+      const label = sp.map((o) => o.value).join(", ");
+      return (
+        <span title={label + (total > 0 ? ` — total +RM ${total.toFixed(2)}` : "")}>
+          <span className="font-semibold text-[#0A1F2E]">{sp.length}</span>
+          <span className="text-gray-500 ml-1 text-[10px] truncate inline-block max-w-[120px] align-middle">
+            {label}
+          </span>
+          {total > 0 && <span className="text-amber-600 text-[10px] ml-1">+{total.toFixed(0)}</span>}
+        </span>
+      );
+    },
   },
   {
     key: "actions", label: "Actions",
