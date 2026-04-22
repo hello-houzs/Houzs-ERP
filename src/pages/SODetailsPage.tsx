@@ -61,7 +61,7 @@ interface Col {
   sortable?: boolean;
   defaultHidden?: boolean;
   align?: "right" | "center";
-  sortValue?: (l: SODetailLine, ctx: ColCtx) => string | number;
+  sortValue?: (l: SODetailLine, ctx?: ColCtx) => string | number;
   render: (l: SODetailLine, ctx: ColCtx) => ReactNode;
 }
 

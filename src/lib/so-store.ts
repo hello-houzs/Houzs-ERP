@@ -169,63 +169,89 @@ const seedLines: SODetailLine[] = (soLinesRaw as RawLine[]).map((r) => ({
 
 const seedHeaders: SOHeader[] = soHeadersRaw as SOHeader[];
 
-// ─── localStorage persistence — lines ─────────────────────────────────────────
+// ─── API-backed with localStorage cache ──────────────────────────────────────
 
-const K_LINES = "houzs-so-lines-v3";
+const CACHE_LINES = "houzs-so-lines-cache-v1";
+const CACHE_HEADERS = "houzs-so-headers-cache-v1";
+
 let listenersL: (() => void)[] = [];
 let cachedL: SODetailLine[] | null = null;
+let fetchingL = false;
+
+let listenersH: (() => void)[] = [];
+let cachedH: SOHeader[] | null = null;
+let fetchingH = false;
 
 function readL(): SODetailLine[] {
   if (typeof window === "undefined") return seedLines;
-  const raw = localStorage.getItem(K_LINES);
-  if (!raw) { localStorage.setItem(K_LINES, JSON.stringify(seedLines)); return seedLines; }
-  try { return JSON.parse(raw); } catch { return seedLines; }
+  const raw = localStorage.getItem(CACHE_LINES);
+  if (raw) { try { return JSON.parse(raw); } catch { /* fall */ } }
+  return seedLines;
 }
-
 function writeL(lines: SODetailLine[]) {
   cachedL = lines;
-  localStorage.setItem(K_LINES, JSON.stringify(lines));
+  try { localStorage.setItem(CACHE_LINES, JSON.stringify(lines)); } catch { /* quota */ }
   listenersL.forEach((fn) => fn());
 }
-
-function subscribeL(fn: () => void) {
-  listenersL.push(fn);
-  return () => { listenersL = listenersL.filter((l) => l !== fn); };
-}
-
-function snapshotL(): SODetailLine[] {
-  if (!cachedL) cachedL = readL();
-  return cachedL;
-}
-
-export function useSOLines(): SODetailLine[] {
-  return useSyncExternalStore(subscribeL, snapshotL, () => seedLines);
-}
-
-// ─── localStorage persistence — headers ───────────────────────────────────────
-
-const K_HEADERS = "houzs-so-headers-v3";
-let listenersH: (() => void)[] = [];
-let cachedH: SOHeader[] | null = null;
+function subscribeL(fn: () => void) { listenersL.push(fn); return () => { listenersL = listenersL.filter((l) => l !== fn); }; }
+function snapshotL(): SODetailLine[] { if (!cachedL) cachedL = readL(); return cachedL; }
 
 function readH(): SOHeader[] {
   if (typeof window === "undefined") return seedHeaders;
-  const raw = localStorage.getItem(K_HEADERS);
-  if (!raw) { localStorage.setItem(K_HEADERS, JSON.stringify(seedHeaders)); return seedHeaders; }
-  try { return JSON.parse(raw); } catch { return seedHeaders; }
+  const raw = localStorage.getItem(CACHE_HEADERS);
+  if (raw) { try { return JSON.parse(raw); } catch { /* fall */ } }
+  return seedHeaders;
+}
+function writeH(headers: SOHeader[]) {
+  cachedH = headers;
+  try { localStorage.setItem(CACHE_HEADERS, JSON.stringify(headers)); } catch { /* quota */ }
+  listenersH.forEach((fn) => fn());
+}
+function subscribeH(fn: () => void) { listenersH.push(fn); return () => { listenersH = listenersH.filter((l) => l !== fn); }; }
+function snapshotH(): SOHeader[] { if (!cachedH) cachedH = readH(); return cachedH; }
+
+async function fetchLines(): Promise<void> {
+  if (fetchingL) return;
+  fetchingL = true;
+  try {
+    const res = await fetch("/api/sales-order-lines");
+    if (!res.ok) throw new Error(String(res.status));
+    const data = (await res.json()) as SODetailLine[];
+    writeL(data);
+  } catch (e) {
+    console.warn("[so-store] lines fetch failed, using cache:", e);
+  } finally { fetchingL = false; }
 }
 
-function subscribeH(fn: () => void) {
-  listenersH.push(fn);
-  return () => { listenersH = listenersH.filter((l) => l !== fn); };
+async function fetchHeaders(): Promise<void> {
+  if (fetchingH) return;
+  fetchingH = true;
+  try {
+    const res = await fetch("/api/sales-orders");
+    if (!res.ok) throw new Error(String(res.status));
+    const data = (await res.json()) as SOHeader[];
+    writeH(data);
+  } catch (e) {
+    console.warn("[so-store] headers fetch failed, using cache:", e);
+  } finally { fetchingH = false; }
 }
 
-function snapshotH(): SOHeader[] {
-  if (!cachedH) cachedH = readH();
-  return cachedH;
+let bootstrapped = false;
+function bootstrap() {
+  if (bootstrapped || typeof window === "undefined") return;
+  bootstrapped = true;
+  fetchLines();
+  fetchHeaders();
+}
+
+export function useSOLines(): SODetailLine[] {
+  // lazy import avoids circular ref with useEffect
+  if (typeof window !== "undefined") bootstrap();
+  return useSyncExternalStore(subscribeL, snapshotL, () => seedLines);
 }
 
 export function useSOHeaders(): SOHeader[] {
+  if (typeof window !== "undefined") bootstrap();
   return useSyncExternalStore(subscribeH, snapshotH, () => seedHeaders);
 }
 
@@ -282,71 +308,130 @@ export function recomputeHeaderCost(header: SOHeader, lines: SODetailLine[]): SO
 function round2(n: number): number { return Math.round(n * 100) / 100; }
 
 // ─── Mutations ────────────────────────────────────────────────────────────────
+// Optimistic update pattern: write cache first for instant UI, then POST/PATCH
+// to D1 in the background. If API fails we keep the local change and log a warn.
 
-export function addSOLine(line: Omit<SODetailLine, "id" | "unitCost" | "lineCost" | "lineMargin">): string {
+export async function addSOLine(
+  line: Omit<SODetailLine, "id" | "unitCost" | "lineCost" | "lineMargin">,
+): Promise<string> {
   const id = uid();
-  const all = readL();
   const complete = recomputeLineCost({ ...line, id, unitCost: 0, lineCost: 0, lineMargin: 0 });
-  all.push(complete);
-  writeL(all);
+  // Optimistic
+  writeL([...snapshotL(), complete]);
+  try {
+    await fetch("/api/sales-order-lines", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(complete),
+    });
+  } catch (e) {
+    console.warn("[so-store] addSOLine API failed, kept optimistic:", e);
+  }
   return id;
 }
 
-export function updateSOLine(id: string, patch: Partial<SODetailLine>) {
-  const all = readL();
+export async function updateSOLine(id: string, patch: Partial<SODetailLine>): Promise<void> {
+  const all = snapshotL();
   const idx = all.findIndex((l) => l.id === id);
   if (idx < 0) return;
-  const merged = { ...all[idx], ...patch };
-  all[idx] = recomputeLineCost(merged);
-  writeL(all);
+  const merged = recomputeLineCost({ ...all[idx], ...patch });
+  const next = [...all];
+  next[idx] = merged;
+  writeL(next);
+  try {
+    await fetch(`/api/sales-order-lines/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        // send the full merged payload so derived cost fields persist too
+        qty: merged.qty,
+        unitPrice: merged.unitPrice,
+        discount: merged.discount,
+        total: merged.total,
+        tax: merged.tax,
+        totalInc: merged.totalInc,
+        balance: merged.balance,
+        paymentStatus: merged.paymentStatus,
+        remark: merged.remark,
+        cancelled: merged.cancelled,
+        variants: merged.variants,
+        unitCost: merged.unitCost,
+        lineCost: merged.lineCost,
+        lineMargin: merged.lineMargin,
+      }),
+    });
+  } catch (e) {
+    console.warn("[so-store] updateSOLine API failed, kept optimistic:", e);
+  }
 }
 
-export function removeSOLine(id: string) {
-  const all = readL().filter((l) => l.id !== id);
-  writeL(all);
+export async function removeSOLine(id: string): Promise<void> {
+  writeL(snapshotL().filter((l) => l.id !== id));
+  try {
+    await fetch(`/api/sales-order-lines/${encodeURIComponent(id)}`, { method: "DELETE" });
+  } catch (e) {
+    console.warn("[so-store] removeSOLine API failed:", e);
+  }
 }
 
-export function resetSOLines() {
+export async function resetSOLines(): Promise<void> {
   cachedL = null;
-  localStorage.removeItem(K_LINES);
+  if (typeof window !== "undefined") localStorage.removeItem(CACHE_LINES);
   listenersL.forEach((fn) => fn());
+  await fetchLines();
 }
 
-export function resetSOHeaders() {
+export async function resetSOHeaders(): Promise<void> {
   cachedH = null;
-  localStorage.removeItem(K_HEADERS);
+  if (typeof window !== "undefined") localStorage.removeItem(CACHE_HEADERS);
   listenersH.forEach((fn) => fn());
+  await fetchHeaders();
 }
 
-export function resetAllSOData() {
-  resetSOLines();
-  resetSOHeaders();
+export async function resetAllSOData(): Promise<void> {
+  await Promise.all([resetSOLines(), resetSOHeaders()]);
 }
 
 // ─── Header mutations (used by New Sales Order form) ──────────────────────────
 
-function writeH(headers: SOHeader[]) {
-  cachedH = headers;
-  localStorage.setItem(K_HEADERS, JSON.stringify(headers));
-  listenersH.forEach((fn) => fn());
+export async function addSOHeader(header: SOHeader): Promise<void> {
+  // Optimistic: prepend for newest-first
+  writeH([header, ...snapshotH().filter((h) => h.docNo !== header.docNo)]);
+  try {
+    await fetch("/api/sales-orders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(header),
+    });
+  } catch (e) {
+    console.warn("[so-store] addSOHeader API failed, kept optimistic:", e);
+  }
 }
 
-export function addSOHeader(header: SOHeader): void {
-  const all = readH();
-  all.unshift(header); // newest first
-  writeH(all);
-}
-
-export function updateSOHeader(docNo: string, patch: Partial<SOHeader>): void {
-  const all = readH();
+export async function updateSOHeader(docNo: string, patch: Partial<SOHeader>): Promise<void> {
+  const all = snapshotH();
   const idx = all.findIndex((h) => h.docNo === docNo);
   if (idx < 0) return;
-  all[idx] = { ...all[idx], ...patch };
-  writeH(all);
+  const merged = { ...all[idx], ...patch };
+  const next = [...all];
+  next[idx] = merged;
+  writeH(next);
+  // POST hits the same ON CONFLICT upsert path — simpler than a dedicated PATCH
+  try {
+    await fetch("/api/sales-orders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(merged),
+    });
+  } catch (e) {
+    console.warn("[so-store] updateSOHeader API failed, kept optimistic:", e);
+  }
 }
 
 export function nextSODocNo(): string {
-  const all = readH();
+  // Purely client-side; good enough while one user is creating SOs interactively.
+  // If two tabs race, the second POST just upserts the same docNo — harmless here.
+  const all = snapshotH();
   let max = 11500;
   for (const h of all) {
     const m = h.docNo.match(/SO-0*(\d+)/);

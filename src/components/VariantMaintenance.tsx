@@ -182,20 +182,29 @@ function loadMaintenanceConfig(): MaintenanceConfig {
 
 function saveMaintenanceConfig(cfg: MaintenanceConfig) {
   if (typeof window === "undefined") return;
+  // Cache locally first so UI survives a network blip
   try {
     const raw = localStorage.getItem(MAINTENANCE_STORAGE_KEY);
     let existing: Record<string, unknown> = {};
     if (raw) {
-      try {
-        existing = JSON.parse(raw);
-      } catch {
-        /* ignore */
-      }
+      try { existing = JSON.parse(raw); } catch { /* ignore */ }
     }
     localStorage.setItem(MAINTENANCE_STORAGE_KEY, JSON.stringify({ ...existing, ...cfg }));
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
+  // Then push the whole config blob up to D1
+  fetch("/api/variants", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cfg),
+  }).catch((e) => console.warn("[variants] PUT failed:", e));
+}
+
+async function fetchMaintenanceConfigFromApi(): Promise<MaintenanceConfig | null> {
+  try {
+    const r = await fetch("/api/variants");
+    if (!r.ok) return null;
+    return (await r.json()) as MaintenanceConfig | null;
+  } catch { return null; }
 }
 
 function loadFabrics(): FabricTrackingItem[] {
@@ -215,9 +224,29 @@ function saveFabrics(list: FabricTrackingItem[]) {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(FABRIC_STORAGE_KEY, JSON.stringify(list));
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
+}
+
+async function fetchFabricsFromApi(): Promise<FabricTrackingItem[] | null> {
+  try {
+    const r = await fetch("/api/fabrics");
+    if (!r.ok) return null;
+    return (await r.json()) as FabricTrackingItem[];
+  } catch { return null; }
+}
+
+function pushFabricToApi(f: FabricTrackingItem) {
+  // Upsert single fabric; server uses ON CONFLICT(fabric_code) DO UPDATE
+  fetch("/api/fabrics", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(f),
+  }).catch((e) => console.warn("[fabrics] POST failed:", e));
+}
+
+function deleteFabricFromApi(id: string) {
+  fetch(`/api/fabrics/${encodeURIComponent(id)}`, { method: "DELETE" })
+    .catch((e) => console.warn("[fabrics] DELETE failed:", e));
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -241,10 +270,25 @@ export default function VariantMaintenance() {
   const [newFabricPrice, setNewFabricPrice] = useState<string>("");
 
   useEffect(() => {
+    // Paint from localStorage immediately…
     const loaded = loadMaintenanceConfig();
     setConfig(loaded);
     setSavedSnapshot(JSON.stringify(loaded));
     setFabricsList(loadFabrics());
+    // …then replace with server truth when it arrives
+    let mounted = true;
+    fetchMaintenanceConfigFromApi().then((cfg) => {
+      if (!mounted || !cfg) return;
+      setConfig(cfg);
+      setSavedSnapshot(JSON.stringify(cfg));
+      try { localStorage.setItem(MAINTENANCE_STORAGE_KEY, JSON.stringify(cfg)); } catch { /* quota */ }
+    });
+    fetchFabricsFromApi().then((list) => {
+      if (!mounted || !list) return;
+      setFabricsList(list);
+      try { localStorage.setItem(FABRIC_STORAGE_KEY, JSON.stringify(list)); } catch { /* quota */ }
+    });
+    return () => { mounted = false; };
   }, []);
 
   // Auto-save config to localStorage whenever it changes (debounced).
@@ -384,17 +428,24 @@ export default function VariantMaintenance() {
       price: priceNum,
     };
     setFabricsList((prev) => [...prev, item]);
+    pushFabricToApi(item);
     setNewFabricCode("");
     setNewFabricPrice("");
     setNewFabricTier("PRICE_2");
   }
 
   function updateFabric(id: string, patch: Partial<FabricTrackingItem>) {
-    setFabricsList((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+    setFabricsList((prev) => {
+      const next = prev.map((f) => (f.id === id ? { ...f, ...patch } : f));
+      const updated = next.find((f) => f.id === id);
+      if (updated) pushFabricToApi(updated);
+      return next;
+    });
   }
 
   function removeFabric(id: string) {
     setFabricsList((prev) => prev.filter((f) => f.id !== id));
+    deleteFabricFromApi(id);
   }
 
   const filteredFabrics = useMemo(() => {

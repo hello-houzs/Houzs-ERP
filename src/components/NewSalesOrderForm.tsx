@@ -2,7 +2,7 @@
 // Labels right-aligned with icon suffix; values on the right.
 // Two-column grid: left column = most fields, right column = Salesperson + Debtor Code.
 
-import { useState, useMemo, type ReactNode } from "react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
 import {
   X, Plus, Trash2, Check, ShoppingCart, Package, ChevronRight,
   Calendar as CalIcon, User as UserIcon, Phone, Mail, MapPin,
@@ -46,7 +46,8 @@ interface LineRow {
   specialOrders: { value: string; priceSen: number }[];
 }
 
-// Read Variant Maintenance config from localStorage
+// Variant Maintenance config — API-first, localStorage fallback so the form
+// still works offline (and during initial paint before the fetch resolves).
 interface PricedOption { value: string; priceSen: number }
 interface FabricItem { id: string; fabricCode: string; priceTier: "PRICE_1" | "PRICE_2"; price: number }
 interface MaintCfg {
@@ -54,16 +55,36 @@ interface MaintCfg {
   gaps: string[]; specials: PricedOption[];
   sofaLegHeights: PricedOption[]; sofaSpecials: PricedOption[]; sofaSizes: string[];
 }
-function loadMaintCfg(): MaintCfg | null {
+function loadMaintCfgSync(): MaintCfg | null {
   try {
     const raw = localStorage.getItem("houzs-variants-config");
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }
-function loadFabrics(): FabricItem[] {
+function loadFabricsSync(): FabricItem[] {
   try {
     const raw = localStorage.getItem("houzs-fabric-tracking");
     return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+async function fetchMaintCfg(): Promise<MaintCfg | null> {
+  try {
+    const r = await fetch("/api/variants");
+    if (!r.ok) return null;
+    const data = (await r.json()) as MaintCfg | null;
+    if (data) {
+      try { localStorage.setItem("houzs-variants-config", JSON.stringify(data)); } catch { /* quota */ }
+    }
+    return data;
+  } catch { return null; }
+}
+async function fetchFabrics(): Promise<FabricItem[]> {
+  try {
+    const r = await fetch("/api/fabrics");
+    if (!r.ok) return [];
+    const data = (await r.json()) as FabricItem[];
+    try { localStorage.setItem("houzs-fabric-tracking", JSON.stringify(data)); } catch { /* quota */ }
+    return data;
   } catch { return []; }
 }
 
@@ -499,8 +520,16 @@ export default function NewSalesOrderForm({ onClose }: Props) {
   const [payments, setPayments] = useState<PaymentRow[]>([]);
 
   // Variant Maintenance config (divan heights, fabrics, etc.)
-  const [maintCfg] = useState<MaintCfg | null>(() => loadMaintCfg());
-  const [fabrics] = useState<FabricItem[]>(() => loadFabrics());
+  // Seed from localStorage for instant paint, then refresh from API in the
+  // background so surcharge prices match D1's source of truth.
+  const [maintCfg, setMaintCfg] = useState<MaintCfg | null>(() => loadMaintCfgSync());
+  const [fabrics, setFabrics] = useState<FabricItem[]>(() => loadFabricsSync());
+  useEffect(() => {
+    let mounted = true;
+    fetchMaintCfg().then((cfg) => { if (mounted && cfg) setMaintCfg(cfg); });
+    fetchFabrics().then((fs) => { if (mounted && fs.length) setFabrics(fs); });
+    return () => { mounted = false; };
+  }, []);
 
   const subtotal = useMemo(() =>
     lines.reduce((s, l) => s + l.qty * computeUnitPrice(l), 0), [lines]);
@@ -594,11 +623,22 @@ export default function NewSalesOrderForm({ onClose }: Props) {
         remark: l.remarks, cancelled: false, variants,
       });
     }
-    // Store payments (future enhancement: persist to a payments store)
-    try {
-      const key = `houzs-so-payments-${docNo}`;
-      localStorage.setItem(key, JSON.stringify(payments.filter((p) => p.amount > 0)));
-    } catch { /* ignore */ }
+    // Persist payments to D1 (one POST per row; fire-and-forget so modal closes fast)
+    for (const p of payments.filter((p) => p.amount > 0)) {
+      fetch("/api/payments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          docNo,
+          date: p.date,
+          method: p.method,
+          amount: p.amount,
+          accountSheet: p.accountSheet,
+          approvalCode: p.approvalCode,
+          collectedBy: p.collectedBy,
+        }),
+      }).catch((e) => console.warn("[new-so] payment POST failed:", e));
+    }
     onClose();
   }
 
