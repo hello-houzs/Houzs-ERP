@@ -37,7 +37,7 @@ import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
 import { ProjectMaintenanceView } from "./ProjectMaintenance";
 import { TabStrip } from "../components/TabStrip";
-import { getHolidaysOn, isHoliday } from "../lib/holidays";
+import { getHolidaysOn } from "../lib/holidays";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
@@ -2036,6 +2036,81 @@ function ProjectsCalendarView() {
   const monthLabel = anchor.toLocaleDateString("en-MY", { month: "long", year: "numeric" });
   const today = new Date().toISOString().slice(0, 10);
 
+  // Per-week lane-packing — ensures a multi-day project sits at the same
+  // lane index in every cell it touches, so the per-cell pills can visually
+  // stitch together (via -7px horizontal margins that bridge cell padding
+  // + the 1px cell border). Without consistent lanes, the same project's
+  // pill would jump rows between adjacent days and the bar would look
+  // broken.
+  type WeekSeg = {
+    project: CalendarProject;
+    startCol: number;
+    endCol: number;
+    clipLeft: boolean;
+    clipRight: boolean;
+    lane: number;
+  };
+  type CellBar = { seg: WeekSeg; isStart: boolean; isEnd: boolean } | null;
+  const MAX_LANES = 2;
+  const cellBars: CellBar[][] = Array.from({ length: 42 }, () =>
+    Array(MAX_LANES).fill(null)
+  );
+  const overflowByCell: number[] = Array(42).fill(0);
+  for (let w = 0; w < 6; w++) {
+    const weekStart = cells[w * 7].iso;
+    const weekEnd = cells[w * 7 + 6].iso;
+    const segs: WeekSeg[] = [];
+    for (const p of projects) {
+      const s = p.start_date.slice(0, 10);
+      const e = (p.end_date || p.start_date).slice(0, 10);
+      if (e < weekStart || s > weekEnd) continue;
+      const clipLeft = s < weekStart;
+      const clipRight = e > weekEnd;
+      const startCol = clipLeft ? 0 : daysBetween(weekStart, s);
+      const endCol = clipRight ? 6 : daysBetween(weekStart, e);
+      segs.push({ project: p, startCol, endCol, clipLeft, clipRight, lane: 0 });
+    }
+    // Longer + earlier first → better greedy packing.
+    segs.sort(
+      (a, b) =>
+        a.startCol - b.startCol ||
+        b.endCol - b.startCol - (a.endCol - a.startCol)
+    );
+    const lanes: WeekSeg[][] = [];
+    for (const seg of segs) {
+      let placed = -1;
+      for (let i = 0; i < lanes.length; i++) {
+        if (
+          lanes[i].every((s) => s.endCol < seg.startCol || s.startCol > seg.endCol)
+        ) {
+          lanes[i].push(seg);
+          placed = i;
+          break;
+        }
+      }
+      if (placed === -1) {
+        lanes.push([seg]);
+        placed = lanes.length - 1;
+      }
+      seg.lane = placed;
+    }
+    for (const seg of segs) {
+      if (seg.lane < MAX_LANES) {
+        for (let ci = seg.startCol; ci <= seg.endCol; ci++) {
+          cellBars[w * 7 + ci][seg.lane] = {
+            seg,
+            isStart: ci === seg.startCol,
+            isEnd: ci === seg.endCol,
+          };
+        }
+      } else {
+        for (let ci = seg.startCol; ci <= seg.endCol; ci++) {
+          overflowByCell[w * 7 + ci]++;
+        }
+      }
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -2172,185 +2247,101 @@ function ProjectsCalendarView() {
             </div>
           ))}
         </div>
-        {Array.from({ length: 6 }, (_, weekIdx) => {
-          const weekCells = cells.slice(weekIdx * 7, weekIdx * 7 + 7);
-          const weekStartIso = weekCells[0].iso;
-          const weekEndIso = weekCells[6].iso;
+        <div className="grid grid-cols-7">
+          {cells.map((cell, idx) => {
+            const inMonth = cell.date.getUTCMonth() === anchor.getMonth();
+            const cellTasks = tasksByDate.get(cell.iso) ?? [];
+            const isToday = cell.iso === today;
+            const holidays = showHolidays ? getHolidaysOn(cell.iso) : [];
+            const isHolidayCell = holidays.length > 0;
+            const bars = cellBars[idx];
+            const overflow = overflowByCell[idx];
+            return (
+              <div
+                key={idx}
+                className={cn(
+                  "relative min-h-[110px] border-b border-r border-border px-1.5 py-1 text-[10px]",
+                  !inMonth && "bg-bg/40 text-ink-muted",
+                  isHolidayCell && inMonth && "bg-err/5",
+                  isToday && "bg-accent-soft/30"
+                )}
+              >
+                <div className="mb-1 flex items-center justify-between">
+                  <span className={cn("font-mono", isToday && "font-bold text-accent")}>
+                    {cell.date.getUTCDate()}
+                  </span>
+                  {cellTasks.length > 0 && (
+                    <span
+                      title={`${cellTasks.length} task(s) due`}
+                      className={cn(
+                        "inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-bold",
+                        cellTasks.some((t) => t.is_overdue)
+                          ? "bg-err text-white"
+                          : "bg-amber-100 text-amber-800"
+                      )}
+                    >
+                      {cellTasks.length}
+                    </span>
+                  )}
+                </div>
 
-          // Build segments per project that touch this week. A segment
-          // carries its column range within the week + whether it was
-          // clipped on either edge (for corner rounding + ‹ › chevrons).
-          type Seg = {
-            project: CalendarProject;
-            startCol: number;
-            endCol: number;
-            clipLeft: boolean;
-            clipRight: boolean;
-          };
-          const segs: Seg[] = [];
-          for (const p of projects) {
-            const s = p.start_date.slice(0, 10);
-            const e = (p.end_date || p.start_date).slice(0, 10);
-            if (e < weekStartIso || s > weekEndIso) continue;
-            const clipLeft = s < weekStartIso;
-            const clipRight = e > weekEndIso;
-            const startCol = clipLeft ? 0 : daysBetween(weekStartIso, s);
-            const endCol = clipRight ? 6 : daysBetween(weekStartIso, e);
-            segs.push({ project: p, startCol, endCol, clipLeft, clipRight });
-          }
-          // Longer + earlier first → better greedy lane packing.
-          segs.sort(
-            (a, b) =>
-              a.startCol - b.startCol ||
-              b.endCol - b.startCol - (a.endCol - a.startCol)
-          );
-          const lanes: Seg[][] = [];
-          for (const seg of segs) {
-            let placed = false;
-            for (const lane of lanes) {
-              if (lane.every((s) => s.endCol < seg.startCol || s.startCol > seg.endCol)) {
-                lane.push(seg);
-                placed = true;
-                break;
-              }
-            }
-            if (!placed) lanes.push([seg]);
-          }
-          const MAX_LANES = 2;
-          const visibleLanes = lanes.slice(0, MAX_LANES);
-          const overflowPerCol = Array(7).fill(0);
-          for (const lane of lanes.slice(MAX_LANES)) {
-            for (const seg of lane) {
-              for (let c = seg.startCol; c <= seg.endCol; c++) overflowPerCol[c]++;
-            }
-          }
-
-          return (
-            <div
-              key={weekIdx}
-              className="relative grid grid-cols-7 border-b border-border last:border-b-0"
-              style={{ minHeight: "110px" }}
-            >
-              {/* Background tiles: one per day, span all content rows so today/holiday tint covers the whole column */}
-              {weekCells.map((cell, ci) => {
-                const inMonth = cell.date.getUTCMonth() === anchor.getMonth();
-                const isToday = cell.iso === today;
-                const isHolidayCell = showHolidays && isHoliday(cell.iso);
-                return (
+                {/* Holiday chip(s) */}
+                {isHolidayCell && (
                   <div
-                    key={`bg-${ci}`}
-                    aria-hidden
-                    style={{ gridRow: "1 / -1", gridColumn: ci + 1 }}
-                    className={cn(
-                      "border-r border-border last:border-r-0",
-                      !inMonth && "bg-bg/40",
-                      isHolidayCell && inMonth && "bg-err/5",
-                      isToday && "bg-accent-soft/30"
-                    )}
-                  />
-                );
-              })}
-
-              {/* Row 1: date header + task count badge + holiday chip */}
-              {weekCells.map((cell, ci) => {
-                const inMonth = cell.date.getUTCMonth() === anchor.getMonth();
-                const cellTasks = tasksByDate.get(cell.iso) ?? [];
-                const isToday = cell.iso === today;
-                const holidays = showHolidays ? getHolidaysOn(cell.iso) : [];
-                const isHolidayCell = holidays.length > 0;
-                return (
-                  <div
-                    key={`hdr-${ci}`}
-                    style={{ gridRow: 1, gridColumn: ci + 1 }}
-                    className="relative z-10 px-1.5 pt-1 text-[10px]"
+                    className="mb-1 truncate rounded bg-err/15 px-1 py-0.5 text-[9px] font-semibold text-err"
+                    title={holidays.map((h) => h.name).join(", ")}
                   >
-                    <div className="flex items-center justify-between">
-                      <span
+                    🎌 {holidays[0].name}
+                    {holidays.length > 1 && ` +${holidays.length - 1}`}
+                  </div>
+                )}
+
+                {/* Project bars — per-week lane-packed. Multi-day bars bridge
+                    adjacent cells via -7px margins that cross the 6px cell
+                    padding + 1px border, so the same brand colour reads as
+                    one continuous bar across all days. */}
+                <div className="relative z-10 space-y-0.5">
+                  {bars.map((bar, li) => {
+                    if (!bar) {
+                      return <div key={li} className="h-[15px]" aria-hidden />;
+                    }
+                    const { seg, isStart, isEnd } = bar;
+                    const continuesLeft = !isStart || seg.clipLeft;
+                    const continuesRight = !isEnd || seg.clipRight;
+                    return (
+                      <button
+                        key={li}
+                        onClick={() => navigate(`/projects/${seg.project.id}`)}
+                        title={`${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`}
+                        style={{
+                          marginLeft: continuesLeft ? -7 : 0,
+                          marginRight: continuesRight ? -7 : 0,
+                        }}
                         className={cn(
-                          "font-mono",
-                          !inMonth && "text-ink-muted",
-                          isToday && "font-bold text-accent"
+                          "block truncate px-1 py-0.5 text-left text-[9px] font-semibold leading-tight",
+                          brandClass(seg.project.brand),
+                          !continuesLeft && "rounded-l",
+                          !continuesRight && "rounded-r"
                         )}
                       >
-                        {cell.date.getUTCDate()}
-                      </span>
-                      {cellTasks.length > 0 && (
-                        <span
-                          title={`${cellTasks.length} task(s) due`}
-                          className={cn(
-                            "inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-bold",
-                            cellTasks.some((t) => t.is_overdue)
-                              ? "bg-err text-white"
-                              : "bg-amber-100 text-amber-800"
-                          )}
-                        >
-                          {cellTasks.length}
+                        {isStart && seg.clipLeft && "‹ "}
+                        <span className={cn(!isStart && "invisible")}>
+                          {seg.project.name}
                         </span>
-                      )}
+                        {isEnd && seg.clipRight && " ›"}
+                      </button>
+                    );
+                  })}
+                  {overflow > 0 && (
+                    <div className="text-[9px] text-ink-muted">
+                      +{overflow} more
                     </div>
-                    {isHolidayCell && (
-                      <div
-                        className="mt-0.5 truncate rounded bg-err/15 px-1 py-0.5 text-[9px] font-semibold text-err"
-                        title={holidays.map((h) => h.name).join(", ")}
-                      >
-                        🎌 {holidays[0].name}
-                        {holidays.length > 1 && ` +${holidays.length - 1}`}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                  )}
+                </div>
 
-              {/* Project bar segments — span columns via grid-column */}
-              {visibleLanes.flatMap((lane, li) =>
-                lane.map((seg) => (
-                  <button
-                    key={`seg-${weekIdx}-${li}-${seg.project.id}`}
-                    onClick={() => navigate(`/projects/${seg.project.id}`)}
-                    title={`${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`}
-                    style={{
-                      gridColumn: `${seg.startCol + 1} / ${seg.endCol + 2}`,
-                      gridRow: li + 2,
-                      marginLeft: seg.clipLeft ? 0 : 2,
-                      marginRight: seg.clipRight ? 0 : 2,
-                    }}
-                    className={cn(
-                      "relative z-10 mt-0.5 min-w-0 truncate px-1 py-0.5 text-left text-[9px] font-semibold",
-                      brandClass(seg.project.brand),
-                      !seg.clipLeft && "rounded-l",
-                      !seg.clipRight && "rounded-r"
-                    )}
-                  >
-                    {seg.clipLeft && "‹ "}
-                    {seg.project.name}
-                    {seg.clipRight && " ›"}
-                  </button>
-                ))
-              )}
-
-              {/* Overflow indicator per column */}
-              {overflowPerCol.map((count, ci) =>
-                count ? (
-                  <div
-                    key={`ov-${ci}`}
-                    style={{ gridColumn: ci + 1, gridRow: MAX_LANES + 2 }}
-                    className="relative z-10 px-1 text-[9px] text-ink-muted"
-                  >
-                    +{count} more
-                  </div>
-                ) : null
-              )}
-
-              {/* Task chips per day (bottom) */}
-              {weekCells.map((cell, ci) => {
-                const cellTasks = tasksByDate.get(cell.iso) ?? [];
-                if (cellTasks.length === 0) return null;
-                return (
-                  <div
-                    key={`tsk-${ci}`}
-                    style={{ gridColumn: ci + 1, gridRow: MAX_LANES + 3 }}
-                    className="relative z-10 mt-1 space-y-0.5 border-t border-border-subtle px-1 pb-1 pt-1"
-                  >
+                {/* Task chips */}
+                {cellTasks.length > 0 && (
+                  <div className="mt-1 space-y-0.5 border-t border-border-subtle pt-1">
                     {cellTasks.slice(0, 2).map((t) => (
                       <CalendarTaskChip
                         key={t.id}
@@ -2374,11 +2365,11 @@ function ProjectsCalendarView() {
                       </button>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          );
-        })}
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
     </div>
