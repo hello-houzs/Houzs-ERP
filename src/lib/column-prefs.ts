@@ -15,14 +15,23 @@ export function useColumnPrefs(
   storageKey: string,
   defaultOrder: string[],
   defaultHidden: string[],
+  /** Earlier-version keys to migrate from if current key is empty (preserves user customization across version bumps) */
+  legacyKeys: string[] = [],
 ): UseColumnPrefsResult {
   const [order, setOrder] = useState<string[]>(defaultOrder);
   const [hidden, setHidden] = useState<Set<string>>(() => new Set(defaultHidden));
 
-  // Restore on mount
+  // Restore on mount (with legacy-key migration)
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(storageKey);
+      let raw = localStorage.getItem(storageKey);
+      // Try each legacy key in order — first hit wins, gets copied forward
+      if (!raw) {
+        for (const lk of legacyKeys) {
+          const old = localStorage.getItem(lk);
+          if (old) { raw = old; localStorage.setItem(storageKey, old); break; }
+        }
+      }
       if (raw) {
         const parsed = JSON.parse(raw) as { order?: string[]; hidden?: string[] };
         if (Array.isArray(parsed.order)) {

@@ -530,9 +530,10 @@ export default function SODetailsPage() {
   const lines = useSOLines();
   const skusMaster = useSKUCostings();
 
-  // column prefs
+  // column prefs — migrate forward from older versions if present
   const { order, hidden, setOrder, setHidden, resetColumns } = useColumnPrefs(
     STORAGE_KEY, DEFAULT_ORDER, DEFAULT_HIDDEN,
+    ["houzs-so-details-columns-v1", "houzs-so-details-columns"],
   );
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [dragKey, setDragKey] = useState<string | null>(null);

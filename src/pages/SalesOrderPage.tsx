@@ -318,9 +318,10 @@ export default function SalesOrderPage() {
   const headers = useSOHeaders();
   const consolidated = useMemo(() => getConsolidatedSOs(lines, undefined, headers), [lines, headers]);
 
-  // column prefs
+  // column prefs — migrate forward from older versions if present
   const { order, hidden, setOrder, setHidden, resetColumns } = useColumnPrefs(
     STORAGE_KEY, DEFAULT_ORDER, DEFAULT_HIDDEN,
+    ["houzs-sales-order-columns-v2", "houzs-sales-order-columns-v1", "houzs-sales-order-columns"],
   );
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [dragKey, setDragKey] = useState<string | null>(null);

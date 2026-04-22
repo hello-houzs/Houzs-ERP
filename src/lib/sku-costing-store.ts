@@ -90,8 +90,37 @@ function uid(): string {
 function read(): SKUCosting[] {
   if (typeof window === "undefined") return seedSKUs;
   const raw = localStorage.getItem(K);
-  if (!raw) { localStorage.setItem(K, JSON.stringify(seedSKUs)); return seedSKUs; }
-  try { return JSON.parse(raw); } catch { return seedSKUs; }
+  if (raw) {
+    try { return JSON.parse(raw); } catch { /* fall through to migration */ }
+  }
+
+  // Migration: if current key empty, try older keys (v3, v2, v1) and merge user-edited
+  // costPrice/sellingPrice/notes forward onto the new seed
+  const LEGACY_KEYS = ["houzs-sku-costings-v3", "houzs-sku-costings-v2", "houzs-sku-costings-v1", "houzs-sku-costings"];
+  for (const lk of LEGACY_KEYS) {
+    const old = localStorage.getItem(lk);
+    if (!old) continue;
+    try {
+      const oldArr: SKUCosting[] = JSON.parse(old);
+      const byCode = new Map(oldArr.map((s) => [s.itemCode, s]));
+      const merged = seedSKUs.map((s) => {
+        const prev = byCode.get(s.itemCode);
+        if (!prev) return s;
+        return {
+          ...s,
+          costPrice: prev.costPrice > 0 ? prev.costPrice : s.costPrice,
+          sellingPrice: prev.sellingPrice > 0 ? prev.sellingPrice : s.sellingPrice,
+          notes: prev.notes ?? s.notes,
+          lastUpdated: prev.lastUpdated ?? s.lastUpdated,
+        };
+      });
+      localStorage.setItem(K, JSON.stringify(merged));
+      return merged;
+    } catch { /* try next legacy key */ }
+  }
+
+  localStorage.setItem(K, JSON.stringify(seedSKUs));
+  return seedSKUs;
 }
 
 function write(skus: SKUCosting[]) {
