@@ -21,6 +21,8 @@ import {
   LogOut,
   ChevronDown,
   Menu,
+  ScrollText,
+  UsersRound,
   X as XIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -74,6 +76,15 @@ const navigationGroups: NavGroup[] = [
     ],
   },
 ];
+
+// Admin section — only rendered for Sales Directors
+const adminNavGroup: NavGroup = {
+  label: "ADMIN",
+  items: [
+    { name: "Users", href: "/admin/users", icon: UsersRound },
+    { name: "Audit Log", href: "/admin/audit-log", icon: ScrollText },
+  ],
+};
 
 // Mobile top bar — shown only on small screens (md:hidden via DashboardLayout)
 export function MobileTopBar({ onOpen }: { onOpen: () => void }) {
@@ -188,7 +199,7 @@ export function Sidebar({ mobileOpen, onMobileClose }: { mobileOpen?: boolean; o
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-3 scrollbar-thin">
-        {navigationGroups
+        {[...navigationGroups, ...(userIsAdmin ? [adminNavGroup] : [])]
           .filter((group) => {
             // QMS and DEPARTMENTS are temporarily hidden for everyone (including admin).
             if (group.label === "QMS" || group.label === "DEPARTMENTS") return false;

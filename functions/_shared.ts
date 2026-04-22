@@ -2,6 +2,11 @@
 
 export interface Env {
   DB: D1Database;
+  // Set via `wrangler pages secret put <NAME>`
+  JWT_SECRET: string;            // HMAC key for JWT signing
+  RESEND_API_KEY: string;        // Resend.com API key for email sending
+  FROM_EMAIL?: string;           // "hello@houzscentury.com" (default if unset)
+  APP_URL?: string;              // "https://houzs-erp-sales.pages.dev" (used in emails)
 }
 
 export function json(data: unknown, status = 200): Response {

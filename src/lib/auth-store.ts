@@ -1,86 +1,139 @@
-// Auth store — tracks the currently logged-in user (by id) in localStorage.
-// Pattern mirrors events-store: useSyncExternalStore + listeners Set + cached value.
+// Auth store — API-backed via /api/auth/me.
+// Keeps the same external surface (useCurrentUser, isAdmin, canViewFinance, ...)
+// so existing pages don't need to change, but now the source of truth is the
+// server cookie session, not localStorage.
 
-import { useSyncExternalStore } from "react";
+import { useSyncExternalStore, useCallback } from "react";
 import { type SalesMember } from "./sales-store";
 import { BRANDS, type Brand } from "./mock-data";
+import { authApi, type CurrentUser } from "./auth-api";
 
-const KEY = "houzs-current-user-id";
-const DEFAULT_ID = "dir-kingsley"; // out-of-box default
+// ─── Internal store ──────────────────────────────────────────────────────────
 
-// ─── Internal subscriber registry ────────────────────────────────────────────
+type AuthState = {
+  status: "loading" | "authenticated" | "guest";
+  user: CurrentUser | null;
+};
 
+let state: AuthState = { status: "loading", user: null };
 const listeners = new Set<() => void>();
-let cached: string | null | undefined = undefined; // undefined = not yet read
+let bootstrapped = false;
 
-function emit() {
-  cached = undefined;
-  listeners.forEach((l) => l());
-}
-
-function readRaw(): string | null {
-  if (typeof window === "undefined") return DEFAULT_ID;
-  const v = localStorage.getItem(KEY);
-  // First-time seed: write the default so the app works out of the box
-  if (v === null) {
-    localStorage.setItem(KEY, DEFAULT_ID);
-    return DEFAULT_ID;
-  }
-  return v;
-}
-
-function getSnapshot(): string | null {
-  if (cached === undefined) cached = readRaw();
-  return cached;
-}
-
-function getServerSnapshot(): string | null {
-  return DEFAULT_ID;
-}
+function emit() { listeners.forEach((l) => l()); }
 
 function subscribe(cb: () => void): () => void {
   listeners.add(cb);
-  // Also react to changes from other tabs
-  const onStorage = (e: StorageEvent) => {
-    if (e.key === KEY) { cached = undefined; cb(); }
-  };
-  window.addEventListener("storage", onStorage);
-  return () => {
-    listeners.delete(cb);
-    window.removeEventListener("storage", onStorage);
-  };
+  return () => { listeners.delete(cb); };
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
+function getSnapshot(): AuthState { return state; }
+function getServerSnapshot(): AuthState { return { status: "loading", user: null }; }
 
-/** Reactive hook: returns the current user id (or null if signed out). */
-export function useCurrentUserId(): string | null {
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-}
-
-/** Write a new current user id (or null to sign out). */
-export function setCurrentUserId(id: string | null): void {
-  if (typeof window === "undefined") return;
-  if (id === null) {
-    localStorage.removeItem(KEY);
-  } else {
-    localStorage.setItem(KEY, id);
-  }
+async function bootstrap() {
+  if (bootstrapped) return;
+  bootstrapped = true;
+  const r = await authApi.me();
+  if (r.ok) state = { status: "authenticated", user: r.data };
+  else state = { status: "guest", user: null };
   emit();
 }
 
-/** Sign out the current user. */
-export function logout(): void {
-  setCurrentUserId(null);
+export async function refreshCurrentUser(): Promise<void> {
+  const r = await authApi.me();
+  if (r.ok) state = { status: "authenticated", user: r.data };
+  else state = { status: "guest", user: null };
+  emit();
 }
 
-// ─── Permission helpers (pure functions, no hooks) ────────────────────────────
+// ─── Public hooks ─────────────────────────────────────────────────────────────
+
+export function useAuthState(): AuthState {
+  if (typeof window !== "undefined") bootstrap();
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
+
+/** Returns the current authenticated user as a SalesMember-compatible shape,
+ *  or null while loading / signed out. Callers that just need permission
+ *  helpers can use this directly. */
+export function useCurrentUser(): SalesMember | null {
+  const { user } = useAuthState();
+  if (!user) return null;
+  return {
+    id: user.id,
+    name: user.name,
+    code: user.code,
+    phone: user.phone,
+    email: user.email,
+    ic: "",
+    position: user.position,
+    parentId: user.parentId,
+    additionalParentIds: user.additionalParentIds,
+    joinDate: user.joinDate,
+    status: user.status === "INACTIVE" ? "INACTIVE" : "ACTIVE",
+    assignedBrands: user.assignedBrands as Brand[],
+    commissionTiers: user.commissionTiers,
+    minRate: user.minRate,
+  };
+}
+
+/** Just the string id, for code paths that previously took `useCurrentUserId()`. */
+export function useCurrentUserId(): string | null {
+  return useCurrentUser()?.id ?? null;
+}
+
+// ─── Imperative actions ──────────────────────────────────────────────────────
+
+export async function login(email: string, password: string): Promise<{ ok: true; mustChangePassword: boolean } | { ok: false; error: string }> {
+  const r = await authApi.login(email, password);
+  if (!r.ok) return { ok: false, error: r.error };
+  // Re-hydrate to pick up full user shape with isAdmin flag
+  await refreshCurrentUser();
+  return { ok: true, mustChangePassword: r.data.user.mustChangePassword };
+}
+
+export async function logout(): Promise<void> {
+  await authApi.logout();
+  state = { status: "guest", user: null };
+  emit();
+}
+
+export async function impersonate(userId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await authApi.impersonate(userId);
+  if (!r.ok) return { ok: false, error: r.error };
+  await refreshCurrentUser();
+  return { ok: true };
+}
+
+export async function stopImpersonate(): Promise<void> {
+  await authApi.stopImpersonate();
+  await refreshCurrentUser();
+}
+
+// Expose hook for pages that need the full action set in one place.
+export function useAuth() {
+  const { status, user } = useAuthState();
+  return {
+    status,
+    user,
+    isAdmin: user?.isAdmin ?? false,
+    isImpersonating: !!user?.impersonatedBy,
+    impersonatedBy: user?.impersonatedBy ?? null,
+    login: useCallback(login, []),
+    logout: useCallback(logout, []),
+    impersonate: useCallback(impersonate, []),
+    stopImpersonate: useCallback(stopImpersonate, []),
+    refresh: useCallback(refreshCurrentUser, []),
+  };
+}
+
+// ─── Permission helpers (unchanged, pure functions) ──────────────────────────
+// These work with SalesMember shape from useCurrentUser(), so callers are
+// drop-in compatible.
 
 export function isAdmin(user: SalesMember | null | undefined): boolean {
   return user?.position === "Sales Director";
 }
 
-/** Read all sales members from localStorage (non-reactive snapshot). */
 function readAllMembers(): SalesMember[] {
   if (typeof window === "undefined") return [];
   try {
@@ -92,13 +145,7 @@ function readAllMembers(): SalesMember[] {
   }
 }
 
-/**
- * Returns the set of member ids in a user's downline (self + all descendants).
- * Traverses BOTH parentId and additionalParentIds edges — so directors with
- * multiple uplines appear as descendants of all their uplines.
- */
 export function getDownlineIds(userId: string, members: SalesMember[]): Set<string> {
-  // Build parent→children map including additionalParentIds
   const childrenMap = new Map<string, SalesMember[]>();
   for (const m of members) {
     const parents = new Set<string>();
@@ -114,32 +161,18 @@ export function getDownlineIds(userId: string, members: SalesMember[]): Set<stri
   while (stack.length) {
     const id = stack.pop()!;
     const kids = childrenMap.get(id) ?? [];
-    for (const k of kids) {
-      if (!result.has(k.id)) {
-        result.add(k.id);
-        stack.push(k.id);
-      }
-    }
+    for (const k of kids) if (!result.has(k.id)) { result.add(k.id); stack.push(k.id); }
   }
   return result;
 }
 
-/**
- * Returns the set of member names (UPPERCASE) in a user's downline,
- * for matching against event.pic (which is stored as a name string).
- */
 export function getDownlineNames(userId: string, members: SalesMember[]): Set<string> {
   const ids = getDownlineIds(userId, members);
   const names = new Set<string>();
-  for (const m of members) {
-    if (ids.has(m.id)) names.add(m.name.toUpperCase());
-  }
+  for (const m of members) if (ids.has(m.id)) names.add(m.name.toUpperCase());
   return names;
 }
 
-/**
- * Full access — Sales Director (sees all events), PIC, or assigned sales member.
- */
 export function canViewFullEvent(
   user: SalesMember | null | undefined,
   event: { assignedSales?: string[]; pic?: string },
@@ -151,26 +184,16 @@ export function canViewFullEvent(
   return false;
 }
 
-/**
- * Returns true if the event is currently live (started but not yet ended).
- * Uses ISO yyyy-mm-dd dates.
- */
 export function isEventLive(event: { startDate: string; endDate: string }): boolean {
   const today = new Date().toISOString().slice(0, 10);
   return event.startDate <= today && today <= event.endDate;
 }
 
-/**
- * Limited access — ANY active sales member can view the event ONLY while the
- * event is currently live. They see a restricted UI: chat + floorplan only.
- * Use canViewFullEvent() to decide whether to show full details.
- */
 export function canViewEvent(
   user: SalesMember | null | undefined,
   event: { assignedSales?: string[]; pic?: string; startDate: string; endDate: string },
 ): boolean {
   if (canViewFullEvent(user, event)) return true;
-  // Any active sales member gets limited access (chat + floorplan) during live events
   if (user && user.status === "ACTIVE" && isEventLive(event)) return true;
   return false;
 }
@@ -179,11 +202,6 @@ export function canViewFinance(user: SalesMember | null | undefined): boolean {
   return isAdmin(user);
 }
 
-/**
- * Brands this user has access to.
- * Sales Directors automatically have access to ALL brands regardless of
- * what's set on their `assignedBrands` field.
- */
 export function getAccessibleBrands(user: SalesMember | null | undefined): Brand[] {
   if (!user) return [];
   if (isAdmin(user)) return [...BRANDS];
@@ -195,26 +213,12 @@ export function canAccessBrand(user: SalesMember | null | undefined, brand: Bran
   return (user?.assignedBrands ?? []).includes(brand);
 }
 
-// ─── Composite hook ───────────────────────────────────────────────────────────
+// ─── Legacy (no-op setters kept so old imports don't break) ──────────────────
 
-/**
- * Returns the full SalesMember object for the current user, or null.
- * Reads directly from localStorage (not via useSalesMembers hook) to avoid
- * double-subscription and infinite re-render risk.
- */
-export function useCurrentUser(): SalesMember | null {
-  const id = useCurrentUserId();
-  // We intentionally read the sales members store snapshot directly (not
-  // via useSalesMembers) so we don't add a second subscription here.
-  // This is safe because any sales-member change that affects the current user
-  // would also trigger a page refresh via the sales-store listeners anyway.
-  if (!id || typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem("houzs_sales_members");
-    if (!raw) return null;
-    const members: SalesMember[] = JSON.parse(raw);
-    return members.find((m) => m.id === id) ?? null;
-  } catch {
-    return null;
-  }
+/** @deprecated — current user is now server-session-driven; this is a no-op. */
+export function setCurrentUserId(_id: string | null): void {
+  console.warn("[auth-store] setCurrentUserId is deprecated; use login/logout/impersonate");
 }
+
+// Re-export readAllMembers in case anything still uses it (hookka-era)
+export { readAllMembers };
