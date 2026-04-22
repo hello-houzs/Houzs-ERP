@@ -1,12 +1,15 @@
 // Fetch helpers for the auth / users / audit-log APIs.
 // All calls use credentials: "include" so the session cookie travels.
 
+export type Department = "SALES" | "OPERATION" | "HQ";
+
 export interface CurrentUser {
   id: string;
   name: string;
   code: string;
   email: string;
   phone: string;
+  department: Department;
   position: string;
   parentId: string;
   additionalParentIds: string[];
@@ -18,6 +21,8 @@ export interface CurrentUser {
   mustChangePassword: boolean;
   lastLogin: string | null;
   isAdmin: boolean;
+  /** module_key → level (NONE | VIEW | EDIT | FULL). Missing keys = NONE. */
+  permissions?: Record<string, "NONE" | "VIEW" | "EDIT" | "FULL">;
   impersonatedBy?: { id: string; name: string } | null;
 }
 
@@ -70,6 +75,7 @@ export interface UserRow {
   code: string;
   email: string;
   phone: string;
+  department: Department;
   position: string;
   parentId: string;
   additionalParentIds: string[];
@@ -91,9 +97,16 @@ export interface InvitePayload {
   email: string;
   phone?: string;
   code?: string;
+  ic?: string;
+  joinDate?: string;
+  department?: Department;
   position: string;
   parentId?: string;
   assignedBrands?: string[];
+  /** Send invite email immediately on create. Default true.
+   *  Set false when creating from Sales Team register — user will show up
+   *  as NOT_INVITED and admin triggers the email separately. */
+  sendInvite?: boolean;
 }
 
 export const usersApi = {
@@ -139,4 +152,22 @@ export const auditApi = {
     for (const [k, v] of Object.entries(params)) if (v != null && v !== "") qs.set(k, String(v));
     return req<AuditEntry[]>(`/api/audit-log${qs.toString() ? `?${qs}` : ""}`);
   },
+};
+
+// ─── Role permissions matrix (Super Admin only) ──────────────────────────────
+
+export interface PermissionRow {
+  department: "SALES" | "OPERATION" | "HQ";
+  position: string;
+  moduleKey: string;
+  level: "NONE" | "VIEW" | "EDIT" | "FULL";
+}
+
+export const permissionsApi = {
+  list: () => req<PermissionRow[]>("/api/permissions"),
+  save: (rows: PermissionRow[]) =>
+    req<{ ok: true; rowCount: number }>("/api/permissions", {
+      method: "PUT",
+      body: JSON.stringify(rows),
+    }),
 };

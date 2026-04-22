@@ -130,8 +130,13 @@ export function useAuth() {
 // These work with SalesMember shape from useCurrentUser(), so callers are
 // drop-in compatible.
 
+// Admin = any of:
+//   • Sales Director (legacy — existing sales bosses)
+//   • Super Admin (HQ department)
+// Until Phase 2 role-permission matrix lands this is the canonical check.
 export function isAdmin(user: SalesMember | null | undefined): boolean {
-  return user?.position === "Sales Director";
+  if (!user) return false;
+  return user.position === "Sales Director" || user.position === "Super Admin";
 }
 
 function readAllMembers(): SalesMember[] {

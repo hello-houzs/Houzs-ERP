@@ -1,29 +1,44 @@
 // /admin/users — invite, manage, and impersonate team members.
 // Admin-only (wrapped in AdminRoute at the App level).
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Plus, Search, Loader2, UserPlus, Mail, Send, RotateCw, UserCog,
   Ban, CheckCircle2, Trash2, X, ChevronDown, Clock, ShieldAlert,
+  Square, CheckSquare,
 } from "lucide-react";
 import { usersApi, type UserRow, type InvitePayload } from "@/lib/auth-api";
 import { impersonate, useAuth } from "@/lib/auth-store";
 import { BRANDS } from "@/lib/mock-data";
 
-const POSITIONS = ["Sales Director", "Sales Manager", "Sales Executive", "Sales Trainee"];
-const STATUSES: UserRow["status"][] = ["ACTIVE", "PENDING", "INACTIVE"];
+// Positions are scoped by department. Phase 2 (permission matrix) will
+// define module access per role; for now these just constrain the dropdown.
+const POSITIONS_BY_DEPARTMENT: Record<"SALES" | "OPERATION" | "HQ", string[]> = {
+  SALES:     ["Sales Director", "Sales Manager", "Sales Executive", "Sales Trainee"],
+  OPERATION: ["Ops Director", "Ops Manager", "Ops Executive", "Warehouse", "Driver"],
+  HQ:        ["Super Admin", "HR Manager", "Finance Manager", "Admin Assistant"],
+};
+const DEPARTMENTS: ("SALES" | "OPERATION" | "HQ")[] = ["SALES", "OPERATION", "HQ"];
+const DEPT_LABELS: Record<string, string> = { SALES: "Sales", OPERATION: "Operation", HQ: "HQ" };
+
+// Display statuses (derived, not the raw DB value)
+type DisplayStatus = "ACTIVE" | "PENDING" | "NOT_INVITED" | "INACTIVE";
+const DISPLAY_STATUSES: DisplayStatus[] = ["ACTIVE", "PENDING", "NOT_INVITED", "INACTIVE"];
 
 export default function AdminUsersPage() {
   const { user: me } = useAuth();
   const [rows, setRows] = useState<UserRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
+  const [deptFilter, setDeptFilter] = useState<string>("all");
   const [posFilter, setPosFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [showInvite, setShowInvite] = useState(false);
   const [editing, setEditing] = useState<UserRow | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
   const nav = useNavigate();
 
   async function load() {
@@ -42,6 +57,7 @@ export default function AdminUsersPage() {
     if (!rows) return [];
     const ql = q.trim().toLowerCase();
     return rows.filter((r) => {
+      if (deptFilter !== "all" && r.department !== deptFilter) return false;
       if (posFilter !== "all" && r.position !== posFilter) return false;
       // Derive "PENDING" for display: status ACTIVE + never logged in + has invite not used
       const displayStatus = derivePendingStatus(r);
@@ -53,7 +69,7 @@ export default function AdminUsersPage() {
         r.code.toLowerCase().includes(ql)
       );
     });
-  }, [rows, q, posFilter, statusFilter]);
+  }, [rows, q, deptFilter, posFilter, statusFilter]);
 
   async function handleInvite(payload: InvitePayload) {
     const r = await usersApi.invite(payload);
@@ -66,8 +82,53 @@ export default function AdminUsersPage() {
   async function handleResend(id: string) {
     const r = await usersApi.resendInvite(id);
     if (!r.ok) return flash(`Resend failed: ${r.error}`);
-    flash(r.data.emailSent ? "Invite resent" : "User reset (email failed)");
+    flash(r.data.emailSent ? "Invite sent" : "User reset (email failed)");
     await load();
+  }
+
+  // Bulk send invites — fires off all resend-invite calls in parallel
+  async function handleBulkInvite() {
+    if (selected.size === 0) return;
+    const ids = [...selected];
+    const targets = (rows ?? []).filter((r) => ids.includes(r.id));
+    const missingEmail = targets.filter((t) => !t.email);
+    if (missingEmail.length > 0) {
+      return flash(`${missingEmail.length} selected user(s) have no email — skipping.`);
+    }
+    if (!confirm(`Send invite email to ${ids.length} user(s)? Each will get a fresh temp password.`)) return;
+    setBulkBusy(true);
+    const results = await Promise.all(ids.map((id) => usersApi.resendInvite(id)));
+    setBulkBusy(false);
+    const sent = results.filter((r) => r.ok && r.data.emailSent).length;
+    const failed = results.length - sent;
+    flash(failed > 0 ? `${sent} sent, ${failed} failed` : `${sent} invites sent`);
+    setSelected(new Set());
+    await load();
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllVisible() {
+    const visible = filtered.filter((r) => r.email).map((r) => r.id);
+    if (visible.every((id) => selected.has(id))) {
+      // Already all selected → clear
+      setSelected(new Set());
+    } else {
+      setSelected(new Set([...selected, ...visible]));
+    }
+  }
+
+  function selectAllNotInvited() {
+    const ids = (rows ?? [])
+      .filter((r) => derivePendingStatus(r) === "NOT_INVITED" && r.email)
+      .map((r) => r.id);
+    setSelected(new Set(ids));
   }
 
   async function handleDisableEnable(row: UserRow) {
@@ -110,6 +171,27 @@ export default function AdminUsersPage() {
         </button>
       </div>
 
+      {/* Bulk action bar — only visible when rows are selected */}
+      {selected.size > 0 && (
+        <div className="flex items-center justify-between gap-3 rounded border border-[#0F766E] bg-[#F0FDFA] px-3 py-2 text-[11px]">
+          <div className="flex items-center gap-2 text-[#065F5B]">
+            <CheckSquare className="h-4 w-4" />
+            <b>{selected.size} selected</b>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setSelected(new Set())}
+              className="h-7 px-2 rounded border border-[#E5E7EB] bg-white text-[11px] font-semibold text-gray-600 hover:bg-gray-50">
+              Clear
+            </button>
+            <button onClick={handleBulkInvite} disabled={bulkBusy}
+              className="h-7 px-3 rounded bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0d6660] disabled:opacity-60 inline-flex items-center gap-1.5">
+              {bulkBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+              Send invite to {selected.size}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative">
@@ -122,12 +204,20 @@ export default function AdminUsersPage() {
           />
         </div>
         <select
+          value={deptFilter}
+          onChange={(e) => setDeptFilter(e.target.value)}
+          className="h-8 px-2 text-[11px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]"
+        >
+          <option value="all">All departments</option>
+          {DEPARTMENTS.map((d) => <option key={d} value={d}>{DEPT_LABELS[d]}</option>)}
+        </select>
+        <select
           value={posFilter}
           onChange={(e) => setPosFilter(e.target.value)}
           className="h-8 px-2 text-[11px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]"
         >
           <option value="all">All positions</option>
-          {POSITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+          {Object.values(POSITIONS_BY_DEPARTMENT).flat().filter((v, i, a) => a.indexOf(v) === i).map((p) => <option key={p} value={p}>{p}</option>)}
         </select>
         <select
           value={statusFilter}
@@ -135,7 +225,7 @@ export default function AdminUsersPage() {
           className="h-8 px-2 text-[11px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]"
         >
           <option value="all">All statuses</option>
-          {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+          {DISPLAY_STATUSES.map((s) => <option key={s} value={s}>{s.replace("_", " ")}</option>)}
         </select>
         <span className="ml-auto text-[11px] text-gray-500">
           {rows == null ? "Loading…" : `${filtered.length} of ${rows.length}`}
@@ -153,8 +243,16 @@ export default function AdminUsersPage() {
         <table className="w-full text-[11px]">
           <thead>
             <tr className="bg-[#F9FAFB] border-b border-[#E5E7EB] text-[10px] uppercase tracking-wide text-gray-500">
+              <th className="px-3 py-2 w-8">
+                <button onClick={selectAllVisible} className="text-gray-500 hover:text-[#0F766E]" title="Select all visible">
+                  {filtered.length > 0 && filtered.filter((r) => r.email).every((r) => selected.has(r.id))
+                    ? <CheckSquare className="h-3.5 w-3.5" />
+                    : <Square className="h-3.5 w-3.5" />}
+                </button>
+              </th>
               <th className="px-3 py-2 text-left font-semibold">Name</th>
               <th className="px-3 py-2 text-left font-semibold">Email</th>
+              <th className="px-3 py-2 text-left font-semibold">Dept</th>
               <th className="px-3 py-2 text-left font-semibold">Position</th>
               <th className="px-3 py-2 text-left font-semibold">Upline</th>
               <th className="px-3 py-2 text-left font-semibold">Status</th>
@@ -164,24 +262,38 @@ export default function AdminUsersPage() {
           </thead>
           <tbody>
             {rows == null && (
-              <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">
+              <tr><td colSpan={9} className="px-3 py-8 text-center text-gray-500">
                 <Loader2 className="inline h-4 w-4 animate-spin" />
               </td></tr>
             )}
             {rows && filtered.length === 0 && (
-              <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">No users match those filters.</td></tr>
+              <tr><td colSpan={9} className="px-3 py-8 text-center text-gray-500">No users match those filters.</td></tr>
             )}
             {filtered.map((row) => {
               const upline = rows?.find((r) => r.id === row.parentId);
               const displayStatus = derivePendingStatus(row);
               const isMe = row.id === me?.id;
+              const canSelect = !!row.email && row.id !== me?.id;
+              const isSelected = selected.has(row.id);
               return (
-                <tr key={row.id} className="border-b border-[#F0F1F3] hover:bg-[#F9FAFB]">
+                <tr key={row.id} className={`border-b border-[#F0F1F3] hover:bg-[#F9FAFB] ${isSelected ? "bg-[#F0FDFA]" : ""}`}>
+                  <td className="px-3 py-2">
+                    {canSelect ? (
+                      <button onClick={() => toggleSelect(row.id)} className="text-gray-400 hover:text-[#0F766E]">
+                        {isSelected ? <CheckSquare className="h-3.5 w-3.5 text-[#0F766E]" /> : <Square className="h-3.5 w-3.5" />}
+                      </button>
+                    ) : (
+                      <span className="inline-block w-3.5 h-3.5" title={!row.email ? "No email on file" : "That's you"}></span>
+                    )}
+                  </td>
                   <td className="px-3 py-2">
                     <div className="font-semibold text-[#0A1F2E]">{row.name}</div>
                     <div className="text-[10px] text-gray-500">{row.code || row.id}</div>
                   </td>
                   <td className="px-3 py-2 text-gray-700">{row.email}</td>
+                  <td className="px-3 py-2">
+                    <DeptBadge dept={row.department} />
+                  </td>
                   <td className="px-3 py-2 text-gray-700">{row.position}</td>
                   <td className="px-3 py-2 text-gray-500">{upline?.name ?? "—"}</td>
                   <td className="px-3 py-2">
@@ -192,6 +304,15 @@ export default function AdminUsersPage() {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-1">
+                      {displayStatus === "NOT_INVITED" && (
+                        <button
+                          onClick={() => handleResend(row.id)}
+                          className="inline-flex items-center gap-1 h-6 px-2 rounded border border-[#0F766E] bg-white text-[10px] font-semibold text-[#0F766E] hover:bg-[#0F766E] hover:text-white"
+                          title="Send invite email with temp password"
+                        >
+                          <Send className="h-3 w-3" /> Invite
+                        </button>
+                      )}
                       {displayStatus === "PENDING" && (
                         <IconBtn
                           title="Resend invite"
@@ -263,25 +384,40 @@ export default function AdminUsersPage() {
 }
 
 // ─── Derive display status ───────────────────────────────────────────────────
-// A user with status=ACTIVE but mustChangePassword=1 and never-logged-in is
-// effectively "PENDING" — show that in the UI even though backend stores them
-// as ACTIVE (so they can log in with temp password).
-function derivePendingStatus(r: UserRow): "ACTIVE" | "PENDING" | "INACTIVE" {
+// The raw `status` column in D1 is just ACTIVE/INACTIVE, but for the UI we
+// split ACTIVE into three cases depending on password + login state:
+//   • NOT_INVITED — seeded member with no password_hash yet (e.g. 42 team
+//     members imported from Excel). They literally cannot log in until admin
+//     sends them an invite.
+//   • PENDING — invite email has been sent (has a temp password), but they
+//     haven't completed their first login yet.
+//   • ACTIVE — has a password AND has logged in at least once.
+function derivePendingStatus(r: UserRow): DisplayStatus {
   if (r.status === "INACTIVE") return "INACTIVE";
+  if (!r.hasPassword) return "NOT_INVITED";
   if (r.mustChangePassword && !r.lastLogin) return "PENDING";
   return "ACTIVE";
 }
 
 // ─── UI bits ─────────────────────────────────────────────────────────────────
 
-function StatusBadge({ status, expiresAt }: { status: "ACTIVE" | "PENDING" | "INACTIVE"; expiresAt: string | null }) {
-  const cls = status === "ACTIVE"   ? "bg-emerald-100 text-emerald-700"
-           : status === "PENDING"  ? "bg-amber-100 text-amber-700"
-                                   : "bg-gray-200 text-gray-600";
+function DeptBadge({ dept }: { dept: "SALES" | "OPERATION" | "HQ" }) {
+  const cls = dept === "HQ"         ? "bg-purple-100 text-purple-700"
+           : dept === "OPERATION" ? "bg-sky-100 text-sky-700"
+                                    : "bg-teal-100 text-teal-700";
+  return <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}`}>{DEPT_LABELS[dept] ?? dept}</span>;
+}
+
+function StatusBadge({ status, expiresAt }: { status: DisplayStatus; expiresAt: string | null }) {
+  const cls = status === "ACTIVE"       ? "bg-emerald-100 text-emerald-700"
+           : status === "PENDING"      ? "bg-amber-100 text-amber-700"
+           : status === "NOT_INVITED"  ? "bg-blue-100 text-blue-700"
+                                         : "bg-gray-200 text-gray-600";
+  const label = status === "NOT_INVITED" ? "NOT INVITED" : status;
   return (
     <div>
       <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}`}>
-        {status}
+        {label}
       </span>
       {status === "PENDING" && expiresAt && (
         <div className="text-[9px] text-gray-500 mt-0.5 inline-flex items-center gap-1 ml-1.5">
@@ -330,23 +466,33 @@ function InviteModal({ onClose, users, onInvite }: {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [position, setPosition] = useState("Sales Executive");
+  const [department, setDepartment] = useState<"SALES" | "OPERATION" | "HQ">("SALES");
+  const [position, setPosition] = useState<string>(POSITIONS_BY_DEPARTMENT["SALES"][0]);
   const [parentId, setParentId] = useState("");
   const [brands, setBrands] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // When department changes, reset position to the first valid one for that dept
+  useEffect(() => {
+    const valid = POSITIONS_BY_DEPARTMENT[department];
+    if (!valid.includes(position)) setPosition(valid[0]);
+  }, [department]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     setErr(null);
     setBusy(true);
-    const r = await onInvite({ name: name.trim(), email: email.trim().toLowerCase(), phone, position, parentId, assignedBrands: brands });
+    const r = await onInvite({
+      name: name.trim(), email: email.trim().toLowerCase(), phone,
+      department, position, parentId, assignedBrands: brands,
+    });
     setBusy(false);
     if (!r.ok) return setErr(r.error);
     onClose();
   }
 
-  const directors = users.filter((u) => ["Sales Director", "Sales Manager"].includes(u.position));
+  const directors = users.filter((u) => ["Sales Director", "Sales Manager", "Ops Director", "Ops Manager", "Super Admin"].includes(u.position));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
@@ -375,11 +521,17 @@ function InviteModal({ onClose, users, onInvite }: {
               className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]"
               placeholder="+60" />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Department">
+              <select value={department} onChange={(e) => setDepartment(e.target.value as "SALES" | "OPERATION" | "HQ")}
+                className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+                {DEPARTMENTS.map((d) => <option key={d} value={d}>{DEPT_LABELS[d]}</option>)}
+              </select>
+            </Field>
             <Field label="Position">
               <select value={position} onChange={(e) => setPosition(e.target.value)}
                 className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
-                {POSITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+                {POSITIONS_BY_DEPARTMENT[department].map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
             </Field>
             <Field label="Upline">
@@ -442,23 +594,30 @@ function EditModal({ row, users, onClose, onSaved }: {
 }) {
   const [name, setName] = useState(row.name);
   const [phone, setPhone] = useState(row.phone ?? "");
+  const [department, setDepartment] = useState<"SALES" | "OPERATION" | "HQ">(row.department ?? "SALES");
   const [position, setPosition] = useState(row.position);
   const [parentId, setParentId] = useState(row.parentId ?? "");
   const [brands, setBrands] = useState<string[]>(row.assignedBrands);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Switching department resets position if it's no longer valid
+  useEffect(() => {
+    const valid = POSITIONS_BY_DEPARTMENT[department];
+    if (!valid.includes(position)) setPosition(valid[0]);
+  }, [department]); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     setErr(null);
     setBusy(true);
-    const r = await usersApi.update(row.id, { name, phone, position, parentId, assignedBrands: brands });
+    const r = await usersApi.update(row.id, { name, phone, department, position, parentId, assignedBrands: brands });
     setBusy(false);
     if (!r.ok) return setErr(r.error);
     onSaved();
   }
 
-  const candidates = users.filter((u) => u.id !== row.id && ["Sales Director", "Sales Manager"].includes(u.position));
+  const candidates = users.filter((u) => u.id !== row.id && ["Sales Director", "Sales Manager", "Ops Director", "Ops Manager", "Super Admin"].includes(u.position));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
@@ -480,11 +639,17 @@ function EditModal({ row, users, onClose, onSaved }: {
             <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
               className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]" />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Department">
+              <select value={department} onChange={(e) => setDepartment(e.target.value as "SALES" | "OPERATION" | "HQ")}
+                className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
+                {DEPARTMENTS.map((d) => <option key={d} value={d}>{DEPT_LABELS[d]}</option>)}
+              </select>
+            </Field>
             <Field label="Position">
               <select value={position} onChange={(e) => setPosition(e.target.value)}
                 className="w-full h-8 px-2 text-[12px] bg-white border border-[#E5E7EB] rounded focus:outline-none focus:border-[#0F766E]">
-                {POSITIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+                {POSITIONS_BY_DEPARTMENT[department].map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
             </Field>
             <Field label="Upline">

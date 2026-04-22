@@ -34,6 +34,7 @@ import PortalPage from './pages/PortalPage';
 // Admin pages
 import AdminUsersPage from './pages/AdminUsersPage';
 import AdminAuditLogPage from './pages/AdminAuditLogPage';
+import AdminPermissionsPage from './pages/AdminPermissionsPage';
 
 export default function App() {
   return (
@@ -84,6 +85,7 @@ export default function App() {
         {/* Admin pages */}
         <Route path="/admin/users" element={<AdminRoute><AdminUsersPage /></AdminRoute>} />
         <Route path="/admin/audit-log" element={<AdminRoute><AdminAuditLogPage /></AdminRoute>} />
+        <Route path="/admin/permissions" element={<AdminRoute><AdminPermissionsPage /></AdminRoute>} />
       </Route>
 
       {/* Print pages — auth required, no sidebar */}

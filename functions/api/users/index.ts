@@ -22,12 +22,19 @@ interface InviteBody {
   email?: string;
   code?: string;
   phone?: string;
+  ic?: string;
+  department?: "SALES" | "OPERATION" | "HQ";
   position?: string;
   parentId?: string;
   additionalParentIds?: string[];
   assignedBrands?: string[];
   commissionTiers?: { threshold: number; pct: number }[];
   minRate?: number;
+  joinDate?: string;
+  /** If false, create user WITHOUT a password + DON'T send email. Used by
+   *  the Sales Team "Register" modal — the new person will show up in the
+   *  Users page as NOT_INVITED, where admin can then multi-select + send. */
+  sendInvite?: boolean;
 }
 
 function rowToUser(r: Record<string, unknown>) {
@@ -35,6 +42,7 @@ function rowToUser(r: Record<string, unknown>) {
     id: r.id,
     name: r.name,
     code: r.code ?? "",
+    department: (r.department as string) ?? "SALES",
     email: r.email,
     phone: r.phone ?? "",
     position: r.position,
@@ -107,50 +115,68 @@ export const onRequestPost: PagesFunction<Env> = async ({ env, request }) => {
     id = `${prefix}-${nameSlug}-${Math.random().toString(36).slice(2, 5)}`;
   }
 
-  const tempPw = generateTempPassword(10);
-  const { hash, salt } = await hashPassword(tempPw);
+  const sendInvite = body.sendInvite !== false; // default true for back-compat
 
+  // Create user row. With sendInvite=false we leave password_hash NULL so the
+  // user shows as NOT_INVITED in the admin UI until admin triggers the invite.
+  let passwordHash: string | null = null;
+  let passwordSalt: string | null = null;
+  let tempPw: string | null = null;
+  if (sendInvite) {
+    tempPw = generateTempPassword(10);
+    const pwHash = await hashPassword(tempPw);
+    passwordHash = pwHash.hash;
+    passwordSalt = pwHash.salt;
+  }
+
+  const department = (body.department ?? "SALES").toUpperCase();
   await env.DB.prepare(
     `INSERT INTO users (
-       id, name, code, email, phone, position, parent_id, additional_parent_ids,
+       id, name, code, email, phone, ic, department, position, parent_id, additional_parent_ids,
        join_date, status, assigned_brands, commission_tiers, min_rate,
        password_hash, password_salt, must_change_password
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, date('now'), 'ACTIVE', ?, ?, ?, ?, ?, 1)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?)`
   ).bind(
-    id, name, body.code ?? name.toUpperCase(), email, body.phone ?? null,
+    id, name, body.code ?? name.toUpperCase(), email, body.phone ?? null, body.ic ?? null,
+    department,
     position, body.parentId || null,
     JSON.stringify(body.additionalParentIds ?? []),
+    body.joinDate ?? new Date().toISOString().slice(0, 10),
     JSON.stringify(body.assignedBrands ?? []),
     JSON.stringify(body.commissionTiers ?? []),
     Number(body.minRate ?? 0),
-    hash, salt,
+    passwordHash, passwordSalt,
+    sendInvite ? 1 : 0,
   ).run();
 
-  // Invitation row
-  const inviteId = crypto.randomUUID();
-  const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 86_400 * 1000).toISOString();
-  await env.DB.prepare(
-    `INSERT INTO invitations (id, user_id, invited_by, expires_at)
-     VALUES (?, ?, ?, ?)`
-  ).bind(inviteId, id, admin.id, expiresAt).run();
+  let emailed = false;
+  if (sendInvite && tempPw) {
+    // Invitation row
+    const inviteId = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 86_400 * 1000).toISOString();
+    await env.DB.prepare(
+      `INSERT INTO invitations (id, user_id, invited_by, expires_at)
+       VALUES (?, ?, ?, ?)`
+    ).bind(inviteId, id, admin.id, expiresAt).run();
 
-  // Send email
-  const appUrl = env.APP_URL ?? `https://${new URL(request.url).host}`;
-  const tpl = inviteEmailTemplate({
-    toName: name,
-    invitedByName: admin.name,
-    tempPassword: tempPw,
-    appUrl,
-    expiresInDays: INVITE_EXPIRY_DAYS,
-  });
-  const emailed = await sendEmail(env, { to: email, subject: tpl.subject, html: tpl.html, text: tpl.text });
+    // Send email
+    const appUrl = env.APP_URL ?? `https://${new URL(request.url).host}`;
+    const tpl = inviteEmailTemplate({
+      toName: name,
+      invitedByName: admin.name,
+      tempPassword: tempPw,
+      appUrl,
+      expiresInDays: INVITE_EXPIRY_DAYS,
+    });
+    emailed = await sendEmail(env, { to: email, subject: tpl.subject, html: tpl.html, text: tpl.text });
+  }
 
   await logAudit(env, request, admin, {
-    action: "invite",
+    action: sendInvite ? "invite" : "register",
     entityType: "user",
     entityId: id,
     changes: { email, name, position, emailSent: emailed },
   });
 
-  return json({ ok: true, id, emailSent: emailed });
+  return json({ ok: true, id, emailSent: emailed, invited: sendInvite });
 };

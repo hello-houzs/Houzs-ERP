@@ -16,15 +16,29 @@ import {
 const IMPERSONATE_TTL_SECONDS = 2 * 3600; // 2 hours
 
 export const onRequestPost: PagesFunction<Env> = async ({ env, request }) => {
-  const admin = await getAuthUser(request, env);
-  if (!admin) return error("Not authenticated", 401);
-  if (!isAdmin(admin)) return error("Only Sales Directors can impersonate", 403);
-  if (admin.impersonatedBy) return error("Already impersonating — stop first", 400);
+  const current = await getAuthUser(request, env);
+  if (!current) return error("Not authenticated", 401);
+
+  // If already impersonating, we want to switch to a new target while keeping
+  // the ORIGINAL admin identity (so the banner + audit still attribute the
+  // action correctly). Look up the original admin from DB, not the JWT claim,
+  // to re-verify they're still an admin.
+  let admin: typeof current;
+  if (current.impersonatedBy) {
+    const row = await env.DB.prepare(
+      `SELECT id, email, name, position FROM users WHERE id = ?`
+    ).bind(current.impersonatedBy.id).first<{ id: string; email: string; name: string; position: string }>();
+    if (!row) return error("Original admin no longer exists", 404);
+    admin = { id: row.id, email: row.email, name: row.name, position: row.position };
+  } else {
+    admin = current;
+  }
+  if (!isAdmin(admin)) return error("Only Super Admin / Sales Director can impersonate", 403);
 
   const body = await request.json<{ userId?: string }>().catch(() => ({} as { userId?: string }));
   const userId = (body.userId ?? "").trim();
   if (!userId) return error("userId required");
-  if (userId === admin.id) return error("Cannot impersonate yourself");
+  if (userId === admin.id) return error("Cannot impersonate yourself — use Return to admin instead");
 
   const target = await env.DB.prepare(
     `SELECT id, email, name, position, status FROM users WHERE id = ?`

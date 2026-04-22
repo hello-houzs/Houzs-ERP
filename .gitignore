@@ -4,9 +4,13 @@ dist
 .DS_Store
 *.log
 
+# Local credentials reference — NEVER commit
+CREDENTIALS.local.md
+
 # Claude Code IDE local config
 .claude/
 
 # Build caches
 tsconfig.tsbuildinfo
 .vite
+.wrangler/

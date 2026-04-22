@@ -3,6 +3,7 @@ import {
   Users, Plus, Trash2, ChevronDown, ChevronRight, Search, X,
   Phone, UserPlus, Edit2, Check, Crown, Shield, User as UserIcon,
   Mail, Tag, DollarSign, AlertTriangle, List, GitBranch, Settings,
+  Loader2,
 } from "lucide-react";
 import { BRANDS, type Brand } from "@/lib/mock-data";
 import {
@@ -13,6 +14,7 @@ import {
   type SalesMember, type MemberStatus, type MemberNode,
   type CommissionTier,
 } from "@/lib/sales-store";
+import { usersApi } from "@/lib/auth-api";
 import { FIELD_LABEL, FIELD_INPUT, FIELD_SELECT, FILTER_SELECT } from "@/lib/ui-tokens";
 
 const STATUSES: MemberStatus[] = ["ACTIVE", "INACTIVE"];
@@ -20,6 +22,7 @@ const STATUSES: MemberStatus[] = ["ACTIVE", "INACTIVE"];
 const BRAND_DOT: Record<Brand, string> = {
   AKEMI: "bg-[#4F6BED]", ZANOTTI: "bg-[#7B5BD6]",
   ERGOTEX: "bg-[#1A73E8]", DUNLOPILLO: "bg-[#0B8043]",
+  HOUZS: "bg-[#0F766E]", OTHER: "bg-gray-500",
 };
 
 function StatusDot({ status }: { status: MemberStatus }) {
@@ -110,9 +113,36 @@ function AddMemberForm({ members, positions, onClose }: {
     setSelectedBrands((prev) => prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b]);
   }
 
-  function submit() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
     const n = name.trim().toUpperCase();
-    if (!n) return;
+    if (!n) return setErr("Name required");
+    if (!email.trim()) return setErr("Email required (so they can receive their invite)");
+    setErr(null);
+    setBusy(true);
+    // 1. Register in D1 with sendInvite=true → temp password generated and
+    //    invite email fires immediately. Hard-coded department=SALES because
+    //    this modal lives in the Sales Team portal — directors can only add
+    //    sales-side members here.
+    const r = await usersApi.invite({
+      name: n,
+      email: email.trim().toLowerCase(),
+      phone: phone.trim(),
+      code: code.trim() || n,
+      ic: ic.trim(),
+      joinDate,
+      department: "SALES",
+      position,
+      parentId,
+      assignedBrands: selectedBrands,
+      sendInvite: true,
+    });
+    setBusy(false);
+    if (!r.ok) return setErr(r.error);
+    // 2. Mirror into local sales-store so the Sales Team list shows it
+    //    immediately (until we fully migrate sales-store to D1).
     addMember({
       name: n, code: code.trim() || n, phone: phone.trim(), email: email.trim(),
       ic: ic.trim() || undefined, position, parentId, joinDate,
@@ -161,8 +191,13 @@ function AddMemberForm({ members, positions, onClose }: {
             </div>
             <div>
               <div className={FIELD_LABEL}>Position</div>
+              {/* Hard-locked to Sales positions — this modal lives in the
+                   Sales Team portal, so non-Sales roles (HQ / Ops) must be
+                   created via the full Admin Users page. */}
               <select value={position} onChange={(e) => setPosition(e.target.value)} className={FIELD_SELECT}>
-                {positions.map((p) => <option key={p} value={p}>{p}</option>)}
+                {positions
+                  .filter((p) => p.toLowerCase().startsWith("sales "))
+                  .map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
             </div>
             <div>
@@ -189,10 +224,23 @@ function AddMemberForm({ members, positions, onClose }: {
             </div>
           </div>
         </div>
+        {/* Info strip — explains what happens after Register */}
+        <div className="mx-5 mt-4 rounded border border-[#DDE5E5] bg-[#F9FAFB] px-3 py-2 text-[11px] text-gray-600 flex items-start gap-2">
+          <Mail className="h-3.5 w-3.5 text-[#0F766E] mt-0.5 shrink-0" />
+          <span>
+            On <b>Register</b>, the new member is created under <b className="text-teal-700">SALES</b>{" "}
+            department and an invite email is sent <b>immediately</b> to their
+            address with a temporary password. They'll be forced to change it
+            on first login.
+          </span>
+        </div>
+        {err && (
+          <div className="mx-5 mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">{err}</div>
+        )}
         <div className="px-5 py-3 border-t border-[#DDE5E5] flex justify-end gap-2 sticky bottom-0 bg-white">
           <button type="button" onClick={onClose} className="h-8 px-3 rounded-md border border-[#DDE5E5] bg-white text-[11px] font-semibold text-gray-600">Cancel</button>
-          <button type="button" onClick={submit} disabled={!name.trim()} className="h-8 px-4 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] disabled:opacity-40 inline-flex items-center gap-1">
-            <Plus className="h-3 w-3" /> Register
+          <button type="button" onClick={submit} disabled={!name.trim() || busy} className="h-8 px-4 rounded-md bg-[#0F766E] text-white text-[11px] font-semibold hover:bg-[#0c5f59] disabled:opacity-40 inline-flex items-center gap-1">
+            {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />} Register
           </button>
         </div>
       </div>
@@ -212,6 +260,9 @@ function EditMemberDialog({ member, members, positions, onClose }: {
   const [ic, setIc] = useState(member.ic ?? "");
   const [position, setPosition] = useState(member.position);
   const [parentId, setParentId] = useState(member.parentId);
+  // Secondary upline — directors frequently report into multiple uplines for
+  // commission splits, so allow a second parent id per member.
+  const [parentId2, setParentId2] = useState<string>(member.additionalParentIds?.[0] ?? "");
   const [status, setStatus] = useState(member.status);
   const [selectedBrands, setSelectedBrands] = useState<Brand[]>(member.assignedBrands);
   const [tiers, setTiers] = useState<CommissionTier[]>(member.commissionTiers);
@@ -243,9 +294,13 @@ function EditMemberDialog({ member, members, positions, onClose }: {
   }
 
   function save() {
+    // additionalParentIds = [parentId2] only when it's set and different from primary
+    const addl = parentId2 && parentId2 !== parentId ? [parentId2] : [];
     updateMember(member.id, {
       name: name.trim().toUpperCase(), code: code.trim(), phone: phone.trim(),
-      email: email.trim(), ic: ic.trim() || undefined, position, parentId, status,
+      email: email.trim(), ic: ic.trim() || undefined, position, parentId,
+      additionalParentIds: addl,
+      status,
       assignedBrands: selectedBrands, commissionTiers: tiers, minRate,
     });
     onClose();
@@ -308,10 +363,19 @@ function EditMemberDialog({ member, members, positions, onClose }: {
                   </select>
                 </div>
                 <div>
-                  <div className={FIELD_LABEL}>Upline</div>
+                  <div className={FIELD_LABEL}>Upline (primary)</div>
                   <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={FIELD_SELECT}>
                     <option value="">— No upline —</option>
                     {parentCandidates.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.position})</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div className={FIELD_LABEL}>Upline (secondary, optional)</div>
+                  <select value={parentId2} onChange={(e) => setParentId2(e.target.value)} className={FIELD_SELECT}>
+                    <option value="">— None —</option>
+                    {parentCandidates
+                      .filter((m) => m.id !== parentId)
+                      .map((m) => <option key={m.id} value={m.id}>{m.name} ({m.position})</option>)}
                   </select>
                 </div>
               </div>

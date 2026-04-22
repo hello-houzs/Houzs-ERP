@@ -18,12 +18,27 @@ const BRAND_COLOR: Record<Brand, string> = {
   ZANOTTI:    "bg-[#7B5BD6] hover:bg-[#6849C4]",   // purple
   ERGOTEX:    "bg-[#1A73E8] hover:bg-[#0F5CC7]",   // google blue
   DUNLOPILLO: "bg-[#0B8043] hover:bg-[#096B38]",   // google green
+  HOUZS:      "bg-[#0F766E] hover:bg-[#0d6660]",   // teal (corporate)
+  OTHER:      "bg-gray-500 hover:bg-gray-600",     // neutral fallback
 };
+
+// Event bars now coloured by STATUS (not brand) per user request.
+// Blue = CONFIRMED (happy path), amber = PENDING, red = CANCELLED.
+const STATUS_COLOR: Record<string, string> = {
+  CONFIRMED: "bg-[#1A73E8] hover:bg-[#0F5CC7]",
+  PENDING:   "bg-amber-500 hover:bg-amber-600",
+  CANCELLED: "bg-red-500 hover:bg-red-600",
+};
+function statusColor(status: string): string {
+  return STATUS_COLOR[status] ?? "bg-gray-500 hover:bg-gray-600";
+}
 const BRAND_DOT: Record<Brand, string> = {
   AKEMI: "bg-[#4F6BED]",
   ZANOTTI: "bg-[#7B5BD6]",
   ERGOTEX: "bg-[#1A73E8]",
   DUNLOPILLO: "bg-[#0B8043]",
+  HOUZS: "bg-[#0F766E]",
+  OTHER: "bg-gray-500",
 };
 
 const MONTH_NAMES = [
@@ -171,6 +186,9 @@ export default function CalendarPage() {
   const [search, setSearch] = useState("");
   const [showPublicHolidays, setShowPublicHolidays] = useState(true);
   const [showSchoolHolidays, setShowSchoolHolidays] = useState(true);
+
+  // Overflow popover — clicked "+N more" cell; lists all events on that day.
+  const [overflowDay, setOverflowDay] = useState<string | null>(null);
 
   const organizerOptions = useMemo(() => {
     const set = new Set<string>();
@@ -590,7 +608,7 @@ export default function CalendarPage() {
                       key={`${s.event.a42}-${si}`}
                       to={`/events/${encodeURIComponent(s.event.a42)}`}
                       title={title}
-                      className={`absolute ${BRAND_COLOR[s.event.brand]} ${roundedL} ${roundedR} text-white text-[10px] font-semibold leading-tight truncate px-1.5 py-[2px] pointer-events-auto transition`}
+                      className={`absolute ${statusColor(s.event.status)} ${roundedL} ${roundedR} text-white text-[10px] font-semibold leading-tight truncate px-1.5 py-[2px] pointer-events-auto transition`}
                       style={{
                         left: `calc(${leftPct}% + 2px)`,
                         width: `calc(${widthPct}% - 4px)`,
@@ -603,12 +621,18 @@ export default function CalendarPage() {
                   );
                 })}
 
-                {/* "+N more" overflow indicators per-day */}
+                {/* "+N more" overflow indicators per-day — clickable,
+                     opens a popover listing every event that occupies that day. */}
                 {hiddenPerCol.map((n, col) =>
                   n > 0 ? (
-                    <div
+                    <button
                       key={`more-${col}`}
-                      className="absolute text-[9px] text-gray-500 font-medium px-1.5"
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOverflowDay(toISODate(week[col]));
+                      }}
+                      className="absolute text-[9px] text-gray-500 font-medium px-1.5 pointer-events-auto hover:text-[#0F766E] hover:underline cursor-pointer text-left"
                       style={{
                         left: `calc(${(col / 7) * 100}% + 2px)`,
                         top: `${MAX_VISIBLE_TRACKS * 20}px`,
@@ -616,7 +640,7 @@ export default function CalendarPage() {
                       }}
                     >
                       {n} more
-                    </div>
+                    </button>
                   ) : null
                 )}
               </div>
@@ -624,6 +648,46 @@ export default function CalendarPage() {
           );
         })}
       </div>
+
+      {/* Overflow-day popover — shows every event that overlaps the clicked date */}
+      {overflowDay && (
+        <div
+          className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center p-4"
+          onClick={() => setOverflowDay(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-lg shadow-xl border border-[#E5E7EB] w-full max-w-md max-h-[80vh] flex flex-col"
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#E5E7EB]">
+              <h3 className="text-[14px] font-bold text-[#0A1F2E]">
+                Events on {new Date(overflowDay).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+              </h3>
+              <button onClick={() => setOverflowDay(null)} className="text-gray-400 hover:text-gray-600 text-[18px] leading-none">×</button>
+            </div>
+            <div className="overflow-y-auto p-2 space-y-1">
+              {(() => {
+                const day = overflowDay;
+                const list = filtered.filter((e) => e.startDate <= day && day <= e.endDate);
+                if (list.length === 0) return <div className="p-4 text-[11px] text-gray-500 text-center">No events</div>;
+                return list.map((e) => (
+                  <Link
+                    key={e.a42}
+                    to={`/events/${encodeURIComponent(e.a42)}`}
+                    onClick={() => setOverflowDay(null)}
+                    className={`block px-3 py-2 rounded text-white text-[11px] font-semibold ${statusColor(e.status)}`}
+                  >
+                    <div className="truncate">{calendarTitle(e)}</div>
+                    <div className="text-[9px] opacity-80 mt-0.5">
+                      {e.startDate} → {e.endDate} · {e.state} · {e.brand} · {e.status}
+                    </div>
+                  </Link>
+                ));
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Legend */}
       <div className="flex flex-wrap gap-x-4 gap-y-1.5 items-center text-[10px] text-gray-500">

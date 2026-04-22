@@ -9,6 +9,7 @@ const FIELD_MAP: Record<string, { col: string; json?: boolean }> = {
   code:                { col: "code" },
   email:               { col: "email" },
   phone:               { col: "phone" },
+  department:          { col: "department" },
   position:            { col: "position" },
   parentId:            { col: "parent_id" },
   additionalParentIds: { col: "additional_parent_ids", json: true },

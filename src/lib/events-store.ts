@@ -1,48 +1,74 @@
-// Client-side events store: mockEvents + user-added + per-event overrides,
-// persisted in localStorage and reactive via a subscriber registry.
+// Events store — D1-backed via /api/events, with localStorage cache for
+// instant paint + offline fallback. Pattern mirrors so-store.ts and
+// sku-costing-store.ts.
 //
-//   useAllEvents() → HouzsEvent[]        — reactive read
-//   addEvent(e)                          — append a new event
-//   updateEvent(a42, changes)            — patch an existing event
-//   deleteUserEvent(a42)                 — remove a user-added event
-//   resetUserData()                      — clear both stores
-//
-// Overrides let us edit fields on seeded mock events too (e.g. drag dates
-// in the PM Dashboard), without mutating the module-level mockEvents array.
+//   useAllEvents() → HouzsEvent[]        — reactive hook
+//   findEventMerged(a42) → HouzsEvent?
+//   addEvent(e)                          — POST /api/events
+//   updateEvent(a42, changes)            — PATCH /api/events/:a42
+//   deleteUserEvent(a42)                 — DELETE /api/events/:a42
+//   resetUserData()                      — clear cache + refetch
+//   buildA42(parts) → string             — utility for composing the key
 
 import { useSyncExternalStore } from "react";
-import { mockEvents, type HouzsEvent } from "./mock-data";
+import { type HouzsEvent } from "./mock-data";
 
-const USER_KEY = "houzs-user-events-v1";
-const OVERRIDE_KEY = "houzs-event-overrides-v1";
-
-type Overrides = Record<string, Partial<HouzsEvent>>;
+const CACHE_KEY = "houzs-events-cache-v1";
 
 const listeners = new Set<() => void>();
 let cached: HouzsEvent[] | null = null;
-function emit() { cached = null; listeners.forEach((l) => l()); }
+let fetching = false;
+let bootstrapped = false;
 
-function safeParse<T>(raw: string | null, fallback: T): T {
-  if (!raw) return fallback;
-  try { return JSON.parse(raw) as T; } catch { return fallback; }
-}
+function emit() { listeners.forEach((l) => l()); }
 
-function readUserEvents(): HouzsEvent[] {
+function readCache(): HouzsEvent[] {
   if (typeof window === "undefined") return [];
-  return safeParse<HouzsEvent[]>(localStorage.getItem(USER_KEY), []);
+  const raw = localStorage.getItem(CACHE_KEY);
+  if (!raw) return [];
+  try { return JSON.parse(raw); } catch { return []; }
 }
-function writeUserEvents(arr: HouzsEvent[]) {
-  localStorage.setItem(USER_KEY, JSON.stringify(arr));
+
+function writeCache(arr: HouzsEvent[]) {
+  cached = arr;
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(arr)); } catch { /* quota */ }
   emit();
 }
-function readOverrides(): Overrides {
-  if (typeof window === "undefined") return {};
-  return safeParse<Overrides>(localStorage.getItem(OVERRIDE_KEY), {});
+
+async function fetchAllFromApi(): Promise<void> {
+  if (fetching) return;
+  fetching = true;
+  try {
+    const r = await fetch("/api/events", { credentials: "include" });
+    if (!r.ok) throw new Error(String(r.status));
+    const data = (await r.json()) as HouzsEvent[];
+    writeCache(data);
+  } catch (e) {
+    console.warn("[events-store] API fetch failed, using cache:", e);
+  } finally {
+    fetching = false;
+  }
 }
-function writeOverrides(o: Overrides) {
-  localStorage.setItem(OVERRIDE_KEY, JSON.stringify(o));
-  emit();
+
+function bootstrap() {
+  if (bootstrapped || typeof window === "undefined") return;
+  bootstrapped = true;
+  fetchAllFromApi();
 }
+
+function subscribe(cb: () => void): () => void {
+  listeners.add(cb);
+  const onStorage = (e: StorageEvent) => { if (e.key === CACHE_KEY) { cached = null; cb(); } };
+  window.addEventListener("storage", onStorage);
+  return () => { listeners.delete(cb); window.removeEventListener("storage", onStorage); };
+}
+
+function getSnapshot(): HouzsEvent[] {
+  if (!cached) cached = readCache();
+  return cached;
+}
+
+function getServerSnapshot(): HouzsEvent[] { return []; }
 
 function daysBetween(start: string, end: string): number {
   const s = new Date(start);
@@ -51,95 +77,89 @@ function daysBetween(start: string, end: string): number {
   return Math.max(1, Math.round((e.getTime() - s.getTime()) / 86400000) + 1);
 }
 
-function merge(): HouzsEvent[] {
-  const userEvents = readUserEvents();
-  const overrides = readOverrides();
-  const all = [...mockEvents, ...userEvents];
-  return all.map((e) => {
-    const o = overrides[e.a42];
-    if (!o) return e;
-    const merged: HouzsEvent = { ...e, ...o };
-    // auto-recompute durationDays if dates changed
-    if (o.startDate || o.endDate) {
-      merged.durationDays = daysBetween(merged.startDate, merged.endDate);
-    }
-    return merged;
-  });
-}
+// ─── Public hooks + accessors ─────────────────────────────────────────────────
 
-function subscribe(cb: () => void): () => void {
-  listeners.add(cb);
-  const onStorage = () => { cached = null; cb(); };
-  window.addEventListener("storage", onStorage);
-  return () => {
-    listeners.delete(cb);
-    window.removeEventListener("storage", onStorage);
-  };
-}
-
-function getSnapshot(): HouzsEvent[] {
-  if (!cached) cached = merge();
-  return cached;
-}
-
-function getServerSnapshot(): HouzsEvent[] {
-  return mockEvents;
-}
-
-/** Reactive hook — subscribes to store mutations + storage events from other tabs. */
 export function useAllEvents(): HouzsEvent[] {
+  if (typeof window !== "undefined") bootstrap();
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
-/** Find one event by a42 including user-added and overrides. */
+/** Non-reactive accessor — used by callers that don't want a subscription. */
 export function findEventMerged(a42: string): HouzsEvent | undefined {
-  return merge().find((e) => e.a42 === a42);
+  if (!cached) cached = readCache();
+  return cached.find((e) => e.a42 === a42);
 }
 
-/** Append a new user-authored event. */
-export function addEvent(e: HouzsEvent) {
-  const arr = readUserEvents();
-  // prevent dupes by a42
-  if (arr.some((x) => x.a42 === e.a42) || mockEvents.some((x) => x.a42 === e.a42)) {
+// ─── Mutations (optimistic: cache first, then API) ───────────────────────────
+
+export async function addEvent(e: HouzsEvent): Promise<void> {
+  if (!cached) cached = readCache();
+  if (cached.some((x) => x.a42 === e.a42)) {
     throw new Error(`Event with A42 "${e.a42}" already exists`);
   }
-  arr.push(e);
-  writeUserEvents(arr);
-}
-
-/** Patch fields on any event (mock or user-added). Auto-recomputes durationDays when dates change. */
-export function updateEvent(a42: string, changes: Partial<HouzsEvent>) {
-  // If it's a user event, update in place; otherwise store as override.
-  const userArr = readUserEvents();
-  const uidx = userArr.findIndex((e) => e.a42 === a42);
-  if (uidx >= 0) {
-    const next = { ...userArr[uidx], ...changes };
-    if (changes.startDate || changes.endDate) {
-      next.durationDays = daysBetween(next.startDate, next.endDate);
-    }
-    userArr[uidx] = next;
-    writeUserEvents(userArr);
-    return;
+  // Recompute durationDays defensively
+  const complete: HouzsEvent = { ...e, durationDays: daysBetween(e.startDate, e.endDate) };
+  writeCache([...cached, complete]);
+  try {
+    await fetch("/api/events", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(complete),
+    });
+  } catch (err) {
+    console.warn("[events-store] addEvent API failed, kept optimistic:", err);
   }
-  const o = readOverrides();
-  o[a42] = { ...(o[a42] ?? {}), ...changes };
-  writeOverrides(o);
 }
 
-/** Remove a user-added event. Mock events cannot be deleted, only overridden. */
-export function deleteUserEvent(a42: string) {
-  const arr = readUserEvents().filter((e) => e.a42 !== a42);
-  writeUserEvents(arr);
+export async function updateEvent(a42: string, changes: Partial<HouzsEvent>): Promise<void> {
+  if (!cached) cached = readCache();
+  const idx = cached.findIndex((e) => e.a42 === a42);
+  if (idx < 0) return;
+  const merged = { ...cached[idx], ...changes };
+  if (changes.startDate || changes.endDate) {
+    merged.durationDays = daysBetween(merged.startDate, merged.endDate);
+  }
+  const next = [...cached];
+  next[idx] = merged;
+  writeCache(next);
+  try {
+    await fetch(`/api/events/${encodeURIComponent(a42)}`, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...changes,
+        ...(changes.startDate || changes.endDate ? { durationDays: merged.durationDays } : {}),
+      }),
+    });
+  } catch (err) {
+    console.warn("[events-store] updateEvent API failed, kept optimistic:", err);
+  }
 }
 
-/** Nuke all user data (both stores). */
-export function resetUserData() {
-  localStorage.removeItem(USER_KEY);
-  localStorage.removeItem(OVERRIDE_KEY);
+export async function deleteUserEvent(a42: string): Promise<void> {
+  if (!cached) cached = readCache();
+  writeCache(cached.filter((e) => e.a42 !== a42));
+  try {
+    await fetch(`/api/events/${encodeURIComponent(a42)}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+  } catch (err) {
+    console.warn("[events-store] deleteEvent API failed:", err);
+  }
+}
+
+export async function resetUserData(): Promise<void> {
+  cached = null;
+  if (typeof window !== "undefined") localStorage.removeItem(CACHE_KEY);
   emit();
+  await fetchAllFromApi();
 }
 
-/** Build a canonical A42 key from the parts. */
+// ─── A42 composition helper (unchanged) ───────────────────────────────────────
+
 export function buildA42(parts: {
   year: number; month: string; organizer: string; state: string; venue: string; brand: string;
 }): string {

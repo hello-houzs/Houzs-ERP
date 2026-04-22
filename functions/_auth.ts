@@ -84,7 +84,7 @@ export interface JWTPayload {
   imp?: { id: string; name: string };
 }
 
-export async function signJWT(payload: Omit<JWTPayload, "iat" | "exp"> & { imp?: { id: string; name: string } }, secret: string, ttlSeconds = 86_400): Promise<string> {
+export async function signJWT(payload: Omit<JWTPayload, "iat" | "exp"> & { imp?: { id: string; name: string } }, secret: string, ttlSeconds = 30 * 86_400): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const full: JWTPayload = { ...payload, iat: now, exp: now + ttlSeconds };
   const headerB64 = b64urlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
@@ -149,7 +149,9 @@ export function validatePassword(pw: string): string | null {
 // ─── Cookie helpers ──────────────────────────────────────────────────────────
 
 const COOKIE_NAME = "houzs_session";
-const COOKIE_MAX_AGE = 86_400; // 24h
+// 30 days — enough that phones / daily users don't re-login constantly.
+// JWT default ttl matches this. Impersonate sessions still use 2h (shorter).
+const COOKIE_MAX_AGE = 30 * 86_400;
 
 export function setAuthCookie(token: string, secure = true): string {
   const parts = [
@@ -223,7 +225,9 @@ export function requireRole(user: AuthUser, role: "Sales Director"): Response | 
 }
 
 export function isAdmin(user: AuthUser): boolean {
-  return user.position === "Sales Director";
+  // HQ Super Admin = top-level admin. Sales Director still counts as admin
+  // for legacy reasons (they can impersonate their downline, edit users).
+  return user.position === "Super Admin" || user.position === "Sales Director";
 }
 
 // ─── Audit log ───────────────────────────────────────────────────────────────
