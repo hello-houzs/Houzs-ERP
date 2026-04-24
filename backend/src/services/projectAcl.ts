@@ -23,6 +23,14 @@ export function getProjectPicScope(user: AuthUser): number[] | null {
   return ids;
 }
 
+/** Effective PIC id — falls back to the creator when pic_id is unset.
+ *  Keeps legacy projects (created before migration 039) visible to
+ *  their creator's team, without requiring a full backfill. */
+function effectivePicId(project: { pic_id: number | null; created_by?: number | null }): number | null {
+  if (project.pic_id != null) return project.pic_id;
+  return project.created_by ?? null;
+}
+
 /**
  * Per-project access tier for rendering decisions. "full" = PIC or
  * unscoped role — can see finances, logistics, POs. "limited" =
@@ -30,10 +38,10 @@ export function getProjectPicScope(user: AuthUser): number[] | null {
  */
 export function projectAccessLevel(
   user: AuthUser,
-  project: { pic_id: number | null }
+  project: { pic_id: number | null; created_by?: number | null }
 ): "full" | "limited" {
   if (!user.scope_to_pic) return "full";
-  if (project.pic_id === user.id) return "full";
+  if (effectivePicId(project) === user.id) return "full";
   return "limited";
 }
 
@@ -43,11 +51,12 @@ export function projectAccessLevel(
  */
 export function canSeeProject(
   user: AuthUser,
-  project: { pic_id: number | null }
+  project: { pic_id: number | null; created_by?: number | null }
 ): boolean {
   if (!user.scope_to_pic) return true;
-  if (project.pic_id == null) return false;
-  if (project.pic_id === user.id) return true;
-  if (user.manager_id && project.pic_id === user.manager_id) return true;
+  const pic = effectivePicId(project);
+  if (pic == null) return false;
+  if (pic === user.id) return true;
+  if (user.manager_id && pic === user.manager_id) return true;
   return false;
 }

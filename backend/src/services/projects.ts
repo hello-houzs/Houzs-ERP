@@ -575,7 +575,11 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
       // Scoped user with no valid PIC line — return no rows.
       where.push("1 = 0");
     } else {
-      where.push(`p.pic_id IN (${f.pic_scope.map(() => "?").join(",")})`);
+      // Fall back to created_by when pic_id is NULL so legacy projects
+      // (pre-migration 039) still attach to their creator's team.
+      where.push(
+        `COALESCE(p.pic_id, p.created_by) IN (${f.pic_scope.map(() => "?").join(",")})`
+      );
       binds.push(...f.pic_scope);
     }
   }

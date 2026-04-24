@@ -679,10 +679,10 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
   // they cannot reassign pic_id away from themselves/their manager.
   if (user?.scope_to_pic) {
     const row = await c.env.DB.prepare(
-      `SELECT pic_id FROM projects WHERE id = ?`
+      `SELECT pic_id, created_by FROM projects WHERE id = ?`
     )
       .bind(id)
-      .first<{ pic_id: number | null }>();
+      .first<{ pic_id: number | null; created_by: number | null }>();
     if (!row) return c.json({ error: "Not found" }, 404);
     if (!canSeeProject(user, row)) return c.json({ error: "Not found" }, 404);
     if ("pic_id" in body) {
@@ -755,12 +755,13 @@ app.patch("/:id/finance", requirePermission("projects.write"), async (c) => {
   // Only the PIC (or an unscoped role) can write finance for a project.
   if (user?.scope_to_pic) {
     const row = await c.env.DB.prepare(
-      `SELECT pic_id FROM projects WHERE id = ?`
+      `SELECT pic_id, created_by FROM projects WHERE id = ?`
     )
       .bind(id)
-      .first<{ pic_id: number | null }>();
+      .first<{ pic_id: number | null; created_by: number | null }>();
     if (!row) return c.json({ error: "Not found" }, 404);
-    if (row.pic_id !== user.id) {
+    const effectivePic = row.pic_id ?? row.created_by ?? null;
+    if (effectivePic !== user.id) {
       return c.json({ error: "Forbidden — finance is PIC-only" }, 403);
     }
   }
@@ -846,7 +847,9 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
     projectBinds.push(like, like, like, like);
   }
   if (picScope) {
-    where.push(`p.pic_id IN (${picScope.map(() => "?").join(",")})`);
+    where.push(
+      `COALESCE(p.pic_id, p.created_by) IN (${picScope.map(() => "?").join(",")})`
+    );
     projectBinds.push(...picScope);
   }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -1007,7 +1010,9 @@ app.get("/finance/lines", requirePermission("projects.read"), async (c) => {
     binds.push(like, like, like, like);
   }
   if (finPicScope) {
-    where.push(`p.pic_id IN (${finPicScope.map(() => "?").join(",")})`);
+    where.push(
+      `COALESCE(p.pic_id, p.created_by) IN (${finPicScope.map(() => "?").join(",")})`
+    );
     binds.push(...finPicScope);
   }
 
@@ -1804,8 +1809,10 @@ app.get("/calendar/events", requirePermission("projects.read"), async (c) => {
   if (picScope && picScope.length === 0) {
     return c.json({ projects: [], tasks: [] });
   }
+  // COALESCE(pic_id, created_by) so legacy projects (pre-039) still
+  // attach to their creator's team under the scoped ACL.
   const picWhere = picScope
-    ? ` AND p.pic_id IN (${picScope.map(() => "?").join(",")})`
+    ? ` AND COALESCE(p.pic_id, p.created_by) IN (${picScope.map(() => "?").join(",")})`
     : "";
   const picBinds = picScope ?? [];
 
