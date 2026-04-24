@@ -30,6 +30,8 @@ import {
   Download,
   Pencil,
   Send,
+  ChevronDown,
+  ChevronUp,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
@@ -2933,6 +2935,9 @@ function ProjectDetailContent({
             </PanelSection>
           )}
 
+            </DetailMain>
+
+            <DetailAside>
           <PanelSection title="Chat">
             <ProjectChat
               projectId={id}
@@ -2942,9 +2947,8 @@ function ProjectDetailContent({
               toast={toast}
             />
           </PanelSection>
-            </DetailMain>
 
-            <DetailAside>
+          <CollapsibleDetails>
           <PanelSection title="Basics" muted>
             <InlineEdit label="Name" value={p.name} onSave={(v) => patch({ name: v })} />
             {(() => {
@@ -3104,6 +3108,7 @@ function ProjectDetailContent({
               </div>
             </PanelSection>
           )}
+          </CollapsibleDetails>
 
             </DetailAside>
           </DetailGrid>
@@ -5795,6 +5800,41 @@ function ImportCsvPanel({
 // (stage transitions, finance edits, checklist changes…). Mirrors the
 // ASSR notes pattern — same backend table (project_activity), one
 // composer that POSTs to /api/projects/:id/notes with action="note".
+
+// ── Collapsible "Project Details" wrapper ───────────────────
+// The aside used to dump every basics/dates/venue/booth panel up-front
+// which pushed the useful content (chat, checklist actions on the
+// main column) far down the page. Collapsed by default; one click to
+// expand when the operator actually needs to edit metadata.
+function CollapsibleDetails({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
+      <button
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 transition-colors hover:bg-bg/40"
+      >
+        <div className="flex items-center gap-2">
+          <span className="h-px w-3 bg-accent" />
+          <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-secondary">
+            Project Details
+          </span>
+        </div>
+        {open ? (
+          <ChevronUp size={13} className="text-ink-muted" />
+        ) : (
+          <ChevronDown size={13} className="text-ink-muted" />
+        )}
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-border-subtle p-3">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ProjectChat({
   projectId,
