@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate, useParams, Navigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -292,6 +292,7 @@ interface ActivityRow {
   from_value: string | null;
   to_value: string | null;
   note: string | null;
+  user_id: number | null;
   user_name: string | null;
   created_at: string;
 }
@@ -5888,8 +5889,38 @@ function ProjectChat({
   onPosted: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
+  const { user: me } = useAuth();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Backend returns newest-first for timeline summaries; chat UIs read
+  // oldest-at-top. Reverse once for render; keep stable via id on
+  // equal timestamps (batch inserts).
+  const messages = useMemo(() => {
+    return [...activity].sort((a, b) => {
+      const t = a.created_at.localeCompare(b.created_at);
+      return t !== 0 ? t : a.id - b.id;
+    });
+  }, [activity]);
+
+  // Auto-scroll to bottom when new messages arrive. Only scroll when
+  // the user is already near the bottom, so reading history isn't
+  // yanked out from under them.
+  const lastCount = useRef(messages.length);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const wasAtBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (messages.length > lastCount.current && wasAtBottom) {
+      el.scrollTop = el.scrollHeight;
+    } else if (lastCount.current === 0) {
+      // First mount — always drop to the bottom.
+      el.scrollTop = el.scrollHeight;
+    }
+    lastCount.current = messages.length;
+  }, [messages.length]);
 
   async function send() {
     const note = draft.trim();
@@ -5911,83 +5942,171 @@ function ProjectChat({
       e.preventDefault();
       send();
     }
+    // Plain Enter also sends when on a single short line — falls back
+    // to ⌘/Ctrl+Enter for multi-line composition with Shift+Enter.
+    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      send();
+    }
   }
 
   return (
-    <div className="space-y-3">
-      {canPost && (
-        <div className="rounded-md border border-border bg-surface p-2">
+    <div className="flex h-[440px] flex-col overflow-hidden rounded-md border border-border bg-bg/30">
+      {/* Message scroll area */}
+      <div
+        ref={scrollRef}
+        className="thin-scroll flex-1 space-y-2 overflow-y-auto px-3 py-3"
+      >
+        {messages.length === 0 && (
+          <div className="py-10 text-center text-[11px] text-ink-muted">
+            No messages yet. Say hi 👋
+          </div>
+        )}
+        {messages.map((a, i) => {
+          const prev = i > 0 ? messages[i - 1] : null;
+          if (a.action !== "note") {
+            return <ChatSystemRow key={a.id} a={a} />;
+          }
+          const isMine = !!me && a.user_id === me.id;
+          // Group with previous if same author, same kind (note), within 5 min.
+          const samePerson =
+            prev &&
+            prev.action === "note" &&
+            prev.user_id === a.user_id;
+          const withinWindow =
+            prev &&
+            Date.parse(a.created_at) - Date.parse(prev.created_at) <
+              5 * 60 * 1000;
+          const grouped = !!(samePerson && withinWindow);
+          return (
+            <ChatBubble key={a.id} a={a} isMine={isMine} grouped={grouped} />
+          );
+        })}
+      </div>
+
+      {/* Composer — fixed at the bottom of the chat pane */}
+      {canPost ? (
+        <div className="flex items-end gap-2 border-t border-border bg-surface px-2.5 py-2">
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKey}
-            placeholder="Write a message…"
-            rows={2}
-            className="w-full resize-none border-0 bg-transparent p-1 text-[12px] text-ink outline-none placeholder:text-ink-muted"
+            placeholder="Message…"
+            rows={1}
+            className="min-h-[36px] max-h-[120px] flex-1 resize-none rounded-full border border-border bg-bg px-3.5 py-2 text-[12.5px] text-ink outline-none placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
           />
-          <div className="mt-1 flex items-center justify-between">
-            <span className="text-[10px] text-ink-muted">⌘/Ctrl + Enter to send</span>
-            <button
-              onClick={send}
-              disabled={sending || !draft.trim()}
-              className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-white shadow-sm disabled:bg-surface-dim disabled:text-ink-muted disabled:shadow-none"
-            >
-              <Send size={11} /> Send
-            </button>
-          </div>
+          <button
+            onClick={send}
+            disabled={sending || !draft.trim()}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-stone transition-all hover:bg-accent-hover disabled:bg-surface-dim disabled:text-ink-muted disabled:shadow-none"
+            title="Send (Enter) · Shift+Enter for new line"
+          >
+            <Send size={14} />
+          </button>
+        </div>
+      ) : (
+        <div className="border-t border-border bg-surface px-3 py-2 text-center text-[10.5px] text-ink-muted">
+          Read-only
         </div>
       )}
+    </div>
+  );
+}
 
-      {activity.length === 0 ? (
-        <div className="text-[11px] text-ink-muted">No messages yet.</div>
-      ) : (
-        <div className="space-y-2">
-          {activity.map((a) =>
-            a.action === "note" ? (
-              <div
-                key={a.id}
-                className="rounded-md border border-border bg-surface px-3 py-2"
-              >
-                <div className="mb-0.5 flex items-baseline justify-between gap-2">
-                  <span className="text-[11.5px] font-semibold text-ink">
-                    {a.user_name || "Unknown"}
-                  </span>
-                  <span
-                    className="font-mono text-[9.5px] text-ink-muted"
-                    title={a.created_at}
-                  >
-                    {relativeTime(a.created_at)}
-                  </span>
-                </div>
-                <div className="whitespace-pre-wrap text-[12px] text-ink-secondary">
-                  {a.note}
-                </div>
-              </div>
-            ) : (
-              <div
-                key={a.id}
-                className="flex items-start gap-2 px-1 text-[10.5px] italic text-ink-muted"
-              >
-                <span
-                  className="font-mono not-italic"
-                  title={a.created_at}
-                >
-                  {relativeTime(a.created_at)}
-                </span>
-                <span className="flex-1">
-                  {actionLabel(a.action)}
-                  {a.from_value && a.to_value && a.from_value !== a.to_value && (
-                    <span> · {a.from_value} → {a.to_value}</span>
-                  )}
-                  {a.to_value && !a.from_value && <span> · {a.to_value}</span>}
-                  {a.note && <span> · {a.note}</span>}
-                  {a.user_name && <span> · {a.user_name}</span>}
-                </span>
-              </div>
-            )
+// ── Chat row components ─────────────────────────────────────
+
+function ChatSystemRow({ a }: { a: ActivityRow }) {
+  return (
+    <div className="my-3 flex justify-center">
+      <div
+        className="max-w-[80%] rounded-full bg-bg/80 px-3 py-1 text-center text-[10.5px] text-ink-muted ring-1 ring-border-subtle"
+        title={a.created_at}
+      >
+        <span className="font-medium">
+          {actionLabel(a.action)}
+        </span>
+        {a.from_value && a.to_value && a.from_value !== a.to_value && (
+          <span className="ml-1">
+            <span className="font-mono">{a.from_value}</span>
+            <span className="mx-1 text-ink-muted/70">→</span>
+            <span className="font-mono">{a.to_value}</span>
+          </span>
+        )}
+        {a.to_value && !a.from_value && (
+          <span className="ml-1 font-mono">{a.to_value}</span>
+        )}
+        {a.note && <span className="ml-1">· {a.note}</span>}
+        {a.user_name && (
+          <span className="ml-1 text-ink-muted/80">· {a.user_name}</span>
+        )}
+        <span className="ml-1.5 font-mono text-ink-muted/70">
+          {relativeTime(a.created_at)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ChatBubble({
+  a,
+  isMine,
+  grouped,
+}: {
+  a: ActivityRow;
+  isMine: boolean;
+  grouped: boolean;
+}) {
+  const name = a.user_name || "Unknown";
+  const initial = name.slice(0, 1).toUpperCase();
+  return (
+    <div
+      className={cn(
+        "flex w-full gap-2",
+        isMine ? "justify-end" : "justify-start",
+        grouped ? "mt-0.5" : "mt-2"
+      )}
+    >
+      {/* Avatar only for others, and only on the first message in a group */}
+      {!isMine && (
+        <div className="w-8 shrink-0">
+          {!grouped && (
+            <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-soft font-mono text-[11px] font-bold text-accent-ink">
+              {initial}
+            </span>
           )}
         </div>
       )}
+      <div
+        className={cn(
+          "flex max-w-[75%] flex-col",
+          isMine ? "items-end" : "items-start"
+        )}
+      >
+        {!grouped && !isMine && (
+          <span className="mb-0.5 px-0.5 text-[10.5px] font-semibold text-ink-secondary">
+            {name}
+          </span>
+        )}
+        <div
+          className={cn(
+            "whitespace-pre-wrap break-words rounded-2xl px-3 py-1.5 text-[12.5px] leading-snug shadow-stone",
+            isMine
+              ? "rounded-br-sm bg-accent text-white"
+              : "rounded-bl-sm bg-surface text-ink ring-1 ring-border-subtle"
+          )}
+        >
+          {a.note}
+        </div>
+        <span
+          className={cn(
+            "mt-0.5 px-0.5 font-mono text-[9.5px]",
+            isMine ? "text-ink-muted" : "text-ink-muted"
+          )}
+          title={a.created_at}
+        >
+          {relativeTime(a.created_at)}
+        </span>
+      </div>
     </div>
   );
 }
