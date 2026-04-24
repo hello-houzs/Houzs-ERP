@@ -524,10 +524,26 @@ export interface TeamMember {
   manager_id: number | null;
   manager_name: string | null;
   manager_email: string | null;
+  /** Department grouping — orthogonal to role, purely for visibility. */
+  department_id: number | null;
+  department_name: string | null;
+  /** 6-char hex without the leading '#'. */
+  department_color: string | null;
   invited_at: string | null;
   joined_at: string | null;
   last_login_at: string | null;
   created_at: string;
+}
+
+export interface Department {
+  id: number;
+  name: string;
+  description: string | null;
+  /** 6-char hex without the leading '#'. */
+  color: string;
+  sort_order: number;
+  member_count: number;
+  created_at?: string;
 }
 
 export interface Invitation {

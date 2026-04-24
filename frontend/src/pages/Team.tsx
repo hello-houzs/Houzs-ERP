@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -12,10 +12,10 @@ import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { relativeTime, cn } from "../lib/utils";
-import type { TeamMember, Invitation, Role } from "../types";
+import type { TeamMember, Invitation, Role, Department } from "../types";
 import { RolesTab } from "./Roles";
 
-type TeamTabValue = "members" | "roles" | "orgchart";
+type TeamTabValue = "members" | "roles" | "orgchart" | "departments";
 
 /**
  * Unified Team page — two tabs (Members, Roles) sharing a single header.
@@ -38,7 +38,7 @@ export function Team() {
 
   const raw = params.get("tab") as TeamTabValue | null;
   const active: TeamTabValue =
-    raw && ["members", "roles", "orgchart"].includes(raw)
+    raw && ["members", "roles", "orgchart", "departments"].includes(raw)
       ? raw
       : canUsers
       ? "members"
@@ -52,10 +52,12 @@ export function Team() {
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [creatingRole, setCreatingRole] = useState(false);
+  const [creatingDept, setCreatingDept] = useState(false);
 
   const tabs: TabOption<TeamTabValue>[] = [
     { value: "members", label: "Members", show: canUsers },
     { value: "orgchart", label: "Org Chart", show: canUsers },
+    { value: "departments", label: "Departments", show: canUsers },
     { value: "roles", label: "Roles", show: canRoles },
   ];
 
@@ -73,6 +75,12 @@ export function Team() {
       title: "Org Chart",
       description:
         "Who reports to whom. Reporting lines drive project access — a user sees projects where they or their manager is the PIC (when their role is scoped).",
+    },
+    departments: {
+      eyebrow: "Workspace · Teams",
+      title: "Departments",
+      description:
+        "Groupings for visibility only — colour-codes the org chart and tags members. Access control still runs through roles + reporting lines.",
     },
     roles: {
       eyebrow: "Workspace · Access Control",
@@ -93,14 +101,26 @@ export function Team() {
           Invite Member
         </Button>
       ) : null
-    ) : canManageRoles ? (
-      <Button
-        variant="brass"
-        icon={<Plus size={14} />}
-        onClick={() => setCreatingRole(true)}
-      >
-        New Role
-      </Button>
+    ) : active === "departments" ? (
+      canManageUsers ? (
+        <Button
+          variant="brass"
+          icon={<Plus size={14} />}
+          onClick={() => setCreatingDept(true)}
+        >
+          New Department
+        </Button>
+      ) : null
+    ) : active === "roles" ? (
+      canManageRoles ? (
+        <Button
+          variant="brass"
+          icon={<Plus size={14} />}
+          onClick={() => setCreatingRole(true)}
+        >
+          New Role
+        </Button>
+      ) : null
     ) : null;
 
   return (
@@ -125,6 +145,12 @@ export function Team() {
         />
       )}
       {active === "orgchart" && canUsers && <OrgChartTab />}
+      {active === "departments" && canUsers && (
+        <DepartmentsTab
+          creating={creatingDept}
+          onCloseCreate={() => setCreatingDept(false)}
+        />
+      )}
       {active === "roles" && canRoles && (
         <RolesTab
           creating={creatingRole}
@@ -154,6 +180,9 @@ function MembersTab({
     api.get("/api/users/invitations")
   );
   const roles = useQuery<{ roles: Role[] }>(() => api.get("/api/roles"));
+  const depts = useQuery<{ departments: Department[] }>(() =>
+    api.get("/api/departments")
+  );
 
   const canManage = can("users.manage");
 
@@ -179,6 +208,21 @@ function MembersTab({
         manager_id
           ? `${u.email} now reports to ${members.data?.users.find((x) => x.id === manager_id)?.name ?? "manager"}`
           : `${u.email} is no longer reporting to anyone`
+      );
+      members.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
+  async function changeDepartment(u: TeamMember, department_id: number | null) {
+    try {
+      await api.patch(`/api/users/${u.id}`, { department_id });
+      const name = department_id
+        ? depts.data?.departments.find((d) => d.id === department_id)?.name
+        : null;
+      toast.success(
+        name ? `${u.email} → ${name}` : `${u.email} removed from department`
       );
       members.reload();
     } catch (e: any) {
@@ -321,6 +365,31 @@ function MembersTab({
                     ))}
                   </select>
                   <select
+                    value={u.department_id ?? ""}
+                    onChange={(e) =>
+                      changeDepartment(
+                        u,
+                        e.target.value ? Number(e.target.value) : null
+                      )
+                    }
+                    title="Department"
+                    style={
+                      u.department_color
+                        ? {
+                            borderLeft: `3px solid #${u.department_color}`,
+                          }
+                        : undefined
+                    }
+                    className="h-8 max-w-[160px] cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  >
+                    <option value="">— No department —</option>
+                    {depts.data?.departments.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
                     value={u.manager_id ?? ""}
                     onChange={(e) =>
                       changeManager(
@@ -353,6 +422,25 @@ function MembersTab({
                   <span className="rounded bg-accent-soft px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent-ink">
                     {u.role_name}
                   </span>
+                  {u.department_name && (
+                    <span
+                      className="inline-flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-wider text-ink"
+                      style={
+                        u.department_color
+                          ? {
+                              backgroundColor: `#${u.department_color}20`,
+                              color: `#${u.department_color}`,
+                            }
+                          : undefined
+                      }
+                    >
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{ backgroundColor: `#${u.department_color || "64748b"}` }}
+                      />
+                      {u.department_name}
+                    </span>
+                  )}
                   {u.manager_name && (
                     <span
                       className="truncate text-[10.5px] text-ink-muted"
@@ -798,13 +886,22 @@ function OrgCard({
         if (!isNaN(id) && id !== user.id) onDrop(id, user.id);
       }}
       className={cn(
-        "relative w-[220px] shrink-0 rounded-md border bg-surface shadow-stone transition-all",
+        "relative w-[220px] shrink-0 overflow-hidden rounded-md border bg-surface shadow-stone transition-all",
         isDragSource && "opacity-50",
         dropHover && isValidDropTarget && "border-accent bg-accent-soft/40 ring-2 ring-accent/30",
         !dropHover && "border-border",
         canManage && "cursor-grab active:cursor-grabbing"
       )}
     >
+      {/* Department colour stripe on the left edge. Transparent when no
+          department assigned so the card still reads as bordered. */}
+      {user.department_color && (
+        <span
+          aria-hidden
+          className="absolute inset-y-0 left-0 w-[3px]"
+          style={{ backgroundColor: `#${user.department_color}` }}
+        />
+      )}
       <div className="flex items-start gap-2.5 px-3 py-2.5">
         <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent-soft font-mono text-[12px] font-bold text-accent-ink">
           {initial}
@@ -827,6 +924,21 @@ function OrgCard({
             <span className="rounded bg-accent-soft px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-accent-ink">
               {user.role_name}
             </span>
+            {user.department_name && (
+              <span
+                className="rounded px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider"
+                style={
+                  user.department_color
+                    ? {
+                        backgroundColor: `#${user.department_color}22`,
+                        color: `#${user.department_color}`,
+                      }
+                    : undefined
+                }
+              >
+                {user.department_name}
+              </span>
+            )}
             {reportsCount > 0 && (
               <span
                 className="font-mono text-[9.5px] text-ink-muted"
@@ -884,6 +996,296 @@ function OrgCard({
         </div>
       )}
     </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Departments tab — small CRUD list of org groupings
+// ──────────────────────────────────────────────────────────
+
+/** Fixed palette shown in the colour picker. Values are 6-char hex
+ *  without '#', to match the backend contract. Room for 8 entries so
+ *  the swatches fit on one row without crowding. */
+const DEPT_PALETTE = [
+  { hex: "64748b", label: "Slate" },
+  { hex: "3b82f6", label: "Blue" },
+  { hex: "06b6d4", label: "Cyan" },
+  { hex: "10b981", label: "Emerald" },
+  { hex: "f59e0b", label: "Amber" },
+  { hex: "f97316", label: "Orange" },
+  { hex: "ec4899", label: "Pink" },
+  { hex: "8b5cf6", label: "Violet" },
+];
+
+function DepartmentsTab({
+  creating,
+  onCloseCreate,
+}: {
+  creating: boolean;
+  onCloseCreate: () => void;
+}) {
+  const { can } = useAuth();
+  const toast = useToast();
+  const dialog = useDialog();
+  const canManage = can("users.manage");
+  const depts = useQuery<{ departments: Department[] }>(() =>
+    api.get("/api/departments")
+  );
+  const [editing, setEditing] = useState<Department | null>(null);
+
+  async function save(
+    d: Department | null,
+    body: { name: string; description: string | null; color: string; sort_order: number }
+  ) {
+    try {
+      if (d) {
+        await api.patch(`/api/departments/${d.id}`, body);
+        toast.success(`Updated ${body.name}`);
+      } else {
+        await api.post("/api/departments", body);
+        toast.success(`Created ${body.name}`);
+      }
+      depts.reload();
+      onCloseCreate();
+      setEditing(null);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
+  async function remove(d: Department) {
+    if (
+      !(await dialog.confirm(
+        `Delete "${d.name}"? Members in this department will be unassigned.`
+      ))
+    )
+      return;
+    try {
+      await api.del(`/api/departments/${d.id}`);
+      toast.success(`Deleted ${d.name}`);
+      depts.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
+  const rows = depts.data?.departments ?? [];
+  const editorOpen = creating || editing !== null;
+  const editorRole = creating ? null : editing;
+
+  return (
+    <div className="space-y-4">
+      {depts.loading && rows.length === 0 && (
+        <div className="text-[12px] text-ink-muted">Loading…</div>
+      )}
+      {depts.error && <div className="text-[12px] text-err">{depts.error}</div>}
+
+      {rows.length === 0 && !depts.loading ? (
+        <div className="rounded-md border border-dashed border-border bg-surface px-5 py-8 text-center text-[12px] text-ink-muted">
+          No departments yet. Create one to start tagging members.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
+          {rows.map((d) => (
+            <div
+              key={d.id}
+              className="flex items-center gap-3 border-b border-border-subtle px-4 py-3 last:border-b-0"
+            >
+              <span
+                className="h-8 w-2 shrink-0 rounded-sm"
+                style={{ backgroundColor: `#${d.color}` }}
+                aria-hidden
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-[13px] font-semibold text-ink">
+                    {d.name}
+                  </span>
+                  <span className="font-mono text-[10px] text-ink-muted">
+                    #{d.color}
+                  </span>
+                </div>
+                {d.description && (
+                  <div className="mt-0.5 truncate text-[11px] text-ink-muted">
+                    {d.description}
+                  </div>
+                )}
+              </div>
+              <span
+                className="rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider"
+                style={{
+                  backgroundColor: `#${d.color}22`,
+                  color: `#${d.color}`,
+                }}
+              >
+                {d.member_count} member{d.member_count === 1 ? "" : "s"}
+              </span>
+              {canManage && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setEditing(d)}
+                    className="rounded p-1.5 text-ink-muted transition-colors hover:bg-surface-dim hover:text-accent"
+                    aria-label="Edit"
+                    title="Edit department"
+                  >
+                    <Pencil size={13} />
+                  </button>
+                  <button
+                    onClick={() => remove(d)}
+                    className="rounded p-1.5 text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
+                    aria-label="Delete"
+                    title="Delete department"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editorOpen && (
+        <DepartmentEditor
+          department={editorRole}
+          onClose={() => {
+            onCloseCreate();
+            setEditing(null);
+          }}
+          onSave={(body) => save(editorRole, body)}
+        />
+      )}
+    </div>
+  );
+}
+
+function DepartmentEditor({
+  department,
+  onClose,
+  onSave,
+}: {
+  department: Department | null;
+  onClose: () => void;
+  onSave: (body: {
+    name: string;
+    description: string | null;
+    color: string;
+    sort_order: number;
+  }) => void;
+}) {
+  const isCreate = !department;
+  const [name, setName] = useState(department?.name || "");
+  const [description, setDescription] = useState(department?.description || "");
+  const [color, setColor] = useState(department?.color || DEPT_PALETTE[0].hex);
+  const [sortOrder, setSortOrder] = useState<number>(department?.sort_order ?? 0);
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (!name.trim()) return;
+    setBusy(true);
+    try {
+      await onSave({
+        name: name.trim(),
+        description: description.trim() || null,
+        color,
+        sort_order: sortOrder,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel
+      open
+      onClose={onClose}
+      title={isCreate ? "New Department" : department!.name}
+      subtitle={isCreate ? "Create a team grouping" : "Edit department"}
+      width={440}
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] text-ink-secondary"
+          >
+            Cancel
+          </button>
+          <Button variant="primary" onClick={submit} disabled={busy || !name.trim()}>
+            {busy ? "Saving…" : isCreate ? "Create" : "Save"}
+          </Button>
+        </div>
+      }
+    >
+      <PanelSection title="Details">
+        <div>
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            Name
+          </label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Sales, Operations, Finance"
+            className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            autoFocus
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            Description
+          </label>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="What this team owns"
+            className="min-h-[60px] w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            Colour
+          </label>
+          <div className="grid grid-cols-8 gap-1.5">
+            {DEPT_PALETTE.map((p) => (
+              <button
+                key={p.hex}
+                onClick={() => setColor(p.hex)}
+                title={p.label}
+                aria-label={p.label}
+                className={cn(
+                  "relative h-8 rounded-md border-2 transition-all",
+                  color === p.hex
+                    ? "border-ink scale-110"
+                    : "border-transparent hover:border-ink/40"
+                )}
+                style={{ backgroundColor: `#${p.hex}` }}
+              >
+                {color === p.hex && (
+                  <Check
+                    size={14}
+                    className="absolute inset-0 m-auto text-white drop-shadow"
+                  />
+                )}
+              </button>
+            ))}
+          </div>
+          <div className="mt-1 font-mono text-[10px] text-ink-muted">#{color}</div>
+        </div>
+        <div>
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            Sort order
+          </label>
+          <input
+            type="number"
+            value={sortOrder}
+            onChange={(e) => setSortOrder(parseInt(e.target.value, 10) || 0)}
+            className="h-9 w-24 rounded-md border border-border bg-surface px-3 text-[13px]"
+          />
+          <div className="mt-1 text-[10px] text-ink-muted">
+            Lower numbers render first in the list.
+          </div>
+        </div>
+      </PanelSection>
+    </Panel>
   );
 }
 

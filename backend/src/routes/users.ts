@@ -18,10 +18,12 @@ app.get("/", requirePermission("users.read"), async (c) => {
     `SELECT u.id, u.email, u.name, u.status, u.role_id,
             r.name as role_name,
             u.manager_id, m.name as manager_name, m.email as manager_email,
+            u.department_id, d.name as department_name, d.color as department_color,
             u.invited_at, u.joined_at, u.last_login_at, u.created_at
      FROM users u
      JOIN roles r ON r.id = u.role_id
      LEFT JOIN users m ON m.id = u.manager_id
+     LEFT JOIN departments d ON d.id = u.department_id
      ORDER BY u.created_at DESC`
   ).all();
   return c.json({ users: rows.results });
@@ -115,6 +117,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     role_id?: number;
     status?: string;
     manager_id?: number | null;
+    department_id?: number | null;
   }>();
   const sets: string[] = [];
   const binds: any[] = [];
@@ -162,6 +165,22 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
       }
       sets.push("manager_id = ?");
       binds.push(mgr);
+    }
+  }
+  if (body.department_id !== undefined) {
+    if (body.department_id === null) {
+      sets.push("department_id = NULL");
+    } else {
+      const dept = parseInt(String(body.department_id), 10);
+      if (!dept) return c.json({ error: "Invalid department_id" }, 400);
+      const exists = await c.env.DB.prepare(
+        `SELECT id FROM departments WHERE id = ?`
+      )
+        .bind(dept)
+        .first<{ id: number }>();
+      if (!exists) return c.json({ error: "Department not found" }, 404);
+      sets.push("department_id = ?");
+      binds.push(dept);
     }
   }
   if (!sets.length) return c.json({ error: "No fields to update" }, 400);
