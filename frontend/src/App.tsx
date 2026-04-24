@@ -10,6 +10,7 @@ import { CreditorDetail } from "./pages/CreditorDetail";
 import { ServiceCases, ServiceCaseDetail } from "./pages/ServiceCases";
 import { Projects, ProjectDetail } from "./pages/Projects";
 import { Sales } from "./pages/Sales";
+import { Notifications } from "./pages/Notifications";
 import { Profile } from "./pages/Profile";
 import { Settings } from "./pages/Settings";
 import { Team } from "./pages/Team";
@@ -289,6 +290,14 @@ export default function App() {
         <Route
           path="/roles"
           element={<Navigate to="/team?tab=roles" replace />}
+        />
+        <Route
+          path="/notifications"
+          element={
+            <Guard perm="projects.read">
+              <Notifications />
+            </Guard>
+          }
         />
         <Route path="/profile" element={<Profile />} />
         </Routes>

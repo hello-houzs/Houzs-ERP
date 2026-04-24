@@ -111,7 +111,7 @@ function BellPopover({
     >
       <div className="flex items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
         <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-secondary">
-          Recent Activity
+          Unread
         </span>
         {feed.length > 0 && (
           <span className="font-mono text-[10px] text-ink-muted">
@@ -158,6 +158,19 @@ function BellPopover({
             ))}
           </ul>
         )}
+      </div>
+
+      {/* Footer — always shown so "View all" is reachable even when the
+          unread list is empty. */}
+      <div className="border-t border-border-subtle bg-bg/40 px-3 py-2">
+        <Link
+          to="/notifications"
+          onClick={onNavigate}
+          className="flex items-center justify-between gap-2 font-mono text-[10px] font-semibold uppercase tracking-brand text-accent hover:underline"
+        >
+          <span>View all</span>
+          <span aria-hidden>→</span>
+        </Link>
       </div>
     </div>
   );

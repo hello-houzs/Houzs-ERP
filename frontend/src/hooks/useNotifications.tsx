@@ -69,7 +69,12 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const fetchOnce = useCallback(async () => {
     if (!user?.id) return;
     try {
-      const r = await api.get<NotificationsPayload>("/api/notifications");
+      // Bell shows unread-only. /notifications page fetches its own
+      // unfiltered feed separately; the unread_by_project map returned
+      // here is the same either way and still drives the list dots.
+      const r = await api.get<NotificationsPayload>(
+        "/api/notifications?unread=1&limit=20"
+      );
       setFeed(r.feed);
       setUnread(r.unread_by_project);
       setTotal(r.total_unread);
