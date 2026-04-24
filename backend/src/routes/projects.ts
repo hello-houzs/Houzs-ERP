@@ -45,34 +45,231 @@ import {
 
 const app = new Hono<{ Bindings: Env }>();
 
-// ── Event types + brand constants ─────────────────────────────
-// Shipped as part of the projects API so the frontend doesn't need
-// to hard-code the list (brands excepted — they're a DB CHECK).
+// ── Event types ──────────────────────────────────────────────
+// DB-backed via project_event_types (migrations 021/022). Admins
+// maintain this from Project Maintenance.
 
 app.get("/event-types", async (c) => {
+  const includeInactive = c.req.query("include_inactive") === "1";
   const rows = await c.env.DB.prepare(
-    `SELECT id, slug, name, default_template_id, sort_order
+    `SELECT id, slug, name, default_template_id, sort_order, active
        FROM project_event_types
-      WHERE active = 1
+      ${includeInactive ? "" : "WHERE active = 1"}
       ORDER BY sort_order, name`
   ).all();
   return c.json({ data: rows.results ?? [] });
 });
 
-// Brands are fixed by the DB CHECK constraint — return them here so
-// the frontend picker stays in sync without duplicating the list.
-app.get("/brands", (c) => {
-  return c.json({
-    data: [
-      "AKEMI",
-      "ZANOTTI",
-      "DUNLOPILLO",
-      "ERGOTEX",
-      "MY SOFA FACTORY",
-      "AKEMI C&C",
-    ],
-  });
+app.post("/event-types", requirePermission("projects.manage"), async (c) => {
+  const body = await c.req.json<{
+    slug?: string;
+    name?: string;
+    sort_order?: number;
+    default_template_id?: number | null;
+  }>();
+  const name = (body.name || "").trim();
+  if (!name) return c.json({ error: "name is required" }, 400);
+  const slug =
+    (body.slug || name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")) ||
+    "";
+  if (!/^[a-z][a-z0-9_]{0,39}$/.test(slug)) {
+    return c.json({ error: "slug must be snake_case, start with a letter" }, 400);
+  }
+  const existing = await c.env.DB.prepare(
+    `SELECT id FROM project_event_types WHERE slug = ?`
+  )
+    .bind(slug)
+    .first<{ id: number }>();
+  if (existing) return c.json({ error: "Slug already exists" }, 409);
+
+  const r = await c.env.DB.prepare(
+    `INSERT INTO project_event_types (slug, name, sort_order, default_template_id, active)
+     VALUES (?, ?, ?, ?, 1)`
+  )
+    .bind(slug, name, body.sort_order ?? 0, body.default_template_id ?? null)
+    .run();
+  return c.json({ id: r.meta.last_row_id, slug, name }, 201);
 });
+
+app.patch("/event-types/:id", requirePermission("projects.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+  const body = await c.req.json<{
+    name?: string;
+    sort_order?: number;
+    default_template_id?: number | null;
+    active?: boolean;
+  }>();
+  const sets: string[] = [];
+  const binds: any[] = [];
+  if (body.name !== undefined) {
+    const n = body.name.trim();
+    if (!n) return c.json({ error: "name cannot be empty" }, 400);
+    sets.push("name = ?");
+    binds.push(n);
+  }
+  if (body.sort_order !== undefined) {
+    sets.push("sort_order = ?");
+    binds.push(body.sort_order);
+  }
+  if (body.default_template_id !== undefined) {
+    sets.push("default_template_id = ?");
+    binds.push(body.default_template_id);
+  }
+  if (body.active !== undefined) {
+    sets.push("active = ?");
+    binds.push(body.active ? 1 : 0);
+  }
+  if (!sets.length) return c.json({ error: "No fields to update" }, 400);
+  binds.push(id);
+  const r = await c.env.DB.prepare(
+    `UPDATE project_event_types SET ${sets.join(", ")} WHERE id = ?`
+  )
+    .bind(...binds)
+    .run();
+  if (!r.meta.changes) return c.json({ error: "Not found" }, 404);
+  return c.json({ ok: true });
+});
+
+app.delete("/event-types/:id", requirePermission("projects.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+  // Soft-delete: set active=0. Projects pointing at this type keep
+  // their event_type_id (FK is ON DELETE SET NULL but we prefer to
+  // keep the historical link visible).
+  await c.env.DB.prepare(
+    `UPDATE project_event_types SET active = 0 WHERE id = ?`
+  )
+    .bind(id)
+    .run();
+  return c.json({ ok: true });
+});
+
+// ── Brands ───────────────────────────────────────────────────
+// Stored in project_brands (migration 044). Admins maintain this
+// from Project Maintenance.
+
+app.get("/brands", async (c) => {
+  const includeInactive = c.req.query("include_inactive") === "1";
+  const rows = await c.env.DB.prepare(
+    `SELECT id, name, color, sort_order, active
+       FROM project_brands
+      ${includeInactive ? "" : "WHERE active = 1"}
+      ORDER BY sort_order, name`
+  ).all<{ id: number; name: string; color: string; sort_order: number; active: number }>();
+  const all = rows.results ?? [];
+  // Backwards compatibility: if the caller didn't ask for the full
+  // objects, return the flat name array the old frontend expects.
+  if (c.req.query("full") !== "1") {
+    return c.json({ data: all.map((r) => r.name) });
+  }
+  return c.json({ data: all });
+});
+
+app.post("/brands", requirePermission("projects.manage"), async (c) => {
+  const body = await c.req.json<{
+    name?: string;
+    color?: string;
+    sort_order?: number;
+  }>();
+  const name = (body.name || "").trim();
+  if (!name) return c.json({ error: "name is required" }, 400);
+  const color = normaliseHex(body.color) ?? "64748b";
+  const existing = await c.env.DB.prepare(
+    `SELECT id FROM project_brands WHERE name = ? COLLATE NOCASE`
+  )
+    .bind(name)
+    .first<{ id: number }>();
+  if (existing) return c.json({ error: "A brand with that name already exists" }, 409);
+  const r = await c.env.DB.prepare(
+    `INSERT INTO project_brands (name, color, sort_order, active)
+     VALUES (?, ?, ?, 1)`
+  )
+    .bind(name, color, body.sort_order ?? 0)
+    .run();
+  return c.json({ id: r.meta.last_row_id, name, color }, 201);
+});
+
+app.patch("/brands/:id", requirePermission("projects.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+  const body = await c.req.json<{
+    name?: string;
+    color?: string;
+    sort_order?: number;
+    active?: boolean;
+  }>();
+  const sets: string[] = [];
+  const binds: any[] = [];
+  let oldName: string | null = null;
+  if (body.name !== undefined) {
+    const n = body.name.trim();
+    if (!n) return c.json({ error: "name cannot be empty" }, 400);
+    // Capture the old name so we can cascade the rename to
+    // existing projects — projects.brand is plain text, not a FK, so
+    // renaming here without a cascade would orphan historical rows.
+    const cur = await c.env.DB.prepare(
+      `SELECT name FROM project_brands WHERE id = ?`
+    )
+      .bind(id)
+      .first<{ name: string }>();
+    oldName = cur?.name ?? null;
+    sets.push("name = ?");
+    binds.push(n);
+  }
+  if (body.color !== undefined) {
+    const hex = normaliseHex(body.color);
+    if (!hex) return c.json({ error: "color must be 6-char hex" }, 400);
+    sets.push("color = ?");
+    binds.push(hex);
+  }
+  if (body.sort_order !== undefined) {
+    sets.push("sort_order = ?");
+    binds.push(body.sort_order);
+  }
+  if (body.active !== undefined) {
+    sets.push("active = ?");
+    binds.push(body.active ? 1 : 0);
+  }
+  if (!sets.length) return c.json({ error: "No fields to update" }, 400);
+  binds.push(id);
+  const r = await c.env.DB.prepare(
+    `UPDATE project_brands SET ${sets.join(", ")} WHERE id = ?`
+  )
+    .bind(...binds)
+    .run();
+  if (!r.meta.changes) return c.json({ error: "Not found" }, 404);
+
+  // Cascade rename to historical projects.brand values.
+  if (oldName && body.name && oldName !== body.name.trim()) {
+    await c.env.DB.prepare(
+      `UPDATE projects SET brand = ?, updated_at = datetime('now') WHERE brand = ?`
+    )
+      .bind(body.name.trim(), oldName)
+      .run();
+  }
+  return c.json({ ok: true });
+});
+
+app.delete("/brands/:id", requirePermission("projects.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+  // Soft-delete. Existing projects keep their brand label; the brand
+  // just stops appearing in new-project pickers.
+  await c.env.DB.prepare(
+    `UPDATE project_brands SET active = 0 WHERE id = ?`
+  )
+    .bind(id)
+    .run();
+  return c.json({ ok: true });
+});
+
+function normaliseHex(input: string | undefined | null): string | null {
+  if (!input) return null;
+  const v = String(input).trim().replace(/^#/, "").toLowerCase();
+  if (!/^[0-9a-f]{6}$/.test(v)) return null;
+  return v;
+}
 
 // ── Summary (dashboard tiles) ─────────────────────────────────
 
