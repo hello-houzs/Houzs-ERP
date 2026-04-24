@@ -407,8 +407,13 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
         </button>
       )}
 
-      {/* ── Global search trigger ──────────────────────────── */}
-      <div className={cn("border-b border-sidebar-border", collapsed ? "px-2 py-3" : "px-3 py-3")}>
+      {/* ── Global search trigger (mobile drawer only; desktop nav bar owns it) */}
+      <div
+        className={cn(
+          "border-b border-sidebar-border lg:hidden",
+          collapsed ? "px-2 py-3" : "px-3 py-3"
+        )}
+      >
         <GlobalSearchTrigger collapsed={collapsed} />
       </div>
 
@@ -417,11 +422,11 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
         {visibleTabs.map((tab) => renderTab(tab))}
       </nav>
 
-      {/* ── Notification bell ────────────────────────────────── */}
+      {/* ── Notification bell (mobile drawer only; desktop nav bar owns it) */}
       {user && (
         <div
           className={cn(
-            "border-t border-sidebar-border",
+            "border-t border-sidebar-border lg:hidden",
             collapsed ? "flex justify-center px-2 py-2" : "px-2 py-2"
           )}
         >
@@ -432,9 +437,9 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
       {/* ── Active members (presence) ───────────────────────── */}
       {user && <PresencePanel collapsed={collapsed} />}
 
-      {/* ── User identity + sign out ────────────────────────── */}
+      {/* ── User identity + sign out (mobile drawer only; desktop nav bar owns the avatar) */}
       {user && (
-        <div className="border-t border-sidebar-border">
+        <div className="border-t border-sidebar-border lg:hidden">
           {collapsed ? (
             <NavLink
               to="/profile"

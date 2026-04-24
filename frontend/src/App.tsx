@@ -25,6 +25,7 @@ import { useAuth } from "./auth/AuthContext";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
 import { NotificationsProvider } from "./hooks/useNotifications";
 import { BrowserPushSink } from "./components/BrowserPushSink";
+import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
 
 /**
  * Wraps a route element in a permission check. Routes the user can't
@@ -114,6 +115,7 @@ export default function App() {
   return (
     <GlobalSearchProvider>
       <NotificationsProvider>
+      <BreadcrumbsProvider>
       <BrowserPushSink />
       <Layout>
         <Routes>
@@ -291,6 +293,7 @@ export default function App() {
         <Route path="/profile" element={<Profile />} />
         </Routes>
       </Layout>
+      </BreadcrumbsProvider>
       </NotificationsProvider>
     </GlobalSearchProvider>
   );

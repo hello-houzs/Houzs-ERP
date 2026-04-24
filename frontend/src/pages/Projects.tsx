@@ -6052,7 +6052,7 @@ function ProjectChat({
       >
         {messages.length === 0 && (
           <div className="py-10 text-center text-[11px] text-ink-muted">
-            No messages yet. Say hi 👋
+            No messages yet.
           </div>
         )}
         {messages.map((a, i) => {

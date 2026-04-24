@@ -1,7 +1,8 @@
-import { Fragment, type ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { ChevronRight, ArrowLeft } from "lucide-react";
+import { type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
 import { cn } from "../lib/utils";
+import { useSetBreadcrumbs } from "../hooks/useBreadcrumbs";
 
 export interface DetailBreadcrumb {
   label: string;
@@ -52,6 +53,11 @@ export function DetailLayout({
   children,
 }: Props) {
   const navigate = useNavigate();
+  // Push the breadcrumb stack into the top-navbar context. On mount
+  // the TopNavbar re-renders; on unmount the context clears so list
+  // pages fall back to the route-derived crumb.
+  useSetBreadcrumbs(breadcrumbs);
+
   function goBack() {
     if (backTo) navigate(backTo);
     else if (window.history.length > 1) navigate(-1);
@@ -63,8 +69,13 @@ export function DetailLayout({
     // px-10. We pull the sticky bar to the edges with negative margins so
     // it spans the full canvas, then re-pad the inner row.
     <div>
-      {/* ── Sticky top chrome — back button + breadcrumb + actions ─── */}
-      <div className="sticky top-0 z-30 -mx-4 -mt-6 mb-4 border-b border-border bg-bg/85 backdrop-blur-md sm:-mx-6 sm:-mt-8 lg:-mx-10 lg:-mt-10">
+      {/* ── Sticky chrome — back button + page actions ─────────
+          Breadcrumb now lives in the desktop TopNavbar; this row
+          keeps the back affordance + any page-scoped action buttons
+          (Archive / Stage transition / etc.). Mobile still sees the
+          breadcrumb inline so nothing gets lost below lg.
+      */}
+      <div className="sticky top-0 z-20 -mx-4 -mt-6 mb-4 border-b border-border bg-bg/85 backdrop-blur-md sm:-mx-6 sm:-mt-8 lg:top-12 lg:-mx-10 lg:-mt-10">
         <div className="mx-auto flex h-10 max-w-[1400px] items-center gap-3 px-4 sm:px-6 lg:px-10">
           <button
             onClick={goBack}
@@ -75,43 +86,31 @@ export function DetailLayout({
             <ArrowLeft size={14} strokeWidth={2.2} />
           </button>
 
+          {/* Mobile-only breadcrumb trail: the TopNavbar is lg-only,
+              so without this the breadcrumb would disappear on phones. */}
           <nav
             aria-label="Breadcrumb"
-            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-[11px] text-ink-muted"
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-[11px] text-ink-muted lg:hidden"
           >
             {breadcrumbs.map((item, i) => {
               const isLast = i === breadcrumbs.length - 1;
               return (
-                <Fragment key={`${item.label}-${i}`}>
-                  {i > 0 && (
-                    <ChevronRight
-                      size={11}
-                      className="shrink-0 text-ink-muted/45"
-                      strokeWidth={2}
-                    />
+                <span
+                  key={`${item.label}-${i}`}
+                  className={cn(
+                    "shrink-0 truncate px-1",
+                    isLast ? "font-semibold text-ink" : "text-ink-secondary"
                   )}
-                  {item.to && !isLast ? (
-                    <Link
-                      to={item.to}
-                      className="shrink-0 truncate rounded px-1 py-0.5 font-medium text-ink-secondary transition-colors hover:bg-surface-dim hover:text-accent"
-                    >
-                      {item.label}
-                    </Link>
-                  ) : (
-                    <span
-                      className={cn(
-                        "shrink-0 truncate px-1 py-0.5",
-                        isLast ? "font-semibold text-ink" : "text-ink-secondary"
-                      )}
-                      aria-current={isLast ? "page" : undefined}
-                    >
-                      {item.label}
-                    </span>
-                  )}
-                </Fragment>
+                >
+                  {i > 0 && <span className="mr-1 text-ink-muted/50">/</span>}
+                  {item.label}
+                </span>
               );
             })}
           </nav>
+
+          {/* Spacer on desktop so the action buttons stay right-aligned. */}
+          <div className="hidden flex-1 lg:block" />
 
           {actions && (
             <div className="flex shrink-0 items-center gap-1.5">{actions}</div>

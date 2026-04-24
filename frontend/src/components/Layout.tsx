@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { ShieldAlert, Menu } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
+import { TopNavbar } from "./TopNavbar";
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
 import type { SyncStatusResponse } from "../types";
@@ -57,6 +58,9 @@ export function Layout({ children }: Props) {
       <main className="paper-grain thin-scroll flex-1 overflow-y-auto">
         {/* Mobile top bar — hamburger + brand mark. Hidden on lg+. */}
         <MobileTopBar onOpenDrawer={() => setMobileOpen(true)} />
+
+        {/* Desktop top navbar — breadcrumb + search + bell + profile. */}
+        <TopNavbar />
 
         {writesDisabled && <ReadOnlyBanner />}
 

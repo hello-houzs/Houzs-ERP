@@ -97,7 +97,7 @@ function BellPopover({
       <div className="thin-scroll flex-1 overflow-y-auto">
         {feed.length === 0 ? (
           <div className="px-4 py-8 text-center text-[11px] text-ink-muted">
-            Nothing new. You're caught up ✨
+            Nothing new. You're caught up.
           </div>
         ) : (
           <ul className="divide-y divide-border-subtle">
