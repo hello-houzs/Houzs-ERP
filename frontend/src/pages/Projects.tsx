@@ -109,6 +109,9 @@ interface ProjectDetail {
     created_at: string;
     updated_at: string;
     duration_days: number | null;
+    pic_id: number | null;
+    pic_name: string | null;
+    pic_email: string | null;
     // Logistics schedule (Notion parity)
     setup_start_at: string | null;
     setup_end_at: string | null;
@@ -130,6 +133,13 @@ interface ProjectDetail {
     payment_proof_file_name: string | null;
     payment_notes: string | null;
     payment_updated_at: string | null;
+  };
+  /** Per-project access tier computed server-side. "limited" = scoped
+   *  rep — finance / logistics / linked POs panels should be hidden. */
+  _access?: {
+    level: "full" | "limited";
+    is_pic: boolean;
+    scoped: boolean;
   };
   finance: {
     rental: number | null;
@@ -2419,7 +2429,15 @@ function CreateProjectPanel({
   const [venue, setVenue] = useState("");
   const [state, setState] = useState("");
   const [organizer, setOrganizer] = useState("");
+  const [picId, setPicId] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
+
+  // Users list for PIC picker — same endpoint Team uses.
+  const usersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>(
+    () => api.get("/api/users"),
+    []
+  );
+  const users = usersQ.data?.users ?? [];
 
   async function submit() {
     if (!name.trim()) {
@@ -2437,6 +2455,7 @@ function CreateProjectPanel({
         venue: venue.trim() || undefined,
         state: state.trim() || undefined,
         organizer: organizer.trim() || undefined,
+        pic_id: picId ? parseInt(picId, 10) : undefined,
       });
       toast.success(`Created ${res.code}`);
       onCreated(res.id);
@@ -2587,6 +2606,30 @@ function CreateProjectPanel({
           </div>
         </div>
       </PanelSection>
+
+      <PanelSection title="Ownership">
+        <div>
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            PIC
+          </div>
+          <select
+            value={picId}
+            onChange={(e) => setPicId(e.target.value)}
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
+          >
+            <option value="">— default to me —</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email}
+              </option>
+            ))}
+          </select>
+          <div className="mt-1.5 text-[10px] text-ink-muted">
+            The PIC is the sales lead. Their direct reports automatically
+            see this project in their scoped list.
+          </div>
+        </div>
+      </PanelSection>
     </Panel>
   );
 }
@@ -2625,6 +2668,12 @@ function ProjectDetailContent({
   const trips = detail.data?.trips ?? [];
   const attachments = detail.data?.attachments ?? [];
   const [showTripPicker, setShowTripPicker] = useState(false);
+
+  // PIC-only panels (Payment, Logistics, Stock Transfers, Finance Ledger,
+  // Linked Trips) are hidden when the viewer is a scoped rep. The backend
+  // returns _access.level = "limited" in that case and also omits the
+  // underlying finance data, so there's nothing to show anyway.
+  const fullAccess = !detail.data?._access || detail.data._access.level === "full";
 
   async function patch(body: Record<string, any>) {
     await api.patch(`/api/projects/${id}`, body);
@@ -2776,24 +2825,28 @@ function ProjectDetailContent({
           </div>
           <DetailGrid>
             <DetailMain>
-          <PaymentSection
-            projectId={id}
-            project={p}
-            onChange={() => {
-              detail.reload();
-              onUpdated();
-            }}
-            toast={toast}
-          />
+          {fullAccess && (
+            <PaymentSection
+              projectId={id}
+              project={p}
+              onChange={() => {
+                detail.reload();
+                onUpdated();
+              }}
+              toast={toast}
+            />
+          )}
 
-          <LogisticsScheduleSection project={p} patch={patch} />
+          {fullAccess && <LogisticsScheduleSection project={p} patch={patch} />}
 
-          <StockTransferSection
-            projectId={id}
-            transfers={detail.data?.stock_transfers ?? []}
-            onChange={() => detail.reload()}
-            toast={toast}
-          />
+          {fullAccess && (
+            <StockTransferSection
+              projectId={id}
+              transfers={detail.data?.stock_transfers ?? []}
+              onChange={() => detail.reload()}
+              toast={toast}
+            />
+          )}
 
           {/* DefectsSection intentionally not rendered — kept in code as a
               future option but the team isn't using it day-to-day. */}
@@ -2866,14 +2919,16 @@ function ProjectDetailContent({
             )}
           </PanelSection>
 
-          <FinanceLedgerSection
-            projectId={id}
-            sizeSqm={p.size_sqm ?? null}
-            durationDays={p.duration_days ?? null}
-            lines={detail.data?.finance_lines ?? []}
-            onChange={() => detail.reload()}
-            toast={toast}
-          />
+          {fullAccess && (
+            <FinanceLedgerSection
+              projectId={id}
+              sizeSqm={p.size_sqm ?? null}
+              durationDays={p.duration_days ?? null}
+              lines={detail.data?.finance_lines ?? []}
+              onChange={() => detail.reload()}
+              toast={toast}
+            />
+          )}
 
           <AttachmentsSection
             projectId={id}
@@ -2882,68 +2937,70 @@ function ProjectDetailContent({
             toast={toast}
           />
 
-          <PanelSection title={`Linked Trips (${trips.length})`}>
-            {trips.length === 0 ? (
-              <div className="text-[11px] text-ink-muted">
-                No trips linked yet.
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                {trips.map((t) => (
-                  <div
-                    key={t.id}
-                    className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-[11px]"
-                  >
-                    <span className="font-mono font-semibold">{t.code}</span>
-                    <span className="text-ink-muted">·</span>
-                    <span>{formatDate(t.scheduled_date)}</span>
-                    <span className="text-ink-muted">·</span>
-                    <span className="capitalize">{t.status}</span>
-                    {t.trip_type && (
-                      <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold text-accent">
-                        {t.trip_type}
-                      </span>
-                    )}
-                    {t.description && (
-                      <span className="truncate text-ink-secondary">— {t.description}</span>
-                    )}
-                    <button
-                      onClick={async () => {
-                        if (!await dialog.confirm("Unlink this trip from the project?")) return;
-                        try {
-                          await api.post(`/api/projects/trips/${t.id}/unlink`, {});
-                          detail.reload();
-                        } catch (e: any) {
-                          toast.error(e?.message || "Failed");
-                        }
-                      }}
-                      className="ml-auto rounded p-1 text-ink-muted hover:text-err"
-                      title="Unlink"
+          {fullAccess && (
+            <PanelSection title={`Linked Trips (${trips.length})`}>
+              {trips.length === 0 ? (
+                <div className="text-[11px] text-ink-muted">
+                  No trips linked yet.
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {trips.map((t) => (
+                    <div
+                      key={t.id}
+                      className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-[11px]"
                     >
-                      <Unlink size={12} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <button
-              onClick={() => setShowTripPicker(true)}
-              className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-border px-3 py-1.5 text-[11px] text-ink-muted hover:border-accent/40 hover:text-accent"
-            >
-              <Link2 size={11} /> Link existing trip
-            </button>
-            {showTripPicker && (
-              <TripPicker
-                projectId={id}
-                onClose={() => setShowTripPicker(false)}
-                onLinked={() => {
-                  setShowTripPicker(false);
-                  detail.reload();
-                }}
-                toast={toast}
-              />
-            )}
-          </PanelSection>
+                      <span className="font-mono font-semibold">{t.code}</span>
+                      <span className="text-ink-muted">·</span>
+                      <span>{formatDate(t.scheduled_date)}</span>
+                      <span className="text-ink-muted">·</span>
+                      <span className="capitalize">{t.status}</span>
+                      {t.trip_type && (
+                        <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold text-accent">
+                          {t.trip_type}
+                        </span>
+                      )}
+                      {t.description && (
+                        <span className="truncate text-ink-secondary">— {t.description}</span>
+                      )}
+                      <button
+                        onClick={async () => {
+                          if (!await dialog.confirm("Unlink this trip from the project?")) return;
+                          try {
+                            await api.post(`/api/projects/trips/${t.id}/unlink`, {});
+                            detail.reload();
+                          } catch (e: any) {
+                            toast.error(e?.message || "Failed");
+                          }
+                        }}
+                        className="ml-auto rounded p-1 text-ink-muted hover:text-err"
+                        title="Unlink"
+                      >
+                        <Unlink size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => setShowTripPicker(true)}
+                className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-border px-3 py-1.5 text-[11px] text-ink-muted hover:border-accent/40 hover:text-accent"
+              >
+                <Link2 size={11} /> Link existing trip
+              </button>
+              {showTripPicker && (
+                <TripPicker
+                  projectId={id}
+                  onClose={() => setShowTripPicker(false)}
+                  onLinked={() => {
+                    setShowTripPicker(false);
+                    detail.reload();
+                  }}
+                  toast={toast}
+                />
+              )}
+            </PanelSection>
+          )}
 
           <PanelSection title="Chat">
             <ProjectChat
@@ -3007,6 +3064,33 @@ function ProjectDetailContent({
             <FieldRow label="Created">
               {formatDate(p.created_at)} · {p.created_by_name || "—"}
             </FieldRow>
+            {/* PIC (Person-In-Charge) — sales lead for the project. Drives
+                the team ACL: anyone reporting to this user can see the
+                project under their scoped role. */}
+            {fullAccess ? (
+              <div>
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                  PIC
+                </div>
+                <select
+                  value={p.pic_id ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    patch({ pic_id: v ? parseInt(v, 10) : null });
+                  }}
+                  className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
+                >
+                  <option value="">— unassigned —</option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <FieldRow label="PIC">{p.pic_name || "—"}</FieldRow>
+            )}
           </PanelSection>
 
           <PanelSection title="Dates" muted>

@@ -17,9 +17,11 @@ app.get("/", requirePermission("users.read"), async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.status, u.role_id,
             r.name as role_name,
+            u.manager_id, m.name as manager_name, m.email as manager_email,
             u.invited_at, u.joined_at, u.last_login_at, u.created_at
      FROM users u
      JOIN roles r ON r.id = u.role_id
+     LEFT JOIN users m ON m.id = u.manager_id
      ORDER BY u.created_at DESC`
   ).all();
   return c.json({ users: rows.results });
@@ -109,7 +111,11 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     return c.json({ error: "You cannot modify your own role or status" }, 400);
   }
 
-  const body = await c.req.json<{ role_id?: number; status?: string }>();
+  const body = await c.req.json<{
+    role_id?: number;
+    status?: string;
+    manager_id?: number | null;
+  }>();
   const sets: string[] = [];
   const binds: any[] = [];
   if (body.role_id != null) {
@@ -126,6 +132,37 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     }
     sets.push("status = ?");
     binds.push(body.status);
+  }
+  if (body.manager_id !== undefined) {
+    if (body.manager_id === null) {
+      sets.push("manager_id = NULL");
+    } else {
+      const mgr = parseInt(String(body.manager_id), 10);
+      if (!mgr) return c.json({ error: "Invalid manager_id" }, 400);
+      if (mgr === id) return c.json({ error: "Cannot report to yourself" }, 400);
+      // Cycle check: walk the prospective manager's chain — if this user
+      // is anywhere in it, the assignment would create a loop.
+      let cursor: number | null = mgr;
+      const seen = new Set<number>();
+      while (cursor != null) {
+        if (cursor === id) {
+          return c.json(
+            { error: "Cycle detected — that user reports to you (directly or indirectly)" },
+            400
+          );
+        }
+        if (seen.has(cursor)) break; // defensive — existing bad data
+        seen.add(cursor);
+        const mgrRow: { manager_id: number | null } | null = await c.env.DB
+          .prepare(`SELECT manager_id FROM users WHERE id = ?`)
+          .bind(cursor)
+          .first();
+        if (!mgrRow) return c.json({ error: "Manager not found" }, 404);
+        cursor = mgrRow.manager_id;
+      }
+      sets.push("manager_id = ?");
+      binds.push(mgr);
+    }
   }
   if (!sets.length) return c.json({ error: "No fields to update" }, 400);
 

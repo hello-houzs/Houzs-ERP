@@ -87,6 +87,10 @@ export interface AuthUser {
   role_name: string;
   status: string;
   permissions: string[];
+  /** Who this user reports to. Drives project-level ACL when scope_to_pic=1. */
+  manager_id: number | null;
+  /** Role flag — if true, project endpoints filter to pic_id IN (self, manager). */
+  scope_to_pic: boolean;
   joined_at?: string | null;
   last_login_at?: string | null;
 }
@@ -109,8 +113,9 @@ export async function deleteSession(env: Env, token: string): Promise<void> {
 export async function getUserBySession(env: Env, token: string): Promise<AuthUser | null> {
   const row = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.role_id, u.status,
-            u.joined_at, u.last_login_at,
+            u.manager_id, u.joined_at, u.last_login_at,
             r.name as role_name, r.permissions as role_permissions,
+            r.scope_to_pic,
             s.expires_at
      FROM sessions s
      JOIN users u ON u.id = s.user_id
@@ -136,6 +141,8 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
     role_name: row.role_name,
     status: row.status,
     permissions: parsePermissions(row.role_permissions),
+    manager_id: row.manager_id ?? null,
+    scope_to_pic: !!row.scope_to_pic,
     joined_at: row.joined_at,
     last_login_at: row.last_login_at,
   };
@@ -143,8 +150,9 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
 
 export async function getUserById(env: Env, id: number): Promise<AuthUser | null> {
   const row = await env.DB.prepare(
-    `SELECT u.id, u.email, u.name, u.role_id, u.status,
-            r.name as role_name, r.permissions as role_permissions
+    `SELECT u.id, u.email, u.name, u.role_id, u.status, u.manager_id,
+            r.name as role_name, r.permissions as role_permissions,
+            r.scope_to_pic
      FROM users u
      JOIN roles r ON r.id = u.role_id
      WHERE u.id = ?`
@@ -160,6 +168,8 @@ export async function getUserById(env: Env, id: number): Promise<AuthUser | null
     role_name: row.role_name,
     status: row.status,
     permissions: parsePermissions(row.role_permissions),
+    manager_id: row.manager_id ?? null,
+    scope_to_pic: !!row.scope_to_pic,
   };
 }
 

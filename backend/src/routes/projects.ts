@@ -37,6 +37,11 @@ import {
   unconfirmStockTransfer,
   archiveStockTransfer,
 } from "../services/projects";
+import {
+  getProjectPicScope,
+  projectAccessLevel,
+  canSeeProject,
+} from "../services/projectAcl";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -117,6 +122,8 @@ app.get("/", requirePermission("projects.read"), async (c) => {
   const eventTypeParam = c.req.query("event_type_id");
   const yearParam = c.req.query("year");
   const monthParam = c.req.query("month");
+  const user = c.get("user");
+  const picScope = getProjectPicScope(user) ?? undefined;
   const result = await listProjects(c.env, {
     stage: c.req.query("stage"),
     brand: c.req.query("brand"),
@@ -130,6 +137,7 @@ app.get("/", requirePermission("projects.read"), async (c) => {
     include_archived: c.req.query("include_archived") === "1",
     sort_by: c.req.query("sort_by") || undefined,
     sort_dir: (c.req.query("sort_dir") || "").toLowerCase() === "asc" ? "asc" : "desc",
+    pic_scope: picScope,
   });
   return c.json(result);
 });
@@ -600,9 +608,19 @@ app.get("/analytics/profitability", requirePermission("projects.read"), async (c
 app.get("/:id", requirePermission("projects.read"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
   const detail = await getProjectDetail(c.env, id);
   if (!detail) return c.json({ error: "Not found" }, 404);
-  return c.json(detail);
+  if (!canSeeProject(user, detail.project)) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  // Tell the frontend which panels to hide for this user/project.
+  const access = {
+    level: projectAccessLevel(user, detail.project),
+    is_pic: detail.project.pic_id === user.id,
+    scoped: !!user.scope_to_pic,
+  };
+  return c.json({ ...detail, _access: access });
 });
 
 // ── Create ────────────────────────────────────────────────────
@@ -619,9 +637,19 @@ app.post("/", requirePermission("projects.write"), async (c) => {
     state?: string;
     organizer?: string;
     notion_url?: string;
+    pic_id?: number | null;
   }>();
   if (!body.name || !body.name.trim()) {
     return c.json({ error: "name is required" }, 400);
+  }
+  // Scoped users (sales reps) can only create projects where they or
+  // their manager is the PIC. Ignore any other pic_id they submit.
+  let picId = body.pic_id ?? null;
+  if (user?.scope_to_pic) {
+    const allowed = [user.id, user.manager_id].filter(Boolean);
+    if (picId == null || !allowed.includes(picId)) {
+      picId = user.id;
+    }
   }
   const result = await createProject(c.env, {
     name: body.name.trim(),
@@ -633,6 +661,7 @@ app.post("/", requirePermission("projects.write"), async (c) => {
     state: body.state ?? null,
     organizer: body.organizer ?? null,
     notion_url: body.notion_url ?? null,
+    pic_id: picId,
     created_by: user?.id ?? 0,
   });
   return c.json(result, 201);
@@ -645,6 +674,25 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
   const body = await c.req.json<Record<string, any>>();
+
+  // Gate: scoped users can only patch projects they can see. And
+  // they cannot reassign pic_id away from themselves/their manager.
+  if (user?.scope_to_pic) {
+    const row = await c.env.DB.prepare(
+      `SELECT pic_id FROM projects WHERE id = ?`
+    )
+      .bind(id)
+      .first<{ pic_id: number | null }>();
+    if (!row) return c.json({ error: "Not found" }, 404);
+    if (!canSeeProject(user, row)) return c.json({ error: "Not found" }, 404);
+    if ("pic_id" in body) {
+      const allowed = [user.id, user.manager_id].filter(Boolean);
+      if (body.pic_id != null && !allowed.includes(body.pic_id)) {
+        delete body.pic_id;
+      }
+    }
+  }
+
   const ok = await patchProject(c.env, id, body, user?.id ?? 0);
   if (!ok) return c.json({ error: "No changes" }, 400);
   return c.json({ ok: true });
@@ -704,6 +752,18 @@ app.patch("/:id/finance", requirePermission("projects.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
+  // Only the PIC (or an unscoped role) can write finance for a project.
+  if (user?.scope_to_pic) {
+    const row = await c.env.DB.prepare(
+      `SELECT pic_id FROM projects WHERE id = ?`
+    )
+      .bind(id)
+      .first<{ pic_id: number | null }>();
+    if (!row) return c.json({ error: "Not found" }, 404);
+    if (row.pic_id !== user.id) {
+      return c.json({ error: "Forbidden — finance is PIC-only" }, 403);
+    }
+  }
   const body = await c.req.json<Record<string, any>>();
   const ok = await patchFinance(c.env, id, body, user?.id ?? 0);
   if (!ok) return c.json({ error: "No changes" }, 400);
@@ -729,6 +789,14 @@ app.get("/finance/categories", (c) => {
 // the range, OR has its start/end inside the range); brand + search
 // filter the project itself.
 app.get("/finance/by-project", requirePermission("projects.read"), async (c) => {
+  const user = c.get("user");
+  // Finance tab is PIC-only. Scoped reps (who aren't themselves a PIC
+  // on any project) get zero rows — finance is in the "limited view"
+  // restricted panel list.
+  const picScope = user?.scope_to_pic ? [user.id].filter(Boolean) : null;
+  if (picScope && picScope.length === 0) {
+    return c.json({ data: [], total: 0, totals: { total_income: 0, total_cost: 0 } });
+  }
   const dateFrom = c.req.query("date_from") || "";
   const dateTo = c.req.query("date_to") || "";
   const brand = c.req.query("brand") || "";
@@ -776,6 +844,10 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
     );
     const like = `%${search}%`;
     projectBinds.push(like, like, like, like);
+  }
+  if (picScope) {
+    where.push(`p.pic_id IN (${picScope.map(() => "?").join(",")})`);
+    projectBinds.push(...picScope);
   }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
@@ -880,6 +952,12 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
 // callers that want the raw ledger (audit, exports). Same filter shape
 // as /finance/by-project plus kind + category.
 app.get("/finance/lines", requirePermission("projects.read"), async (c) => {
+  const user = c.get("user");
+  // PIC-only panel — scoped reps see no finance lines.
+  const finPicScope = user?.scope_to_pic ? [user.id].filter(Boolean) : null;
+  if (finPicScope && finPicScope.length === 0) {
+    return c.json({ data: [], total: 0, page: 1, per_page: 50 });
+  }
   const dateFrom = c.req.query("date_from") || "";
   const dateTo = c.req.query("date_to") || "";
   const kind = (c.req.query("kind") || "all").toLowerCase();
@@ -927,6 +1005,10 @@ app.get("/finance/lines", requirePermission("projects.read"), async (c) => {
     );
     const like = `%${search}%`;
     binds.push(like, like, like, like);
+  }
+  if (finPicScope) {
+    where.push(`p.pic_id IN (${finPicScope.map(() => "?").join(",")})`);
+    binds.push(...finPicScope);
   }
 
   const sortBy = c.req.query("sort_by") || "occurred_at";
@@ -1716,17 +1798,28 @@ app.get("/calendar/events", requirePermission("projects.read"), async (c) => {
   const to = c.req.query("to");
   if (!from || !to) return c.json({ error: "from & to required (YYYY-MM-DD)" }, 400);
 
+  const user = c.get("user");
+  const picScope = getProjectPicScope(user);
+  // Scoped user with no PIC line → return empty quickly.
+  if (picScope && picScope.length === 0) {
+    return c.json({ projects: [], tasks: [] });
+  }
+  const picWhere = picScope
+    ? ` AND p.pic_id IN (${picScope.map(() => "?").join(",")})`
+    : "";
+  const picBinds = picScope ?? [];
+
   // Projects whose [start_date, end_date] overlaps [from, to].
   const projects = await c.env.DB.prepare(
-    `SELECT id, code, name, stage, brand,
-            start_date, end_date, venue, state
-       FROM projects
-      WHERE archived_at IS NULL
-        AND start_date IS NOT NULL
-        AND date(start_date) <= date(?)
-        AND date(COALESCE(end_date, start_date)) >= date(?)`
+    `SELECT p.id, p.code, p.name, p.stage, p.brand,
+            p.start_date, p.end_date, p.venue, p.state
+       FROM projects p
+      WHERE p.archived_at IS NULL
+        AND p.start_date IS NOT NULL
+        AND date(p.start_date) <= date(?)
+        AND date(COALESCE(p.end_date, p.start_date)) >= date(?)${picWhere}`
   )
-    .bind(to, from)
+    .bind(to, from, ...picBinds)
     .all();
 
   const tasks = await c.env.DB.prepare(
@@ -1742,10 +1835,10 @@ app.get("/calendar/events", requirePermission("projects.read"), async (c) => {
         AND c.status != 'done'
         AND c.status != 'na'
         AND c.due_date IS NOT NULL
-        AND date(c.due_date) BETWEEN date(?) AND date(?)
+        AND date(c.due_date) BETWEEN date(?) AND date(?)${picWhere}
       ORDER BY c.due_date, p.brand, c.id`
   )
-    .bind(from, to)
+    .bind(from, to, ...picBinds)
     .all();
 
   return c.json({ projects: projects.results ?? [], tasks: tasks.results ?? [] });

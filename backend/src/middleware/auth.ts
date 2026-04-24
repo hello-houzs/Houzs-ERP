@@ -14,6 +14,8 @@ const SERVICE_USER: AuthUser = {
   role_name: "Service",
   status: "active",
   permissions: ["*"],
+  manager_id: null,
+  scope_to_pic: false,
 };
 
 declare module "hono" {

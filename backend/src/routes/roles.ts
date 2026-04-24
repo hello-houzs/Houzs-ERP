@@ -20,7 +20,8 @@ app.get("/permissions", requirePermission("roles.read"), async (c) => {
  */
 app.get("/", requirePermission("roles.read"), async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT r.id, r.name, r.description, r.permissions, r.is_system, r.created_at,
+    `SELECT r.id, r.name, r.description, r.permissions, r.is_system,
+            r.scope_to_pic, r.created_at,
             (SELECT COUNT(*) FROM users WHERE role_id = r.id) as member_count
      FROM roles r
      ORDER BY r.is_system DESC, r.name ASC`
@@ -32,6 +33,7 @@ app.get("/", requirePermission("roles.read"), async (c) => {
     description: r.description,
     permissions: parsePermissions(r.permissions),
     is_system: !!r.is_system,
+    scope_to_pic: !!r.scope_to_pic,
     member_count: r.member_count || 0,
     created_at: r.created_at,
   }));
@@ -49,6 +51,7 @@ app.post("/", requirePermission("roles.manage"), async (c) => {
     name: string;
     description?: string;
     permissions?: string[];
+    scope_to_pic?: boolean;
   }>();
   if (!body.name?.trim()) return c.json({ error: "name is required" }, 400);
 
@@ -60,10 +63,15 @@ app.post("/", requirePermission("roles.manage"), async (c) => {
   if (exists) return c.json({ error: "A role with that name already exists" }, 409);
 
   const result = await c.env.DB.prepare(
-    `INSERT INTO roles (name, description, permissions, is_system)
-     VALUES (?, ?, ?, 0)`
+    `INSERT INTO roles (name, description, permissions, is_system, scope_to_pic)
+     VALUES (?, ?, ?, 0, ?)`
   )
-    .bind(body.name.trim(), body.description?.trim() || null, JSON.stringify(perms))
+    .bind(
+      body.name.trim(),
+      body.description?.trim() || null,
+      JSON.stringify(perms),
+      body.scope_to_pic ? 1 : 0
+    )
     .run();
 
   return c.json({
@@ -72,6 +80,7 @@ app.post("/", requirePermission("roles.manage"), async (c) => {
     description: body.description?.trim() || null,
     permissions: perms,
     is_system: false,
+    scope_to_pic: !!body.scope_to_pic,
     member_count: 0,
   });
 });
@@ -96,6 +105,7 @@ app.patch("/:id", requirePermission("roles.manage"), async (c) => {
     name?: string;
     description?: string;
     permissions?: string[];
+    scope_to_pic?: boolean;
   }>();
 
   // System roles: only description editable, never name or permissions.
@@ -122,6 +132,10 @@ app.patch("/:id", requirePermission("roles.manage"), async (c) => {
     const perms = body.permissions.filter(isValidPermission);
     sets.push("permissions = ?");
     binds.push(JSON.stringify(perms));
+  }
+  if (body.scope_to_pic !== undefined) {
+    sets.push("scope_to_pic = ?");
+    binds.push(body.scope_to_pic ? 1 : 0);
   }
   if (!sets.length) return c.json({ error: "No fields to update" }, 400);
 

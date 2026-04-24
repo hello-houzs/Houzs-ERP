@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, ChevronDown, ChevronRight } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -11,11 +11,11 @@ import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { relativeTime } from "../lib/utils";
+import { relativeTime, cn } from "../lib/utils";
 import type { TeamMember, Invitation, Role } from "../types";
 import { RolesTab } from "./Roles";
 
-type TeamTabValue = "members" | "roles";
+type TeamTabValue = "members" | "roles" | "orgchart";
 
 /**
  * Unified Team page — two tabs (Members, Roles) sharing a single header.
@@ -38,7 +38,7 @@ export function Team() {
 
   const raw = params.get("tab") as TeamTabValue | null;
   const active: TeamTabValue =
-    raw && ["members", "roles"].includes(raw)
+    raw && ["members", "roles", "orgchart"].includes(raw)
       ? raw
       : canUsers
       ? "members"
@@ -55,6 +55,7 @@ export function Team() {
 
   const tabs: TabOption<TeamTabValue>[] = [
     { value: "members", label: "Members", show: canUsers },
+    { value: "orgchart", label: "Org Chart", show: canUsers },
     { value: "roles", label: "Roles", show: canRoles },
   ];
 
@@ -66,6 +67,12 @@ export function Team() {
       eyebrow: "Workspace · Members",
       title: "Members",
       description: "Manage who can access this workspace and what they can do.",
+    },
+    orgchart: {
+      eyebrow: "Workspace · Hierarchy",
+      title: "Org Chart",
+      description:
+        "Who reports to whom. Reporting lines drive project access — a user sees projects where they or their manager is the PIC (when their role is scoped).",
     },
     roles: {
       eyebrow: "Workspace · Access Control",
@@ -117,6 +124,7 @@ export function Team() {
           onCloseInvite={() => setInviteOpen(false)}
         />
       )}
+      {active === "orgchart" && canUsers && <OrgChartTab />}
       {active === "roles" && canRoles && (
         <RolesTab
           creating={creatingRole}
@@ -158,6 +166,20 @@ function MembersTab({
     try {
       await api.patch(`/api/users/${u.id}`, { role_id });
       toast.success(`Role updated for ${u.email}`);
+      members.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
+  async function changeManager(u: TeamMember, manager_id: number | null) {
+    try {
+      await api.patch(`/api/users/${u.id}`, { manager_id });
+      toast.success(
+        manager_id
+          ? `${u.email} now reports to ${members.data?.users.find((x) => x.id === manager_id)?.name ?? "manager"}`
+          : `${u.email} is no longer reporting to anyone`
+      );
       members.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -285,21 +307,61 @@ function MembersTab({
                 </div>
               </div>
               {canManage && u.id !== me?.id ? (
-                <select
-                  value={u.role_id}
-                  onChange={(e) => changeRole(u, Number(e.target.value))}
-                  className="h-8 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] font-semibold text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
-                >
-                  {roles.data?.roles.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    value={u.role_id}
+                    onChange={(e) => changeRole(u, Number(e.target.value))}
+                    title="Role"
+                    className="h-8 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] font-semibold text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  >
+                    {roles.data?.roles.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={u.manager_id ?? ""}
+                    onChange={(e) =>
+                      changeManager(
+                        u,
+                        e.target.value ? Number(e.target.value) : null
+                      )
+                    }
+                    title="Reports to"
+                    className="h-8 max-w-[180px] cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  >
+                    <option value="">— No manager —</option>
+                    {(members.data?.users ?? [])
+                      .filter(
+                        (m) =>
+                          m.id !== u.id &&
+                          m.status === "active" &&
+                          // Hide this user's descendants to pre-empt cycles.
+                          // Backend does the authoritative check; this is UX.
+                          !isDescendantOf(m.id, u.id, members.data?.users ?? [])
+                      )
+                      .map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name || m.email}
+                        </option>
+                      ))}
+                  </select>
+                </>
               ) : (
-                <span className="rounded bg-accent-soft px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent-ink">
-                  {u.role_name}
-                </span>
+                <>
+                  <span className="rounded bg-accent-soft px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent-ink">
+                    {u.role_name}
+                  </span>
+                  {u.manager_name && (
+                    <span
+                      className="truncate text-[10.5px] text-ink-muted"
+                      title={`Reports to ${u.manager_name}`}
+                    >
+                      → {u.manager_name}
+                    </span>
+                  )}
+                </>
               )}
               {canManage && u.id !== me?.id && (
                 <div className="flex items-center gap-1">
@@ -400,6 +462,167 @@ function MembersTab({
           reload();
         }}
       />
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Org hierarchy helpers
+// ──────────────────────────────────────────────────────────
+
+/**
+ * Returns true if `candidateId` sits somewhere in `ancestorId`'s reporting
+ * subtree — i.e. appointing them as ancestor's manager would create a loop.
+ * Used only to hide bad options in the picker; the backend still validates.
+ */
+function isDescendantOf(
+  candidateId: number,
+  ancestorId: number,
+  users: TeamMember[]
+): boolean {
+  const byId = new Map(users.map((u) => [u.id, u]));
+  const seen = new Set<number>();
+  let cursor: number | null = candidateId;
+  while (cursor != null && !seen.has(cursor)) {
+    seen.add(cursor);
+    const node: TeamMember | undefined = byId.get(cursor);
+    if (!node) return false;
+    if (node.manager_id === ancestorId) return true;
+    cursor = node.manager_id;
+  }
+  return false;
+}
+
+// ──────────────────────────────────────────────────────────
+// Org Chart tab — recursive nested tree of reporting lines
+// ──────────────────────────────────────────────────────────
+
+function OrgChartTab() {
+  const members = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users"));
+  const users = (members.data?.users ?? []).filter((u) => u.status !== "disabled");
+
+  // Roots: users with no manager. Any user whose manager_id points at
+  // someone not in the active set also gets re-rooted so no-one is
+  // invisible. Walk up once to find each user's highest visible ancestor.
+  const { roots, childrenOf } = useMemo(() => {
+    const byId = new Map(users.map((u) => [u.id, u]));
+    const childrenOf = new Map<number | null, TeamMember[]>();
+    for (const u of users) {
+      const parentId =
+        u.manager_id != null && byId.has(u.manager_id) ? u.manager_id : null;
+      const arr = childrenOf.get(parentId) ?? [];
+      arr.push(u);
+      childrenOf.set(parentId, arr);
+    }
+    // Sort every sibling group alphabetically so the tree is stable.
+    for (const arr of childrenOf.values()) {
+      arr.sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+    }
+    const roots = childrenOf.get(null) ?? [];
+    return { roots, childrenOf };
+  }, [users]);
+
+  if (members.loading) {
+    return <div className="text-[12px] text-ink-muted">Loading…</div>;
+  }
+  if (members.error) {
+    return <div className="text-[12px] text-err">{members.error}</div>;
+  }
+  if (!roots.length) {
+    return (
+      <div className="rounded-md border border-border bg-surface px-5 py-8 text-center text-[12px] text-ink-muted">
+        No one reports to anyone yet. Head to the <b>Members</b> tab and set a
+        manager on each user — the tree builds itself from there.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {roots.map((r) => (
+        <OrgNode key={r.id} user={r} depth={0} childrenOf={childrenOf} />
+      ))}
+    </div>
+  );
+}
+
+function OrgNode({
+  user,
+  depth,
+  childrenOf,
+}: {
+  user: TeamMember;
+  depth: number;
+  childrenOf: Map<number | null, TeamMember[]>;
+}) {
+  const kids = childrenOf.get(user.id) ?? [];
+  const [open, setOpen] = useState(true);
+
+  const initial = (user.name || user.email).slice(0, 1).toUpperCase();
+
+  return (
+    <div className="relative">
+      <div
+        className={cn(
+          "flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 shadow-stone",
+          depth > 0 && "ml-6"
+        )}
+      >
+        {kids.length > 0 ? (
+          <button
+            onClick={() => setOpen(!open)}
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-ink-muted hover:bg-surface-dim hover:text-accent"
+            aria-label={open ? "Collapse" : "Expand"}
+          >
+            {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </button>
+        ) : (
+          <span className="inline-block h-5 w-5" aria-hidden />
+        )}
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent-soft font-mono text-[11px] font-bold text-accent-ink">
+          {initial}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[12.5px] font-semibold text-ink">
+              {user.name || user.email}
+            </span>
+            {user.status !== "active" && (
+              <span className="rounded bg-bg px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+                {user.status}
+              </span>
+            )}
+          </div>
+          <div className="mt-0.5 truncate text-[10.5px] text-ink-muted">
+            {user.email}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="rounded bg-accent-soft px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-wider text-accent-ink">
+            {user.role_name}
+          </span>
+          {kids.length > 0 && (
+            <span
+              className="font-mono text-[10px] text-ink-muted"
+              title={`${kids.length} direct report${kids.length === 1 ? "" : "s"}`}
+            >
+              {kids.length}
+            </span>
+          )}
+        </div>
+      </div>
+      {open && kids.length > 0 && (
+        <div className="relative mt-1.5 space-y-1.5 border-l border-border-subtle pl-0 ml-4">
+          {kids.map((k) => (
+            <OrgNode
+              key={k.id}
+              user={k}
+              depth={depth + 1}
+              childrenOf={childrenOf}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -176,6 +176,7 @@ function RoleEditorPanel({
   const [selected, setSelected] = useState<Set<string>>(
     new Set(role?.permissions || [])
   );
+  const [scopeToPic, setScopeToPic] = useState<boolean>(!!role?.scope_to_pic);
   const [busy, setBusy] = useState(false);
 
   const grouped = useMemo(() => {
@@ -223,6 +224,7 @@ function RoleEditorPanel({
         name: name.trim(),
         description: description.trim() || null,
         permissions: Array.from(selected),
+        scope_to_pic: scopeToPic,
       };
       if (isCreate) {
         await api.post("/api/roles", body);
@@ -275,6 +277,28 @@ function RoleEditorPanel({
             placeholder="What this role is for"
             className="min-h-[60px] w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:bg-bg disabled:text-ink-muted"
           />
+        </div>
+        <div>
+          <label className="flex items-start gap-2 rounded-md border border-border bg-bg/40 p-2.5">
+            <input
+              type="checkbox"
+              checked={scopeToPic}
+              disabled={readOnly}
+              onChange={(e) => setScopeToPic(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5 accent-accent"
+            />
+            <div className="min-w-0">
+              <div className="text-[11.5px] font-semibold text-ink">
+                Scope to PIC's projects
+              </div>
+              <div className="mt-0.5 text-[10.5px] leading-snug text-ink-muted">
+                When on, users with this role only see projects where they
+                or their manager is the PIC. Finance, logistics, linked
+                trips and payment stay hidden. Use this for sales reps
+                who should only see their own team's projects.
+              </div>
+            </div>
+          </label>
         </div>
       </PanelSection>
 

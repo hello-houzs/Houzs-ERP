@@ -54,6 +54,7 @@ export interface CreateProjectInput {
   state?: string | null;
   organizer?: string | null;
   notion_url?: string | null;
+  pic_id?: number | null;
   created_by: number;
 }
 
@@ -64,13 +65,17 @@ export async function createProject(env: Env, input: CreateProjectInput) {
     : now.getFullYear();
   const code = await nextProjectCode(env, year);
 
+  // Default the PIC to the creator so a sales rep who creates their
+  // own project immediately sees it under the scoped filter. Admins
+  // creating on someone else's behalf can override via input.pic_id.
+  const picId = input.pic_id ?? input.created_by ?? null;
   const r = await env.DB.prepare(
     `INSERT INTO projects (
       code, name, stage,
       event_type_id, brand,
       start_date, end_date, venue, state, organizer, notion_url,
-      created_by
-    ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      pic_id, created_by
+    ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       code,
@@ -83,6 +88,7 @@ export async function createProject(env: Env, input: CreateProjectInput) {
       input.state ?? null,
       input.organizer ?? null,
       input.notion_url ?? null,
+      picId,
       input.created_by
     )
     .run();
@@ -173,6 +179,7 @@ const PATCH_FIELDS = [
   "brand", "event_type_id",
   "booth_no", "size_sqm",
   "notion_url", "notes",
+  "pic_id",
   // Logistics schedule (Notion parity)
   "setup_start_at", "setup_end_at",
   "dismantle_start_at", "dismantle_end_at",
@@ -307,6 +314,8 @@ export async function getProjectDetail(env: Env, id: number) {
             et.slug  as event_type_slug,
             et.name  as event_type_name,
             u1.name  as created_by_name,
+            pic.name as pic_name,
+            pic.email as pic_email,
             ud1.name as setup_driver_name,
             ud2.name as dismantle_driver_name,
             l1.plate as setup_lorry_plate,
@@ -314,6 +323,7 @@ export async function getProjectDetail(env: Env, id: number) {
        FROM projects p
        LEFT JOIN project_event_types et ON et.id = p.event_type_id
        LEFT JOIN users u1 ON u1.id = p.created_by
+       LEFT JOIN users pic ON pic.id = p.pic_id
        LEFT JOIN users ud1 ON ud1.id = p.setup_driver_user_id
        LEFT JOIN users ud2 ON ud2.id = p.dismantle_driver_user_id
        LEFT JOIN lorries l1 ON l1.id = p.setup_lorry_id
@@ -494,6 +504,10 @@ export interface ListProjectsFilters {
   include_archived?: boolean;
   sort_by?: string;
   sort_dir?: "asc" | "desc";
+  /** ACL allow-list. If present, only projects with pic_id IN this list
+   *  are returned. Empty array means "nothing" (scoped user with no PIC
+   *  in their line → zero results, which is correct). */
+  pic_scope?: number[];
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -556,6 +570,15 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     const like = `%${f.search}%`;
     binds.push(like, like, like, like);
   }
+  if (f.pic_scope) {
+    if (f.pic_scope.length === 0) {
+      // Scoped user with no valid PIC line — return no rows.
+      where.push("1 = 0");
+    } else {
+      where.push(`p.pic_id IN (${f.pic_scope.map(() => "?").join(",")})`);
+      binds.push(...f.pic_scope);
+    }
+  }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   const page = f.page && f.page > 0 ? f.page : 1;
@@ -583,6 +606,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
             p.start_date, p.end_date,
             p.state, p.venue, p.booth_no, p.size_sqm,
             p.archived_at,
+            p.pic_id, pic.name as pic_name,
             et.name as event_type_name,
             pf.rental, pf.total_sales, pf.contractor_cost,
             -- Computed progress %: done / (total − na). SUM(CASE…) for
@@ -599,6 +623,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
        FROM projects p
        LEFT JOIN project_event_types et ON et.id = p.event_type_id
        LEFT JOIN project_finance pf ON pf.project_id = p.id
+       LEFT JOIN users pic ON pic.id = p.pic_id
      ${whereSql}
      ${orderBy}
      LIMIT ? OFFSET ?`

@@ -507,6 +507,8 @@ export interface AuthUser {
   role_name: string;
   status: string;
   permissions: string[];
+  manager_id?: number | null;
+  scope_to_pic?: boolean;
   joined_at?: string | null;
   last_login_at?: string | null;
 }
@@ -518,6 +520,10 @@ export interface TeamMember {
   status: "invited" | "active" | "disabled";
   role_id: number;
   role_name: string;
+  /** Who this user reports to in the org chart. null = root. */
+  manager_id: number | null;
+  manager_name: string | null;
+  manager_email: string | null;
   invited_at: string | null;
   joined_at: string | null;
   last_login_at: string | null;
@@ -542,6 +548,9 @@ export interface Role {
   description: string | null;
   permissions: string[];
   is_system: boolean;
+  /** When true, users with this role can only see projects where they
+   *  or their manager is the PIC. Drives the sales-team ACL. */
+  scope_to_pic?: boolean;
   member_count: number;
   created_at?: string;
 }
