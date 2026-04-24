@@ -434,8 +434,12 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
         </div>
       )}
 
-      {/* ── Active members (presence) ───────────────────────── */}
-      {user && <PresencePanel collapsed={collapsed} />}
+      {/* ── Active members (mobile drawer only; desktop nav bar owns it) */}
+      {user && (
+        <div className="lg:hidden">
+          <PresencePanel collapsed={collapsed} />
+        </div>
+      )}
 
       {/* ── User identity + sign out (mobile drawer only; desktop nav bar owns the avatar) */}
       {user && (

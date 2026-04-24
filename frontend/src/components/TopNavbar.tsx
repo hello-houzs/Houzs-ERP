@@ -5,6 +5,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useBreadcrumbs } from "../hooks/useBreadcrumbs";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
+import { PresenceIndicator } from "./PresenceIndicator";
 import { cn } from "../lib/utils";
 
 /**
@@ -68,12 +69,13 @@ export function TopNavbar() {
         })}
       </nav>
 
-      {/* ── Right rail: search · bell · profile ─────────────── */}
+      {/* ── Right rail: search · online · bell · profile ───── */}
       <div className="flex shrink-0 items-center gap-2">
         <GlobalSearchTrigger collapsed={false} />
         {user && (
           <>
             <div className="h-5 w-px bg-border-subtle" />
+            <PresenceIndicator />
             <NotificationBell collapsed direction="down" align="end" />
             <NavLink
               to="/profile"
