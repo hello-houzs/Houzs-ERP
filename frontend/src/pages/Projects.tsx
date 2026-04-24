@@ -62,6 +62,7 @@ import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
+import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery } from "../api/client";
 import { formatDate, formatCurrency, cn, relativeTime } from "../lib/utils";
 
@@ -596,6 +597,7 @@ function ProjectsListView() {
   const { can } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
+  const { unreadByProject } = useNotifications();
   const [stage, setStage] = useState<"ALL" | ProjectStage>("ALL");
   const [search, setSearch] = useState("");
   const [brand, setBrand] = useState<string>("");
@@ -660,12 +662,25 @@ function ProjectsListView() {
       key: "name",
       label: "Project",
       alwaysVisible: true,
-      render: (r) => (
-        <div className="flex flex-col">
-          <span className="text-[13px] font-semibold">{r.name}</span>
-          {r.venue && <span className="text-[10px] text-ink-muted">{r.venue}</span>}
-        </div>
-      ),
+      render: (r) => {
+        const unread = unreadByProject[r.id] ?? 0;
+        return (
+          <div className="flex flex-col">
+            <span className="flex items-center gap-1.5 text-[13px] font-semibold">
+              {unread > 0 && (
+                <span
+                  title={`${unread} new ${unread === 1 ? "update" : "updates"}`}
+                  className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-err px-1 font-mono text-[9px] font-bold text-white"
+                >
+                  {unread > 9 ? "9+" : unread}
+                </span>
+              )}
+              {r.name}
+            </span>
+            {r.venue && <span className="text-[10px] text-ink-muted">{r.venue}</span>}
+          </div>
+        );
+      },
       getValue: (r) => r.name,
     },
     {
@@ -5850,37 +5865,102 @@ function ProjectChat({
   toast: ReturnType<typeof useToast>;
 }) {
   const { user: me } = useAuth();
+  const notifs = useNotifications();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Backend returns newest-first for timeline summaries; chat UIs read
-  // oldest-at-top. Reverse once for render; keep stable via id on
-  // equal timestamps (batch inserts).
-  const messages = useMemo(() => {
-    return [...activity].sort((a, b) => {
-      const t = a.created_at.localeCompare(b.created_at);
-      return t !== 0 ? t : a.id - b.id;
+  // Live-merged message list. Starts from the parent-passed `activity`
+  // and accrues new rows from the 3s poller. Using a map keyed on
+  // activity.id so duplicates (server refetch + poll colliding) don't
+  // render twice.
+  const [liveById, setLiveById] = useState<Map<number, ActivityRow>>(
+    () => new Map(activity.map((a) => [a.id, a]))
+  );
+  // Re-seed when the parent sends a fresh activity prop (e.g. after
+  // a stage change triggers a full detail reload). New IDs get added;
+  // existing ones replaced; nothing is dropped so locally-polled rows
+  // that haven't made it into parent yet aren't lost.
+  useEffect(() => {
+    setLiveById((prev) => {
+      const next = new Map(prev);
+      for (const a of activity) next.set(a.id, a);
+      return next;
     });
   }, [activity]);
 
-  // Auto-scroll to bottom when new messages arrive. Only scroll when
-  // the user is already near the bottom, so reading history isn't
-  // yanked out from under them.
-  const lastCount = useRef(messages.length);
+  // "N new ↓" chip state — count of messages that arrived while the
+  // user was scrolled away from the bottom.
+  const [newCount, setNewCount] = useState(0);
+  const wasAtBottomRef = useRef(true);
+
+  // Chat UIs read oldest-at-top; stable-sort by created_at then id.
+  const messages = useMemo(() => {
+    return Array.from(liveById.values()).sort((a, b) => {
+      const t = a.created_at.localeCompare(b.created_at);
+      return t !== 0 ? t : a.id - b.id;
+    });
+  }, [liveById]);
+
+  // POST /read when the chat mounts — marks this project as caught up
+  // so the notification bell clears its dot. Also ping the notifications
+  // context to refetch immediately.
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const wasAtBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    if (messages.length > lastCount.current && wasAtBottom) {
-      el.scrollTop = el.scrollHeight;
-    } else if (lastCount.current === 0) {
-      // First mount — always drop to the bottom.
-      el.scrollTop = el.scrollHeight;
+    (async () => {
+      try {
+        await api.post(`/api/projects/${projectId}/read`, {});
+        notifs.reload();
+      } catch {
+        // Non-critical; a failed read just means the dot lingers.
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  // Poll for new activity every 3s while the page is visible. Uses the
+  // max known created_at as the cursor so we only pull truly-new rows.
+  useEffect(() => {
+    let cancelled = false;
+    async function tick() {
+      if (document.hidden) return;
+      const maxTs = messages[messages.length - 1]?.created_at;
+      if (!maxTs) return;
+      try {
+        const r = await api.get<{ data: ActivityRow[] }>(
+          `/api/projects/${projectId}/activity?since=${encodeURIComponent(maxTs)}`
+        );
+        if (cancelled) return;
+        const incoming = r.data ?? [];
+        if (incoming.length === 0) return;
+        // Track how many new bubbles we added while the user was scrolled up.
+        const addedWhileScrolledUp = wasAtBottomRef.current ? 0 : incoming.length;
+        setLiveById((prev) => {
+          const next = new Map(prev);
+          for (const a of incoming) next.set(a.id, a);
+          return next;
+        });
+        if (addedWhileScrolledUp > 0) {
+          setNewCount((c) => c + addedWhileScrolledUp);
+        }
+        // Also refresh the bell / unread dots so newly-arriving rows
+        // update the surrounding UI without a full detail reload.
+        notifs.reload();
+      } catch {
+        // Silent — the next tick will retry.
+      }
     }
-    lastCount.current = messages.length;
-  }, [messages.length]);
+    const id = window.setInterval(tick, 3000);
+    function onVis() {
+      if (!document.hidden) tick();
+    }
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, messages.length]);
 
   async function send() {
     const note = draft.trim();
@@ -5890,12 +5970,57 @@ function ProjectChat({
       await api.post(`/api/projects/${projectId}/notes`, { note });
       setDraft("");
       onPosted();
+      // Mark as read right away — our own send shouldn't light up our bell.
+      api.post(`/api/projects/${projectId}/read`, {}).catch(() => {});
     } catch (e: any) {
       toast.error(e?.message || "Failed to send");
     } finally {
       setSending(false);
     }
   }
+
+  function scrollToBottom() {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    setNewCount(0);
+  }
+
+  // Auto-scroll to bottom on new messages, but only if the user was
+  // already near the bottom. Keeps reading-history scroll position
+  // intact when bubbles arrive.
+  const lastCount = useRef(messages.length);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    wasAtBottomRef.current = atBottom;
+    if (messages.length > lastCount.current && atBottom) {
+      el.scrollTop = el.scrollHeight;
+      setNewCount(0);
+    } else if (lastCount.current === 0) {
+      // First render — drop to the newest.
+      el.scrollTop = el.scrollHeight;
+    }
+    lastCount.current = messages.length;
+  }, [messages.length]);
+
+  // Track scroll position so the poller's "N new" counter knows whether
+  // the user is reading live or has scrolled up.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    function onScroll() {
+      if (!el) return;
+      const atBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      wasAtBottomRef.current = atBottom;
+      if (atBottom) setNewCount(0);
+    }
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -5911,7 +6036,15 @@ function ProjectChat({
   }
 
   return (
-    <div className="flex h-[440px] flex-col overflow-hidden rounded-md border border-border bg-bg/30">
+    <div className="relative flex h-[440px] flex-col overflow-hidden rounded-md border border-border bg-bg/30">
+      {newCount > 0 && (
+        <button
+          onClick={scrollToBottom}
+          className="absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full bg-accent px-3 py-1 text-[10.5px] font-semibold text-white shadow-slab transition-all hover:bg-accent-hover"
+        >
+          {newCount} new message{newCount === 1 ? "" : "s"} ↓
+        </button>
+      )}
       {/* Message scroll area */}
       <div
         ref={scrollRef}

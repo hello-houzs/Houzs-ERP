@@ -911,6 +911,54 @@ app.post("/:id/notes", requirePermission("projects.write"), async (c) => {
   return c.json({ ok: true });
 });
 
+// ── Activity polling ─────────────────────────────────────────
+// Lightweight endpoint used by the chat pane to pull only rows newer
+// than its last-seen cursor. No ACL filter here beyond the existing
+// projects.read gate — the chat pane only opens once the caller has
+// already fetched the full project detail, which is ACL-gated.
+
+app.get("/:id/activity", requirePermission("projects.read"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const since = c.req.query("since") || "";
+  const sinceClause = since ? " AND act.created_at > ?" : "";
+  const sinceBinds = since ? [since] : [];
+
+  const rows = await c.env.DB.prepare(
+    `SELECT act.id, act.action, act.from_value, act.to_value, act.note,
+            act.user_id, u.name AS user_name, act.created_at
+       FROM project_activity act
+       LEFT JOIN users u ON u.id = act.user_id
+      WHERE act.project_id = ?
+        AND act.archived_at IS NULL${sinceClause}
+      ORDER BY act.created_at ASC, act.id ASC`
+  )
+    .bind(id, ...sinceBinds)
+    .all();
+  return c.json({ data: rows.results ?? [] });
+});
+
+// ── Mark as read ─────────────────────────────────────────────
+// Upserts the (user, project, now) row into project_reads. The
+// frontend calls this when the user opens the chat / detail page;
+// drives the notification bell's unread count.
+
+app.post("/:id/read", requirePermission("projects.read"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
+  if (!user?.id) return c.json({ ok: true });
+  await c.env.DB.prepare(
+    `INSERT INTO project_reads (user_id, project_id, last_read_at)
+     VALUES (?, ?, datetime('now'))
+     ON CONFLICT(user_id, project_id)
+     DO UPDATE SET last_read_at = datetime('now')`
+  )
+    .bind(user.id, id)
+    .run();
+  return c.json({ ok: true });
+});
+
 // ── Archive / restore (soft delete) ───────────────────────────
 
 app.post("/:id/archive", requirePermission("projects.manage"), async (c) => {

@@ -26,6 +26,7 @@ import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
 import { PresencePanel } from "./PresencePanel";
 import { GlobalSearchTrigger } from "./GlobalSearch";
+import { NotificationBell } from "./NotificationBell";
 
 interface Props {
   /** Desktop-only collapsed state (lg+). */
@@ -415,6 +416,18 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
       <nav className="no-scrollbar flex-1 overflow-y-auto px-2 pb-4 pt-3">
         {visibleTabs.map((tab) => renderTab(tab))}
       </nav>
+
+      {/* ── Notification bell ────────────────────────────────── */}
+      {user && (
+        <div
+          className={cn(
+            "border-t border-sidebar-border",
+            collapsed ? "flex justify-center px-2 py-2" : "px-2 py-2"
+          )}
+        >
+          <NotificationBell collapsed={collapsed} />
+        </div>
+      )}
 
       {/* ── Active members (presence) ───────────────────────── */}
       {user && <PresencePanel collapsed={collapsed} />}

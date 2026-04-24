@@ -1,12 +1,16 @@
 import { useState, useEffect } from "react";
-import { User as UserIcon, KeyRound, LogOut } from "lucide-react";
+import { User as UserIcon, KeyRound, LogOut, Bell } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { StatusDot } from "../components/StatusDot";
 import { useAuth } from "../auth/AuthContext";
 import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
-import { formatDate, relativeTime } from "../lib/utils";
+import { formatDate, relativeTime, cn } from "../lib/utils";
+import {
+  isBrowserPushEnabled,
+  setBrowserPushEnabled,
+} from "../components/BrowserPushSink";
 
 /**
  * Self-service profile page for every authenticated staff user.
@@ -125,6 +129,9 @@ export function Profile() {
         </div>
       </section>
 
+      {/* ── Notifications ────────────────────────── */}
+      <NotificationsSection />
+
       {/* ── Change password ──────────────────────── */}
       <PasswordSection />
 
@@ -162,6 +169,127 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
     </div>
   );
 }
+
+function NotificationsSection() {
+  const toast = useToast();
+  // Track the toggle + browser-level permission in local state so the UI
+  // re-renders after permission prompts resolve.
+  const [enabled, setEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("notifications:browserPush") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [permission, setPermission] = useState<NotificationPermission | "unsupported">(
+    typeof window !== "undefined" && "Notification" in window
+      ? Notification.permission
+      : "unsupported"
+  );
+
+  async function toggle() {
+    if (permission === "unsupported") {
+      toast.error("This browser doesn't support desktop notifications");
+      return;
+    }
+    if (enabled) {
+      // Turn OFF — just flip the preference. We don't revoke the
+      // browser permission; that's the user's OS-level choice.
+      setBrowserPushEnabled(false);
+      setEnabled(false);
+      toast.success("Browser notifications off");
+      return;
+    }
+    // Turning ON — may need to prompt.
+    if (permission === "default") {
+      const result = await Notification.requestPermission();
+      setPermission(result);
+      if (result !== "granted") {
+        toast.error("Permission denied");
+        return;
+      }
+    } else if (permission === "denied") {
+      toast.error(
+        "Notifications are blocked in your browser settings. Unblock them for this site and try again."
+      );
+      return;
+    }
+    setBrowserPushEnabled(true);
+    setEnabled(true);
+    toast.success("Browser notifications on");
+    // Fire a hello banner so they see it worked.
+    try {
+      new Notification("Notifications enabled", {
+        body: "You'll get a banner when there's new activity on your projects.",
+        icon: "/logo-mark.png",
+      });
+    } catch {
+      // no-op
+    }
+  }
+
+  const supported = permission !== "unsupported";
+  const active = enabled && permission === "granted";
+
+  return (
+    <section className="mb-6 rounded-md border border-border bg-surface p-6 shadow-stone">
+      <div className="mb-5 flex items-center gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-full bg-accent-soft text-accent">
+          <Bell size={18} />
+        </div>
+        <div>
+          <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
+            Notifications
+          </h2>
+          <div className="text-[12px] text-ink-secondary">
+            The bell in the sidebar polls every 30s automatically. Turn on
+            desktop notifications to get OS-level banners when new activity
+            lands on your projects.
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg/40 px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-[12.5px] font-semibold text-ink">
+            Browser notifications
+          </div>
+          <div className="mt-0.5 text-[11px] text-ink-muted">
+            {!supported
+              ? "Not supported in this browser."
+              : permission === "denied"
+              ? "Blocked in browser settings — unblock this site to enable."
+              : active
+              ? "On — banners fire when the tab is in the background."
+              : "Off — you'll still see the in-app bell, just no OS banner."}
+          </div>
+        </div>
+        <button
+          onClick={toggle}
+          disabled={!supported}
+          aria-pressed={active}
+          className={cn(
+            "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors",
+            active
+              ? "border-accent bg-accent"
+              : "border-border bg-surface-dim",
+            !supported && "opacity-40"
+          )}
+        >
+          <span
+            className={cn(
+              "inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform",
+              active ? "translate-x-6" : "translate-x-1"
+            )}
+          />
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// Silence the unused-import warning when the check doesn't branch.
+void isBrowserPushEnabled;
 
 function PasswordSection() {
   const toast = useToast();

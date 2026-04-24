@@ -23,6 +23,8 @@ import { DriverTrip } from "./pages/DriverTrip";
 import { DriverProfile } from "./pages/DriverProfile";
 import { useAuth } from "./auth/AuthContext";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
+import { NotificationsProvider } from "./hooks/useNotifications";
+import { BrowserPushSink } from "./components/BrowserPushSink";
 
 /**
  * Wraps a route element in a permission check. Routes the user can't
@@ -111,6 +113,8 @@ export default function App() {
 
   return (
     <GlobalSearchProvider>
+      <NotificationsProvider>
+      <BrowserPushSink />
       <Layout>
         <Routes>
         <Route path="/" element={<Overview />} />
@@ -287,6 +291,7 @@ export default function App() {
         <Route path="/profile" element={<Profile />} />
         </Routes>
       </Layout>
+      </NotificationsProvider>
     </GlobalSearchProvider>
   );
 }
