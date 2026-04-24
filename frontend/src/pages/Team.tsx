@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -494,17 +494,28 @@ function isDescendantOf(
 }
 
 // ──────────────────────────────────────────────────────────
-// Org Chart tab — recursive nested tree of reporting lines
+// Org Chart tab — top-down visual tree with drag-to-assign
 // ──────────────────────────────────────────────────────────
+//
+// Renders each team as a proper top-down hierarchy (parent → children
+// below, connected by hairlines). Interactions:
+//   • Drag a node onto another node → assigns that user as report.
+//   • Drag a node onto the "Top level" strip → removes their manager.
+//   • Click the pencil on a card → inline manager dropdown (keyboard-
+//     accessible fallback for drag-and-drop).
+// Cycle prevention is enforced both client-side (drop target refuses)
+// and server-side (PATCH /api/users/:id walks the chain).
 
 function OrgChartTab() {
+  const { can } = useAuth();
+  const toast = useToast();
+  const canManage = can("users.manage");
   const members = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users"));
   const users = (members.data?.users ?? []).filter((u) => u.status !== "disabled");
 
-  // Roots: users with no manager. Any user whose manager_id points at
-  // someone not in the active set also gets re-rooted so no-one is
-  // invisible. Walk up once to find each user's highest visible ancestor.
-  const { roots, childrenOf } = useMemo(() => {
+  // Any user whose manager_id points at an inactive/missing user gets
+  // re-rooted so they stay visible.
+  const { roots, childrenOf, byId } = useMemo(() => {
     const byId = new Map(users.map((u) => [u.id, u]));
     const childrenOf = new Map<number | null, TeamMember[]>();
     for (const u of users) {
@@ -514,81 +525,297 @@ function OrgChartTab() {
       arr.push(u);
       childrenOf.set(parentId, arr);
     }
-    // Sort every sibling group alphabetically so the tree is stable.
     for (const arr of childrenOf.values()) {
       arr.sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
     }
-    const roots = childrenOf.get(null) ?? [];
-    return { roots, childrenOf };
+    return { roots: childrenOf.get(null) ?? [], childrenOf, byId };
   }, [users]);
 
-  if (members.loading) {
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+
+  async function reassign(userId: number, managerId: number | null) {
+    if (userId === managerId) return;
+    const current = byId.get(userId);
+    if (!current) return;
+    if ((current.manager_id ?? null) === managerId) return; // no-op
+    if (managerId != null && isDescendantOf(managerId, userId, users)) {
+      toast.error("That user reports to this one — would create a loop");
+      return;
+    }
+    try {
+      await api.patch(`/api/users/${userId}`, { manager_id: managerId });
+      const targetName = managerId ? byId.get(managerId)?.name || byId.get(managerId)?.email : null;
+      toast.success(
+        targetName
+          ? `${current.name || current.email} now reports to ${targetName}`
+          : `${current.name || current.email} is now top-level`
+      );
+      members.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update");
+    } finally {
+      setEditingId(null);
+    }
+  }
+
+  if (members.loading && users.length === 0) {
     return <div className="text-[12px] text-ink-muted">Loading…</div>;
   }
   if (members.error) {
     return <div className="text-[12px] text-err">{members.error}</div>;
   }
-  if (!roots.length) {
-    return (
-      <div className="rounded-md border border-border bg-surface px-5 py-8 text-center text-[12px] text-ink-muted">
-        No one reports to anyone yet. Head to the <b>Members</b> tab and set a
-        manager on each user — the tree builds itself from there.
-      </div>
-    );
-  }
 
   return (
-    <div className="space-y-2">
-      {roots.map((r) => (
-        <OrgNode key={r.id} user={r} depth={0} childrenOf={childrenOf} />
-      ))}
+    <div className="space-y-4">
+      {/* Top-level drop zone — drop a user here to remove their manager */}
+      {canManage && (
+        <TopLevelDropZone
+          dragging={draggingId != null}
+          onDrop={(userId) => reassign(userId, null)}
+        />
+      )}
+
+      {roots.length === 0 ? (
+        <div className="rounded-md border border-border bg-surface px-5 py-8 text-center text-[12px] text-ink-muted">
+          No active members yet.
+        </div>
+      ) : (
+        <div className="thin-scroll overflow-x-auto pb-6">
+          <div className="mx-auto flex min-w-fit items-start justify-center gap-10 px-4 pt-2">
+            {roots.map((r) => (
+              <OrgTreeNode
+                key={r.id}
+                user={r}
+                childrenOf={childrenOf}
+                canManage={canManage}
+                users={users}
+                draggingId={draggingId}
+                setDraggingId={setDraggingId}
+                onDrop={reassign}
+                editingId={editingId}
+                setEditingId={setEditingId}
+                onPickManager={reassign}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="text-[10.5px] text-ink-muted">
+        <span className="font-semibold">Tip:</span> drag any card onto another
+        to reassign reporting. Drop on the strip at the top to make them
+        top-level. Or click the pencil icon for a dropdown.
+      </div>
     </div>
   );
 }
 
-function OrgNode({
+function TopLevelDropZone({
+  dragging,
+  onDrop,
+}: {
+  dragging: boolean;
+  onDrop: (userId: number) => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onDragOver={(e) => {
+        if (!dragging) return;
+        e.preventDefault();
+        setHover(true);
+      }}
+      onDragLeave={() => setHover(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setHover(false);
+        const id = parseInt(e.dataTransfer.getData("user-id"), 10);
+        if (!isNaN(id)) onDrop(id);
+      }}
+      className={cn(
+        "rounded-md border-2 border-dashed px-4 py-2 text-center font-mono text-[10px] uppercase tracking-brand transition-colors",
+        hover
+          ? "border-accent bg-accent-soft/40 text-accent"
+          : dragging
+          ? "border-accent/40 text-accent/70"
+          : "border-border text-ink-muted"
+      )}
+    >
+      Top level — drop here to remove manager
+    </div>
+  );
+}
+
+function OrgTreeNode({
   user,
-  depth,
   childrenOf,
+  canManage,
+  users,
+  draggingId,
+  setDraggingId,
+  onDrop,
+  editingId,
+  setEditingId,
+  onPickManager,
 }: {
   user: TeamMember;
-  depth: number;
   childrenOf: Map<number | null, TeamMember[]>;
+  canManage: boolean;
+  users: TeamMember[];
+  draggingId: number | null;
+  setDraggingId: (id: number | null) => void;
+  onDrop: (userId: number, managerId: number | null) => void;
+  editingId: number | null;
+  setEditingId: (id: number | null) => void;
+  onPickManager: (userId: number, managerId: number | null) => void;
 }) {
   const kids = childrenOf.get(user.id) ?? [];
-  const [open, setOpen] = useState(true);
-
-  const initial = (user.name || user.email).slice(0, 1).toUpperCase();
+  const hasKids = kids.length > 0;
 
   return (
-    <div className="relative">
-      <div
-        className={cn(
-          "flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 shadow-stone",
-          depth > 0 && "ml-6"
-        )}
-      >
-        {kids.length > 0 ? (
-          <button
-            onClick={() => setOpen(!open)}
-            className="inline-flex h-5 w-5 items-center justify-center rounded text-ink-muted hover:bg-surface-dim hover:text-accent"
-            aria-label={open ? "Collapse" : "Expand"}
-          >
-            {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-          </button>
-        ) : (
-          <span className="inline-block h-5 w-5" aria-hidden />
-        )}
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent-soft font-mono text-[11px] font-bold text-accent-ink">
+    <div className="flex flex-col items-center">
+      <OrgCard
+        user={user}
+        reportsCount={kids.length}
+        canManage={canManage}
+        draggingId={draggingId}
+        setDraggingId={setDraggingId}
+        onDrop={onDrop}
+        editing={editingId === user.id}
+        setEditing={(on) => setEditingId(on ? user.id : null)}
+        users={users}
+        onPickManager={onPickManager}
+      />
+
+      {hasKids && (
+        <div className="flex flex-col items-stretch">
+          {/* Parent's vertical stub */}
+          <div className="flex h-4 justify-center">
+            <div className="w-px bg-border" />
+          </div>
+
+          {/* Children row: each wrapper owns its segment of the horizontal
+              bar (via absolute top-0 div); segments visually merge into
+              one continuous connector between the outermost centres. */}
+          <div className="flex items-start">
+            {kids.map((k, i) => {
+              const only = kids.length === 1;
+              const first = i === 0;
+              const last = i === kids.length - 1;
+              return (
+                <div
+                  key={k.id}
+                  className="relative flex flex-1 flex-col items-center px-3"
+                >
+                  {!only && (
+                    <div
+                      className={cn(
+                        "absolute top-0 h-px bg-border",
+                        first && "left-1/2 right-0",
+                        last && "left-0 right-1/2",
+                        !first && !last && "left-0 right-0"
+                      )}
+                    />
+                  )}
+                  <div className="h-4 w-px bg-border" />
+                  <OrgTreeNode
+                    user={k}
+                    childrenOf={childrenOf}
+                    canManage={canManage}
+                    users={users}
+                    draggingId={draggingId}
+                    setDraggingId={setDraggingId}
+                    onDrop={onDrop}
+                    editingId={editingId}
+                    setEditingId={setEditingId}
+                    onPickManager={onPickManager}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OrgCard({
+  user,
+  reportsCount,
+  canManage,
+  draggingId,
+  setDraggingId,
+  onDrop,
+  editing,
+  setEditing,
+  users,
+  onPickManager,
+}: {
+  user: TeamMember;
+  reportsCount: number;
+  canManage: boolean;
+  draggingId: number | null;
+  setDraggingId: (id: number | null) => void;
+  onDrop: (userId: number, managerId: number | null) => void;
+  editing: boolean;
+  setEditing: (on: boolean) => void;
+  users: TeamMember[];
+  onPickManager: (userId: number, managerId: number | null) => void;
+}) {
+  const [dropHover, setDropHover] = useState(false);
+  const initial = (user.name || user.email).slice(0, 1).toUpperCase();
+  const isDragSource = draggingId === user.id;
+  const isValidDropTarget =
+    draggingId != null &&
+    draggingId !== user.id &&
+    // Can't drop user onto their own descendant.
+    !isDescendantOf(user.id, draggingId, users);
+
+  return (
+    <div
+      draggable={canManage}
+      onDragStart={(e) => {
+        if (!canManage) return;
+        e.dataTransfer.setData("user-id", String(user.id));
+        e.dataTransfer.effectAllowed = "move";
+        setDraggingId(user.id);
+      }}
+      onDragEnd={() => setDraggingId(null)}
+      onDragOver={(e) => {
+        if (!canManage || !isValidDropTarget) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        setDropHover(true);
+      }}
+      onDragLeave={() => setDropHover(false)}
+      onDrop={(e) => {
+        if (!canManage) return;
+        e.preventDefault();
+        setDropHover(false);
+        const id = parseInt(e.dataTransfer.getData("user-id"), 10);
+        if (!isNaN(id) && id !== user.id) onDrop(id, user.id);
+      }}
+      className={cn(
+        "relative w-[220px] shrink-0 rounded-md border bg-surface shadow-stone transition-all",
+        isDragSource && "opacity-50",
+        dropHover && isValidDropTarget && "border-accent bg-accent-soft/40 ring-2 ring-accent/30",
+        !dropHover && "border-border",
+        canManage && "cursor-grab active:cursor-grabbing"
+      )}
+    >
+      <div className="flex items-start gap-2.5 px-3 py-2.5">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent-soft font-mono text-[12px] font-bold text-accent-ink">
           {initial}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
+          <div className="flex items-center gap-1.5">
             <span className="truncate text-[12.5px] font-semibold text-ink">
               {user.name || user.email}
             </span>
             {user.status !== "active" && (
-              <span className="rounded bg-bg px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+              <span className="rounded bg-bg px-1 py-px font-mono text-[9px] font-semibold uppercase text-ink-muted">
                 {user.status}
               </span>
             )}
@@ -596,31 +823,64 @@ function OrgNode({
           <div className="mt-0.5 truncate text-[10.5px] text-ink-muted">
             {user.email}
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <span className="rounded bg-accent-soft px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-wider text-accent-ink">
-            {user.role_name}
-          </span>
-          {kids.length > 0 && (
-            <span
-              className="font-mono text-[10px] text-ink-muted"
-              title={`${kids.length} direct report${kids.length === 1 ? "" : "s"}`}
-            >
-              {kids.length}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            <span className="rounded bg-accent-soft px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-accent-ink">
+              {user.role_name}
             </span>
-          )}
+            {reportsCount > 0 && (
+              <span
+                className="font-mono text-[9.5px] text-ink-muted"
+                title={`${reportsCount} direct report${reportsCount === 1 ? "" : "s"}`}
+              >
+                {reportsCount} report{reportsCount === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
         </div>
+        {canManage && !editing && (
+          <button
+            onClick={() => setEditing(true)}
+            className="rounded p-1 text-ink-muted transition-colors hover:bg-surface-dim hover:text-accent"
+            aria-label="Change manager"
+            title="Change manager"
+          >
+            <Pencil size={11} />
+          </button>
+        )}
       </div>
-      {open && kids.length > 0 && (
-        <div className="relative mt-1.5 space-y-1.5 border-l border-border-subtle pl-0 ml-4">
-          {kids.map((k) => (
-            <OrgNode
-              key={k.id}
-              user={k}
-              depth={depth + 1}
-              childrenOf={childrenOf}
-            />
-          ))}
+
+      {editing && (
+        <div className="border-t border-border-subtle bg-bg/60 px-3 py-2">
+          <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+            Reports to
+          </label>
+          <select
+            autoFocus
+            defaultValue={user.manager_id ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              onPickManager(user.id, v ? Number(v) : null);
+            }}
+            className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          >
+            <option value="">— No manager —</option>
+            {users
+              .filter(
+                (m) =>
+                  m.id !== user.id && !isDescendantOf(m.id, user.id, users)
+              )
+              .map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name || m.email}
+                </option>
+              ))}
+          </select>
+          <button
+            onClick={() => setEditing(false)}
+            className="mt-1.5 text-[10px] text-ink-muted hover:text-ink"
+          >
+            Cancel
+          </button>
         </div>
       )}
     </div>
