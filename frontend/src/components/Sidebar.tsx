@@ -430,7 +430,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
             collapsed ? "flex justify-center px-2 py-2" : "px-2 py-2"
           )}
         >
-          <NotificationBell collapsed={collapsed} />
+          <NotificationBell collapsed={collapsed} direction="up" align="start" />
         </div>
       )}
 

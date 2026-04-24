@@ -74,7 +74,7 @@ export function TopNavbar() {
         {user && (
           <>
             <div className="h-5 w-px bg-border-subtle" />
-            <NotificationBell collapsed />
+            <NotificationBell collapsed direction="down" align="end" />
             <NavLink
               to="/profile"
               className="group flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-bg/60"

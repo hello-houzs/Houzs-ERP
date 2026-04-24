@@ -6,15 +6,28 @@ import { useNotifications, type NotificationItem } from "../hooks/useNotificatio
 
 interface Props {
   collapsed: boolean;
+  /** Where the popover should appear relative to the bell button.
+   *  "down" anchors the popover below the button (top navbar usage);
+   *  "up" anchors it above (sidebar usage, where the bell sits near
+   *  the bottom of the screen). Defaults to "down". */
+  direction?: "up" | "down";
+  /** Horizontal edge the popover aligns to. "end" is the right side
+   *  of the button (top-navbar — prevents overflow off the right edge
+   *  of the viewport). Defaults to "start". */
+  align?: "start" | "end";
 }
 
 /**
- * Sidebar notification bell. Click opens a popover listing the latest
+ * Notification bell + popover. Click opens a list of the latest
  * activity on the user's projects. Visible count is the per-project
  * unread aggregate, capped at 99+. Polls itself via the shared
  * NotificationsProvider — this component is display-only.
  */
-export function NotificationBell({ collapsed }: Props) {
+export function NotificationBell({
+  collapsed,
+  direction = "down",
+  align = "start",
+}: Props) {
   const { feed, totalUnread } = useNotifications();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -64,7 +77,14 @@ export function NotificationBell({ collapsed }: Props) {
         )}
       </button>
 
-      {open && <BellPopover feed={feed} onNavigate={() => setOpen(false)} />}
+      {open && (
+        <BellPopover
+          feed={feed}
+          onNavigate={() => setOpen(false)}
+          direction={direction}
+          align={align}
+        />
+      )}
     </div>
   );
 }
@@ -72,15 +92,21 @@ export function NotificationBell({ collapsed }: Props) {
 function BellPopover({
   feed,
   onNavigate,
+  direction,
+  align,
 }: {
   feed: NotificationItem[];
   onNavigate: () => void;
+  direction: "up" | "down";
+  align: "start" | "end";
 }) {
   return (
     <div
       className={cn(
-        "absolute bottom-full left-0 z-40 mb-2 w-[320px] overflow-hidden rounded-md border border-border bg-surface shadow-slab",
-        "max-h-[70vh] flex flex-col"
+        "absolute z-40 w-[320px] overflow-hidden rounded-md border border-border bg-surface shadow-slab",
+        "max-h-[70vh] flex flex-col",
+        direction === "down" ? "top-full mt-2" : "bottom-full mb-2",
+        align === "end" ? "right-0" : "left-0"
       )}
     >
       <div className="flex items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
