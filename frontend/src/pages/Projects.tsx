@@ -311,28 +311,6 @@ interface Paginated<T> {
   total: number;
 }
 
-// ── Malaysia states (picker) ─────────────────────────────────
-// Mirrors the backend constant. Kept here to avoid an extra API round
-// trip for what is effectively static data.
-
-const MALAYSIA_STATES = [
-  "Kuala Lumpur",
-  "Selangor",
-  "Johor",
-  "Penang",
-  "Perak",
-  "Pahang",
-  "Kedah",
-  "Kelantan",
-  "Terengganu",
-  "Negeri Sembilan",
-  "Melaka",
-  "Sabah",
-  "Sarawak",
-  "Putrajaya",
-  "Labuan",
-] as const;
-
 // ── Payment workflow ─────────────────────────────────────────
 
 const PAYMENT_STATUS_META: Record<
@@ -508,12 +486,11 @@ function VenuePicker({
 }
 
 function composeEventName(p: {
-  state?: string | null;
   brand?: string | null;
   event_type_name?: string | null;
   venue?: string | null;
 }): string {
-  const parts = [p.state, p.brand, p.event_type_name?.toUpperCase(), p.venue]
+  const parts = [p.brand, p.event_type_name?.toUpperCase(), p.venue]
     .map((s) => (s || "").trim())
     .filter(Boolean);
   return parts.join(" - ");
@@ -622,7 +599,6 @@ function ProjectsListView() {
   const [brand, setBrand] = useState<string>("");
   const [year, setYear] = useState<string>("");
   const [month, setMonth] = useState<string>("");
-  const [state, setState] = useState<string>("");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
   const [showCreate, setShowCreate] = useState(false);
@@ -642,7 +618,6 @@ function ProjectsListView() {
           brand: brand || undefined,
           year: year || undefined,
           month: month || undefined,
-          state: state || undefined,
           search,
           page,
           per_page: perPage,
@@ -650,7 +625,7 @@ function ProjectsListView() {
           ...sortParams,
         })}`
       ),
-    [stage, brand, year, month, state, search, page, perPage, showArchived, sort?.key, sort?.dir]
+    [stage, brand, year, month, search, page, perPage, showArchived, sort?.key, sort?.dir]
   );
 
   const summary = useQuery<{
@@ -736,12 +711,6 @@ function ProjectsListView() {
       label: "End",
       render: (r) => formatDate(r.end_date),
       getValue: (r) => r.end_date,
-    },
-    {
-      key: "state",
-      label: "State",
-      render: (r) => <span className="text-[11px]">{r.state || "—"}</span>,
-      getValue: (r) => r.state,
     },
     {
       key: "booth_no",
@@ -888,21 +857,6 @@ function ProjectsListView() {
           ].map((label, i) => (
             <option key={label} value={i + 1}>
               {label}
-            </option>
-          ))}
-        </select>
-        <select
-          value={state}
-          onChange={(e) => {
-            setPage(1);
-            setState(e.target.value);
-          }}
-          className="h-8 rounded-md border border-border bg-surface px-2 text-[12px]"
-        >
-          <option value="">All states</option>
-          {MALAYSIA_STATES.map((s) => (
-            <option key={s} value={s}>
-              {s}
             </option>
           ))}
         </select>
@@ -2428,7 +2382,6 @@ function CreateProjectPanel({
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [venue, setVenue] = useState("");
-  const [state, setState] = useState("");
   const [organizer, setOrganizer] = useState("");
   const [picId, setPicId] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
@@ -2454,7 +2407,6 @@ function CreateProjectPanel({
         start_date: startDate || undefined,
         end_date: endDate || undefined,
         venue: venue.trim() || undefined,
-        state: state.trim() || undefined,
         organizer: organizer.trim() || undefined,
         pic_id: picId ? parseInt(picId, 10) : undefined,
       });
@@ -2573,38 +2525,16 @@ function CreateProjectPanel({
           <VenuePicker
             value={venue || null}
             onChange={(v) => setVenue(v ?? "")}
-            onStateHint={(s) => {
-              if (s && !state) setState(s);
-            }}
           />
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-              State
-            </div>
-            <select
-              value={state}
-              onChange={(e) => setState(e.target.value)}
-              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
-            >
-              <option value="">— select —</option>
-              {MALAYSIA_STATES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+        <div>
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            Organizer
           </div>
-          <div>
-            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-              Organizer
-            </div>
-            <OrganizerPicker
-              value={organizer}
-              onChange={(v) => setOrganizer(v ?? "")}
-            />
-          </div>
+          <OrganizerPicker
+            value={organizer}
+            onChange={(v) => setOrganizer(v ?? "")}
+          />
         </div>
       </PanelSection>
 
@@ -3019,7 +2949,6 @@ function ProjectDetailContent({
             <InlineEdit label="Name" value={p.name} onSave={(v) => patch({ name: v })} />
             {(() => {
               const suggested = composeEventName({
-                state: p.state,
                 brand: p.brand,
                 event_type_name: p.event_type_name,
                 venue: p.venue,
@@ -3117,17 +3046,8 @@ function ProjectDetailContent({
               <VenuePicker
                 value={p.venue}
                 onChange={(v) => patch({ venue: v })}
-                onStateHint={(s) => {
-                  if (s && !p.state) patch({ state: s });
-                }}
               />
             </div>
-            <InlineEdit
-              label="State"
-              value={p.state}
-              options={MALAYSIA_STATES}
-              onSave={(v) => patch({ state: v })}
-            />
             <div>
               <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
                 Organizer
