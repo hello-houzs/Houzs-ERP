@@ -18,6 +18,7 @@ import {
   Wrench,
   FolderKanban,
   ShieldCheck,
+  HandCoins,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -70,6 +71,10 @@ interface Tab {
 const TABS: Tab[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read" },
+  // Sales (rep-facing log). Distinct from "Sales Orders" (AutoCount SOs);
+  // this is the staging area where reps enter their own sales before
+  // they're pushed to AutoCount.
+  { to: "/sales", label: "Sales", icon: HandCoins, perm: "sales.read" },
   // Members with delivery_orders.read but no trips.read.all still see
   // the flat Delivery list. Dispatchers with trips.read.all get the
   // richer Queue tab inside Trips, so this entry hides for them.

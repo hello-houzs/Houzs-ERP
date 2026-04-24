@@ -13,6 +13,8 @@ const ALLOWED_TABLES = new Set([
   "balance",
   "overdue",
   "logs",
+  // Rep-entered sales transactions. row_key = sales_entries.id (as string).
+  "sales_entries",
 ]);
 
 const ALLOWED_TYPES = new Set(["text", "number", "date", "select", "checkbox"]);

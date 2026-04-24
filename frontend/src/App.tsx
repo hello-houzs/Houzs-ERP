@@ -9,6 +9,7 @@ import { PurchaseOrders, PurchaseOrderDetail } from "./pages/PurchaseOrders";
 import { CreditorDetail } from "./pages/CreditorDetail";
 import { ServiceCases, ServiceCaseDetail } from "./pages/ServiceCases";
 import { Projects, ProjectDetail } from "./pages/Projects";
+import { Sales } from "./pages/Sales";
 import { Profile } from "./pages/Profile";
 import { Settings } from "./pages/Settings";
 import { Team } from "./pages/Team";
@@ -237,6 +238,14 @@ export default function App() {
         <Route
           path="/suppliers"
           element={<Navigate to="/po?view=creditors" replace />}
+        />
+        <Route
+          path="/sales"
+          element={
+            <Guard perm="sales.read">
+              <Sales />
+            </Guard>
+          }
         />
         <Route
           path="/projects"
