@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { Check, X, Info, AlertTriangle } from "lucide-react";
+import { onForbidden } from "../api/client";
 
 type ToastKind = "success" | "error" | "info" | "warning";
 
@@ -39,6 +40,21 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     info: (m) => show("info", m),
     warning: (m) => show("warning", m),
   };
+
+  // Surface every 403 as a toast. Some callers also catch + toast the
+  // raw "403: …" error themselves, so we dedupe identical messages
+  // inside a 1.5s window to avoid the same denial showing twice.
+  useEffect(() => {
+    let last = "";
+    let lastAt = 0;
+    return onForbidden((message) => {
+      const now = Date.now();
+      if (message === last && now - lastAt < 1500) return;
+      last = message;
+      lastAt = now;
+      show("error", message);
+    });
+  }, [show]);
 
   return (
     <ToastContext.Provider value={value}>

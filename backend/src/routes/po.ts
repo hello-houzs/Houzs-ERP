@@ -2,18 +2,23 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { runPOPull, runPODocsPull, pushPODates } from "../services/po";
 import { AutoCountClient } from "../services/autocount";
+import { getDb } from "../db/client";
+import { purchase_orders, purchase_order_docs } from "../db/schema";
+import { and, asc, desc, eq, like, lt, or, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/summary", async (c) => {
+  const db = getDb(c.env);
+
   // Lines (purchase_orders) — outstanding only, from /getOutstanding.
-  const totals = await c.env.DB.prepare(
-    `SELECT COUNT(*) as line_count,
-            COUNT(DISTINCT doc_no) as po_count,
-            COUNT(DISTINCT creditor_code) as supplier_count,
-            COALESCE(SUM(remaining_qty), 0) as remaining_qty
-     FROM purchase_orders`
-  ).first();
+  const totalsRow = await db.get<any>(sql`
+    SELECT COUNT(*) as line_count,
+           COUNT(DISTINCT doc_no) as po_count,
+           COUNT(DISTINCT creditor_code) as supplier_count,
+           COALESCE(SUM(remaining_qty), 0) as remaining_qty
+      FROM ${purchase_orders}
+  `);
 
   // Doc-level counts mirror the table's filter semantics. A PO is
   // "outstanding" only when:
@@ -24,66 +29,73 @@ app.get("/summary", async (c) => {
   //     with Qty - TransferedQty > 0 upstream)
   // Without the line-existence join, a doc whose header is still open
   // but whose lines have all been delivered would inflate the count.
-  const docCounts = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS total,
-            COUNT(CASE
-                    WHEN d.cancelled = 0
-                     AND COALESCE(d.doc_status, '') != 'C'
-                     AND EXISTS (SELECT 1 FROM purchase_orders po WHERE po.doc_no = d.doc_no)
-                  THEN 1
-                  END) AS outstanding_count,
-            COUNT(CASE
-                    WHEN d.cancelled = 0
-                     AND (d.doc_status = 'C'
-                          OR NOT EXISTS (SELECT 1 FROM purchase_orders po WHERE po.doc_no = d.doc_no))
-                  THEN 1
-                  END) AS delivered_count,
-            COUNT(CASE WHEN d.cancelled = 1 THEN 1 END) AS cancelled_count
-       FROM purchase_order_docs d`
-  ).first<{
+  const docCounts = await db.get<{
     total: number;
     outstanding_count: number;
     delivered_count: number;
     cancelled_count: number;
-  }>();
+  }>(sql`
+    SELECT COUNT(*) AS total,
+           COUNT(CASE
+                   WHEN d.cancelled = 0
+                    AND COALESCE(d.doc_status, '') != 'C'
+                    AND EXISTS (SELECT 1 FROM ${purchase_orders} po WHERE po.doc_no = d.doc_no)
+                 THEN 1
+                 END) AS outstanding_count,
+           COUNT(CASE
+                   WHEN d.cancelled = 0
+                    AND (d.doc_status = 'C'
+                         OR NOT EXISTS (SELECT 1 FROM ${purchase_orders} po WHERE po.doc_no = d.doc_no))
+                 THEN 1
+                 END) AS delivered_count,
+           COUNT(CASE WHEN d.cancelled = 1 THEN 1 END) AS cancelled_count
+      FROM ${purchase_order_docs} d
+  `);
 
   const today = new Date().toISOString().slice(0, 10);
   // Overdue = outstanding line past its planned delivery_date. The
   // purchase_orders table already only carries outstanding lines.
-  const overdue = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count FROM purchase_orders
-     WHERE delivery_date IS NOT NULL AND delivery_date < ?`
-  )
-    .bind(today)
-    .first<{ count: number }>();
+  const overdueRow = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(purchase_orders)
+    .where(
+      and(
+        sql`${purchase_orders.delivery_date} IS NOT NULL`,
+        lt(purchase_orders.delivery_date, today)
+      )
+    );
 
-  const noSupplierDate = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count FROM purchase_orders
-     WHERE (supplier_date1 IS NULL OR supplier_date1 = '')
-       AND (supplier_date2 IS NULL OR supplier_date2 = '')
-       AND (supplier_date3 IS NULL OR supplier_date3 = '')`
-  ).first<{ count: number }>();
+  const noSupplierDateRow = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(purchase_orders)
+    .where(sql`
+      (${purchase_orders.supplier_date1} IS NULL OR ${purchase_orders.supplier_date1} = '')
+      AND (${purchase_orders.supplier_date2} IS NULL OR ${purchase_orders.supplier_date2} = '')
+      AND (${purchase_orders.supplier_date3} IS NULL OR ${purchase_orders.supplier_date3} = '')
+    `);
 
-  const topSuppliers = await c.env.DB.prepare(
-    `SELECT creditor_name as name, COUNT(*) as count
-     FROM purchase_orders
-     WHERE creditor_name IS NOT NULL
-     GROUP BY creditor_name
-     ORDER BY count DESC
-     LIMIT 5`
-  ).all();
+  const topSuppliers = await db
+    .select({
+      name: purchase_orders.creditor_name,
+      count: sql<number>`COUNT(*)`,
+    })
+    .from(purchase_orders)
+    .where(sql`${purchase_orders.creditor_name} IS NOT NULL`)
+    .groupBy(purchase_orders.creditor_name)
+    .orderBy(desc(sql`COUNT(*)`))
+    .limit(5);
 
   return c.json({
     totals: {
-      ...totals,
+      ...totalsRow,
       outstanding_count: docCounts?.outstanding_count ?? 0,
       delivered_count: docCounts?.delivered_count ?? 0,
       cancelled_count: docCounts?.cancelled_count ?? 0,
       doc_count: docCounts?.total ?? 0,
     },
-    overdue: overdue?.count || 0,
-    missing_supplier_date: noSupplierDate?.count || 0,
-    top_suppliers: topSuppliers.results,
+    overdue: overdueRow[0]?.count || 0,
+    missing_supplier_date: noSupplierDateRow[0]?.count || 0,
+    top_suppliers: topSuppliers,
   });
 });
 
@@ -94,34 +106,41 @@ app.get("/", async (c) => {
   const perPage = Math.min(parseInt(c.req.query("per_page") || "50", 10), 200);
   const offset = (page - 1) * perPage;
 
-  const where: string[] = [];
-  const binds: any[] = [];
+  const db = getDb(c.env);
+
+  const conds: any[] = [];
   if (search) {
-    where.push("(doc_no LIKE ? OR creditor_name LIKE ? OR item_code LIKE ?)");
-    const like = `%${search}%`;
-    binds.push(like, like, like);
+    const likeStr = `%${search}%`;
+    conds.push(
+      or(
+        like(purchase_orders.doc_no, likeStr),
+        like(purchase_orders.creditor_name, likeStr),
+        like(purchase_orders.item_code, likeStr)
+      )!
+    );
   }
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const where = conds.length ? and(...conds) : undefined;
 
-  const total = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count FROM purchase_orders ${whereSql}`
-  )
-    .bind(...binds)
-    .first<{ count: number }>();
+  const totalRow = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(purchase_orders)
+    .where(where);
 
-  const rows = await c.env.DB.prepare(
-    `SELECT * FROM purchase_orders ${whereSql}
-     ORDER BY doc_no ASC
-     LIMIT ? OFFSET ?`
-  )
-    .bind(...binds, perPage, offset)
-    .all();
+  // SELECT * — pass through every column to the frontend; the AutoCount
+  // shape is wide and adding columns to schema.ts every time AutoCount
+  // changes its export isn't worth it.
+  const rows = await db.all<any>(sql`
+    SELECT * FROM ${purchase_orders}
+    ${where ? sql`WHERE ${where}` : sql``}
+    ORDER BY doc_no ASC
+    LIMIT ${perPage} OFFSET ${offset}
+  `);
 
   return c.json({
-    data: rows.results,
+    data: rows,
     page,
     per_page: perPage,
-    total: total?.count || 0,
+    total: totalRow[0]?.count || 0,
   });
 });
 
@@ -142,45 +161,52 @@ app.get("/docs", async (c) => {
   const perPage = Math.min(parseInt(c.req.query("per_page") || "50", 10), 200);
   const offset = (page - 1) * perPage;
 
-  const where: string[] = [];
-  const binds: any[] = [];
+  const db = getDb(c.env);
+
+  // Build the WHERE conditions referring to the joined `po` aggregate
+  // directly via `COALESCE(po.line_count, 0)` instead of the SELECT
+  // alias `outstanding_line_count`. Same FROM + JOIN drives both the
+  // COUNT and the data query, so we don't need to wrap in a subquery
+  // (which previously broke when string-rewriting Drizzle SQL objects).
+  const whereParts: any[] = [];
   if (search) {
-    where.push("(d.doc_no LIKE ? OR d.creditor_name LIKE ? OR d.ref LIKE ?)");
-    const like = `%${search}%`;
-    binds.push(like, like, like);
+    const likeStr = `%${search}%`;
+    whereParts.push(
+      sql`(d.doc_no LIKE ${likeStr} OR d.creditor_name LIKE ${likeStr} OR d.ref LIKE ${likeStr})`
+    );
   }
   if (status === "outstanding") {
-    where.push(
-      "d.cancelled = 0 AND COALESCE(d.doc_status,'') != 'C' AND outstanding_line_count > 0"
+    whereParts.push(
+      sql`d.cancelled = 0 AND COALESCE(d.doc_status,'') != 'C' AND COALESCE(po.line_count, 0) > 0`
     );
   } else if (status === "delivered") {
-    // Header marked closed OR no remaining lines, and not cancelled.
-    where.push(
-      "d.cancelled = 0 AND (d.doc_status = 'C' OR outstanding_line_count = 0)"
+    whereParts.push(
+      sql`d.cancelled = 0 AND (d.doc_status = 'C' OR COALESCE(po.line_count, 0) = 0)`
     );
   } else if (status === "cancelled") {
-    where.push("d.cancelled = 1");
+    whereParts.push(sql`d.cancelled = 1`);
   }
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const whereClause = whereParts.length
+    ? sql`WHERE ${sql.join(whereParts, sql` AND `)}`
+    : sql``;
 
-  const baseSelect = `
-    SELECT d.*,
-           COALESCE(po.line_count, 0) AS outstanding_line_count,
-           po.next_delivery,
-           po.total_remaining_qty
-      FROM purchase_order_docs d
-      LEFT JOIN (
-        SELECT doc_no,
-               COUNT(*) AS line_count,
-               MIN(delivery_date) AS next_delivery,
-               SUM(remaining_qty) AS total_remaining_qty
-          FROM purchase_orders
-         GROUP BY doc_no
-      ) po ON po.doc_no = d.doc_no
+  // Shared FROM + JOIN — both COUNT and the data query use this.
+  const fromJoin = sql`
+    FROM ${purchase_order_docs} d
+    LEFT JOIN (
+      SELECT doc_no,
+             COUNT(*) AS line_count,
+             MIN(delivery_date) AS next_delivery,
+             SUM(remaining_qty) AS total_remaining_qty
+        FROM ${purchase_orders}
+       GROUP BY doc_no
+    ) po ON po.doc_no = d.doc_no
   `;
 
   // Allow-list of sortable columns → SQL expression. Keeps `sort_by`
-  // safe from injection.
+  // safe from injection. References to alias columns
+  // (outstanding_line_count, next_delivery) work in ORDER BY because
+  // SQLite resolves SELECT aliases there.
   const sortMap: Record<string, string> = {
     doc_no: "d.doc_no",
     doc_date: "d.doc_date",
@@ -201,69 +227,68 @@ app.get("/docs", async (c) => {
   const sortDir =
     (c.req.query("sort_dir") || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
   const sortExpr = sortMap[sortBy] || null;
-  const orderBy = sortExpr
-    ? `ORDER BY ${sortExpr} ${sortDir}, d.doc_no DESC`
-    : `ORDER BY d.doc_date DESC, d.doc_no DESC`;
+  const orderByClause = sortExpr
+    ? sql`ORDER BY ${sql.raw(`${sortExpr} ${sortDir}`)}, d.doc_no DESC`
+    : sql`ORDER BY d.doc_date DESC, d.doc_no DESC`;
 
-  const total = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS count FROM (${baseSelect}) sub ${whereSql.replace(/\bd\./g, "sub.")}`
-  )
-    .bind(...binds)
-    .first<{ count: number }>();
+  const totalRow = await db.get<{ count: number }>(
+    sql`SELECT COUNT(*) AS count ${fromJoin} ${whereClause}`
+  );
 
-  const rows = await c.env.DB.prepare(
-    `SELECT * FROM (${baseSelect}) d ${whereSql}
-     ${orderBy}
-     LIMIT ? OFFSET ?`
-  )
-    .bind(...binds, perPage, offset)
-    .all();
+  const rows = await db.all<any>(sql`
+    SELECT d.*,
+           COALESCE(po.line_count, 0) AS outstanding_line_count,
+           po.next_delivery,
+           po.total_remaining_qty
+    ${fromJoin}
+    ${whereClause}
+    ${orderByClause}
+    LIMIT ${perPage} OFFSET ${offset}
+  `);
 
   return c.json({
-    data: rows.results,
+    data: rows,
     page,
     per_page: perPage,
-    total: total?.count || 0,
+    total: totalRow?.count || 0,
   });
 });
 
-// Lines for a single PO doc — used by the side-panel expand on the
-// unified PO view to show item codes, supplier dates, etc.
 // Single PO doc by number — feeds the dedicated /po/:docNo detail page.
 // Same shape as one row from /docs (header + outstanding_line_count +
 // next_delivery + total_remaining_qty) so the page can drop straight in.
 app.get("/docs/:docNo", async (c) => {
   const docNo = c.req.param("docNo");
-  const row = await c.env.DB.prepare(
-    `SELECT d.*,
-            COALESCE(po.line_count, 0) AS outstanding_line_count,
-            po.next_delivery,
-            po.total_remaining_qty
-       FROM purchase_order_docs d
-       LEFT JOIN (
-         SELECT doc_no,
-                COUNT(*) AS line_count,
-                MIN(delivery_date) AS next_delivery,
-                SUM(remaining_qty) AS total_remaining_qty
-           FROM purchase_orders
-          GROUP BY doc_no
-       ) po ON po.doc_no = d.doc_no
-      WHERE d.doc_no = ?`
-  )
-    .bind(docNo)
-    .first();
+  const db = getDb(c.env);
+  const row = await db.get<any>(sql`
+    SELECT d.*,
+           COALESCE(po.line_count, 0) AS outstanding_line_count,
+           po.next_delivery,
+           po.total_remaining_qty
+      FROM ${purchase_order_docs} d
+      LEFT JOIN (
+        SELECT doc_no,
+               COUNT(*) AS line_count,
+               MIN(delivery_date) AS next_delivery,
+               SUM(remaining_qty) AS total_remaining_qty
+          FROM ${purchase_orders}
+         GROUP BY doc_no
+      ) po ON po.doc_no = d.doc_no
+     WHERE d.doc_no = ${docNo}
+  `);
   if (!row) return c.json({ error: "Not found" }, 404);
   return c.json({ data: row });
 });
 
 app.get("/lines/:docNo", async (c) => {
   const docNo = c.req.param("docNo");
-  const rows = await c.env.DB.prepare(
-    `SELECT * FROM purchase_orders WHERE doc_no = ? ORDER BY item_code ASC`
-  )
-    .bind(docNo)
-    .all();
-  return c.json({ data: rows.results });
+  const db = getDb(c.env);
+  const rows = await db.all<any>(sql`
+    SELECT * FROM ${purchase_orders}
+     WHERE doc_no = ${docNo}
+     ORDER BY item_code ASC
+  `);
+  return c.json({ data: rows });
 });
 
 // Full line-item details for a single PO from AutoCount
@@ -303,45 +328,47 @@ app.patch("/:docNo/:itemCode", async (c) => {
     unit_price?: number | null;
   }>();
 
-  const allowed = ["overdue_days", "supplier_date1", "supplier_date2", "supplier_date3"] as const;
-  const sets: string[] = [];
-  const binds: any[] = [];
+  const allowed = [
+    "overdue_days",
+    "supplier_date1",
+    "supplier_date2",
+    "supplier_date3",
+  ] as const;
+  const set: Record<string, any> = {};
   for (const k of allowed) {
-    if (k in body) {
-      sets.push(`${k} = ?`);
-      binds.push((body as any)[k] ?? null);
-    }
+    if (k in body) set[k] = (body as any)[k] ?? null;
   }
 
   // Money fields are treated as a manual override so the next sync
   // doesn't clobber them. amount_source gets stamped "manual".
   if ("amount" in body || "unit_price" in body) {
     if ("amount" in body) {
-      sets.push("amount = ?");
-      binds.push(body.amount != null ? Number(body.amount) : null);
+      set.amount = body.amount != null ? Number(body.amount) : null;
     }
     if ("unit_price" in body) {
-      sets.push("unit_price = ?");
-      binds.push(body.unit_price != null ? Number(body.unit_price) : null);
+      set.unit_price = body.unit_price != null ? Number(body.unit_price) : null;
     }
-    sets.push("amount_source = ?");
-    binds.push("manual");
-    sets.push("amount_updated_at = ?");
-    binds.push(new Date().toISOString());
-    sets.push("amount_updated_by = ?");
-    binds.push(me?.id || null);
+    set.amount_source = "manual";
+    set.amount_updated_at = new Date().toISOString();
+    set.amount_updated_by = me?.id || null;
   }
 
-  if (!sets.length) return c.json({ error: "No fields to update" }, 400);
+  if (Object.keys(set).length === 0) {
+    return c.json({ error: "No fields to update" }, 400);
+  }
 
-  binds.push(docNo, itemCode);
-  const res = await c.env.DB.prepare(
-    `UPDATE purchase_orders SET ${sets.join(", ")} WHERE doc_no = ? AND item_code = ?`
-  )
-    .bind(...binds)
-    .run();
+  const db = getDb(c.env);
+  const result = await db
+    .update(purchase_orders)
+    .set(set)
+    .where(
+      and(
+        eq(purchase_orders.doc_no, docNo),
+        eq(purchase_orders.item_code, itemCode)
+      )
+    );
 
-  if (!res.meta.changes) return c.json({ error: "PO line not found" }, 404);
+  if (!result.meta?.changes) return c.json({ error: "PO line not found" }, 404);
   return c.json({ ok: true });
 });
 

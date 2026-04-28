@@ -529,6 +529,13 @@ export interface TeamMember {
   department_name: string | null;
   /** 6-char hex without the leading '#'. */
   department_color: string | null;
+  /**
+   * Per-user brand allow-list (mig 049). Drives sales-dept project
+   * visibility for users in scope_to_pic roles. Empty array when no
+   * brands assigned (or role isn't sales-scoped — empty here doesn't
+   * imply anything for unscoped users).
+   */
+  brands: string[];
   invited_at: string | null;
   joined_at: string | null;
   last_login_at: string | null;
@@ -774,7 +781,12 @@ export interface PlannerProposal {
 export type EventType = "setup" | "dismantle";
 
 export interface CalendarEvent {
-  id: number;
+  /** Numeric ids belong to manual rows in the `events` table.
+   *  Project-sourced rows use a string id like "project-42-setup" so
+   *  they never collide with autoincrement values. The `source` field
+   *  is the canonical signal — id type is just the implementation
+   *  detail. */
+  id: number | string;
   type: EventType;
   title: string;
   event_date: string;
@@ -785,4 +797,13 @@ export interface CalendarEvent {
   created_by_name: string | null;
   created_at: string;
   updated_at: string;
+  /** "manual" → row in events table, fully editable here.
+   *  "project" → derived from a project's setup/dismantle config,
+   *  read-only at this surface (clicks navigate to the project). */
+  source?: "manual" | "project";
+  project_id?: number;
+  project_code?: string | null;
+  driver_name?: string | null;
+  lorry_plate?: string | null;
+  end_at?: string | null;
 }

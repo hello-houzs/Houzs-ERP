@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, X, Wand2, RefreshCw, ExternalLink } from "lucide-react";
+import { Plus, X, Wand2, RefreshCw, ExternalLink, Pencil, Trash2 } from "lucide-react";
 import { MapView, type MapPin } from "../components/MapView";
 import { PageHeader } from "../components/Layout";
 import { DataTable } from "../components/DataTable";
@@ -15,6 +15,7 @@ import { TrackingTab } from "../components/TrackingTab";
 import { TabStrip } from "../components/TabStrip";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
+import { useDialog } from "../hooks/useDialog";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
@@ -25,6 +26,8 @@ import type {
   Paginated,
   Trip,
   TripDetail,
+  TripStatus,
+  TripType,
   Warehouse,
   Lorry,
   TeamMember,
@@ -53,6 +56,9 @@ const TAB_STATUS: Record<TripsTab, string> = {
 export function Trips() {
   const { can } = useAuth();
   const canPlan = can("planner.run");
+  const canManage = can("trips.manage");
+  const toast = useToast();
+  const dialog = useDialog();
   const [tab, setTab] = useLocalStorage<TripsTab>("trips:tab", "queue");
   const [newTripSeed, setNewTripSeed] = useState<SalesOrder[] | null>(null);
   const [warehouse, setWarehouse] = useState<string>("");
@@ -62,6 +68,7 @@ export function Trips() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:trips", 50);
   const [showNew, setShowNew] = useState(false);
+  const [editing, setEditing] = useState<Trip | null>(null);
   const navigate = useNavigate();
 
   // ?focus=ID — Overview inbox deep-links straight to the trip detail page.
@@ -98,6 +105,66 @@ export function Trips() {
   const today = new Date().toISOString().slice(0, 10);
   const todayCount = rows.filter((t) => t.trip_date === today).length;
   const inProgressCount = rows.filter((t) => t.status === "in_progress" || t.status === "started").length;
+
+  // ── Per-row CRUD actions (live + history tabs) ────────────
+  // The list previously only supported click-to-navigate. Add inline
+  // Edit + Cancel so dispatchers can fix scheduling errors without
+  // jumping to the detail page.
+  async function cancelTrip(t: Trip) {
+    if (
+      !(await dialog.confirm(
+        `Cancel trip ${t.trip_no}? Stops stay attached for audit but the trip is removed from active dispatch.`
+      ))
+    )
+      return;
+    try {
+      await api.del(`/api/trips/${t.id}`);
+      toast.success(`Cancelled ${t.trip_no}`);
+      list.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Cancel failed");
+    }
+  }
+
+  async function permaDeleteTrip(t: Trip) {
+    if (
+      !(await dialog.confirm(
+        `Permanently delete trip ${t.trip_no}? This drops the trip and its stops — the underlying sales orders will return to the Queue. Cannot be undone.`
+      ))
+    )
+      return;
+    try {
+      await api.del(`/api/trips/${t.id}/permanent`);
+      toast.success(`Deleted ${t.trip_no}`);
+      list.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Delete failed");
+    }
+  }
+
+  async function clearHistory() {
+    if (
+      !(await dialog.confirm(
+        warehouse
+          ? `Permanently delete every completed and cancelled trip in ${warehouse}? Sales orders return to Queue. Cannot be undone.`
+          : `Permanently delete every completed and cancelled trip across all warehouses? Sales orders return to Queue. Cannot be undone.`
+      ))
+    )
+      return;
+    try {
+      const r = await api.del<{ ok: boolean; deleted: number }>(
+        `/api/trips/history/clear${warehouse ? `?warehouse=${encodeURIComponent(warehouse)}` : ""}`
+      );
+      toast.success(
+        r.deleted === 0
+          ? "No history to clear"
+          : `Deleted ${r.deleted} trip${r.deleted === 1 ? "" : "s"}`
+      );
+      list.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Clear failed");
+    }
+  }
   const completedCount = rows.filter((t) => t.status === "completed").length;
   const totalRevenue = rows.reduce((s, t) => s + (t.total_revenue || 0), 0);
 
@@ -157,6 +224,19 @@ export function Trips() {
         actions={
           <>
             {tab !== "events" && tab !== "tracking" && <BackfillButton />}
+            {tab === "history" && canManage && (
+              <button
+                onClick={clearHistory}
+                title={
+                  warehouse
+                    ? `Permanently delete every completed/cancelled trip in ${warehouse}`
+                    : "Permanently delete every completed/cancelled trip"
+                }
+                className="flex items-center gap-1.5 rounded-md border border-err/40 bg-err/5 px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-err hover:bg-err/10"
+              >
+                <Trash2 size={14} /> Clear History
+              </button>
+            )}
             {tab !== "drafts" && tab !== "queue" && tab !== "events" && tab !== "tracking" && (
               <button
                 onClick={() => {
@@ -314,6 +394,56 @@ export function Trips() {
             ),
             getValue: (r: Trip) => r.status,
           },
+          ...(canManage
+            ? [
+                {
+                  key: "_actions",
+                  label: "",
+                  align: "right" as const,
+                  alwaysVisible: true,
+                  disableSort: true,
+                  render: (r: Trip) => {
+                    const terminal =
+                      r.status === "cancelled" || r.status === "completed";
+                    return (
+                      <div
+                        className="flex items-center justify-end gap-0.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          onClick={() => setEditing(r)}
+                          title="Edit trip"
+                          aria-label="Edit trip"
+                          className="rounded p-1 text-ink-muted hover:bg-surface-dim hover:text-ink"
+                        >
+                          <Pencil size={13} />
+                        </button>
+                        {!terminal && (
+                          <button
+                            onClick={() => cancelTrip(r)}
+                            title="Cancel trip"
+                            aria-label="Cancel trip"
+                            className="rounded p-1 text-ink-muted hover:bg-err/10 hover:text-err"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                        {terminal && (
+                          <button
+                            onClick={() => permaDeleteTrip(r)}
+                            title="Permanently delete (orders return to Queue)"
+                            aria-label="Permanently delete trip"
+                            className="rounded border border-err/30 p-1 text-err hover:bg-err/10"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  },
+                },
+              ]
+            : []),
         ] as any}
         rows={list.data?.data ?? null}
         loading={list.loading}
@@ -351,6 +481,17 @@ export function Trips() {
             setShowNew(false);
             setNewTripSeed(null);
             setTab("live");
+            list.reload();
+          }}
+        />
+      )}
+
+      {editing && (
+        <EditTripPanel
+          trip={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
             list.reload();
           }}
         />
@@ -871,4 +1012,227 @@ function buildGoogleMapsUrl(
   for (const s of stops) points.push(`${s.lat},${s.lng}`);
   if (warehouse) points.push(`${warehouse.lat},${warehouse.lng}`);
   return `https://www.google.com/maps/dir/${points.join("/")}`;
+}
+
+// ── Inline edit panel for a single trip ──────────────────────
+// Lives on the live/history list so dispatchers can correct the
+// schedule, reassign driver/lorry, or change status without leaving
+// the table. Backed by PATCH /api/trips/:id, which already supports
+// the auto-stamp transition shortcut for status changes.
+
+const TRIP_STATUS_OPTIONS: { value: TripStatus; label: string }[] = [
+  { value: "assigned", label: "Assigned" },
+  { value: "started", label: "Started" },
+  { value: "in_progress", label: "In Progress" },
+  { value: "completed", label: "Completed" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
+const TRIP_TYPE_OPTIONS: { value: TripType; label: string }[] = [
+  { value: "delivery", label: "Delivery" },
+  { value: "setup", label: "Setup" },
+  { value: "dismantle", label: "Dismantle" },
+  { value: "sg", label: "Singapore" },
+  { value: "mixed", label: "Mixed" },
+];
+
+function EditTripPanel({
+  trip,
+  onClose,
+  onSaved,
+}: {
+  trip: Trip;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  const [tripDate, setTripDate] = useState(trip.trip_date);
+  const [tripType, setTripType] = useState<TripType>(trip.trip_type);
+  const [status, setStatus] = useState<TripStatus>(trip.status);
+  const [warehouse, setWarehouse] = useState(trip.warehouse);
+  const [lorryId, setLorryId] = useState<number | "">(trip.lorry_id ?? "");
+  const [driverId, setDriverId] = useState<number | "">(trip.driver_user_id ?? "");
+  const [notes, setNotes] = useState(trip.notes ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const warehouses = useQuery<{ data: Warehouse[] }>(() => api.get("/api/warehouses"));
+  const lorries = useQuery<{ data: Lorry[] }>(
+    () => api.get(`/api/lorries${buildQuery({ warehouse })}`),
+    [warehouse]
+  );
+  const drivers = useQuery<{ users: TeamMember[] }>(() =>
+    api
+      .get<{ users: TeamMember[] }>("/api/users")
+      .catch(() => ({ users: [] as TeamMember[] }))
+  );
+
+  // Build a diff against the original so we don't ship every field on
+  // every save — keeps the activity log readable and avoids tripping
+  // an unintended status auto-stamp.
+  function buildDiff(): Record<string, any> {
+    const out: Record<string, any> = {};
+    if (tripDate !== trip.trip_date) out.trip_date = tripDate;
+    if (tripType !== trip.trip_type) out.trip_type = tripType;
+    if (warehouse !== trip.warehouse) out.warehouse = warehouse;
+    const newLorry = lorryId === "" ? null : lorryId;
+    if (newLorry !== trip.lorry_id) out.lorry_id = newLorry;
+    const newDriver = driverId === "" ? null : driverId;
+    if (newDriver !== trip.driver_user_id) out.driver_user_id = newDriver;
+    if ((notes || null) !== (trip.notes || null)) out.notes = notes || null;
+    if (status !== trip.status) out.status = status;
+    return out;
+  }
+
+  async function save() {
+    const diff = buildDiff();
+    if (Object.keys(diff).length === 0) {
+      onClose();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.patch(`/api/trips/${trip.id}`, diff);
+      toast.success(`Updated ${trip.trip_no}`);
+      onSaved();
+    } catch (e: any) {
+      setError(e?.message || "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel
+      open
+      onClose={onClose}
+      title={`Edit ${trip.trip_no}`}
+      subtitle={`${formatDate(trip.trip_date)} · ${trip.warehouse}`}
+      width={460}
+      footer={
+        <div className="flex items-center justify-between gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] text-ink-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={busy}
+            className="rounded-md bg-accent px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm disabled:opacity-50"
+          >
+            {busy ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      }
+    >
+      {error && (
+        <div className="mb-3 rounded-md border border-err/40 bg-err/5 px-3 py-2 text-[12px] text-err">
+          {error}
+        </div>
+      )}
+
+      <PanelSection title="Schedule">
+        <FieldRow label="Date">
+          <input
+            type="date"
+            value={tripDate}
+            onChange={(e) => setTripDate(e.target.value)}
+            className="h-9 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent"
+          />
+        </FieldRow>
+        <FieldRow label="Warehouse">
+          <select
+            value={warehouse}
+            onChange={(e) => {
+              setWarehouse(e.target.value);
+              // Clear lorry — the next list is filtered by warehouse.
+              setLorryId("");
+            }}
+            className="h-9 w-full rounded-md border border-border bg-surface px-2 text-[12.5px]"
+          >
+            {warehouses.data?.data.map((w) => (
+              <option key={w.code} value={w.code}>
+                {w.code} · {w.name}
+              </option>
+            ))}
+          </select>
+        </FieldRow>
+        <FieldRow label="Type">
+          <select
+            value={tripType}
+            onChange={(e) => setTripType(e.target.value as TripType)}
+            className="h-9 w-full rounded-md border border-border bg-surface px-2 text-[12.5px]"
+          >
+            {TRIP_TYPE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </FieldRow>
+        <FieldRow label="Status">
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value as TripStatus)}
+            className="h-9 w-full rounded-md border border-border bg-surface px-2 text-[12.5px]"
+          >
+            {TRIP_STATUS_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </FieldRow>
+      </PanelSection>
+
+      <PanelSection title="Assignment">
+        <FieldRow label="Driver">
+          <select
+            value={driverId}
+            onChange={(e) =>
+              setDriverId(e.target.value ? parseInt(e.target.value, 10) : "")
+            }
+            className="h-9 w-full rounded-md border border-border bg-surface px-2 text-[12.5px]"
+          >
+            <option value="">— none —</option>
+            {(drivers.data?.users ?? []).map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name}
+              </option>
+            ))}
+          </select>
+        </FieldRow>
+        <FieldRow label="Lorry">
+          <select
+            value={lorryId}
+            onChange={(e) =>
+              setLorryId(e.target.value ? parseInt(e.target.value, 10) : "")
+            }
+            className="h-9 w-full rounded-md border border-border bg-surface px-2 text-[12.5px]"
+          >
+            <option value="">— none —</option>
+            {(lorries.data?.data ?? []).map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.plate}
+                {l.size && ` · ${l.size}`}
+              </option>
+            ))}
+          </select>
+        </FieldRow>
+      </PanelSection>
+
+      <PanelSection title="Notes">
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={3}
+          placeholder="Anything the dispatcher should know"
+          className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[12.5px] outline-none focus:border-accent"
+        />
+      </PanelSection>
+    </Panel>
+  );
 }

@@ -290,9 +290,10 @@ export function DefinitionList({ items }: { items: DefnItem[] }) {
           </dt>
           <dd
             className={cn(
-              "flex-1 truncate text-[12px] text-ink",
+              "min-w-0 flex-1 break-words text-[12px] text-ink",
               item.mono && "font-mono text-[11.5px]"
             )}
+            title={typeof item.value === "string" ? item.value : undefined}
           >
             {item.value}
           </dd>

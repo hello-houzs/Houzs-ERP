@@ -15,6 +15,17 @@ import {
   getPodObject,
   tripBelongsToDriver,
 } from "../services/trips";
+import { getDb } from "../db/client";
+import {
+  lorries,
+  lorry_incidents,
+  salary_trip_lines,
+  trips,
+  trip_locations,
+  trip_stops,
+  warehouses,
+} from "../db/schema";
+import { and, asc, eq, gte, inArray, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -38,6 +49,9 @@ function canManage(c: any) {
 }
 
 // ── List trips ─────────────────────────────────────────────────────
+// Delegates to services/trips.ts which is still raw SQL — that file is
+// queued for a future Drizzle pass once the conversion proves itself
+// on the lighter route handlers.
 app.get("/", async (c) => {
   const user = c.get("user");
   const all = canReadAll(c);
@@ -72,22 +86,42 @@ app.get("/mine/today", async (c) => {
     return c.json({ error: "Forbidden" }, 403);
   }
   const today = new Date().toISOString().slice(0, 10);
-  const rows = await c.env.DB.prepare(
-    `SELECT t.*, l.plate as lorry_plate, l.size as lorry_size,
-            w.name as warehouse_name,
-            (SELECT COUNT(*) FROM trip_stops s WHERE s.trip_id = t.id) as stop_count_actual,
-            (SELECT COUNT(*) FROM trip_stops s WHERE s.trip_id = t.id AND s.status IN ('delivered','failed')) as stops_done
-       FROM trips t
-       LEFT JOIN lorries l ON l.id = t.lorry_id
-       LEFT JOIN warehouses w ON w.code = t.warehouse
-      WHERE t.driver_user_id = ?
-        AND t.trip_date >= ?
-        AND t.status IN ('assigned','started','in_progress')
-      ORDER BY t.trip_date ASC, t.id ASC`
-  )
-    .bind(user.id, today)
-    .all();
-  return c.json({ data: rows.results ?? [] });
+  const db = getDb(c.env);
+  const rows = await db
+    .select({
+      // Spread trip columns. SQL builder can't `t.*` so list explicitly.
+      id: trips.id,
+      driver_user_id: trips.driver_user_id,
+      lorry_id: trips.lorry_id,
+      warehouse: trips.warehouse,
+      trip_date: trips.trip_date,
+      status: trips.status,
+      started_at: trips.started_at,
+      completed_at: trips.completed_at,
+      lorry_plate: lorries.plate,
+      lorry_size: lorries.size,
+      warehouse_name: warehouses.name,
+      stop_count_actual: sql<number>`(
+        SELECT COUNT(*) FROM ${trip_stops} s WHERE s.trip_id = ${trips.id}
+      )`,
+      stops_done: sql<number>`(
+        SELECT COUNT(*) FROM ${trip_stops} s
+         WHERE s.trip_id = ${trips.id}
+           AND s.status IN ('delivered','failed')
+      )`,
+    })
+    .from(trips)
+    .leftJoin(lorries, eq(lorries.id, trips.lorry_id))
+    .leftJoin(warehouses, eq(warehouses.code, trips.warehouse))
+    .where(
+      and(
+        eq(trips.driver_user_id, user.id),
+        gte(trips.trip_date, today),
+        inArray(trips.status, ["assigned", "started", "in_progress"])
+      )
+    )
+    .orderBy(asc(trips.trip_date), asc(trips.id));
+  return c.json({ data: rows });
 });
 
 // ── Trip detail ────────────────────────────────────────────────────
@@ -168,14 +202,100 @@ app.post("/:id/reorder", requirePermission("trips.manage"), async (c) => {
   const order: number[] = Array.isArray(body?.stop_ids) ? body.stop_ids : [];
   if (!order.length) return c.json({ error: "stop_ids required" }, 400);
 
-  const stmts = order.map((stopId, i) =>
-    c.env.DB.prepare(
-      `UPDATE trip_stops SET sequence = ?, updated_at = datetime('now')
-        WHERE id = ? AND trip_id = ?`
-    ).bind(i + 1, stopId, tripId)
-  );
-  await c.env.DB.batch(stmts);
+  const db = getDb(c.env);
+  // One UPDATE per stop — Drizzle queries auto-prepare. Could be a
+  // batch but the count is small (≤10 typically) and serial is fine.
+  for (let i = 0; i < order.length; i++) {
+    await db
+      .update(trip_stops)
+      .set({
+        sequence: i + 1,
+        updated_at: sql`datetime('now')` as unknown as string,
+      })
+      .where(and(eq(trip_stops.id, order[i]), eq(trip_stops.trip_id, tripId)));
+  }
   return c.json({ ok: true, count: order.length });
+});
+
+// ── Hard delete (permanent) ───────────────────────────────────────
+// Only allowed for trips already in a terminal status (completed or
+// cancelled). Used to clear the History tab — typically when test
+// data piled up before go-live. Once gone, the underlying sales
+// orders return to the Queue tab automatically because Queue derives
+// from "orders not currently on a trip".
+//
+// Cascades: trip_stops + trip_locations have ON DELETE CASCADE in
+// schema. lorry_incidents.trip_id is nullable so we null it.
+// salary_trip_lines is hard-deleted (test data has no payroll
+// implication; if this changes we'd add a guard).
+//
+// Note: the path is registered BEFORE the soft-cancel `/:id` route
+// so Hono's pattern matcher routes `/:id/permanent` here instead of
+// treating "permanent" as the id.
+app.delete("/:id/permanent", requirePermission("trips.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (Number.isNaN(id)) return c.json({ error: "Bad id" }, 400);
+
+  const db = getDb(c.env);
+  const row = await db
+    .select({ status: trips.status })
+    .from(trips)
+    .where(eq(trips.id, id))
+    .limit(1);
+  if (row.length === 0) return c.json({ error: "Not found" }, 404);
+  if (row[0].status !== "completed" && row[0].status !== "cancelled") {
+    return c.json(
+      {
+        error:
+          "Only completed or cancelled trips can be permanently deleted. Cancel the trip first.",
+      },
+      409
+    );
+  }
+
+  // Sequential to keep this readable; the row counts are small.
+  await db
+    .update(lorry_incidents)
+    .set({ trip_id: null })
+    .where(eq(lorry_incidents.trip_id, id));
+  await db.delete(salary_trip_lines).where(eq(salary_trip_lines.trip_id, id));
+  await db.delete(trip_locations).where(eq(trip_locations.trip_id, id));
+  await db.delete(trip_stops).where(eq(trip_stops.trip_id, id));
+  await db.delete(trips).where(eq(trips.id, id));
+  return c.json({ ok: true });
+});
+
+// ── Clear all history (bulk hard delete) ──────────────────────────
+// One-shot for wiping every completed + cancelled trip. Same cascade
+// semantics as /:id/permanent. Optional ?warehouse= filter so a
+// single-warehouse cleanup doesn't nuke another region's history.
+app.delete("/history/clear", requirePermission("trips.manage"), async (c) => {
+  const warehouse = c.req.query("warehouse") || null;
+
+  const db = getDb(c.env);
+  const idRows = await db
+    .select({ id: trips.id })
+    .from(trips)
+    .where(
+      warehouse
+        ? and(
+            inArray(trips.status, ["completed", "cancelled"]),
+            eq(trips.warehouse, warehouse)
+          )
+        : inArray(trips.status, ["completed", "cancelled"])
+    );
+  const ids = idRows.map((r) => r.id);
+  if (ids.length === 0) return c.json({ ok: true, deleted: 0 });
+
+  await db
+    .update(lorry_incidents)
+    .set({ trip_id: null })
+    .where(inArray(lorry_incidents.trip_id, ids));
+  await db.delete(salary_trip_lines).where(inArray(salary_trip_lines.trip_id, ids));
+  await db.delete(trip_locations).where(inArray(trip_locations.trip_id, ids));
+  await db.delete(trip_stops).where(inArray(trip_stops.trip_id, ids));
+  await db.delete(trips).where(inArray(trips.id, ids));
+  return c.json({ ok: true, deleted: ids.length });
 });
 
 // ── Cancel trip ────────────────────────────────────────────────────
@@ -237,13 +357,18 @@ app.get("/:id/locations", async (c) => {
     return c.json({ error: "Forbidden" }, 403);
   }
 
-  const rows = await c.env.DB.prepare(
-    `SELECT lat, lng, accuracy, recorded_at FROM trip_locations
-      WHERE trip_id = ? ORDER BY recorded_at ASC`
-  )
-    .bind(tripId)
-    .all();
-  return c.json({ data: rows.results ?? [] });
+  const db = getDb(c.env);
+  const rows = await db
+    .select({
+      lat: trip_locations.lat,
+      lng: trip_locations.lng,
+      accuracy: trip_locations.accuracy,
+      recorded_at: trip_locations.recorded_at,
+    })
+    .from(trip_locations)
+    .where(eq(trip_locations.trip_id, tripId))
+    .orderBy(asc(trip_locations.recorded_at));
+  return c.json({ data: rows });
 });
 
 // ── POD upload (binary, multipart not needed) ─────────────────────
@@ -281,13 +406,16 @@ app.put("/:id/stops/:stopId/pod", async (c) => {
   await putPodObject(c.env, key, body, contentType);
 
   // Auto-record on the stop
-  const col = kind === "photo" ? "pod_photo_r2_key" : "signature_r2_key";
-  await c.env.DB.prepare(
-    `UPDATE trip_stops SET ${col} = ?, updated_at = datetime('now')
-      WHERE id = ? AND trip_id = ?`
-  )
-    .bind(key, stopId, tripId)
-    .run();
+  const db = getDb(c.env);
+  const set: Record<string, any> = {
+    updated_at: sql`datetime('now')`,
+  };
+  if (kind === "photo") set.pod_photo_r2_key = key;
+  else set.signature_r2_key = key;
+  await db
+    .update(trip_stops)
+    .set(set)
+    .where(and(eq(trip_stops.id, stopId), eq(trip_stops.trip_id, tripId)));
 
   return c.json({ key });
 });

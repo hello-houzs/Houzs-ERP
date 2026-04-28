@@ -1,6 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { GripVertical, ChevronUp, ChevronDown, Plus, Pencil, Trash2, ShieldCheck, Eye, EyeOff } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
+import { ColorPicker } from "../components/ColorPicker";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
@@ -46,6 +49,14 @@ interface ChecklistTemplateItem {
   description: string | null;
   required_perm: string | null;
   due_offset_days: number | null;
+  section_id: number | null;
+  requires_review: number; // 0 | 1 — admin-driven flag (mig 050)
+}
+
+interface ChecklistTemplateSection {
+  id: number;
+  name: string;
+  sort_order: number;
 }
 
 export function ProjectMaintenanceView() {
@@ -136,13 +147,18 @@ function OrganizerManager() {
             key={o.id}
             className="flex items-center justify-between gap-3 px-3 py-2"
           >
-            <span className="text-[12.5px] text-ink">{o.name}</span>
-            <button
-              onClick={() => remove(o)}
-              className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
-            >
-              Remove
-            </button>
+            <span className="flex-1 text-[12.5px] text-ink">{o.name}</span>
+            <RowActionsMenu
+              items={[
+                {
+                  type: "action",
+                  icon: Trash2,
+                  label: "Remove",
+                  danger: true,
+                  onClick: () => remove(o),
+                },
+              ]}
+            />
           </li>
         ))}
       </ul>
@@ -254,12 +270,17 @@ function VenueManager() {
               placeholder="state"
               className="h-7 w-32 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
             />
-            <button
-              onClick={() => remove(v)}
-              className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
-            >
-              Remove
-            </button>
+            <RowActionsMenu
+              items={[
+                {
+                  type: "action",
+                  icon: Trash2,
+                  label: "Remove",
+                  danger: true,
+                  onClick: () => remove(v),
+                },
+              ]}
+            />
           </li>
         ))}
       </ul>
@@ -373,17 +394,119 @@ function ChecklistManager() {
   );
 }
 
+// RowActionsMenu and ColorPicker live in ../components for reuse.
+
 function ChecklistItemsEditor({ templateId }: { templateId: number }) {
   const toast = useToast();
-  const q = useQuery<{ data: ChecklistTemplateItem[] }>(
+  const q = useQuery<{
+    data: ChecklistTemplateItem[];
+    sections: ChecklistTemplateSection[];
+  }>(
     () => api.get(`/api/projects/checklist-templates/${templateId}/items`),
     [templateId]
   );
+  // Per-section quick-add. Tracks which section's "Add task" form is
+  // open + the title being typed.
+  const [addInSectionId, setAddInSectionId] = useState<number | null | "_none">(null);
   const [newTitle, setNewTitle] = useState("");
   const [newOffset, setNewOffset] = useState("");
   const [adding, setAdding] = useState(false);
+  // Tracks which section a drag is currently hovering over so we can
+  // tint the drop zone. Null = not dragging into any section.
+  const [dragOverSectionKey, setDragOverSectionKey] = useState<string | null>(null);
 
-  async function addItem() {
+  // Section management state
+  const [newSectionName, setNewSectionName] = useState("");
+  const [editingSectionId, setEditingSectionId] = useState<number | null>(null);
+  const [editingSectionName, setEditingSectionName] = useState("");
+  const [addingSection, setAddingSection] = useState(false);
+
+  const sections = q.data?.sections ?? [];
+
+  async function addSection() {
+    const n = newSectionName.trim();
+    if (!n) return;
+    setAddingSection(true);
+    try {
+      await api.post(`/api/projects/checklist-templates/${templateId}/sections`, {
+        name: n,
+      });
+      setNewSectionName("");
+      q.reload();
+      toast.success("Section added");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    } finally {
+      setAddingSection(false);
+    }
+  }
+
+  async function renameSection(id: number) {
+    const n = editingSectionName.trim();
+    if (!n) return;
+    try {
+      await api.patch(`/api/projects/checklist-templates/sections/${id}`, {
+        name: n,
+      });
+      setEditingSectionId(null);
+      setEditingSectionName("");
+      q.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
+  async function deleteSection(id: number, name: string) {
+    if (
+      !confirm(
+        `Delete section "${name}"? Template items in it will move to Uncategorised.`
+      )
+    )
+      return;
+    try {
+      await api.del(`/api/projects/checklist-templates/sections/${id}`);
+      q.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
+  // Reorder a section by one slot. The order here propagates to every
+  // project cloned from this template, which drives the stage-chip
+  // progress bar at the top of the project detail page.
+  async function moveSection(sectionId: number, delta: -1 | 1) {
+    const idx = sections.findIndex((s) => s.id === sectionId);
+    if (idx < 0) return;
+    const target = idx + delta;
+    if (target < 0 || target >= sections.length) return;
+    const next = sections.slice();
+    [next[idx], next[target]] = [next[target], next[idx]];
+    try {
+      await api.put(
+        `/api/projects/checklist-templates/${templateId}/sections/reorder`,
+        { ids: next.map((s) => s.id) }
+      );
+      q.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to reorder");
+    }
+  }
+
+  // Local order overrides server data while a reorder is in flight, so
+  // the UI feels instant. Reset whenever the server payload changes.
+  const [localOrder, setLocalOrder] = useState<ChecklistTemplateItem[] | null>(
+    null
+  );
+  const [dragId, setDragId] = useState<number | null>(null);
+  const [dragOverId, setDragOverId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (q.data?.data) setLocalOrder(q.data.data);
+  }, [q.data?.data]);
+
+  const items = localOrder ?? q.data?.data ?? [];
+
+  async function addItem(targetSectionId: number | null) {
     const t = newTitle.trim();
     if (!t) return;
     setAdding(true);
@@ -391,9 +514,12 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
       await api.post(`/api/projects/checklist-templates/${templateId}/items`, {
         title: t,
         due_offset_days: newOffset ? parseInt(newOffset, 10) : null,
+        section_id: targetSectionId,
       });
       setNewTitle("");
       setNewOffset("");
+      // Keep the form open in the same section so admins can batch-add
+      // multiple tasks per stage without re-clicking.
       q.reload();
       toast.success("Item added");
     } catch (e: any) {
@@ -422,90 +548,514 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
     }
   }
 
-  const items = q.data?.data ?? [];
+  // Push the proposed order to the server. The local state has already
+  // been updated; on failure we reload to bring the server's truth back.
+  async function persistOrder(next: ChecklistTemplateItem[]) {
+    try {
+      await api.put(
+        `/api/projects/checklist-templates/${templateId}/items/reorder`,
+        { ids: next.map((i) => i.id) }
+      );
+      q.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to reorder");
+      q.reload();
+    }
+  }
+
+  function moveBy(idx: number, delta: -1 | 1) {
+    const target = idx + delta;
+    if (target < 0 || target >= items.length) return;
+    const next = items.slice();
+    [next[idx], next[target]] = [next[target], next[idx]];
+    setLocalOrder(next);
+    persistOrder(next);
+  }
+
+  function onDragStart(e: React.DragEvent, id: number) {
+    e.dataTransfer.setData("text/plain", String(id));
+    e.dataTransfer.effectAllowed = "move";
+    setDragId(id);
+  }
+  function onDragOver(e: React.DragEvent, overId: number) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverId !== overId) setDragOverId(overId);
+  }
+  function onDragLeaveRow(overId: number) {
+    if (dragOverId === overId) setDragOverId(null);
+  }
+  function onDrop(e: React.DragEvent, targetId: number) {
+    e.preventDefault();
+    setDragOverId(null);
+    setDragOverSectionKey(null);
+    const sourceId = parseInt(e.dataTransfer.getData("text/plain"), 10);
+    setDragId(null);
+    if (!sourceId || sourceId === targetId) return;
+    const sourceIdx = items.findIndex((i) => i.id === sourceId);
+    const targetIdx = items.findIndex((i) => i.id === targetId);
+    if (sourceIdx < 0 || targetIdx < 0) return;
+    const source = items[sourceIdx];
+    const target = items[targetIdx];
+    const next = items.slice();
+    const [moved] = next.splice(sourceIdx, 1);
+    // Cross-section drop: inherit the target row's section before
+    // splicing in, so the persisted order + section_id agree.
+    const movedNew = { ...moved, section_id: target.section_id };
+    const targetIdxAdj =
+      sourceIdx < targetIdx ? targetIdx - 1 : targetIdx;
+    next.splice(targetIdxAdj, 0, movedNew);
+    setLocalOrder(next);
+    if (source.section_id !== target.section_id) {
+      // Patch the item's section_id first, then persist the new order.
+      // Sequential awaits since reorder relies on the section move
+      // already being durable.
+      (async () => {
+        try {
+          await api.patch(`/api/projects/checklist-templates/items/${source.id}`, {
+            section_id: target.section_id,
+          });
+          await persistOrder(next);
+        } catch (e: any) {
+          toast.error(e?.message || "Failed to move");
+          q.reload();
+        }
+      })();
+    } else {
+      persistOrder(next);
+    }
+  }
+
+  // Drop on a section block (header or empty area). Moves the dragged
+  // item into this section and parks it at the end of that section's
+  // existing items. Avoids the row-on-row collision when a section is
+  // empty or the user wants to append rather than insert before a row.
+  async function onDropOnSection(
+    e: React.DragEvent,
+    sectionId: number | null
+  ) {
+    e.preventDefault();
+    setDragOverSectionKey(null);
+    const sourceId = parseInt(e.dataTransfer.getData("text/plain"), 10);
+    setDragId(null);
+    if (!sourceId) return;
+    const sourceIdx = items.findIndex((i) => i.id === sourceId);
+    if (sourceIdx < 0) return;
+    const source = items[sourceIdx];
+    if ((source.section_id ?? null) === sectionId) {
+      // Already in this section — nothing to do at the section level.
+      return;
+    }
+    // Move the row to just after the last item in the target section
+    // (or to the end if that section is empty).
+    const next = items.slice();
+    const [moved] = next.splice(sourceIdx, 1);
+    moved.section_id = sectionId;
+    let insertAt = next.length;
+    for (let i = next.length - 1; i >= 0; i--) {
+      if ((next[i].section_id ?? null) === sectionId) {
+        insertAt = i + 1;
+        break;
+      }
+    }
+    next.splice(insertAt, 0, moved);
+    setLocalOrder(next);
+    try {
+      await api.patch(`/api/projects/checklist-templates/items/${source.id}`, {
+        section_id: sectionId,
+      });
+      await persistOrder(next);
+    } catch (err: any) {
+      toast.error(err?.message || "Failed to move");
+      q.reload();
+    }
+  }
+
+  function onDragOverSection(e: React.DragEvent, key: string) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverSectionKey !== key) setDragOverSectionKey(key);
+  }
 
   return (
     <div>
-      <div className="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_140px_auto]">
-        <input
-          value={newTitle}
-          onChange={(e) => setNewTitle(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addItem()}
-          placeholder="New item title…"
-          className="h-9 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-        />
-        <input
-          value={newOffset}
-          onChange={(e) => setNewOffset(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addItem()}
-          placeholder="Due offset days"
-          type="number"
-          className="h-9 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-        />
-        <Button
-          variant="primary"
-          onClick={addItem}
-          disabled={adding || !newTitle.trim()}
-        >
-          Add item
-        </Button>
+      {/* Sections (mig 050) — define stages that group template items.
+          Project-level sections are cloned from these on project create. */}
+      <div className="mb-3 rounded-md border border-border bg-bg/40 p-2">
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+            Sections (stages)
+          </span>
+          <span className="font-mono text-[9.5px] text-ink-muted/70">
+            {sections.length} defined
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {sections.map((s, idx) =>
+            editingSectionId === s.id ? (
+              <span
+                key={s.id}
+                className="inline-flex items-center gap-1 rounded-full border border-accent bg-accent-soft px-1 py-0.5"
+              >
+                <input
+                  value={editingSectionName}
+                  onChange={(e) => setEditingSectionName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") renameSection(s.id);
+                    if (e.key === "Escape") setEditingSectionId(null);
+                  }}
+                  autoFocus
+                  className="h-5 w-32 rounded bg-surface px-1.5 text-[11px] outline-none"
+                />
+                <button
+                  onClick={() => renameSection(s.id)}
+                  className="rounded bg-accent px-1 py-0.5 font-mono text-[8.5px] font-semibold uppercase text-white"
+                >
+                  Save
+                </button>
+              </span>
+            ) : (
+              <span
+                key={s.id}
+                className="group inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-ink-secondary"
+              >
+                {/* Reorder arrows — order here propagates to every
+                    project cloned from this template, driving the
+                    stage progress bar's left-to-right order. */}
+                <button
+                  onClick={() => moveSection(s.id, -1)}
+                  disabled={idx === 0}
+                  className="opacity-50 hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-20"
+                  title="Move left"
+                >
+                  <ChevronUp size={10} className="-rotate-90" />
+                </button>
+                <button
+                  onClick={() => moveSection(s.id, 1)}
+                  disabled={idx === sections.length - 1}
+                  className="opacity-50 hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-20"
+                  title="Move right"
+                >
+                  <ChevronDown size={10} className="-rotate-90" />
+                </button>
+                <span>{s.name}</span>
+                <button
+                  onClick={() => {
+                    setEditingSectionId(s.id);
+                    setEditingSectionName(s.name);
+                  }}
+                  className="opacity-50 hover:opacity-100"
+                  title="Rename"
+                >
+                  <Pencil size={10} />
+                </button>
+                <button
+                  onClick={() => deleteSection(s.id, s.name)}
+                  className="opacity-50 hover:text-err hover:opacity-100"
+                  title="Delete"
+                >
+                  <Trash2 size={10} />
+                </button>
+              </span>
+            )
+          )}
+          <input
+            value={newSectionName}
+            onChange={(e) => setNewSectionName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addSection()}
+            placeholder="New section…"
+            className="h-7 w-44 rounded-md border border-dashed border-border bg-surface px-2 text-[11.5px] outline-none focus:border-accent focus:ring-1 focus:ring-accent/20"
+          />
+          <button
+            onClick={addSection}
+            disabled={addingSection || !newSectionName.trim()}
+            className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-secondary hover:border-accent/40 hover:text-accent disabled:opacity-50"
+          >
+            <Plus size={10} className="inline-block mr-0.5" />
+            Add
+          </button>
+        </div>
+        {sections.length === 0 && (
+          <p className="mt-1 text-[10px] text-ink-muted">
+            No sections yet. Without sections, all template items land in
+            "Uncategorised" on each project.
+          </p>
+        )}
       </div>
 
-      <ul className="divide-y divide-border-subtle rounded-md border border-border bg-bg/40">
-        {q.loading && (
-          <li className="px-3 py-3 text-[11.5px] text-ink-muted">Loading…</li>
-        )}
-        {!q.loading && items.length === 0 && (
-          <li className="px-3 py-3 text-[11.5px] text-ink-muted">
-            No items yet — add one above.
-          </li>
-        )}
-        {items.map((item) => (
-          <li
-            key={item.id}
-            className="grid grid-cols-1 gap-2 px-3 py-2 sm:grid-cols-[60px_1fr_120px_auto] sm:items-center"
-          >
-            <input
-              defaultValue={item.seq}
-              onBlur={(e) => {
-                const n = parseInt(e.target.value, 10);
-                if (!isNaN(n) && n !== item.seq) patchItem(item.id, { seq: n });
-              }}
-              type="number"
-              className="h-7 rounded-md border border-border bg-surface px-2 font-mono text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-            />
-            <input
-              defaultValue={item.title}
-              onBlur={(e) => {
-                if (e.target.value !== item.title)
-                  patchItem(item.id, { title: e.target.value });
-              }}
-              className="h-7 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-            />
-            <input
-              defaultValue={item.due_offset_days ?? ""}
-              onBlur={(e) => {
-                const n = e.target.value ? parseInt(e.target.value, 10) : null;
-                if (n !== item.due_offset_days)
-                  patchItem(item.id, { due_offset_days: n });
-              }}
-              type="number"
-              placeholder="Due offset"
-              className="h-7 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-            />
-            <button
-              onClick={() => removeItem(item)}
-              className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
-            >
-              Delete
-            </button>
-          </li>
-        ))}
-      </ul>
+      {q.loading && items.length === 0 && (
+        <div className="rounded-md border border-border bg-bg/40 px-3 py-3 text-[11.5px] text-ink-muted">
+          Loading…
+        </div>
+      )}
+
+      {/* Section-keyed blocks. Each block is a drop zone — drop a row
+          onto it to move the row into that section. Reordering within
+          a section uses the row-on-row drop (cross-section drop also
+          works that way; the row inherits the target's section). */}
+      {!q.loading &&
+        (() => {
+          const blocks: Array<{
+            key: string;
+            sectionId: number | null;
+            name: string;
+            items: ChecklistTemplateItem[];
+          }> = [];
+          for (const s of sections) {
+            blocks.push({
+              key: `s-${s.id}`,
+              sectionId: s.id,
+              name: s.name,
+              items: items.filter((it) => it.section_id === s.id),
+            });
+          }
+          const uncat = items.filter((it) => it.section_id == null);
+          if (uncat.length > 0 || sections.length === 0) {
+            blocks.push({
+              key: "s-none",
+              sectionId: null,
+              name: "Uncategorised",
+              items: uncat,
+            });
+          }
+          return (
+            <div className="space-y-2">
+              {blocks.map((block) => {
+                const isDropTarget =
+                  dragOverSectionKey === block.key && dragId != null;
+                const addOpenHere =
+                  addInSectionId ===
+                  (block.sectionId == null ? "_none" : block.sectionId);
+                return (
+                  <div
+                    key={block.key}
+                    onDragOver={(e) => onDragOverSection(e, block.key)}
+                    onDragLeave={() => {
+                      if (dragOverSectionKey === block.key)
+                        setDragOverSectionKey(null);
+                    }}
+                    onDrop={(e) => onDropOnSection(e, block.sectionId)}
+                    className={cn(
+                      "rounded-md border bg-bg/40 transition-colors",
+                      isDropTarget
+                        ? "border-accent bg-accent-soft/30"
+                        : "border-border"
+                    )}
+                  >
+                    {/* Block header */}
+                    <div className="flex items-center gap-2 border-b border-border-subtle bg-bg/60 px-3 py-1.5">
+                      <span className="flex-1 text-[10.5px] font-semibold uppercase tracking-brand text-ink-secondary">
+                        {block.name}
+                      </span>
+                      <span className="font-mono text-[10px] text-ink-muted">
+                        {block.items.length}
+                      </span>
+                      <button
+                        onClick={() =>
+                          setAddInSectionId(
+                            addOpenHere
+                              ? null
+                              : block.sectionId == null
+                              ? "_none"
+                              : block.sectionId
+                          )
+                        }
+                        className="rounded p-0.5 text-ink-muted hover:bg-surface-dim hover:text-accent"
+                        title="Add task to this section"
+                      >
+                        <Plus size={12} />
+                      </button>
+                    </div>
+
+                    {/* Block rows */}
+                    <ul className="divide-y divide-border-subtle">
+                      {block.items.length === 0 && !addOpenHere && (
+                        <li className="px-3 py-3 text-[10.5px] italic text-ink-muted">
+                          Drop a task here, or click <Plus size={10} className="inline" /> above to add one.
+                        </li>
+                      )}
+                      {block.items.map((item) => {
+                        const idx = items.findIndex((i) => i.id === item.id);
+                        const blockIdx = block.items.findIndex(
+                          (i) => i.id === item.id
+                        );
+                        const isDragging = dragId === item.id;
+                        const isRowDropTarget =
+                          dragOverId === item.id && dragId !== item.id;
+                        return (
+                          <li
+                            key={item.id}
+                            draggable
+                            onDragStart={(e) => onDragStart(e, item.id)}
+                            onDragOver={(e) => {
+                              e.stopPropagation();
+                              onDragOver(e, item.id);
+                            }}
+                            onDragLeave={() => onDragLeaveRow(item.id)}
+                            onDrop={(e) => {
+                              e.stopPropagation();
+                              onDrop(e, item.id);
+                            }}
+                            onDragEnd={() => {
+                              setDragId(null);
+                              setDragOverId(null);
+                              setDragOverSectionKey(null);
+                            }}
+                            className={cn(
+                              "grid grid-cols-1 gap-2 px-3 py-2 transition-colors sm:grid-cols-[auto_1fr_120px_auto] sm:items-center",
+                              isDragging && "opacity-40",
+                              isRowDropTarget && "bg-accent-soft/40"
+                            )}
+                          >
+                            {/* Drag handle + arrow controls */}
+                            <div className="flex items-center gap-0.5 text-ink-muted">
+                              <span
+                                className="cursor-grab rounded p-1 hover:bg-bg/70 active:cursor-grabbing"
+                                title="Drag to reorder or move between sections"
+                                aria-label="Drag handle"
+                              >
+                                <GripVertical size={14} />
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => moveBy(idx, -1)}
+                                disabled={blockIdx === 0}
+                                title="Move up"
+                                aria-label="Move up"
+                                className="rounded p-1 hover:bg-bg/70 hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                              >
+                                <ChevronUp size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => moveBy(idx, 1)}
+                                disabled={blockIdx === block.items.length - 1}
+                                title="Move down"
+                                aria-label="Move down"
+                                className="rounded p-1 hover:bg-bg/70 hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                              >
+                                <ChevronDown size={14} />
+                              </button>
+                              <span className="ml-1 font-mono text-[10px] text-ink-muted/70">
+                                {blockIdx + 1}
+                              </span>
+                            </div>
+                            <input
+                              defaultValue={item.title}
+                              key={`title-${item.id}-${item.title}`}
+                              onBlur={(e) => {
+                                if (e.target.value !== item.title)
+                                  patchItem(item.id, { title: e.target.value });
+                              }}
+                              className="h-7 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                            />
+                            <input
+                              defaultValue={item.due_offset_days ?? ""}
+                              key={`offset-${item.id}-${item.due_offset_days ?? ""}`}
+                              onBlur={(e) => {
+                                const n = e.target.value
+                                  ? parseInt(e.target.value, 10)
+                                  : null;
+                                if (n !== item.due_offset_days)
+                                  patchItem(item.id, { due_offset_days: n });
+                              }}
+                              type="number"
+                              placeholder="Due offset"
+                              className="h-7 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                            />
+                            {/* Row actions — both "Need review" and
+                                Delete moved into a single ellipsis
+                                menu so the visible row only carries
+                                handle / title / offset / menu. The
+                                trigger gets a tiny brass dot when the
+                                template item is review-gated, so admins
+                                can scan the list without opening every
+                                menu. */}
+                            <RowActionsMenu
+                              indicator={!!item.requires_review}
+                              items={[
+                                {
+                                  type: "toggle",
+                                  icon: ShieldCheck,
+                                  label: "Need review",
+                                  active: !!item.requires_review,
+                                  onClick: () =>
+                                    patchItem(item.id, {
+                                      requires_review: !item.requires_review,
+                                    }),
+                                },
+                                {
+                                  type: "action",
+                                  icon: Trash2,
+                                  label: "Delete",
+                                  danger: true,
+                                  onClick: () => removeItem(item),
+                                },
+                              ]}
+                            />
+                          </li>
+                        );
+                      })}
+                      {/* Inline quick-add inside the section */}
+                      {addOpenHere && (
+                        <li className="grid grid-cols-1 gap-2 bg-bg/30 px-3 py-2 sm:grid-cols-[1fr_140px_auto_auto] sm:items-center">
+                          <input
+                            value={newTitle}
+                            onChange={(e) => setNewTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") addItem(block.sectionId);
+                              if (e.key === "Escape") {
+                                setAddInSectionId(null);
+                                setNewTitle("");
+                                setNewOffset("");
+                              }
+                            }}
+                            placeholder="New task title…"
+                            autoFocus
+                            className="h-8 rounded-md border border-accent/40 bg-surface px-2 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                          />
+                          <input
+                            value={newOffset}
+                            onChange={(e) => setNewOffset(e.target.value)}
+                            onKeyDown={(e) =>
+                              e.key === "Enter" && addItem(block.sectionId)
+                            }
+                            placeholder="Due offset days"
+                            type="number"
+                            className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                          />
+                          <Button
+                            variant="primary"
+                            onClick={() => addItem(block.sectionId)}
+                            disabled={adding || !newTitle.trim()}
+                          >
+                            Add
+                          </Button>
+                          <button
+                            onClick={() => {
+                              setAddInSectionId(null);
+                              setNewTitle("");
+                              setNewOffset("");
+                            }}
+                            className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted"
+                          >
+                            Cancel
+                          </button>
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+
       <p className="mt-2 text-[10.5px] text-ink-muted">
-        Seq controls display order (lower first). Due offset days = how many
-        days from the project start date the item is due (negative = before
-        start).
+        Drag a row's handle to reorder within a section, or drop it on a
+        different section's block to move it. The "Mgmt review" toggle
+        flags tasks that need approval before they can be ticked done on
+        a project.
       </p>
     </div>
   );
@@ -602,20 +1152,12 @@ function BrandManager() {
           placeholder="New brand name…"
           className="h-9 min-w-[200px] flex-1 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
         />
-        <div className="flex items-center gap-1">
-          {BRAND_PALETTE.map((hex) => (
-            <button
-              key={hex}
-              onClick={() => setColor(hex)}
-              title={`#${hex}`}
-              className={cn(
-                "h-7 w-7 rounded-md border-2 transition-all",
-                color === hex ? "border-ink scale-110" : "border-transparent"
-              )}
-              style={{ backgroundColor: `#${hex}` }}
-            />
-          ))}
-        </div>
+        <ColorPicker
+          value={color}
+          onChange={setColor}
+          presets={BRAND_PALETTE}
+          size={32}
+        />
         <Button variant="primary" onClick={add} disabled={adding || !name.trim()}>
           Add
         </Button>
@@ -638,6 +1180,12 @@ function BrandManager() {
               !b.active && "opacity-50"
             )}
           >
+            <ColorPicker
+              value={b.color}
+              onChange={(hex) => patch(b, { color: hex })}
+              presets={BRAND_PALETTE}
+              size={24}
+            />
             <input
               defaultValue={b.name}
               onBlur={(e) => {
@@ -646,20 +1194,6 @@ function BrandManager() {
               }}
               className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[12.5px] font-semibold text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
             />
-            <div className="flex items-center gap-1">
-              {BRAND_PALETTE.map((hex) => (
-                <button
-                  key={hex}
-                  onClick={() => patch(b, { color: hex })}
-                  title={`#${hex}`}
-                  className={cn(
-                    "h-5 w-5 rounded-sm border-2 transition-all",
-                    b.color === hex ? "border-ink" : "border-transparent opacity-60 hover:opacity-100"
-                  )}
-                  style={{ backgroundColor: `#${hex}` }}
-                />
-              ))}
-            </div>
             <input
               type="number"
               defaultValue={b.sort_order}
@@ -670,25 +1204,33 @@ function BrandManager() {
               title="Sort order"
               className="h-8 w-16 rounded-md border border-border bg-surface px-2 font-mono text-[11px]"
             />
-            <button
-              onClick={() => patch(b, { active: !b.active })}
+            <span
               className={cn(
-                "rounded px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider",
-                b.active
-                  ? "bg-synced/15 text-synced"
-                  : "bg-bg text-ink-muted"
+                "rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider",
+                b.active ? "bg-synced/15 text-synced" : "bg-bg text-ink-muted"
               )}
             >
               {b.active ? "Active" : "Hidden"}
-            </button>
-            {b.active && (
-              <button
-                onClick={() => remove(b)}
-                className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
-              >
-                Hide
-              </button>
-            )}
+            </span>
+            <RowActionsMenu
+              indicator={!b.active}
+              items={[
+                {
+                  type: "toggle",
+                  icon: b.active ? Eye : EyeOff,
+                  label: b.active ? "Active" : "Hidden",
+                  active: !!b.active,
+                  onClick: () => patch(b, { active: !b.active }),
+                },
+                {
+                  type: "action",
+                  icon: Trash2,
+                  label: "Hide from picker",
+                  danger: true,
+                  onClick: () => remove(b),
+                },
+              ]}
+            />
           </li>
         ))}
       </ul>
@@ -814,25 +1356,33 @@ function EventTypeManager() {
                 title="Sort order"
                 className="h-8 w-16 rounded-md border border-border bg-surface px-2 font-mono text-[11px]"
               />
-              <button
-                onClick={() => patch(t, { active: !active })}
+              <span
                 className={cn(
-                  "rounded px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider",
-                  active
-                    ? "bg-synced/15 text-synced"
-                    : "bg-bg text-ink-muted"
+                  "rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider",
+                  active ? "bg-synced/15 text-synced" : "bg-bg text-ink-muted"
                 )}
               >
                 {active ? "Active" : "Hidden"}
-              </button>
-              {active && (
-                <button
-                  onClick={() => remove(t)}
-                  className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
-                >
-                  Hide
-                </button>
-              )}
+              </span>
+              <RowActionsMenu
+                indicator={!active}
+                items={[
+                  {
+                    type: "toggle",
+                    icon: active ? Eye : EyeOff,
+                    label: active ? "Active" : "Hidden",
+                    active,
+                    onClick: () => patch(t, { active: !active }),
+                  },
+                  {
+                    type: "action",
+                    icon: Trash2,
+                    label: "Hide from picker",
+                    danger: true,
+                    onClick: () => remove(t),
+                  },
+                ]}
+              />
             </li>
           );
         })}

@@ -16,6 +16,8 @@ const SERVICE_USER: AuthUser = {
   permissions: ["*"],
   manager_id: null,
   scope_to_pic: false,
+  department_id: null,
+  brand_scope: null,
 };
 
 declare module "hono" {
@@ -87,6 +89,31 @@ export function requirePermission(perm: string): MiddlewareHandler<{ Bindings: E
     if (!user) return c.json({ error: "Unauthorized" }, 401);
     if (!hasPermission(user.permissions, perm)) {
       return c.json({ error: `Forbidden: missing ${perm}` }, 403);
+    }
+    await next();
+  };
+}
+
+/**
+ * Per-route gate that accepts ANY of the listed permissions. Used where
+ * a narrow permission (e.g. projects.chat) and a broader one
+ * (projects.write) should both unlock the same endpoint, so admins can
+ * pick the least-privilege fit per role.
+ *
+ * Usage:
+ *   app.post("/:id/notes",
+ *     requireAnyPermission(["projects.write", "projects.chat"]),
+ *     handler);
+ */
+export function requireAnyPermission(perms: string[]): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    const user = c.get("user");
+    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    if (!perms.some((p) => hasPermission(user.permissions, p))) {
+      return c.json(
+        { error: `Forbidden: requires one of ${perms.join(", ")}` },
+        403
+      );
     }
     await next();
   };

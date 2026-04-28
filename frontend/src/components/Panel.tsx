@@ -87,9 +87,11 @@ interface SectionProps {
   title: string;
   children: ReactNode;
   muted?: boolean;
+  /** Optional control rendered top-right of the section header. */
+  action?: ReactNode;
 }
 
-export function PanelSection({ title, children, muted }: SectionProps) {
+export function PanelSection({ title, children, muted, action }: SectionProps) {
   return (
     <section
       className={cn(
@@ -99,9 +101,10 @@ export function PanelSection({ title, children, muted }: SectionProps) {
     >
       <div className="mb-2 flex items-center gap-2">
         <span className="h-px w-3 bg-accent/60" />
-        <div className="text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+        <div className="flex-1 text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
           {title}
         </div>
+        {action && <div className="shrink-0">{action}</div>}
       </div>
       <div className="space-y-2">{children}</div>
     </section>

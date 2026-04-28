@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/Layout";
+import { ExpandableText } from "../components/ExpandableText";
 import { api } from "../api/client";
 import { cn, relativeTime } from "../lib/utils";
 import {
@@ -147,9 +148,11 @@ export function Notifications() {
                       {relativeTime(a.created_at)}
                     </span>
                   </div>
-                  <div className="mt-0.5 truncate text-[12px] text-ink-secondary">
-                    {summarise(a)}
-                  </div>
+                  <ExpandableText
+                    text={summarise(a)}
+                    lines={2}
+                    className="mt-0.5 text-[12px] text-ink-secondary"
+                  />
                 </div>
               </Link>
             </li>

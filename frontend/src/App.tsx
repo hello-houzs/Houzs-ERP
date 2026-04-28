@@ -26,6 +26,7 @@ import { useAuth } from "./auth/AuthContext";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
 import { NotificationsProvider } from "./hooks/useNotifications";
 import { BrowserPushSink } from "./components/BrowserPushSink";
+import { FloatingChatWidget } from "./components/FloatingChatWidget";
 import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
 
 /**
@@ -118,6 +119,7 @@ export default function App() {
       <NotificationsProvider>
       <BreadcrumbsProvider>
       <BrowserPushSink />
+      <FloatingChatWidget />
       <Layout>
         <Routes>
         <Route path="/" element={<Overview />} />

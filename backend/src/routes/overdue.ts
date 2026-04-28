@@ -1,35 +1,50 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { runOverdue } from "../services/overdue";
+import { getDb } from "../db/client";
+import { overdue_history, sales_orders } from "../db/schema";
+import { and, desc, eq, gte, like, or, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/summary", async (c) => {
-  const totals = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count, COALESCE(SUM(balance), 0) as total FROM overdue_history`
-  ).first();
+  const db = getDb(c.env);
 
-  const recent = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count FROM overdue_history
-     WHERE pull_date >= date('now', '-30 days')`
-  ).first<{ count: number }>();
+  const totals = await db
+    .select({
+      count: sql<number>`COUNT(*)`,
+      total: sql<number>`COALESCE(SUM(${overdue_history.balance}), 0)`,
+    })
+    .from(overdue_history);
 
-  const byLocation = await c.env.DB.prepare(
-    `SELECT location, COUNT(*) as count, COALESCE(SUM(balance), 0) as total
-     FROM overdue_history
-     WHERE location IS NOT NULL
-     GROUP BY location ORDER BY total DESC LIMIT 5`
-  ).all();
+  const recent = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(overdue_history)
+    .where(gte(overdue_history.pull_date, sql`date('now', '-30 days')`));
 
-  const lastPull = await c.env.DB.prepare(
-    `SELECT pull_date FROM overdue_history ORDER BY id DESC LIMIT 1`
-  ).first<{ pull_date: string }>();
+  const byLocation = await db
+    .select({
+      location: overdue_history.location,
+      count: sql<number>`COUNT(*)`,
+      total: sql<number>`COALESCE(SUM(${overdue_history.balance}), 0)`,
+    })
+    .from(overdue_history)
+    .where(sql`${overdue_history.location} IS NOT NULL`)
+    .groupBy(overdue_history.location)
+    .orderBy(desc(sql`COALESCE(SUM(${overdue_history.balance}), 0)`))
+    .limit(5);
+
+  const lastPull = await db
+    .select({ pull_date: overdue_history.pull_date })
+    .from(overdue_history)
+    .orderBy(desc(overdue_history.id))
+    .limit(1);
 
   return c.json({
-    totals,
-    recent_30d: recent?.count || 0,
-    by_location: byLocation.results,
-    last_pull: lastPull?.pull_date || null,
+    totals: totals[0],
+    recent_30d: recent[0]?.count || 0,
+    by_location: byLocation,
+    last_pull: lastPull[0]?.pull_date || null,
   });
 });
 
@@ -55,27 +70,32 @@ app.get("/history", async (c) => {
   const perPage = Math.min(parseInt(c.req.query("per_page") || "50", 10), 200);
   const offset = (page - 1) * perPage;
 
+  const db = getDb(c.env);
+
   const sortBy = c.req.query("sort_by") || "";
   const sortDir =
     (c.req.query("sort_dir") || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
   const sortExpr = HISTORY_SORT_MAP[sortBy] || "id";
-  const orderBy = `ORDER BY ${sortExpr} ${sortDir}, id DESC`;
+  const orderByClause = sql`ORDER BY ${sql.raw(`${sortExpr} ${sortDir}`)}, id DESC`;
 
-  const total = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count FROM overdue_history`
-  ).first<{ count: number }>();
+  const totalRow = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(overdue_history);
 
-  const rows = await c.env.DB.prepare(
-    `SELECT * FROM overdue_history ${orderBy} LIMIT ? OFFSET ?`
-  )
-    .bind(perPage, offset)
-    .all();
+  // SELECT * for the audit-log shape. Schema only knows the core
+  // columns; downstream consumers may expect more if migration adds
+  // fields later.
+  const rows = await db.all<any>(sql`
+    SELECT * FROM ${overdue_history}
+    ${orderByClause}
+    LIMIT ${perPage} OFFSET ${offset}
+  `);
 
   return c.json({
-    data: rows.results,
+    data: rows,
     page,
     per_page: perPage,
-    total: total?.count || 0,
+    total: totalRow[0]?.count || 0,
   });
 });
 
@@ -109,52 +129,47 @@ app.get("/orders", async (c) => {
   const perPage = Math.min(parseInt(c.req.query("per_page") || "50", 10), 200);
   const offset = (page - 1) * perPage;
 
-  const where: string[] = [];
-  const binds: any[] = [];
+  const db = getDb(c.env);
 
+  // The WHERE clause references `so.*` columns that are in scope on
+  // both the COUNT and the data query (same FROM + JOIN).
+  let searchCond = sql``;
   if (search) {
-    where.push("(so.doc_no LIKE ? OR so.debtor_name LIKE ? OR so.phone LIKE ?)");
-    const like = `%${search}%`;
-    binds.push(like, like, like);
+    const likeStr = `%${search}%`;
+    searchCond = sql` AND (so.doc_no LIKE ${likeStr} OR so.debtor_name LIKE ${likeStr} OR so.phone LIKE ${likeStr})`;
   }
-
-  const whereSql = where.length ? `AND ${where.join(" AND ")}` : "";
 
   const sortBy = c.req.query("sort_by") || "";
   const sortDir =
     (c.req.query("sort_dir") || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
   const sortExpr = ORDERS_SORT_MAP[sortBy] || "last_extended_at";
-  const orderBy = `ORDER BY ${sortExpr} ${sortDir}, so.doc_no DESC`;
+  const orderByClause = sql`ORDER BY ${sql.raw(`${sortExpr} ${sortDir}`)}, so.doc_no DESC`;
 
-  const total = await c.env.DB.prepare(
-    `SELECT COUNT(DISTINCT oh.doc_no) as count
-       FROM overdue_history oh
-       JOIN sales_orders so ON so.doc_no = oh.doc_no
-      WHERE 1=1 ${whereSql}`
-  )
-    .bind(...binds)
-    .first<{ count: number }>();
+  const totalRow = await db.get<{ count: number }>(sql`
+    SELECT COUNT(DISTINCT oh.doc_no) AS count
+      FROM ${overdue_history} oh
+      JOIN ${sales_orders} so ON so.doc_no = oh.doc_no
+     WHERE 1=1 ${searchCond}
+  `);
 
-  const rows = await c.env.DB.prepare(
-    `SELECT so.*,
-            COUNT(oh.id) as extension_count,
-            MAX(oh.pull_date) as last_extended_at,
-            MIN(oh.original_expiry_date) as first_original_expiry
-       FROM overdue_history oh
-       JOIN sales_orders so ON so.doc_no = oh.doc_no
-      WHERE 1=1 ${whereSql}
-      GROUP BY oh.doc_no
-      ${orderBy}
-      LIMIT ? OFFSET ?`
-  )
-    .bind(...binds, perPage, offset)
-    .all();
+  const rows = await db.all<any>(sql`
+    SELECT so.*,
+           COUNT(oh.id) AS extension_count,
+           MAX(oh.pull_date) AS last_extended_at,
+           MIN(oh.original_expiry_date) AS first_original_expiry
+      FROM ${overdue_history} oh
+      JOIN ${sales_orders} so ON so.doc_no = oh.doc_no
+     WHERE 1=1 ${searchCond}
+     GROUP BY oh.doc_no
+     ${orderByClause}
+     LIMIT ${perPage} OFFSET ${offset}
+  `);
 
   return c.json({
-    data: rows.results,
+    data: rows,
     page,
     per_page: perPage,
-    total: total?.count || 0,
+    total: totalRow?.count || 0,
   });
 });
 

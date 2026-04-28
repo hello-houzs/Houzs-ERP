@@ -3,6 +3,9 @@ import type { Env } from "../types";
 import { pushSalesOrder } from "../services/push";
 import { DELIVERY_WHERE } from "../services/deliveryFilter";
 import { AutoCountClient } from "../services/autocount";
+import { getDb } from "../db/client";
+import { sales_orders, order_details } from "../db/schema";
+import { and, desc, eq, like, or, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -59,6 +62,12 @@ const SORT_MAP: Record<string, string> = {
 // List orders — reads from D1 sales_orders, kept fresh by the */5 cron via
 // filtered getSince. The manual "Sync All" button (mode=all) is the only
 // thing that calls AutoCount /SalesOrder/getAll directly.
+//
+// Drizzle conversion note: this handler keeps the broad SELECT so.* +
+// od.* shape via Drizzle's `sql` template, since spelling out 30+
+// columns in a `db.select({...})` would balloon the file. Filters,
+// counts, and patches use the typed query builder so column refs stay
+// compiler-checked.
 app.get("/", async (c) => {
   const view = c.req.query("view"); // "do" → delivery order filter
   const region = c.req.query("region");
@@ -70,103 +79,105 @@ app.get("/", async (c) => {
   const perPage = Math.min(parseInt(c.req.query("per_page") || "50", 10), 200);
   const offset = (page - 1) * perPage;
 
-  const where: string[] = [];
-  const binds: any[] = [];
-  if (view === "do") where.push(`(${DELIVERY_WHERE})`);
-  if (region) {
-    where.push("so.region = ?");
-    binds.push(region);
-  }
-  if (warehouseQ) {
-    where.push("od.warehouse = ?");
-    binds.push(warehouseQ);
-  }
+  const db = getDb(c.env);
+
+  const conds: any[] = [];
+  if (view === "do") conds.push(sql`(${sql.raw(DELIVERY_WHERE)})`);
+  if (region) conds.push(eq(sales_orders.region, region));
+  if (warehouseQ) conds.push(eq(order_details.warehouse, warehouseQ));
   if (unscheduled) {
     // Exclude orders that are already on a non-cancelled trip OR on a
     // draft proposal — these are "in flight" or "being planned" and
     // shouldn't appear in the dispatcher's planning queue.
-    where.push(`NOT EXISTS (
+    conds.push(sql`NOT EXISTS (
       SELECT 1 FROM trip_stops ts
         JOIN trips t ON t.id = ts.trip_id
        WHERE ts.doc_no = so.doc_no
          AND t.status IN ('assigned','started','in_progress','completed')
     )`);
-    where.push(`NOT EXISTS (
+    conds.push(sql`NOT EXISTS (
       SELECT 1 FROM trip_proposal_trips ptt
         JOIN trip_proposals tp ON tp.id = ptt.proposal_id
        WHERE tp.status = 'draft'
          AND json_extract(ptt.payload_json, '$.stops') LIKE '%"' || so.doc_no || '"%'
     )`);
   }
-  if (status) {
-    where.push("so.sync_status = ?");
-    binds.push(status);
-  }
+  if (status) conds.push(eq(sales_orders.sync_status, status));
   if (search) {
-    where.push("(so.doc_no LIKE ? OR so.debtor_name LIKE ? OR so.phone LIKE ?)");
-    const like = `%${search}%`;
-    binds.push(like, like, like);
+    const likeStr = `%${search}%`;
+    conds.push(
+      or(
+        like(sales_orders.doc_no, likeStr),
+        like(sales_orders.debtor_name, likeStr),
+        like(sales_orders.phone, likeStr)
+      )!
+    );
   }
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const whereClause = conds.length ? sql`WHERE ${sql.join(conds, sql` AND `)}` : sql``;
 
   // The COUNT(*) needs the same JOIN whenever filters or sort touch
   // od.* columns (warehouse filter already does). Keeping the join in
   // both queries is harmless and one-line simpler than conditional.
-  const total = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count
-       FROM sales_orders so
-       LEFT JOIN order_details od ON od.doc_no = so.doc_no
-       ${whereSql}`
-  )
-    .bind(...binds)
-    .first<{ count: number }>();
+  const totalRow = await db.get<{ count: number }>(sql`
+    SELECT COUNT(*) as count
+      FROM ${sales_orders} so
+      LEFT JOIN ${order_details} od ON od.doc_no = so.doc_no
+      ${whereClause}
+  `);
 
   const sortBy = c.req.query("sort_by") || "";
   const sortDir =
     (c.req.query("sort_dir") || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
   const sortExpr = SORT_MAP[sortBy];
-  const orderBy = sortExpr
-    ? `ORDER BY ${sortExpr} ${sortDir}, so.doc_no DESC`
-    : `ORDER BY so.updated_at DESC, so.doc_no DESC`;
+  const orderByClause = sortExpr
+    ? sql`ORDER BY ${sql.raw(`${sortExpr} ${sortDir}`)}, so.doc_no DESC`
+    : sql`ORDER BY so.updated_at DESC, so.doc_no DESC`;
 
-  const rows = await c.env.DB.prepare(
-    `SELECT so.*, od.delivery_date, od.time_range, od.lorry_plate, od.driver_name,
-            od.driver_contact, od.property_type, od.consignment_no, od.eta_port,
-            od.estimate_delivery, od.shipout_date,
-            od.warehouse, od.state, od.lat, od.lng, od.order_type,
-            od.proposed_delivery_date
-     FROM sales_orders so
-     LEFT JOIN order_details od ON od.doc_no = so.doc_no
-     ${whereSql}
-     ${orderBy}
-     LIMIT ? OFFSET ?`
-  )
-    .bind(...binds, perPage, offset)
-    .all();
+  const rows = await db.all<any>(sql`
+    SELECT so.*, od.delivery_date, od.time_range, od.lorry_plate, od.driver_name,
+           od.driver_contact, od.property_type, od.consignment_no, od.eta_port,
+           od.estimate_delivery, od.shipout_date,
+           od.warehouse, od.state, od.lat, od.lng, od.order_type,
+           od.proposed_delivery_date
+      FROM ${sales_orders} so
+      LEFT JOIN ${order_details} od ON od.doc_no = so.doc_no
+      ${whereClause}
+      ${orderByClause}
+      LIMIT ${perPage} OFFSET ${offset}
+  `);
 
   return c.json({
-    data: rows.results,
+    data: rows,
     page,
     per_page: perPage,
-    total: total?.count || 0,
+    total: totalRow?.count || 0,
   });
 });
 
 // Legacy stats endpoint (kept so older clients don't break).
 app.get("/stats", async (c) => {
-  const byRegion = await c.env.DB.prepare(
-    `SELECT region, COUNT(*) as count FROM sales_orders so GROUP BY region`
-  ).all();
-  const byStatus = await c.env.DB.prepare(
-    `SELECT sync_status, COUNT(*) as count FROM sales_orders so GROUP BY sync_status`
-  ).all();
-  const totals = await c.env.DB.prepare(
-    `SELECT COUNT(*) as total_orders, COALESCE(SUM(balance), 0) as total_balance FROM sales_orders so`
-  ).first();
+  const db = getDb(c.env);
+  const byRegion = await db
+    .select({ region: sales_orders.region, count: sql<number>`COUNT(*)` })
+    .from(sales_orders)
+    .groupBy(sales_orders.region);
+  const byStatus = await db
+    .select({
+      sync_status: sales_orders.sync_status,
+      count: sql<number>`COUNT(*)`,
+    })
+    .from(sales_orders)
+    .groupBy(sales_orders.sync_status);
+  const totals = await db
+    .select({
+      total_orders: sql<number>`COUNT(*)`,
+      total_balance: sql<number>`COALESCE(SUM(${sales_orders.balance}), 0)`,
+    })
+    .from(sales_orders);
   return c.json({
-    by_region: byRegion.results,
-    by_status: byStatus.results,
-    totals,
+    by_region: byRegion,
+    by_status: byStatus,
+    totals: totals[0],
   });
 });
 
@@ -177,68 +188,66 @@ app.get("/stats", async (c) => {
  * Used by Overview, Sales Orders, and Delivery Orders dashboards.
  */
 app.get("/summary", async (c) => {
+  const db = getDb(c.env);
+
   async function bucket(extraWhere: string) {
-    const whereSql = extraWhere ? `WHERE ${extraWhere}` : "";
+    const whereClause = extraWhere ? sql`WHERE ${sql.raw(extraWhere)}` : sql``;
 
-    const totals = await c.env.DB.prepare(
-      `SELECT
-         COUNT(*) as total,
-         COALESCE(SUM(so.balance), 0) as total_balance,
-         SUM(CASE WHEN so.balance > 0 THEN 1 ELSE 0 END) as outstanding_count,
-         SUM(CASE WHEN so.expiry_date IS NULL OR so.expiry_date = '' THEN 1 ELSE 0 END) as no_expiry,
-         SUM(CASE WHEN so.expiry_date IS NOT NULL AND so.expiry_date <> '' AND so.expiry_date < date('now') THEN 1 ELSE 0 END) as expired,
-         SUM(CASE WHEN so.expiry_date IS NOT NULL AND so.expiry_date <> '' AND so.expiry_date >= date('now') AND so.expiry_date <= date('now', '+7 days') THEN 1 ELSE 0 END) as expiring_7d
-       FROM sales_orders so
-       ${whereSql}`
-    ).first<any>();
+    const totalsRow = await db.get<any>(sql`
+      SELECT
+        COUNT(*) as total,
+        COALESCE(SUM(so.balance), 0) as total_balance,
+        SUM(CASE WHEN so.balance > 0 THEN 1 ELSE 0 END) as outstanding_count,
+        SUM(CASE WHEN so.expiry_date IS NULL OR so.expiry_date = '' THEN 1 ELSE 0 END) as no_expiry,
+        SUM(CASE WHEN so.expiry_date IS NOT NULL AND so.expiry_date <> '' AND so.expiry_date < date('now') THEN 1 ELSE 0 END) as expired,
+        SUM(CASE WHEN so.expiry_date IS NOT NULL AND so.expiry_date <> '' AND so.expiry_date >= date('now') AND so.expiry_date <= date('now', '+7 days') THEN 1 ELSE 0 END) as expiring_7d
+      FROM ${sales_orders} so
+      ${whereClause}
+    `);
 
-    const byRegion = await c.env.DB.prepare(
-      `SELECT region, COUNT(*) as count
-       FROM sales_orders so
-       ${whereSql}
-       GROUP BY region`
-    ).all<{ region: string; count: number }>();
+    const byRegion = await db.all<{ region: string; count: number }>(sql`
+      SELECT region, COUNT(*) as count
+        FROM ${sales_orders} so
+        ${whereClause}
+       GROUP BY region
+    `);
 
-    const byStatus = await c.env.DB.prepare(
-      `SELECT COALESCE(NULLIF(TRIM(so.remark4), ''), '(none)') as status, COUNT(*) as count
-       FROM sales_orders so
-       ${whereSql}
+    const byStatus = await db.all<{ status: string; count: number }>(sql`
+      SELECT COALESCE(NULLIF(TRIM(so.remark4), ''), '(none)') as status, COUNT(*) as count
+        FROM ${sales_orders} so
+        ${whereClause}
        GROUP BY status
-       ORDER BY count DESC`
-    ).all<{ status: string; count: number }>();
+       ORDER BY count DESC
+    `);
 
     const region_map: Record<string, number> = { WEST: 0, EAST: 0, SG: 0, OTHER: 0 };
-    for (const r of byRegion.results ?? []) {
-      region_map[r.region || "OTHER"] = r.count;
-    }
+    for (const r of byRegion) region_map[r.region || "OTHER"] = r.count;
     const status_map: Record<string, number> = {};
-    for (const r of byStatus.results ?? []) {
-      status_map[r.status] = r.count;
-    }
+    for (const r of byStatus) status_map[r.status] = r.count;
 
     return {
-      total: totals?.total || 0,
+      total: totalsRow?.total || 0,
       by_region: region_map,
       by_status: status_map,
-      total_balance: totals?.total_balance || 0,
-      outstanding_count: totals?.outstanding_count || 0,
-      expired: totals?.expired || 0,
-      expiring_7d: totals?.expiring_7d || 0,
-      no_expiry: totals?.no_expiry || 0,
+      total_balance: totalsRow?.total_balance || 0,
+      outstanding_count: totalsRow?.outstanding_count || 0,
+      expired: totalsRow?.expired || 0,
+      expiring_7d: totalsRow?.expiring_7d || 0,
+      no_expiry: totalsRow?.no_expiry || 0,
     };
   }
 
   const all = await bucket("");
   const delivery = await bucket(DELIVERY_WHERE);
 
-  const latest = await c.env.DB.prepare(
-    `SELECT MAX(last_modified) as latest FROM sales_orders`
-  ).first<{ latest: string | null }>();
+  const latest = await db
+    .select({ latest: sql<string | null>`MAX(${sales_orders.last_modified})` })
+    .from(sales_orders);
 
   return c.json({
     all,
     delivery,
-    latest_modified: latest?.latest || null,
+    latest_modified: latest[0]?.latest || null,
     fetched_at: new Date().toISOString(),
   });
 });
@@ -246,18 +255,18 @@ app.get("/summary", async (c) => {
 // Single order
 app.get("/:docNo", async (c) => {
   const docNo = c.req.param("docNo");
-  const order = await c.env.DB.prepare(
-    `SELECT * FROM sales_orders WHERE doc_no = ?`
-  )
-    .bind(docNo)
-    .first();
+  const db = getDb(c.env);
+  // SELECT * needs to expose every column to the frontend; spread via
+  // sql template to avoid manually listing every field of the
+  // AutoCount-mirrored row.
+  const order = await db.get<any>(
+    sql`SELECT * FROM ${sales_orders} WHERE doc_no = ${docNo}`
+  );
   if (!order) return c.json({ error: "Not found" }, 404);
 
-  const details = await c.env.DB.prepare(
-    `SELECT * FROM order_details WHERE doc_no = ?`
-  )
-    .bind(docNo)
-    .first();
+  const details = await db.get<any>(
+    sql`SELECT * FROM ${order_details} WHERE doc_no = ${docNo}`
+  );
 
   return c.json({ order, details });
 });
@@ -281,28 +290,21 @@ app.patch("/:docNo", async (c) => {
   const docNo = c.req.param("docNo");
   const body = await c.req.json<{ remark4?: string | null; expiry_date?: string | null }>();
 
-  const sets: string[] = [];
-  const binds: any[] = [];
-  if ("remark4" in body) {
-    sets.push("remark4 = ?");
-    binds.push(body.remark4 ?? null);
+  const set: Record<string, any> = {};
+  if ("remark4" in body) set.remark4 = body.remark4 ?? null;
+  if ("expiry_date" in body) set.expiry_date = body.expiry_date ?? null;
+  if (Object.keys(set).length === 0) {
+    return c.json({ error: "No fields to update" }, 400);
   }
-  if ("expiry_date" in body) {
-    sets.push("expiry_date = ?");
-    binds.push(body.expiry_date ?? null);
-  }
-  if (!sets.length) return c.json({ error: "No fields to update" }, 400);
+  set.updated_at = sql`datetime('now')`;
 
-  sets.push("updated_at = datetime('now')");
-  binds.push(docNo);
+  const db = getDb(c.env);
+  const result = await db
+    .update(sales_orders)
+    .set(set)
+    .where(eq(sales_orders.doc_no, docNo));
 
-  const result = await c.env.DB.prepare(
-    `UPDATE sales_orders SET ${sets.join(", ")} WHERE doc_no = ?`
-  )
-    .bind(...binds)
-    .run();
-
-  if (!result.meta.changes) return c.json({ error: "Order not found" }, 404);
+  if (!result.meta?.changes) return c.json({ error: "Order not found" }, 404);
 
   // Real-time push
   const pushResult = await pushSalesOrder(c.env, docNo);
@@ -319,26 +321,29 @@ app.patch("/:docNo/details", async (c) => {
   for (const k of ORDER_DETAIL_FIELDS) {
     if (k in body) updates[k] = body[k];
   }
-  if (!Object.keys(updates).length) return c.json({ error: "No valid fields" }, 400);
+  if (Object.keys(updates).length === 0) {
+    return c.json({ error: "No valid fields" }, 400);
+  }
+
+  const db = getDb(c.env);
 
   // Verify the order exists
-  const exists = await c.env.DB.prepare(
-    `SELECT 1 as ok FROM sales_orders WHERE doc_no = ?`
-  )
-    .bind(docNo)
-    .first();
-  if (!exists) return c.json({ error: "Order not found" }, 404);
+  const exists = await db
+    .select({ doc_no: sales_orders.doc_no })
+    .from(sales_orders)
+    .where(eq(sales_orders.doc_no, docNo))
+    .limit(1);
+  if (exists.length === 0) return c.json({ error: "Order not found" }, 404);
 
-  // Upsert: insert with all keys, on conflict update only changed
-  const cols = Object.keys(updates);
-  const placeholders = cols.map(() => "?").join(", ");
-  const updateSet = cols.map((c) => `${c} = excluded.${c}`).join(", ");
-  const sql = `INSERT INTO order_details (doc_no, ${cols.join(", ")}, updated_at)
-               VALUES (?, ${placeholders}, datetime('now'))
-               ON CONFLICT(doc_no) DO UPDATE SET ${updateSet}, updated_at = datetime('now')`;
-  const binds = [docNo, ...cols.map((k) => updates[k])];
-
-  await c.env.DB.prepare(sql).bind(...binds).run();
+  // Upsert via INSERT … ON CONFLICT DO UPDATE. Drizzle's
+  // .onConflictDoUpdate accepts a `set` map and a target column.
+  await db
+    .insert(order_details)
+    .values({ doc_no: docNo, ...updates, updated_at: sql`datetime('now')` as unknown as string })
+    .onConflictDoUpdate({
+      target: order_details.doc_no,
+      set: { ...updates, updated_at: sql`datetime('now')` as unknown as string },
+    });
 
   return c.json({ ok: true });
 });

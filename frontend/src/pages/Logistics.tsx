@@ -57,26 +57,28 @@ export function Logistics() {
   return (
     <div>
       {!onlyOne && visibleTabs.length > 1 && (
-        <div className="mb-6 flex items-center gap-1 border-b border-border">
-          {visibleTabs.map((t) => {
-            const Icon = t.icon;
-            const isActive = t.value === active;
-            return (
-              <button
-                key={t.value}
-                onClick={() => setTab(t.value)}
-                className={cn(
-                  "relative -mb-px flex items-center gap-2 border-b-2 px-4 py-2.5 text-[12px] font-semibold transition-colors",
-                  isActive
-                    ? "border-accent text-accent"
-                    : "border-transparent text-ink-secondary hover:text-ink"
-                )}
-              >
-                <Icon size={14} strokeWidth={2.2} />
-                {t.label}
-              </button>
-            );
-          })}
+        <div className="mb-6 border-b border-border">
+          <div className="no-scrollbar -mx-4 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:px-0 [&>*]:shrink-0">
+            {visibleTabs.map((t) => {
+              const Icon = t.icon;
+              const isActive = t.value === active;
+              return (
+                <button
+                  key={t.value}
+                  onClick={() => setTab(t.value)}
+                  className={cn(
+                    "relative -mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-4 py-2.5 text-[12px] font-semibold transition-colors",
+                    isActive
+                      ? "border-accent text-accent"
+                      : "border-transparent text-ink-secondary hover:text-ink"
+                  )}
+                >
+                  <Icon size={14} strokeWidth={2.2} />
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 

@@ -1,5 +1,8 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
+import { getDb } from "../db/client";
+import { sales_orders } from "../db/schema";
+import { and, asc, desc, eq, gt, gte, isNotNull, like, lt, lte, or, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -11,41 +14,73 @@ app.get("/summary", async (c) => {
     return d.toISOString().slice(0, 10);
   })();
 
-  const totals = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count, COALESCE(SUM(balance), 0) as total
-     FROM sales_orders WHERE balance > 0`
-  ).first();
+  const db = getDb(c.env);
 
-  const expired = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count, COALESCE(SUM(balance), 0) as total
-     FROM sales_orders
-     WHERE balance > 0 AND expiry_date IS NOT NULL AND expiry_date < ?`
-  )
-    .bind(today)
-    .first();
+  const totals = await db
+    .select({
+      count: sql<number>`COUNT(*)`,
+      total: sql<number>`COALESCE(SUM(${sales_orders.balance}), 0)`,
+    })
+    .from(sales_orders)
+    .where(gt(sales_orders.balance, 0));
 
-  const warning = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count, COALESCE(SUM(balance), 0) as total
-     FROM sales_orders
-     WHERE balance > 0 AND expiry_date IS NOT NULL AND expiry_date >= ? AND expiry_date <= ?`
-  )
-    .bind(today, in7)
-    .first();
+  const expired = await db
+    .select({
+      count: sql<number>`COUNT(*)`,
+      total: sql<number>`COALESCE(SUM(${sales_orders.balance}), 0)`,
+    })
+    .from(sales_orders)
+    .where(
+      and(
+        gt(sales_orders.balance, 0),
+        isNotNull(sales_orders.expiry_date),
+        lt(sales_orders.expiry_date, today)
+      )
+    );
 
-  const byRegion = await c.env.DB.prepare(
-    `SELECT region, COUNT(*) as count, COALESCE(SUM(balance), 0) as total
-     FROM sales_orders WHERE balance > 0 GROUP BY region`
-  ).all();
+  const warning = await db
+    .select({
+      count: sql<number>`COUNT(*)`,
+      total: sql<number>`COALESCE(SUM(${sales_orders.balance}), 0)`,
+    })
+    .from(sales_orders)
+    .where(
+      and(
+        gt(sales_orders.balance, 0),
+        isNotNull(sales_orders.expiry_date),
+        gte(sales_orders.expiry_date, today),
+        lte(sales_orders.expiry_date, in7)
+      )
+    );
 
-  const top = await c.env.DB.prepare(
-    `SELECT debtor_name as name, COALESCE(SUM(balance), 0) as total
-     FROM sales_orders WHERE balance > 0
-     GROUP BY debtor_name
-     ORDER BY total DESC
-     LIMIT 5`
-  ).all();
+  const byRegion = await db
+    .select({
+      region: sales_orders.region,
+      count: sql<number>`COUNT(*)`,
+      total: sql<number>`COALESCE(SUM(${sales_orders.balance}), 0)`,
+    })
+    .from(sales_orders)
+    .where(gt(sales_orders.balance, 0))
+    .groupBy(sales_orders.region);
 
-  return c.json({ totals, expired, warning, by_region: byRegion.results, top_debtors: top.results });
+  const top = await db
+    .select({
+      name: sales_orders.debtor_name,
+      total: sql<number>`COALESCE(SUM(${sales_orders.balance}), 0)`,
+    })
+    .from(sales_orders)
+    .where(gt(sales_orders.balance, 0))
+    .groupBy(sales_orders.debtor_name)
+    .orderBy(desc(sql`COALESCE(SUM(${sales_orders.balance}), 0)`))
+    .limit(5);
+
+  return c.json({
+    totals: totals[0],
+    expired: expired[0],
+    warning: warning[0],
+    by_region: byRegion,
+    top_debtors: top,
+  });
 });
 
 // Allow-listed sortable columns. Default (when sort_by is empty) keeps
@@ -70,8 +105,7 @@ app.get("/", async (c) => {
   const perPage = Math.min(parseInt(c.req.query("per_page") || "50", 10), 200);
   const offset = (page - 1) * perPage;
 
-  const where: string[] = ["balance > 0"];
-  const binds: any[] = [];
+  const db = getDb(c.env);
 
   const today = new Date().toISOString().slice(0, 10);
   const warningCutoff = (() => {
@@ -80,49 +114,54 @@ app.get("/", async (c) => {
     return d.toISOString().slice(0, 10);
   })();
 
+  const conds: any[] = [gt(sales_orders.balance, 0)];
   if (filter === "expired") {
-    where.push("expiry_date IS NOT NULL AND expiry_date < ?");
-    binds.push(today);
+    conds.push(isNotNull(sales_orders.expiry_date));
+    conds.push(lt(sales_orders.expiry_date, today));
   } else if (filter === "warning") {
-    where.push("expiry_date IS NOT NULL AND expiry_date >= ? AND expiry_date <= ?");
-    binds.push(today, warningCutoff);
+    conds.push(isNotNull(sales_orders.expiry_date));
+    conds.push(gte(sales_orders.expiry_date, today));
+    conds.push(lte(sales_orders.expiry_date, warningCutoff));
   }
-
   if (search) {
-    where.push("(doc_no LIKE ? OR debtor_name LIKE ? OR phone LIKE ?)");
-    const like = `%${search}%`;
-    binds.push(like, like, like);
+    const likeStr = `%${search}%`;
+    conds.push(
+      or(
+        like(sales_orders.doc_no, likeStr),
+        like(sales_orders.debtor_name, likeStr),
+        like(sales_orders.phone, likeStr)
+      )!
+    );
   }
-
-  const whereSql = `WHERE ${where.join(" AND ")}`;
+  const where = and(...conds);
 
   const sortBy = c.req.query("sort_by") || "";
   const sortDir =
     (c.req.query("sort_dir") || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
   const sortExpr = SORT_MAP[sortBy];
-  const orderBy = sortExpr
-    ? `ORDER BY ${sortExpr} ${sortDir}, doc_no ASC`
-    : `ORDER BY expiry_date ASC NULLS LAST, doc_no ASC`;
+  const orderByClause = sortExpr
+    ? sql`ORDER BY ${sql.raw(`${sortExpr} ${sortDir}`)}, doc_no ASC`
+    : sql`ORDER BY expiry_date ASC NULLS LAST, doc_no ASC`;
 
-  const total = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count FROM sales_orders ${whereSql}`
-  )
-    .bind(...binds)
-    .first<{ count: number }>();
+  const totalRow = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(sales_orders)
+    .where(where);
 
-  const rows = await c.env.DB.prepare(
-    `SELECT * FROM sales_orders ${whereSql}
-     ${orderBy}
-     LIMIT ? OFFSET ?`
-  )
-    .bind(...binds, perPage, offset)
-    .all();
+  // Wide SELECT — pass every AutoCount column through; the frontend
+  // expects the full row shape from /api/balance.
+  const rows = await db.all<any>(sql`
+    SELECT * FROM ${sales_orders}
+    WHERE ${where}
+    ${orderByClause}
+    LIMIT ${perPage} OFFSET ${offset}
+  `);
 
   return c.json({
-    data: rows.results,
+    data: rows,
     page,
     per_page: perPage,
-    total: total?.count || 0,
+    total: totalRow[0]?.count || 0,
   });
 });
 

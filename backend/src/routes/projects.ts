@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { requirePermission } from "../middleware/auth";
+import { requirePermission, requireAnyPermission } from "../middleware/auth";
 import {
   createProject,
   patchProject,
@@ -38,10 +38,18 @@ import {
   archiveStockTransfer,
 } from "../services/projects";
 import {
-  getProjectPicScope,
+  getProjectScope,
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
+import { getDb } from "../db/client";
+import {
+  project_brands,
+  project_finance_lines,
+  projects as projectsTable,
+  user_brands,
+} from "../db/schema";
+import { and, eq, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -320,7 +328,7 @@ app.get("/", requirePermission("projects.read"), async (c) => {
   const yearParam = c.req.query("year");
   const monthParam = c.req.query("month");
   const user = c.get("user");
-  const picScope = getProjectPicScope(user) ?? undefined;
+  const scope = getProjectScope(user);
   const result = await listProjects(c.env, {
     stage: c.req.query("stage"),
     brand: c.req.query("brand"),
@@ -334,7 +342,8 @@ app.get("/", requirePermission("projects.read"), async (c) => {
     include_archived: c.req.query("include_archived") === "1",
     sort_by: c.req.query("sort_by") || undefined,
     sort_dir: (c.req.query("sort_dir") || "").toLowerCase() === "asc" ? "asc" : "desc",
-    pic_scope: picScope,
+    pic_scope: scope?.pic_ids,
+    brand_scope: scope?.brands,
   });
   return c.json(result);
 });
@@ -512,15 +521,29 @@ app.get(
   async (c) => {
     const id = parseInt(c.req.param("id"), 10);
     if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
-    const rows = await c.env.DB.prepare(
-      `SELECT id, seq, title, description, required_perm, due_offset_days
+    // Return items + sections together so the editor renders one
+    // round-trip. mig 050: section_id + requires_review on items.
+    const items = await c.env.DB.prepare(
+      `SELECT id, seq, title, description, required_perm, due_offset_days,
+              section_id, requires_review
          FROM project_checklist_template_items
         WHERE template_id = ?
         ORDER BY seq, id`
     )
       .bind(id)
       .all();
-    return c.json({ data: rows.results ?? [] });
+    const sections = await c.env.DB.prepare(
+      `SELECT id, name, sort_order
+         FROM project_checklist_template_sections
+        WHERE template_id = ?
+        ORDER BY sort_order, id`
+    )
+      .bind(id)
+      .all();
+    return c.json({
+      data: items.results ?? [],
+      sections: sections.results ?? [],
+    });
   }
 );
 
@@ -536,6 +559,8 @@ app.post(
       required_perm?: string | null;
       due_offset_days?: number | null;
       seq?: number;
+      section_id?: number | null;
+      requires_review?: boolean;
     }>();
     const title = (body.title || "").trim();
     if (!title) return c.json({ error: "title required" }, 400);
@@ -551,8 +576,9 @@ app.post(
     }
     const r = await c.env.DB.prepare(
       `INSERT INTO project_checklist_template_items
-         (template_id, seq, title, description, required_perm, due_offset_days)
-       VALUES (?, ?, ?, ?, ?, ?)`
+         (template_id, seq, title, description, required_perm, due_offset_days,
+          section_id, requires_review)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         id,
@@ -560,7 +586,9 @@ app.post(
         title,
         body.description ?? null,
         body.required_perm ?? null,
-        body.due_offset_days ?? null
+        body.due_offset_days ?? null,
+        body.section_id ?? null,
+        body.requires_review ? 1 : 0
       )
       .run();
     return c.json({ id: r.meta.last_row_id, seq }, 201);
@@ -579,6 +607,8 @@ app.patch(
       required_perm?: string | null;
       due_offset_days?: number | null;
       seq?: number;
+      section_id?: number | null;
+      requires_review?: boolean;
     }>();
     const sets: string[] = [];
     const binds: any[] = [];
@@ -588,11 +618,15 @@ app.patch(
       sets.push("title = ?");
       binds.push(t);
     }
-    for (const k of ["description", "required_perm", "due_offset_days", "seq"] as const) {
+    for (const k of ["description", "required_perm", "due_offset_days", "seq", "section_id"] as const) {
       if (k in body) {
         sets.push(`${k} = ?`);
         binds.push((body as any)[k] ?? null);
       }
+    }
+    if ("requires_review" in body) {
+      sets.push("requires_review = ?");
+      binds.push(body.requires_review ? 1 : 0);
     }
     if (sets.length === 0) return c.json({ ok: true });
     await c.env.DB.prepare(
@@ -615,6 +649,38 @@ app.delete(
     )
       .bind(id)
       .run();
+    return c.json({ ok: true });
+  }
+);
+
+// Batch reorder. Accepts an array of item ids in the new display
+// order; renumbers seq in steps of 10 (10, 20, 30, …) so any future
+// fine-grained insert can pick a value between two existing rows
+// without another full renumber.
+//
+// Only items that actually belong to the template are affected, so
+// passing an id from a different template is a no-op rather than an
+// error.
+app.put(
+  "/checklist-templates/:id/items/reorder",
+  requirePermission("projects.manage"),
+  async (c) => {
+    const id = parseInt(c.req.param("id"), 10);
+    if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+    const body = await c.req.json<{ ids?: unknown }>();
+    if (!Array.isArray(body.ids) || !body.ids.every((n) => Number.isInteger(n))) {
+      return c.json({ error: "ids must be an array of integers" }, 400);
+    }
+    const ids = body.ids as number[];
+    if (ids.length === 0) return c.json({ ok: true });
+    const stmts = ids.map((itemId, idx) =>
+      c.env.DB.prepare(
+        `UPDATE project_checklist_template_items
+            SET seq = ?
+          WHERE id = ? AND template_id = ?`
+      ).bind((idx + 1) * 10, itemId, id)
+    );
+    await c.env.DB.batch(stmts);
     return c.json({ ok: true });
   }
 );
@@ -820,6 +886,30 @@ app.get("/:id", requirePermission("projects.read"), async (c) => {
   return c.json({ ...detail, _access: access });
 });
 
+/**
+ * Brand-on-person gate for PIC assignment. Returns true when the
+ * picked user has the project's brand in their user_brands row set
+ * (mig 049, replaces the prior dept-level join in mig 048).
+ *
+ * A project with no brand can never have a PIC assigned: there's no
+ * brand to match against, and unbranded projects are deliberately
+ * invisible to scoped users anyway.
+ */
+async function canPicProjectBrand(
+  env: Env,
+  picUserId: number,
+  brand: string | null | undefined
+): Promise<boolean> {
+  if (!brand) return false;
+  const db = getDb(env);
+  const rows = await db
+    .select({ one: user_brands.user_id })
+    .from(user_brands)
+    .where(and(eq(user_brands.user_id, picUserId), eq(user_brands.brand, brand)))
+    .limit(1);
+  return rows.length > 0;
+}
+
 // ── Create ────────────────────────────────────────────────────
 
 app.post("/", requirePermission("projects.write"), async (c) => {
@@ -848,6 +938,21 @@ app.post("/", requirePermission("projects.write"), async (c) => {
       picId = user.id;
     }
   }
+  // Brand gate: when assigning a PIC at create time, the picked user's
+  // department must cover the project's brand. Skip when picId is null
+  // (unassigned project — admin will pic it later).
+  if (picId != null) {
+    const ok = await canPicProjectBrand(c.env, picId, body.brand ?? null);
+    if (!ok) {
+      return c.json(
+        {
+          error:
+            "Picked user's department does not cover this brand. Assign a brand first or pick a user whose department includes it.",
+        },
+        403
+      );
+    }
+  }
   const result = await createProject(c.env, {
     name: body.name.trim(),
     event_type_id: body.event_type_id ?? null,
@@ -872,21 +977,46 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
   const user = c.get("user");
   const body = await c.req.json<Record<string, any>>();
 
+  // Always need brand + pic_id + created_by for the brand gate below
+  // (and for the scoped-user can-see check).
+  const existing = await c.env.DB.prepare(
+    `SELECT pic_id, created_by, brand FROM projects WHERE id = ?`
+  )
+    .bind(id)
+    .first<{
+      pic_id: number | null;
+      created_by: number | null;
+      brand: string | null;
+    }>();
+  if (!existing) return c.json({ error: "Not found" }, 404);
+
   // Gate: scoped users can only patch projects they can see. And
   // they cannot reassign pic_id away from themselves/their manager.
   if (user?.scope_to_pic) {
-    const row = await c.env.DB.prepare(
-      `SELECT pic_id, created_by FROM projects WHERE id = ?`
-    )
-      .bind(id)
-      .first<{ pic_id: number | null; created_by: number | null }>();
-    if (!row) return c.json({ error: "Not found" }, 404);
-    if (!canSeeProject(user, row)) return c.json({ error: "Not found" }, 404);
+    if (!canSeeProject(user, existing)) return c.json({ error: "Not found" }, 404);
     if ("pic_id" in body) {
       const allowed = [user.id, user.manager_id].filter(Boolean);
       if (body.pic_id != null && !allowed.includes(body.pic_id)) {
         delete body.pic_id;
       }
+    }
+  }
+
+  // Brand gate for any PIC assignment (admin or scoped). Validates
+  // against the post-patch brand, so changing brand + pic together is
+  // checked atomically.
+  if ("pic_id" in body && body.pic_id != null) {
+    const effectiveBrand =
+      "brand" in body ? (body.brand as string | null) : existing.brand;
+    const ok = await canPicProjectBrand(c.env, body.pic_id, effectiveBrand);
+    if (!ok) {
+      return c.json(
+        {
+          error:
+            "Picked user's department does not cover this brand.",
+        },
+        403
+      );
     }
   }
 
@@ -901,7 +1031,7 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
 // …) so the timeline interleaves human chat and system events in one
 // view. Mirrors POST /api/assr/:id/notes.
 
-app.post("/:id/notes", requirePermission("projects.write"), async (c) => {
+app.post("/:id/notes", requireAnyPermission(["projects.write", "projects.chat"]), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -1056,48 +1186,40 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
   );
   const offset = (page - 1) * perPage;
 
+  const db = getDb(c.env);
+
   // Date filter applied INSIDE the SUM aggregations so a project with
   // older lines still surfaces (it just shows zero for the window).
-  const dateClauseParts: string[] = [];
-  const dateBinds: any[] = [];
+  const dateConds: any[] = [];
   if (dateFrom) {
-    dateClauseParts.push("COALESCE(l.occurred_at, l.created_at) >= ?");
-    dateBinds.push(dateFrom);
+    dateConds.push(sql`COALESCE(l.occurred_at, l.created_at) >= ${dateFrom}`);
   }
   if (dateTo) {
-    dateClauseParts.push("COALESCE(l.occurred_at, l.created_at) <= ?");
-    dateBinds.push(`${dateTo}T23:59:59`);
+    dateConds.push(sql`COALESCE(l.occurred_at, l.created_at) <= ${`${dateTo}T23:59:59`}`);
   }
-  const dateClause = dateClauseParts.length
-    ? `AND ${dateClauseParts.join(" AND ")}`
-    : "";
+  const dateClause = dateConds.length
+    ? sql`AND ${sql.join(dateConds, sql` AND `)}`
+    : sql``;
 
   // Project-level WHERE.
-  const where: string[] = [];
-  const projectBinds: any[] = [];
-  if (!includeArchived) where.push("p.archived_at IS NULL");
-  if (brand) {
-    where.push("p.brand = ?");
-    projectBinds.push(brand);
-  }
-  if (stage) {
-    where.push("p.stage = ?");
-    projectBinds.push(stage);
-  }
+  const projConds: any[] = [];
+  if (!includeArchived) projConds.push(sql`p.archived_at IS NULL`);
+  if (brand) projConds.push(sql`p.brand = ${brand}`);
+  if (stage) projConds.push(sql`p.stage = ${stage}`);
   if (search) {
-    where.push(
-      "(p.code LIKE ? OR p.name LIKE ? OR p.venue LIKE ? OR p.organizer LIKE ?)"
-    );
     const like = `%${search}%`;
-    projectBinds.push(like, like, like, like);
+    projConds.push(
+      sql`(p.code LIKE ${like} OR p.name LIKE ${like} OR p.venue LIKE ${like} OR p.organizer LIKE ${like})`
+    );
   }
   if (picScope) {
-    where.push(
-      `COALESCE(p.pic_id, p.created_by) IN (${picScope.map(() => "?").join(",")})`
+    projConds.push(
+      sql`COALESCE(p.pic_id, p.created_by) IN (${sql.join(picScope.map((id) => sql`${id}`), sql`, `)})`
     );
-    projectBinds.push(...picScope);
   }
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const whereClause = projConds.length
+    ? sql`WHERE ${sql.join(projConds, sql` AND `)}`
+    : sql``;
 
   const sortBy = c.req.query("sort_by") || "net";
   const sortDir =
@@ -1115,12 +1237,12 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
     margin_pct: "margin_pct",
     lines: "line_count",
   };
-  const orderBy = `ORDER BY ${sortMap[sortBy] ?? sortMap.net} ${sortDir}, id DESC`;
+  const orderByClause = sql`ORDER BY ${sql.raw(`${sortMap[sortBy] ?? sortMap.net} ${sortDir}`)}, id DESC`;
 
   // The aggregate row per project. Date filter only applies inside
   // each SUM; the project row itself is selected by the project-level
   // WHERE (so projects with zero matching lines still show with 0s).
-  const baseSelect = `
+  const baseSelect = sql`
     SELECT p.id,
            p.code,
            p.name,
@@ -1133,15 +1255,15 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
            COALESCE(SUM(CASE WHEN l.kind = 'income' AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS income,
            COALESCE(SUM(CASE WHEN l.kind = 'cost'   AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS cost,
            COUNT(CASE WHEN l.archived_at IS NULL ${dateClause} THEN l.id END) AS line_count
-      FROM projects p
-      LEFT JOIN project_finance_lines l ON l.project_id = p.id
-      ${whereSql}
+      FROM ${projectsTable} p
+      LEFT JOIN ${project_finance_lines} l ON l.project_id = p.id
+      ${whereClause}
       GROUP BY p.id
   `;
 
   // Build derived columns net + margin_pct on top of the aggregate so
   // we can sort by them.
-  const wrapped = `
+  const wrapped = sql`
     SELECT *,
            (income - cost) AS net,
            CASE WHEN income > 0
@@ -1151,47 +1273,31 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
       FROM (${baseSelect}) sub
   `;
 
-  // Each occurrence of `dateClause` adds the same dateBinds to the
-  // bind sequence. Two occurrences in baseSelect (income / cost), then
-  // a third inside the COUNT(CASE …). Plus projectBinds for whereSql.
-  const aggregateBinds = [
-    ...dateBinds,
-    ...dateBinds,
-    ...dateBinds,
-    ...projectBinds,
-  ];
+  const totalRow = await db.get<{ count: number }>(
+    sql`SELECT COUNT(*) AS count FROM (${wrapped}) outerSub`
+  );
 
-  const total = await c.env.DB.prepare(
-    `SELECT COUNT(*) AS count FROM (${wrapped}) outerSub`
-  )
-    .bind(...aggregateBinds)
-    .first<{ count: number }>();
-
-  const rows = await c.env.DB.prepare(
-    `${wrapped} ${orderBy} LIMIT ? OFFSET ?`
-  )
-    .bind(...aggregateBinds, perPage, offset)
-    .all();
+  const rows = await db.all<any>(
+    sql`${wrapped} ${orderByClause} LIMIT ${perPage} OFFSET ${offset}`
+  );
 
   // Filtered grand totals so the header cards recompute server-side.
-  const totals = await c.env.DB.prepare(
-    `SELECT
-       COALESCE(SUM(income), 0) AS total_income,
-       COALESCE(SUM(cost),   0) AS total_cost
-     FROM (${wrapped}) tot`
-  )
-    .bind(...aggregateBinds)
-    .first<{ total_income: number; total_cost: number }>();
+  const totalsRow = await db.get<{ total_income: number; total_cost: number }>(sql`
+    SELECT
+      COALESCE(SUM(income), 0) AS total_income,
+      COALESCE(SUM(cost),   0) AS total_cost
+    FROM (${wrapped}) tot
+  `);
 
   return c.json({
-    data: rows.results ?? [],
+    data: rows,
     page,
     per_page: perPage,
-    total: total?.count ?? 0,
+    total: totalRow?.count ?? 0,
     totals: {
-      income: totals?.total_income ?? 0,
-      cost: totals?.total_cost ?? 0,
-      net: (totals?.total_income ?? 0) - (totals?.total_cost ?? 0),
+      income: totalsRow?.total_income ?? 0,
+      cost: totalsRow?.total_cost ?? 0,
+      net: (totalsRow?.total_income ?? 0) - (totalsRow?.total_cost ?? 0),
     },
   });
 });
@@ -1208,7 +1314,7 @@ app.get("/finance/lines", requirePermission("projects.read"), async (c) => {
   }
   const dateFrom = c.req.query("date_from") || "";
   const dateTo = c.req.query("date_to") || "";
-  const kind = (c.req.query("kind") || "all").toLowerCase();
+  const kindParam = (c.req.query("kind") || "all").toLowerCase();
   const brand = c.req.query("brand") || "";
   const category = c.req.query("category") || "";
   const projectId = parseInt(c.req.query("project_id") || "", 10);
@@ -1220,45 +1326,31 @@ app.get("/finance/lines", requirePermission("projects.read"), async (c) => {
   );
   const offset = (page - 1) * perPage;
 
-  const where: string[] = ["l.archived_at IS NULL"];
-  const binds: any[] = [];
+  const db = getDb(c.env);
 
+  const conds: any[] = [sql`l.archived_at IS NULL`];
   if (dateFrom) {
-    where.push("COALESCE(l.occurred_at, l.created_at) >= ?");
-    binds.push(dateFrom);
+    conds.push(sql`COALESCE(l.occurred_at, l.created_at) >= ${dateFrom}`);
   }
   if (dateTo) {
-    where.push("COALESCE(l.occurred_at, l.created_at) <= ?");
-    binds.push(`${dateTo}T23:59:59`);
+    conds.push(sql`COALESCE(l.occurred_at, l.created_at) <= ${`${dateTo}T23:59:59`}`);
   }
-  if (kind === "income" || kind === "cost") {
-    where.push("l.kind = ?");
-    binds.push(kind);
+  if (kindParam === "income" || kindParam === "cost") {
+    conds.push(sql`l.kind = ${kindParam}`);
   }
-  if (brand) {
-    where.push("p.brand = ?");
-    binds.push(brand);
-  }
-  if (category) {
-    where.push("l.category = ?");
-    binds.push(category);
-  }
-  if (!isNaN(projectId)) {
-    where.push("l.project_id = ?");
-    binds.push(projectId);
-  }
+  if (brand) conds.push(sql`p.brand = ${brand}`);
+  if (category) conds.push(sql`l.category = ${category}`);
+  if (!isNaN(projectId)) conds.push(sql`l.project_id = ${projectId}`);
   if (search) {
-    where.push(
-      "(l.description LIKE ? OR l.notes LIKE ? OR p.code LIKE ? OR p.name LIKE ?)"
-    );
     const like = `%${search}%`;
-    binds.push(like, like, like, like);
+    conds.push(
+      sql`(l.description LIKE ${like} OR l.notes LIKE ${like} OR p.code LIKE ${like} OR p.name LIKE ${like})`
+    );
   }
   if (finPicScope) {
-    where.push(
-      `COALESCE(p.pic_id, p.created_by) IN (${finPicScope.map(() => "?").join(",")})`
+    conds.push(
+      sql`COALESCE(p.pic_id, p.created_by) IN (${sql.join(finPicScope.map((id) => sql`${id}`), sql`, `)})`
     );
-    binds.push(...finPicScope);
   }
 
   const sortBy = c.req.query("sort_by") || "occurred_at";
@@ -1271,60 +1363,56 @@ app.get("/finance/lines", requirePermission("projects.read"), async (c) => {
     category: "l.category",
     kind: "l.kind",
   };
-  const orderBy = `ORDER BY ${sortMap[sortBy] ?? sortMap.occurred_at} ${sortDir}, l.id DESC`;
+  const orderByClause = sql`ORDER BY ${sql.raw(`${sortMap[sortBy] ?? sortMap.occurred_at} ${sortDir}`)}, l.id DESC`;
 
-  const baseFrom = `
-    FROM project_finance_lines l
-    JOIN projects p ON p.id = l.project_id
-    WHERE ${where.join(" AND ")}
+  const baseFrom = sql`
+    FROM ${project_finance_lines} l
+    JOIN ${projectsTable} p ON p.id = l.project_id
+    WHERE ${sql.join(conds, sql` AND `)}
   `;
 
-  const total = await c.env.DB.prepare(`SELECT COUNT(*) as count ${baseFrom}`)
-    .bind(...binds)
-    .first<{ count: number }>();
+  const totalRow = await db.get<{ count: number }>(
+    sql`SELECT COUNT(*) as count ${baseFrom}`
+  );
 
-  const rows = await c.env.DB.prepare(
-    `SELECT l.id,
-            l.project_id,
-            l.kind,
-            l.category,
-            l.description,
-            l.amount,
-            l.occurred_at,
-            l.notes,
-            l.created_at,
-            l.r2_key,
-            l.file_name,
-            p.code   AS project_code,
-            p.name   AS project_name,
-            p.brand  AS project_brand
-     ${baseFrom}
-     ${orderBy}
-     LIMIT ? OFFSET ?`
-  )
-    .bind(...binds, perPage, offset)
-    .all();
+  const rows = await db.all<any>(sql`
+    SELECT l.id,
+           l.project_id,
+           l.kind,
+           l.category,
+           l.description,
+           l.amount,
+           l.occurred_at,
+           l.notes,
+           l.created_at,
+           l.r2_key,
+           l.file_name,
+           p.code   AS project_code,
+           p.name   AS project_name,
+           p.brand  AS project_brand
+    ${baseFrom}
+    ${orderByClause}
+    LIMIT ${perPage} OFFSET ${offset}
+  `);
 
   // Lightweight totals across the filtered set so the page can show
   // "income X, cost Y, net Z" without a second round trip.
-  const totals = await c.env.DB.prepare(
-    `SELECT
-       COALESCE(SUM(CASE WHEN l.kind = 'income' THEN l.amount ELSE 0 END), 0) AS total_income,
-       COALESCE(SUM(CASE WHEN l.kind = 'cost'   THEN l.amount ELSE 0 END), 0) AS total_cost
-     ${baseFrom}`
-  )
-    .bind(...binds)
-    .first<{ total_income: number; total_cost: number }>();
+  const totalsRow = await db.get<{ total_income: number; total_cost: number }>(sql`
+    SELECT
+      COALESCE(SUM(CASE WHEN l.kind = 'income' THEN l.amount ELSE 0 END), 0) AS total_income,
+      COALESCE(SUM(CASE WHEN l.kind = 'cost'   THEN l.amount ELSE 0 END), 0) AS total_cost
+    ${baseFrom}
+  `);
 
   return c.json({
-    data: rows.results ?? [],
+    data: rows,
     page,
     per_page: perPage,
-    total: total?.count ?? 0,
+    total: totalRow?.count ?? 0,
     totals: {
-      income: totals?.total_income ?? 0,
-      cost: totals?.total_cost ?? 0,
-      net: (totals?.total_income ?? 0) - (totals?.total_cost ?? 0),
+      income: totalsRow?.total_income ?? 0,
+      cost: totalsRow?.total_cost ?? 0,
+      net: (totalsRow?.total_income ?? 0) - (totalsRow?.total_cost ?? 0),
     },
   });
 });
@@ -1562,6 +1650,7 @@ app.post("/:id/checklist", requirePermission("projects.write"), async (c) => {
     due_date?: string;
     owner_user_id?: number;
     seq?: number;
+    section_id?: number | null;
   }>();
   if (!body.title || !body.title.trim()) {
     return c.json({ error: "title is required" }, 400);
@@ -1576,6 +1665,7 @@ app.post("/:id/checklist", requirePermission("projects.write"), async (c) => {
       due_date: body.due_date ?? null,
       owner_user_id: body.owner_user_id ?? null,
       seq: body.seq ?? null,
+      section_id: body.section_id ?? null,
     },
     user?.id ?? 0
   );
@@ -1596,7 +1686,7 @@ app.patch("/checklist/:itemId", requirePermission("projects.write"), async (c) =
 // — if the item specifies one (e.g. 'projects.approve' for the
 // 3D-final-approval step), only users with that permission can tick
 // it.
-app.post("/checklist/:itemId/status", requirePermission("projects.write"), async (c) => {
+app.post("/checklist/:itemId/status", requireAnyPermission(["projects.write", "projects.checklist.tick"]), async (c) => {
   const itemId = parseInt(c.req.param("itemId"), 10);
   if (isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -1625,7 +1715,7 @@ app.post("/checklist/:itemId/status", requirePermission("projects.write"), async
 
 // ── Checklist review loop ────────────────────────────────────
 
-app.post("/checklist/:itemId/review", requirePermission("projects.write"), async (c) => {
+app.post("/checklist/:itemId/review", requireAnyPermission(["projects.write", "projects.checklist.tick"]), async (c) => {
   const itemId = parseInt(c.req.param("itemId"), 10);
   if (isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -1675,6 +1765,296 @@ app.post("/checklist/:itemId/review", requirePermission("projects.write"), async
   }
   return c.json({ ok: true });
 });
+
+// ── Tasklist sections (mig 050) ──────────────────────────────
+// Per-project sections that group tasks into stages. The frontend
+// renders these as collapsible groups with a stage-chip progress row
+// at the top of the project detail page.
+
+app.post("/:id/sections", requirePermission("projects.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const body = await c.req.json<{ name?: string; sort_order?: number }>();
+  const name = (body.name || "").trim();
+  if (!name) return c.json({ error: "name is required" }, 400);
+  // If sort_order omitted, append.
+  let order = body.sort_order;
+  if (order == null) {
+    const max = await c.env.DB.prepare(
+      `SELECT COALESCE(MAX(sort_order), 0) AS s
+         FROM project_checklist_sections WHERE project_id = ?`
+    )
+      .bind(id)
+      .first<{ s: number }>();
+    order = (max?.s ?? 0) + 10;
+  }
+  const r = await c.env.DB.prepare(
+    `INSERT INTO project_checklist_sections (project_id, name, sort_order)
+     VALUES (?, ?, ?)`
+  )
+    .bind(id, name, order)
+    .run();
+  return c.json({ id: r.meta.last_row_id, name, sort_order: order }, 201);
+});
+
+app.patch("/sections/:sectionId", requirePermission("projects.write"), async (c) => {
+  const sectionId = parseInt(c.req.param("sectionId"), 10);
+  if (isNaN(sectionId)) return c.json({ error: "Invalid ID" }, 400);
+  const body = await c.req.json<{ name?: string; sort_order?: number }>();
+  const sets: string[] = [];
+  const binds: any[] = [];
+  if ("name" in body) {
+    const n = (body.name || "").trim();
+    if (!n) return c.json({ error: "name cannot be empty" }, 400);
+    sets.push("name = ?");
+    binds.push(n);
+  }
+  if ("sort_order" in body) {
+    sets.push("sort_order = ?");
+    binds.push(body.sort_order ?? 0);
+  }
+  if (sets.length === 0) return c.json({ error: "No fields to update" }, 400);
+  binds.push(sectionId);
+  await c.env.DB.prepare(
+    `UPDATE project_checklist_sections SET ${sets.join(", ")} WHERE id = ?`
+  )
+    .bind(...binds)
+    .run();
+  return c.json({ ok: true });
+});
+
+app.delete("/sections/:sectionId", requirePermission("projects.write"), async (c) => {
+  const sectionId = parseInt(c.req.param("sectionId"), 10);
+  if (isNaN(sectionId)) return c.json({ error: "Invalid ID" }, 400);
+  // ON DELETE SET NULL on project_checklist.section_id ⇒ tasks
+  // automatically fall back to "Uncategorised".
+  await c.env.DB.prepare(`DELETE FROM project_checklist_sections WHERE id = ?`)
+    .bind(sectionId)
+    .run();
+  return c.json({ ok: true });
+});
+
+// Bulk reorder — accepts an array of section ids in the new display
+// order; renumbers sort_order in steps of 10.
+app.put("/:id/sections/reorder", requirePermission("projects.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const body = await c.req.json<{ ids?: unknown }>();
+  if (!Array.isArray(body.ids) || !body.ids.every((n) => Number.isInteger(n))) {
+    return c.json({ error: "ids must be an array of integers" }, 400);
+  }
+  const ids = body.ids as number[];
+  if (ids.length === 0) return c.json({ ok: true });
+  const stmts = ids.map((sectionId, idx) =>
+    c.env.DB
+      .prepare(
+        `UPDATE project_checklist_sections
+            SET sort_order = ?
+          WHERE id = ? AND project_id = ?`
+      )
+      .bind((idx + 1) * 10, sectionId, id)
+  );
+  await c.env.DB.batch(stmts);
+  return c.json({ ok: true });
+});
+
+// ── Tasklist attachments (mig 050) ───────────────────────────
+// Per-task file attachments. Replaces the project-level Attachments
+// panel. Same R2 upload pattern as project_attachments above.
+
+const TASK_ATTACH_ALLOWED = new Set([
+  "pdf", "png", "jpg", "jpeg", "webp", "heic", "mp4", "mov",
+  "doc", "docx", "xls", "xlsx", "csv", "txt", "dwg", "skp",
+]);
+const TASK_ATTACH_MAX = 25 * 1024 * 1024; // 25 MB
+
+function taskAttachmentKey(itemId: number, ext: string): string {
+  return `task-attach/${itemId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+}
+
+app.put(
+  "/checklist/:itemId/attachments",
+  requirePermission("projects.write"),
+  async (c) => {
+    const itemId = parseInt(c.req.param("itemId"), 10);
+    if (isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
+    const user = c.get("user");
+    const ext = (c.req.query("ext") || "").toLowerCase();
+    const fileName = c.req.query("name") || `attachment.${ext}`;
+    if (!TASK_ATTACH_ALLOWED.has(ext)) {
+      return c.json({ error: `Extension '${ext}' not allowed` }, 400);
+    }
+    const body = await c.req.arrayBuffer();
+    if (body.byteLength > TASK_ATTACH_MAX) {
+      return c.json({ error: "File too large (max 25MB)" }, 400);
+    }
+    const contentType =
+      ext === "mp4" ? "video/mp4" :
+      ext === "mov" ? "video/quicktime" :
+      ext === "pdf" ? "application/pdf" :
+      ext === "doc" ? "application/msword" :
+      ext === "docx" ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" :
+      ext === "xls" ? "application/vnd.ms-excel" :
+      ext === "xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" :
+      ext === "csv" ? "text/csv" :
+      ext === "txt" ? "text/plain" :
+      ext === "dwg" ? "application/acad" :
+      ext === "skp" ? "application/vnd.sketchup.skp" :
+      `image/${ext === "jpg" ? "jpeg" : ext}`;
+    const key = taskAttachmentKey(itemId, ext);
+    await c.env.POD_BUCKET.put(key, body, { httpMetadata: { contentType } });
+    const r = await c.env.DB.prepare(
+      `INSERT INTO project_checklist_attachments
+         (item_id, r2_key, file_name, content_type, size_bytes, uploaded_by)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+      .bind(itemId, key, fileName, contentType, body.byteLength, user?.id ?? null)
+      .run();
+    return c.json(
+      {
+        id: r.meta.last_row_id,
+        item_id: itemId,
+        r2_key: key,
+        file_name: fileName,
+        content_type: contentType,
+        size_bytes: body.byteLength,
+        uploaded_at: new Date().toISOString(),
+      },
+      201
+    );
+  }
+);
+
+app.delete(
+  "/checklist/attachments/:attId",
+  requirePermission("projects.write"),
+  async (c) => {
+    const attId = parseInt(c.req.param("attId"), 10);
+    if (isNaN(attId)) return c.json({ error: "Invalid ID" }, 400);
+    // Soft archive — keep the row + R2 object so an accidental delete
+    // can be reversed if anyone notices in time.
+    await c.env.DB.prepare(
+      `UPDATE project_checklist_attachments
+          SET archived_at = datetime('now')
+        WHERE id = ?`
+    )
+      .bind(attId)
+      .run();
+    return c.json({ ok: true });
+  }
+);
+
+// ── Template sections + requires_review (mig 050) ───────────
+// Used by the Project Maintenance template editor (Phase B in the
+// frontend rollout). The clone-on-create path in
+// services/projects.ts::instantiateChecklistFromEventType already
+// honours these — admins can configure today, the next project
+// inherits.
+
+app.post(
+  "/checklist-templates/:id/sections",
+  requirePermission("projects.manage"),
+  async (c) => {
+    const id = parseInt(c.req.param("id"), 10);
+    if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+    const body = await c.req.json<{ name?: string; sort_order?: number }>();
+    const name = (body.name || "").trim();
+    if (!name) return c.json({ error: "name is required" }, 400);
+    let order = body.sort_order;
+    if (order == null) {
+      const max = await c.env.DB.prepare(
+        `SELECT COALESCE(MAX(sort_order), 0) AS s
+           FROM project_checklist_template_sections WHERE template_id = ?`
+      )
+        .bind(id)
+        .first<{ s: number }>();
+      order = (max?.s ?? 0) + 10;
+    }
+    const r = await c.env.DB.prepare(
+      `INSERT INTO project_checklist_template_sections (template_id, name, sort_order)
+       VALUES (?, ?, ?)`
+    )
+      .bind(id, name, order)
+      .run();
+    return c.json({ id: r.meta.last_row_id, name, sort_order: order }, 201);
+  }
+);
+
+app.patch(
+  "/checklist-templates/sections/:sectionId",
+  requirePermission("projects.manage"),
+  async (c) => {
+    const sectionId = parseInt(c.req.param("sectionId"), 10);
+    if (isNaN(sectionId)) return c.json({ error: "Invalid ID" }, 400);
+    const body = await c.req.json<{ name?: string; sort_order?: number }>();
+    const sets: string[] = [];
+    const binds: any[] = [];
+    if ("name" in body) {
+      const n = (body.name || "").trim();
+      if (!n) return c.json({ error: "name cannot be empty" }, 400);
+      sets.push("name = ?");
+      binds.push(n);
+    }
+    if ("sort_order" in body) {
+      sets.push("sort_order = ?");
+      binds.push(body.sort_order ?? 0);
+    }
+    if (sets.length === 0) return c.json({ error: "No fields to update" }, 400);
+    binds.push(sectionId);
+    await c.env.DB.prepare(
+      `UPDATE project_checklist_template_sections SET ${sets.join(", ")} WHERE id = ?`
+    )
+      .bind(...binds)
+      .run();
+    return c.json({ ok: true });
+  }
+);
+
+app.delete(
+  "/checklist-templates/sections/:sectionId",
+  requirePermission("projects.manage"),
+  async (c) => {
+    const sectionId = parseInt(c.req.param("sectionId"), 10);
+    if (isNaN(sectionId)) return c.json({ error: "Invalid ID" }, 400);
+    await c.env.DB.prepare(
+      `DELETE FROM project_checklist_template_sections WHERE id = ?`
+    )
+      .bind(sectionId)
+      .run();
+    return c.json({ ok: true });
+  }
+);
+
+// Bulk reorder template sections — same shape as the items reorder
+// (`PUT /checklist-templates/:id/items/reorder`). Renumbers
+// sort_order in steps of 10 so future fine-grained inserts can pick
+// a value in between two rows without another full renumber. Sections
+// not belonging to the template are silent no-ops.
+app.put(
+  "/checklist-templates/:id/sections/reorder",
+  requirePermission("projects.manage"),
+  async (c) => {
+    const id = parseInt(c.req.param("id"), 10);
+    if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+    const body = await c.req.json<{ ids?: unknown }>();
+    if (!Array.isArray(body.ids) || !body.ids.every((n) => Number.isInteger(n))) {
+      return c.json({ error: "ids must be an array of integers" }, 400);
+    }
+    const ids = body.ids as number[];
+    if (ids.length === 0) return c.json({ ok: true });
+    const stmts = ids.map((sectionId, idx) =>
+      c.env.DB
+        .prepare(
+          `UPDATE project_checklist_template_sections
+              SET sort_order = ?
+            WHERE id = ? AND template_id = ?`
+        )
+        .bind((idx + 1) * 10, sectionId, id)
+    );
+    await c.env.DB.batch(stmts);
+    return c.json({ ok: true });
+  }
+);
 
 // ── Defects ──────────────────────────────────────────────────
 
@@ -2049,17 +2429,26 @@ app.get("/calendar/events", requirePermission("projects.read"), async (c) => {
   if (!from || !to) return c.json({ error: "from & to required (YYYY-MM-DD)" }, 400);
 
   const user = c.get("user");
-  const picScope = getProjectPicScope(user);
-  // Scoped user with no PIC line → return empty quickly.
-  if (picScope && picScope.length === 0) {
+  const scope = getProjectScope(user);
+  // Scoped user with no PIC line OR no brand coverage → return empty.
+  if (scope && (scope.pic_ids.length === 0 || scope.brands.length === 0)) {
     return c.json({ projects: [], tasks: [] });
   }
   // COALESCE(pic_id, created_by) so legacy projects (pre-039) still
   // attach to their creator's team under the scoped ACL.
-  const picWhere = picScope
-    ? ` AND COALESCE(p.pic_id, p.created_by) IN (${picScope.map(() => "?").join(",")})`
-    : "";
-  const picBinds = picScope ?? [];
+  const scopeWhereParts: string[] = [];
+  const scopeBinds: any[] = [];
+  if (scope) {
+    scopeWhereParts.push(
+      `COALESCE(p.pic_id, p.created_by) IN (${scope.pic_ids.map(() => "?").join(",")})`
+    );
+    scopeBinds.push(...scope.pic_ids);
+    scopeWhereParts.push(
+      `(p.brand IS NOT NULL AND p.brand IN (${scope.brands.map(() => "?").join(",")}))`
+    );
+    scopeBinds.push(...scope.brands);
+  }
+  const scopeWhere = scopeWhereParts.length ? ` AND ${scopeWhereParts.join(" AND ")}` : "";
 
   // Projects whose [start_date, end_date] overlaps [from, to].
   const projects = await c.env.DB.prepare(
@@ -2069,9 +2458,9 @@ app.get("/calendar/events", requirePermission("projects.read"), async (c) => {
       WHERE p.archived_at IS NULL
         AND p.start_date IS NOT NULL
         AND date(p.start_date) <= date(?)
-        AND date(COALESCE(p.end_date, p.start_date)) >= date(?)${picWhere}`
+        AND date(COALESCE(p.end_date, p.start_date)) >= date(?)${scopeWhere}`
   )
-    .bind(to, from, ...picBinds)
+    .bind(to, from, ...scopeBinds)
     .all();
 
   const tasks = await c.env.DB.prepare(
@@ -2087,10 +2476,10 @@ app.get("/calendar/events", requirePermission("projects.read"), async (c) => {
         AND c.status != 'done'
         AND c.status != 'na'
         AND c.due_date IS NOT NULL
-        AND date(c.due_date) BETWEEN date(?) AND date(?)${picWhere}
+        AND date(c.due_date) BETWEEN date(?) AND date(?)${scopeWhere}
       ORDER BY c.due_date, p.brand, c.id`
   )
-    .bind(from, to, ...picBinds)
+    .bind(from, to, ...scopeBinds)
     .all();
 
   return c.json({ projects: projects.results ?? [], tasks: tasks.results ?? [] });
@@ -2120,9 +2509,13 @@ app.post("/import/csv", requirePermission("projects.manage"), async (c) => {
     etBySlug.set(r.name.toLowerCase(), r.id);
   }
 
-  const ALLOWED_BRANDS = new Set([
-    "AKEMI", "ZANOTTI", "DUNLOPILLO", "ERGOTEX", "MY SOFA FACTORY", "AKEMI C&C",
-  ]);
+  // Pull the canonical brand allow-list from project_brands (admins
+  // maintain it under Project Maintenance) so newly-added brands flow
+  // through CSV without code changes.
+  const brandRows = await getDb(c.env)
+    .select({ name: project_brands.name })
+    .from(project_brands);
+  const ALLOWED_BRANDS = new Set(brandRows.map((b) => b.name));
 
   const { createProject } = await import("../services/projects");
 

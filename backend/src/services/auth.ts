@@ -1,5 +1,8 @@
 import type { Env } from "../types";
 import { parsePermissions } from "./permissions";
+import { getDb } from "../db/client";
+import { user_brands } from "../db/schema";
+import { inArray } from "drizzle-orm";
 
 // ── Crypto helpers ────────────────────────────────────────
 // PBKDF2 via Web Crypto — built into Workers, no WASM needed.
@@ -91,6 +94,15 @@ export interface AuthUser {
   manager_id: number | null;
   /** Role flag — if true, project endpoints filter to pic_id IN (self, manager). */
   scope_to_pic: boolean;
+  /** Department membership — drives the brand allow-list below. */
+  department_id: number | null;
+  /**
+   * Brand allow-list for scoped users — null when the role isn't
+   * scope_to_pic (admins, ops, finance). Empty array when the user is
+   * scoped but their department has no brands assigned — that user
+   * sees no projects until an admin configures the dept.
+   */
+  brand_scope: string[] | null;
   joined_at?: string | null;
   last_login_at?: string | null;
 }
@@ -110,10 +122,51 @@ export async function deleteSession(env: Env, token: string): Promise<void> {
   await env.DB.prepare(`DELETE FROM sessions WHERE token = ?`).bind(token).run();
 }
 
+// Builds the AuthUser shape from the row returned by the SELECT below
+// + a follow-up brand fetch when the user is scoped.
+//
+// Brand allow-list is per-person via user_brands (mig 049). Effective
+// scope is the UNION of the user's own brands plus their direct
+// manager's brands — the same one-hop rule used for pic_ids. This
+// lets a Sales Director set brands once at their level and have their
+// reps inherit visibility automatically; a rep can still hold extra
+// brands directly if they specialise outside the manager's coverage.
+async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
+  const scoped = !!row.scope_to_pic;
+  const managerId: number | null = row.manager_id ?? null;
+  let brandScope: string[] | null = null;
+  if (scoped) {
+    const ids = managerId ? [row.id, managerId] : [row.id];
+    const db = getDb(env);
+    const rows = await db
+      .select({ brand: user_brands.brand })
+      .from(user_brands)
+      .where(inArray(user_brands.user_id, ids));
+    // Dedup since the same brand can be listed on both the rep and
+    // the manager.
+    brandScope = Array.from(new Set(rows.map((r) => r.brand)));
+  }
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role_id: row.role_id,
+    role_name: row.role_name,
+    status: row.status,
+    permissions: parsePermissions(row.role_permissions),
+    manager_id: managerId,
+    scope_to_pic: scoped,
+    department_id: row.department_id ?? null,
+    brand_scope: brandScope,
+    joined_at: row.joined_at ?? null,
+    last_login_at: row.last_login_at ?? null,
+  };
+}
+
 export async function getUserBySession(env: Env, token: string): Promise<AuthUser | null> {
   const row = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.role_id, u.status,
-            u.manager_id, u.joined_at, u.last_login_at,
+            u.manager_id, u.department_id, u.joined_at, u.last_login_at,
             r.name as role_name, r.permissions as role_permissions,
             r.scope_to_pic,
             s.expires_at
@@ -133,24 +186,13 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
     return null;
   }
 
-  return {
-    id: row.id,
-    email: row.email,
-    name: row.name,
-    role_id: row.role_id,
-    role_name: row.role_name,
-    status: row.status,
-    permissions: parsePermissions(row.role_permissions),
-    manager_id: row.manager_id ?? null,
-    scope_to_pic: !!row.scope_to_pic,
-    joined_at: row.joined_at,
-    last_login_at: row.last_login_at,
-  };
+  return hydrateAuthUser(env, row);
 }
 
 export async function getUserById(env: Env, id: number): Promise<AuthUser | null> {
   const row = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.role_id, u.status, u.manager_id,
+            u.department_id,
             r.name as role_name, r.permissions as role_permissions,
             r.scope_to_pic
      FROM users u
@@ -160,17 +202,7 @@ export async function getUserById(env: Env, id: number): Promise<AuthUser | null
     .bind(id)
     .first<any>();
   if (!row) return null;
-  return {
-    id: row.id,
-    email: row.email,
-    name: row.name,
-    role_id: row.role_id,
-    role_name: row.role_name,
-    status: row.status,
-    permissions: parsePermissions(row.role_permissions),
-    manager_id: row.manager_id ?? null,
-    scope_to_pic: !!row.scope_to_pic,
-  };
+  return hydrateAuthUser(env, row);
 }
 
 /**

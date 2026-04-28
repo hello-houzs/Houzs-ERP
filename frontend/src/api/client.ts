@@ -36,6 +36,27 @@ export function onUnauthorized(fn: UnauthorizedListener): () => void {
   return () => unauthorizedListeners.delete(fn);
 }
 
+/**
+ * Listeners for 403 responses. ToastProvider subscribes so any
+ * permission-denied response surfaces a single, friendly toast even
+ * if the calling page silently swallows the error.
+ */
+type ForbiddenListener = (message: string) => void;
+const forbiddenListeners = new Set<ForbiddenListener>();
+export function onForbidden(fn: ForbiddenListener): () => void {
+  forbiddenListeners.add(fn);
+  return () => forbiddenListeners.delete(fn);
+}
+
+function extractErrorMessage(body: string): string {
+  if (!body) return "";
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed.error === "string") return parsed.error;
+  } catch {}
+  return "";
+}
+
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const token = tokenStore.get();
   const res = await fetch(`${baseUrl}${path}`, {
@@ -64,6 +85,10 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
     try {
       body = await res.text();
     } catch {}
+    if (res.status === 403) {
+      const msg = extractErrorMessage(body) || "You don't have permission to do that";
+      for (const fn of forbiddenListeners) fn(msg);
+    }
     throw new Error(`${res.status}: ${body || res.statusText}`);
   }
   if (res.status === 204) return undefined as T;

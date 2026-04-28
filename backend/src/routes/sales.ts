@@ -8,10 +8,13 @@ const app = new Hono<{ Bindings: Env }>();
 // Reps (role.scope_to_pic=1) without sales.manage only see entries
 // they created. Anyone with sales.manage, or any unscoped role, sees
 // everything.
+// Returns a single WHERE-fragment (no leading/trailing AND) that the
+// caller stitches into the final clause via " AND ". Returning a leading
+// AND here used to double up with the join — `WHERE x AND AND y`.
 function buildOwnershipWhere(user: any, canManage: boolean) {
   if (canManage) return { sql: "", binds: [] as any[] };
   if (user?.scope_to_pic) {
-    return { sql: " AND s.created_by = ? ", binds: [user.id] };
+    return { sql: "s.created_by = ?", binds: [user.id] };
   }
   return { sql: "", binds: [] as any[] };
 }
@@ -56,8 +59,8 @@ app.get("/entries", requirePermission("sales.read"), async (c) => {
   }
 
   const ownership = buildOwnershipWhere(user, canManage);
-  const whereSql = [where.join(" AND "), ownership.sql.trim()].filter(Boolean).join(" AND ");
-  const fullWhere = whereSql ? `WHERE ${whereSql}` : "";
+  if (ownership.sql) where.push(ownership.sql);
+  const fullWhere = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const fullBinds = [...binds, ...ownership.binds];
 
   const total = await c.env.DB.prepare(

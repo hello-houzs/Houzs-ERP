@@ -9,6 +9,11 @@ export interface CreateAssrInput {
   doc_no: string;
   items: { item_code: string; item_description?: string; qty?: number }[];
   complaint_issue: string;
+  /** Optional issue taxonomy entry captured at create time. Free-text
+   *  string ("Product defect", "Missing / short item", or admin
+   *  custom). Replaces the older service_category-driven flow on the
+   *  intake form. */
+  issue_category?: string | null;
   created_by?: number;
 }
 
@@ -142,9 +147,9 @@ export async function createAssrCase(
   const result = await env.DB.prepare(
     `INSERT INTO assr_cases (
        assr_no, status, stage, doc_no, complained_date, customer_name, phone, location,
-       sales_agent, item_code, complaint_issue, po_no, addr1, addr2, addr3, addr4, created_by,
+       sales_agent, item_code, complaint_issue, issue_category, po_no, addr1, addr2, addr3, addr4, created_by,
        assigned_to, sla_hours, deadline_at
-     ) VALUES (?, 'Open', 'registration', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, 'Open', 'registration', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       assrNo,
@@ -156,6 +161,7 @@ export async function createAssrCase(
       context?.SalesAgent ?? null,
       firstItem,
       input.complaint_issue,
+      input.issue_category ?? null,
       context?.SOUDF_ToPONo ?? null,
       context?.InvAddr1 ?? null,
       context?.InvAddr2 ?? null,

@@ -13,9 +13,9 @@ import { formatCurrency, formatDate, cn } from "../lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────
 
-type EntryStatus = "draft" | "submitted" | "pushed" | "void";
+export type EntryStatus = "draft" | "submitted" | "pushed" | "void";
 
-interface SalesEntry {
+export interface SalesEntry {
   id: number;
   project_id: number | null;
   project_code: string | null;
@@ -51,7 +51,7 @@ interface ListResponse {
   };
 }
 
-const STATUS_BADGE: Record<EntryStatus, { label: string; cls: string }> = {
+export const STATUS_BADGE: Record<EntryStatus, { label: string; cls: string }> = {
   draft:     { label: "Draft",     cls: "bg-bg text-ink-muted border border-border" },
   submitted: { label: "Submitted", cls: "bg-amber-100 text-amber-800" },
   pushed:    { label: "Pushed",    cls: "bg-synced/15 text-synced" },
@@ -413,18 +413,26 @@ function Tile({
 
 // ── Entry create/edit panel ──────────────────────────────────
 
-function EntryPanel({
+export function EntryPanel({
   mode,
   entry,
   udfFields,
   onClose,
   onSaved,
+  lockedProjectId,
+  lockedProjectLabel,
 }: {
   mode: "create" | "edit";
   entry?: SalesEntry;
   udfFields: UdfField[];
   onClose: () => void;
   onSaved: () => void;
+  /** When set, the project picker is replaced by a read-only label and
+   *  every saved entry is force-linked to this project. Used by the
+   *  in-project Sales section so reps can't accidentally re-target an
+   *  entry to a different exhibition. */
+  lockedProjectId?: number;
+  lockedProjectLabel?: string;
 }) {
   const toast = useToast();
   const [customerName, setCustomerName] = useState(entry?.customer_name || "");
@@ -435,7 +443,9 @@ function EntryPanel({
     entry?.occurred_at?.slice(0, 10) || new Date().toISOString().slice(0, 10)
   );
   const [projectId, setProjectId] = useState<string>(
-    entry?.project_id ? String(entry.project_id) : ""
+    lockedProjectId
+      ? String(lockedProjectId)
+      : entry?.project_id ? String(entry.project_id) : ""
   );
   const [notes, setNotes] = useState(entry?.notes || "");
   const [custom, setCustom] = useState<Record<string, string>>({});
@@ -467,7 +477,8 @@ function EntryPanel({
 
   // Minimal project picker — fetches only recent projects. Free text
   // fallback not shown; pic_id wiring on projects means reps already see
-  // only their PIC's projects here.
+  // only their PIC's projects here. Fires even when locked — harmless
+  // and avoids a conditional hook call.
   const projectsQ = useQuery<{ data: Array<{ id: number; code: string; name: string }> }>(
     () => api.get("/api/projects?per_page=200")
   );
@@ -613,19 +624,28 @@ function EntryPanel({
           />
         </div>
         <div>
-          <Label>Project (optional)</Label>
-          <select
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            className="h-10 w-full appearance-none rounded-md border border-border bg-surface px-3 text-[13px]"
-          >
-            <option value="">— none —</option>
-            {(projectsQ.data?.data ?? []).map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.code} · {p.name}
-              </option>
-            ))}
-          </select>
+          <Label>Project</Label>
+          {lockedProjectId ? (
+            <div
+              className="flex h-10 items-center rounded-md border border-border bg-bg/40 px-3 text-[13px] text-ink-secondary"
+              title="Locked — drafted from this exhibition's page"
+            >
+              {lockedProjectLabel || `Project #${lockedProjectId}`}
+            </div>
+          ) : (
+            <select
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              className="h-10 w-full appearance-none rounded-md border border-border bg-surface px-3 text-[13px]"
+            >
+              <option value="">— none —</option>
+              {(projectsQ.data?.data ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.code} · {p.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
         <div>
           <Label>Notes</Label>

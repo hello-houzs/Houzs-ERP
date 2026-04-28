@@ -11,6 +11,8 @@
     "db:migrate": "node -e \"const fs=require('fs'),p=require('path'),{execSync}=require('child_process');const dir='src/db/migrations';for(const f of fs.readdirSync(dir).sort()){console.log('▶',f);try{execSync(`wrangler d1 execute autocount-sync --remote --file=${p.join(dir,f)}`,{stdio:'inherit'})}catch(e){console.log('  (skipped — likely already applied)')}}\""
   },
   "dependencies": {
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0"
   },
   "devDependencies": {

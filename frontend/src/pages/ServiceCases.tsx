@@ -43,6 +43,7 @@ import {
 import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
 import { InlineEdit } from "../components/InlineEdit";
+import { ExpandableText } from "../components/ExpandableText";
 import { StatCard } from "../components/StatCard";
 import { DashboardGrid, DashboardPanels, DashboardBreakdown } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
@@ -393,7 +394,12 @@ function CasesView({
       key: "customer_name",
       label: "Customer",
       render: (r) => (
-        <span className="block max-w-[180px] truncate">{r.customer_name || "—"}</span>
+        <span
+          className="block max-w-[180px] truncate"
+          title={r.customer_name || undefined}
+        >
+          {r.customer_name || "—"}
+        </span>
       ),
       getValue: (r) => r.customer_name,
     },
@@ -736,6 +742,10 @@ function CreatePanel({
   const [lookupItems, setLookupItems] = useState<{ item_code: string; item_description: string | null; qty?: number }[] | null>(null);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [issue, setIssue] = useState("");
+  // "" → unset; OTHER_SENTINEL → user picked Other but hasn't typed yet;
+  // any other string → either a canonical category or a custom label.
+  const [issueCategory, setIssueCategory] = useState<string>("");
+  const [customCategory, setCustomCategory] = useState("");
   const [lookingUp, setLookingUp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [customerInfo, setCustomerInfo] = useState<{ name?: string; phone?: string; location?: string } | null>(null);
@@ -800,12 +810,23 @@ function CreatePanel({
       toast.error("Select at least one item");
       return;
     }
+    // Resolve the chosen issue category. "Other" requires the user to
+    // have typed a custom label; otherwise we send null.
+    let resolvedCategory: string | null = null;
+    if (issueCategory === OTHER_SENTINEL) {
+      const trimmed = customCategory.trim();
+      resolvedCategory = trimmed || null;
+    } else if (issueCategory) {
+      resolvedCategory = issueCategory;
+    }
+
     setSubmitting(true);
     try {
       const res = await api.post<{ assr_no: string; id: number }>("/api/assr", {
         doc_no: docNo.trim(),
         items,
         complaint_issue: issue.trim(),
+        issue_category: resolvedCategory,
       });
 
       // Upload any staged defect photos/videos as "complaint" attachments.
@@ -893,7 +914,12 @@ function CreatePanel({
                   />
                   <span className="font-mono text-[11px] font-medium">{item.item_code}</span>
                   {item.item_description && (
-                    <span className="flex-1 truncate text-ink-secondary">{item.item_description}</span>
+                    <span
+                      className="flex-1 truncate text-ink-secondary"
+                      title={item.item_description}
+                    >
+                      {item.item_description}
+                    </span>
                   )}
                   {item.qty != null && item.qty > 0 && (
                     <span className="ml-auto text-[11px] text-ink-muted">&times;{item.qty}</span>
@@ -931,6 +957,36 @@ function CreatePanel({
           placeholder="Describe the issue…"
           className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
         />
+        <div className="mt-3">
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            Issue Category
+          </div>
+          <select
+            value={issueCategory}
+            onChange={(e) => {
+              const v = e.target.value;
+              setIssueCategory(v);
+              if (v !== OTHER_SENTINEL) setCustomCategory("");
+            }}
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          >
+            <option value="">— select —</option>
+            {ISSUE_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+            <option value={OTHER_SENTINEL}>Other…</option>
+          </select>
+          {issueCategory === OTHER_SENTINEL && (
+            <input
+              value={customCategory}
+              onChange={(e) => setCustomCategory(e.target.value)}
+              placeholder="e.g. transport damage"
+              className="mt-1.5 w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            />
+          )}
+        </div>
       </PanelSection>
 
       <PanelSection title={`Defect Photos / Videos (${files.length}/${MAX_FILES})`}>
@@ -1266,7 +1322,12 @@ function DetailContent({
                 {items.map((item) => (
                   <div key={item.id} className="flex items-center gap-2 rounded border border-border px-3 py-1.5 text-sm">
                     <span className="font-mono text-[11px] font-medium">{item.item_code}</span>
-                    <span className="flex-1 truncate text-ink-secondary">{item.item_description || ""}</span>
+                    <span
+                      className="flex-1 truncate text-ink-secondary"
+                      title={item.item_description || undefined}
+                    >
+                      {item.item_description || ""}
+                    </span>
                     <span className="text-[11px] text-ink-muted">&times;{item.qty}</span>
                     {c.stage !== "closed" && (
                       <button
@@ -1322,8 +1383,14 @@ function DetailContent({
             )}
           </PanelSection>
 
-          {/* Issue & Resolution */}
-          <PanelSection title="Issue & Resolution">
+          {/* ── Issue (captured at intake) ─────────────────────
+              Everything in this block was filled in (or auto-derived
+              from) the original create form: the customer's reported
+              complaint, the issue category, and the priority used for
+              SLA calculation. service_category was removed when the
+              intake form was simplified — the issue_category taxonomy
+              now drives both the dashboard breakdown and triage. */}
+          <PanelSection title="Issue">
             <FieldRow label="Complaint">{c.complaint_issue || "—"}</FieldRow>
             <IssueCategoryField
               value={c.issue_category}
@@ -1331,21 +1398,20 @@ function DetailContent({
               dialog={dialog}
             />
             <InlineEdit
-              label="Resolution Method"
-              value={c.resolution_method}
-              options={[...RESOLUTION_OPTIONS]}
-              onSave={(v) => patch({ resolution_method: v })}
-            />
-            <InlineEdit
               label="Priority"
               value={c.priority}
               options={[...PRIORITY_OPTIONS]}
               onSave={(v) => patch({ priority: v })}
             />
-            <ServiceCategoryField
-              value={c.service_category}
-              onSave={(v) => patch({ service_category: v })}
-              dialog={dialog}
+          </PanelSection>
+
+          {/* ── Resolution (filled as the case progresses) ────── */}
+          <PanelSection title="Resolution">
+            <InlineEdit
+              label="Resolution Method"
+              value={c.resolution_method}
+              options={[...RESOLUTION_OPTIONS]}
+              onSave={(v) => patch({ resolution_method: v })}
             />
             {/* Creditor (AutoCount) — derived from item_code via
                 StockItem.MainSupplier. Read-only; re-resolved when
@@ -1580,7 +1646,10 @@ function DetailContent({
                           <span className="text-[10px] text-ink-muted">{formatDate(po.doc_date)}</span>
                         )}
                       </div>
-                      <div className="truncate text-[11px] text-ink-secondary">
+                      <div
+                        className="truncate text-[11px] text-ink-secondary"
+                        title={`${po.item_code}${po.item_description ? ` — ${po.item_description}` : ""}`}
+                      >
                         {po.item_code} {po.item_description ? `— ${po.item_description}` : ""}
                       </div>
                       {po.creditor_name && (
@@ -2188,81 +2257,6 @@ function CostTrackingPanel({
   );
 }
 
-// Fixed list of service categories. "Others" branches to a free-text
-// dialog so non-standard cases can still be tagged.
-const SERVICE_CATEGORIES = [
-  "Product defect",
-  "Incorrect item delivered",
-  "Missing / short item",
-  "Warranty service request",
-  "Installation / assembly issue",
-] as const;
-
-function ServiceCategoryField({
-  value,
-  onSave,
-  dialog,
-}: {
-  value: string | null | undefined;
-  onSave: (next: string | null) => Promise<void>;
-  dialog: ReturnType<typeof useDialog>;
-}) {
-  const isCanonical =
-    !!value && (SERVICE_CATEGORIES as readonly string[]).includes(value);
-  const showsOther = !!value && !isCanonical;
-
-  async function onChange(next: string) {
-    if (next === OTHER_SENTINEL) {
-      const custom = await dialog.prompt({
-        title: "Other service category",
-        message: "Describe the service category in a few words.",
-        placeholder: "e.g. retainer top-up",
-        defaultValue: showsOther ? value || "" : "",
-        required: true,
-        confirmLabel: "Save",
-      });
-      if (!custom) return;
-      await onSave(custom);
-      return;
-    }
-    await onSave(next || null);
-  }
-
-  return (
-    <div>
-      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-        Service Category
-      </div>
-      <select
-        value={isCanonical ? (value as string) : showsOther ? OTHER_SENTINEL : ""}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-      >
-        <option value="">— select —</option>
-        {SERVICE_CATEGORIES.map((c) => (
-          <option key={c} value={c}>
-            {c}
-          </option>
-        ))}
-        <option value={OTHER_SENTINEL}>
-          Others{showsOther ? ` — ${value}` : "…"}
-        </option>
-      </select>
-      {showsOther && (
-        <div className="mt-1 text-[10px] text-ink-muted">
-          Custom label.{" "}
-          <button
-            onClick={() => onChange(OTHER_SENTINEL)}
-            className="text-accent hover:underline"
-          >
-            Edit
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function CustomerHistory({ id }: { id: number }) {
   const q = useQuery<{ cases: CustomerHistoryRow[] }>(
     () => api.get(`/api/assr/${id}/customer-history`),
@@ -2307,7 +2301,11 @@ function CustomerHistory({ id }: { id: number }) {
               )}
             </div>
             {p.complaint_issue && (
-              <div className="mt-1 line-clamp-2 text-ink-secondary">{p.complaint_issue}</div>
+              <ExpandableText
+                text={p.complaint_issue}
+                lines={2}
+                className="mt-1 text-ink-secondary"
+              />
             )}
           </div>
         ))}

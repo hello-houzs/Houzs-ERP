@@ -1,7 +1,25 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
-import { getProjectPicScope } from "../services/projectAcl";
+import { getProjectScope } from "../services/projectAcl";
+import { getDb } from "../db/client";
+import {
+  project_activity,
+  project_reads,
+  projects,
+  users,
+} from "../db/schema";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -12,7 +30,8 @@ const app = new Hono<{ Bindings: Env }>();
  * Projects list.
  *
  * Scoping: re-uses the project ACL. Scoped users (sales reps) see
- * only activity on projects where they or their manager is the PIC.
+ * only activity on projects where they or their manager is the PIC,
+ * AND whose brand is in the user's brand allow-list (mig 049).
  *
  * Query params:
  *   limit      — max feed items (default 20, max 100)
@@ -31,8 +50,8 @@ app.get("/", requirePermission("projects.read"), async (c) => {
   const since = c.req.query("since") || null;
   const unreadOnly = c.req.query("unread") === "1";
 
-  const picScope = getProjectPicScope(user);
-  if (picScope && picScope.length === 0) {
+  const scope = getProjectScope(user);
+  if (scope && (scope.pic_ids.length === 0 || scope.brands.length === 0)) {
     return c.json({
       feed: [],
       unread_by_project: {},
@@ -40,82 +59,125 @@ app.get("/", requirePermission("projects.read"), async (c) => {
       has_more: false,
     });
   }
-  const picClause = picScope
-    ? ` AND COALESCE(p.pic_id, p.created_by) IN (${picScope.map(() => "?").join(",")})`
-    : "";
-  const picBinds = picScope ?? [];
 
-  // Feed: recent activity across the user's visible projects. Exclude
-  // the user's own rows so your own posts don't spam the bell.
-  const sinceClause = since ? " AND act.created_at > ?" : "";
-  const sinceBinds = since ? [since] : [];
+  const db = getDb(c.env);
 
-  // Unread clause: LEFT JOIN on project_reads and keep rows where the
-  // activity is strictly newer than the user's last_read_at for that
-  // project. Users who've never opened a project see every item as
-  // unread.
-  const unreadClause = unreadOnly
-    ? " AND act.created_at > COALESCE(pr.last_read_at, '1970-01-01')"
-    : "";
-  const unreadJoin = unreadOnly
-    ? " LEFT JOIN project_reads pr ON pr.project_id = p.id AND pr.user_id = ?"
-    : "";
-  const unreadBinds = unreadOnly ? [user.id] : [];
+  // Reusable scope predicate — same for the feed query and the
+  // per-project unread counts. COALESCE(pic_id, created_by) keeps
+  // legacy projects (pre-039) attached to their creator's team.
+  const scopeConds = [];
+  if (scope) {
+    scopeConds.push(
+      inArray(
+        sql<number>`COALESCE(${projects.pic_id}, ${projects.created_by})`,
+        scope.pic_ids
+      )
+    );
+    scopeConds.push(inArray(projects.brand, scope.brands));
+  }
+
+  // Feed conditions — exclude the user's own rows so your own posts
+  // don't spam the bell.
+  const feedConds = [
+    isNull(projects.archived_at),
+    isNull(project_activity.archived_at),
+    or(
+      isNull(project_activity.user_id),
+      ne(project_activity.user_id, user.id)
+    )!,
+    ...scopeConds,
+  ];
+  if (since) feedConds.push(gt(project_activity.created_at, since));
+  if (unreadOnly) {
+    // Activity strictly newer than the user's last_read_at for that
+    // project. Users who've never opened a project see every item as
+    // unread (COALESCE on the join).
+    feedConds.push(
+      sql`${project_activity.created_at} > COALESCE(${project_reads.last_read_at}, '1970-01-01')`
+    );
+  }
+
+  // Build the feed query. The unread join is conditional — using
+  // .$dynamic() so the leftJoin can be appended later without TS
+  // narrowing complaints.
+  let feedQ = db
+    .select({
+      id: project_activity.id,
+      project_id: project_activity.project_id,
+      action: project_activity.action,
+      from_value: project_activity.from_value,
+      to_value: project_activity.to_value,
+      note: project_activity.note,
+      created_at: project_activity.created_at,
+      user_id: project_activity.user_id,
+      user_name: users.name,
+      project_code: projects.code,
+      project_name: projects.name,
+      brand: projects.brand,
+      project_start_date: projects.start_date,
+      project_end_date: projects.end_date,
+    })
+    .from(project_activity)
+    .innerJoin(projects, eq(projects.id, project_activity.project_id))
+    .leftJoin(users, eq(users.id, project_activity.user_id))
+    .$dynamic();
+
+  if (unreadOnly) {
+    feedQ = feedQ.leftJoin(
+      project_reads,
+      and(
+        eq(project_reads.project_id, projects.id),
+        eq(project_reads.user_id, user.id)
+      )!
+    );
+  }
 
   // Pull limit+1 rows so we can tell the frontend whether there's a
   // next page without an extra COUNT(*) query.
-  const feedRows = await c.env.DB.prepare(
-    `SELECT act.id, act.project_id, act.action, act.from_value, act.to_value,
-            act.note, act.created_at,
-            act.user_id, u.name AS user_name,
-            p.code AS project_code, p.name AS project_name, p.brand
-       FROM project_activity act
-       JOIN projects p ON p.id = act.project_id${unreadJoin}
-       LEFT JOIN users u ON u.id = act.user_id
-      WHERE p.archived_at IS NULL
-        AND act.archived_at IS NULL
-        AND (act.user_id IS NULL OR act.user_id != ?)${picClause}${sinceClause}${unreadClause}
-      ORDER BY act.created_at DESC, act.id DESC
-      LIMIT ? OFFSET ?`
-  )
-    .bind(
-      ...unreadBinds,
-      user.id,
-      ...picBinds,
-      ...sinceBinds,
-      limit + 1,
-      offset
-    )
-    .all<any>();
+  const rawRows = await feedQ
+    .where(and(...feedConds))
+    .orderBy(desc(project_activity.created_at), desc(project_activity.id))
+    .limit(limit + 1)
+    .offset(offset);
 
-  const rawRows = feedRows.results ?? [];
   const hasMore = rawRows.length > limit;
   const trimmedRows = hasMore ? rawRows.slice(0, limit) : rawRows;
 
   // Per-project unread counts: activity rows strictly newer than the
   // user's last_read_at for that project. Null (never opened) counts
   // everything. Still scoped to visible projects.
-  const unreadRows = await c.env.DB.prepare(
-    `SELECT p.id AS project_id,
-            COUNT(*) AS unread_count
-       FROM projects p
-       JOIN project_activity a ON a.project_id = p.id
-       LEFT JOIN project_reads pr
-         ON pr.project_id = p.id AND pr.user_id = ?
-      WHERE p.archived_at IS NULL
-        AND a.archived_at IS NULL
-        AND (a.user_id IS NULL OR a.user_id != ?)
-        AND a.created_at > COALESCE(pr.last_read_at, '1970-01-01')
-        ${picClause}
-      GROUP BY p.id
-      HAVING COUNT(*) > 0`
-  )
-    .bind(user.id, user.id, ...picBinds)
-    .all<{ project_id: number; unread_count: number }>();
+  const unreadRows = await db
+    .select({
+      project_id: projects.id,
+      unread_count: sql<number>`COUNT(*)`,
+    })
+    .from(projects)
+    .innerJoin(project_activity, eq(project_activity.project_id, projects.id))
+    .leftJoin(
+      project_reads,
+      and(
+        eq(project_reads.project_id, projects.id),
+        eq(project_reads.user_id, user.id)
+      )!
+    )
+    .where(
+      and(
+        isNull(projects.archived_at),
+        isNull(project_activity.archived_at),
+        or(
+          isNull(project_activity.user_id),
+          ne(project_activity.user_id, user.id)
+        )!,
+        sql`${project_activity.created_at} > COALESCE(${project_reads.last_read_at}, '1970-01-01')`,
+        ...scopeConds
+      )
+    )
+    .groupBy(projects.id)
+    .having(sql`COUNT(*) > 0`);
 
   const unread_by_project: Record<number, number> = {};
   let total_unread = 0;
-  for (const r of unreadRows.results ?? []) {
+  for (const r of unreadRows) {
     unread_by_project[r.project_id] = r.unread_count;
     total_unread += r.unread_count;
   }

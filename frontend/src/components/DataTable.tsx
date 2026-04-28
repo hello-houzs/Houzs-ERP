@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Download,
   Upload,
@@ -415,8 +415,8 @@ export function DataTable<T>({
         udfTableLabel={udfTableLabel || udfTable}
       />
 
-      {/* ── Table ─────────────────────────────────────────── */}
-      <div className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
+      {/* ── Table (sm+) ───────────────────────────────────── */}
+      <div className="hidden overflow-hidden rounded-lg border border-border bg-surface shadow-stone sm:block">
         <div className="thin-scroll overflow-x-auto">
           <table className="w-full border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-10">
@@ -529,6 +529,99 @@ export function DataTable<T>({
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* ── Mobile card list (<sm) ─────────────────────────────
+          Same data, stacked-card layout. The first visible column
+          becomes the card title; subsequent columns render as
+          label/value rows. Skips the row entirely if the user
+          intentionally hid the first column. */}
+      <div className="space-y-2 sm:hidden">
+        {loading && (
+          <>
+            {[0, 1, 2, 3, 4].map((i) => (
+              <div
+                key={i}
+                className="rounded-lg border border-border bg-surface p-3 shadow-stone"
+              >
+                <div className="mb-2 h-4 w-2/3 animate-pulse rounded bg-bg/80" />
+                <div className="space-y-1.5">
+                  <div className="h-3 w-full animate-pulse rounded bg-bg/60" />
+                  <div className="h-3 w-5/6 animate-pulse rounded bg-bg/60" />
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+        {!loading && error && (
+          <div className="rounded-lg border border-err/40 bg-err/5 p-4 text-center text-sm text-err">
+            <div className="font-semibold">Failed to load</div>
+            <div className="mt-1 text-xs text-ink-muted">{error}</div>
+          </div>
+        )}
+        {!loading && !error && sortedRows && sortedRows.length === 0 && (
+          <div className="rounded-lg border border-dashed border-border bg-surface px-4 py-12 text-center text-sm text-ink-muted">
+            {emptyLabel}
+          </div>
+        )}
+        {!loading &&
+          !error &&
+          sortedRows &&
+          sortedRows.map((row) => {
+            const customClass = getRowClassName?.(row);
+            const [first, ...rest] = visibleColumns;
+            return (
+              <div
+                key={getRowKey(row)}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+                role={onRowClick ? "button" : undefined}
+                tabIndex={onRowClick ? 0 : undefined}
+                onKeyDown={
+                  onRowClick
+                    ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onRowClick(row);
+                        }
+                      }
+                    : undefined
+                }
+                className={cn(
+                  "rounded-lg border border-border bg-surface p-3 shadow-stone transition-colors",
+                  onRowClick &&
+                    "cursor-pointer active:bg-accent-soft/40 hover:border-accent/40",
+                  customClass
+                )}
+              >
+                {first && (
+                  <div className="mb-2 text-[14px] font-semibold leading-snug text-ink">
+                    {first.render(row)}
+                  </div>
+                )}
+                {rest.length > 0 && (
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12px]">
+                    {rest.map((c) => (
+                      <Fragment key={c.key}>
+                        <dt className="self-start pt-px font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                          {c.label}
+                        </dt>
+                        <dd
+                          className={cn(
+                            "min-w-0 break-words text-ink",
+                            c.align === "right" && "text-right",
+                            c.align === "center" && "text-center",
+                            c.className
+                          )}
+                        >
+                          {c.render(row)}
+                        </dd>
+                      </Fragment>
+                    ))}
+                  </dl>
+                )}
+              </div>
+            );
+          })}
       </div>
     </div>
   );

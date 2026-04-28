@@ -18,7 +18,6 @@ import {
   Wrench,
   FolderKanban,
   ShieldCheck,
-  HandCoins,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -72,10 +71,11 @@ interface Tab {
 const TABS: Tab[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read" },
-  // Sales (rep-facing log). Distinct from "Sales Orders" (AutoCount SOs);
-  // this is the staging area where reps enter their own sales before
-  // they're pushed to AutoCount.
-  { to: "/sales", label: "Sales", icon: HandCoins, perm: "sales.read" },
+  // The rep-facing Sales log used to live here as its own tab. It was
+  // moved into the Project detail page (each exhibition has its own
+  // Sales section) so reps draft sales against the project they're
+  // working on. The /sales route still resolves for managers who
+  // bookmarked it, but it's intentionally hidden from the nav.
   // Members with delivery_orders.read but no trips.read.all still see
   // the flat Delivery list. Dispatchers with trips.read.all get the
   // richer Queue tab inside Trips, so this entry hides for them.

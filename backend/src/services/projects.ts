@@ -113,6 +113,12 @@ export async function createProject(env: Env, input: CreateProjectInput) {
 
 // Clone checklist template items into project_checklist, resolving
 // due_offset_days against the project's start_date if present.
+//
+// Mig 050: template sections are cloned to per-project sections first,
+// then template_items.section_id is mapped to the new project section
+// id when inserting tasks. Template items with `requires_review = 1`
+// translate to `required_perm = 'projects.approve'` on the cloned task,
+// reusing the existing review pipeline (mig 024).
 export async function instantiateChecklistFromEventType(
   env: Env,
   projectId: number,
@@ -127,8 +133,34 @@ export async function instantiateChecklistFromEventType(
   const templateId = et?.default_template_id;
   if (!templateId) return;
 
+  // 1. Clone sections, keeping a map from template section id → new
+  //    project section id so we can translate item.section_id below.
+  const tplSections = await env.DB.prepare(
+    `SELECT id, name, sort_order
+       FROM project_checklist_template_sections
+      WHERE template_id = ?
+      ORDER BY sort_order, id`
+  )
+    .bind(templateId)
+    .all<{ id: number; name: string; sort_order: number }>();
+
+  const sectionIdMap = new Map<number, number>();
+  for (const s of tplSections.results ?? []) {
+    const ins = await env.DB.prepare(
+      `INSERT INTO project_checklist_sections (project_id, name, sort_order)
+       VALUES (?, ?, ?)`
+    )
+      .bind(projectId, s.name, s.sort_order)
+      .run();
+    sectionIdMap.set(s.id, ins.meta.last_row_id as number);
+  }
+
+  // 2. Clone items. requires_review = 1 → required_perm = projects.approve
+  //    (unless the template already specifies a custom perm). Section_id
+  //    maps via sectionIdMap; unmapped sections fall through as null.
   const items = await env.DB.prepare(
-    `SELECT seq, title, description, required_perm, due_offset_days
+    `SELECT seq, title, description, required_perm, due_offset_days,
+            section_id, requires_review
        FROM project_checklist_template_items
       WHERE template_id = ?
       ORDER BY seq`
@@ -140,22 +172,31 @@ export async function instantiateChecklistFromEventType(
       description: string | null;
       required_perm: string | null;
       due_offset_days: number | null;
+      section_id: number | null;
+      requires_review: number | null;
     }>();
 
   const rows = items.results ?? [];
   for (const item of rows) {
     const due = resolveDueDate(startDate, item.due_offset_days);
+    const projectSectionId = item.section_id
+      ? sectionIdMap.get(item.section_id) ?? null
+      : null;
+    const requiredPerm =
+      item.required_perm ??
+      (item.requires_review ? "projects.approve" : null);
     await env.DB.prepare(
       `INSERT INTO project_checklist
-         (project_id, seq, title, description, required_perm, due_date)
-       VALUES (?, ?, ?, ?, ?, ?)`
+         (project_id, section_id, seq, title, description, required_perm, due_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         projectId,
+        projectSectionId,
         item.seq,
         item.title,
         item.description,
-        item.required_perm,
+        requiredPerm,
         due
       )
       .run();
@@ -351,6 +392,39 @@ export async function getProjectDetail(env: Env, id: number) {
     .bind(id)
     .all();
 
+  // Sections (mig 050) — ordered by sort_order. Tasks reference these
+  // by section_id; tasks with section_id IS NULL render as
+  // "Uncategorised" on the frontend.
+  const sections = await env.DB.prepare(
+    `SELECT id, name, sort_order, created_at
+       FROM project_checklist_sections
+      WHERE project_id = ?
+      ORDER BY sort_order, id`
+  )
+    .bind(id)
+    .all();
+
+  // Per-task attachments (mig 050) — replaces the project-level
+  // Attachments panel. Attached to tasks by item_id.
+  const checklistItemIdsRaw = (checklist.results ?? []).map((r: any) => r.id);
+  let taskAttachments: any[] = [];
+  if (checklistItemIdsRaw.length) {
+    const placeholders = checklistItemIdsRaw.map(() => "?").join(",");
+    const a = await env.DB.prepare(
+      `SELECT att.*, u.name as uploader_name
+         FROM project_checklist_attachments att
+         LEFT JOIN users u ON u.id = att.uploaded_by
+        WHERE att.item_id IN (${placeholders}) AND att.archived_at IS NULL
+        ORDER BY att.uploaded_at DESC, att.id DESC`
+    )
+      .bind(...checklistItemIdsRaw)
+      .all();
+    taskAttachments = a.results ?? [];
+  }
+
+  // Project-level attachments — kept for legacy data. The UI panel was
+  // removed in mig 050; this stays in the response so any old client
+  // doesn't 500 on a missing field.
   const attachments = await env.DB.prepare(
     `SELECT a.*, u.name as uploader_name
        FROM project_attachments a
@@ -473,6 +547,52 @@ export async function getProjectDetail(env: Env, id: number) {
     .bind(id)
     .all();
 
+  // Stage progress (mig 050) — one entry per section with done /
+  // total / na counts. The UI replaces the percentage bar with this.
+  // Sections that don't have any tasks yet are still returned (count
+  // 0) so admins see them as empty stages.
+  const sectionList = (sections.results ?? []) as Array<{
+    id: number;
+    name: string;
+    sort_order: number;
+  }>;
+  const sectionProgress = sectionList.map((s) => {
+    const items = (checklist.results ?? []).filter(
+      (r: any) => r.section_id === s.id
+    );
+    const total = items.length;
+    const done = items.filter((r: any) => r.status === "done").length;
+    const na = items.filter((r: any) => r.status === "na").length;
+    const denom = total - na;
+    const complete = denom > 0 && done === denom;
+    return {
+      ...s,
+      total,
+      done,
+      na,
+      complete: complete ? 1 : 0,
+    };
+  });
+  // Uncategorised bucket — tasks without a section_id.
+  const uncatItems = (checklist.results ?? []).filter(
+    (r: any) => r.section_id == null
+  );
+  if (uncatItems.length > 0) {
+    const total = uncatItems.length;
+    const done = uncatItems.filter((r: any) => r.status === "done").length;
+    const na = uncatItems.filter((r: any) => r.status === "na").length;
+    const denom = total - na;
+    sectionProgress.push({
+      id: 0,
+      name: "Uncategorised",
+      sort_order: 9999,
+      total,
+      done,
+      na,
+      complete: denom > 0 && done === denom ? 1 : 0,
+    });
+  }
+
   return {
     project: { ...project, progress_pct, duration_days },
     finance: finance ?? null,
@@ -480,6 +600,9 @@ export async function getProjectDetail(env: Env, id: number) {
     stock_transfers: stockTransfers.results ?? [],
     checklist: checklist.results ?? [],
     checklist_comments: comments,
+    checklist_attachments: taskAttachments,
+    sections: sectionList,
+    section_progress: sectionProgress,
     attachments: attachments.results ?? [],
     defects: defects.results ?? [],
     sales_reports: salesReports.results ?? [],
@@ -508,6 +631,10 @@ export interface ListProjectsFilters {
    *  are returned. Empty array means "nothing" (scoped user with no PIC
    *  in their line → zero results, which is correct). */
   pic_scope?: number[];
+  /** Brand allow-list — paired with pic_scope for sales-dept scoping
+   *  (migration 048). Empty array means the scoped user has no brand
+   *  coverage → zero results. Undefined means no brand ACL applies. */
+  brand_scope?: string[];
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -581,6 +708,20 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
         `COALESCE(p.pic_id, p.created_by) IN (${f.pic_scope.map(() => "?").join(",")})`
       );
       binds.push(...f.pic_scope);
+    }
+  }
+  if (f.brand_scope) {
+    if (f.brand_scope.length === 0) {
+      // Scoped user with no brand coverage — return no rows.
+      where.push("1 = 0");
+    } else {
+      // Project must have a brand AND it must be in the user's
+      // department's allow-list. Brand-less projects are intentionally
+      // invisible to scoped users — admins fix by setting the brand.
+      where.push(
+        `(p.brand IS NOT NULL AND p.brand IN (${f.brand_scope.map(() => "?").join(",")}))`
+      );
+      binds.push(...f.brand_scope);
     }
   }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -687,6 +828,7 @@ export interface CreateChecklistItemInput {
   due_date?: string | null;
   owner_user_id?: number | null;
   seq?: number | null;
+  section_id?: number | null;
 }
 
 export async function createChecklistItem(
@@ -707,11 +849,12 @@ export async function createChecklistItem(
   }
   const r = await env.DB.prepare(
     `INSERT INTO project_checklist
-       (project_id, seq, title, description, required_perm, due_date, owner_user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+       (project_id, section_id, seq, title, description, required_perm, due_date, owner_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       input.project_id,
+      input.section_id ?? null,
       seq,
       input.title,
       input.description ?? null,
@@ -727,6 +870,7 @@ export async function createChecklistItem(
 const CHECKLIST_PATCH_FIELDS = [
   "title", "description", "required_perm",
   "due_date", "owner_user_id", "seq", "notes",
+  "section_id",
 ] as const;
 
 export async function patchChecklistItem(

@@ -1,14 +1,12 @@
 import { useParams } from "react-router-dom";
 import {
   DetailLayout,
-  DetailGrid,
-  DetailMain,
-  DetailAside,
   Section,
   StatStrip,
   DefinitionList,
 } from "../components/DetailLayout";
 import { InlineEdit } from "../components/InlineEdit";
+import { ExpandableText } from "../components/ExpandableText";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
@@ -114,9 +112,62 @@ export function OrderDetail() {
             ]}
           />
 
-          <div className="mt-5">
-            <DetailGrid>
-              <DetailMain>
+          {/* Order / Address / Notes — used to live in the right aside,
+              now a full-width row above the line items so the long
+              labels and values aren't squeezed by a 4/12 column. */}
+          <div className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-3">
+            <Section title="Order">
+              <DefinitionList
+                items={[
+                  { label: "Doc No", value: order.doc_no, mono: true },
+                  { label: "D/O", value: order.transfer_to || "—", mono: true },
+                  { label: "Date", value: formatDate(order.doc_date) },
+                  { label: "Ref", value: order.ref || "—" },
+                  { label: "Agent", value: order.sales_agent || "—" },
+                  { label: "Region", value: order.region },
+                  {
+                    label: "Total",
+                    value: formatCurrency(order.local_total),
+                    mono: true,
+                  },
+                  {
+                    label: "Balance",
+                    mono: true,
+                    value: (
+                      <span
+                        className={cn(
+                          order.balance > 0 && "font-semibold text-err"
+                        )}
+                      >
+                        {formatCurrency(order.balance)}
+                      </span>
+                    ),
+                  },
+                ]}
+              />
+            </Section>
+
+            <Section title="Address">
+              <div className="space-y-1 text-[12.5px] text-ink-secondary">
+                <div>{order.inv_addr1 || "—"}</div>
+                {order.inv_addr2 && <div>{order.inv_addr2}</div>}
+                {order.inv_addr3 && <div>{order.inv_addr3}</div>}
+                {order.inv_addr4 && <div>{order.inv_addr4}</div>}
+              </div>
+            </Section>
+
+            <Section title="Notes">
+              <DefinitionList
+                items={[
+                  { label: "Remark 2", value: order.remark2, full: true },
+                  { label: "Remark 3", value: order.remark3, full: true },
+                  { label: "Note", value: order.note, full: true },
+                ]}
+              />
+            </Section>
+          </div>
+
+          <div className="mt-3 space-y-3">
                 <Section
                   title={`Line Items${lines.data?.lines?.length ? ` · ${lines.data.lines.length}` : ""}`}
                   dense
@@ -165,8 +216,12 @@ export function OrderDetail() {
                                 <td className="px-4 py-1.5 font-mono text-[11px]">
                                   {ln.ItemCode || "—"}
                                 </td>
-                                <td className="max-w-[260px] truncate px-3 py-1.5 text-ink-secondary">
-                                  {desc || "—"}
+                                <td className="max-w-[260px] px-3 py-1.5 text-ink-secondary">
+                                  <ExpandableText
+                                    text={desc || ""}
+                                    lines={1}
+                                    emptyLabel="—"
+                                  />
                                 </td>
                                 <td className="px-3 py-1.5 text-right font-mono">
                                   {qty != null ? qty : "—"}
@@ -293,60 +348,6 @@ export function OrderDetail() {
                     </div>
                   </Section>
                 )}
-              </DetailMain>
-
-              <DetailAside>
-                <Section title="Order">
-                  <DefinitionList
-                    items={[
-                      { label: "Doc No", value: order.doc_no, mono: true },
-                      { label: "D/O", value: order.transfer_to || "—", mono: true },
-                      { label: "Date", value: formatDate(order.doc_date) },
-                      { label: "Ref", value: order.ref || "—" },
-                      { label: "Agent", value: order.sales_agent || "—" },
-                      { label: "Region", value: order.region },
-                      {
-                        label: "Total",
-                        value: formatCurrency(order.local_total),
-                        mono: true,
-                      },
-                      {
-                        label: "Balance",
-                        mono: true,
-                        value: (
-                          <span
-                            className={cn(
-                              order.balance > 0 && "font-semibold text-err"
-                            )}
-                          >
-                            {formatCurrency(order.balance)}
-                          </span>
-                        ),
-                      },
-                    ]}
-                  />
-                </Section>
-
-                <Section title="Address">
-                  <div className="space-y-1 text-[12.5px] text-ink-secondary">
-                    <div>{order.inv_addr1 || "—"}</div>
-                    {order.inv_addr2 && <div>{order.inv_addr2}</div>}
-                    {order.inv_addr3 && <div>{order.inv_addr3}</div>}
-                    {order.inv_addr4 && <div>{order.inv_addr4}</div>}
-                  </div>
-                </Section>
-
-                <Section title="Notes">
-                  <DefinitionList
-                    items={[
-                      { label: "Remark 2", value: order.remark2, full: true },
-                      { label: "Remark 3", value: order.remark3, full: true },
-                      { label: "Note", value: order.note, full: true },
-                    ]}
-                  />
-                </Section>
-              </DetailAside>
-            </DetailGrid>
           </div>
         </>
       )}

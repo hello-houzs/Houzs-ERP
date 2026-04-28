@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
+import { ColorPicker } from "../components/ColorPicker";
 import { Panel, PanelSection } from "../components/Panel";
 import { StatusDot } from "../components/StatusDot";
 import { useQuery } from "../hooks/useQuery";
@@ -183,6 +184,9 @@ function MembersTab({
   const depts = useQuery<{ departments: Department[] }>(() =>
     api.get("/api/departments")
   );
+
+  // Per-user brand picker — opens a small modal scoped to one member.
+  const [brandsFor, setBrandsFor] = useState<TeamMember | null>(null);
 
   const canManage = can("users.manage");
 
@@ -453,6 +457,14 @@ function MembersTab({
               )}
               {canManage && u.id !== me?.id && (
                 <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setBrandsFor(u)}
+                    className="rounded p-1.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
+                    aria-label="Edit brand allow-list"
+                    title="Edit brand allow-list"
+                  >
+                    <Tag size={14} />
+                  </button>
                   {u.status !== "invited" && (
                     <button
                       onClick={() => sendReset(u)}
@@ -550,7 +562,151 @@ function MembersTab({
           reload();
         }}
       />
+
+      {brandsFor && (
+        <UserBrandsPanel
+          user={brandsFor}
+          onClose={() => setBrandsFor(null)}
+          onSaved={() => {
+            setBrandsFor(null);
+            // No need to reload members — brand list lives in its own
+            // endpoint and isn't in /api/users payload.
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Per-user brand allow-list editor (mig 049). Drives whether scoped
+ * sales users see a project (intersected with their PIC scope).
+ * Rendered as a side panel; reuses the chip-toggle UX from Roles.
+ */
+function UserBrandsPanel({
+  user,
+  onClose,
+  onSaved,
+}: {
+  user: TeamMember;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [brands, setBrands] = useState<string[] | null>(null);
+
+  // Canonical brand list from the project_brands lookup.
+  const brandOpts = useQuery<{ data: string[] }>(() =>
+    api.get("/api/projects/brands?names_only=1")
+  );
+  // Current allow-list for this user.
+  const current = useQuery<{ brands: string[] }>(
+    () => api.get(`/api/users/${user.id}/brands`),
+    [user.id]
+  );
+
+  // Hydrate local state once the fetch lands.
+  if (brands === null && current.data) {
+    setBrands(current.data.brands);
+  }
+
+  const allBrands = brandOpts.data?.data ?? [];
+  const selected = brands ?? [];
+
+  function toggle(b: string) {
+    setBrands((prev) => {
+      const cur = prev ?? [];
+      return cur.includes(b) ? cur.filter((x) => x !== b) : [...cur, b];
+    });
+  }
+
+  async function save() {
+    setBusy(true);
+    try {
+      await api.put(`/api/users/${user.id}/brands`, { brands: selected });
+      toast.success(
+        selected.length === 0
+          ? `Cleared ${user.name || user.email}'s brand list`
+          : `Updated ${user.name || user.email}'s brands`
+      );
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel
+      open
+      onClose={onClose}
+      title={user.name || user.email}
+      subtitle="Brand allow-list"
+      width={420}
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] text-ink-secondary"
+          >
+            Cancel
+          </button>
+          <Button
+            variant="primary"
+            onClick={save}
+            disabled={busy || current.loading}
+          >
+            {busy ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      }
+    >
+      <PanelSection title="Brands">
+        <div className="text-[11px] leading-snug text-ink-muted">
+          When this user's role is sales-scoped, they only see projects
+          whose brand is on this list (AND-ed with the PIC one-hop rule).
+          Their direct reports inherit the same scope through{" "}
+          <span className="font-mono">manager_id</span>.
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {current.loading && (
+            <div className="text-[11px] text-ink-muted">Loading…</div>
+          )}
+          {!current.loading && allBrands.length === 0 && (
+            <div className="text-[11px] text-ink-muted">
+              No brands defined yet. Add some under Project Maintenance →
+              Brands.
+            </div>
+          )}
+          {!current.loading &&
+            allBrands.map((b) => {
+              const on = selected.includes(b);
+              return (
+                <button
+                  key={b}
+                  type="button"
+                  onClick={() => toggle(b)}
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors",
+                    on
+                      ? "border-accent bg-accent text-white"
+                      : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent"
+                  )}
+                >
+                  {b}
+                </button>
+              );
+            })}
+        </div>
+        <div className="mt-1 text-[10px] text-ink-muted">
+          {selected.length === 0
+            ? "Empty list — this user sees no projects when sales-scoped."
+            : `${selected.length} brand${selected.length === 1 ? "" : "s"} selected.`}
+        </div>
+      </PanelSection>
+    </Panel>
   );
 }
 
@@ -599,10 +755,36 @@ function OrgChartTab() {
   const toast = useToast();
   const canManage = can("users.manage");
   const members = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users"));
-  const users = (members.data?.users ?? []).filter((u) => u.status !== "disabled");
+  const depts = useQuery<{ departments: Department[] }>(() =>
+    api.get("/api/departments")
+  );
 
-  // Any user whose manager_id points at an inactive/missing user gets
-  // re-rooted so they stay visible.
+  // Department filter — null = "All". When a dept is selected the chart
+  // narrows to that dept's members only; reps reporting up to a manager
+  // outside the filtered set get re-rooted so the team's lineup is
+  // visible end-to-end. Persists per-tab in the URL so a "Sales chart"
+  // bookmark stays usable.
+  const [params, setParams] = useSearchParams();
+  const filterDeptId = params.get("dept")
+    ? parseInt(params.get("dept") || "", 10)
+    : null;
+  function setFilterDeptId(id: number | null) {
+    const next = new URLSearchParams(params);
+    if (id == null) next.delete("dept");
+    else next.set("dept", String(id));
+    setParams(next, { replace: true });
+  }
+
+  const allActive = (members.data?.users ?? []).filter(
+    (u) => u.status !== "disabled"
+  );
+  const users = useMemo(() => {
+    if (filterDeptId == null) return allActive;
+    return allActive.filter((u) => u.department_id === filterDeptId);
+  }, [allActive, filterDeptId]);
+
+  // Any user whose manager_id points at an inactive/missing/out-of-
+  // filter user gets re-rooted so they stay visible.
   const { roots, childrenOf, byId } = useMemo(() => {
     const byId = new Map(users.map((u) => [u.id, u]));
     const childrenOf = new Map<number | null, TeamMember[]>();
@@ -654,8 +836,71 @@ function OrgChartTab() {
     return <div className="text-[12px] text-err">{members.error}</div>;
   }
 
+  const deptList = depts.data?.departments ?? [];
+  const filterDept = filterDeptId
+    ? deptList.find((d) => d.id === filterDeptId)
+    : null;
+
   return (
     <div className="space-y-4">
+      {/* Department pill row — pick "All" or any dept to narrow the
+          tree to that team. Bookmarkable via ?dept= so a Sales chart
+          link is shareable. */}
+      {deptList.length > 0 && (
+        <div className="no-scrollbar -mx-1 flex items-center gap-1.5 overflow-x-auto px-1 pb-1">
+          <span className="shrink-0 font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+            Filter
+          </span>
+          <button
+            type="button"
+            onClick={() => setFilterDeptId(null)}
+            className={cn(
+              "shrink-0 rounded-full border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors",
+              filterDeptId == null
+                ? "border-accent bg-accent text-white"
+                : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent"
+            )}
+          >
+            All
+            <span className="ml-1.5 font-normal opacity-70">
+              {allActive.length}
+            </span>
+          </button>
+          {deptList.map((d) => {
+            const on = filterDeptId === d.id;
+            const count = allActive.filter(
+              (u) => u.department_id === d.id
+            ).length;
+            return (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => setFilterDeptId(d.id)}
+                className={cn(
+                  "shrink-0 rounded-full border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors"
+                )}
+                style={
+                  on
+                    ? {
+                        backgroundColor: `#${d.color}`,
+                        color: "white",
+                        borderColor: `#${d.color}`,
+                      }
+                    : {
+                        backgroundColor: `#${d.color}1a`,
+                        color: `#${d.color}`,
+                        borderColor: `#${d.color}40`,
+                      }
+                }
+              >
+                {d.name}
+                <span className="ml-1.5 font-normal opacity-70">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Top-level drop zone — drop a user here to remove their manager */}
       {canManage && (
         <TopLevelDropZone
@@ -666,7 +911,9 @@ function OrgChartTab() {
 
       {roots.length === 0 ? (
         <div className="rounded-md border border-border bg-surface px-5 py-8 text-center text-[12px] text-ink-muted">
-          No active members yet.
+          {filterDept
+            ? `No active members in ${filterDept.name}.`
+            : "No active members yet."}
         </div>
       ) : (
         <div className="thin-scroll overflow-x-auto pb-6">
@@ -948,6 +1195,21 @@ function OrgCard({
               </span>
             )}
           </div>
+          {user.brands && user.brands.length > 0 && (
+            <div
+              className="mt-1 flex flex-wrap items-center gap-0.5"
+              title={`Brand allow-list: ${user.brands.join(", ")}`}
+            >
+              {user.brands.map((b) => (
+                <span
+                  key={b}
+                  className="rounded bg-bg px-1 py-px font-mono text-[8.5px] font-semibold uppercase tracking-wider text-ink-secondary"
+                >
+                  {b}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         {canManage && !editing && (
           <button
@@ -1244,31 +1506,17 @@ function DepartmentEditor({
           <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
             Colour
           </label>
-          <div className="grid grid-cols-8 gap-1.5">
-            {DEPT_PALETTE.map((p) => (
-              <button
-                key={p.hex}
-                onClick={() => setColor(p.hex)}
-                title={p.label}
-                aria-label={p.label}
-                className={cn(
-                  "relative h-8 rounded-md border-2 transition-all",
-                  color === p.hex
-                    ? "border-ink scale-110"
-                    : "border-transparent hover:border-ink/40"
-                )}
-                style={{ backgroundColor: `#${p.hex}` }}
-              >
-                {color === p.hex && (
-                  <Check
-                    size={14}
-                    className="absolute inset-0 m-auto text-white drop-shadow"
-                  />
-                )}
-              </button>
-            ))}
+          <div className="flex items-center gap-3">
+            <ColorPicker
+              value={color}
+              onChange={setColor}
+              presets={DEPT_PALETTE.map((p) => p.hex)}
+              size={36}
+            />
+            <span className="font-mono text-[11px] uppercase tracking-wider text-ink-muted">
+              #{color}
+            </span>
           </div>
-          <div className="mt-1 font-mono text-[10px] text-ink-muted">#{color}</div>
         </div>
         <div>
           <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">

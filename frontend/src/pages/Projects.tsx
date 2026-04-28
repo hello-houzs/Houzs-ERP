@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { useNavigate, useParams, Navigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, Navigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
   Calendar,
@@ -30,8 +30,10 @@ import {
   Download,
   Pencil,
   Send,
+  CheckSquare,
   ChevronDown,
   ChevronUp,
+  Paperclip,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
@@ -45,6 +47,9 @@ import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
 import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
+import { ProjectChat } from "../components/ProjectChat";
+import { ProjectGantt } from "../components/ProjectGantt";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 import {
   DetailLayout,
   DetailGrid,
@@ -58,6 +63,13 @@ import { DashboardGrid } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
+import { useUdf } from "../hooks/useUdf";
+import {
+  EntryPanel,
+  STATUS_BADGE as SALES_STATUS_BADGE,
+  type SalesEntry,
+  type EntryStatus as SalesEntryStatus,
+} from "./Sales";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
@@ -158,12 +170,46 @@ interface ProjectDetail {
   stock_transfers: StockTransfer[];
   checklist: ChecklistItem[];
   checklist_comments: ChecklistComment[];
+  /** Per-task attachments (mig 050). Replaces project-level Attachments. */
+  checklist_attachments?: TaskAttachment[];
+  /** Tasklist sections (mig 050). Tasks group under these. */
+  sections?: TasklistSection[];
+  /** Per-section progress for the stage chip row. */
+  section_progress?: SectionProgress[];
   attachments: ProjectAttachment[];
   defects: ProjectDefect[];
   sales_reports: SalesReport[];
   activity: ActivityRow[];
   team: any[];
   trips: ProjectTrip[];
+}
+
+interface TasklistSection {
+  id: number;
+  name: string;
+  sort_order: number;
+}
+
+interface SectionProgress {
+  id: number;          // 0 sentinel = "Uncategorised"
+  name: string;
+  sort_order: number;
+  total: number;
+  done: number;
+  na: number;
+  complete: number;    // 0 | 1
+}
+
+interface TaskAttachment {
+  id: number;
+  item_id: number;
+  r2_key: string;
+  file_name: string;
+  content_type: string | null;
+  size_bytes: number | null;
+  uploaded_by: number | null;
+  uploader_name: string | null;
+  uploaded_at: string;
 }
 
 type PaymentStatus =
@@ -287,6 +333,7 @@ interface ChecklistItem {
   completed_by_name: string | null;
   completed_at: string | null;
   notes: string | null;
+  section_id: number | null;
 }
 
 interface ActivityRow {
@@ -959,36 +1006,55 @@ function ProjectsListView() {
 // ── Calendar view ────────────────────────────────────────────
 // Month grid: events render as colored bars spanning their date range,
 // overdue checklist items render as dots on their due date. Brand is
-// used as the color key.
+// used as the color key. The colour palette is admin-maintained in
+// Project Maintenance (project_brands.color, hex without '#') and
+// loaded via /api/projects/brands?full=1 — see useBrandPalette below.
 
-const BRAND_COLORS: Record<string, string> = {
-  AKEMI: "bg-accent/70 text-accent-ink",
-  ZANOTTI: "bg-blue-500/70 text-white",
-  DUNLOPILLO: "bg-emerald-500/70 text-white",
-  ERGOTEX: "bg-purple-500/70 text-white",
-  "MY SOFA FACTORY": "bg-amber-500/70 text-white",
-  "AKEMI C&C": "bg-rose-500/70 text-white",
-};
-
-function brandClass(brand: string | null | undefined): string {
-  if (!brand) return "bg-ink-muted/60 text-white";
-  return BRAND_COLORS[brand] ?? "bg-ink-muted/60 text-white";
+interface BrandRow {
+  id: number;
+  name: string;
+  color: string;       // 6-char hex, no '#'
+  sort_order: number;
+  active: number;
 }
 
-// Solid brand dot — extracted from the bg-accent/70 etc above. Used
-// inline next to task titles so a row's brand is readable even when
-// the row itself isn't a coloured bar.
-const BRAND_DOT_HEX: Record<string, string> = {
-  AKEMI: "#a16a2e",
-  ZANOTTI: "#3b82f6",
-  DUNLOPILLO: "#10b981",
-  ERGOTEX: "#a855f7",
-  "MY SOFA FACTORY": "#f59e0b",
-  "AKEMI C&C": "#f43f5e",
-};
+const BRAND_FALLBACK_HEX = "#8a8e85";
 
-function brandDot(brand: string | null | undefined): string {
-  return brand ? BRAND_DOT_HEX[brand] ?? "#8a8e85" : "#8a8e85";
+/** Read the admin-maintained brand list once, expose colour lookups. */
+function useBrandPalette() {
+  const q = useQuery<{ data: BrandRow[] }>(() =>
+    api.get("/api/projects/brands?full=1")
+  );
+  const rows = q.data?.data ?? [];
+  const map = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const b of rows) m.set(b.name, `#${b.color}`);
+    return m;
+  }, [rows]);
+  return { rows, map, loading: q.loading };
+}
+
+function brandHex(map: Map<string, string>, brand: string | null | undefined): string {
+  if (!brand) return BRAND_FALLBACK_HEX;
+  return map.get(brand) ?? BRAND_FALLBACK_HEX;
+}
+
+/** Inline-style props for a brand-coloured surface (calendar bar, chip).
+ *  Always white text — brand palette is mid-saturation so contrast is
+ *  reliable enough; we accept the rare slightly-low-contrast case
+ *  rather than pulling in a luminance helper. */
+function brandStyle(
+  map: Map<string, string>,
+  brand: string | null | undefined,
+  alpha = 0.78
+): React.CSSProperties {
+  const hex = brandHex(map, brand);
+  return {
+    // backgroundColor with rgba would need conversion; "color-mix" works
+    // in every evergreen browser and skips the conversion step.
+    backgroundColor: `color-mix(in srgb, ${hex} ${Math.round(alpha * 100)}%, transparent)`,
+    color: "white",
+  };
 }
 
 // Per-task chip rendered inside a calendar cell. Compact: brand dot,
@@ -997,9 +1063,11 @@ function brandDot(brand: string | null | undefined): string {
 function CalendarTaskChip({
   task,
   onOpen,
+  brandMap,
 }: {
   task: CalendarTask;
   onOpen: () => void;
+  brandMap: Map<string, string>;
 }) {
   const overdue = task.is_overdue === 1;
   const initials = (task.owner_name || "")
@@ -1027,7 +1095,7 @@ function CalendarTaskChip({
     >
       <span
         className="h-1.5 w-1.5 shrink-0 rounded-full"
-        style={{ background: brandDot(task.brand) }}
+        style={{ background: brandHex(brandMap, task.brand) }}
       />
       <span
         className={cn(
@@ -1952,6 +2020,11 @@ function ProjectsCalendarView() {
   const brandsQ = useQuery<{ data: string[] }>(() =>
     api.get("/api/projects/brands")
   );
+  // Full brand rows (with colour) for the legend + bar tints. Keyed by
+  // brand name. Replaces the old hardcoded BRAND_COLORS / BRAND_DOT_HEX
+  // maps so newly-added brands in Project Maintenance light up here
+  // without a deploy.
+  const brandPalette = useBrandPalette();
   const [anchor, setAnchor] = useState<Date>(() => {
     const d = new Date();
     d.setDate(1);
@@ -2018,12 +2091,13 @@ function ProjectsCalendarView() {
   const monthLabel = anchor.toLocaleDateString("en-MY", { month: "long", year: "numeric" });
   const today = new Date().toISOString().slice(0, 10);
 
-  // Per-week lane-packing — ensures a multi-day project sits at the same
-  // lane index in every cell it touches, so the per-cell pills can visually
-  // stitch together (via -7px horizontal margins that bridge cell padding
-  // + the 1px cell border). Without consistent lanes, the same project's
-  // pill would jump rows between adjacent days and the bar would look
-  // broken.
+  // Per-week lane-packing. Each project that overlaps a week becomes a
+  // single segment for that week (clipped to the visible Sun..Sat range)
+  // with a lane index. Segments are rendered as absolutely-positioned
+  // bars overlaid on the week row, so a multi-day project shows as ONE
+  // continuous bar from start to end with the project name on it — not
+  // a chain of per-cell pills. Bars wrap at week boundaries; the
+  // clipLeft/clipRight flags drive the rounded-corner + chevron hint.
   type WeekSeg = {
     project: CalendarProject;
     startCol: number;
@@ -2032,11 +2106,8 @@ function ProjectsCalendarView() {
     clipRight: boolean;
     lane: number;
   };
-  type CellBar = { seg: WeekSeg; isStart: boolean; isEnd: boolean } | null;
-  const MAX_LANES = 2;
-  const cellBars: CellBar[][] = Array.from({ length: 42 }, () =>
-    Array(MAX_LANES).fill(null)
-  );
+  const MAX_LANES = 3;
+  const weekSegs: WeekSeg[][] = Array.from({ length: 6 }, () => []);
   const overflowByCell: number[] = Array(42).fill(0);
   for (let w = 0; w < 6; w++) {
     const weekStart = cells[w * 7].iso;
@@ -2078,13 +2149,7 @@ function ProjectsCalendarView() {
     }
     for (const seg of segs) {
       if (seg.lane < MAX_LANES) {
-        for (let ci = seg.startCol; ci <= seg.endCol; ci++) {
-          cellBars[w * 7 + ci][seg.lane] = {
-            seg,
-            isStart: ci === seg.startCol,
-            isEnd: ci === seg.endCol,
-          };
-        }
+        weekSegs[w].push(seg);
       } else {
         for (let ci = seg.startCol; ci <= seg.endCol; ci++) {
           overflowByCell[w * 7 + ci]++;
@@ -2092,6 +2157,14 @@ function ProjectsCalendarView() {
       }
     }
   }
+
+  // Layout constants for the per-week bar overlay.
+  // BAR_TOP_OFFSET puts the bars below the cell's day-number row.
+  const BAR_H = 18;
+  const LANE_GAP = 3;
+  const LANE_TOTAL = BAR_H + LANE_GAP;
+  const BAR_TOP_OFFSET = 24;
+  const BARS_AREA_H = MAX_LANES * LANE_TOTAL;
 
   return (
     <div>
@@ -2200,12 +2273,15 @@ function ProjectsCalendarView() {
         </div>
       </div>
 
-      {/* Brand legend */}
+      {/* Brand legend — sourced from project_brands so admins control it. */}
       <div className="mb-3 flex flex-wrap items-center gap-2 text-[10px]">
-        {Object.entries(BRAND_COLORS).map(([b, cls]) => (
-          <span key={b} className="inline-flex items-center gap-1">
-            <span className={cn("h-2 w-2 rounded-full", cls.split(" ")[0])} />
-            <span className="text-ink-muted">{b}</span>
+        {brandPalette.rows.map((b) => (
+          <span key={b.id} className="inline-flex items-center gap-1">
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ background: `#${b.color}` }}
+            />
+            <span className="text-ink-muted">{b.name}</span>
           </span>
         ))}
       </div>
@@ -2229,129 +2305,150 @@ function ProjectsCalendarView() {
             </div>
           ))}
         </div>
-        <div className="grid grid-cols-7">
-          {cells.map((cell, idx) => {
-            const inMonth = cell.date.getUTCMonth() === anchor.getMonth();
-            const cellTasks = tasksByDate.get(cell.iso) ?? [];
-            const isToday = cell.iso === today;
-            const holidays = showHolidays ? getHolidaysOn(cell.iso) : [];
-            const isHolidayCell = holidays.length > 0;
-            const bars = cellBars[idx];
-            const overflow = overflowByCell[idx];
-            return (
-              <div
-                key={idx}
-                className={cn(
-                  "relative min-h-[110px] border-b border-r border-border px-1.5 py-1 text-[10px]",
-                  !inMonth && "bg-bg/40 text-ink-muted",
-                  isHolidayCell && inMonth && "bg-err/5",
-                  isToday && "bg-accent-soft/30"
-                )}
-              >
-                <div className="mb-1 flex items-center justify-between">
-                  <span className={cn("font-mono", isToday && "font-bold text-accent")}>
-                    {cell.date.getUTCDate()}
-                  </span>
-                  {cellTasks.length > 0 && (
-                    <span
-                      title={`${cellTasks.length} task(s) due`}
-                      className={cn(
-                        "inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-bold",
-                        cellTasks.some((t) => t.is_overdue)
-                          ? "bg-err text-white"
-                          : "bg-amber-100 text-amber-800"
-                      )}
-                    >
-                      {cellTasks.length}
-                    </span>
-                  )}
-                </div>
-
-                {/* Holiday chip(s) */}
-                {isHolidayCell && (
+        {/* 6 week rows. Each row is a relative grid so an absolute bar
+            overlay can paint a single continuous pill from start col to
+            end col on top of the day cells. */}
+        {Array.from({ length: 6 }).map((_, w) => {
+          const segs = weekSegs[w];
+          return (
+            <div
+              key={w}
+              className="relative grid grid-cols-7"
+              style={{ minHeight: BAR_TOP_OFFSET + BARS_AREA_H + 50 }}
+            >
+              {Array.from({ length: 7 }).map((_, d) => {
+                const idx = w * 7 + d;
+                const cell = cells[idx];
+                const inMonth = cell.date.getUTCMonth() === anchor.getMonth();
+                const cellTasks = tasksByDate.get(cell.iso) ?? [];
+                const isToday = cell.iso === today;
+                const holidays = showHolidays ? getHolidaysOn(cell.iso) : [];
+                const isHolidayCell = holidays.length > 0;
+                const overflow = overflowByCell[idx];
+                return (
                   <div
-                    className="mb-1 truncate rounded bg-err/15 px-1 py-0.5 text-[9px] font-semibold text-err"
-                    title={holidays.map((h) => h.name).join(", ")}
+                    key={idx}
+                    className={cn(
+                      "relative border-b border-r border-border px-1.5 py-1 text-[10px]",
+                      !inMonth && "bg-bg/40 text-ink-muted",
+                      isHolidayCell && inMonth && "bg-err/5",
+                      isToday && "bg-accent-soft/30"
+                    )}
                   >
-                    🎌 {holidays[0].name}
-                    {holidays.length > 1 && ` +${holidays.length - 1}`}
-                  </div>
-                )}
-
-                {/* Project bars — per-week lane-packed. Multi-day bars bridge
-                    adjacent cells via -7px margins that cross the 6px cell
-                    padding + 1px border, so the same brand colour reads as
-                    one continuous bar across all days. */}
-                <div className="relative z-10 space-y-0.5">
-                  {bars.map((bar, li) => {
-                    if (!bar) {
-                      return <div key={li} className="h-[15px]" aria-hidden />;
-                    }
-                    const { seg, isStart, isEnd } = bar;
-                    const continuesLeft = !isStart || seg.clipLeft;
-                    const continuesRight = !isEnd || seg.clipRight;
-                    return (
-                      <button
-                        key={li}
-                        onClick={() => navigate(`/projects/${seg.project.id}`)}
-                        title={`${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`}
-                        style={{
-                          marginLeft: continuesLeft ? -7 : 0,
-                          marginRight: continuesRight ? -7 : 0,
-                        }}
-                        className={cn(
-                          "block truncate px-1 py-0.5 text-left text-[9px] font-semibold leading-tight",
-                          brandClass(seg.project.brand),
-                          !continuesLeft && "rounded-l",
-                          !continuesRight && "rounded-r"
-                        )}
-                      >
-                        {isStart && seg.clipLeft && "‹ "}
-                        <span className={cn(!isStart && "invisible")}>
-                          {seg.project.name}
+                    <div className="flex items-center justify-between">
+                      <span className={cn("font-mono", isToday && "font-bold text-accent")}>
+                        {cell.date.getUTCDate()}
+                      </span>
+                      {cellTasks.length > 0 && (
+                        <span
+                          title={`${cellTasks.length} task(s) due`}
+                          className={cn(
+                            "inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-bold",
+                            cellTasks.some((t) => t.is_overdue)
+                              ? "bg-err text-white"
+                              : "bg-amber-100 text-amber-800"
+                          )}
+                        >
+                          {cellTasks.length}
                         </span>
-                        {isEnd && seg.clipRight && " ›"}
-                      </button>
-                    );
-                  })}
-                  {overflow > 0 && (
-                    <div className="text-[9px] text-ink-muted">
-                      +{overflow} more
+                      )}
                     </div>
-                  )}
-                </div>
 
-                {/* Task chips */}
-                {cellTasks.length > 0 && (
-                  <div className="mt-1 space-y-0.5 border-t border-border-subtle pt-1">
-                    {cellTasks.slice(0, 2).map((t) => (
-                      <CalendarTaskChip
-                        key={t.id}
-                        task={t}
-                        onOpen={() => navigate(`/projects/${t.project_id}`)}
-                      />
-                    ))}
-                    {cellTasks.length > 2 && (
-                      <button
-                        onClick={() => {
-                          const first = cellTasks[2];
-                          if (first) navigate(`/projects/${first.project_id}`);
-                        }}
-                        title={cellTasks
-                          .slice(2)
-                          .map((t) => `${t.project_code}: ${t.title}`)
-                          .join("\n")}
-                        className="block text-[9px] font-semibold text-accent hover:underline"
+                    {/* Reserved vertical space for the absolute bar
+                        overlay so cell content (holiday + tasks) sits
+                        below all bars regardless of how many lanes are
+                        used in this week. */}
+                    <div style={{ height: BARS_AREA_H }} aria-hidden />
+
+                    {overflow > 0 && (
+                      <div className="text-[9px] text-ink-muted">
+                        +{overflow} more
+                      </div>
+                    )}
+
+                    {isHolidayCell && (
+                      <div
+                        className="mt-1 truncate rounded bg-err/15 px-1 py-0.5 text-[9px] font-semibold text-err"
+                        title={holidays.map((h) => h.name).join(", ")}
                       >
-                        +{cellTasks.length - 2} more task{cellTasks.length - 2 === 1 ? "" : "s"}
-                      </button>
+                        {holidays[0].name}
+                        {holidays.length > 1 && ` +${holidays.length - 1}`}
+                      </div>
+                    )}
+
+                    {cellTasks.length > 0 && (
+                      <div className="mt-1 space-y-0.5 border-t border-border-subtle pt-1">
+                        {cellTasks.slice(0, 2).map((t) => (
+                          <CalendarTaskChip
+                            key={t.id}
+                            task={t}
+                            brandMap={brandPalette.map}
+                            onOpen={() => navigate(`/projects/${t.project_id}`)}
+                          />
+                        ))}
+                        {cellTasks.length > 2 && (
+                          <button
+                            onClick={() => {
+                              const first = cellTasks[2];
+                              if (first) navigate(`/projects/${first.project_id}`);
+                            }}
+                            title={cellTasks
+                              .slice(2)
+                              .map((t) => `${t.project_code}: ${t.title}`)
+                              .join("\n")}
+                            className="block text-[9px] font-semibold text-accent hover:underline"
+                          >
+                            +{cellTasks.length - 2} more task{cellTasks.length - 2 === 1 ? "" : "s"}
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
+                );
+              })}
+
+              {/* Bar overlay — one absolutely-positioned pill per
+                  segment, spanning startCol..endCol. Pointer events
+                  pass through the wrapper so the underlying cells stay
+                  clickable; the bars themselves opt back in. */}
+              <div
+                className="pointer-events-none absolute left-0 right-0 z-10"
+                style={{ top: BAR_TOP_OFFSET }}
+                aria-hidden={false}
+              >
+                {segs.map((seg) => {
+                  const span = seg.endCol - seg.startCol + 1;
+                  const leftPct = (seg.startCol / 7) * 100;
+                  const widthPct = (span / 7) * 100;
+                  return (
+                    <button
+                      key={`${w}-${seg.project.id}-${seg.startCol}`}
+                      onClick={() => navigate(`/projects/${seg.project.id}`)}
+                      title={`${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`}
+                      style={{
+                        position: "absolute",
+                        left: `calc(${leftPct}% + 4px)`,
+                        width: `calc(${widthPct}% - 8px)`,
+                        top: seg.lane * LANE_TOTAL,
+                        height: BAR_H,
+                        ...brandStyle(brandPalette.map, seg.project.brand),
+                      }}
+                      className={cn(
+                        "pointer-events-auto truncate px-2 text-left text-[10.5px] font-semibold leading-[18px] shadow-sm transition-transform hover:-translate-y-px hover:shadow",
+                        seg.clipLeft ? "rounded-l-none" : "rounded-l-md",
+                        seg.clipRight ? "rounded-r-none" : "rounded-r-md"
+                      )}
+                    >
+                      {seg.clipLeft && "‹ "}
+                      {seg.project.name}
+                      {seg.clipRight && " ›"}
+                    </button>
+                  );
+                })}
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+        })}
       </div>
 
     </div>
@@ -2403,12 +2500,27 @@ function CreateProjectPanel({
   const [picId, setPicId] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
 
-  // Users list for PIC picker — same endpoint Team uses.
+  // Users list for PIC picker — narrowed to the picked brand's
+  // department coverage so admins can't assign someone whose dept
+  // doesn't cover the brand. Empty brand → empty list (with a hint
+  // shown in the dropdown rendering).
   const usersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>(
-    () => api.get("/api/users"),
-    []
+    () =>
+      brand
+        ? api.get(`/api/users?brand=${encodeURIComponent(brand)}`)
+        : Promise.resolve({ users: [] }),
+    [brand]
   );
   const users = usersQ.data?.users ?? [];
+
+  // If the picked PIC is no longer in the filtered list (e.g. brand
+  // changed), drop them so the form doesn't submit a stale id.
+  useEffect(() => {
+    if (!picId) return;
+    if (!users.some((u) => String(u.id) === picId)) {
+      setPicId("");
+    }
+  }, [users, picId]);
 
   async function submit() {
     if (!name.trim()) {
@@ -2563,9 +2675,12 @@ function CreateProjectPanel({
           <select
             value={picId}
             onChange={(e) => setPicId(e.target.value)}
-            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
+            disabled={!brand}
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] disabled:cursor-not-allowed disabled:bg-bg disabled:text-ink-muted"
           >
-            <option value="">— default to me —</option>
+            <option value="">
+              {brand ? "— default to me —" : "Pick a brand first"}
+            </option>
             {users.map((u) => (
               <option key={u.id} value={u.id}>
                 {u.name || u.email}
@@ -2573,8 +2688,15 @@ function CreateProjectPanel({
             ))}
           </select>
           <div className="mt-1.5 text-[10px] text-ink-muted">
-            The PIC is the sales lead. Their direct reports automatically
-            see this project in their scoped list.
+            {brand
+              ? `Only users in a department covering "${brand}" can be picked. Their direct reports inherit visibility of this project.`
+              : "The PIC dropdown unlocks once you choose a brand."}
+            {brand && users.length === 0 && !usersQ.loading && (
+              <span className="mt-1 block text-warning-text">
+                No user has a department covering this brand yet — assign
+                the brand to a department first under Team → Departments.
+              </span>
+            )}
           </div>
         </div>
       </PanelSection>
@@ -2611,6 +2733,19 @@ function ProjectDetailContent({
   const [addItemOpen, setAddItemOpen] = useState(false);
 
   const p = detail.data?.project;
+
+  // Brand-narrowed users list for the PIC picker only — backend
+  // enforces the same filter, so this is mostly a UX convenience that
+  // hides invalid candidates instead of showing a 403 toast on save.
+  const picBrand = p?.brand ?? "";
+  const picUsersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>(
+    () =>
+      picBrand
+        ? api.get(`/api/users?brand=${encodeURIComponent(picBrand)}`)
+        : Promise.resolve({ users: [] }),
+    [picBrand]
+  );
+  const picUsers = picUsersQ.data?.users ?? [];
   const checklist = detail.data?.checklist ?? [];
   const activity = detail.data?.activity ?? [];
   const trips = detail.data?.trips ?? [];
@@ -2745,7 +2880,16 @@ function ProjectDetailContent({
           {/* Stage + progress header */}
           <div className="mb-5 flex flex-wrap items-center gap-3 rounded-md border border-border bg-bg/60 px-4 py-3">
             <StatusDot variant={stageVariant(p.stage)} label={STAGE_LABEL[p.stage]} />
-            <ProgressBar pct={p.progress_pct ?? 0} />
+            {/* Stage chip row replaces the percent bar (mig 050). One
+                pill per tasklist section; complete sections fill solid,
+                in-progress get a partial gradient, untouched ones stay
+                muted. Falls back to the percent bar when a project has
+                no sections defined yet. */}
+            {(detail.data?.section_progress ?? []).length > 0 ? (
+              <StageProgressRow sections={detail.data!.section_progress!} />
+            ) : (
+              <ProgressBar pct={p.progress_pct ?? 0} />
+            )}
             {p.duration_days != null && (
               <span className="inline-flex items-center gap-1 text-[11px] text-ink-secondary">
                 <Calendar size={11} />
@@ -2785,7 +2929,9 @@ function ProjectDetailContent({
             />
           )}
 
-          {fullAccess && <LogisticsScheduleSection project={p} patch={patch} />}
+          {fullAccess && (
+            <LogisticsScheduleSection project={p} trips={trips} patch={patch} />
+          )}
 
           {fullAccess && (
             <StockTransferSection
@@ -2806,66 +2952,34 @@ function ProjectDetailContent({
             toast={toast}
           />
 
-          <PanelSection title={`Checklist (${checklist.length})`}>
-            <div className="space-y-1.5">
-              {checklist.map((item) => (
-                <ChecklistRow
-                  key={item.id}
-                  item={item}
-                  users={users}
-                  comments={(detail.data?.checklist_comments ?? []).filter(
-                    (c) => c.item_id === item.id
-                  )}
-                  canApprove={!item.required_perm || can(item.required_perm)}
-                  onStatus={(s) => setItemStatus(item, s)}
-                  onDelete={() => deleteItem(item)}
-                  onReassign={async (ownerId) => {
-                    try {
-                      await api.patch(`/api/projects/checklist/${item.id}`, {
-                        owner_user_id: ownerId,
-                      });
-                      detail.reload();
-                    } catch (e: any) {
-                      toast.error(e?.message || "Failed");
-                    }
-                  }}
-                  onReview={async (action, payload) => {
-                    try {
-                      await api.post(`/api/projects/checklist/${item.id}/review`, {
-                        action,
-                        ...payload,
-                      });
-                      detail.reload();
-                    } catch (e: any) {
-                      toast.error(e?.message || "Failed");
-                    }
-                  }}
-                />
-              ))}
-              {checklist.length === 0 && (
-                <div className="text-[11px] text-ink-muted">No checklist items.</div>
-              )}
-            </div>
-            {addItemOpen ? (
-              <AddChecklistItem
-                projectId={id}
-                users={users}
-                onAdded={() => {
-                  setAddItemOpen(false);
-                  detail.reload();
-                }}
-                onCancel={() => setAddItemOpen(false)}
-                toast={toast}
-              />
-            ) : (
-              <button
-                onClick={() => setAddItemOpen(true)}
-                className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-border px-3 py-1.5 text-[11px] text-ink-muted hover:border-accent/40 hover:text-accent"
-              >
-                <Plus size={11} /> Add item
-              </button>
-            )}
-          </PanelSection>
+          <ProjectSalesEntriesSection
+            projectId={id}
+            projectCode={p.code}
+            projectName={p.name}
+            canWrite={can("sales.write")}
+            canManage={can("sales.manage")}
+            toast={toast}
+          />
+
+          <TasklistSections
+            projectId={id}
+            projectStartDate={p.start_date}
+            projectEndDate={p.end_date}
+            checklist={checklist}
+            sections={detail.data?.sections ?? []}
+            sectionProgress={detail.data?.section_progress ?? []}
+            attachments={detail.data?.checklist_attachments ?? []}
+            comments={detail.data?.checklist_comments ?? []}
+            users={users}
+            canTick={can("projects.write") || can("projects.checklist.tick")}
+            canManage={can("projects.write")}
+            addItemOpen={addItemOpen}
+            setAddItemOpen={setAddItemOpen}
+            onReload={() => detail.reload()}
+            onItemStatus={setItemStatus}
+            onItemDelete={deleteItem}
+            toast={toast}
+          />
 
           {fullAccess && (
             <FinanceLedgerSection
@@ -2878,12 +2992,10 @@ function ProjectDetailContent({
             />
           )}
 
-          <AttachmentsSection
-            projectId={id}
-            attachments={attachments}
-            onChange={() => detail.reload()}
-            toast={toast}
-          />
+          {/* Project-level Attachments panel removed in mig 050 — files
+              now live on tasks via the per-task attachment uploader.
+              Old project_attachments rows still load from the API for
+              legacy data but the UI no longer surfaces them. */}
 
           {fullAccess && (
             <PanelSection title={`Linked Trips (${trips.length})`}>
@@ -2909,7 +3021,12 @@ function ProjectDetailContent({
                         </span>
                       )}
                       {t.description && (
-                        <span className="truncate text-ink-secondary">— {t.description}</span>
+                        <span
+                          className="truncate text-ink-secondary"
+                          title={t.description}
+                        >
+                          — {t.description}
+                        </span>
                       )}
                       <button
                         onClick={async () => {
@@ -2957,13 +3074,12 @@ function ProjectDetailContent({
             <ProjectChat
               projectId={id}
               activity={activity}
-              canPost={can("projects.write")}
+              canPost={can("projects.write") || can("projects.chat")}
               onPosted={() => detail.reload()}
               toast={toast}
             />
           </PanelSection>
 
-          <CollapsibleDetails>
           <PanelSection title="Basics" muted>
             <InlineEdit label="Name" value={p.name} onSave={(v) => patch({ name: v })} />
             {(() => {
@@ -3027,15 +3143,32 @@ function ProjectDetailContent({
                     const v = e.target.value;
                     patch({ pic_id: v ? parseInt(v, 10) : null });
                   }}
-                  className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
+                  disabled={!p.brand}
+                  className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] disabled:cursor-not-allowed disabled:bg-bg disabled:text-ink-muted"
                 >
-                  <option value="">— unassigned —</option>
-                  {users.map((u) => (
+                  <option value="">
+                    {p.brand ? "— unassigned —" : "Pick a brand first"}
+                  </option>
+                  {/* Always include the current PIC so the row stays
+                      labelled even if their dept lost the brand later. */}
+                  {p.pic_id != null && p.pic_name &&
+                    !picUsers.some((u) => u.id === p.pic_id) && (
+                      <option value={p.pic_id}>
+                        {p.pic_name} (out of brand scope)
+                      </option>
+                    )}
+                  {picUsers.map((u) => (
                     <option key={u.id} value={u.id}>
-                      {u.name}
+                      {u.name || u.email}
                     </option>
                   ))}
                 </select>
+                {p.brand && picUsers.length === 0 && !picUsersQ.loading && (
+                  <div className="mt-1 text-[10px] leading-snug text-warning-text">
+                    No user has a department covering "{p.brand}". Set
+                    the brand on a department under Team → Departments.
+                  </div>
+                )}
               </div>
             ) : (
               <FieldRow label="PIC">{p.pic_name || "—"}</FieldRow>
@@ -3123,7 +3256,6 @@ function ProjectDetailContent({
               </div>
             </PanelSection>
           )}
-          </CollapsibleDetails>
 
             </DetailAside>
           </DetailGrid>
@@ -3160,6 +3292,620 @@ export function ProjectDetail() {
   );
 }
 
+// ── Helpers ──────────────────────────────────────────────────
+function formatBytes(n: number | null | undefined): string {
+  if (n == null) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+// ── Task attachment chip ─────────────────────────────────────
+// Shows a thumbnail (image attachments) or file-type icon (everything
+// else), the filename, and an ellipsis menu with Download / Remove.
+// Auth-protected R2 fetch goes through api.fetchBlobUrl so the
+// browser's <img> tag can render the bytes (it can't carry the
+// Bearer header on its own).
+function TaskAttachmentChip({
+  attachment,
+  canManage,
+  onDelete,
+  toast,
+}: {
+  attachment: TaskAttachment;
+  canManage?: boolean;
+  onDelete: () => void;
+  toast?: ReturnType<typeof useToast>;
+}) {
+  const isImage = (attachment.content_type ?? "").startsWith("image/");
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isImage) return;
+    let cancelled = false;
+    let revoke: string | null = null;
+    api
+      .fetchBlobUrl(`/api/projects/attachments/${attachment.r2_key}`)
+      .then((url) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+        } else {
+          revoke = url;
+          setThumbUrl(url);
+        }
+      })
+      .catch(() => {
+        // Silent — falls through to the file-type icon.
+      });
+    return () => {
+      cancelled = true;
+      if (revoke) URL.revokeObjectURL(revoke);
+    };
+  }, [attachment.r2_key, isImage]);
+
+  function FileTypeIcon() {
+    const ct = attachment.content_type ?? "";
+    if (ct.startsWith("video/")) return <FileText size={12} />;
+    if (ct === "application/pdf") return <FileText size={12} />;
+    return <FileText size={12} />;
+  }
+
+  async function download() {
+    try {
+      await api.downloadFile(
+        `/api/projects/attachments/${attachment.r2_key}`,
+        attachment.file_name
+      );
+    } catch (e: any) {
+      toast?.error(e?.message || "Download failed");
+    }
+  }
+
+  const menuItems = [
+    {
+      type: "action" as const,
+      icon: Download,
+      label: "Download",
+      onClick: download,
+    },
+    ...(canManage
+      ? [
+          {
+            type: "action" as const,
+            icon: Trash2,
+            label: "Remove",
+            danger: true,
+            onClick: onDelete,
+          },
+        ]
+      : []),
+  ];
+
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-bg/40 pr-1"
+      title={`${attachment.file_name} · ${formatBytes(attachment.size_bytes)}`}
+    >
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          download();
+        }}
+        className="flex items-center gap-1.5 rounded-l-md hover:bg-bg/60"
+      >
+        {isImage && thumbUrl ? (
+          <img
+            src={thumbUrl}
+            alt=""
+            className="h-7 w-7 rounded-l-md object-cover"
+          />
+        ) : isImage ? (
+          // Image being fetched — placeholder square at the same
+          // dimension to avoid layout shift when the blob arrives.
+          <span className="grid h-7 w-7 place-items-center rounded-l-md bg-bg/60 text-ink-muted">
+            <ImageIcon size={12} />
+          </span>
+        ) : (
+          <span className="grid h-7 w-7 place-items-center rounded-l-md bg-bg/60 text-ink-muted">
+            <FileTypeIcon />
+          </span>
+        )}
+        <span className="max-w-[140px] truncate text-[10.5px] text-ink-secondary">
+          {attachment.file_name}
+        </span>
+      </button>
+      <RowActionsMenu items={menuItems} size={22} title="Attachment actions" />
+    </span>
+  );
+}
+
+// ── Stage progress row ───────────────────────────────────────
+// One pill per tasklist section. Solid + check when every non-NA task
+// in the section is done; partial gradient based on done/total when
+// in-progress; muted outline when nothing's started. Replaces the
+// percentage progress bar (mig 050).
+function StageProgressRow({ sections }: { sections: SectionProgress[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {sections.map((s) => {
+        const denom = s.total - s.na;
+        const pct = denom > 0 ? Math.round((s.done / denom) * 100) : 0;
+        const complete = s.complete === 1;
+        return (
+          <span
+            key={s.id || s.name}
+            title={`${s.name} — ${s.done}/${denom || 0} done${s.na ? ` · ${s.na} N/A` : ""}`}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors",
+              complete
+                ? "border-synced bg-synced/15 text-synced"
+                : pct > 0
+                ? "border-accent/40 bg-accent/10 text-accent"
+                : "border-border text-ink-muted"
+            )}
+          >
+            {complete ? <CheckCircle2 size={10} /> : <Circle size={10} />}
+            <span>{s.name}</span>
+            {!complete && pct > 0 && (
+              <span className="font-mono text-[9px] opacity-70">
+                {s.done}/{denom}
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Tasklist (grouped by section) ─────────────────────────────
+// Mig 050: replaces the flat checklist with section headers + grouped
+// rows. Each section is collapsible; admins can add/rename/delete
+// sections inline. Tasks without a section land in an "Uncategorised"
+// bucket pinned at the bottom.
+function TasklistSections({
+  projectId,
+  projectStartDate,
+  projectEndDate,
+  checklist,
+  sections,
+  sectionProgress,
+  attachments,
+  comments,
+  users,
+  canTick,
+  canManage,
+  addItemOpen,
+  setAddItemOpen,
+  onReload,
+  onItemStatus,
+  onItemDelete,
+  toast,
+}: {
+  projectId: number;
+  projectStartDate: string | null;
+  projectEndDate: string | null;
+  checklist: ChecklistItem[];
+  sections: TasklistSection[];
+  sectionProgress: SectionProgress[];
+  attachments: TaskAttachment[];
+  comments: ChecklistComment[];
+  users: { id: number; name: string }[];
+  canTick: boolean;
+  canManage: boolean;
+  addItemOpen: boolean;
+  setAddItemOpen: (v: boolean) => void;
+  onReload: () => void;
+  onItemStatus: (item: ChecklistItem, s: ChecklistStatus) => void;
+  onItemDelete: (item: ChecklistItem) => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const { can } = useAuth();
+  const [addSectionOpen, setAddSectionOpen] = useState(false);
+  const [newSectionName, setNewSectionName] = useState("");
+  const [editingSectionId, setEditingSectionId] = useState<number | null>(null);
+  const [editingSectionName, setEditingSectionName] = useState("");
+  // List vs Gantt view toggle, URL-backed so a Gantt link is shareable.
+  const [viewParams, setViewParams] = useSearchParams();
+  const view = viewParams.get("tasklist_view") === "gantt" ? "gantt" : "list";
+  function setView(next: "list" | "gantt") {
+    const p = new URLSearchParams(viewParams);
+    if (next === "list") p.delete("tasklist_view");
+    else p.set("tasklist_view", next);
+    setViewParams(p, { replace: true });
+  }
+  // Click → list scroll target. The list-view rows carry data-task-id;
+  // the handler sets the focus id, which a useEffect below scrolls into
+  // view + briefly highlights via a CSS animation.
+  const [focusTaskId, setFocusTaskId] = useState<number | null>(null);
+  useEffect(() => {
+    if (focusTaskId == null || view !== "list") return;
+    const el = document.querySelector<HTMLElement>(
+      `[data-task-id="${focusTaskId}"]`
+    );
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("ring-2", "ring-accent", "ring-offset-2");
+      const t = setTimeout(() => {
+        el.classList.remove("ring-2", "ring-accent", "ring-offset-2");
+      }, 1500);
+      return () => clearTimeout(t);
+    }
+  }, [focusTaskId, view]);
+  // Which section the "Add item" form is targeting. Null = no section
+  // (Uncategorised). Keyed off button click below.
+  const [addInSectionId, setAddInSectionId] = useState<number | null>(null);
+
+  const groups = useMemo(() => {
+    const buckets: Array<{
+      section: TasklistSection | null;
+      items: ChecklistItem[];
+    }> = [];
+    for (const sec of sections) {
+      buckets.push({
+        section: sec,
+        items: checklist.filter((it) => it.section_id === sec.id),
+      });
+    }
+    const uncat = checklist.filter((it) => it.section_id == null);
+    if (uncat.length > 0 || sections.length === 0) {
+      buckets.push({ section: null, items: uncat });
+    }
+    return buckets;
+  }, [sections, checklist]);
+
+  const attachmentsByItem = useMemo(() => {
+    const m = new Map<number, TaskAttachment[]>();
+    for (const a of attachments) {
+      const arr = m.get(a.item_id) ?? [];
+      arr.push(a);
+      m.set(a.item_id, arr);
+    }
+    return m;
+  }, [attachments]);
+
+  async function addSection() {
+    const name = newSectionName.trim();
+    if (!name) return;
+    try {
+      await api.post(`/api/projects/${projectId}/sections`, { name });
+      toast.success(`Added section "${name}"`);
+      setNewSectionName("");
+      setAddSectionOpen(false);
+      onReload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
+  async function renameSection(id: number) {
+    const name = editingSectionName.trim();
+    if (!name) return;
+    try {
+      await api.patch(`/api/projects/sections/${id}`, { name });
+      toast.success("Section renamed");
+      setEditingSectionId(null);
+      setEditingSectionName("");
+      onReload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
+  async function deleteSection(id: number, name: string) {
+    if (
+      !window.confirm(
+        `Delete section "${name}"? Tasks in it will move to Uncategorised.`
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.del(`/api/projects/sections/${id}`);
+      toast.success("Section removed");
+      onReload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
+  // Reorder a section by one slot. The order drives the stage-chip
+  // progress bar at the top of the page, so admins reach for this
+  // when they want stages displayed in lifecycle order.
+  async function moveSection(sectionId: number, delta: -1 | 1) {
+    const idx = sections.findIndex((s) => s.id === sectionId);
+    if (idx < 0) return;
+    const target = idx + delta;
+    if (target < 0 || target >= sections.length) return;
+    const next = sections.slice();
+    [next[idx], next[target]] = [next[target], next[idx]];
+    try {
+      await api.put(`/api/projects/${projectId}/sections/reorder`, {
+        ids: next.map((s) => s.id),
+      });
+      onReload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to reorder");
+    }
+  }
+
+  return (
+    <PanelSection
+      title={`Tasklist (${checklist.length})`}
+      action={
+        <div className="flex items-center gap-1.5">
+          {/* List / Gantt toggle. URL-backed (?tasklist_view=) so a
+              Sales Director can deep-link to a single project's
+              Gantt without further navigation. */}
+          <div className="inline-flex overflow-hidden rounded-md border border-border bg-bg/40 font-mono text-[9.5px] font-semibold uppercase tracking-wider">
+            <button
+              type="button"
+              onClick={() => setView("list")}
+              className={cn(
+                "px-2 py-1 transition-colors",
+                view === "list"
+                  ? "bg-accent text-white"
+                  : "text-ink-muted hover:text-accent"
+              )}
+              aria-pressed={view === "list"}
+            >
+              List
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("gantt")}
+              className={cn(
+                "px-2 py-1 transition-colors",
+                view === "gantt"
+                  ? "bg-accent text-white"
+                  : "text-ink-muted hover:text-accent"
+              )}
+              aria-pressed={view === "gantt"}
+            >
+              Gantt
+            </button>
+          </div>
+          {canManage && (
+            <button
+              type="button"
+              onClick={() => setAddSectionOpen((v) => !v)}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-secondary hover:border-accent/40 hover:text-accent"
+            >
+              <Plus size={11} /> Section
+            </button>
+          )}
+        </div>
+      }
+    >
+      {view === "gantt" ? (
+        <ProjectGantt
+          projectStartDate={projectStartDate}
+          projectEndDate={projectEndDate}
+          sections={sections}
+          sectionProgress={sectionProgress}
+          tasks={checklist.map((c) => ({
+            id: c.id,
+            title: c.title,
+            status: c.status,
+            due_date: c.due_date,
+            section_id: c.section_id,
+            required_perm: c.required_perm,
+            owner_name: c.owner_name,
+          }))}
+          onTaskClick={(taskId) => {
+            setView("list");
+            setFocusTaskId(taskId);
+          }}
+        />
+      ) : null}
+
+      {view === "list" && addSectionOpen && (
+        <div className="mb-3 flex items-center gap-2 rounded-md border border-dashed border-accent/40 bg-accent-soft/20 p-2">
+          <input
+            value={newSectionName}
+            onChange={(e) => setNewSectionName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addSection();
+              if (e.key === "Escape") {
+                setAddSectionOpen(false);
+                setNewSectionName("");
+              }
+            }}
+            placeholder="e.g. Pre-event, Setup, Live, Teardown"
+            autoFocus
+            className="h-7 flex-1 rounded-md border border-border bg-surface px-2 text-[11.5px] outline-none focus:border-accent"
+          />
+          <button
+            onClick={addSection}
+            disabled={!newSectionName.trim()}
+            className="rounded-md bg-accent px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white disabled:opacity-50"
+          >
+            Add
+          </button>
+          <button
+            onClick={() => {
+              setAddSectionOpen(false);
+              setNewSectionName("");
+            }}
+            className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {view === "list" && (
+      <div className="space-y-3">
+        {groups.map(({ section, items }) => {
+          const sectionId = section?.id ?? null;
+          const headerName = section?.name ?? "Uncategorised";
+          const denom = items.length - items.filter((i) => i.status === "na").length;
+          const done = items.filter((i) => i.status === "done").length;
+          return (
+            <div
+              key={section?.id ?? "uncat"}
+              className="rounded-md border border-border-subtle bg-bg/30"
+            >
+              <div className="flex items-center gap-2 border-b border-border-subtle bg-bg/50 px-2.5 py-1.5">
+                {editingSectionId === section?.id ? (
+                  <>
+                    <input
+                      value={editingSectionName}
+                      onChange={(e) => setEditingSectionName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") renameSection(section!.id);
+                        if (e.key === "Escape") setEditingSectionId(null);
+                      }}
+                      autoFocus
+                      className="h-6 flex-1 rounded-md border border-accent bg-surface px-2 text-[11.5px] font-semibold outline-none"
+                    />
+                    <button
+                      onClick={() => renameSection(section!.id)}
+                      className="rounded bg-accent px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase text-white"
+                    >
+                      Save
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className="flex-1 text-[11.5px] font-semibold uppercase tracking-wider text-ink-secondary">
+                      {headerName}
+                    </span>
+                    <span className="font-mono text-[10px] text-ink-muted">
+                      {done}/{denom || 0}
+                    </span>
+                    {section && canManage && (
+                      <>
+                        {/* Up / down arrows reorder the section. The
+                            order here drives the stage-chip progress
+                            bar at the top of the page. */}
+                        <button
+                          onClick={() => moveSection(section.id, -1)}
+                          disabled={
+                            sections.findIndex((s) => s.id === section.id) === 0
+                          }
+                          className="rounded p-0.5 text-ink-muted hover:bg-surface-dim hover:text-accent disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-ink-muted"
+                          title="Move up"
+                        >
+                          <ChevronUp size={12} />
+                        </button>
+                        <button
+                          onClick={() => moveSection(section.id, 1)}
+                          disabled={
+                            sections.findIndex((s) => s.id === section.id) ===
+                            sections.length - 1
+                          }
+                          className="rounded p-0.5 text-ink-muted hover:bg-surface-dim hover:text-accent disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-ink-muted"
+                          title="Move down"
+                        >
+                          <ChevronDown size={12} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingSectionId(section.id);
+                            setEditingSectionName(section.name);
+                          }}
+                          className="rounded p-0.5 text-ink-muted hover:bg-surface-dim hover:text-accent"
+                          title="Rename"
+                        >
+                          <Pencil size={11} />
+                        </button>
+                        <button
+                          onClick={() => deleteSection(section.id, section.name)}
+                          className="rounded p-0.5 text-ink-muted hover:bg-err/10 hover:text-err"
+                          title="Delete section"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="space-y-1.5 p-2">
+                {items.map((item) => (
+                  <ChecklistRow
+                    key={item.id}
+                    item={item}
+                    users={users}
+                    comments={comments.filter((c) => c.item_id === item.id)}
+                    canTick={canTick}
+                    canApprove={!item.required_perm || can(item.required_perm)}
+                    canManage={canManage}
+                    attachments={attachmentsByItem.get(item.id) ?? []}
+                    onStatus={(s) => onItemStatus(item, s)}
+                    onDelete={() => onItemDelete(item)}
+                    onReassign={async (ownerId) => {
+                      try {
+                        await api.patch(`/api/projects/checklist/${item.id}`, {
+                          owner_user_id: ownerId,
+                        });
+                        onReload();
+                      } catch (e: any) {
+                        toast.error(e?.message || "Failed");
+                      }
+                    }}
+                    onReview={async (action, payload) => {
+                      try {
+                        await api.post(`/api/projects/checklist/${item.id}/review`, {
+                          action,
+                          ...payload,
+                        });
+                        onReload();
+                      } catch (e: any) {
+                        toast.error(e?.message || "Failed");
+                      }
+                    }}
+                    onAttachmentsChanged={onReload}
+                    toast={toast}
+                  />
+                ))}
+                {items.length === 0 && (
+                  <div className="px-1 py-1 text-[10.5px] text-ink-muted">
+                    No tasks in this section yet.
+                  </div>
+                )}
+                {canManage && (
+                  <button
+                    onClick={() => {
+                      setAddInSectionId(sectionId);
+                      setAddItemOpen(true);
+                    }}
+                    className="mt-1 inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-[10.5px] text-ink-muted hover:border-accent/40 hover:text-accent"
+                  >
+                    <Plus size={10} /> Add task
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      )}
+
+      {view === "list" && addItemOpen && (
+        <AddChecklistItem
+          projectId={projectId}
+          users={users}
+          sectionId={addInSectionId}
+          onAdded={() => {
+            setAddItemOpen(false);
+            setAddInSectionId(null);
+            onReload();
+          }}
+          onCancel={() => {
+            setAddItemOpen(false);
+            setAddInSectionId(null);
+          }}
+          toast={toast}
+        />
+      )}
+    </PanelSection>
+  );
+}
+
 // ── Checklist row ────────────────────────────────────────────
 
 const REVIEW_BADGES: Record<string, { label: string; cls: string }> = {
@@ -3173,16 +3919,24 @@ function ChecklistRow({
   item,
   comments,
   users,
+  canTick,
   canApprove,
+  canManage,
+  attachments,
   onStatus,
   onDelete,
   onReview,
   onReassign,
+  onAttachmentsChanged,
+  toast,
 }: {
   item: ChecklistItem;
   comments: ChecklistComment[];
   users: { id: number; name: string }[];
+  canTick: boolean;
   canApprove: boolean;
+  canManage?: boolean;
+  attachments?: TaskAttachment[];
   onStatus: (s: ChecklistStatus) => void;
   onDelete: () => void;
   onReview: (
@@ -3190,11 +3944,49 @@ function ChecklistRow({
     payload: { reason?: string; note?: string }
   ) => void | Promise<void>;
   onReassign: (ownerId: number | null) => void | Promise<void>;
+  onAttachmentsChanged?: () => void;
+  toast?: ReturnType<typeof useToast>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [note, setNote] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function uploadAttachment(file: File) {
+    if (!file) return;
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      toast?.error("File needs an extension");
+      return;
+    }
+    setUploading(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const url = `/api/projects/checklist/${item.id}/attachments?ext=${encodeURIComponent(
+        ext
+      )}&name=${encodeURIComponent(file.name)}`;
+      await api.putBinary(url, buf, file.type || "application/octet-stream");
+      toast?.success("Uploaded");
+      onAttachmentsChanged?.();
+    } catch (e: any) {
+      toast?.error(e?.message || "Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function deleteAttachment(attId: number) {
+    if (!window.confirm("Remove this attachment?")) return;
+    try {
+      await api.del(`/api/projects/checklist/attachments/${attId}`);
+      onAttachmentsChanged?.();
+    } catch (e: any) {
+      toast?.error(e?.message || "Failed");
+    }
+  }
 
   const overdue =
     item.status === "pending" &&
@@ -3210,19 +4002,27 @@ function ChecklistRow({
         item.status === "done" && "bg-synced/5",
         item.status === "na" && "opacity-60",
         overdue && "border-err/40 bg-err/5",
-        item.review_status === "rejected" && "border-err/30"
+        item.review_status === "rejected" && "border-err/30",
+        "transition-shadow"
       )}
+      data-task-id={item.id}
     >
       <div className="flex items-start gap-2">
         <button
           onClick={() => onStatus(item.status === "done" ? "pending" : "done")}
-          disabled={!canApprove}
+          disabled={!canTick || !canApprove}
           className="mt-0.5 shrink-0"
-          title={canApprove ? "Toggle done" : `Requires ${item.required_perm}`}
+          title={
+            !canTick
+              ? "You don't have permission to tick checklist items"
+              : !canApprove
+              ? `Requires ${item.required_perm}`
+              : "Toggle done"
+          }
         >
           {item.status === "done" ? (
             <CheckCircle2 size={16} className="text-synced" />
-          ) : !canApprove ? (
+          ) : !canTick || !canApprove ? (
             <Lock size={16} className="text-ink-muted" />
           ) : (
             <Circle size={16} className="text-ink-muted hover:text-accent" />
@@ -3276,6 +4076,46 @@ function ChecklistRow({
               <span className="basis-full rounded bg-err/10 px-2 py-1 text-err">
                 Rejected: {item.rejection_reason}
               </span>
+            )}
+            {/* Per-task attachments (mig 050). Each chip carries a
+                thumbnail (for image content types) or a file-type
+                icon, plus an ellipsis menu with Download / Remove. */}
+            {((attachments && attachments.length > 0) || canManage) && (
+              <div className="mt-1 flex basis-full flex-wrap items-center gap-1.5">
+                {(attachments ?? []).map((a) => (
+                  <TaskAttachmentChip
+                    key={a.id}
+                    attachment={a}
+                    canManage={canManage}
+                    onDelete={() => deleteAttachment(a.id)}
+                    toast={toast}
+                  />
+                ))}
+                {canManage && (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      hidden
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) uploadAttachment(f);
+                      }}
+                    />
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fileInputRef.current?.click();
+                      }}
+                      disabled={uploading}
+                      className="inline-flex items-center gap-0.5 rounded-full border border-dashed border-border bg-surface px-2 py-0.5 text-[10px] text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                    >
+                      <Plus size={10} />
+                      {uploading ? "Uploading…" : "Attach"}
+                    </button>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -3486,12 +4326,14 @@ function commentKindColor(k: string): string {
 function AddChecklistItem({
   projectId,
   users,
+  sectionId,
   onAdded,
   onCancel,
   toast,
 }: {
   projectId: number;
   users: { id: number; name: string }[];
+  sectionId?: number | null;
   onAdded: () => void;
   onCancel: () => void;
   toast: ReturnType<typeof useToast>;
@@ -3510,6 +4352,7 @@ function AddChecklistItem({
         description: description.trim() || undefined,
         due_date: dueDate || undefined,
         owner_user_id: ownerId ? parseInt(ownerId, 10) : undefined,
+        section_id: sectionId ?? undefined,
       });
       onAdded();
     } catch (e: any) {
@@ -4147,9 +4990,16 @@ function AddStockTransferForm({
 
 function LogisticsScheduleSection({
   project,
+  trips,
   patch,
 }: {
   project: ProjectDetail["project"];
+  /** Trips already linked to this project — used to surface a
+   *  clickable chip above each phase that opens the matching
+   *  logistics event. Matched by `trip_type` ("setup" / "dismantle"),
+   *  case-insensitive so a stray capitalisation doesn't break the
+   *  link. */
+  trips: ProjectTrip[];
   patch: (body: Record<string, any>) => Promise<void>;
 }) {
   const [drivers, setDrivers] = useState<{ id: number; name: string }[]>([]);
@@ -4171,8 +5021,29 @@ function LogisticsScheduleSection({
       .catch(() => {});
   }, []);
 
+  const setupTrip = trips.find(
+    (t) => (t.trip_type || "").toLowerCase() === "setup"
+  );
+  const dismantleTrip = trips.find(
+    (t) => (t.trip_type || "").toLowerCase() === "dismantle"
+  );
+
+  // Driver name resolution for the phase header chips. The select
+  // already loaded the full users list, so reuse it instead of relying
+  // on a denormalised name on the project row.
+  const setupDriverName =
+    drivers.find((u) => u.id === project.setup_driver_user_id)?.name ?? null;
+  const dismantleDriverName =
+    drivers.find((u) => u.id === project.dismantle_driver_user_id)?.name ?? null;
+
   return (
     <PanelSection title="Logistics Schedule" muted>
+      <PhaseHeader
+        phase="Setup"
+        trip={setupTrip}
+        scheduledAt={project.setup_start_at}
+        driverName={setupDriverName}
+      />
       <div className="grid grid-cols-2 gap-3">
         <DateTimeField
           label="Setup Start"
@@ -4229,7 +5100,14 @@ function LogisticsScheduleSection({
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3 border-t border-border pt-3">
+      <div className="mt-4 border-t border-border pt-3">
+        <PhaseHeader
+          phase="Dismantle"
+          trip={dismantleTrip}
+          scheduledAt={project.dismantle_start_at}
+          driverName={dismantleDriverName}
+        />
+        <div className="grid grid-cols-2 gap-3">
         <DateTimeField
           label="Dismantle Start"
           value={project.dismantle_start_at}
@@ -4283,8 +5161,82 @@ function LogisticsScheduleSection({
             ))}
           </select>
         </div>
+        </div>
       </div>
     </PanelSection>
+  );
+}
+
+/**
+ * Per-phase header inside the Logistics Schedule section. Reflects
+ * whichever logistics surface this phase currently maps to:
+ *
+ *   1. A real Trip linked via the Linked Trips sub-section
+ *      (matching trip_type) → chip links to /trips/:id.
+ *   2. A scheduled date on the project itself (setup_start_at /
+ *      dismantle_start_at) → chip links to the Logistics Events tab,
+ *      which renders the project-derived row alongside manual events.
+ *   3. Neither set → muted "Not scheduled" hint.
+ *
+ * The previous version only handled case (1), which read as "No trip
+ * linked" even when the dispatcher had already configured the date +
+ * driver and the event was visible in /logistics?tab=events.
+ */
+function PhaseHeader({
+  phase,
+  trip,
+  scheduledAt,
+  driverName,
+}: {
+  phase: "Setup" | "Dismantle";
+  trip: ProjectTrip | undefined;
+  /** Project's setup_start_at / dismantle_start_at — the source of
+   *  truth for the synthetic event surfaced in /logistics?tab=events. */
+  scheduledAt: string | null;
+  driverName: string | null;
+}) {
+  // Match Logistics page's tab key — keeps the back-link readable.
+  const eventsHref = "/logistics?tab=events";
+
+  return (
+    <div className="mb-2 flex items-center justify-between gap-2">
+      <div className="font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+        {phase} Phase
+      </div>
+      {trip ? (
+        <Link
+          to={`/trips/${trip.id}`}
+          title={`Open trip ${trip.code}${trip.scheduled_date ? ` · ${formatDate(trip.scheduled_date)}` : ""}`}
+          className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/40 px-2 py-1 font-mono text-[10px] font-semibold tracking-wider text-accent transition-colors hover:bg-accent-soft/70"
+        >
+          <Truck size={11} />
+          <span className="normal-case">{trip.code}</span>
+          {trip.status && (
+            <span className="text-ink-muted/80">· {trip.status}</span>
+          )}
+          <ExternalLink size={10} />
+        </Link>
+      ) : scheduledAt ? (
+        <Link
+          to={eventsHref}
+          title={`Scheduled ${formatDate(scheduledAt)}${driverName ? ` · ${driverName}` : ""} — open Logistics Events`}
+          className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/40 px-2 py-1 font-mono text-[10px] font-semibold tracking-wider text-accent transition-colors hover:bg-accent-soft/70"
+        >
+          <Calendar size={11} />
+          <span>{formatDate(scheduledAt)}</span>
+          {driverName && (
+            <span className="text-ink-muted/80 normal-case">
+              · {driverName}
+            </span>
+          )}
+          <ExternalLink size={10} />
+        </Link>
+      ) : (
+        <span className="font-mono text-[9.5px] uppercase tracking-wider text-ink-muted">
+          Not scheduled
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -4825,6 +5777,308 @@ function AddSalesReportForm({
   );
 }
 
+// ── Project Sales Entries (rep-facing log, scoped to one project) ──
+// The standalone /sales page used to host this. We moved it inside the
+// project page because the workflow is per-exhibition: a rep opens the
+// project they're working, drafts the sales they collected, then submits.
+// The entry's project_id is hard-locked here so a rep can't accidentally
+// re-target a draft to a different exhibition.
+
+function ProjectSalesEntriesSection({
+  projectId,
+  projectCode,
+  projectName,
+  canWrite,
+  canManage,
+  toast,
+}: {
+  projectId: number;
+  projectCode: string | null;
+  projectName: string;
+  canWrite: boolean;
+  canManage: boolean;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const dialog = useDialog();
+  const auth = useAuth();
+  const meId = auth.user?.id;
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<SalesEntry | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>("");
+
+  const list = useQuery<{
+    data: SalesEntry[];
+    totals: { amount: number; count: number; by_status: { draft: number; submitted: number; pushed: number } };
+  }>(
+    () =>
+      api.get(
+        `/api/sales/entries?project_id=${projectId}${
+          statusFilter ? `&status=${statusFilter}` : ""
+        }&per_page=200`
+      ),
+    [projectId, statusFilter]
+  );
+  const udf = useUdf("sales_entries");
+
+  async function submitEntry(e: SalesEntry) {
+    try {
+      await api.post(`/api/sales/entries/${e.id}/submit`);
+      toast.success(`Submitted — ${e.customer_name}`);
+      list.reload();
+    } catch (err: any) {
+      toast.error(err?.message || "Failed");
+    }
+  }
+  async function voidEntry(e: SalesEntry) {
+    if (!(await dialog.confirm(`Void sale for ${e.customer_name}?`))) return;
+    try {
+      await api.post(`/api/sales/entries/${e.id}/void`);
+      toast.success("Voided");
+      list.reload();
+    } catch (err: any) {
+      toast.error(err?.message || "Failed");
+    }
+  }
+  async function deleteEntry(e: SalesEntry) {
+    if (!(await dialog.confirm(`Delete draft for ${e.customer_name}?`))) return;
+    try {
+      await api.del(`/api/sales/entries/${e.id}`);
+      toast.success("Deleted");
+      list.reload();
+    } catch (err: any) {
+      toast.error(err?.message || "Failed");
+    }
+  }
+
+  const rows = list.data?.data ?? [];
+  const totals = list.data?.totals;
+  const projectLabel = projectCode ? `${projectCode} · ${projectName}` : projectName;
+
+  return (
+    <PanelSection title={`Sales (${rows.length})`}>
+      {/* Toolbar: totals · status filter · new-sale */}
+      <div className="mb-2 flex flex-wrap items-center gap-3 rounded-md border border-border-subtle bg-bg/30 px-3 py-2 text-[10.5px]">
+        {totals && (
+          <>
+            <Stat label="Total" value={formatCurrency(totals.amount)} accent />
+            <Stat label="Drafts" value={String(totals.by_status.draft)} />
+            <Stat label="Submitted" value={String(totals.by_status.submitted)} />
+            <Stat label="Pushed" value={String(totals.by_status.pushed)} />
+          </>
+        )}
+        <div className="ml-auto flex items-center gap-1.5">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="h-6 rounded-md border border-border bg-surface px-1.5 text-[10.5px]"
+            title="Filter status"
+          >
+            <option value="">All</option>
+            <option value="draft">Draft</option>
+            <option value="submitted">Submitted</option>
+            <option value="pushed">Pushed</option>
+            <option value="void">Void</option>
+          </select>
+          {canWrite && (
+            <button
+              onClick={() => setCreating(true)}
+              className="inline-flex h-6 items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/60 px-2 text-[10.5px] font-semibold text-accent hover:bg-accent hover:text-white"
+            >
+              <Plus size={11} /> New Sale
+            </button>
+          )}
+        </div>
+      </div>
+
+      {list.loading && rows.length === 0 && (
+        <div className="text-[11px] text-ink-muted">Loading sales…</div>
+      )}
+      {list.error && (
+        <div className="rounded-md border border-err/40 bg-err/5 p-2 text-[11px] text-err">
+          {list.error}
+        </div>
+      )}
+      {!list.loading && rows.length === 0 && (
+        <div className="rounded-md border border-dashed border-border bg-surface px-3 py-4 text-center text-[11px] text-ink-muted">
+          No sales drafted yet for this exhibition.
+          {canWrite && (
+            <>
+              {" "}
+              <button
+                onClick={() => setCreating(true)}
+                className="font-semibold text-accent hover:underline"
+              >
+                Draft your first sale
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div className="overflow-hidden rounded-md border border-border bg-surface">
+          <table className="w-full">
+            <thead className="bg-bg/60">
+              <tr className="text-left font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                <th className="px-2 py-1.5">Date</th>
+                <th className="px-2 py-1.5">Customer</th>
+                <th className="px-2 py-1.5 text-right">Amount</th>
+                <th className="px-2 py-1.5">Status</th>
+                <th className="px-2 py-1.5">By</th>
+                <th className="w-px px-1 py-1.5" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((e) => {
+                const badge = SALES_STATUS_BADGE[e.status as SalesEntryStatus];
+                const isMine = e.created_by === meId;
+                const canEdit = canManage || (isMine && e.status === "draft");
+                const canSubmit = canEdit && e.status === "draft";
+                return (
+                  <tr
+                    key={e.id}
+                    className="border-t border-border-subtle text-[11.5px] hover:bg-bg/40"
+                  >
+                    <td className="px-2 py-1.5 font-mono text-ink-secondary">
+                      {formatDate(e.occurred_at)}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <div className="font-semibold text-ink">{e.customer_name}</div>
+                      {e.customer_code && (
+                        <div className="font-mono text-[9.5px] text-ink-muted">
+                          {e.customer_code}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-mono font-semibold">
+                      {formatCurrency(e.amount)}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <span
+                        className={cn(
+                          "inline-flex rounded-full px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider",
+                          badge.cls
+                        )}
+                      >
+                        {badge.label}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5 text-[10.5px] text-ink-muted">
+                      {e.created_by_name || e.created_by_email || "—"}
+                    </td>
+                    <td className="px-1 py-1">
+                      <div className="flex items-center gap-0.5">
+                        {canSubmit && (
+                          <button
+                            onClick={() => submitEntry(e)}
+                            className="rounded p-1 text-ink-muted hover:bg-accent-soft hover:text-accent"
+                            title="Submit"
+                          >
+                            <CheckSquare size={12} />
+                          </button>
+                        )}
+                        {canEdit && (
+                          <button
+                            onClick={() => setEditing(e)}
+                            className="rounded p-1 text-ink-muted hover:bg-surface-dim hover:text-ink"
+                            title="Edit"
+                          >
+                            <Pencil size={12} />
+                          </button>
+                        )}
+                        {canManage && e.status === "submitted" && (
+                          <button
+                            disabled
+                            className="rounded p-1 text-ink-muted opacity-50"
+                            title="Push to AutoCount (disabled until integration is enabled)"
+                          >
+                            <Send size={12} />
+                          </button>
+                        )}
+                        {canManage && e.status !== "void" && (
+                          <button
+                            onClick={() => voidEntry(e)}
+                            className="rounded p-1 text-ink-muted hover:bg-err/10 hover:text-err"
+                            title="Void"
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                        {canEdit && e.status === "draft" && (
+                          <button
+                            onClick={() => deleteEntry(e)}
+                            className="rounded p-1 text-ink-muted hover:bg-err/10 hover:text-err"
+                            title="Delete"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {creating && (
+        <EntryPanel
+          mode="create"
+          udfFields={udf.fields}
+          lockedProjectId={projectId}
+          lockedProjectLabel={projectLabel}
+          onClose={() => setCreating(false)}
+          onSaved={() => {
+            setCreating(false);
+            list.reload();
+          }}
+        />
+      )}
+      {editing && (
+        <EntryPanel
+          mode="edit"
+          entry={editing}
+          udfFields={udf.fields}
+          lockedProjectId={projectId}
+          lockedProjectLabel={projectLabel}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            list.reload();
+          }}
+        />
+      )}
+    </PanelSection>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+        {label}
+      </span>
+      <span
+        className={cn(
+          "font-mono text-[12px] font-bold leading-none",
+          accent ? "text-accent" : "text-ink"
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
 // ── Finance ledger ───────────────────────────────────────────
 // Line-item finance. Each entry is an income or cost line tagged with
 // a category. Live totals + margin + per-sqm / per-day views are
@@ -5064,7 +6318,10 @@ function LedgerGroup({
                 {catLabel(l.category)}
               </span>
               <div className="min-w-0 flex-1">
-                <div className="truncate">
+                <div
+                  className="truncate"
+                  title={l.description || undefined}
+                >
                   {l.description || <span className="text-ink-muted">No description</span>}
                 </div>
                 <div className="text-[10px] text-ink-muted">
@@ -5821,410 +7078,3 @@ function ImportCsvPanel({
 // which pushed the useful content (chat, checklist actions on the
 // main column) far down the page. Collapsed by default; one click to
 // expand when the operator actually needs to edit metadata.
-function CollapsibleDetails({ children }: { children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
-      <button
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        className="flex w-full items-center justify-between gap-2 px-3 py-2 transition-colors hover:bg-bg/40"
-      >
-        <div className="flex items-center gap-2">
-          <span className="h-px w-3 bg-accent" />
-          <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-secondary">
-            Project Details
-          </span>
-        </div>
-        {open ? (
-          <ChevronUp size={13} className="text-ink-muted" />
-        ) : (
-          <ChevronDown size={13} className="text-ink-muted" />
-        )}
-      </button>
-      {open && (
-        <div className="space-y-3 border-t border-border-subtle p-3">
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ProjectChat({
-  projectId,
-  activity,
-  canPost,
-  onPosted,
-  toast,
-}: {
-  projectId: number;
-  activity: ActivityRow[];
-  canPost: boolean;
-  onPosted: () => void;
-  toast: ReturnType<typeof useToast>;
-}) {
-  const { user: me } = useAuth();
-  const notifs = useNotifications();
-  const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Live-merged message list. Starts from the parent-passed `activity`
-  // and accrues new rows from the 3s poller. Using a map keyed on
-  // activity.id so duplicates (server refetch + poll colliding) don't
-  // render twice.
-  const [liveById, setLiveById] = useState<Map<number, ActivityRow>>(
-    () => new Map(activity.map((a) => [a.id, a]))
-  );
-  // Re-seed when the parent sends a fresh activity prop (e.g. after
-  // a stage change triggers a full detail reload). New IDs get added;
-  // existing ones replaced; nothing is dropped so locally-polled rows
-  // that haven't made it into parent yet aren't lost.
-  useEffect(() => {
-    setLiveById((prev) => {
-      const next = new Map(prev);
-      for (const a of activity) next.set(a.id, a);
-      return next;
-    });
-  }, [activity]);
-
-  // "N new ↓" chip state — count of messages that arrived while the
-  // user was scrolled away from the bottom.
-  const [newCount, setNewCount] = useState(0);
-  const wasAtBottomRef = useRef(true);
-
-  // Chat UIs read oldest-at-top; stable-sort by created_at then id.
-  const messages = useMemo(() => {
-    return Array.from(liveById.values()).sort((a, b) => {
-      const t = a.created_at.localeCompare(b.created_at);
-      return t !== 0 ? t : a.id - b.id;
-    });
-  }, [liveById]);
-
-  // POST /read when the chat mounts — marks this project as caught up
-  // so the notification bell clears its dot. Also ping the notifications
-  // context to refetch immediately.
-  useEffect(() => {
-    (async () => {
-      try {
-        await api.post(`/api/projects/${projectId}/read`, {});
-        notifs.reload();
-      } catch {
-        // Non-critical; a failed read just means the dot lingers.
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
-
-  // Poll for new activity every 3s while the page is visible. Uses the
-  // max known created_at as the cursor so we only pull truly-new rows.
-  useEffect(() => {
-    let cancelled = false;
-    async function tick() {
-      if (document.hidden) return;
-      const maxTs = messages[messages.length - 1]?.created_at;
-      if (!maxTs) return;
-      try {
-        const r = await api.get<{ data: ActivityRow[] }>(
-          `/api/projects/${projectId}/activity?since=${encodeURIComponent(maxTs)}`
-        );
-        if (cancelled) return;
-        const incoming = r.data ?? [];
-        if (incoming.length === 0) return;
-        // Track how many new bubbles we added while the user was scrolled up.
-        const addedWhileScrolledUp = wasAtBottomRef.current ? 0 : incoming.length;
-        setLiveById((prev) => {
-          const next = new Map(prev);
-          for (const a of incoming) next.set(a.id, a);
-          return next;
-        });
-        if (addedWhileScrolledUp > 0) {
-          setNewCount((c) => c + addedWhileScrolledUp);
-        }
-        // Also refresh the bell / unread dots so newly-arriving rows
-        // update the surrounding UI without a full detail reload.
-        notifs.reload();
-      } catch {
-        // Silent — the next tick will retry.
-      }
-    }
-    const id = window.setInterval(tick, 3000);
-    function onVis() {
-      if (!document.hidden) tick();
-    }
-    document.addEventListener("visibilitychange", onVis);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-      document.removeEventListener("visibilitychange", onVis);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, messages.length]);
-
-  async function send() {
-    const note = draft.trim();
-    if (!note || sending) return;
-    setSending(true);
-    try {
-      await api.post(`/api/projects/${projectId}/notes`, { note });
-      setDraft("");
-      onPosted();
-      // Mark as read right away — our own send shouldn't light up our bell.
-      api.post(`/api/projects/${projectId}/read`, {}).catch(() => {});
-    } catch (e: any) {
-      toast.error(e?.message || "Failed to send");
-    } finally {
-      setSending(false);
-    }
-  }
-
-  function scrollToBottom() {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    setNewCount(0);
-  }
-
-  // Auto-scroll to bottom on new messages, but only if the user was
-  // already near the bottom. Keeps reading-history scroll position
-  // intact when bubbles arrive.
-  const lastCount = useRef(messages.length);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const atBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    wasAtBottomRef.current = atBottom;
-    if (messages.length > lastCount.current && atBottom) {
-      el.scrollTop = el.scrollHeight;
-      setNewCount(0);
-    } else if (lastCount.current === 0) {
-      // First render — drop to the newest.
-      el.scrollTop = el.scrollHeight;
-    }
-    lastCount.current = messages.length;
-  }, [messages.length]);
-
-  // Track scroll position so the poller's "N new" counter knows whether
-  // the user is reading live or has scrolled up.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    function onScroll() {
-      if (!el) return;
-      const atBottom =
-        el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-      wasAtBottomRef.current = atBottom;
-      if (atBottom) setNewCount(0);
-    }
-    el.addEventListener("scroll", onScroll);
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
-
-  function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      e.preventDefault();
-      send();
-    }
-    // Plain Enter also sends when on a single short line — falls back
-    // to ⌘/Ctrl+Enter for multi-line composition with Shift+Enter.
-    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
-      e.preventDefault();
-      send();
-    }
-  }
-
-  return (
-    <div className="relative flex h-[440px] flex-col overflow-hidden rounded-md border border-border bg-bg/30">
-      {newCount > 0 && (
-        <button
-          onClick={scrollToBottom}
-          className="absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full bg-accent px-3 py-1 text-[10.5px] font-semibold text-white shadow-slab transition-all hover:bg-accent-hover"
-        >
-          {newCount} new message{newCount === 1 ? "" : "s"} ↓
-        </button>
-      )}
-      {/* Message scroll area */}
-      <div
-        ref={scrollRef}
-        className="thin-scroll flex-1 space-y-2 overflow-y-auto px-3 py-3"
-      >
-        {messages.length === 0 && (
-          <div className="py-10 text-center text-[11px] text-ink-muted">
-            No messages yet.
-          </div>
-        )}
-        {messages.map((a, i) => {
-          const prev = i > 0 ? messages[i - 1] : null;
-          if (a.action !== "note") {
-            return <ChatSystemRow key={a.id} a={a} />;
-          }
-          const isMine = !!me && a.user_id === me.id;
-          // Group with previous if same author, same kind (note), within 5 min.
-          const samePerson =
-            prev &&
-            prev.action === "note" &&
-            prev.user_id === a.user_id;
-          const withinWindow =
-            prev &&
-            Date.parse(a.created_at) - Date.parse(prev.created_at) <
-              5 * 60 * 1000;
-          const grouped = !!(samePerson && withinWindow);
-          return (
-            <ChatBubble key={a.id} a={a} isMine={isMine} grouped={grouped} />
-          );
-        })}
-      </div>
-
-      {/* Composer — fixed at the bottom of the chat pane */}
-      {canPost ? (
-        <div className="flex items-end gap-2 border-t border-border bg-surface px-2.5 py-2">
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onKey}
-            placeholder="Message…"
-            rows={1}
-            className="min-h-[36px] max-h-[120px] flex-1 resize-none rounded-full border border-border bg-bg px-3.5 py-2 text-[12.5px] text-ink outline-none placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
-          />
-          <button
-            onClick={send}
-            disabled={sending || !draft.trim()}
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-stone transition-all hover:bg-accent-hover disabled:bg-surface-dim disabled:text-ink-muted disabled:shadow-none"
-            title="Send (Enter) · Shift+Enter for new line"
-          >
-            <Send size={14} />
-          </button>
-        </div>
-      ) : (
-        <div className="border-t border-border bg-surface px-3 py-2 text-center text-[10.5px] text-ink-muted">
-          Read-only
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Chat row components ─────────────────────────────────────
-
-function ChatSystemRow({ a }: { a: ActivityRow }) {
-  return (
-    <div className="my-3 flex justify-center">
-      <div
-        className="max-w-[80%] rounded-full bg-bg/80 px-3 py-1 text-center text-[10.5px] text-ink-muted ring-1 ring-border-subtle"
-        title={a.created_at}
-      >
-        <span className="font-medium">
-          {actionLabel(a.action)}
-        </span>
-        {a.from_value && a.to_value && a.from_value !== a.to_value && (
-          <span className="ml-1">
-            <span className="font-mono">{a.from_value}</span>
-            <span className="mx-1 text-ink-muted/70">→</span>
-            <span className="font-mono">{a.to_value}</span>
-          </span>
-        )}
-        {a.to_value && !a.from_value && (
-          <span className="ml-1 font-mono">{a.to_value}</span>
-        )}
-        {a.note && <span className="ml-1">· {a.note}</span>}
-        {a.user_name && (
-          <span className="ml-1 text-ink-muted/80">· {a.user_name}</span>
-        )}
-        <span className="ml-1.5 font-mono text-ink-muted/70">
-          {relativeTime(a.created_at)}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function ChatBubble({
-  a,
-  isMine,
-  grouped,
-}: {
-  a: ActivityRow;
-  isMine: boolean;
-  grouped: boolean;
-}) {
-  const name = a.user_name || "Unknown";
-  const initial = name.slice(0, 1).toUpperCase();
-  return (
-    <div
-      className={cn(
-        "flex w-full gap-2",
-        isMine ? "justify-end" : "justify-start",
-        grouped ? "mt-0.5" : "mt-2"
-      )}
-    >
-      {/* Avatar only for others, and only on the first message in a group */}
-      {!isMine && (
-        <div className="w-8 shrink-0">
-          {!grouped && (
-            <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-soft font-mono text-[11px] font-bold text-accent-ink">
-              {initial}
-            </span>
-          )}
-        </div>
-      )}
-      <div
-        className={cn(
-          "flex max-w-[75%] flex-col",
-          isMine ? "items-end" : "items-start"
-        )}
-      >
-        {!grouped && !isMine && (
-          <span className="mb-0.5 px-0.5 text-[10.5px] font-semibold text-ink-secondary">
-            {name}
-          </span>
-        )}
-        <div
-          className={cn(
-            "whitespace-pre-wrap break-words rounded-2xl px-3 py-1.5 text-[12.5px] leading-snug shadow-stone",
-            isMine
-              ? "rounded-br-sm bg-accent text-white"
-              : "rounded-bl-sm bg-surface text-ink ring-1 ring-border-subtle"
-          )}
-        >
-          {a.note}
-        </div>
-        <span
-          className={cn(
-            "mt-0.5 px-0.5 font-mono text-[9.5px]",
-            isMine ? "text-ink-muted" : "text-ink-muted"
-          )}
-          title={a.created_at}
-        >
-          {relativeTime(a.created_at)}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function actionLabel(action: string): string {
-  switch (action) {
-    case "created":
-      return "Project created";
-    case "stage_change":
-      return "Stage changed";
-    case "checklist_status":
-      return "Checklist updated";
-    case "checklist_add":
-      return "Checklist item added";
-    case "checklist_remove":
-      return "Checklist item removed";
-    case "finance_edit":
-      return "Finance updated";
-    case "archived":
-      return "Archived";
-    case "restored":
-      return "Restored";
-    case "note":
-      return "Message";
-    default:
-      return action;
-  }
-}

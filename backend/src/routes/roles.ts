@@ -2,6 +2,9 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { PERMISSIONS, isValidPermission, parsePermissions } from "../services/permissions";
 import { requirePermission } from "../middleware/auth";
+import { getDb } from "../db/client";
+import { roles, users } from "../db/schema";
+import { and, eq, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -19,26 +22,34 @@ app.get("/permissions", requirePermission("roles.read"), async (c) => {
  * Returns all roles + their permission arrays + member counts.
  */
 app.get("/", requirePermission("roles.read"), async (c) => {
-  const rows = await c.env.DB.prepare(
-    `SELECT r.id, r.name, r.description, r.permissions, r.is_system,
-            r.scope_to_pic, r.created_at,
-            (SELECT COUNT(*) FROM users WHERE role_id = r.id) as member_count
-     FROM roles r
-     ORDER BY r.is_system DESC, r.name ASC`
-  ).all();
+  const db = getDb(c.env);
+  const rows = await db
+    .select({
+      id: roles.id,
+      name: roles.name,
+      description: roles.description,
+      permissions: roles.permissions,
+      is_system: roles.is_system,
+      scope_to_pic: roles.scope_to_pic,
+      created_at: roles.created_at,
+      // Subquery for the member count keeps this single-round-trip.
+      member_count: sql<number>`(SELECT COUNT(*) FROM ${users} WHERE ${users.role_id} = ${roles.id})`,
+    })
+    .from(roles)
+    .orderBy(sql`${roles.is_system} DESC`, roles.name);
 
-  const roles = (rows.results || []).map((r: any) => ({
-    id: r.id,
-    name: r.name,
-    description: r.description,
-    permissions: parsePermissions(r.permissions),
-    is_system: !!r.is_system,
-    scope_to_pic: !!r.scope_to_pic,
-    member_count: r.member_count || 0,
-    created_at: r.created_at,
-  }));
-
-  return c.json({ roles });
+  return c.json({
+    roles: rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      permissions: parsePermissions(r.permissions),
+      is_system: !!r.is_system,
+      scope_to_pic: !!r.scope_to_pic,
+      member_count: r.member_count ?? 0,
+      created_at: r.created_at,
+    })),
+  });
 });
 
 /**
@@ -56,27 +67,32 @@ app.post("/", requirePermission("roles.manage"), async (c) => {
   if (!body.name?.trim()) return c.json({ error: "name is required" }, 400);
 
   const perms = (body.permissions || []).filter(isValidPermission);
+  const name = body.name.trim();
 
-  const exists = await c.env.DB.prepare(`SELECT id FROM roles WHERE name = ?`)
-    .bind(body.name.trim())
-    .first();
-  if (exists) return c.json({ error: "A role with that name already exists" }, 409);
+  const db = getDb(c.env);
+  const exists = await db
+    .select({ id: roles.id })
+    .from(roles)
+    .where(eq(roles.name, name))
+    .limit(1);
+  if (exists.length > 0) {
+    return c.json({ error: "A role with that name already exists" }, 409);
+  }
 
-  const result = await c.env.DB.prepare(
-    `INSERT INTO roles (name, description, permissions, is_system, scope_to_pic)
-     VALUES (?, ?, ?, 0, ?)`
-  )
-    .bind(
-      body.name.trim(),
-      body.description?.trim() || null,
-      JSON.stringify(perms),
-      body.scope_to_pic ? 1 : 0
-    )
-    .run();
+  const inserted = await db
+    .insert(roles)
+    .values({
+      name,
+      description: body.description?.trim() || null,
+      permissions: JSON.stringify(perms),
+      is_system: 0,
+      scope_to_pic: body.scope_to_pic ? 1 : 0,
+    })
+    .returning({ id: roles.id });
 
   return c.json({
-    id: result.meta.last_row_id,
-    name: body.name.trim(),
+    id: inserted[0]?.id,
+    name,
     description: body.description?.trim() || null,
     permissions: perms,
     is_system: false,
@@ -94,12 +110,13 @@ app.patch("/:id", requirePermission("roles.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
 
-  const role = await c.env.DB.prepare(
-    `SELECT id, is_system FROM roles WHERE id = ?`
-  )
-    .bind(id)
-    .first<{ id: number; is_system: number }>();
-  if (!role) return c.json({ error: "Role not found" }, 404);
+  const db = getDb(c.env);
+  const row = await db
+    .select({ id: roles.id, is_system: roles.is_system })
+    .from(roles)
+    .where(eq(roles.id, id))
+    .limit(1);
+  if (row.length === 0) return c.json({ error: "Role not found" }, 404);
 
   const body = await c.req.json<{
     name?: string;
@@ -109,7 +126,7 @@ app.patch("/:id", requirePermission("roles.manage"), async (c) => {
   }>();
 
   // System roles: only description editable, never name or permissions.
-  if (role.is_system) {
+  if (row[0].is_system) {
     if (body.name !== undefined || body.permissions !== undefined) {
       return c.json(
         { error: "System roles cannot be renamed or have permissions changed" },
@@ -118,32 +135,22 @@ app.patch("/:id", requirePermission("roles.manage"), async (c) => {
     }
   }
 
-  const sets: string[] = [];
-  const binds: any[] = [];
-  if (body.name !== undefined) {
-    sets.push("name = ?");
-    binds.push(body.name.trim());
-  }
+  const set: Record<string, any> = {};
+  if (body.name !== undefined) set.name = body.name.trim();
   if (body.description !== undefined) {
-    sets.push("description = ?");
-    binds.push(body.description?.trim() || null);
+    set.description = body.description?.trim() || null;
   }
   if (body.permissions !== undefined) {
-    const perms = body.permissions.filter(isValidPermission);
-    sets.push("permissions = ?");
-    binds.push(JSON.stringify(perms));
+    set.permissions = JSON.stringify(body.permissions.filter(isValidPermission));
   }
   if (body.scope_to_pic !== undefined) {
-    sets.push("scope_to_pic = ?");
-    binds.push(body.scope_to_pic ? 1 : 0);
+    set.scope_to_pic = body.scope_to_pic ? 1 : 0;
   }
-  if (!sets.length) return c.json({ error: "No fields to update" }, 400);
+  if (Object.keys(set).length === 0) {
+    return c.json({ error: "No fields to update" }, 400);
+  }
 
-  binds.push(id);
-  await c.env.DB.prepare(`UPDATE roles SET ${sets.join(", ")} WHERE id = ?`)
-    .bind(...binds)
-    .run();
-
+  await db.update(roles).set(set).where(eq(roles.id, id));
   return c.json({ ok: true });
 });
 
@@ -155,29 +162,30 @@ app.delete("/:id", requirePermission("roles.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
 
-  const role = await c.env.DB.prepare(
-    `SELECT id, is_system FROM roles WHERE id = ?`
-  )
-    .bind(id)
-    .first<{ id: number; is_system: number }>();
-  if (!role) return c.json({ error: "Role not found" }, 404);
-  if (role.is_system) {
+  const db = getDb(c.env);
+  const row = await db
+    .select({ id: roles.id, is_system: roles.is_system })
+    .from(roles)
+    .where(eq(roles.id, id))
+    .limit(1);
+  if (row.length === 0) return c.json({ error: "Role not found" }, 404);
+  if (row[0].is_system) {
     return c.json({ error: "System roles cannot be deleted" }, 400);
   }
 
-  const inUse = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count FROM users WHERE role_id = ?`
-  )
-    .bind(id)
-    .first<{ count: number }>();
-  if ((inUse?.count || 0) > 0) {
+  const inUse = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(users)
+    .where(eq(users.role_id, id));
+  const count = inUse[0]?.count ?? 0;
+  if (count > 0) {
     return c.json(
-      { error: `Role is in use by ${inUse?.count} user(s) — reassign them first` },
+      { error: `Role is in use by ${count} user(s) — reassign them first` },
       409
     );
   }
 
-  await c.env.DB.prepare(`DELETE FROM roles WHERE id = ?`).bind(id).run();
+  await db.delete(roles).where(eq(roles.id, id));
   return c.json({ ok: true });
 });
 

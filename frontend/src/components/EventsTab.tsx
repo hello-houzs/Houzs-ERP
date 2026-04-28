@@ -1,5 +1,15 @@
 import { useState } from "react";
-import { Plus, Trash2, X, Calendar, MapPin, Wrench } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  X,
+  Calendar,
+  MapPin,
+  Wrench,
+  ExternalLink,
+  FolderKanban,
+} from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "../hooks/useQuery";
 import { useDialog } from "../hooks/useDialog";
 import { useToast } from "../hooks/useToast";
@@ -29,7 +39,8 @@ export function EventsTab() {
     <div>
       <div className="mb-4 flex items-center gap-2">
         <div className="text-[11px] text-ink-secondary">
-          Setup and dismantle events. Not tied to sales orders.
+          Setup and dismantle events. Manual entries plus anything
+          configured on a project (Logistics Schedule).
         </div>
         <button
           onClick={() => setEditing("new")}
@@ -66,9 +77,14 @@ export function EventsTab() {
           <div className="space-y-2">
             {grouped[d].map((e) => (
               <EventCard
-                key={e.id}
+                key={String(e.id)}
                 event={e}
-                onEdit={() => setEditing(e)}
+                onEdit={() => {
+                  // Project-sourced rows are read-only at this surface;
+                  // the EventCard's click handler navigates instead.
+                  if (e.source === "project") return;
+                  setEditing(e);
+                }}
                 onDeleted={() => list.reload()}
               />
             ))}
@@ -76,9 +92,9 @@ export function EventsTab() {
         </div>
       ))}
 
-      {editing && (
+      {editing && editing !== "new" && editing.source === "project" ? null : editing && (
         <EventDialog
-          event={editing === "new" ? null : editing}
+          event={editing === "new" ? null : (editing as CalendarEvent)}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -101,6 +117,9 @@ function EventCard({
 }) {
   const dialog = useDialog();
   const toast = useToast();
+  const navigate = useNavigate();
+  const isProject = event.source === "project";
+
   async function remove() {
     if (!await dialog.confirm(`Delete "${event.title}"?`)) return;
     try {
@@ -111,11 +130,24 @@ function EventCard({
     }
   }
 
+  function onCardClick() {
+    if (isProject && event.project_id) {
+      navigate(`/projects/${event.project_id}`);
+      return;
+    }
+    onEdit();
+  }
+
   const Icon = event.type === "setup" ? Wrench : Calendar;
   return (
     <div
-      onClick={onEdit}
-      className="cursor-pointer rounded-xl border border-border bg-surface p-4 shadow-sm transition-colors hover:border-accent/40"
+      onClick={onCardClick}
+      className={cn(
+        "cursor-pointer rounded-xl border bg-surface p-4 shadow-sm transition-colors",
+        isProject
+          ? "border-accent/30 hover:border-accent/60"
+          : "border-border hover:border-accent/40"
+      )}
     >
       <div className="flex items-start gap-3">
         <span
@@ -129,13 +161,23 @@ function EventCard({
           <Icon size={15} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-[10px] font-bold uppercase tracking-wide text-ink-secondary">
               {event.type}
             </span>
             {event.status && (
               <span className="rounded-full bg-ink/10 px-2 py-0.5 text-[10px] font-semibold text-ink">
                 {event.status}
+              </span>
+            )}
+            {isProject && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent-soft/60 px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-wider text-accent">
+                <FolderKanban size={9} /> From Project
+              </span>
+            )}
+            {isProject && event.end_at && (
+              <span className="font-mono text-[10px] text-ink-muted">
+                ends {formatDate(event.end_at)}
               </span>
             )}
           </div>
@@ -150,16 +192,34 @@ function EventCard({
             <div className="mt-1.5 text-[11px] text-ink-secondary">{event.notes}</div>
           )}
         </div>
-        <button
-          onClick={(ev) => {
-            ev.stopPropagation();
-            remove();
-          }}
-          aria-label="Delete"
-          className="rounded-md border border-border bg-surface p-1.5 text-ink-secondary hover:border-err/40 hover:text-err"
-        >
-          <Trash2 size={13} />
-        </button>
+        {isProject ? (
+          // Project-sourced: read-only here, with a clear hop-out chip.
+          // No delete button — managing setup/dismantle dates lives on
+          // the project page.
+          event.project_id != null && (
+            <Link
+              to={`/projects/${event.project_id}`}
+              onClick={(ev) => ev.stopPropagation()}
+              aria-label="Open project"
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/40 px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent hover:bg-accent-soft/70"
+              title="Open project"
+            >
+              {event.project_code || "Open"}
+              <ExternalLink size={10} />
+            </Link>
+          )
+        ) : (
+          <button
+            onClick={(ev) => {
+              ev.stopPropagation();
+              remove();
+            }}
+            aria-label="Delete"
+            className="rounded-md border border-border bg-surface p-1.5 text-ink-secondary hover:border-err/40 hover:text-err"
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
       </div>
     </div>
   );

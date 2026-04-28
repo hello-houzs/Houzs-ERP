@@ -3,6 +3,20 @@ import type { Env } from "../types";
 import { generateToken, isoIn } from "../services/auth";
 import { requirePermission } from "../middleware/auth";
 import { sendEmail, publicUrl } from "../services/email";
+import { getDb } from "../db/client";
+import {
+  departments,
+  invitations,
+  lorries,
+  password_resets,
+  project_brands,
+  roles,
+  sessions,
+  user_brands,
+  users,
+} from "../db/schema";
+import { alias } from "drizzle-orm/sqlite-core";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -12,21 +26,131 @@ const RESET_TTL_SECONDS = 60 * 60; // 1 hour — password reset should expire fa
 /**
  * GET /api/users
  * List all team members. Requires users.read.
+ *
+ * Optional ?brand=<x> narrows the list to users with that brand in
+ * their user_brands row set (mig 049). Used by the project PIC picker.
  */
 app.get("/", requirePermission("users.read"), async (c) => {
-  const rows = await c.env.DB.prepare(
-    `SELECT u.id, u.email, u.name, u.status, u.role_id,
-            r.name as role_name,
-            u.manager_id, m.name as manager_name, m.email as manager_email,
-            u.department_id, d.name as department_name, d.color as department_color,
-            u.invited_at, u.joined_at, u.last_login_at, u.created_at
-     FROM users u
-     JOIN roles r ON r.id = u.role_id
-     LEFT JOIN users m ON m.id = u.manager_id
-     LEFT JOIN departments d ON d.id = u.department_id
-     ORDER BY u.created_at DESC`
-  ).all();
-  return c.json({ users: rows.results });
+  const brand = (c.req.query("brand") || "").trim();
+  const db = getDb(c.env);
+  const manager = alias(users, "m");
+
+  const conds: any[] = [];
+  if (brand) {
+    // EXISTS-on-user_brands narrows the list without exploding rows
+    // through a JOIN.
+    conds.push(
+      sql`EXISTS (SELECT 1 FROM ${user_brands} ub
+                   WHERE ub.user_id = ${users.id}
+                     AND ub.brand = ${brand})`
+    );
+  }
+
+  const rows = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      status: users.status,
+      role_id: users.role_id,
+      role_name: roles.name,
+      manager_id: users.manager_id,
+      manager_name: manager.name,
+      manager_email: manager.email,
+      department_id: users.department_id,
+      department_name: departments.name,
+      department_color: departments.color,
+      invited_at: users.invited_at,
+      joined_at: users.joined_at,
+      last_login_at: users.last_login_at,
+      created_at: users.created_at,
+      // GROUP_CONCAT joins the user's brand allow-list in one round-trip.
+      // Unit-separator (US, 0x1f) keeps multi-word brands ("MY SOFA
+      // FACTORY") splittable client-side without ambiguity.
+      brands_concat: sql<string | null>`(
+        SELECT GROUP_CONCAT(ub.brand, X'1f')
+          FROM ${user_brands} ub
+         WHERE ub.user_id = ${users.id}
+      )`,
+    })
+    .from(users)
+    .innerJoin(roles, eq(roles.id, users.role_id))
+    .leftJoin(manager, eq(manager.id, users.manager_id))
+    .leftJoin(departments, eq(departments.id, users.department_id))
+    .where(conds.length ? and(...conds) : undefined)
+    .orderBy(desc(users.created_at));
+
+  const out = rows.map((r) => ({
+    ...r,
+    brands: r.brands_concat
+      ? String(r.brands_concat).split("\x1f").filter(Boolean)
+      : [],
+    brands_concat: undefined,
+  }));
+  return c.json({ users: out });
+});
+
+/**
+ * GET /api/users/:id/brands
+ * Per-user brand allow-list (mig 049).
+ */
+app.get("/:id/brands", requirePermission("users.read"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+  const db = getDb(c.env);
+  const rows = await db
+    .select({ brand: user_brands.brand })
+    .from(user_brands)
+    .where(eq(user_brands.user_id, id));
+  return c.json({ brands: rows.map((r) => r.brand) });
+});
+
+/**
+ * PUT /api/users/:id/brands
+ * Body: { brands: string[] }  replace-set semantics, validated against
+ * project_brands.name (silent-drop unknowns).
+ */
+app.put("/:id/brands", requirePermission("users.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+
+  const body = await c.req.json<{ brands?: unknown }>();
+  const incoming = Array.isArray(body.brands) ? body.brands : [];
+  const requested = incoming
+    .filter((x): x is string => typeof x === "string" && x.trim() !== "")
+    .map((s) => s.trim());
+
+  const db = getDb(c.env);
+  const target = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (target.length === 0) return c.json({ error: "User not found" }, 404);
+
+  // Validate against the canonical brand list. Active OR inactive — an
+  // archived brand still scopes existing projects until manually
+  // removed; we just don't show it in the new picker.
+  let valid: string[] = [];
+  if (requested.length > 0) {
+    const r = await db
+      .select({ name: project_brands.name })
+      .from(project_brands)
+      .where(inArray(project_brands.name, requested));
+    const allowed = new Set(r.map((x) => x.name));
+    valid = requested.filter((b) => allowed.has(b));
+  }
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM user_brands WHERE user_id = ?`).bind(id),
+    ...valid.map((b) =>
+      c.env.DB
+        .prepare(`INSERT INTO user_brands (user_id, brand) VALUES (?, ?)`)
+        .bind(id, b)
+    ),
+  ]);
+
+  return c.json({ ok: true, brands: valid });
 });
 
 /**
@@ -43,65 +167,69 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
   }
   const email = body.email.toLowerCase().trim();
 
-  const role = await c.env.DB.prepare(
-    `SELECT id FROM roles WHERE id = ?`
-  )
-    .bind(body.role_id)
-    .first<{ id: number }>();
-  if (!role) return c.json({ error: "Role not found" }, 404);
+  const db = getDb(c.env);
 
-  // If the user already exists and is active/disabled, refuse.
-  const existing = await c.env.DB.prepare(
-    `SELECT id, status FROM users WHERE email = ?`
-  )
-    .bind(email)
-    .first<{ id: number; status: string }>();
+  const role = await db
+    .select({ id: roles.id })
+    .from(roles)
+    .where(eq(roles.id, body.role_id))
+    .limit(1);
+  if (role.length === 0) return c.json({ error: "Role not found" }, 404);
 
-  if (existing && existing.status === "active") {
+  const existing = await db
+    .select({ id: users.id, status: users.status })
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+
+  if (existing.length > 0 && existing[0].status === "active") {
     return c.json({ error: "A user with that email already exists" }, 409);
   }
 
   // Create or refresh the placeholder user.
-  if (!existing) {
-    await c.env.DB.prepare(
-      `INSERT INTO users (email, role_id, status, invited_by, invited_at)
-       VALUES (?, ?, 'invited', ?, datetime('now'))`
-    )
-      .bind(email, body.role_id, me.id || null)
-      .run();
+  if (existing.length === 0) {
+    await db.insert(users).values({
+      email,
+      role_id: body.role_id,
+      status: "invited",
+      invited_by: me.id || null,
+      invited_at: sql`datetime('now')` as unknown as string,
+    });
   } else {
     // Re-invite — bump role and reset invited_at, drop any old token.
-    await c.env.DB.prepare(
-      `UPDATE users SET role_id = ?, status = 'invited',
-                        invited_by = ?, invited_at = datetime('now')
-       WHERE email = ?`
-    )
-      .bind(body.role_id, me.id || null, email)
-      .run();
-    await c.env.DB.prepare(
-      `DELETE FROM invitations WHERE email = ? AND accepted_at IS NULL`
-    )
-      .bind(email)
-      .run();
+    await db
+      .update(users)
+      .set({
+        role_id: body.role_id,
+        status: "invited",
+        invited_by: me.id || null,
+        invited_at: sql`datetime('now')` as unknown as string,
+      })
+      .where(eq(users.email, email));
+    await db
+      .delete(invitations)
+      .where(and(eq(invitations.email, email), isNull(invitations.accepted_at)));
   }
 
   // Issue a fresh invitation token.
   const token = generateToken();
   const expires = isoIn(INVITE_TTL_SECONDS);
-  await c.env.DB.prepare(
-    `INSERT INTO invitations (email, role_id, token, invited_by, expires_at)
-     VALUES (?, ?, ?, ?, ?)`
-  )
-    .bind(email, body.role_id, token, me.id || 0, expires)
-    .run();
+  await db.insert(invitations).values({
+    email,
+    role_id: body.role_id,
+    token,
+    invited_by: me.id || 0,
+    expires_at: expires,
+  });
 
   return c.json({ token, expires_at: expires, email });
 });
 
 /**
  * PATCH /api/users/:id
- * Body: { role_id?, status? }
- * Update a team member's role or enable/disable them.
+ * Body: { role_id?, status?, manager_id?, department_id? }
+ * Update a team member's role, enable/disable, reassign manager or
+ * department.
  */
 app.patch("/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
@@ -119,26 +247,30 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     manager_id?: number | null;
     department_id?: number | null;
   }>();
-  const sets: string[] = [];
-  const binds: any[] = [];
+
+  const db = getDb(c.env);
+  const set: Record<string, any> = {};
+
   if (body.role_id != null) {
-    const role = await c.env.DB.prepare(`SELECT id FROM roles WHERE id = ?`)
-      .bind(body.role_id)
-      .first();
-    if (!role) return c.json({ error: "Role not found" }, 404);
-    sets.push("role_id = ?");
-    binds.push(body.role_id);
+    const role = await db
+      .select({ id: roles.id })
+      .from(roles)
+      .where(eq(roles.id, body.role_id))
+      .limit(1);
+    if (role.length === 0) return c.json({ error: "Role not found" }, 404);
+    set.role_id = body.role_id;
   }
+
   if (body.status != null) {
     if (!["active", "disabled"].includes(body.status)) {
       return c.json({ error: "status must be active or disabled" }, 400);
     }
-    sets.push("status = ?");
-    binds.push(body.status);
+    set.status = body.status;
   }
+
   if (body.manager_id !== undefined) {
     if (body.manager_id === null) {
-      sets.push("manager_id = NULL");
+      set.manager_id = null;
     } else {
       const mgr = parseInt(String(body.manager_id), 10);
       if (!mgr) return c.json({ error: "Invalid manager_id" }, 400);
@@ -156,46 +288,44 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
         }
         if (seen.has(cursor)) break; // defensive — existing bad data
         seen.add(cursor);
-        const mgrRow: { manager_id: number | null } | null = await c.env.DB
-          .prepare(`SELECT manager_id FROM users WHERE id = ?`)
-          .bind(cursor)
-          .first();
-        if (!mgrRow) return c.json({ error: "Manager not found" }, 404);
-        cursor = mgrRow.manager_id;
+        const mgrRow = await db
+          .select({ manager_id: users.manager_id })
+          .from(users)
+          .where(eq(users.id, cursor))
+          .limit(1);
+        if (mgrRow.length === 0) return c.json({ error: "Manager not found" }, 404);
+        cursor = mgrRow[0].manager_id;
       }
-      sets.push("manager_id = ?");
-      binds.push(mgr);
+      set.manager_id = mgr;
     }
   }
+
   if (body.department_id !== undefined) {
     if (body.department_id === null) {
-      sets.push("department_id = NULL");
+      set.department_id = null;
     } else {
       const dept = parseInt(String(body.department_id), 10);
       if (!dept) return c.json({ error: "Invalid department_id" }, 400);
-      const exists = await c.env.DB.prepare(
-        `SELECT id FROM departments WHERE id = ?`
-      )
-        .bind(dept)
-        .first<{ id: number }>();
-      if (!exists) return c.json({ error: "Department not found" }, 404);
-      sets.push("department_id = ?");
-      binds.push(dept);
+      const exists = await db
+        .select({ id: departments.id })
+        .from(departments)
+        .where(eq(departments.id, dept))
+        .limit(1);
+      if (exists.length === 0) return c.json({ error: "Department not found" }, 404);
+      set.department_id = dept;
     }
   }
-  if (!sets.length) return c.json({ error: "No fields to update" }, 400);
 
-  binds.push(id);
-  const result = await c.env.DB.prepare(
-    `UPDATE users SET ${sets.join(", ")} WHERE id = ?`
-  )
-    .bind(...binds)
-    .run();
-  if (!result.meta.changes) return c.json({ error: "User not found" }, 404);
+  if (Object.keys(set).length === 0) {
+    return c.json({ error: "No fields to update" }, 400);
+  }
+
+  const result = await db.update(users).set(set).where(eq(users.id, id));
+  if (!(result.meta?.changes)) return c.json({ error: "User not found" }, 404);
 
   // If we disabled a user, revoke their sessions.
   if (body.status === "disabled") {
-    await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(id).run();
+    await db.delete(sessions).where(eq(sessions.user_id, id));
   }
 
   return c.json({ ok: true });
@@ -213,44 +343,50 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
   if (!id) return c.json({ error: "Bad id" }, 400);
   if (id === me.id) return c.json({ error: "You cannot delete yourself" }, 400);
 
-  const row = await c.env.DB.prepare(
-    `SELECT u.id, u.status, r.name as role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?`
-  )
-    .bind(id)
-    .first<{ id: number; status: string; role_name: string }>();
-  if (!row) return c.json({ error: "User not found" }, 404);
+  const db = getDb(c.env);
+  const row = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      status: users.status,
+      role_name: roles.name,
+    })
+    .from(users)
+    .innerJoin(roles, eq(roles.id, users.role_id))
+    .where(eq(users.id, id))
+    .limit(1);
+  if (row.length === 0) return c.json({ error: "User not found" }, 404);
+  const target = row[0];
 
-  if (row.role_name === "Owner") {
-    const owners = await c.env.DB.prepare(
-      `SELECT COUNT(*) as count FROM users u JOIN roles r ON r.id = u.role_id
-       WHERE r.name = 'Owner' AND u.status = 'active'`
-    ).first<{ count: number }>();
-    if ((owners?.count || 0) <= 1) {
+  if (target.role_name === "Owner") {
+    const owners = await db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(users)
+      .innerJoin(roles, eq(roles.id, users.role_id))
+      .where(and(eq(roles.name, "Owner"), eq(users.status, "active")));
+    if ((owners[0]?.count ?? 0) <= 1) {
       return c.json({ error: "Cannot remove the last Owner" }, 400);
     }
   }
 
   // Revoke sessions
-  await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(id).run();
+  await db.delete(sessions).where(eq(sessions.user_id, id));
 
   // If never joined (still invited), safe to hard-delete
-  if (row.status === "invited") {
-    await c.env.DB.prepare(
-      `DELETE FROM invitations WHERE email = (SELECT email FROM users WHERE id = ?)`
-    ).bind(id).run();
-    await c.env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(id).run();
+  if (target.status === "invited") {
+    await db.delete(invitations).where(eq(invitations.email, target.email));
+    await db.delete(users).where(eq(users.id, id));
     return c.json({ ok: true, action: "deleted" });
   }
 
   // Otherwise disable — preserves FK references in trips, salary, etc.
-  await c.env.DB.prepare(
-    `UPDATE users SET status = 'disabled' WHERE id = ?`
-  ).bind(id).run();
+  await db.update(users).set({ status: "disabled" }).where(eq(users.id, id));
 
   // Clear default_driver on lorries
-  await c.env.DB.prepare(
-    `UPDATE lorries SET default_driver_user_id = NULL WHERE default_driver_user_id = ?`
-  ).bind(id).run();
+  await db
+    .update(lorries)
+    .set({ default_driver_user_id: null })
+    .where(eq(lorries.default_driver_user_id, id));
 
   return c.json({ ok: true, action: "disabled" });
 });
@@ -260,17 +396,26 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
  * Pending invitations.
  */
 app.get("/invitations", requirePermission("users.read"), async (c) => {
-  const rows = await c.env.DB.prepare(
-    `SELECT i.id, i.email, i.role_id, r.name as role_name,
-            i.token, i.expires_at, i.created_at, i.accepted_at,
-            ib.email as invited_by_email
-     FROM invitations i
-     JOIN roles r ON r.id = i.role_id
-     LEFT JOIN users ib ON ib.id = i.invited_by
-     WHERE i.accepted_at IS NULL
-     ORDER BY i.created_at DESC`
-  ).all();
-  return c.json({ invitations: rows.results });
+  const db = getDb(c.env);
+  const inviter = alias(users, "ib");
+  const rows = await db
+    .select({
+      id: invitations.id,
+      email: invitations.email,
+      role_id: invitations.role_id,
+      role_name: roles.name,
+      token: invitations.token,
+      expires_at: invitations.expires_at,
+      created_at: invitations.created_at,
+      accepted_at: invitations.accepted_at,
+      invited_by_email: inviter.email,
+    })
+    .from(invitations)
+    .innerJoin(roles, eq(roles.id, invitations.role_id))
+    .leftJoin(inviter, eq(inviter.id, invitations.invited_by))
+    .where(isNull(invitations.accepted_at))
+    .orderBy(desc(invitations.created_at));
+  return c.json({ invitations: rows });
 });
 
 /**
@@ -281,20 +426,19 @@ app.delete("/invitations/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
 
-  const inv = await c.env.DB.prepare(
-    `SELECT email FROM invitations WHERE id = ?`
-  )
-    .bind(id)
-    .first<{ email: string }>();
-  if (!inv) return c.json({ error: "Invitation not found" }, 404);
+  const db = getDb(c.env);
+  const inv = await db
+    .select({ email: invitations.email })
+    .from(invitations)
+    .where(eq(invitations.id, id))
+    .limit(1);
+  if (inv.length === 0) return c.json({ error: "Invitation not found" }, 404);
 
   // Also clean up the placeholder user if they never accepted.
-  await c.env.DB.prepare(
-    `DELETE FROM users WHERE email = ? AND status = 'invited'`
-  )
-    .bind(inv.email)
-    .run();
-  await c.env.DB.prepare(`DELETE FROM invitations WHERE id = ?`).bind(id).run();
+  await db
+    .delete(users)
+    .where(and(eq(users.email, inv[0].email), eq(users.status, "invited")));
+  await db.delete(invitations).where(eq(invitations.id, id));
 
   return c.json({ ok: true });
 });
@@ -310,12 +454,20 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
   if (!id) return c.json({ error: "Bad id" }, 400);
   const me = c.get("user");
 
-  const target = await c.env.DB.prepare(
-    `SELECT id, email, name, status FROM users WHERE id = ?`
-  )
-    .bind(id)
-    .first<{ id: number; email: string; name: string | null; status: string }>();
-  if (!target) return c.json({ error: "User not found" }, 404);
+  const db = getDb(c.env);
+  const targetRow = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      status: users.status,
+    })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (targetRow.length === 0) return c.json({ error: "User not found" }, 404);
+  const target = targetRow[0];
+
   if (target.status === "invited") {
     // Invited users haven't set a password yet — the existing invitation
     // flow handles first-time setup. Steering admins at the right tool.
@@ -326,27 +478,25 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
   }
 
   // Invalidate any prior unconsumed reset tokens for this user.
-  await c.env.DB.prepare(
-    `UPDATE password_resets
-        SET consumed_at = datetime('now')
-      WHERE user_id = ? AND consumed_at IS NULL`
-  )
-    .bind(id)
-    .run();
+  await db
+    .update(password_resets)
+    .set({ consumed_at: sql`datetime('now')` as unknown as string })
+    .where(
+      and(eq(password_resets.user_id, id), isNull(password_resets.consumed_at))
+    );
 
   const token = generateToken();
   const expiresAt = isoIn(RESET_TTL_SECONDS);
-  await c.env.DB.prepare(
-    `INSERT INTO password_resets (user_id, token, requested_by, expires_at)
-     VALUES (?, ?, ?, ?)`
-  )
-    .bind(id, token, me?.id || null, expiresAt)
-    .run();
+  await db.insert(password_resets).values({
+    user_id: id,
+    token,
+    requested_by: me?.id || null,
+    expires_at: expiresAt,
+  });
 
   // Also revoke active sessions so the user has to log in again with
-  // the new password. Defensive — if an admin is resetting, the old
-  // password should be considered compromised.
-  await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(id).run();
+  // the new password.
+  await db.delete(sessions).where(eq(sessions.user_id, id));
 
   // Fire the email. sendEmail() already handles "channel disabled" and
   // "recipient missing" — we still return the token so copy-paste works.

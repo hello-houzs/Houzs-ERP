@@ -1,26 +1,42 @@
 import type { AuthUser } from "./auth";
 
+export interface ProjectScope {
+  /** PIC allow-list as today: [user.id, user.manager_id] (nulls dropped). */
+  pic_ids: number[];
+  /**
+   * Brand allow-list from the user's department (department_brands).
+   * Empty array means the scoped user belongs to a department with no
+   * brands assigned (or no department at all) — they should see no
+   * projects.
+   */
+  brands: string[];
+}
+
 /**
- * Build the allow-list of PIC ids for the current user, or null if the
- * user's role isn't scoped (admins/ops/finance see everything).
+ * Combined scope for the current user, or null when the role isn't
+ * scope_to_pic (admins / ops / finance run unfiltered queries).
  *
- * One-hop rule: a scoped user sees projects where pic_id is themselves
- * or their direct manager. That matches the sales-team model — a rep
- * only sees projects their PIC (their manager) is running.
- *
- * Return shape:
- *   null              → no ACL; caller runs an unfiltered query
- *   [ids]             → filter projects to pic_id IN (...)
- *   []                → scoped user with nothing in their line (e.g.
- *                       no manager set). Caller should short-circuit
- *                       to an empty list rather than run the query.
+ * One-hop PIC rule: scoped user sees projects where pic_id is them or
+ * their manager. Brand rule (added 048): the project's brand must be
+ * in the user's department's brand allow-list.
+ */
+export function getProjectScope(user: AuthUser): ProjectScope | null {
+  if (!user.scope_to_pic) return null;
+  const pic_ids: number[] = [];
+  if (user.id) pic_ids.push(user.id);
+  if (user.manager_id) pic_ids.push(user.manager_id);
+  const brands = user.brand_scope ?? [];
+  return { pic_ids, brands };
+}
+
+/**
+ * Back-compat shim. Kept so any caller that only cares about the PIC
+ * dimension keeps working. Prefer `getProjectScope` for new code so the
+ * brand filter is wired automatically.
  */
 export function getProjectPicScope(user: AuthUser): number[] | null {
-  if (!user.scope_to_pic) return null;
-  const ids: number[] = [];
-  if (user.id) ids.push(user.id);
-  if (user.manager_id) ids.push(user.manager_id);
-  return ids;
+  const s = getProjectScope(user);
+  return s ? s.pic_ids : null;
 }
 
 /** Effective PIC id — falls back to the creator when pic_id is unset.
@@ -46,17 +62,29 @@ export function projectAccessLevel(
 }
 
 /**
- * Hard gate: can this user see this project at all? Returns false only
- * for scoped users viewing a project outside their PIC line.
+ * Hard gate: can this user see this project at all? Returns false for
+ * scoped users viewing a project outside their PIC line OR outside
+ * their department's brand list.
  */
 export function canSeeProject(
   user: AuthUser,
-  project: { pic_id: number | null; created_by?: number | null }
+  project: {
+    pic_id: number | null;
+    created_by?: number | null;
+    brand?: string | null;
+  }
 ): boolean {
   if (!user.scope_to_pic) return true;
   const pic = effectivePicId(project);
   if (pic == null) return false;
-  if (pic === user.id) return true;
-  if (user.manager_id && pic === user.manager_id) return true;
-  return false;
+  const inPicLine = pic === user.id || (user.manager_id != null && pic === user.manager_id);
+  if (!inPicLine) return false;
+  // Brand gate. A scoped user with an empty brand list sees nothing
+  // (forces admins to configure dept brands explicitly). Projects with
+  // no brand are likewise invisible to scoped users — set the brand to
+  // make them appear.
+  const brands = user.brand_scope ?? [];
+  if (brands.length === 0) return false;
+  if (!project.brand) return false;
+  return brands.includes(project.brand);
 }

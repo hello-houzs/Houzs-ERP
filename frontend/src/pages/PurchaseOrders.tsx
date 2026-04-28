@@ -4,15 +4,12 @@ import { RefreshCw, Send, ChevronDown, ChevronUp } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import {
   DetailLayout,
-  DetailGrid,
-  DetailMain,
-  DetailAside,
   Section,
   StatStrip,
-  DefinitionList,
   HeaderButton,
 } from "../components/DetailLayout";
 import { Button } from "../components/Button";
+import { ExpandableText } from "../components/ExpandableText";
 import { DataTable, type Column } from "../components/DataTable";
 import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection } from "../components/Panel";
@@ -840,9 +837,33 @@ function PoLinesContent({
         ]}
       />
 
+      {/* Header Fields — promoted from the right aside to a full-width
+          row at the top so the 150-key AutoCount payload has room to
+          breathe (groups still split into 2-col sub-grids inside). */}
       <div className="mt-5">
-        <DetailGrid>
-          <DetailMain>
+        <Section
+          title={`Header Fields · ${Object.keys(headerFields).length}`}
+          actions={
+            <button
+              onClick={() => setShowHeader((s) => !s)}
+              className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent hover:underline"
+            >
+              {showHeader ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+              {showHeader ? "Hide" : "Show"}
+            </button>
+          }
+        >
+          {showHeader ? (
+            <FieldGrid fields={headerFields} groups={HEADER_GROUPS} />
+          ) : (
+            <div className="text-[11.5px] text-ink-muted">
+              Tap “Show” to expand the AutoCount header payload.
+            </div>
+          )}
+        </Section>
+      </div>
+
+      <div className="mt-3 space-y-3">
             {/* Line item details from AutoCount /getDetail */}
             <Section
               title={`Line Item Details${details ? ` · ${details.length}` : ""}`}
@@ -988,9 +1009,12 @@ function PoLinesContent({
                   <tr key={l.id} className="border-t border-border-subtle align-top">
                     <td className="px-2 py-2">
                       <div className="font-mono text-[11px]">{l.item_code}</div>
-                      <div className="truncate text-[11px] text-ink-muted">
-                        {l.item_description || ""}
-                      </div>
+                      <ExpandableText
+                        text={l.item_description || ""}
+                        lines={1}
+                        emptyLabel=""
+                        className="text-[11px] text-ink-muted"
+                      />
                     </td>
                     <td className="px-2 py-2 text-right font-mono text-[11px]">
                       {formatNumber(l.remaining_qty)}
@@ -1024,31 +1048,6 @@ function PoLinesContent({
           </div>
         )}
             </Section>
-          </DetailMain>
-
-          <DetailAside>
-            <Section
-              title={`Header Fields · ${Object.keys(headerFields).length}`}
-              actions={
-                <button
-                  onClick={() => setShowHeader((s) => !s)}
-                  className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent hover:underline"
-                >
-                  {showHeader ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-                  {showHeader ? "Hide" : "Show"}
-                </button>
-              }
-            >
-              {showHeader ? (
-                <FieldGrid fields={headerFields} groups={HEADER_GROUPS} />
-              ) : (
-                <div className="text-[11.5px] text-ink-muted">
-                  Tap “Show” to expand the AutoCount header payload.
-                </div>
-              )}
-            </Section>
-          </DetailAside>
-        </DetailGrid>
       </div>
     </DetailLayout>
   );
@@ -1246,8 +1245,19 @@ function FieldRow({ label, value }: { label: string; value: unknown }) {
   else display = String(value);
   return (
     <div className="flex items-baseline gap-2 border-b border-border-subtle/60 py-0.5">
-      <dt className="min-w-[140px] truncate font-mono text-[10px] text-ink-muted">{label}</dt>
-      <dd className="flex-1 truncate font-mono text-[11px] text-ink">{display}</dd>
+      <dt
+        className="min-w-[140px] truncate font-mono text-[10px] text-ink-muted"
+        title={label}
+      >
+        {label}
+      </dt>
+      <dd className="min-w-0 flex-1">
+        <ExpandableText
+          text={display}
+          lines={1}
+          className="font-mono text-[11px] text-ink"
+        />
+      </dd>
     </div>
   );
 }

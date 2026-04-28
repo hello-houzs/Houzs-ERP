@@ -128,9 +128,13 @@ app.get("/:id/cost-suggestion", async (c) => {
   if (caseRow.po_no) {
     // PO line table is purchase_orders (one row per outstanding line),
     // keyed by (doc_no, item_code). Pull the matching line.
+    // The PO line table stores `original_qty` (the full line quantity at
+    // doc creation, added in migration 030) and `remaining_qty` (still
+    // outstanding). Earlier code referenced `ordered_qty`, which never
+    // existed and crashed auto-fill with a SQLite "no such column" error.
     const poRow = await c.env.DB.prepare(
       `SELECT remaining_qty AS qty,
-              ordered_qty   AS ord_qty,
+              original_qty  AS ord_qty,
               unit_price    AS price
          FROM purchase_orders
         WHERE doc_no = ? AND item_code = ?
@@ -173,10 +177,13 @@ app.get("/summary", async (c) => {
      GROUP BY location ORDER BY count DESC LIMIT 5`
   ).all();
 
+  // Group by issue_category. The intake form now captures this on
+  // every new case (replacing the older service_category-driven flow),
+  // so this gives dispatchers a live view of what's coming in.
   const byCategory = await c.env.DB.prepare(
-    `SELECT service_category as name, COUNT(*) as count FROM assr_cases
-     WHERE service_category IS NOT NULL
-     GROUP BY service_category ORDER BY count DESC LIMIT 5`
+    `SELECT issue_category as name, COUNT(*) as count FROM assr_cases
+     WHERE issue_category IS NOT NULL
+     GROUP BY issue_category ORDER BY count DESC LIMIT 5`
   ).all();
 
   const recent = await c.env.DB.prepare(
@@ -527,6 +534,7 @@ app.post("/", async (c) => {
     items?: { item_code: string; item_description?: string; qty?: number }[];
     item_code?: string;
     complaint_issue: string;
+    issue_category?: string | null;
   }>();
 
   if (!body.doc_no || !body.complaint_issue) {
@@ -548,6 +556,7 @@ app.post("/", async (c) => {
     doc_no: body.doc_no,
     items,
     complaint_issue: body.complaint_issue,
+    issue_category: body.issue_category ?? null,
     created_by: userId,
   });
   return c.json(result, 201);

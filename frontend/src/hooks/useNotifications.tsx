@@ -25,6 +25,11 @@ export interface NotificationItem {
   user_id: number | null;
   user_name: string | null;
   created_at: string;
+  /** Project's event start date — joined in by the notifications
+   *  query so the floating chat list can show the event date next to
+   *  the project code. ISO yyyy-mm-dd or null for unscheduled. */
+  project_start_date: string | null;
+  project_end_date: string | null;
 }
 
 export interface NotificationsPayload {

@@ -70,19 +70,21 @@ export function DriverProfile() {
       )}
 
       {/* Tab strip */}
-      <div className="mb-4 flex gap-1 border-b border-border">
-        {(["profile", "salary", "clock"] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={cn(
-              "-mb-px border-b-2 px-3 py-2 text-[12px] font-semibold capitalize",
-              tab === t ? "border-accent text-accent" : "border-transparent text-ink-secondary"
-            )}
-          >
-            {t}
-          </button>
-        ))}
+      <div className="mb-4 border-b border-border">
+        <div className="no-scrollbar -mx-4 flex gap-1 overflow-x-auto px-4 sm:mx-0 sm:px-0 [&>*]:shrink-0">
+          {(["profile", "salary", "clock"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={cn(
+                "-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-[12px] font-semibold capitalize",
+                tab === t ? "border-accent text-accent" : "border-transparent text-ink-secondary"
+              )}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
       </div>
 
       {tab === "profile" && <ProfileTab profile={profile.data} onUpdated={() => profile.reload()} />}

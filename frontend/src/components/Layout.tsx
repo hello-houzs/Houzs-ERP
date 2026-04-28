@@ -4,6 +4,7 @@ import { ShieldAlert, Menu } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TopNavbar } from "./TopNavbar";
+import { MobileTabBar } from "./MobileTabBar";
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
 import type { SyncStatusResponse } from "../types";
@@ -64,10 +65,19 @@ export function Layout({ children }: Props) {
 
         {writesDisabled && <ReadOnlyBanner />}
 
-        <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 sm:py-8 lg:px-10 lg:py-10 animate-rise">
+        {/* Bottom padding on small screens leaves room for the mobile
+            tab rail (h-14 + safe-area-inset-bottom). lg+ keeps the
+            standard padding because the rail is hidden there. */}
+        <div className="mx-auto w-full max-w-[1400px] px-4 pt-6 pb-24 sm:px-6 sm:pt-8 sm:pb-28 lg:px-10 lg:py-10 animate-rise">
           {children}
         </div>
       </main>
+
+      {/* Mobile bottom tab rail — visible below lg, sits above the
+          Floating Chat FAB which auto-clears it on mobile. The centre
+          "Menu" tab opens its own bottom-sheet modal (no longer
+          delegates to the Sidebar drawer), so onOpenDrawer is gone. */}
+      <MobileTabBar />
     </div>
   );
 }
@@ -137,27 +147,27 @@ interface PageHeaderProps {
 
 export function PageHeader({ title, description, actions, eyebrow }: PageHeaderProps) {
   return (
-    <div className="mb-6 flex flex-col gap-4 border-b border-border pb-5 sm:mb-8 sm:gap-3 sm:pb-6 md:flex-row md:items-end md:justify-between">
+    <div className="mb-4 flex flex-col gap-3 border-b border-border pb-3 sm:mb-8 sm:gap-3 sm:pb-6 md:flex-row md:items-end md:justify-between">
       <div className="min-w-0">
         {eyebrow && (
-          <div className="mb-2 flex items-center gap-2">
-            <span className="h-px w-6 bg-accent" />
-            <span className="text-[10px] font-semibold uppercase tracking-brand text-accent">
+          <div className="mb-1.5 flex items-center gap-2 sm:mb-2">
+            <span className="h-px w-5 bg-accent sm:w-6" />
+            <span className="text-[9.5px] font-semibold uppercase tracking-brand text-accent sm:text-[10px]">
               {eyebrow}
             </span>
           </div>
         )}
-        <h1 className="font-display text-[22px] font-extrabold leading-tight tracking-tight text-ink sm:text-[26px] lg:text-[28px]">
+        <h1 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink sm:text-[26px] lg:text-[28px]">
           {title}
         </h1>
         {description && (
-          <p className="mt-1.5 max-w-2xl text-[12.5px] leading-relaxed text-ink-secondary sm:text-sm">
+          <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-ink-secondary sm:mt-1.5 sm:text-sm">
             {description}
           </p>
         )}
       </div>
       {actions && (
-        <div className="flex flex-wrap items-center gap-2 md:shrink-0">{actions}</div>
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 md:shrink-0">{actions}</div>
       )}
     </div>
   );

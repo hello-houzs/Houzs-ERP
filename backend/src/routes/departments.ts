@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
+import { getDb } from "../db/client";
+import { departments, users } from "../db/schema";
+import { and, eq, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -11,13 +14,26 @@ const app = new Hono<{ Bindings: Env }>();
  * sensitive).
  */
 app.get("/", requirePermission("users.read"), async (c) => {
-  const rows = await c.env.DB.prepare(
-    `SELECT d.id, d.name, d.description, d.color, d.sort_order, d.created_at,
-            (SELECT COUNT(*) FROM users u WHERE u.department_id = d.id AND u.status = 'active') AS member_count
-       FROM departments d
-       ORDER BY d.sort_order, d.name`
-  ).all();
-  return c.json({ departments: rows.results ?? [] });
+  const db = getDb(c.env);
+  const rows = await db
+    .select({
+      id: departments.id,
+      name: departments.name,
+      description: departments.description,
+      color: departments.color,
+      sort_order: departments.sort_order,
+      created_at: departments.created_at,
+      // Active-only member count, kept as a correlated subquery so
+      // the row shape stays flat for the frontend.
+      member_count: sql<number>`(
+        SELECT COUNT(*) FROM ${users}
+         WHERE ${users.department_id} = ${departments.id}
+           AND ${users.status} = 'active'
+      )`,
+    })
+    .from(departments)
+    .orderBy(departments.sort_order, departments.name);
+  return c.json({ departments: rows });
 });
 
 /**
@@ -36,29 +52,39 @@ app.post("/", requirePermission("users.manage"), async (c) => {
 
   const color = normaliseColor(body.color) ?? "64748b";
 
-  // Name is UNIQUE — reactivate / return existing if a dupe slipped
-  // through the UI (idempotent create plays nicely with quick retries).
-  const existing = await c.env.DB.prepare(
-    `SELECT id FROM departments WHERE name = ?`
-  )
-    .bind(name)
-    .first<{ id: number }>();
-  if (existing) return c.json({ error: "A department with that name already exists" }, 409);
+  const db = getDb(c.env);
+  // Name is UNIQUE — fail fast on dupes (idempotent create plays
+  // nicely with quick retries).
+  const existing = await db
+    .select({ id: departments.id })
+    .from(departments)
+    .where(eq(departments.name, name))
+    .limit(1);
+  if (existing.length > 0) {
+    return c.json({ error: "A department with that name already exists" }, 409);
+  }
 
-  const r = await c.env.DB.prepare(
-    `INSERT INTO departments (name, description, color, sort_order)
-     VALUES (?, ?, ?, ?)`
-  )
-    .bind(name, body.description?.trim() || null, color, body.sort_order ?? 0)
-    .run();
-  return c.json({
-    id: r.meta.last_row_id,
-    name,
-    description: body.description?.trim() || null,
-    color,
-    sort_order: body.sort_order ?? 0,
-    member_count: 0,
-  }, 201);
+  const inserted = await db
+    .insert(departments)
+    .values({
+      name,
+      description: body.description?.trim() || null,
+      color,
+      sort_order: body.sort_order ?? 0,
+    })
+    .returning({ id: departments.id });
+
+  return c.json(
+    {
+      id: inserted[0]?.id,
+      name,
+      description: body.description?.trim() || null,
+      color,
+      sort_order: body.sort_order ?? 0,
+      member_count: 0,
+    },
+    201
+  );
 });
 
 /**
@@ -76,37 +102,36 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     sort_order?: number;
   }>();
 
-  const sets: string[] = [];
-  const binds: any[] = [];
+  const set: Record<string, any> = {};
   if (body.name !== undefined) {
     const name = body.name.trim();
     if (!name) return c.json({ error: "name cannot be empty" }, 400);
-    sets.push("name = ?");
-    binds.push(name);
+    set.name = name;
   }
   if (body.description !== undefined) {
-    sets.push("description = ?");
-    binds.push(body.description?.trim() || null);
+    set.description = body.description?.trim() || null;
   }
   if (body.color !== undefined) {
     const c2 = normaliseColor(body.color);
     if (!c2) return c.json({ error: "color must be a 6-char hex" }, 400);
-    sets.push("color = ?");
-    binds.push(c2);
+    set.color = c2;
   }
   if (body.sort_order !== undefined) {
-    sets.push("sort_order = ?");
-    binds.push(body.sort_order);
+    set.sort_order = body.sort_order;
   }
-  if (!sets.length) return c.json({ error: "No fields to update" }, 400);
+  if (Object.keys(set).length === 0) {
+    return c.json({ error: "No fields to update" }, 400);
+  }
 
-  binds.push(id);
-  const r = await c.env.DB.prepare(
-    `UPDATE departments SET ${sets.join(", ")} WHERE id = ?`
-  )
-    .bind(...binds)
-    .run();
-  if (!r.meta.changes) return c.json({ error: "Not found" }, 404);
+  const db = getDb(c.env);
+  const existing = await db
+    .select({ id: departments.id })
+    .from(departments)
+    .where(eq(departments.id, id))
+    .limit(1);
+  if (existing.length === 0) return c.json({ error: "Not found" }, 404);
+
+  await db.update(departments).set(set).where(eq(departments.id, id));
   return c.json({ ok: true });
 });
 
@@ -118,10 +143,16 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
 app.delete("/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
-  const r = await c.env.DB.prepare(`DELETE FROM departments WHERE id = ?`)
-    .bind(id)
-    .run();
-  if (!r.meta.changes) return c.json({ error: "Not found" }, 404);
+
+  const db = getDb(c.env);
+  const existing = await db
+    .select({ id: departments.id })
+    .from(departments)
+    .where(eq(departments.id, id))
+    .limit(1);
+  if (existing.length === 0) return c.json({ error: "Not found" }, 404);
+
+  await db.delete(departments).where(eq(departments.id, id));
   return c.json({ ok: true });
 });
 
