@@ -196,10 +196,11 @@ export default {
           .then((n) => console.log(`[cron leaderboards] refreshed=${n}`))
           .catch((e) => console.error("[cron leaderboards]", e)),
       );
-    } else if (event.cron === "0 0 1 * *") {
-      // Monthly: reset every active user's gifting allowance back to
-      // gamify_settings.monthly_gifting_amount. Idempotent within
-      // the month via the YYYY-MM-01 stamp on users.gifting_reset_at.
+      // Monthly gifting reset folded into the same daily slot — the
+      // helper is idempotent on `users.gifting_reset_at = YYYY-MM-01`,
+      // so 30/31 days a month it no-ops and on the 1st it grants the
+      // monthly allowance exactly once. Avoids a 5th cron line on the
+      // free plan's trigger cap.
       ctx.waitUntil(
         resetMonthlyGifting(env)
           .then((r) =>
