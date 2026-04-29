@@ -18,12 +18,12 @@ import {
   Crown,
   Medal,
   Award,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { DashboardGrid } from "../components/Dashboard";
 import { StatCard } from "../components/StatCard";
-import { DataTable } from "../components/DataTable";
 import { SendPointsButton } from "../components/SendPointsButton";
 import { StreakBoard } from "../components/StreakBoard";
 import { AwardImage } from "../components/AwardImage";
@@ -174,7 +174,20 @@ export function Gamification() {
         eyebrow="Engagement"
         title="Houzs Points"
         description="Earn points for shipping ideas, getting upvotes, and recognising teammates. Spend them on prizes, send gifts to others."
-        actions={<SendPointsButton />}
+        actions={
+          <>
+            {user?.permissions?.includes("*") && (
+              <Link
+                to="/gamification/admin"
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/50 hover:text-accent"
+                title="Admin console"
+              >
+                <SettingsIcon size={12} /> Admin
+              </Link>
+            )}
+            <SendPointsButton />
+          </>
+        }
       />
 
       <DashboardGrid cols={4}>
@@ -252,6 +265,16 @@ export function Gamification() {
 
 // ── Leaderboard tab ────────────────────────────────────────────
 
+function initials(name: string): string {
+  const parts = name
+    .replace(/@.*/g, "")
+    .split(/[\s._-]+/)
+    .filter(Boolean);
+  if (parts.length === 0) return "??";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
 function LeaderboardTab({
   scope,
   period,
@@ -276,11 +299,14 @@ function LeaderboardTab({
     [scope, period],
   );
 
-  const rows = board.data?.rows ?? null;
+  const rows = board.data?.rows ?? [];
+  const top3 = rows.slice(0, 3);
+  const rest = rows.slice(3);
 
   return (
     <div>
-      <div className="mb-4 flex flex-wrap items-end gap-3">
+      {/* ── Filter row ───────────────────────────────────── */}
+      <div className="mb-5 flex flex-wrap items-end gap-3">
         <label className="flex w-full flex-col gap-0.5 sm:w-auto">
           <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-secondary">
             Scope
@@ -318,110 +344,268 @@ function LeaderboardTab({
         </div>
       </div>
 
-      <DataTable<LeaderboardRow>
-        tableId="gamify-leaderboard"
-        rows={rows}
-        loading={board.loading}
-        error={board.error}
-        getRowKey={(r) => r.user_id}
-        getRowClassName={(r) =>
-          ownUserId && r.user_id === ownUserId ? "bg-accent-soft/40" : ""
-        }
-        emptyLabel="No qualifying activity yet — gift someone, share an idea, or wait for upvotes."
-        mobileCard={{
-          primary: "name",
-          cells: ["points", "current_streak", "department_name"],
-          layout: "stack",
-        }}
-        columns={[
-          {
-            key: "rank",
-            label: "Rank",
-            width: "70px",
-            render: (r) => {
-              const Top = r.rank === 1 ? Crown : r.rank === 2 ? Medal : r.rank === 3 ? Award : null;
-              return (
-                <span
+      {/* ── Loading / error / empty ──────────────────────── */}
+      {board.loading ? (
+        <ListSkeleton rows={6} />
+      ) : board.error ? (
+        <EmptyState
+          icon={<Trophy size={20} />}
+          message="Couldn't load leaderboard"
+          description={board.error}
+        />
+      ) : rows.length === 0 ? (
+        <EmptyState
+          icon={<Trophy size={20} />}
+          message="No qualifying activity yet"
+          description="Gift someone, ship an idea, or wait for upvotes — the board fills as the team racks up points."
+        />
+      ) : (
+        <>
+          {/* ── Podium ──────────────────────────────────── */}
+          {top3.length > 0 && <Podium rows={top3} ownUserId={ownUserId} />}
+
+          {/* ── Ranks 4+ ────────────────────────────────── */}
+          {rest.length > 0 && (
+            <div className="mt-6 overflow-hidden rounded-xl border border-border bg-surface shadow-stone">
+              <div className="border-b border-border bg-bg/40 px-4 py-2">
+                <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                  The pack
+                </span>
+              </div>
+              <ul>
+                {rest.map((r, i) => (
+                  <RankRow
+                    key={r.user_id}
+                    row={r}
+                    isYou={ownUserId === r.user_id}
+                    index={i}
+                  />
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Podium for top 3 ──────────────────────────────────────────
+
+function Podium({
+  rows,
+  ownUserId,
+}: {
+  rows: LeaderboardRow[];
+  ownUserId: number | null;
+}) {
+  // Render order: 2nd · 1st · 3rd. Visual height: 1st > 2nd > 3rd.
+  const slots: Array<LeaderboardRow | null> = [
+    rows[1] ?? null,
+    rows[0] ?? null,
+    rows[2] ?? null,
+  ];
+  const cfg = [
+    { rank: 2, height: "sm:h-32 h-24", Icon: Medal, ring: "ring-accent/40", bar: "from-accent/60 to-accent/30" },
+    { rank: 1, height: "sm:h-44 h-32", Icon: Crown, ring: "ring-accent shadow-brass", bar: "from-accent to-accent/60" },
+    { rank: 3, height: "sm:h-24 h-20", Icon: Award, ring: "ring-accent/25", bar: "from-accent/30 to-accent/15" },
+  ];
+
+  return (
+    <div className="relative overflow-hidden rounded-xl border border-border bg-gradient-to-br from-accent-soft/50 via-surface to-surface p-4 shadow-stone sm:p-6">
+      {/* Decorative laurel band */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-transparent via-accent to-transparent opacity-60" />
+
+      <div className="grid grid-cols-3 items-end gap-2 sm:gap-4">
+        {slots.map((r, i) => {
+          const c = cfg[i];
+          if (!r) {
+            return (
+              <div key={`empty-${i}`} className="flex flex-col items-center">
+                <div className="mb-2 grid h-16 w-16 place-items-center rounded-full border-2 border-dashed border-border/60 sm:h-20 sm:w-20">
+                  <span className="font-display text-[16px] font-extrabold text-ink-muted/50">
+                    —
+                  </span>
+                </div>
+                <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                  Slot {c.rank}
+                </div>
+                <div
                   className={cn(
-                    "inline-flex h-7 min-w-[2rem] items-center justify-center gap-1 rounded-full px-1.5 font-mono text-[11px] font-bold transition-transform duration-200 hover:scale-110",
-                    r.rank === 1 && "bg-gradient-to-br from-accent to-accent/70 text-white shadow-stone ring-2 ring-accent/30",
-                    r.rank === 2 && "bg-gradient-to-br from-accent/70 to-accent/40 text-white",
-                    r.rank === 3 && "bg-gradient-to-br from-accent/40 to-accent/20 text-ink",
-                    r.rank > 3 && "bg-bg/60 text-ink-secondary",
+                    "mt-2 w-full rounded-t-md border border-b-0 border-border bg-bg/40",
+                    c.height,
+                  )}
+                />
+              </div>
+            );
+          }
+          const isYou = ownUserId === r.user_id;
+          return (
+            <div
+              key={r.user_id}
+              className="flex flex-col items-center animate-rise"
+              style={{ animationDelay: `${i * 80}ms` }}
+            >
+              {/* Avatar with crown */}
+              <div className="relative">
+                {c.rank === 1 && (
+                  <Crown
+                    size={20}
+                    className="absolute -top-4 left-1/2 -translate-x-1/2 rotate-[-10deg] fill-accent/30 text-accent drop-shadow-[0_2px_4px_rgba(161,106,46,0.4)]"
+                  />
+                )}
+                <div
+                  className={cn(
+                    "grid place-items-center rounded-full bg-gradient-to-br ring-4 ring-offset-2 ring-offset-surface transition-transform hover:scale-105",
+                    "h-16 w-16 sm:h-20 sm:w-20",
+                    c.bar,
+                    c.ring,
                   )}
                 >
-                  {Top && <Top size={11} className="shrink-0" />}
-                  {r.rank}
-                </span>
-              );
-            },
-            getValue: (r) => r.rank,
-          },
-          {
-            key: "name",
-            label: "Member",
-            render: (r) => (
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-ink">{r.name}</span>
-                {ownUserId === r.user_id && (
-                  <span className="font-mono text-[9px] uppercase tracking-brand text-accent">
-                    You
+                  <span className="font-display text-[18px] font-extrabold text-white sm:text-[22px]">
+                    {initials(r.name)}
                   </span>
+                </div>
+              </div>
+
+              {/* Name + dept */}
+              <div className="mt-2 max-w-full px-1 text-center">
+                <div className="truncate font-display text-[12.5px] font-extrabold tracking-tight text-ink sm:text-[13.5px]">
+                  {r.name}
+                  {isYou && (
+                    <span className="ml-1 font-mono text-[8.5px] uppercase tracking-brand text-accent">
+                      you
+                    </span>
+                  )}
+                </div>
+                {r.department_name && (
+                  <div className="truncate text-[9.5px] uppercase tracking-brand text-ink-muted">
+                    {r.department_name}
+                  </div>
                 )}
               </div>
-            ),
-            getValue: (r) => r.name,
-          },
-          {
-            key: "department_name",
-            label: "Department",
-            render: (r) => r.department_name || "—",
-            getValue: (r) => r.department_name,
-          },
-          {
-            key: "current_streak",
-            label: "Streak",
-            render: (r) =>
-              r.current_streak > 0 ? (
-                <span className="inline-flex items-center gap-1 text-ink">
-                  <Flame size={12} className="text-accent" />
-                  <span className="font-mono text-[12px]">{r.current_streak}w</span>
-                </span>
-              ) : (
-                <span className="text-ink-muted">—</span>
-              ),
-            getValue: (r) => r.current_streak,
-          },
-          {
-            key: "points",
-            label: "Points",
-            align: "right",
-            render: (r) => (
-              <span className="font-mono text-[13px] font-bold text-accent">
+
+              {/* Points */}
+              <div className="mt-1 inline-flex items-center gap-1 font-mono text-[14px] font-bold text-accent sm:text-[16px]">
+                <Coins size={13} />
                 {r.points.toLocaleString()}
-              </span>
-            ),
-            getValue: (r) => r.points,
-          },
-          {
-            key: "_send",
-            label: "",
-            alwaysVisible: true,
-            disableSort: true,
-            align: "right",
-            render: (r) =>
-              ownUserId && r.user_id !== ownUserId ? (
-                <div onClick={(e) => e.stopPropagation()}>
-                  <SendPointsButton
-                    prefill={{ id: r.user_id, name: r.name }}
-                    compact
-                  />
+              </div>
+
+              {/* Streak chip */}
+              {r.current_streak > 0 && (
+                <div className="mt-1 inline-flex items-center gap-0.5 rounded-full bg-warning-bg/80 px-1.5 py-0.5 text-[9.5px] font-bold text-warning-text">
+                  <Flame size={10} className="fill-warning-text/30" />
+                  {r.current_streak}w
                 </div>
-              ) : null,
-          },
-        ]}
-      />
+              )}
+
+              {/* Pillar with rank number */}
+              <div
+                className={cn(
+                  "relative mt-3 flex w-full items-start justify-center overflow-hidden rounded-t-md border border-b-0 border-accent/30 bg-gradient-to-b shadow-inner",
+                  c.bar,
+                  c.height,
+                )}
+              >
+                <span className="mt-2 font-display text-[28px] font-extrabold text-white drop-shadow-[0_2px_4px_rgba(17,24,16,0.25)] sm:text-[36px]">
+                  {c.rank}
+                </span>
+                <c.Icon
+                  size={14}
+                  className="absolute bottom-2 left-1/2 -translate-x-1/2 text-white/70"
+                />
+                {/* Send-points action — only on top-3 of others */}
+                {ownUserId && !isYou && (
+                  <div
+                    className="absolute right-1 top-1"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <SendPointsButton
+                      prefill={{ id: r.user_id, name: r.name }}
+                      compact
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
+  );
+}
+
+function RankRow({
+  row,
+  isYou,
+  index,
+}: {
+  row: LeaderboardRow;
+  isYou: boolean;
+  index: number;
+}) {
+  return (
+    <li
+      className={cn(
+        "group flex items-center gap-3 border-b border-border-subtle px-4 py-2.5 transition-colors last:border-b-0 hover:bg-bg/40 animate-rise",
+        isYou && "bg-accent-soft/30 hover:bg-accent-soft/40",
+      )}
+      style={{ animationDelay: `${Math.min(index * 25, 600)}ms` }}
+    >
+      {/* Rank number */}
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-bg/60 font-mono text-[11px] font-bold text-ink-secondary">
+        {row.rank}
+      </span>
+
+      {/* Avatar */}
+      <span
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent-soft font-mono text-[10px] font-bold uppercase text-accent-ink"
+        aria-hidden="true"
+      >
+        {initials(row.name)}
+      </span>
+
+      {/* Name + dept */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <span className="truncate font-semibold text-ink">{row.name}</span>
+          {isYou && (
+            <span className="shrink-0 font-mono text-[9px] uppercase tracking-brand text-accent">
+              you
+            </span>
+          )}
+        </div>
+        {row.department_name && (
+          <div className="truncate text-[10.5px] text-ink-muted">
+            {row.department_name}
+          </div>
+        )}
+      </div>
+
+      {/* Streak (hidden on very narrow) */}
+      {row.current_streak > 0 && (
+        <span className="hidden items-center gap-0.5 rounded-full bg-warning-bg/60 px-1.5 py-0.5 text-[9.5px] font-bold text-warning-text sm:inline-flex">
+          <Flame size={10} className="fill-warning-text/30" />
+          {row.current_streak}w
+        </span>
+      )}
+
+      {/* Points */}
+      <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[13px] font-bold text-accent">
+        <Coins size={11} />
+        {row.points.toLocaleString()}
+      </span>
+
+      {/* Send button (others only) */}
+      {!isYou && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 sm:opacity-60"
+        >
+          <SendPointsButton prefill={{ id: row.user_id, name: row.name }} compact />
+        </div>
+      )}
+    </li>
   );
 }
 

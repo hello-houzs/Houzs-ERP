@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Plus,
@@ -13,6 +13,11 @@ import {
   Power,
   PowerOff,
   Save,
+  Lightbulb,
+  MessageCircle,
+  ArrowUp,
+  Rocket,
+  Hourglass,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
@@ -27,7 +32,7 @@ import { useAuth } from "../auth/AuthContext";
 import { api, tokenStore } from "../api/client";
 import { cn, relativeTime } from "../lib/utils";
 
-type AdminTab = "catalog" | "redemptions";
+type AdminTab = "catalog" | "redemptions" | "innovations" | "suggestions";
 
 interface AwardRow {
   id: number;
@@ -110,6 +115,8 @@ export function GamificationAdmin() {
         options={[
           { value: "catalog", label: "Catalog" },
           { value: "redemptions", label: "Redemptions" },
+          { value: "innovations", label: "Innovations" },
+          { value: "suggestions", label: "Suggestions" },
         ] as TabOption<AdminTab>[]}
       />
 
@@ -125,6 +132,8 @@ export function GamificationAdmin() {
           }}
         />
       )}
+      {tab === "innovations" && <InnovationsAdminPanel />}
+      {tab === "suggestions" && <SuggestionsAdminPanel />}
     </div>
   );
 }
@@ -651,4 +660,434 @@ function StatusChip({ status }: { status: RedemptionRow["status"] }) {
       <Icon size={10} /> {status}
     </span>
   );
+}
+
+// ── Innovation triage queue ────────────────────────────────────
+
+interface InnovationAdminRow {
+  id: number;
+  user_id: number;
+  user_name: string | null;
+  title: string;
+  body: string;
+  tags: string | null;
+  status:
+    | "review"
+    | "accepted"
+    | "in_progress"
+    | "shipped"
+    | "declined";
+  decided_at: string | null;
+  decline_reason: string | null;
+  created_at: string;
+  vote_count: number;
+  has_voted: number;
+}
+
+function InnovationsAdminPanel() {
+  const [statusFilter, setStatusFilter] = useState<
+    "review" | "accepted" | "in_progress" | "shipped" | "declined" | null
+  >("review");
+  const list = useQuery<{ rows: InnovationAdminRow[] }>(
+    () =>
+      api.get(
+        `/api/innovations${statusFilter ? `?status=${statusFilter}` : ""}`,
+      ),
+    [statusFilter],
+  );
+  const counts = useMemo(() => {
+    const rows = list.data?.rows ?? [];
+    return rows.reduce(
+      (acc, r) => {
+        acc[r.status] = (acc[r.status] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
+  }, [list.data]);
+
+  return (
+    <IdeaAdminPanel
+      kind="innovation"
+      list={list}
+      statuses={[
+        { value: "review", label: "Under review" },
+        { value: "accepted", label: "Accepted" },
+        { value: "in_progress", label: "In progress" },
+        { value: "shipped", label: "Shipped" },
+        { value: "declined", label: "Declined" },
+      ]}
+      filter={statusFilter}
+      onFilterChange={(v) => setStatusFilter(v as any)}
+      counts={counts}
+      icon={<Lightbulb size={20} />}
+      emptyMessage="No innovations to triage"
+      emptyDescription="Anything submitted under /innovations lands here for review."
+    />
+  );
+}
+
+// ── Suggestion triage queue ────────────────────────────────────
+
+interface SuggestionAdminRow {
+  id: number;
+  user_id: number;
+  user_name: string | null;
+  title: string;
+  body: string | null;
+  status: "review" | "approved" | "declined";
+  decided_at: string | null;
+  decline_reason: string | null;
+  created_at: string;
+  vote_count: number;
+  has_voted: number;
+}
+
+function SuggestionsAdminPanel() {
+  const [statusFilter, setStatusFilter] = useState<
+    "review" | "approved" | "declined" | null
+  >("review");
+  const list = useQuery<{ rows: SuggestionAdminRow[] }>(
+    () =>
+      api.get(
+        `/api/suggestions${statusFilter ? `?status=${statusFilter}` : ""}`,
+      ),
+    [statusFilter],
+  );
+  const counts = useMemo(() => {
+    const rows = list.data?.rows ?? [];
+    return rows.reduce(
+      (acc, r) => {
+        acc[r.status] = (acc[r.status] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
+  }, [list.data]);
+
+  return (
+    <IdeaAdminPanel
+      kind="suggestion"
+      list={list}
+      statuses={[
+        { value: "review", label: "Under review" },
+        { value: "approved", label: "Approved" },
+        { value: "declined", label: "Declined" },
+      ]}
+      filter={statusFilter}
+      onFilterChange={(v) => setStatusFilter(v as any)}
+      counts={counts}
+      icon={<MessageCircle size={20} />}
+      emptyMessage="No suggestions to triage"
+      emptyDescription="Anything submitted under /suggestions lands here for review."
+    />
+  );
+}
+
+// ── Shared idea-admin panel ────────────────────────────────────
+
+interface IdeaAdminPanelProps<T extends InnovationAdminRow | SuggestionAdminRow> {
+  kind: "innovation" | "suggestion";
+  list: { data: { rows: T[] } | null; loading: boolean; error: string | null; reload: () => void };
+  statuses: { value: string; label: string }[];
+  filter: string | null;
+  onFilterChange: (v: string | null) => void;
+  counts: Record<string, number>;
+  icon: React.ReactNode;
+  emptyMessage: string;
+  emptyDescription: string;
+}
+
+function IdeaAdminPanel<T extends InnovationAdminRow | SuggestionAdminRow>({
+  kind,
+  list,
+  statuses,
+  filter,
+  onFilterChange,
+  counts,
+  icon,
+  emptyMessage,
+  emptyDescription,
+}: IdeaAdminPanelProps<T>) {
+  if (list.loading) return <ListSkeleton rows={5} />;
+  if (list.error) {
+    return (
+      <EmptyState
+        icon={<XCircle size={20} />}
+        message="Couldn't load"
+        description={list.error}
+      />
+    );
+  }
+  const rows = list.data?.rows ?? [];
+
+  return (
+    <div>
+      <div className="mb-4 inline-flex flex-wrap rounded-md border border-border bg-surface p-0.5 text-[11px] font-semibold">
+        <button
+          onClick={() => onFilterChange(null)}
+          className={cn(
+            "rounded px-3 py-1 transition-colors",
+            !filter
+              ? "bg-accent text-white"
+              : "text-ink-secondary hover:text-ink",
+          )}
+        >
+          All
+        </button>
+        {statuses.map((s) => (
+          <button
+            key={s.value}
+            onClick={() => onFilterChange(s.value)}
+            className={cn(
+              "rounded px-3 py-1 transition-colors",
+              filter === s.value
+                ? "bg-accent text-white"
+                : "text-ink-secondary hover:text-ink",
+            )}
+          >
+            {s.label}
+            {counts[s.value] ? ` · ${counts[s.value]}` : ""}
+          </button>
+        ))}
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={icon}
+          message={emptyMessage}
+          description={emptyDescription}
+        />
+      ) : (
+        <ul className="space-y-2">
+          {rows.map((r, i) => (
+            <IdeaAdminRow
+              key={r.id}
+              kind={kind}
+              row={r}
+              statuses={statuses}
+              onChange={() => list.reload()}
+              index={i}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function IdeaAdminRow<T extends InnovationAdminRow | SuggestionAdminRow>({
+  kind,
+  row,
+  statuses,
+  onChange,
+  index,
+}: {
+  kind: "innovation" | "suggestion";
+  row: T;
+  statuses: { value: string; label: string }[];
+  onChange: () => void;
+  index: number;
+}) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [reason, setReason] = useState("");
+  const [showFull, setShowFull] = useState(false);
+
+  async function decide(s: string) {
+    if (s === row.status) return;
+    if (s === "declined" && !reason.trim()) {
+      toast.error("Add a decline reason first");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.post(`/api/${kind}s/${row.id}/decision`, {
+        status: s,
+        decline_reason: s === "declined" ? reason.trim() : undefined,
+      });
+      const verb =
+        s === "shipped"
+          ? "shipped"
+          : s === "approved"
+            ? "approved"
+            : s === "declined"
+              ? "declined"
+              : `moved to ${s}`;
+      toast.success(`Marked ${verb}`);
+      onChange();
+    } catch (e: any) {
+      toast.error(e?.message || "Decision failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const tags = (row as InnovationAdminRow).tags;
+  const body = row.body;
+
+  return (
+    <li
+      className="overflow-hidden rounded-xl border border-border bg-surface shadow-stone transition-all hover:border-accent/40 animate-rise"
+      style={{ animationDelay: `${Math.min(index * 30, 600)}ms` }}
+    >
+      <div className="flex items-start gap-3 p-3">
+        {/* Vote count column */}
+        <div className="flex w-12 shrink-0 flex-col items-center gap-0.5 rounded-lg border border-border bg-bg/40 px-2 py-2">
+          <ArrowUp size={14} className="text-ink-muted" />
+          <span className="font-mono text-[12px] font-bold leading-none text-ink">
+            {row.vote_count}
+          </span>
+          <span className="text-[8.5px] uppercase tracking-brand text-ink-muted">
+            votes
+          </span>
+        </div>
+
+        {/* Body */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="font-display text-[15px] font-extrabold leading-tight tracking-tight text-ink">
+              {row.title}
+            </h3>
+            <IdeaStatusBadge status={row.status} />
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-ink-muted">
+            <span>
+              by{" "}
+              <span className="font-semibold text-ink-secondary">
+                {row.user_name || `User #${row.user_id}`}
+              </span>
+            </span>
+            <span className="font-mono">{relativeTime(row.created_at)}</span>
+            {tags && (
+              <span className="inline-flex items-center gap-1">
+                {tags
+                  .split(",")
+                  .map((t) => t.trim())
+                  .filter(Boolean)
+                  .slice(0, 4)
+                  .map((t) => (
+                    <span
+                      key={t}
+                      className="rounded-full bg-accent-soft/40 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-brand text-accent-ink"
+                    >
+                      {t}
+                    </span>
+                  ))}
+              </span>
+            )}
+          </div>
+
+          {body && (
+            <div className="mt-2 text-[12px] leading-relaxed text-ink-secondary">
+              {showFull ? (
+                <p className="whitespace-pre-wrap">{body}</p>
+              ) : (
+                <p className="line-clamp-2">{body}</p>
+              )}
+              {body.length > 150 && (
+                <button
+                  type="button"
+                  onClick={() => setShowFull((v) => !v)}
+                  className="mt-1 text-[10.5px] font-semibold text-accent hover:underline"
+                >
+                  {showFull ? "Show less" : "Show more"}
+                </button>
+              )}
+            </div>
+          )}
+
+          {row.decline_reason && (
+            <div className="mt-2 rounded-md border border-err/30 bg-err-bg/40 p-2 text-[11px] text-err">
+              <span className="font-semibold uppercase tracking-brand">
+                Declined:{" "}
+              </span>
+              {row.decline_reason}
+            </div>
+          )}
+
+          {/* Decision row */}
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            {statuses.map((s) => (
+              <button
+                key={s.value}
+                type="button"
+                disabled={busy || s.value === row.status}
+                onClick={() => decide(s.value)}
+                className={cn(
+                  "rounded-md px-2.5 py-1 text-[10.5px] font-bold uppercase tracking-brand transition-all active:scale-95",
+                  s.value === row.status
+                    ? "cursor-default bg-ink/10 text-ink-muted"
+                    : statusButton(s.value),
+                  busy && "opacity-50",
+                )}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+
+          <input
+            type="text"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Decline reason (only required when declining)"
+            className="mt-2 w-full rounded-md border border-border bg-paper px-2 py-1.5 text-[11.5px]"
+          />
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function IdeaStatusBadge({ status }: { status: string }) {
+  const Icon =
+    status === "shipped" || status === "approved"
+      ? Rocket
+      : status === "in_progress"
+        ? Hourglass
+        : status === "accepted"
+          ? CheckCircle2
+          : status === "declined"
+            ? XCircle
+            : Clock;
+  const tone =
+    status === "shipped" || status === "approved"
+      ? "bg-synced-bg/70 text-synced"
+      : status === "in_progress"
+        ? "bg-warning-bg/70 text-warning-text"
+        : status === "accepted"
+          ? "bg-accent-soft/60 text-accent-ink"
+          : status === "declined"
+            ? "bg-err-bg/60 text-err"
+            : "bg-bg/60 text-ink-secondary";
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-brand",
+        tone,
+      )}
+    >
+      <Icon size={10} />
+      {status.replace(/_/g, " ")}
+    </span>
+  );
+}
+
+function statusButton(status: string): string {
+  switch (status) {
+    case "review":
+      return "bg-bg/60 text-ink-secondary hover:bg-bg/80";
+    case "accepted":
+      return "bg-accent-soft/60 text-accent-ink hover:bg-accent-soft";
+    case "in_progress":
+      return "bg-warning-bg/70 text-warning-text hover:bg-warning-bg";
+    case "shipped":
+    case "approved":
+      return "bg-synced-bg/70 text-synced hover:bg-synced-bg";
+    case "declined":
+      return "bg-err-bg/60 text-err hover:bg-err-bg";
+    default:
+      return "bg-bg/60 text-ink-secondary hover:bg-bg/80";
+  }
 }

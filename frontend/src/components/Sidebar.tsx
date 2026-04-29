@@ -182,6 +182,12 @@ export const NAV_TABS: NavTab[] = [
       { to: "/gamification?sub=shop", label: "Award Shop", icon: ShoppingBag },
       { to: "/innovations", label: "Innovations", icon: Lightbulb },
       { to: "/suggestions", label: "Suggestions", icon: MessageCircle },
+      {
+        to: "/gamification/admin",
+        label: "Admin Console",
+        icon: SettingsIcon,
+        perm: "*",
+      },
     ],
   },
   { to: "/settings", label: "Settings", icon: SettingsIcon, perm: "settings.manage" },
