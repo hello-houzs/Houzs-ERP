@@ -32,17 +32,19 @@ bucket_name = "houzs-erp"
 
 [triggers]
 # Cron schedule:
-#   */5  → SO incremental pull (tight — ops users see new orders fast)
-#   */30 → PO pull (docs + outstanding lines). Procurement changes slowly,
-#          hitting AutoCount every 5 min is overkill.
-#   0 2  → Daily batch: overdue auto-extend, SLA escalation, project
-#          reminders, creditors resync, and stock-items refresh (which
-#          also re-writes assr_cases.creditor_code when MainSupplier
-#          moves upstream).
+#   */5    → SO incremental pull (tight — ops users see new orders fast)
+#   */30   → PO pull (docs + outstanding lines). Procurement changes slowly,
+#            hitting AutoCount every 5 min is overkill.
+#   0 2    → Daily batch: overdue auto-extend, SLA escalation, project
+#            reminders, creditors resync, stock-items refresh, weekly
+#            streak rollover + leaderboard cache refresh (mig 055).
+#   0 0 1  → Monthly batch: reset every active user's gifting allowance.
+#            Idempotent within a month via `users.gifting_reset_at`.
 crons = [
   "*/5 * * * *",
   "*/30 * * * *",
-  "0 2 * * *"
+  "0 2 * * *",
+  "0 0 1 * *"
 ]
 
 [observability]

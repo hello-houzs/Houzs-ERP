@@ -18,6 +18,10 @@ import {
   Wrench,
   FolderKanban,
   ShieldCheck,
+  Trophy,
+  Lightbulb,
+  MessageCircle,
+  ShoppingBag,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -169,6 +173,17 @@ export const NAV_TABS: NavTab[] = [
     ],
   },
   { to: "/team", label: "Team", icon: Users, anyPerm: ["users.read", "roles.read"] },
+  {
+    label: "Engagement",
+    icon: Trophy,
+    groupId: "engagement",
+    children: [
+      { to: "/gamification", label: "Houzs Points", icon: Trophy },
+      { to: "/gamification?sub=shop", label: "Award Shop", icon: ShoppingBag },
+      { to: "/innovations", label: "Innovations", icon: Lightbulb },
+      { to: "/suggestions", label: "Suggestions", icon: MessageCircle },
+    ],
+  },
   { to: "/settings", label: "Settings", icon: SettingsIcon, perm: "settings.manage" },
 ];
 

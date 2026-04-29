@@ -36,6 +36,12 @@ export interface NotificationsPayload {
   feed: NotificationItem[];
   unread_by_project: Record<number, number>;
   total_unread: number;
+  // Houzs Points (mig 055) snapshot — piggybacks the same poll
+  // cadence so the topbar chip + gamification page header don't need
+  // a second round-trip.
+  points_balance?: number;
+  gifting_balance?: number;
+  current_streak?: number;
 }
 
 interface Ctx {
@@ -46,6 +52,10 @@ interface Ctx {
   /** Event timestamp whenever a fresh payload lands; Profile uses this
    *  to detect new items for browser push firing. */
   lastTick: number;
+  // Houzs Points — present once the first poll lands.
+  pointsBalance: number;
+  giftingBalance: number;
+  currentStreak: number;
 }
 
 const NotificationsContext = createContext<Ctx>({
@@ -54,6 +64,9 @@ const NotificationsContext = createContext<Ctx>({
   totalUnread: 0,
   reload: () => {},
   lastTick: 0,
+  pointsBalance: 0,
+  giftingBalance: 0,
+  currentStreak: 0,
 });
 
 // ── Provider ─────────────────────────────────────────────────
@@ -69,6 +82,9 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [unreadByProject, setUnread] = useState<Record<number, number>>({});
   const [totalUnread, setTotal] = useState(0);
   const [lastTick, setLastTick] = useState(0);
+  const [pointsBalance, setPoints] = useState(0);
+  const [giftingBalance, setGifting] = useState(0);
+  const [currentStreak, setStreak] = useState(0);
   const timerRef = useRef<number | null>(null);
 
   const fetchOnce = useCallback(async () => {
@@ -84,6 +100,9 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       setUnread(r.unread_by_project);
       setTotal(r.total_unread);
       setLastTick(Date.now());
+      if (typeof r.points_balance === "number") setPoints(r.points_balance);
+      if (typeof r.gifting_balance === "number") setGifting(r.gifting_balance);
+      if (typeof r.current_streak === "number") setStreak(r.current_streak);
     } catch {
       // Swallow — polling error shouldn't noise the UI. Next tick retries.
     }
@@ -127,6 +146,9 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
         totalUnread,
         reload: fetchOnce,
         lastTick,
+        pointsBalance,
+        giftingBalance,
+        currentStreak,
       }}
     >
       {children}

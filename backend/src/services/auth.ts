@@ -105,6 +105,10 @@ export interface AuthUser {
   brand_scope: string[] | null;
   joined_at?: string | null;
   last_login_at?: string | null;
+  // Houzs Points (mig 055) — small per-user counters.
+  points_balance?: number;
+  gifting_balance?: number;
+  current_streak?: number;
 }
 
 export async function createSession(env: Env, userId: number): Promise<string> {
@@ -160,6 +164,9 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     brand_scope: brandScope,
     joined_at: row.joined_at ?? null,
     last_login_at: row.last_login_at ?? null,
+    points_balance: row.points_balance ?? 0,
+    gifting_balance: row.gifting_balance ?? 0,
+    current_streak: row.current_streak ?? 0,
   };
 }
 
@@ -167,6 +174,7 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
   const row = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.role_id, u.status,
             u.manager_id, u.department_id, u.joined_at, u.last_login_at,
+            u.points_balance, u.gifting_balance, u.current_streak,
             r.name as role_name, r.permissions as role_permissions,
             r.scope_to_pic,
             s.expires_at
@@ -193,6 +201,7 @@ export async function getUserById(env: Env, id: number): Promise<AuthUser | null
   const row = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.role_id, u.status, u.manager_id,
             u.department_id,
+            u.points_balance, u.gifting_balance, u.current_streak,
             r.name as role_name, r.permissions as role_permissions,
             r.scope_to_pic
      FROM users u

@@ -5,6 +5,7 @@ import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TopNavbar } from "./TopNavbar";
 import { MobileTabBar } from "./MobileTabBar";
+import { PointsChip } from "./PointsChip";
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
 import type { SyncStatusResponse } from "../types";
@@ -105,7 +106,8 @@ function MobileTopBar({ onOpenDrawer }: { onOpenDrawer: () => void }) {
         className="h-7 w-auto max-w-[140px] object-contain"
         draggable={false}
       />
-      <div className="ml-auto flex items-center gap-1">
+      <div className="ml-auto flex items-center gap-1.5">
+        <PointsChip compact />
         <GlobalSearchTrigger collapsed />
       </div>
     </div>

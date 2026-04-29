@@ -14,6 +14,10 @@ import { Notifications } from "./pages/Notifications";
 import { Profile } from "./pages/Profile";
 import { Settings } from "./pages/Settings";
 import { Team } from "./pages/Team";
+import { Gamification } from "./pages/Gamification";
+import { GamificationAdmin } from "./pages/GamificationAdmin";
+import { Innovations } from "./pages/Innovations";
+import { Suggestions } from "./pages/Suggestions";
 import { Logistics } from "./pages/Logistics";
 import { TripDetail } from "./pages/TripDetail";
 import { StaffDetail } from "./pages/StaffDetail";
@@ -301,6 +305,10 @@ export default function App() {
             </Guard>
           }
         />
+        <Route path="/gamification" element={<Gamification />} />
+        <Route path="/gamification/admin" element={<GamificationAdmin />} />
+        <Route path="/innovations" element={<Innovations />} />
+        <Route path="/suggestions" element={<Suggestions />} />
         <Route path="/profile" element={<Profile />} />
         </Routes>
       </Layout>

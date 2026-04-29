@@ -29,6 +29,11 @@ export const users = sqliteTable("users", {
   created_at: text("created_at").default(sql`(datetime('now'))`),
   manager_id: integer("manager_id"),
   department_id: integer("department_id"),
+  // Houzs Points (mig 055)
+  points_balance: integer("points_balance").notNull().default(0),
+  gifting_balance: integer("gifting_balance").notNull().default(0),
+  gifting_reset_at: text("gifting_reset_at"),
+  current_streak: integer("current_streak").notNull().default(0),
 });
 
 // ── roles ──────────────────────────────────────────────────
@@ -564,3 +569,140 @@ export const project_finance_lines = sqliteTable("project_finance_lines", {
   created_by: integer("created_by"),
   archived_at: text("archived_at"),
 });
+
+// ── point_transactions (mig 055) ──────────────────────────
+// Append-only ledger. `users.points_balance` and
+// `users.gifting_balance` are caches derived from this table; never
+// write balances without a matching row here.
+export const point_transactions = sqliteTable("point_transactions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  user_id: integer("user_id").notNull(),
+  pool: text("pool").notNull(), // 'earned' | 'gifting'
+  delta: integer("delta").notNull(),
+  reason: text("reason").notNull(),
+  ref_type: text("ref_type"),
+  ref_id: integer("ref_id"),
+  counterparty_user_id: integer("counterparty_user_id"),
+  note: text("note"),
+  created_at: text("created_at").default(sql`(datetime('now'))`),
+});
+
+// ── user_streak_weeks (mig 055) ───────────────────────────
+// One row per user × ISO-week. `qualified` flips to 1 when
+// upvotes_count >= gamify_settings.streak_weekly_threshold.
+export const user_streak_weeks = sqliteTable(
+  "user_streak_weeks",
+  {
+    user_id: integer("user_id").notNull(),
+    iso_week: text("iso_week").notNull(),
+    upvotes_count: integer("upvotes_count").notNull().default(0),
+    qualified: integer("qualified").notNull().default(0),
+    computed_at: text("computed_at").default(sql`(datetime('now'))`),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.user_id, t.iso_week] }),
+  })
+);
+
+// ── leaderboard_cache (mig 055) ───────────────────────────
+// Pre-aggregated top-N rows per (scope, period). Scope is 'company'
+// or 'department:{id}'; period is 'week' | 'month' | 'all'.
+export const leaderboard_cache = sqliteTable(
+  "leaderboard_cache",
+  {
+    scope: text("scope").notNull(),
+    period: text("period").notNull(),
+    computed_at: text("computed_at").notNull(),
+    rows_json: text("rows_json").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.scope, t.period] }),
+  })
+);
+
+// ── gamify_settings (mig 055) ─────────────────────────────
+// Admin-tunable values: monthly_gifting_amount, streak threshold,
+// per-action point values. TEXT-stored, parsed on read.
+export const gamify_settings = sqliteTable("gamify_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});
+
+// ── awards (mig 056) ──────────────────────────────────────
+// Admin-curated catalogue of redeemable items.
+export const awards = sqliteTable("awards", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  description: text("description"),
+  cost_points: integer("cost_points").notNull(),
+  stock: integer("stock"),
+  image_r2_key: text("image_r2_key"),
+  active: integer("active").notNull().default(1),
+  sort_order: integer("sort_order").notNull().default(0),
+  created_at: text("created_at").default(sql`(datetime('now'))`),
+  updated_at: text("updated_at").default(sql`(datetime('now'))`),
+});
+
+// ── award_redemptions (mig 056) ───────────────────────────
+// Lifecycle: pending -> shipped -> delivered, or cancelled.
+export const award_redemptions = sqliteTable("award_redemptions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  award_id: integer("award_id").notNull(),
+  user_id: integer("user_id").notNull(),
+  cost_points: integer("cost_points").notNull(),
+  status: text("status").notNull().default("pending"),
+  shipping_addr: text("shipping_addr"),
+  admin_note: text("admin_note"),
+  created_at: text("created_at").default(sql`(datetime('now'))`),
+  shipped_at: text("shipped_at"),
+  delivered_at: text("delivered_at"),
+  cancelled_at: text("cancelled_at"),
+  cancelled_by: integer("cancelled_by"),
+  ledger_tx_id: integer("ledger_tx_id"),
+});
+
+// ── innovations (mig 057) ─────────────────────────────────
+// Strategic ideas: build / explore / improve. Status pipeline drives
+// the point award when status reaches 'shipped'.
+export const innovations = sqliteTable("innovations", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  user_id: integer("user_id").notNull(),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  tags: text("tags"),
+  status: text("status").notNull().default("review"),
+  decided_by: integer("decided_by"),
+  decided_at: text("decided_at"),
+  decline_reason: text("decline_reason"),
+  awarded_at: text("awarded_at"),
+  created_at: text("created_at").default(sql`(datetime('now'))`),
+});
+
+// ── suggestions (mig 057) ─────────────────────────────────
+// Operational fixes. Status pipeline drives the point award when
+// status reaches 'approved'.
+export const suggestions = sqliteTable("suggestions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  user_id: integer("user_id").notNull(),
+  title: text("title").notNull(),
+  body: text("body"),
+  status: text("status").notNull().default("review"),
+  decided_by: integer("decided_by"),
+  decided_at: text("decided_at"),
+  decline_reason: text("decline_reason"),
+  awarded_at: text("awarded_at"),
+  created_at: text("created_at").default(sql`(datetime('now'))`),
+});
+
+// ── votes (mig 057) ───────────────────────────────────────
+// Polymorphic upvotes; one row per (target, voter).
+export const votes = sqliteTable(
+  "votes",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    target_type: text("target_type").notNull(),
+    target_id: integer("target_id").notNull(),
+    user_id: integer("user_id").notNull(),
+    created_at: text("created_at").default(sql`(datetime('now'))`),
+  },
+);

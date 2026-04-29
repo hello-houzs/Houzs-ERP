@@ -182,11 +182,27 @@ app.get("/", requirePermission("projects.read"), async (c) => {
     total_unread += r.unread_count;
   }
 
+  // Houzs Points snapshot — same poll cadence, near-zero cost
+  // (single SELECT). Powers the topbar chip and lets the
+  // gamification page header render without a second round-trip.
+  const me = await db
+    .select({
+      points_balance: users.points_balance,
+      gifting_balance: users.gifting_balance,
+      current_streak: users.current_streak,
+    })
+    .from(users)
+    .where(eq(users.id, user.id))
+    .get();
+
   return c.json({
     feed: trimmedRows,
     unread_by_project,
     total_unread,
     has_more: hasMore,
+    points_balance: me?.points_balance ?? 0,
+    gifting_balance: me?.gifting_balance ?? 0,
+    current_streak: me?.current_streak ?? 0,
   });
 });
 

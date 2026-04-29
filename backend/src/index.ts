@@ -37,6 +37,10 @@ import assrPrint from "./routes/assr_print";
 import survey from "./routes/survey";
 import track from "./routes/track";
 import portal from "./routes/portal";
+import gamify from "./routes/gamify";
+import awards from "./routes/awards";
+import innovations from "./routes/innovations";
+import suggestions from "./routes/suggestions";
 import { caseTrack } from "./middleware/caseTrack";
 import { runPull } from "./services/pull";
 import { runPOPull, runPODocsPull } from "./services/po";
@@ -45,6 +49,11 @@ import { runSlaEscalation } from "./services/assrEscalation";
 import { runProjectDueReminders } from "./services/projectReminders";
 import { runCreditorsPull } from "./services/creditors";
 import { runStockItemsRefresh } from "./services/stockItems";
+import {
+  recomputeWeeklyStreaks,
+  refreshAllLeaderboards,
+  resetMonthlyGifting,
+} from "./services/points";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -107,6 +116,10 @@ app.route("/api/search", search);
 app.route("/api/creditors", creditors);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
+app.route("/api/gamify", gamify);
+app.route("/api/awards", awards);
+app.route("/api/innovations", innovations);
+app.route("/api/suggestions", suggestions);
 
 app.onError((err, c) => {
   console.error("[onError]", err);
@@ -165,6 +178,36 @@ export default {
         runStockItemsRefresh(env, {})
           .then((r) => console.log(`[cron stockitems] ${r.message}`))
           .catch((e) => console.error("[cron stockitems]", e))
+      );
+      // Houzs Points (mig 055): roll up the current ISO week's
+      // qualifying activity per user, recompute current_streak, and
+      // refresh every leaderboard scope/period cache.
+      ctx.waitUntil(
+        recomputeWeeklyStreaks(env)
+          .then((r) =>
+            console.log(
+              `[cron streaks] week=${r.current_week} touched=${r.users_touched}`,
+            ),
+          )
+          .catch((e) => console.error("[cron streaks]", e)),
+      );
+      ctx.waitUntil(
+        refreshAllLeaderboards(env)
+          .then((n) => console.log(`[cron leaderboards] refreshed=${n}`))
+          .catch((e) => console.error("[cron leaderboards]", e)),
+      );
+    } else if (event.cron === "0 0 1 * *") {
+      // Monthly: reset every active user's gifting allowance back to
+      // gamify_settings.monthly_gifting_amount. Idempotent within
+      // the month via the YYYY-MM-01 stamp on users.gifting_reset_at.
+      ctx.waitUntil(
+        resetMonthlyGifting(env)
+          .then((r) =>
+            console.log(
+              `[cron gifting-reset] ${r.users_reset} user(s) granted ${r.amount} for ${r.period}`,
+            ),
+          )
+          .catch((e) => console.error("[cron gifting-reset]", e)),
       );
     }
   },
