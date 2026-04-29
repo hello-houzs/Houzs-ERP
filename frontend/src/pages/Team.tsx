@@ -10,6 +10,9 @@ import { StatusDot } from "../components/StatusDot";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
+import { Skeleton, ListSkeleton } from "../components/Skeleton";
+import { EmptyState } from "../components/EmptyState";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { relativeTime, cn } from "../lib/utils";
@@ -17,6 +20,8 @@ import type { TeamMember, Invitation, Role, Department } from "../types";
 import { RolesTab } from "./Roles";
 
 type TeamTabValue = "members" | "roles" | "orgchart" | "departments";
+
+const TEAM_KEYS = ["tab"] as const;
 
 /**
  * Unified Team page — two tabs (Members, Roles) sharing a single header.
@@ -30,7 +35,7 @@ type TeamTabValue = "members" | "roles" | "orgchart" | "departments";
  */
 export function Team() {
   const { can } = useAuth();
-  const [params, setParams] = useSearchParams();
+  const [params, setParams] = useStickyFilters("team", TEAM_KEYS);
 
   const canUsers = can("users.read");
   const canRoles = can("roles.read");
@@ -314,7 +319,9 @@ function MembersTab({
         </div>
         <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
           {members.loading && (
-            <div className="px-5 py-6 text-sm text-ink-muted">Loading…</div>
+            <div className="space-y-2 px-5 py-4">
+              <ListSkeleton rows={5} />
+            </div>
           )}
           {members.error && (
             <div className="px-5 py-4 text-sm text-err">{members.error}</div>
@@ -672,7 +679,11 @@ function UserBrandsPanel({
         </div>
         <div className="flex flex-wrap gap-1.5">
           {current.loading && (
-            <div className="text-[11px] text-ink-muted">Loading…</div>
+            <div className="flex flex-wrap gap-1.5">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-5 w-16" />
+              ))}
+            </div>
           )}
           {!current.loading && allBrands.length === 0 && (
             <div className="text-[11px] text-ink-muted">
@@ -830,7 +841,7 @@ function OrgChartTab() {
   }
 
   if (members.loading && users.length === 0) {
-    return <div className="text-[12px] text-ink-muted">Loading…</div>;
+    return <ListSkeleton rows={4} />;
   }
   if (members.error) {
     return <div className="text-[12px] text-err">{members.error}</div>;
@@ -1337,15 +1348,14 @@ function DepartmentsTab({
 
   return (
     <div className="space-y-4">
-      {depts.loading && rows.length === 0 && (
-        <div className="text-[12px] text-ink-muted">Loading…</div>
-      )}
+      {depts.loading && rows.length === 0 && <ListSkeleton rows={3} />}
       {depts.error && <div className="text-[12px] text-err">{depts.error}</div>}
 
       {rows.length === 0 && !depts.loading ? (
-        <div className="rounded-md border border-dashed border-border bg-surface px-5 py-8 text-center text-[12px] text-ink-muted">
-          No departments yet. Create one to start tagging members.
-        </div>
+        <EmptyState
+          message="No departments yet."
+          description="Create one to start tagging members."
+        />
       ) : (
         <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
           {rows.map((d) => (

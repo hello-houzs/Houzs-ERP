@@ -5,10 +5,23 @@ import { TabStrip, type TabOption } from "../components/TabStrip";
 import { DataTable } from "../components/DataTable";
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
 
 type FleetTab = "drivers" | "helpers" | "lorries" | "compliance";
+
+const FLEET_TABS: readonly FleetTab[] = [
+  "drivers",
+  "helpers",
+  "lorries",
+  "compliance",
+];
+
+// `?sub=` (not `?tab=`): the Logistics outer wrapper owns `?tab=` to
+// pick between Trips and Fleet. Reusing `tab` here used to crash this
+// page (TAB_HEADER["fleet"] === undefined → blank screen).
+const FLEET_TAB_KEYS = ["sub"] as const;
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -58,7 +71,17 @@ interface LorryDetail {
 // ── Main page ─────────────────────────────────────────────────────
 
 export function Fleet() {
-  const [tab, setTab] = useLocalStorage<FleetTab>("fleet:tab", "drivers");
+  const [params, setParams] = useStickyFilters("fleet", FLEET_TAB_KEYS);
+  const rawSub = params.get("sub");
+  const tab: FleetTab = (FLEET_TABS as readonly string[]).includes(rawSub ?? "")
+    ? (rawSub as FleetTab)
+    : "drivers";
+  const setTab = (v: FleetTab) => {
+    const next = new URLSearchParams(params);
+    if (v === "drivers") next.delete("sub");
+    else next.set("sub", v);
+    setParams(next, { replace: true });
+  };
   const navigate = useNavigate();
 
   const tabs: TabOption<FleetTab>[] = [

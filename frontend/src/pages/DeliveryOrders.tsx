@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { PageHeader } from "../components/Layout";
 import { FilterPills } from "../components/FilterPills";
@@ -9,6 +8,7 @@ import { DashboardGrid, DashboardPanels, DashboardBreakdown } from "../component
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency } from "../lib/utils";
 import { getSalesOrderColumns } from "../lib/orderColumns";
@@ -16,12 +16,28 @@ import type { Paginated, SalesOrder, Region, OrdersSummary } from "../types";
 
 type RegionFilter = "ALL" | Region;
 
+const DELIVERY_ORDERS_FILTER_KEYS = ["region", "search", "page"] as const;
+
 export function DeliveryOrders() {
   const navigate = useNavigate();
-  const [region, setRegion] = useState<RegionFilter>("ALL");
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
+  const [params, setParams] = useStickyFilters("delivery-orders", DELIVERY_ORDERS_FILTER_KEYS);
+  const region = ((params.get("region") || "ALL") as RegionFilter);
+  const search = params.get("search") || "";
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:delivery-orders", 50);
+
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "" || (k === "region" && v === "ALL") || (k === "page" && v === "1"))
+        next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setRegion = (v: RegionFilter) => patchParams({ region: v, page: "1" });
+  const setSearch = (v: string) => patchParams({ search: v, page: "1" });
+  const setPage = (n: number) => patchParams({ page: String(n) });
 
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
 
@@ -114,10 +130,7 @@ export function DeliveryOrders() {
       <div className="mb-4">
         <FilterPills
           value={region}
-          onChange={(v) => {
-            setPage(1);
-            setRegion(v);
-          }}
+          onChange={(v) => setRegion(v)}
           options={[
             { value: "ALL", label: "All" },
             { value: "WEST", label: "West" },
@@ -134,10 +147,7 @@ export function DeliveryOrders() {
         exportName="delivery-orders"
         search={{
           value: search,
-          onChange: (v) => {
-            setPage(1);
-            setSearch(v);
-          },
+          onChange: (v) => setSearch(v),
           placeholder: "Search doc no, customer, phone…",
         }}
         columns={columns}

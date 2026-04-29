@@ -12,8 +12,9 @@ import {
   Clock,
   Hourglass,
 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Button } from "../components/Button";
+import { TabStrip, type TabOption } from "../components/TabStrip";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
@@ -53,6 +54,8 @@ interface InboxResponse {
   };
 }
 
+type SummaryTab = "briefing" | "action" | "pipeline";
+
 export function Overview() {
   const toast = useToast();
   const { user, can } = useAuth();
@@ -61,6 +64,21 @@ export function Overview() {
   const po = useQuery<POSummary>(() => api.get("/api/po/summary"));
   const balance = useQuery<BalanceSummary>(() => api.get("/api/balance/summary"));
   const assr = useQuery<AssrSummary>(() => api.get("/api/assr/summary"));
+
+  // Mobile tab state — URL-backed so it survives reload and links. lg+
+  // hides the tab bar and renders all three sections stacked, so the
+  // value is irrelevant on desktop.
+  const [params, setParams] = useSearchParams();
+  const tab: SummaryTab =
+    params.get("tab") === "action" || params.get("tab") === "pipeline"
+      ? (params.get("tab") as SummaryTab)
+      : "briefing";
+  const setTab = (next: SummaryTab) => {
+    const p = new URLSearchParams(params);
+    if (next === "briefing") p.delete("tab");
+    else p.set("tab", next);
+    setParams(p, { replace: true });
+  };
 
   function reloadAll() {
     inbox.reload();
@@ -116,7 +134,7 @@ export function Overview() {
   return (
     <div>
       {/* ── HERO ──────────────────────────────────────────── */}
-      <header className="mb-8">
+      <header className="mb-6 sm:mb-8">
         <div className="mb-4 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
           <span className="h-px w-6 bg-accent" />
           <span>Daily Briefing · {todayHuman}</span>
@@ -151,13 +169,6 @@ export function Overview() {
             </Button>
           </div>
         </div>
-
-        {/* KPI ribbon — what needs your attention right now */}
-        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {kpis.map((k, i) => (
-            <HeroKpiCard key={i} {...k} />
-          ))}
-        </div>
       </header>
 
       {/* Inbox load error — surfaced so a silent empty state doesn't hide a bug */}
@@ -167,51 +178,146 @@ export function Overview() {
         </div>
       )}
 
-      {/* ── INBOX ─────────────────────────────────────────── */}
-      <SectionHeader
-        eyebrow="Action"
-        title="What needs you"
-        hint={data ? `${(data.counts.my_tasks + data.counts.review_queue + data.counts.blockers).toLocaleString()} open` : undefined}
-      />
-      <div className="mb-10 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <InboxColumn
-          icon={<InboxIcon size={14} />}
-          title="My Tasks"
-          subtitle="Assigned to you, due soon or overdue"
-          emptyLabel="Inbox zero. Nothing assigned or due."
-          emptyTone="positive"
-          items={data?.my_tasks ?? []}
-          loading={inbox.loading}
-        />
-        <InboxColumn
-          icon={<MessageSquare size={14} />}
-          title="Review Queue"
-          subtitle="Waiting on your approval or decision"
-          emptyLabel="Nothing waiting on you."
-          emptyTone="positive"
-          items={data?.review_queue ?? []}
-          loading={inbox.loading}
-        />
-        <InboxColumn
-          icon={<Flag size={14} />}
-          title="Blockers"
-          subtitle="Stuck, overdue, or unresolved"
-          emptyLabel="No blockers."
-          emptyTone="positive"
-          items={data?.blockers ?? []}
-          loading={inbox.loading}
-          accent="error"
-        />
-        <InboxColumn
-          icon={<Calendar size={14} />}
-          title="This Week"
-          subtitle="Events and trips in the next 7 days"
-          emptyLabel="No events or trips scheduled."
-          emptyTone="neutral"
-          items={data?.this_week ?? []}
-          loading={inbox.loading}
+      {/* ── MOBILE TAB BAR ─────────────────────────────────
+          Sticky under the page topbar (h-14) so dispatchers can switch
+          summary slices without scrolling back up. Hidden on lg+ where
+          the three sections stack vertically and a tab bar would just
+          add chrome. */}
+      <div className="sticky top-14 z-10 -mx-4 mb-4 bg-paper px-4 sm:-mx-6 sm:px-6 lg:hidden">
+        <TabStrip<SummaryTab>
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: "briefing", label: "Briefing" },
+            {
+              value: "action",
+              label: "Action",
+              count: data
+                ? data.counts.my_tasks +
+                  data.counts.review_queue +
+                  data.counts.blockers
+                : undefined,
+            } as TabOption<SummaryTab>,
+            { value: "pipeline", label: "Pipeline" },
+          ]}
         />
       </div>
+
+      {/* ── BRIEFING (KPI ribbon) ──────────────────────────
+          Mobile: visible only when the Briefing tab is active.
+          lg+: always rendered as the first stacked block. */}
+      <section className={cn("mb-10", tab !== "briefing" && "hidden lg:block")}>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {kpis.map((k, i) => (
+            <HeroKpiCard key={i} {...k} />
+          ))}
+        </div>
+      </section>
+
+      {/* ── INBOX (Action) ─────────────────────────────────
+          Mobile: visible only when the Action tab is active.
+          lg+: always rendered, with its own SectionHeader for desktop
+          users who scan the whole page in one pass. */}
+      <section className={cn("mb-10", tab !== "action" && "hidden lg:block")}>
+        <SectionHeader
+          eyebrow="Action"
+          title="What needs you"
+          hint={data ? `${(data.counts.my_tasks + data.counts.review_queue + data.counts.blockers).toLocaleString()} open` : undefined}
+        />
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <InboxColumn
+            icon={<InboxIcon size={14} />}
+            title="My Tasks"
+            subtitle="Assigned to you, due soon or overdue"
+            emptyLabel="Inbox zero. Nothing assigned or due."
+            emptyTone="positive"
+            items={data?.my_tasks ?? []}
+            loading={inbox.loading}
+          />
+          <InboxColumn
+            icon={<MessageSquare size={14} />}
+            title="Review Queue"
+            subtitle="Waiting on your approval or decision"
+            emptyLabel="Nothing waiting on you."
+            emptyTone="positive"
+            items={data?.review_queue ?? []}
+            loading={inbox.loading}
+          />
+          <InboxColumn
+            icon={<Flag size={14} />}
+            title="Blockers"
+            subtitle="Stuck, overdue, or unresolved"
+            emptyLabel="No blockers."
+            emptyTone="positive"
+            items={data?.blockers ?? []}
+            loading={inbox.loading}
+            accent="error"
+          />
+          <InboxColumn
+            icon={<Calendar size={14} />}
+            title="This Week"
+            subtitle="Events and trips in the next 7 days"
+            emptyLabel="No events or trips scheduled."
+            emptyTone="neutral"
+            items={data?.this_week ?? []}
+            loading={inbox.loading}
+          />
+        </div>
+      </section>
+
+      {/* ── PIPELINE ───────────────────────────────────────
+          Mobile: visible only when the Pipeline tab is active.
+          lg+: always rendered. */}
+      <section className={cn("mb-10", tab !== "pipeline" && "hidden lg:block")}>
+        <SectionHeader
+          eyebrow="Pipeline"
+          title="Across the modules"
+          hint={`Snapshot · ${formatDate(today)}`}
+        />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <PipelineTile
+            to="/orders"
+            icon={<TrendingUp size={14} />}
+            label="Sales Orders"
+            value={orders.data ? orders.data.all.total.toLocaleString() : "—"}
+            sub={
+              orders.data
+                ? `${formatCurrency(orders.data.all.total_balance, { compact: true })} outstanding`
+                : "Loading…"
+            }
+          />
+          <PipelineTile
+            to="/orders"
+            icon={<Clock size={14} />}
+            label="Ready for Delivery"
+            value={orders.data ? orders.data.delivery.total.toLocaleString() : "—"}
+            sub={
+              orders.data ? `${orders.data.delivery.expiring_7d} expiring in 7 days` : "Loading…"
+            }
+            tone={orders.data && orders.data.delivery.expired > 0 ? "error" : undefined}
+          />
+          <PipelineTile
+            to="/po"
+            icon={<TrendingUp size={14} />}
+            label="Open Purchase Orders"
+            value={po.data ? (po.data.totals.outstanding_count ?? 0).toLocaleString() : "—"}
+            sub={po.data ? `${po.data.overdue} overdue` : "Loading…"}
+            tone={po.data && po.data.overdue > 0 ? "error" : undefined}
+          />
+          <PipelineTile
+            to="/assr"
+            icon={<MessageSquare size={14} />}
+            label="Service Cases"
+            value={assr.data ? assr.data.total.toLocaleString() : "—"}
+            sub={
+              assr.data
+                ? `${assr.data.by_status.find((s) => s.status === "Open")?.count ?? 0} open · ${assr.data.aging_count} aging`
+                : "Loading…"
+            }
+            tone={assr.data && assr.data.aging_count > 0 ? "warning" : undefined}
+          />
+        </div>
+      </section>
 
       {/* ── FINANCIALS ────────────────────────────────────── */}
       {can("projects.read") && (
@@ -230,56 +336,6 @@ export function Overview() {
           </div>
         </>
       )}
-
-      {/* ── PIPELINE ──────────────────────────────────────── */}
-      <SectionHeader
-        eyebrow="Pipeline"
-        title="Across the modules"
-        hint={`Snapshot · ${formatDate(today)}`}
-      />
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <PipelineTile
-          to="/orders"
-          icon={<TrendingUp size={14} />}
-          label="Sales Orders"
-          value={orders.data ? orders.data.all.total.toLocaleString() : "—"}
-          sub={
-            orders.data
-              ? `${formatCurrency(orders.data.all.total_balance, { compact: true })} outstanding`
-              : "Loading…"
-          }
-        />
-        <PipelineTile
-          to="/orders"
-          icon={<Clock size={14} />}
-          label="Ready for Delivery"
-          value={orders.data ? orders.data.delivery.total.toLocaleString() : "—"}
-          sub={
-            orders.data ? `${orders.data.delivery.expiring_7d} expiring in 7 days` : "Loading…"
-          }
-          tone={orders.data && orders.data.delivery.expired > 0 ? "error" : undefined}
-        />
-        <PipelineTile
-          to="/po"
-          icon={<TrendingUp size={14} />}
-          label="Open Purchase Orders"
-          value={po.data ? (po.data.totals.outstanding_count ?? 0).toLocaleString() : "—"}
-          sub={po.data ? `${po.data.overdue} overdue` : "Loading…"}
-          tone={po.data && po.data.overdue > 0 ? "error" : undefined}
-        />
-        <PipelineTile
-          to="/assr"
-          icon={<MessageSquare size={14} />}
-          label="Service Cases"
-          value={assr.data ? assr.data.total.toLocaleString() : "—"}
-          sub={
-            assr.data
-              ? `${assr.data.by_status.find((s) => s.status === "Open")?.count ?? 0} open · ${assr.data.aging_count} aging`
-              : "Loading…"
-          }
-          tone={assr.data && assr.data.aging_count > 0 ? "warning" : undefined}
-        />
-      </div>
     </div>
   );
 }

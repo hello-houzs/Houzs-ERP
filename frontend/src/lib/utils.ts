@@ -51,6 +51,19 @@ export function formatDate(d: string | null | undefined): string {
   return iso;
 }
 
+// DD/MM/YYYY HH:mm. Used where time-of-day matters (Logistics schedule:
+// setup_start_at / dismantle_end_at, etc.). Treats stored values as
+// local-ish — the user enters them in local time and we display the
+// same wall-clock string back without timezone conversion.
+export function formatDateTime(d: string | null | undefined): string {
+  if (!d) return "—";
+  const datePart = formatDate(d);
+  if (datePart === "—") return "—";
+  const time = d.slice(11, 16);
+  if (!/^\d{2}:\d{2}$/.test(time)) return datePart;
+  return `${datePart} ${time}`;
+}
+
 export function relativeTime(d: string | null | undefined): string {
   if (!d) return "—";
   const date = parseDate(d);

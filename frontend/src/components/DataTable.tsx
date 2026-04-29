@@ -88,6 +88,23 @@ interface Props<T> {
    */
   serverSort?: boolean;
   onSortChange?: (sort: { key: string; dir: "asc" | "desc" } | null) => void;
+  /**
+   * Customise the mobile (<sm) card layout. When omitted, the mobile
+   * branch falls back to "first visible column = title; rest as label /
+   * value rows", which is right for most heterogeneous tables. Some
+   * dense list views (e.g. Trips Queue) want fewer cells laid out as a
+   * value-only grid — that's what this opts into.
+   */
+  mobileCard?: {
+    /** Column key used as the card title. Defaults to first visible column. */
+    primary?: string;
+    /** Ordered keys to show below the title. Defaults to remaining visible columns. */
+    cells?: string[];
+    /** "stack" (today) or "grid-2" — two equal columns, value-only. */
+    layout?: "stack" | "grid-2";
+    /** Hide the `<dt>` labels even in "stack" layout. Default false. */
+    hideLabels?: boolean;
+  };
 }
 
 type Density = "comfy" | "compact";
@@ -115,6 +132,7 @@ export function DataTable<T>({
   search,
   serverSort,
   onSortChange,
+  mobileCard,
 }: Props<T>) {
   const idKey = tableId || "_";
   const [hiddenList, setHiddenList] = useLocalStorage<string[]>(`dt:hidden:${idKey}`, []);
@@ -569,7 +587,30 @@ export function DataTable<T>({
           sortedRows &&
           sortedRows.map((row) => {
             const customClass = getRowClassName?.(row);
-            const [first, ...rest] = visibleColumns;
+            // Resolve title + cells. When `mobileCard` is unset, fall
+            // back to the legacy shape (first visible column = title,
+            // remainder as labelled rows). When set, honour the
+            // explicit `primary` / `cells` keys.
+            const colByKey = new Map(visibleColumns.map((c) => [c.key, c]));
+            let primaryCol = visibleColumns[0];
+            let cellCols = visibleColumns.slice(1);
+            if (mobileCard) {
+              if (mobileCard.primary) {
+                primaryCol =
+                  colByKey.get(mobileCard.primary) ?? primaryCol;
+              }
+              if (mobileCard.cells) {
+                cellCols = mobileCard.cells
+                  .map((k) => colByKey.get(k))
+                  .filter((c): c is Column<T> => !!c);
+              } else {
+                cellCols = visibleColumns.filter(
+                  (c) => c.key !== primaryCol?.key,
+                );
+              }
+            }
+            const layout = mobileCard?.layout ?? "stack";
+            const hideLabels = mobileCard?.hideLabels ?? layout === "grid-2";
             return (
               <div
                 key={getRowKey(row)}
@@ -593,18 +634,42 @@ export function DataTable<T>({
                   customClass
                 )}
               >
-                {first && (
+                {primaryCol && (
                   <div className="mb-2 text-[14px] font-semibold leading-snug text-ink">
-                    {first.render(row)}
+                    {primaryCol.render(row)}
                   </div>
                 )}
-                {rest.length > 0 && (
-                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12px]">
-                    {rest.map((c) => (
+                {cellCols.length > 0 && layout === "grid-2" && (
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-[12px]">
+                    {cellCols.map((c) => (
+                      <dd
+                        key={c.key}
+                        className={cn(
+                          "min-w-0 break-words text-ink-secondary",
+                          c.align === "right" && "text-right",
+                          c.align === "center" && "text-center",
+                          c.className
+                        )}
+                      >
+                        {c.render(row)}
+                      </dd>
+                    ))}
+                  </dl>
+                )}
+                {cellCols.length > 0 && layout === "stack" && (
+                  <dl
+                    className={cn(
+                      "grid gap-x-3 gap-y-1.5 text-[12px]",
+                      hideLabels ? "grid-cols-1" : "grid-cols-[auto_1fr]",
+                    )}
+                  >
+                    {cellCols.map((c) => (
                       <Fragment key={c.key}>
-                        <dt className="self-start pt-px font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-                          {c.label}
-                        </dt>
+                        {!hideLabels && (
+                          <dt className="self-start pt-px font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                            {c.label}
+                          </dt>
+                        )}
                         <dd
                           className={cn(
                             "min-w-0 break-words text-ink",

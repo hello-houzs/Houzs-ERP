@@ -7,22 +7,41 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { useUdf, type UdfField, type UdfFieldType } from "../hooks/useUdf";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
+import { ListSkeleton } from "../components/Skeleton";
+import { EmptyState } from "../components/EmptyState";
+
+const SALES_FILTER_KEYS = ["status", "search", "date_from", "date_to"] as const;
 
 // ── Types ─────────────────────────────────────────────────────
 
 export type EntryStatus = "draft" | "submitted" | "pushed" | "void";
+
+export type PaymentType = "cash" | "card_cc" | "card_db" | "epp";
+
+export const PAYMENT_TYPE_LABEL: Record<PaymentType, string> = {
+  cash: "Cash",
+  card_cc: "Credit Card",
+  card_db: "Debit Card",
+  epp: "EPP",
+};
 
 export interface SalesEntry {
   id: number;
   project_id: number | null;
   project_code: string | null;
   project_name: string | null;
+  ref_no: string | null;
   customer_name: string;
   customer_code: string | null;
+  customer_address: string | null;
+  customer_phone: string | null;
   amount: number;
+  deposit_amount: number | null;
+  deposit_payment_type: PaymentType | null;
   currency: string;
   occurred_at: string;
   notes: string | null;
@@ -31,6 +50,9 @@ export interface SalesEntry {
   autocount_doc_type: string | null;
   pushed_at: string | null;
   push_error: string | null;
+  sales_person_id: number | null;
+  sales_person_name: string | null;
+  sales_person_email: string | null;
   created_by: number;
   created_by_name: string | null;
   created_by_email: string | null;
@@ -67,10 +89,25 @@ export function Sales() {
   const canManage = can("sales.manage");
   const canWrite = can("sales.write");
 
-  const [status, setStatus] = useState<string>("");
-  const [search, setSearch] = useState<string>("");
-  const [dateFrom, setDateFrom] = useState<string>("");
-  const [dateTo, setDateTo] = useState<string>("");
+  // Filter state lives in the URL — `?status=draft&search=abc` —
+  // mirrored to localStorage via useStickyFilters so navbar away-and-back
+  // restores the last view. Bookmark / share / refresh / back-button all
+  // work because the URL itself is the source of truth.
+  const [params, setParams] = useStickyFilters("sales", SALES_FILTER_KEYS);
+  const status = params.get("status") || "";
+  const search = params.get("search") || "";
+  const dateFrom = params.get("date_from") || "";
+  const dateTo = params.get("date_to") || "";
+
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "") next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+
   const [editing, setEditing] = useState<SalesEntry | null>(null);
   const [creating, setCreating] = useState(false);
   const [fieldsOpen, setFieldsOpen] = useState(false);
@@ -169,7 +206,7 @@ export function Sales() {
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <select
           value={status}
-          onChange={(e) => setStatus(e.target.value)}
+          onChange={(e) => patchParams({ status: e.target.value })}
           className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
         >
           <option value="">All statuses</option>
@@ -181,7 +218,7 @@ export function Sales() {
         <input
           type="date"
           value={dateFrom}
-          onChange={(e) => setDateFrom(e.target.value)}
+          onChange={(e) => patchParams({ date_from: e.target.value })}
           title="From"
           className="h-8 rounded-md border border-border bg-surface px-2 text-[11px]"
         />
@@ -189,25 +226,22 @@ export function Sales() {
         <input
           type="date"
           value={dateTo}
-          onChange={(e) => setDateTo(e.target.value)}
+          onChange={(e) => patchParams({ date_to: e.target.value })}
           title="To"
           className="h-8 rounded-md border border-border bg-surface px-2 text-[11px]"
         />
         <input
           type="search"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search customer / notes…"
+          onChange={(e) => patchParams({ search: e.target.value })}
+          placeholder="Search customer / phone / ref no…"
           className="h-8 flex-1 min-w-[200px] max-w-[320px] rounded-md border border-border bg-surface px-3 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
         />
         {(status || search || dateFrom || dateTo) && (
           <button
-            onClick={() => {
-              setStatus("");
-              setSearch("");
-              setDateFrom("");
-              setDateTo("");
-            }}
+            onClick={() =>
+              patchParams({ status: "", search: "", date_from: "", date_to: "" })
+            }
             className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
           >
             Clear
@@ -216,26 +250,21 @@ export function Sales() {
       </div>
 
       {/* List */}
-      {list.loading && !list.data && (
-        <div className="px-4 py-6 text-[12px] text-ink-muted">Loading…</div>
-      )}
+      {list.loading && !list.data && <ListSkeleton rows={6} />}
       {list.error && (
         <div className="rounded-md border border-err/40 bg-err/5 px-4 py-3 text-[12px] text-err">
           {list.error}
         </div>
       )}
       {list.data && list.data.data.length === 0 && !list.loading && (
-        <div className="rounded-md border border-dashed border-border bg-surface px-5 py-10 text-center text-[12px] text-ink-muted">
-          No sales logged yet.{" "}
-          {canWrite && (
-            <button
-              onClick={() => setCreating(true)}
-              className="font-semibold text-accent hover:underline"
-            >
-              Add your first entry
-            </button>
-          )}
-        </div>
+        <EmptyState
+          message="No sales logged yet."
+          cta={
+            canWrite
+              ? { label: "Add your first entry", onClick: () => setCreating(true) }
+              : undefined
+          }
+        />
       )}
       {list.data && list.data.data.length > 0 && (
         <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
@@ -267,9 +296,9 @@ export function Sales() {
                     </td>
                     <td className="px-3 py-2">
                       <div className="font-semibold text-ink">{e.customer_name}</div>
-                      {e.customer_code && (
+                      {e.customer_phone && (
                         <div className="font-mono text-[10px] text-ink-muted">
-                          {e.customer_code}
+                          {e.customer_phone}
                         </div>
                       )}
                     </td>
@@ -435,9 +464,32 @@ export function EntryPanel({
   lockedProjectLabel?: string;
 }) {
   const toast = useToast();
+  const auth = useAuth();
   const [customerName, setCustomerName] = useState(entry?.customer_name || "");
-  const [customerCode, setCustomerCode] = useState(entry?.customer_code || "");
+  const [customerPhone, setCustomerPhone] = useState(entry?.customer_phone || "");
+  const [customerAddress, setCustomerAddress] = useState(entry?.customer_address || "");
+  const [refNo, setRefNo] = useState(entry?.ref_no || "");
   const [amount, setAmount] = useState(entry ? String(entry.amount) : "");
+  // When deposit_amount is null on a fresh row, default it to mirror
+  // amount — the rep collected the full sale up front. They can drop
+  // it lower if a balance is being chased.
+  const [depositAmount, setDepositAmount] = useState(
+    entry?.deposit_amount != null
+      ? String(entry.deposit_amount)
+      : entry?.amount != null
+      ? String(entry.amount)
+      : ""
+  );
+  const [depositPaymentType, setDepositPaymentType] = useState<PaymentType | "">(
+    (entry?.deposit_payment_type as PaymentType) || ""
+  );
+  const [salesPersonId, setSalesPersonId] = useState<string>(
+    entry?.sales_person_id != null
+      ? String(entry.sales_person_id)
+      : auth.user?.id
+      ? String(auth.user.id)
+      : ""
+  );
   const [currency, setCurrency] = useState(entry?.currency || "MYR");
   const [occurredAt, setOccurredAt] = useState(
     entry?.occurred_at?.slice(0, 10) || new Date().toISOString().slice(0, 10)
@@ -450,6 +502,13 @@ export function EntryPanel({
   const [notes, setNotes] = useState(entry?.notes || "");
   const [custom, setCustom] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+
+  // Sales-person picker. Defaults to the logged-in user (admins keying
+  // an entry on behalf of a rep change this). Falls back gracefully if
+  // /api/users is forbidden for the role — the picker simply hides.
+  const usersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>(
+    () => api.get<{ users: Array<{ id: number; name: string | null; email: string }> }>("/api/users").catch(() => ({ users: [] }))
+  );
 
   // Hydrate custom field values if editing.
   useEffect(() => {
@@ -493,13 +552,35 @@ export function EntryPanel({
       toast.error("Amount must be a number");
       return;
     }
+    let dep: number | null = null;
+    if (depositAmount.trim() !== "") {
+      const d = parseFloat(depositAmount);
+      if (!isFinite(d) || d < 0) {
+        toast.error("Deposit must be a non-negative number");
+        return;
+      }
+      if (d > amt) {
+        toast.error("Deposit cannot exceed amount");
+        return;
+      }
+      dep = d;
+    }
+    if (dep !== null && dep > 0 && !depositPaymentType) {
+      toast.error("Pick a payment type for the deposit");
+      return;
+    }
     setBusy(true);
     try {
       const body: any = {
         project_id: projectId ? parseInt(projectId, 10) : null,
+        ref_no: refNo.trim() || null,
         customer_name: customerName.trim(),
-        customer_code: customerCode.trim() || null,
+        customer_phone: customerPhone.trim() || null,
+        customer_address: customerAddress.trim() || null,
         amount: amt,
+        deposit_amount: dep,
+        deposit_payment_type: depositPaymentType || null,
+        sales_person_id: salesPersonId ? parseInt(salesPersonId, 10) : null,
         currency: currency.trim() || "MYR",
         occurred_at: occurredAt,
         notes: notes.trim() || null,
@@ -576,23 +657,43 @@ export function EntryPanel({
           <input
             value={customerName}
             onChange={(e) => setCustomerName(e.target.value)}
-            placeholder="e.g. ABC Sdn Bhd"
+            placeholder="e.g. Tan Wei Ming"
             className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
             autoFocus
           />
         </div>
         <div>
-          <Label>AutoCount customer code (optional)</Label>
+          <Label>Phone</Label>
           <input
-            value={customerCode}
-            onChange={(e) => setCustomerCode(e.target.value)}
-            placeholder="e.g. 300-A0001"
+            value={customerPhone}
+            onChange={(e) => setCustomerPhone(e.target.value)}
+            placeholder="e.g. 012-345 6789"
+            inputMode="tel"
             className="h-10 w-full rounded-md border border-border bg-surface px-3 font-mono text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          />
+        </div>
+        <div>
+          <Label>Address</Label>
+          <textarea
+            value={customerAddress}
+            onChange={(e) => setCustomerAddress(e.target.value)}
+            placeholder="Delivery / billing address"
+            rows={2}
+            className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
           />
         </div>
       </PanelSection>
 
       <PanelSection title="Sale">
+        <div>
+          <Label>Reference no.</Label>
+          <input
+            value={refNo}
+            onChange={(e) => setRefNo(e.target.value)}
+            placeholder="e.g. ZNT00001"
+            className="h-10 w-full rounded-md border border-border bg-surface px-3 font-mono text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          />
+        </div>
         <div className="grid grid-cols-[1fr_100px] gap-3">
           <div>
             <Label>Amount</Label>
@@ -600,7 +701,15 @@ export function EntryPanel({
               type="number"
               step="0.01"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={(e) => {
+                setAmount(e.target.value);
+                // Auto-mirror deposit when the rep hasn't manually
+                // dialled it back yet (deposit==prev amount). Avoids
+                // surprising them when they type the gross first.
+                if (depositAmount === "" || depositAmount === amount) {
+                  setDepositAmount(e.target.value);
+                }
+              }}
               placeholder="0.00"
               className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
             />
@@ -614,6 +723,47 @@ export function EntryPanel({
             />
           </div>
         </div>
+        <div className="grid grid-cols-[1fr_1fr] gap-3">
+          <div>
+            <Label>Deposit collected</Label>
+            <input
+              type="number"
+              step="0.01"
+              value={depositAmount}
+              onChange={(e) => setDepositAmount(e.target.value)}
+              placeholder="0.00"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            />
+          </div>
+          <div>
+            <Label>Deposit payment type</Label>
+            <select
+              value={depositPaymentType}
+              onChange={(e) => setDepositPaymentType(e.target.value as PaymentType | "")}
+              className="h-10 w-full appearance-none rounded-md border border-border bg-surface px-3 text-[13px]"
+            >
+              <option value="">— select —</option>
+              <option value="cash">Cash</option>
+              <option value="card_cc">Credit Card</option>
+              <option value="card_db">Debit Card</option>
+              <option value="epp">EPP</option>
+            </select>
+          </div>
+        </div>
+        {(() => {
+          const a = parseFloat(amount) || 0;
+          const d = parseFloat(depositAmount) || 0;
+          const balance = Math.max(0, a - d);
+          if (a <= 0) return null;
+          return (
+            <div className="rounded-md border border-border-subtle bg-bg/40 px-3 py-2 text-[11px] text-ink-secondary">
+              Balance to chase post-event:{" "}
+              <span className="font-mono font-bold text-ink">
+                {currency || "MYR"} {balance.toFixed(2)}
+              </span>
+            </div>
+          );
+        })()}
         <div>
           <Label>Date</Label>
           <input
@@ -622,6 +772,21 @@ export function EntryPanel({
             onChange={(e) => setOccurredAt(e.target.value)}
             className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px]"
           />
+        </div>
+        <div>
+          <Label>Sales person</Label>
+          <select
+            value={salesPersonId}
+            onChange={(e) => setSalesPersonId(e.target.value)}
+            className="h-10 w-full appearance-none rounded-md border border-border bg-surface px-3 text-[13px]"
+          >
+            <option value="">— me —</option>
+            {(usersQ.data?.users ?? []).map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email}
+              </option>
+            ))}
+          </select>
         </div>
         <div>
           <Label>Project</Label>

@@ -476,6 +476,7 @@ export const project_checklist = sqliteTable("project_checklist", {
   description: text("description"),
   required_perm: text("required_perm"),
   due_date: text("due_date"),
+  due_offset_days: integer("due_offset_days"),
   owner_user_id: integer("owner_user_id"),
   status: text("status").notNull().default("pending"),
   evidence_r2_key: text("evidence_r2_key"),
@@ -512,6 +513,38 @@ export const project_checklist_template_items = sqliteTable(
     requires_review: integer("requires_review").notNull().default(0),
   }
 );
+
+// ── sales_entries (mig 041; mig 051 added payment-split columns) ─
+// Rep-keyed sales transactions. `amount` is the gross; `deposit_amount`
+// is what was collected on event day (balance = amount - deposit, not
+// stored). `deposit_payment_type` is one of cash/card_cc/card_db/epp.
+// `sales_person_id` defaults to created_by but admins can key entries
+// on behalf of another rep, so it's a separate column.
+export const sales_entries = sqliteTable("sales_entries", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  project_id: integer("project_id"),
+  ref_no: text("ref_no"),
+  customer_name: text("customer_name").notNull(),
+  customer_code: text("customer_code"),
+  customer_address: text("customer_address"),
+  customer_phone: text("customer_phone"),
+  amount: integer("amount").notNull(),
+  deposit_amount: integer("deposit_amount"),
+  deposit_payment_type: text("deposit_payment_type"),
+  currency: text("currency").notNull().default("MYR"),
+  occurred_at: text("occurred_at").notNull(),
+  notes: text("notes"),
+  status: text("status").notNull().default("draft"),
+  autocount_doc_no: text("autocount_doc_no"),
+  autocount_doc_type: text("autocount_doc_type"),
+  pushed_at: text("pushed_at"),
+  push_error: text("push_error"),
+  sales_person_id: integer("sales_person_id"),
+  created_by: integer("created_by").notNull(),
+  created_at: text("created_at").default(sql`(datetime('now'))`),
+  updated_at: text("updated_at").default(sql`(datetime('now'))`),
+  archived_at: text("archived_at"),
+});
 
 // ── project_finance_lines ─────────────────────────────────
 // Per-line ledger of finance entries. `kind` separates revenue

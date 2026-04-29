@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { PageHeader } from "../components/Layout";
 import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
@@ -6,14 +5,30 @@ import { Pagination } from "../components/Pagination";
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api, buildQuery } from "../api/client";
 import { relativeTime } from "../lib/utils";
 import type { Paginated, ExecutionLog } from "../types";
 
+const LOGS_FILTER_KEYS = ["type", "status", "page"] as const;
+
 export function Logs() {
-  const [type, setType] = useState("");
-  const [status, setStatus] = useState("");
-  const [page, setPage] = useState(1);
+  const [params, setParams] = useStickyFilters("logs", LOGS_FILTER_KEYS);
+  const type = params.get("type") || "";
+  const status = params.get("status") || "";
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "" || (k === "page" && v === "1")) next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setType = (v: string) => patchParams({ type: v, page: "1" });
+  const setStatus = (v: string) => patchParams({ status: v, page: "1" });
+  const setPage = (n: number) => patchParams({ page: String(n) });
+
   const [perPage, setPerPage] = useLocalStorage<number>("pp:logs", 50);
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
 
@@ -92,10 +107,7 @@ export function Logs() {
             <select
               className={selectClass}
               value={type}
-              onChange={(e) => {
-                setPage(1);
-                setType(e.target.value);
-              }}
+              onChange={(e) => setType(e.target.value)}
             >
               <option value="">All Types</option>
               <option value="PULL">Pull</option>
@@ -107,10 +119,7 @@ export function Logs() {
             <select
               className={selectClass}
               value={status}
-              onChange={(e) => {
-                setPage(1);
-                setStatus(e.target.value);
-              }}
+              onChange={(e) => setStatus(e.target.value)}
             >
               <option value="">All Status</option>
               <option value="SYNCED">Synced</option>

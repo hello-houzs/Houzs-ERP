@@ -102,7 +102,7 @@ export function LorryDetail() {
       breadcrumbs={[
         { label: "Logistics", to: "/logistics" },
         { label: "Fleet", to: "/logistics?tab=fleet" },
-        { label: "Lorries", to: "/logistics?tab=fleet" },
+        { label: "Lorries", to: "/logistics?tab=fleet&sub=lorries" },
         { label: d?.lorry.plate || `#${id}` },
       ]}
       eyebrow={`Lorry · ${d?.lorry.plate || `#${id}`}`}
@@ -155,7 +155,7 @@ export function LorryDetail() {
                 >
                   {showMaintForm && (
                     <div className="mb-3 rounded-md border border-accent/30 bg-accent-soft/40 p-3">
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                         <EditField
                           label="Type"
                           value={maintForm.type}

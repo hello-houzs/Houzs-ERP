@@ -18,7 +18,11 @@
  * through to network for new builds).
  */
 
-const VERSION = "houzs-erp-v1";
+// Bumping this purges old caches in the activate step. v2: HTML is now
+// fetched network-first so the stale-on-first-refresh issue from v1 is
+// gone; this one-shot bump also clears any v1 shell entry that has the
+// pre-fix index.html baked in.
+const VERSION = "houzs-erp-v2";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
@@ -86,8 +90,22 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Everything else (the SPA shell): cache-first with background
-  // refresh. New deploys get fresh asset filenames so this is safe.
+  // HTML / SPA navigation requests must always try the network first so a
+  // fresh deploy is picked up on the very next refresh. Falls back to the
+  // cached index.html only when offline. Without this, cache-first served
+  // a stale index.html for one extra refresh after every deploy.
+  const isNavigation =
+    req.mode === "navigate" ||
+    url.pathname === "/" ||
+    url.pathname === "/index.html";
+  if (isNavigation) {
+    event.respondWith(navigationNetworkFirst(req));
+    return;
+  }
+
+  // Everything else (hashed /assets/*, manifest, logos): cache-first with
+  // background refresh. Hashed asset filenames change on every build, so
+  // serving them from cache is always correct for the corresponding HTML.
   event.respondWith(cacheFirst(req));
 });
 
@@ -114,6 +132,29 @@ async function networkFirst(req) {
         headers: { "Content-Type": "application/json" },
       }
     );
+  }
+}
+
+// Navigation = the SPA's index.html shell. Always try network first so a
+// new deploy lands on the next refresh; cache fallback only kicks in when
+// the user is offline (lift, tunnel, no signal at venue).
+async function navigationNetworkFirst(req) {
+  const cache = await caches.open(SHELL_CACHE);
+  try {
+    const fresh = await fetchWithTimeout(req, 4000);
+    if (fresh && fresh.ok) {
+      // Mirror the shell into cache under both the requested URL and
+      // /index.html so the SPA fallback path below always finds it.
+      cache.put(req, fresh.clone()).catch(() => {});
+      cache.put("/index.html", fresh.clone()).catch(() => {});
+      return fresh;
+    }
+    throw new Error("network response not ok");
+  } catch {
+    const cached =
+      (await cache.match(req)) || (await cache.match("/index.html"));
+    if (cached) return cached;
+    return new Response("Offline", { status: 503 });
   }
 }
 

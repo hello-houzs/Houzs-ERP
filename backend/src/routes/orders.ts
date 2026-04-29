@@ -5,7 +5,7 @@ import { DELIVERY_WHERE } from "../services/deliveryFilter";
 import { AutoCountClient } from "../services/autocount";
 import { getDb } from "../db/client";
 import { sales_orders, order_details } from "../db/schema";
-import { and, desc, eq, like, or, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -81,10 +81,14 @@ app.get("/", async (c) => {
 
   const db = getDb(c.env);
 
+  // FROM aliases the tables as `so` and `od`, so SQLite rejects bare
+  // "sales_orders".col / "order_details".col references that Drizzle's
+  // column helpers would emit. Build the WHERE with raw sql templates
+  // that reference the aliases directly.
   const conds: any[] = [];
   if (view === "do") conds.push(sql`(${sql.raw(DELIVERY_WHERE)})`);
-  if (region) conds.push(eq(sales_orders.region, region));
-  if (warehouseQ) conds.push(eq(order_details.warehouse, warehouseQ));
+  if (region) conds.push(sql`so.region = ${region}`);
+  if (warehouseQ) conds.push(sql`od.warehouse = ${warehouseQ}`);
   if (unscheduled) {
     // Exclude orders that are already on a non-cancelled trip OR on a
     // draft proposal — these are "in flight" or "being planned" and
@@ -102,16 +106,10 @@ app.get("/", async (c) => {
          AND json_extract(ptt.payload_json, '$.stops') LIKE '%"' || so.doc_no || '"%'
     )`);
   }
-  if (status) conds.push(eq(sales_orders.sync_status, status));
+  if (status) conds.push(sql`so.sync_status = ${status}`);
   if (search) {
     const likeStr = `%${search}%`;
-    conds.push(
-      or(
-        like(sales_orders.doc_no, likeStr),
-        like(sales_orders.debtor_name, likeStr),
-        like(sales_orders.phone, likeStr)
-      )!
-    );
+    conds.push(sql`(so.doc_no LIKE ${likeStr} OR so.debtor_name LIKE ${likeStr} OR so.phone LIKE ${likeStr})`);
   }
   const whereClause = conds.length ? sql`WHERE ${sql.join(conds, sql` AND `)}` : sql``;
 

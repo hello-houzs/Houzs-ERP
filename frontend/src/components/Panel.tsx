@@ -72,7 +72,9 @@ export function Panel({ open, onClose, title, subtitle, children, footer, width 
         </div>
         <div className="thin-scroll flex-1 overflow-y-auto px-6 py-5">{children}</div>
         {footer && (
-          <div className="border-t border-border bg-bg/60 px-6 py-3">{footer}</div>
+          <div className="border-t border-border bg-bg/60 px-6 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
+            {footer}
+          </div>
         )}
       </div>
     </div>

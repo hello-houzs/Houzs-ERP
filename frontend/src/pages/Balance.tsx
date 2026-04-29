@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { PageHeader } from "../components/Layout";
 import { FilterPills } from "../components/FilterPills";
 import { DataTable, type Column } from "../components/DataTable";
@@ -8,17 +7,35 @@ import { DashboardGrid, DashboardPanels, DashboardBreakdown } from "../component
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api, buildQuery } from "../api/client";
 import { cn, formatCurrency, formatDate, isExpired, isExpiringSoon } from "../lib/utils";
 import type { Paginated, SalesOrder, BalanceSummary } from "../types";
 
 type ExpiryFilter = "all" | "expired" | "warning";
 
+const BALANCE_FILTER_KEYS = ["filter", "search", "page"] as const;
+
 export function Balance() {
-  const [filter, setFilter] = useState<ExpiryFilter>("all");
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
+  const [params, setParams] = useStickyFilters("balance", BALANCE_FILTER_KEYS);
+  const filter = ((params.get("filter") || "all") as ExpiryFilter);
+  const search = params.get("search") || "";
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:balance", 100);
+
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "" || (k === "filter" && v === "all") || (k === "page" && v === "1"))
+        next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setFilter = (v: ExpiryFilter) =>
+    patchParams({ filter: v, page: "1" });
+  const setSearch = (v: string) => patchParams({ search: v, page: "1" });
+  const setPage = (n: number) => patchParams({ page: String(n) });
 
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
 
@@ -181,10 +198,7 @@ export function Balance() {
       <div className="mb-4">
         <FilterPills
           value={filter}
-          onChange={(v) => {
-            setPage(1);
-            setFilter(v);
-          }}
+          onChange={(v) => setFilter(v)}
           options={[
             { value: "all", label: "All" },
             { value: "expired", label: "Expired" },
@@ -200,10 +214,7 @@ export function Balance() {
         exportName="balance"
         search={{
           value: search,
-          onChange: (v) => {
-            setPage(1);
-            setSearch(v);
-          },
+          onChange: (v) => setSearch(v),
           placeholder: "Search doc no, customer, phone…",
         }}
         columns={columns}

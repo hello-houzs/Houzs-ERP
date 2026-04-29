@@ -1,0 +1,12 @@
+# Cloudflare Pages cache rules.
+#
+# index.html is the entry that points at the hashed bundles — always
+# revalidate so a new deploy reaches the user on the next refresh.
+# /assets/* are content-hashed by Vite, so a year-long immutable cache
+# is correct: the filename itself changes whenever the contents change.
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

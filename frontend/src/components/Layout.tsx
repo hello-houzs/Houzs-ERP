@@ -65,10 +65,12 @@ export function Layout({ children }: Props) {
 
         {writesDisabled && <ReadOnlyBanner />}
 
-        {/* Bottom padding on small screens leaves room for the mobile
-            tab rail (h-14 + safe-area-inset-bottom). lg+ keeps the
-            standard padding because the rail is hidden there. */}
-        <div className="mx-auto w-full max-w-[1400px] px-4 pt-6 pb-24 sm:px-6 sm:pt-8 sm:pb-28 lg:px-10 lg:py-10 animate-rise">
+        {/* Bottom padding clears the mobile tab rail (h-14 + safe area)
+            AND the floating chat FAB which sits above the rail at
+            bottom-20 + safe area + h-12. Total clearance: 160 + safe
+            area for mobile/sm, normal for lg+ where the rail is hidden
+            and the FAB tucks into the corner. */}
+        <div className="mx-auto w-full max-w-[1400px] px-4 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 lg:px-10 lg:py-10 animate-rise">
           {children}
         </div>
       </main>

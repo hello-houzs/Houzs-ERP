@@ -38,7 +38,12 @@ interface Props {
   onMobileClose?: () => void;
 }
 
-interface Tab {
+/**
+ * Single source of truth for the app's nav tree. Used by the desktop
+ * Sidebar and re-rendered as a grid in the mobile MenuModal so the
+ * two never drift. Add a route here, it shows up in both places.
+ */
+export interface NavTab {
   /** Click target. Omit when this is a pure group header with `children`. */
   to?: string;
   label: string;
@@ -56,7 +61,7 @@ interface Tab {
   hidePerm?: string;
   /** Optional sub-entries. When present, this tab renders as an
    *  expandable group header instead of a click target. */
-  children?: Tab[];
+  children?: NavTab[];
   /** Stable id used for the per-group expanded/collapsed memory. Only
    *  required when `children` is present. */
   groupId?: string;
@@ -68,7 +73,7 @@ interface Tab {
  * Management). Tabs declare permission via `perm` / `anyPerm`; the
  * filter recurses so groups with no visible kids hide entirely.
  */
-const TABS: Tab[] = [
+export const NAV_TABS: NavTab[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read" },
   // The rep-facing Sales log used to live here as its own tab. It was
@@ -216,24 +221,26 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   // suppressed by hidePerm (used to remove redundant entries when a
   // richer replacement is available). Recursive — a group with no
   // visible children is itself hidden.
-  function filterTab(t: Tab): Tab | null {
+  function filterTab(t: NavTab): NavTab | null {
     if (t.perm && !can(t.perm)) return null;
     if (t.anyPerm && !t.anyPerm.some((p) => can(p))) return null;
     if (t.hidePerm && can(t.hidePerm)) return null;
     if (t.children) {
       const kids = t.children
         .map(filterTab)
-        .filter((x): x is Tab => x !== null);
+        .filter((x): x is NavTab => x !== null);
       if (kids.length === 0) return null;
       return { ...t, children: kids };
     }
     return t;
   }
 
-  const visibleTabs = TABS.map(filterTab).filter((t): t is Tab => t !== null);
+  const visibleTabs = NAV_TABS.map(filterTab).filter(
+    (t): t is NavTab => t !== null,
+  );
 
   // Recursive renderer for tabs — handles plain links and nested groups.
-  function renderTab(tab: Tab, depth = 0): React.ReactNode {
+  function renderTab(tab: NavTab, depth = 0): React.ReactNode {
     const Icon = tab.icon;
 
     // Group header (has children) — render as expandable section.

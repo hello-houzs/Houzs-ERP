@@ -240,6 +240,11 @@ export function QueueTab({
           },
           placeholder: "Search doc no, customer, phone…",
         }}
+        mobileCard={{
+          primary: "doc_no",
+          cells: ["warehouse", "doc_date", "expiry_date"],
+          layout: "grid-2",
+        }}
         columns={columns}
         rows={list.data?.data ?? null}
         loading={list.loading}

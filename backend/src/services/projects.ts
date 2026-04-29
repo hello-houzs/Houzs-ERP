@@ -59,6 +59,9 @@ export interface CreateProjectInput {
 }
 
 export async function createProject(env: Env, input: CreateProjectInput) {
+  if (input.start_date && input.end_date && input.end_date < input.start_date) {
+    throw new Error("end_date must be on or after start_date");
+  }
   const now = new Date();
   const year = input.start_date
     ? new Date(input.start_date).getFullYear()
@@ -187,8 +190,8 @@ export async function instantiateChecklistFromEventType(
       (item.requires_review ? "projects.approve" : null);
     await env.DB.prepare(
       `INSERT INTO project_checklist
-         (project_id, section_id, seq, title, description, required_perm, due_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+         (project_id, section_id, seq, title, description, required_perm, due_date, due_offset_days)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         projectId,
@@ -197,7 +200,8 @@ export async function instantiateChecklistFromEventType(
         item.title,
         item.description,
         requiredPerm,
-        due
+        due,
+        item.due_offset_days
       )
       .run();
   }
@@ -265,33 +269,37 @@ export async function patchProject(
   id: number,
   body: Record<string, any>,
   userId: number
-): Promise<boolean> {
-  // Capture stage change for activity log before we write.
+): Promise<{ ok: boolean; shifted_tasks: number; delta_days: number }> {
+  // Capture current stage + start_date in one read so we can both log the
+  // stage transition and shift checklist due_dates by the start_date delta
+  // without a second SELECT.
+  const wantStageOrDate =
+    "stage" in body || "start_date" in body || "end_date" in body;
   let prevStage: string | null = null;
-  if ("stage" in body) {
+  let prevStart: string | null = null;
+  let prevEnd: string | null = null;
+  if (wantStageOrDate) {
     const row = await env.DB.prepare(
-      `SELECT stage FROM projects WHERE id = ?`
+      `SELECT stage, start_date, end_date FROM projects WHERE id = ?`
     )
       .bind(id)
-      .first<{ stage: string }>();
+      .first<{
+        stage: string;
+        start_date: string | null;
+        end_date: string | null;
+      }>();
     prevStage = row?.stage ?? null;
+    prevStart = row?.start_date ?? null;
+    prevEnd = row?.end_date ?? null;
   }
 
-  // If start_date moves, bubble the change into checklist due dates
-  // for items that were created from a template offset. We don't track
-  // which items came from the template, so this only updates items that
-  // *already have* a due_date — leaving manually-dated items alone
-  // would need a flag we don't have yet, so for v1 we only recompute
-  // if the caller explicitly asks via body.__shift_checklist.
-  const shiftChecklist = body.__shift_checklist === true;
-  let prevStart: string | null = null;
-  if (shiftChecklist && "start_date" in body) {
-    const row = await env.DB.prepare(
-      `SELECT start_date FROM projects WHERE id = ?`
-    )
-      .bind(id)
-      .first<{ start_date: string | null }>();
-    prevStart = row?.start_date ?? null;
+  // end_date >= start_date when both are set after the patch.
+  const nextStart =
+    "start_date" in body ? (body.start_date as string | null) : prevStart;
+  const nextEnd =
+    "end_date" in body ? (body.end_date as string | null) : prevEnd;
+  if (nextStart && nextEnd && nextEnd < nextStart) {
+    throw new Error("end_date must be on or after start_date");
   }
 
   const sets: string[] = [];
@@ -302,7 +310,7 @@ export async function patchProject(
       binds.push(body[k] ?? null);
     }
   }
-  if (!sets.length) return false;
+  if (!sets.length) return { ok: false, shifted_tasks: 0, delta_days: 0 };
   sets.push("updated_at = datetime('now')");
   binds.push(id);
 
@@ -316,35 +324,69 @@ export async function patchProject(
     await logProjectActivity(env, id, "stage_change", prevStage, body.stage, null, userId);
   }
 
-  if (shiftChecklist && prevStart && body.start_date) {
-    await shiftChecklistDueDates(env, id, prevStart, body.start_date);
+  // Re-derive checklist due_dates from the new start_date and each
+  // task's due_offset_days (the offset configured in Project
+  // Maintenance, persisted onto the row at template-instantiation
+  // time and on every manual due_date edit). Stock-transfer mirror
+  // tasks (notes LIKE 'auto:%') are skipped — their due_date follows
+  // the transferred_at field, not the project schedule.
+  let shifted = 0;
+  let deltaDays = 0;
+  if (
+    "start_date" in body &&
+    body.start_date &&
+    prevStart !== body.start_date
+  ) {
+    const out = await redateChecklistFromOffsets(
+      env,
+      id,
+      body.start_date as string
+    );
+    shifted = out.shifted;
+    deltaDays = out.deltaDays;
   }
 
-  return r.meta.changes > 0;
+  return {
+    ok: r.meta.changes > 0,
+    shifted_tasks: shifted,
+    delta_days: deltaDays,
+  };
 }
 
-async function shiftChecklistDueDates(
+async function redateChecklistFromOffsets(
   env: Env,
   projectId: number,
-  prevStart: string,
   nextStart: string
-) {
-  const prev = new Date(prevStart);
-  const next = new Date(nextStart);
-  if (isNaN(prev.getTime()) || isNaN(next.getTime())) return;
-  const deltaDays = Math.round(
-    (next.getTime() - prev.getTime()) / (1000 * 60 * 60 * 24)
-  );
-  if (deltaDays === 0) return;
-  // SQLite date arithmetic: shift by deltaDays for any non-null due_date
-  await env.DB.prepare(
+): Promise<{ shifted: number; deltaDays: number }> {
+  // Normalise to YYYY-MM-DD so the SQLite `date(...)` builtin gets a
+  // clean anchor regardless of any stray time/zone bits a legacy row
+  // might carry.
+  const nextDay = String(nextStart).slice(0, 10);
+  if (isNaN(new Date(nextDay + "T00:00:00Z").getTime())) {
+    return { shifted: 0, deltaDays: 0 };
+  }
+  // For each task with a known offset, due_date = nextDay + offset.
+  // Skip auto-mirror rows (notes='auto:stock_transfer=<id>' etc.) and
+  // already-completed work — completed tasks keep their original due
+  // date for audit. Manual tasks without an offset are left alone.
+  const r = await env.DB.prepare(
     `UPDATE project_checklist
-        SET due_date = date(due_date, ? || ' days'),
+        SET due_date = date(?, due_offset_days || ' days'),
             updated_at = datetime('now')
-      WHERE project_id = ? AND due_date IS NOT NULL AND status != 'done'`
+      WHERE project_id = ?
+        AND due_offset_days IS NOT NULL
+        AND status != 'done'
+        AND (notes IS NULL OR notes NOT LIKE 'auto:%')`
   )
-    .bind(deltaDays >= 0 ? `+${deltaDays}` : `${deltaDays}`, projectId)
+    .bind(nextDay, projectId)
     .run();
+  const shifted = r.meta.changes ?? 0;
+  console.log(
+    `[redateChecklistFromOffsets] project=${projectId} anchor=${nextDay} shifted=${shifted}`
+  );
+  // deltaDays kept on the return for the toast — leave at 0 since
+  // we re-derive absolute dates rather than applying a single delta.
+  return { shifted, deltaDays: 0 };
 }
 
 // ── Detail ────────────────────────────────────────────────────
@@ -535,6 +577,62 @@ export async function getProjectDetail(env: Env, id: number) {
   // these directly; project_finance is only the cached rollup.
   const ledger = await listLedgerLines(env, id);
 
+  // Sales entries surface as virtual income rows in the ledger so the
+  // Finance section reflects rep-entered sales without double-bookkeeping.
+  // sales_entries is the source of truth (managed via the Sales section);
+  // these synthetic rows carry source='sales_entry' so the UI suppresses
+  // edit/delete controls.
+  const salesEntryLines = await env.DB.prepare(
+    `SELECT s.id, s.amount, s.occurred_at, s.created_at,
+            s.customer_name, s.ref_no, s.notes,
+            COALESCE(sp.name, u.name) as created_by_name
+       FROM sales_entries s
+       LEFT JOIN users u  ON u.id  = s.created_by
+       LEFT JOIN users sp ON sp.id = s.sales_person_id
+      WHERE s.project_id = ?
+        AND s.archived_at IS NULL
+        AND s.status != 'void'
+      ORDER BY s.occurred_at DESC, s.id DESC`
+  )
+    .bind(id)
+    .all<{
+      id: number;
+      amount: number;
+      occurred_at: string;
+      created_at: string;
+      customer_name: string;
+      ref_no: string | null;
+      notes: string | null;
+      created_by_name: string | null;
+    }>();
+  const synthIncome = (salesEntryLines.results ?? []).map((s) => ({
+    id: -s.id,
+    project_id: id,
+    kind: "income" as const,
+    category: "sales",
+    description:
+      (s.ref_no ? `${s.ref_no} · ` : "") + s.customer_name,
+    amount: s.amount,
+    occurred_at: s.occurred_at,
+    r2_key: null,
+    file_name: null,
+    mime_type: null,
+    notes: s.notes,
+    created_by_name: s.created_by_name,
+    created_at: s.created_at,
+    archived_at: null,
+    source: "sales_entry" as const,
+    source_id: s.id,
+  }));
+  const ledgerWithSales = [...ledger, ...synthIncome].sort((a: any, b: any) => {
+    const ao = a.occurred_at ?? "";
+    const bo = b.occurred_at ?? "";
+    if (ao && bo) return bo.localeCompare(ao);
+    if (!ao && bo) return 1;
+    if (ao && !bo) return -1;
+    return (b.id ?? 0) - (a.id ?? 0);
+  });
+
   // Stock transfers — OUT + RETURN records, confirmation-tracked.
   const stockTransfers = await env.DB.prepare(
     `SELECT t.*, u.name as created_by_name, uc.name as confirmed_by_name
@@ -596,7 +694,7 @@ export async function getProjectDetail(env: Env, id: number) {
   return {
     project: { ...project, progress_pct, duration_days },
     finance: finance ?? null,
-    finance_lines: ledger,
+    finance_lines: ledgerWithSales,
     stock_transfers: stockTransfers.results ?? [],
     checklist: checklist.results ?? [],
     checklist_comments: comments,
@@ -847,10 +945,30 @@ export async function createChecklistItem(
       .first<{ next_seq: number }>();
     seq = row?.next_seq ?? 10;
   }
+  // Compute the offset relative to the project's start_date, so a
+  // later project-level start_date change keeps this task at the
+  // same relative position in the schedule.
+  let dueOffsetDays: number | null = null;
+  if (input.due_date) {
+    const proj = await env.DB.prepare(
+      `SELECT start_date FROM projects WHERE id = ?`
+    )
+      .bind(input.project_id)
+      .first<{ start_date: string | null }>();
+    if (proj?.start_date) {
+      const due = new Date(String(input.due_date).slice(0, 10) + "T00:00:00Z");
+      const start = new Date(String(proj.start_date).slice(0, 10) + "T00:00:00Z");
+      if (!isNaN(due.getTime()) && !isNaN(start.getTime())) {
+        dueOffsetDays = Math.round(
+          (due.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
+        );
+      }
+    }
+  }
   const r = await env.DB.prepare(
     `INSERT INTO project_checklist
-       (project_id, section_id, seq, title, description, required_perm, due_date, owner_user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+       (project_id, section_id, seq, title, description, required_perm, due_date, due_offset_days, owner_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       input.project_id,
@@ -860,6 +978,7 @@ export async function createChecklistItem(
       input.description ?? null,
       input.required_perm ?? null,
       input.due_date ?? null,
+      dueOffsetDays,
       input.owner_user_id ?? null
     )
     .run();
@@ -887,6 +1006,33 @@ export async function patchChecklistItem(
       binds.push(body[k] ?? null);
     }
   }
+
+  // When the user moves a task's due_date by hand, re-anchor the
+  // task's offset to the project's current start_date so a future
+  // project-level start_date change preserves this manual shift.
+  if ("due_date" in body) {
+    const row = await env.DB.prepare(
+      `SELECT c.project_id, p.start_date
+         FROM project_checklist c
+         JOIN projects p ON p.id = c.project_id
+        WHERE c.id = ?`
+    )
+      .bind(itemId)
+      .first<{ project_id: number; start_date: string | null }>();
+    let nextOffset: number | null = null;
+    if (body.due_date && row?.start_date) {
+      const due = new Date(String(body.due_date).slice(0, 10) + "T00:00:00Z");
+      const start = new Date(String(row.start_date).slice(0, 10) + "T00:00:00Z");
+      if (!isNaN(due.getTime()) && !isNaN(start.getTime())) {
+        nextOffset = Math.round(
+          (due.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
+        );
+      }
+    }
+    sets.push("due_offset_days = ?");
+    binds.push(nextOffset);
+  }
+
   if (!sets.length) return false;
   sets.push("updated_at = datetime('now')");
   binds.push(itemId);
@@ -1407,6 +1553,25 @@ export async function syncFinanceRollup(env: Env, projectId: number) {
     out.total_sales = Math.max(out.total_sales, reportTotal);
   }
 
+  // Roll in sales_entries (mig 041, the rep-facing flow that replaced
+  // the file-upload sales-reports section in mig 051). Drafts count too
+  // — what dispatchers / Sales Director care about is "sales taken on
+  // the floor", not just AutoCount-pushed ones. Voided + archived rows
+  // are excluded.
+  const entriesSum = await env.DB.prepare(
+    `SELECT COALESCE(SUM(amount), 0) as total
+       FROM sales_entries
+      WHERE project_id = ?
+        AND archived_at IS NULL
+        AND status != 'void'`
+  )
+    .bind(projectId)
+    .first<{ total: number }>();
+  const entriesTotal = entriesSum?.total ?? 0;
+  // Add to whatever's already there. Reports and entries are distinct
+  // record sets — a project can have both during the migration window.
+  out.total_sales += entriesTotal;
+
   await env.DB.prepare(
     `UPDATE project_finance
         SET rental = ?, contractor_cost = ?, license_fee = ?,
@@ -1503,6 +1668,18 @@ export async function createStockTransfer(
       userId || null
     )
     .run();
+  const transferId = r.meta.last_row_id as number;
+  // Surface the transfer in the tasklist so it's visible alongside other
+  // project work. Linked back via notes marker so confirm/archive can
+  // toggle the matching task's status.
+  await syncStockTransferTask(env, {
+    transferId,
+    projectId: input.project_id,
+    direction: input.direction,
+    transferredAt: input.transferred_at ?? null,
+    confirmedAt: null,
+    userId,
+  });
   await logProjectActivity(
     env,
     input.project_id,
@@ -1512,15 +1689,87 @@ export async function createStockTransfer(
     input.notes ?? null,
     userId
   );
-  return { id: r.meta.last_row_id as number };
+  return { id: transferId };
+}
+
+// ── Stock transfer ↔ tasklist mirror ─────────────────────────
+// Each non-archived stock transfer surfaces as one project_checklist row
+// so admins can see it in the Tasklist alongside everything else. The
+// link is by notes marker `auto:stock_transfer=<id>` (no schema change).
+const STOCK_TRANSFER_TASK_MARKER = "auto:stock_transfer=";
+
+function stockTransferTaskTitle(direction: string, transferredAt: string | null) {
+  const verb = direction === "out" ? "Stock OUT" : "Stock RETURN";
+  return transferredAt ? `${verb} — ${transferredAt}` : verb;
+}
+
+async function syncStockTransferTask(
+  env: Env,
+  args: {
+    transferId: number;
+    projectId: number;
+    direction: string;
+    transferredAt: string | null;
+    confirmedAt: string | null;
+    userId: number;
+  }
+) {
+  const marker = `${STOCK_TRANSFER_TASK_MARKER}${args.transferId}`;
+  const existing = await env.DB.prepare(
+    `SELECT id FROM project_checklist WHERE project_id = ? AND notes = ? LIMIT 1`
+  )
+    .bind(args.projectId, marker)
+    .first<{ id: number }>();
+  const status = args.confirmedAt ? "done" : "pending";
+  const title = stockTransferTaskTitle(args.direction, args.transferredAt);
+  if (existing) {
+    await env.DB.prepare(
+      `UPDATE project_checklist
+          SET title = ?, due_date = ?, status = ?,
+              completed_by = CASE WHEN ? = 'done' THEN ? ELSE NULL END,
+              completed_at = CASE WHEN ? = 'done' THEN datetime('now') ELSE NULL END,
+              updated_at = datetime('now')
+        WHERE id = ?`
+    )
+      .bind(title, args.transferredAt, status, status, args.userId || null, status, existing.id)
+      .run();
+    return;
+  }
+  await env.DB.prepare(
+    `INSERT INTO project_checklist
+       (project_id, seq, title, description, due_date, status,
+        completed_by, completed_at, notes, created_at, updated_at)
+     VALUES (?, 9000, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
+  )
+    .bind(
+      args.projectId,
+      title,
+      "Auto-generated from Stock Transfers section",
+      args.transferredAt,
+      status,
+      status === "done" ? args.userId || null : null,
+      status === "done" ? new Date().toISOString() : null,
+      marker
+    )
+    .run();
+}
+
+async function deleteStockTransferTask(env: Env, transferId: number) {
+  const marker = `${STOCK_TRANSFER_TASK_MARKER}${transferId}`;
+  await env.DB.prepare(
+    `DELETE FROM project_checklist WHERE notes = ?`
+  )
+    .bind(marker)
+    .run();
 }
 
 export async function confirmStockTransfer(env: Env, transferId: number, userId: number) {
   const row = await env.DB.prepare(
-    `SELECT project_id, direction FROM project_stock_transfers WHERE id = ?`
+    `SELECT project_id, direction, transferred_at
+       FROM project_stock_transfers WHERE id = ?`
   )
     .bind(transferId)
-    .first<{ project_id: number; direction: string }>();
+    .first<{ project_id: number; direction: string; transferred_at: string | null }>();
   if (!row) return false;
   await env.DB.prepare(
     `UPDATE project_stock_transfers
@@ -1529,6 +1778,14 @@ export async function confirmStockTransfer(env: Env, transferId: number, userId:
   )
     .bind(userId || null, transferId)
     .run();
+  await syncStockTransferTask(env, {
+    transferId,
+    projectId: row.project_id,
+    direction: row.direction,
+    transferredAt: row.transferred_at,
+    confirmedAt: new Date().toISOString(),
+    userId,
+  });
   await logProjectActivity(
     env,
     row.project_id,
@@ -1542,6 +1799,12 @@ export async function confirmStockTransfer(env: Env, transferId: number, userId:
 }
 
 export async function unconfirmStockTransfer(env: Env, transferId: number) {
+  const row = await env.DB.prepare(
+    `SELECT project_id, direction, transferred_at
+       FROM project_stock_transfers WHERE id = ?`
+  )
+    .bind(transferId)
+    .first<{ project_id: number; direction: string; transferred_at: string | null }>();
   await env.DB.prepare(
     `UPDATE project_stock_transfers
         SET confirmed_at = NULL, confirmed_by = NULL
@@ -1549,6 +1812,16 @@ export async function unconfirmStockTransfer(env: Env, transferId: number) {
   )
     .bind(transferId)
     .run();
+  if (row) {
+    await syncStockTransferTask(env, {
+      transferId,
+      projectId: row.project_id,
+      direction: row.direction,
+      transferredAt: row.transferred_at,
+      confirmedAt: null,
+      userId: 0,
+    });
+  }
 }
 
 export async function archiveStockTransfer(env: Env, transferId: number) {
@@ -1557,6 +1830,7 @@ export async function archiveStockTransfer(env: Env, transferId: number) {
   )
     .bind(transferId)
     .run();
+  await deleteStockTransferTask(env, transferId);
 }
 
 // ── Internal (existing) ──────────────────────────────────────

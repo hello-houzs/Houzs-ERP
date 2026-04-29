@@ -14,6 +14,7 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, relativeTime, cn, isExpired, isExpiringSoon } from "../lib/utils";
 import { parseCSVFile } from "../lib/csv";
@@ -31,10 +32,23 @@ import type {
 type RegionFilter = "ALL" | Region;
 type View = "orders" | "balance" | "overdue" | "pnl";
 
+const ORDERS_TAB_KEYS = ["view"] as const;
+const ORDERS_VIEW_KEYS = ["region", "search", "page"] as const;
+const BALANCE_VIEW_KEYS = ["filter", "search", "page"] as const;
+const OVERDUE_VIEW_KEYS = ["search", "page"] as const;
+
 // Delivery Message Status options (stored in AutoCount Remark4).
 export function Orders() {
   const toast = useToast();
-  const [view, setView] = useLocalStorage<View>("orders:view", "orders");
+  const [params, setParams] = useStickyFilters("orders-tab", ORDERS_TAB_KEYS);
+  const view = ((params.get("view") || "orders") as View);
+  const setView = (v: View) => {
+    // Clear sub-view params on tab switch so the new sub-view's
+    // useStickyFilters mount restores from its own scope cleanly.
+    const next = new URLSearchParams();
+    if (v !== "orders") next.set("view", v);
+    setParams(next, { replace: true });
+  };
 
   return (
     <div>
@@ -67,9 +81,23 @@ export function Orders() {
 
 function OrdersView({ toast }: { toast: ReturnType<typeof useToast> }) {
   const navigate = useNavigate();
-  const [region, setRegion] = useState<RegionFilter>("ALL");
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
+  const [params, setParams] = useStickyFilters("orders-orders", ORDERS_VIEW_KEYS);
+  const region = ((params.get("region") || "ALL") as RegionFilter);
+  const search = params.get("search") || "";
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "" || (k === "region" && v === "ALL") || (k === "page" && v === "1"))
+        next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setRegion = (v: RegionFilter) => patchParams({ region: v, page: "1" });
+  const setSearch = (v: string) => patchParams({ search: v, page: "1" });
+  const setPage = (n: number) => patchParams({ page: String(n) });
+
   const [perPage, setPerPage] = useLocalStorage<number>("pp:orders", 50);
   const [syncing, setSyncing] = useState(false);
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
@@ -228,10 +256,7 @@ function OrdersView({ toast }: { toast: ReturnType<typeof useToast> }) {
       <div className="mb-4">
         <FilterPills
           value={region}
-          onChange={(v) => {
-            setPage(1);
-            setRegion(v);
-          }}
+          onChange={(v) => setRegion(v)}
           options={[
             { value: "ALL", label: "All" },
             { value: "WEST", label: "West" },
@@ -248,10 +273,7 @@ function OrdersView({ toast }: { toast: ReturnType<typeof useToast> }) {
         exportName="orders"
         search={{
           value: search,
-          onChange: (v) => {
-            setPage(1);
-            setSearch(v);
-          },
+          onChange: (v) => setSearch(v),
           placeholder: "Search doc no, customer, phone…",
         }}
         columns={columns}
@@ -288,9 +310,23 @@ function OrdersView({ toast }: { toast: ReturnType<typeof useToast> }) {
 type ExpiryFilter = "all" | "expired" | "warning";
 
 function BalanceView() {
-  const [filter, setFilter] = useState<ExpiryFilter>("all");
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
+  const [params, setParams] = useStickyFilters("orders-balance", BALANCE_VIEW_KEYS);
+  const filter = ((params.get("filter") || "all") as ExpiryFilter);
+  const search = params.get("search") || "";
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "" || (k === "filter" && v === "all") || (k === "page" && v === "1"))
+        next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setFilter = (v: ExpiryFilter) => patchParams({ filter: v, page: "1" });
+  const setSearch = (v: string) => patchParams({ search: v, page: "1" });
+  const setPage = (n: number) => patchParams({ page: String(n) });
+
   const [perPage, setPerPage] = useLocalStorage<number>("pp:balance", 100);
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
 
@@ -385,10 +421,7 @@ function BalanceView() {
       <div className="mb-4">
         <FilterPills
           value={filter}
-          onChange={(v) => {
-            setPage(1);
-            setFilter(v);
-          }}
+          onChange={(v) => setFilter(v)}
           options={[
             { value: "all", label: "All" },
             { value: "expired", label: "Expired" },
@@ -404,10 +437,7 @@ function BalanceView() {
         exportName="balance"
         search={{
           value: search,
-          onChange: (v) => {
-            setPage(1);
-            setSearch(v);
-          },
+          onChange: (v) => setSearch(v),
           placeholder: "Search doc no, customer, phone…",
         }}
         columns={columns}
@@ -444,8 +474,20 @@ function BalanceView() {
 // ── Overdue View ─────────────────────────────────────────────
 
 function OverdueView({ toast }: { toast: ReturnType<typeof useToast> }) {
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
+  const [params, setParams] = useStickyFilters("orders-overdue", OVERDUE_VIEW_KEYS);
+  const search = params.get("search") || "";
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "" || (k === "page" && v === "1")) next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setSearch = (v: string) => patchParams({ search: v, page: "1" });
+  const setPage = (n: number) => patchParams({ page: String(n) });
+
   const [perPage, setPerPage] = useLocalStorage<number>("pp:overdue", 50);
   const [running, setRunning] = useState(false);
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
@@ -569,10 +611,7 @@ function OverdueView({ toast }: { toast: ReturnType<typeof useToast> }) {
         exportName="overdue-orders"
         search={{
           value: search,
-          onChange: (v) => {
-            setPage(1);
-            setSearch(v);
-          },
+          onChange: (v) => setSearch(v),
           placeholder: "Search doc no, customer, phone…",
         }}
         columns={columns}

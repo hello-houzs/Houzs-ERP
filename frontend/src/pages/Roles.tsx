@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Trash2, Lock, Shield } from "lucide-react";
 import { Button } from "../components/Button";
 import { Panel, PanelSection } from "../components/Panel";
+import { Skeleton } from "../components/Skeleton";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
@@ -65,7 +66,11 @@ export function RolesTab({
     <div>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {rolesQ.loading && (
-          <div className="px-5 py-6 text-sm text-ink-muted">Loading…</div>
+          <>
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-32 w-full rounded-lg" />
+            ))}
+          </>
         )}
         {rolesQ.data?.roles.map((r) => (
           <div

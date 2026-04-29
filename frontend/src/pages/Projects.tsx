@@ -12,8 +12,6 @@ import {
   Upload,
   FileText,
   Image as ImageIcon,
-  Link2,
-  Unlink,
   Upload as UploadIcon,
   X,
   ExternalLink,
@@ -63,33 +61,39 @@ import { DashboardGrid } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
+import { Skeleton, ListSkeleton } from "../components/Skeleton";
+import { EmptyState } from "../components/EmptyState";
 import { useUdf } from "../hooks/useUdf";
 import {
   EntryPanel,
   STATUS_BADGE as SALES_STATUS_BADGE,
+  PAYMENT_TYPE_LABEL,
   type SalesEntry,
   type EntryStatus as SalesEntryStatus,
 } from "./Sales";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useAuth } from "../auth/AuthContext";
 import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery } from "../api/client";
-import { formatDate, formatCurrency, cn, relativeTime } from "../lib/utils";
+import { formatDate, formatDateTime, formatCurrency, cn, relativeTime } from "../lib/utils";
 
 // ── Types (module-local) ─────────────────────────────────────
 // Kept in this file until something else imports them. Promoting to
 // types.ts is a no-brainer move once a second page needs them.
 
+// Simplified lifecycle (mig 053):
+//   draft → setup → live → dismantle → completed
+// "planning" + "build" collapsed into "setup"; "teardown" → "dismantle";
+// "closed"/"cancelled" → "completed".
 type ProjectStage =
   | "draft"
-  | "planning"
-  | "build"
+  | "setup"
   | "live"
-  | "teardown"
-  | "closed"
-  | "cancelled";
+  | "dismantle"
+  | "completed";
 
 type ChecklistStatus = "pending" | "done" | "na" | "blocked";
 
@@ -178,7 +182,6 @@ interface ProjectDetail {
   section_progress?: SectionProgress[];
   attachments: ProjectAttachment[];
   defects: ProjectDefect[];
-  sales_reports: SalesReport[];
   activity: ActivityRow[];
   team: any[];
   trips: ProjectTrip[];
@@ -250,6 +253,10 @@ interface FinanceLine {
   notes: string | null;
   created_by_name: string | null;
   created_at: string;
+  // Synthesised rows (e.g. from sales_entries) carry a source marker so
+  // the UI can suppress edit/delete — the source table is the truth.
+  source?: "sales_entry";
+  source_id?: number;
 }
 
 type AttachRole = "sales" | "driver" | "design" | "office";
@@ -283,20 +290,6 @@ interface ProjectDefect {
   resolved_notes: string | null;
   linked_assr_id: number | null;
   linked_assr_no: string | null;
-}
-
-interface SalesReport {
-  id: number;
-  project_id: number;
-  title: string | null;
-  sales_amount: number | null;
-  period_start: string | null;
-  period_end: string | null;
-  r2_key: string | null;
-  file_name: string | null;
-  mime_type: string | null;
-  uploaded_by_name: string | null;
-  created_at: string;
 }
 
 interface ChecklistComment {
@@ -546,26 +539,52 @@ function composeEventName(p: {
   return parts.join(" - ");
 }
 
+// Default project-name format used by the create form.
+//   "{state} [{brand}] {organizer | SOLO} @ {venue}"
+// Solo events override the organizer slot with the literal string "SOLO".
+// Missing fields collapse cleanly so a half-filled form still produces a
+// reasonable name; the user can always override by typing.
+function composeDefaultProjectName(p: {
+  state?: string | null;
+  brand?: string | null;
+  organizer?: string | null;
+  venue?: string | null;
+  event_type_slug?: string | null;
+}): string {
+  const state = (p.state || "").trim();
+  const brand = (p.brand || "").trim();
+  const organizer = (p.organizer || "").trim();
+  const venue = (p.venue || "").trim();
+  const isSolo = (p.event_type_slug || "").toLowerCase() === "solo";
+  const orgSlot = isSolo ? "SOLO" : organizer;
+
+  const head: string[] = [];
+  if (state) head.push(state);
+  if (brand) head.push(`[${brand}]`);
+  if (orgSlot) head.push(orgSlot);
+  const left = head.join(" ");
+  if (!venue) return left;
+  if (!left) return `@ ${venue}`;
+  return `${left} @ ${venue}`;
+}
+
 // ── Stage helpers ────────────────────────────────────────────
 
 const STAGE_OPTIONS: { value: "ALL" | ProjectStage; label: string }[] = [
   { value: "ALL", label: "All" },
   { value: "draft", label: "Draft" },
-  { value: "planning", label: "Planning" },
-  { value: "build", label: "Build" },
+  { value: "setup", label: "Setup" },
   { value: "live", label: "Live" },
-  { value: "teardown", label: "Teardown" },
-  { value: "closed", label: "Closed" },
+  { value: "dismantle", label: "Dismantle" },
+  { value: "completed", label: "Completed" },
 ];
 
 const STAGE_LABEL: Record<ProjectStage, string> = {
   draft: "Draft",
-  planning: "Planning",
-  build: "Build",
+  setup: "Setup",
   live: "Live",
-  teardown: "Teardown",
-  closed: "Closed",
-  cancelled: "Cancelled",
+  dismantle: "Dismantle",
+  completed: "Completed",
 };
 
 function stageVariant(
@@ -574,25 +593,21 @@ function stageVariant(
   switch (stage) {
     case "draft":
       return "neutral";
-    case "planning":
+    case "setup":
       return "open";
-    case "build":
     case "live":
-    case "teardown":
+    case "dismantle":
       return "in-progress";
-    case "closed":
+    case "completed":
       return "closed";
-    case "cancelled":
-      return "error";
   }
 }
 
 const NEXT_STAGE: Partial<Record<ProjectStage, { stage: ProjectStage; label: string }>> = {
-  draft: { stage: "planning", label: "Move to Planning" },
-  planning: { stage: "build", label: "Start Build" },
-  build: { stage: "live", label: "Go Live" },
-  live: { stage: "teardown", label: "Start Teardown" },
-  teardown: { stage: "closed", label: "Close Project" },
+  draft: { stage: "setup", label: "Move to Setup" },
+  setup: { stage: "live", label: "Go Live" },
+  live: { stage: "dismantle", label: "Start Dismantle" },
+  dismantle: { stage: "completed", label: "Complete Project" },
 };
 
 // ── Main page ────────────────────────────────────────────────
@@ -640,17 +655,46 @@ export function Projects() {
   );
 }
 
+const PROJECTS_LIST_FILTER_KEYS = [
+  "stage",
+  "search",
+  "brand",
+  "year",
+  "month",
+  "page",
+] as const;
+
 function ProjectsListView() {
   const { can } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const { unreadByProject } = useNotifications();
-  const [stage, setStage] = useState<"ALL" | ProjectStage>("ALL");
-  const [search, setSearch] = useState("");
-  const [brand, setBrand] = useState<string>("");
-  const [year, setYear] = useState<string>("");
-  const [month, setMonth] = useState<string>("");
-  const [page, setPage] = useState(1);
+  const [params, setParams] = useStickyFilters(
+    "projects-list",
+    PROJECTS_LIST_FILTER_KEYS
+  );
+  const stage = ((params.get("stage") || "ALL") as "ALL" | ProjectStage);
+  const search = params.get("search") || "";
+  const brand = params.get("brand") || "";
+  const year = params.get("year") || "";
+  const month = params.get("month") || "";
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "" || (k === "stage" && v === "ALL") || (k === "page" && v === "1"))
+        next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setStage = (v: "ALL" | ProjectStage) => patchParams({ stage: v, page: "1" });
+  const setSearch = (v: string) => patchParams({ search: v, page: "1" });
+  const setBrand = (v: string) => patchParams({ brand: v, page: "1" });
+  const setYear = (v: string) => patchParams({ year: v, page: "1" });
+  const setMonth = (v: string) => patchParams({ month: v, page: "1" });
+  const setPage = (n: number) => patchParams({ page: String(n) });
+
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -865,18 +909,12 @@ function ProjectsListView() {
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <FilterPills
           value={stage}
-          onChange={(v) => {
-            setPage(1);
-            setStage(v);
-          }}
+          onChange={(v) => setStage(v)}
           options={STAGE_OPTIONS}
         />
         <select
           value={brand}
-          onChange={(e) => {
-            setPage(1);
-            setBrand(e.target.value);
-          }}
+          onChange={(e) => setBrand(e.target.value)}
           className="h-8 rounded-md border border-border bg-surface px-2 text-[12px]"
         >
           <option value="">All brands</option>
@@ -888,10 +926,7 @@ function ProjectsListView() {
         </select>
         <select
           value={year}
-          onChange={(e) => {
-            setPage(1);
-            setYear(e.target.value);
-          }}
+          onChange={(e) => setYear(e.target.value)}
           className="h-8 rounded-md border border-border bg-surface px-2 text-[12px]"
         >
           <option value="">All years</option>
@@ -908,10 +943,7 @@ function ProjectsListView() {
         </select>
         <select
           value={month}
-          onChange={(e) => {
-            setPage(1);
-            setMonth(e.target.value);
-          }}
+          onChange={(e) => setMonth(e.target.value)}
           className="h-8 rounded-md border border-border bg-surface px-2 text-[12px]"
         >
           <option value="">All months</option>
@@ -943,10 +975,7 @@ function ProjectsListView() {
         exportName="projects"
         search={{
           value: search,
-          onChange: (v) => {
-            setPage(1);
-            setSearch(v);
-          },
+          onChange: (v) => setSearch(v),
           placeholder: "Search code, name, venue, organizer…",
         }}
         columns={columns}
@@ -1132,6 +1161,7 @@ interface CalendarProject {
   name: string;
   stage: ProjectStage;
   brand: string | null;
+  organizer: string | null;
   start_date: string;
   end_date: string | null;
   venue: string | null;
@@ -1144,6 +1174,7 @@ interface CalendarTask {
   project_code: string;
   project_name: string;
   brand: string | null;
+  organizer: string | null;
   title: string;
   due_date: string;
   status: string;
@@ -1229,14 +1260,20 @@ const FINANCE_TAB_HEADER: Record<
   },
 };
 
+const PROJECTS_FINANCES_TAB_KEYS = ["tab"] as const;
+
 function ProjectsFinancesView() {
-  const [params, setParams] = useSearchParams();
+  const [params, setParams] = useStickyFilters(
+    "projects-finances-tab",
+    PROJECTS_FINANCES_TAB_KEYS
+  );
   const rawTab = params.get("tab") as FinanceTab | null;
   const tab: FinanceTab =
     rawTab && FINANCE_TABS.includes(rawTab) ? rawTab : "list";
   function setTab(next: FinanceTab) {
     const p = new URLSearchParams(params);
-    p.set("tab", next);
+    if (next === "list") p.delete("tab");
+    else p.set("tab", next);
     setParams(p, { replace: true });
   }
 
@@ -1299,24 +1336,62 @@ interface FinanceByProjectResponse {
 
 const FINANCE_STAGE_OPTIONS = [
   "draft",
-  "planning",
-  "build",
+  "setup",
   "live",
-  "teardown",
-  "closed",
-  "cancelled",
+  "dismantle",
+  "completed",
+] as const;
+
+const FINANCE_LIST_FILTER_KEYS = [
+  "date_from",
+  "date_to",
+  "brand",
+  "stage",
+  "search",
+  "include_archived",
+  "page",
 ] as const;
 
 function FinanceListView() {
   const navigate = useNavigate();
   const thisYear = new Date().getFullYear();
-  const [dateFrom, setDateFrom] = useState(`${thisYear}-01-01`);
-  const [dateTo, setDateTo] = useState(`${thisYear}-12-31`);
-  const [brand, setBrand] = useState("");
-  const [stage, setStage] = useState("");
-  const [search, setSearch] = useState("");
-  const [includeArchived, setIncludeArchived] = useState(false);
-  const [page, setPage] = useState(1);
+  const defaultFrom = `${thisYear}-01-01`;
+  const defaultTo = `${thisYear}-12-31`;
+  const [params, setParams] = useStickyFilters(
+    "projects-finance",
+    FINANCE_LIST_FILTER_KEYS
+  );
+  const dateFrom = params.get("date_from") || defaultFrom;
+  const dateTo = params.get("date_to") || defaultTo;
+  const brand = params.get("brand") || "";
+  const stage = params.get("stage") || "";
+  const search = params.get("search") || "";
+  const includeArchived = params.get("include_archived") === "1";
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (
+        v === "" ||
+        (k === "page" && v === "1") ||
+        (k === "include_archived" && v === "0") ||
+        (k === "date_from" && v === defaultFrom) ||
+        (k === "date_to" && v === defaultTo)
+      ) {
+        next.delete(k);
+      } else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setDateFrom = (v: string) => patchParams({ date_from: v, page: "1" });
+  const setDateTo = (v: string) => patchParams({ date_to: v, page: "1" });
+  const setBrand = (v: string) => patchParams({ brand: v, page: "1" });
+  const setStage = (v: string) => patchParams({ stage: v, page: "1" });
+  const setSearch = (v: string) => patchParams({ search: v, page: "1" });
+  const setIncludeArchived = (v: boolean) =>
+    patchParams({ include_archived: v ? "1" : "0", page: "1" });
+  const setPage = (n: number) => patchParams({ page: String(n) });
+
   const [perPage, setPerPage] = useLocalStorage<number>(
     "pp:project-finance-by-project",
     50
@@ -1512,10 +1587,7 @@ function FinanceListView() {
           <input
             type="date"
             value={dateFrom}
-            onChange={(e) => {
-              setPage(1);
-              setDateFrom(e.target.value);
-            }}
+            onChange={(e) => setDateFrom(e.target.value)}
             className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
           />
         </FilterField>
@@ -1523,20 +1595,14 @@ function FinanceListView() {
           <input
             type="date"
             value={dateTo}
-            onChange={(e) => {
-              setPage(1);
-              setDateTo(e.target.value);
-            }}
+            onChange={(e) => setDateTo(e.target.value)}
             className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
           />
         </FilterField>
         <FilterField label="Brand">
           <select
             value={brand}
-            onChange={(e) => {
-              setPage(1);
-              setBrand(e.target.value);
-            }}
+            onChange={(e) => setBrand(e.target.value)}
             className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
           >
             <option value="">All</option>
@@ -1550,10 +1616,7 @@ function FinanceListView() {
         <FilterField label="Stage">
           <select
             value={stage}
-            onChange={(e) => {
-              setPage(1);
-              setStage(e.target.value);
-            }}
+            onChange={(e) => setStage(e.target.value)}
             className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
           >
             <option value="">All</option>
@@ -1584,10 +1647,7 @@ function FinanceListView() {
             <input
               type="checkbox"
               checked={includeArchived}
-              onChange={(e) => {
-                setPage(1);
-                setIncludeArchived(e.target.checked);
-              }}
+              onChange={(e) => setIncludeArchived(e.target.checked)}
               className="accent-accent"
             />
             Include archived
@@ -1600,10 +1660,7 @@ function FinanceListView() {
         exportName="project-finance-by-project"
         search={{
           value: search,
-          onChange: (v) => {
-            setPage(1);
-            setSearch(v);
-          },
+          onChange: (v) => setSearch(v),
           placeholder: "Search project code, name, venue, organizer…",
         }}
         columns={columns}
@@ -2004,11 +2061,40 @@ function daysBetween(fromIso: string, toIso: string): number {
   return Math.round((b - a) / 86400000);
 }
 
+const PROJECTS_CALENDAR_FILTER_KEYS = [
+  "brand",
+  "stage",
+  "organizer",
+  "month",
+] as const;
+
 function ProjectsCalendarView() {
   const toast = useToast();
   const navigate = useNavigate();
-  const [brand, setBrand] = useLocalStorage<string>("projects:cal:brand", "");
-  const [stage, setStage] = useLocalStorage<string>("projects:cal:stage", "");
+  const [params, setParams] = useStickyFilters(
+    "projects-calendar",
+    PROJECTS_CALENDAR_FILTER_KEYS
+  );
+  const brand = params.get("brand") || "";
+  const stage = params.get("stage") || "";
+  const organizer = params.get("organizer") || "";
+  // anchor lives in URL as `month=YYYY-MM` so a refresh / shared link
+  // lands on the same month.
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "") next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setBrand = (v: string) => patchParams({ brand: v });
+  const setStage = (v: string) => patchParams({ stage: v });
+  const setOrganizer = (v: string) => patchParams({ organizer: v });
+
+  // showTasks / showHolidays are personal display prefs (checkbox toggles
+  // on the legend, not data filters), so they stay in localStorage per
+  // CLAUDE.md's URL-state convention.
   const [showTasks, setShowTasks] = useLocalStorage<boolean>(
     "projects:cal:showTasks",
     true
@@ -2020,16 +2106,28 @@ function ProjectsCalendarView() {
   const brandsQ = useQuery<{ data: string[] }>(() =>
     api.get("/api/projects/brands")
   );
+  const organizersQ = useQuery<{ data: { id: number; name: string }[] }>(() =>
+    api.get("/api/projects/organizers")
+  );
   // Full brand rows (with colour) for the legend + bar tints. Keyed by
   // brand name. Replaces the old hardcoded BRAND_COLORS / BRAND_DOT_HEX
   // maps so newly-added brands in Project Maintenance light up here
   // without a deploy.
   const brandPalette = useBrandPalette();
-  const [anchor, setAnchor] = useState<Date>(() => {
+  const monthStr = params.get("month") || "";
+  const anchor = (() => {
+    if (/^\d{4}-\d{2}$/.test(monthStr)) {
+      return new Date(Number(monthStr.slice(0, 4)), Number(monthStr.slice(5, 7)) - 1, 1);
+    }
     const d = new Date();
     d.setDate(1);
     return d;
-  });
+  })();
+  const setAnchor = (next: Date) => {
+    const yyyy = next.getFullYear();
+    const mm = String(next.getMonth() + 1).padStart(2, "0");
+    patchParams({ month: `${yyyy}-${mm}` });
+  };
 
   // First of month → last of month. Cover 6 weeks (42 cells) starting
   // from the first Sunday on/before the 1st.
@@ -2064,11 +2162,13 @@ function ProjectsCalendarView() {
   const projects = allProjects.filter((p) => {
     if (brand && p.brand !== brand) return false;
     if (stage && p.stage !== stage) return false;
+    if (organizer && (p.organizer || "") !== organizer) return false;
     return true;
   });
   const tasks = showTasks
     ? allTasks.filter((t) => {
         if (brand && t.brand !== brand) return false;
+        if (organizer && (t.organizer || "") !== organizer) return false;
         // Tasks don't carry project stage on the wire — match via the
         // filtered project set.
         if (stage) {
@@ -2235,6 +2335,19 @@ function ProjectsCalendarView() {
               </option>
             ))}
           </select>
+          <select
+            value={organizer}
+            onChange={(e) => setOrganizer(e.target.value)}
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            title="Filter by organizer"
+          >
+            <option value="">All organizers</option>
+            {(organizersQ.data?.data ?? []).map((o) => (
+              <option key={o.id} value={o.name}>
+                {o.name}
+              </option>
+            ))}
+          </select>
           <button
             onClick={() => setShowTasks(!showTasks)}
             className={cn(
@@ -2259,11 +2372,12 @@ function ProjectsCalendarView() {
           >
             {showHolidays ? "✓" : "○"} MY Holidays
           </button>
-          {(brand || stage) && (
+          {(brand || stage || organizer) && (
             <button
               onClick={() => {
                 setBrand("");
                 setStage("");
+                setOrganizer("");
               }}
               className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
             >
@@ -2490,15 +2604,31 @@ function CreateProjectPanel({
   brands: string[];
   eventTypes: EventType[];
 }) {
-  const [name, setName] = useState("");
   const [eventTypeId, setEventTypeId] = useState<string>("");
   const [brand, setBrand] = useState<string>("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [venue, setVenue] = useState("");
+  // State is derived from the picked venue (project_venues stores it).
+  // Not user-editable — the venue is the single source of truth.
+  const [stateName, setStateName] = useState("");
   const [organizer, setOrganizer] = useState("");
   const [picId, setPicId] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
+
+  const eventTypeSlug =
+    eventTypes.find((t) => String(t.id) === eventTypeId)?.slug ?? null;
+
+  // Name is fully derived — user can't override.
+  const derivedName = composeDefaultProjectName({
+    state: stateName,
+    brand,
+    organizer,
+    venue,
+    event_type_slug: eventTypeSlug,
+  });
+
+  const dateInvalid = !!(startDate && endDate && endDate < startDate);
 
   // Users list for PIC picker — narrowed to the picked brand's
   // department coverage so admins can't assign someone whose dept
@@ -2523,19 +2653,28 @@ function CreateProjectPanel({
   }, [users, picId]);
 
   async function submit() {
-    if (!name.trim()) {
-      toast.error("Name is required");
+    if (!venue.trim()) {
+      toast.error("Venue is required");
+      return;
+    }
+    if (!derivedName.trim()) {
+      toast.error("Pick a venue so a name can be derived");
+      return;
+    }
+    if (dateInvalid) {
+      toast.error("End date must be on or after start date");
       return;
     }
     setSubmitting(true);
     try {
       const res = await api.post<{ id: number; code: string }>("/api/projects", {
-        name: name.trim(),
+        name: derivedName.trim(),
         event_type_id: eventTypeId ? parseInt(eventTypeId, 10) : undefined,
         brand: brand || undefined,
         start_date: startDate || undefined,
         end_date: endDate || undefined,
-        venue: venue.trim() || undefined,
+        venue: venue.trim(),
+        state: stateName.trim() || undefined,
         organizer: organizer.trim() || undefined,
         pic_id: picId ? parseInt(picId, 10) : undefined,
       });
@@ -2563,7 +2702,11 @@ function CreateProjectPanel({
           >
             Cancel
           </button>
-          <Button variant="primary" onClick={submit} disabled={submitting || !name.trim()}>
+          <Button
+            variant="primary"
+            onClick={submit}
+            disabled={submitting || !derivedName.trim() || !venue.trim() || dateInvalid}
+          >
             {submitting ? "Creating…" : "Create Project"}
           </Button>
         </div>
@@ -2574,12 +2717,16 @@ function CreateProjectPanel({
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
             Project Name
           </div>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. PIKOM PC Fair 2026"
-            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-          />
+          <div className="w-full rounded-md border border-dashed border-border bg-bg px-3 py-2 text-[13px] text-ink-secondary">
+            {derivedName || (
+              <span className="text-ink-muted">
+                Pick brand, organizer and venue to derive…
+              </span>
+            )}
+          </div>
+          <div className="mt-1 text-[10px] text-ink-muted">
+            Auto-derived: <span className="font-mono">{"{state} [{brand}] {organizer | SOLO} @ {venue}"}</span>
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -2639,22 +2786,41 @@ function CreateProjectPanel({
             <input
               type="date"
               value={endDate}
+              min={startDate || undefined}
               onChange={(e) => setEndDate(e.target.value)}
-              className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
+              className={cn(
+                "w-full rounded-md border bg-surface px-3 py-2 text-[13px]",
+                dateInvalid ? "border-err" : "border-border"
+              )}
             />
           </div>
         </div>
+        {dateInvalid && (
+          <div className="text-[11px] text-err">
+            End date must be on or after the start date.
+          </div>
+        )}
       </PanelSection>
 
       <PanelSection title="Venue">
         <div>
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-            Venue
+            Venue<span className="ml-1 text-err">*</span>
           </div>
           <VenuePicker
             value={venue || null}
-            onChange={(v) => setVenue(v ?? "")}
+            onChange={(v) => {
+              setVenue(v ?? "");
+              if (!v) setStateName("");
+            }}
+            onStateHint={(s) => setStateName(s ?? "")}
           />
+          <div className="mt-1 text-[10px] text-ink-muted">
+            State is read from the venue's record in Project Maintenance.
+            {venue && stateName && (
+              <span className="ml-1 font-mono text-ink">· {stateName}</span>
+            )}
+          </div>
         </div>
         <div>
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
@@ -2750,16 +2916,26 @@ function ProjectDetailContent({
   const activity = detail.data?.activity ?? [];
   const trips = detail.data?.trips ?? [];
   const attachments = detail.data?.attachments ?? [];
-  const [showTripPicker, setShowTripPicker] = useState(false);
 
-  // PIC-only panels (Payment, Logistics, Stock Transfers, Finance Ledger,
-  // Linked Trips) are hidden when the viewer is a scoped rep. The backend
-  // returns _access.level = "limited" in that case and also omits the
-  // underlying finance data, so there's nothing to show anyway.
+  // PIC-only panels (Payment, Logistics, Stock Transfers, Finance Ledger)
+  // are hidden when the viewer is a scoped rep. The backend returns
+  // _access.level = "limited" in that case and also omits the underlying
+  // finance data, so there's nothing to show anyway.
   const fullAccess = !detail.data?._access || detail.data._access.level === "full";
 
   async function patch(body: Record<string, any>) {
-    await api.patch(`/api/projects/${id}`, body);
+    const res = await api.patch<{ shifted_tasks?: number; delta_days?: number }>(
+      `/api/projects/${id}`,
+      body
+    );
+    if (res?.shifted_tasks && res.shifted_tasks > 0) {
+      const days = res.delta_days ?? 0;
+      const direction = days > 0 ? "forward" : "back";
+      toast.success(
+        `Shifted ${res.shifted_tasks} task${res.shifted_tasks === 1 ? "" : "s"} ` +
+          `${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} ${direction}`
+      );
+    }
     detail.reload();
     onUpdated();
   }
@@ -2865,7 +3041,13 @@ function ProjectDetailContent({
     >
       {/* DetailLayout owns the loading/error chrome — keep this no-op for legacy in-page loading hint */}
       {false && <div className="hidden">noop</div>}
-      {detail.loading && <div className="p-6 text-sm text-ink-muted">Loading…</div>}
+      {detail.loading && (
+        <div className="space-y-4 p-6">
+          <Skeleton className="h-6 w-1/3" />
+          <Skeleton className="h-4 w-2/3" />
+          <ListSkeleton rows={5} />
+        </div>
+      )}
       {detail.error && !detail.loading && (
         <div className="m-5 rounded-md border border-err/40 bg-err/5 p-4 text-sm">
           <div className="font-semibold text-err">Failed to load project</div>
@@ -2915,8 +3097,10 @@ function ProjectDetailContent({
               <Printer size={11} /> Print
             </button>
           </div>
-          <DetailGrid>
-            <DetailMain>
+          {/* Payment sits directly under the stage-progress header so the
+              status pills are the first thing the eye lands on after the
+              eyebrow + title. No PanelSection chrome — the strip
+              integrates visually with the header. */}
           {fullAccess && (
             <PaymentSection
               projectId={id}
@@ -2929,28 +3113,32 @@ function ProjectDetailContent({
             />
           )}
 
-          {fullAccess && (
-            <LogisticsScheduleSection project={p} trips={trips} patch={patch} />
-          )}
+          <DetailGrid>
+            <DetailMain>
+          {/* PIC-only ops sections pack into a 2-col inner grid so the
+              left column doesn't run as a single tall column on wide
+              screens. Sales + Tasklist sit below as full-width because
+              their internal rows already use horizontal columns.
 
+              Stock Transfer section removed — transfers still mirror into
+              the tasklist via createStockTransfer in the backend, so the
+              admin sees them in the Tasklist alongside other work. */}
           {fullAccess && (
-            <StockTransferSection
-              projectId={id}
-              transfers={detail.data?.stock_transfers ?? []}
-              onChange={() => detail.reload()}
-              toast={toast}
-            />
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <LogisticsScheduleSection project={p} trips={trips} patch={patch} />
+              <FinanceLedgerSection
+                projectId={id}
+                sizeSqm={p.size_sqm ?? null}
+                durationDays={p.duration_days ?? null}
+                lines={detail.data?.finance_lines ?? []}
+                onChange={() => detail.reload()}
+                toast={toast}
+              />
+            </div>
           )}
 
           {/* DefectsSection intentionally not rendered — kept in code as a
               future option but the team isn't using it day-to-day. */}
-
-          <SalesReportsSection
-            projectId={id}
-            reports={detail.data?.sales_reports ?? []}
-            onChange={() => detail.reload()}
-            toast={toast}
-          />
 
           <ProjectSalesEntriesSection
             projectId={id}
@@ -2981,91 +3169,13 @@ function ProjectDetailContent({
             toast={toast}
           />
 
-          {fullAccess && (
-            <FinanceLedgerSection
-              projectId={id}
-              sizeSqm={p.size_sqm ?? null}
-              durationDays={p.duration_days ?? null}
-              lines={detail.data?.finance_lines ?? []}
-              onChange={() => detail.reload()}
-              toast={toast}
-            />
-          )}
-
           {/* Project-level Attachments panel removed in mig 050 — files
               now live on tasks via the per-task attachment uploader.
               Old project_attachments rows still load from the API for
-              legacy data but the UI no longer surfaces them. */}
+              legacy data but the UI no longer surfaces them.
 
-          {fullAccess && (
-            <PanelSection title={`Linked Trips (${trips.length})`}>
-              {trips.length === 0 ? (
-                <div className="text-[11px] text-ink-muted">
-                  No trips linked yet.
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {trips.map((t) => (
-                    <div
-                      key={t.id}
-                      className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-[11px]"
-                    >
-                      <span className="font-mono font-semibold">{t.code}</span>
-                      <span className="text-ink-muted">·</span>
-                      <span>{formatDate(t.scheduled_date)}</span>
-                      <span className="text-ink-muted">·</span>
-                      <span className="capitalize">{t.status}</span>
-                      {t.trip_type && (
-                        <span className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold text-accent">
-                          {t.trip_type}
-                        </span>
-                      )}
-                      {t.description && (
-                        <span
-                          className="truncate text-ink-secondary"
-                          title={t.description}
-                        >
-                          — {t.description}
-                        </span>
-                      )}
-                      <button
-                        onClick={async () => {
-                          if (!await dialog.confirm("Unlink this trip from the project?")) return;
-                          try {
-                            await api.post(`/api/projects/trips/${t.id}/unlink`, {});
-                            detail.reload();
-                          } catch (e: any) {
-                            toast.error(e?.message || "Failed");
-                          }
-                        }}
-                        className="ml-auto rounded p-1 text-ink-muted hover:text-err"
-                        title="Unlink"
-                      >
-                        <Unlink size={12} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <button
-                onClick={() => setShowTripPicker(true)}
-                className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-border px-3 py-1.5 text-[11px] text-ink-muted hover:border-accent/40 hover:text-accent"
-              >
-                <Link2 size={11} /> Link existing trip
-              </button>
-              {showTripPicker && (
-                <TripPicker
-                  projectId={id}
-                  onClose={() => setShowTripPicker(false)}
-                  onLinked={() => {
-                    setShowTripPicker(false);
-                    detail.reload();
-                  }}
-                  toast={toast}
-                />
-              )}
-            </PanelSection>
-          )}
+              Linked Trips panel removed — surfaced via Logistics Schedule
+              chips above; managed in /logistics?tab=events. */}
 
             </DetailMain>
 
@@ -3083,19 +3193,23 @@ function ProjectDetailContent({
           <PanelSection title="Basics" muted>
             <InlineEdit label="Name" value={p.name} onSave={(v) => patch({ name: v })} />
             {(() => {
-              const suggested = composeEventName({
+              const slug =
+                eventTypes.find((t) => t.id === p.event_type_id)?.slug ?? null;
+              const suggested = composeDefaultProjectName({
+                state: p.state,
                 brand: p.brand,
-                event_type_name: p.event_type_name,
+                organizer: p.organizer,
                 venue: p.venue,
+                event_type_slug: slug,
               });
               if (!suggested || suggested === p.name) return null;
               return (
                 <button
                   onClick={() => patch({ name: suggested })}
                   className="-mt-1 inline-flex items-center gap-1 self-start rounded-md border border-dashed border-accent/40 bg-accent-soft/20 px-2 py-1 text-[10px] font-semibold text-accent hover:bg-accent-soft/40"
-                  title="Replace name with STATE - BRAND - TYPE - VENUE"
+                  title="Replace name with {state} [{brand}] {organizer | SOLO} @ {venue}"
                 >
-                  Use convention: {suggested}
+                  Auto-fill: {suggested}
                 </button>
               );
             })()}
@@ -3180,25 +3294,50 @@ function ProjectDetailContent({
               label="Start Date"
               type="date"
               value={p.start_date}
-              onSave={(v) => patch({ start_date: v })}
+              onSave={async (v) => {
+                if (v && p.end_date && p.end_date < v) {
+                  toast.error("Start date can't be after end date");
+                  throw new Error("invalid range");
+                }
+                await patch({ start_date: v });
+              }}
             />
             <InlineEdit
               label="End Date"
               type="date"
               value={p.end_date}
-              onSave={(v) => patch({ end_date: v })}
+              onSave={async (v) => {
+                if (v && p.start_date && v < p.start_date) {
+                  toast.error("End date must be on or after start date");
+                  throw new Error("invalid range");
+                }
+                await patch({ end_date: v });
+              }}
             />
           </PanelSection>
 
           <PanelSection title="Venue">
             <div>
               <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-                Venue
+                Venue<span className="ml-1 text-err">*</span>
               </div>
               <VenuePicker
                 value={p.venue}
-                onChange={(v) => patch({ venue: v })}
+                onChange={(v) =>
+                  // Clear state when venue is cleared so the project name
+                  // re-derives without a stale state piece.
+                  patch(v ? { venue: v } : { venue: null, state: null })
+                }
+                onStateHint={(s) => {
+                  if (s && s !== p.state) patch({ state: s });
+                }}
               />
+              <div className="mt-1 text-[10px] text-ink-muted">
+                State is sourced from the venue record.
+                {p.state && (
+                  <span className="ml-1 font-mono text-ink">· {p.state}</span>
+                )}
+              </div>
             </div>
             <div>
               <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
@@ -3503,6 +3642,7 @@ function TasklistSections({
   toast: ReturnType<typeof useToast>;
 }) {
   const { can } = useAuth();
+  const dialog = useDialog();
   const [addSectionOpen, setAddSectionOpen] = useState(false);
   const [newSectionName, setNewSectionName] = useState("");
   const [editingSectionId, setEditingSectionId] = useState<number | null>(null);
@@ -3514,6 +3654,16 @@ function TasklistSections({
     const p = new URLSearchParams(viewParams);
     if (next === "list") p.delete("tasklist_view");
     else p.set("tasklist_view", next);
+    setViewParams(p, { replace: true });
+  }
+  // Sort mode for the list view. "section" keeps the section grouping
+  // (default); "due" flattens to a single list ordered by due_date so
+  // the user can scan what's coming up next across sections.
+  const sort = viewParams.get("tasklist_sort") === "due" ? "due" : "section";
+  function setSort(next: "section" | "due") {
+    const p = new URLSearchParams(viewParams);
+    if (next === "section") p.delete("tasklist_sort");
+    else p.set("tasklist_sort", next);
     setViewParams(p, { replace: true });
   }
   // Click → list scroll target. The list-view rows carry data-task-id;
@@ -3543,6 +3693,20 @@ function TasklistSections({
       section: TasklistSection | null;
       items: ChecklistItem[];
     }> = [];
+    if (sort === "due") {
+      // Flat list, ascending by due_date with nulls (no due) at the end.
+      // Same comparator the calendar uses for task ordering.
+      const sorted = [...checklist].sort((a, b) => {
+        const ad = a.due_date ?? "";
+        const bd = b.due_date ?? "";
+        if (!ad && !bd) return a.seq - b.seq;
+        if (!ad) return 1;
+        if (!bd) return -1;
+        return ad.localeCompare(bd);
+      });
+      buckets.push({ section: null, items: sorted });
+      return buckets;
+    }
     for (const sec of sections) {
       buckets.push({
         section: sec,
@@ -3554,7 +3718,7 @@ function TasklistSections({
       buckets.push({ section: null, items: uncat });
     }
     return buckets;
-  }, [sections, checklist]);
+  }, [sections, checklist, sort]);
 
   const attachmentsByItem = useMemo(() => {
     const m = new Map<number, TaskAttachment[]>();
@@ -3596,9 +3760,12 @@ function TasklistSections({
 
   async function deleteSection(id: number, name: string) {
     if (
-      !window.confirm(
-        `Delete section "${name}"? Tasks in it will move to Uncategorised.`
-      )
+      !(await dialog.confirm({
+        title: "Delete section",
+        message: `Delete section "${name}"? Tasks in it will move to Uncategorised.`,
+        danger: true,
+        confirmLabel: "Delete",
+      }))
     ) {
       return;
     }
@@ -3667,6 +3834,41 @@ function TasklistSections({
               Gantt
             </button>
           </div>
+          {/* Sort: section (default grouping) vs due (flat, by due_date).
+              Only meaningful in list view. URL-backed so a "what's
+              next?" view is bookmarkable. */}
+          {view === "list" && (
+          <div className="inline-flex overflow-hidden rounded-md border border-border bg-bg/40 font-mono text-[9.5px] font-semibold uppercase tracking-wider">
+            <button
+              type="button"
+              onClick={() => setSort("section")}
+              className={cn(
+                "px-2 py-1 transition-colors",
+                sort === "section"
+                  ? "bg-accent text-white"
+                  : "text-ink-muted hover:text-accent"
+              )}
+              aria-pressed={sort === "section"}
+              title="Group by section"
+            >
+              Section
+            </button>
+            <button
+              type="button"
+              onClick={() => setSort("due")}
+              className={cn(
+                "px-2 py-1 transition-colors",
+                sort === "due"
+                  ? "bg-accent text-white"
+                  : "text-ink-muted hover:text-accent"
+              )}
+              aria-pressed={sort === "due"}
+              title="Flatten and sort by due date"
+            >
+              Due
+            </button>
+          </div>
+          )}
           {canManage && (
             <button
               type="button"
@@ -3740,7 +3942,8 @@ function TasklistSections({
       <div className="space-y-3">
         {groups.map(({ section, items }) => {
           const sectionId = section?.id ?? null;
-          const headerName = section?.name ?? "Uncategorised";
+          const headerName =
+            section?.name ?? (sort === "due" ? "By due date" : "Uncategorised");
           const denom = items.length - items.filter((i) => i.status === "na").length;
           const done = items.filter((i) => i.status === "done").length;
           return (
@@ -3947,6 +4150,7 @@ function ChecklistRow({
   onAttachmentsChanged?: () => void;
   toast?: ReturnType<typeof useToast>;
 }) {
+  const dialog = useDialog();
   const [expanded, setExpanded] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -3979,9 +4183,17 @@ function ChecklistRow({
   }
 
   async function deleteAttachment(attId: number) {
-    if (!window.confirm("Remove this attachment?")) return;
+    if (
+      !(await dialog.confirm({
+        message: "Remove this attachment?",
+        danger: true,
+        confirmLabel: "Remove",
+      }))
+    )
+      return;
     try {
       await api.del(`/api/projects/checklist/attachments/${attId}`);
+      toast?.success("Attachment removed");
       onAttachmentsChanged?.();
     } catch (e: any) {
       toast?.error(e?.message || "Failed");
@@ -4430,14 +4642,32 @@ function DateTimeField({
   value: string | null | undefined;
   onSave: (next: string | null) => Promise<void> | void;
 }) {
+  // Split into a separate date + time input — the native datetime-local
+  // control is too wide for the Logistics 2-col grid (browser locale +
+  // AM/PM stretches it on Windows). Two narrow controls side-by-side
+  // pack tighter and the unambiguous DD/MM/YYYY HH:mm caption sits
+  // below for confirmation.
   const initial = toLocalInput(value);
-  const [draft, setDraft] = useState(initial);
+  const [datePart, setDatePart] = useState(initial.slice(0, 10));
+  const [timePart, setTimePart] = useState(initial.slice(11, 16));
   useEffect(() => {
-    setDraft(toLocalInput(value));
+    const v = toLocalInput(value);
+    setDatePart(v.slice(0, 10));
+    setTimePart(v.slice(11, 16));
   }, [value]);
 
+  const draft = datePart && timePart ? `${datePart}T${timePart}` : datePart;
+
   async function commit() {
-    const normalized = draft || null;
+    // Treat "date only" as midnight-local so the user can still tap a
+    // date and hit save; without this, half-filled inputs would never
+    // persist.
+    const normalized =
+      datePart && !timePart
+        ? `${datePart}T00:00`
+        : datePart && timePart
+          ? `${datePart}T${timePart}`
+          : null;
     if ((normalized ?? "") === (toLocalInput(value) || "")) return;
     await onSave(normalized);
   }
@@ -4447,13 +4677,25 @@ function DateTimeField({
       <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
         {label}
       </div>
-      <input
-        type="datetime-local"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-      />
+      <div className="flex gap-1.5">
+        <input
+          type="date"
+          value={datePart}
+          onChange={(e) => setDatePart(e.target.value)}
+          onBlur={commit}
+          className="flex-1 min-w-0 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+        />
+        <input
+          type="time"
+          value={timePart}
+          onChange={(e) => setTimePart(e.target.value)}
+          onBlur={commit}
+          className="w-[88px] rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+        />
+      </div>
+      <div className="mt-1 font-mono text-[10px] text-ink-muted">
+        {formatDateTime(draft)}
+      </div>
     </div>
   );
 }
@@ -4520,7 +4762,6 @@ function PaymentSection({
   onChange: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
-  const [uploading, setUploading] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [notesDraft, setNotesDraft] = useState(project.payment_notes ?? "");
   const current = (project.payment_status || "not_started") as PaymentStatus;
@@ -4549,47 +4790,6 @@ function PaymentSection({
     }
   }
 
-  async function uploadProof(file: File) {
-    if (file.size > 10 * 1024 * 1024) {
-      toast.error("File exceeds 10MB");
-      return;
-    }
-    setUploading(true);
-    try {
-      const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
-      const buf = await file.arrayBuffer();
-      const up = await api.putBinary<{ key: string; mime_type: string }>(
-        `/api/projects/${projectId}/payment/proof?ext=${ext}`,
-        buf,
-        file.type
-      );
-      await api.post(`/api/projects/${projectId}/payment`, {
-        status: current,
-        proof_r2_key: up.key,
-        proof_file_name: file.name,
-      });
-      toast.success("Proof uploaded");
-      onChange();
-    } catch (e: any) {
-      toast.error(e?.message || "Upload failed");
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  async function openProof() {
-    if (!project.payment_proof_r2_key) return;
-    try {
-      const url = await api.fetchBlobUrl(
-        `/api/projects/attachments/${project.payment_proof_r2_key}`
-      );
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-    } catch (e: any) {
-      toast.error(e?.message || "Failed");
-    }
-  }
-
   const toneCls: Record<typeof meta.tone, string> = {
     default: "bg-surface-dim text-ink-muted",
     open: "bg-amber-100 text-amber-800",
@@ -4597,12 +4797,19 @@ function PaymentSection({
     warning: "bg-amber-500/15 text-amber-900",
   };
 
+  // Compact strip — sits directly under the stage-progress header, so
+  // no PanelSection chrome. Proof of payment is uploaded as an
+  // attachment on the corresponding Finance Ledger line (income or
+  // cost), keeping the receipt next to the money it documents.
   return (
-    <PanelSection title="Payment" muted>
-      <div className="mb-3 flex items-center gap-2">
+    <div className="mb-5 rounded-md border border-border bg-bg/60 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+          Payment
+        </span>
         <span
           className={cn(
-            "rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-wider",
+            "rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
             toneCls[meta.tone]
           )}
         >
@@ -4613,69 +4820,43 @@ function PaymentSection({
             updated {formatDate(project.payment_updated_at)}
           </span>
         )}
-      </div>
-
-      {/* Status buttons */}
-      <div className="mb-3 flex flex-wrap items-center gap-1.5">
-        {(Object.keys(PAYMENT_STATUS_META) as PaymentStatus[]).map((s) => {
-          const isCurrent = s === current;
-          return (
-            <button
-              key={s}
-              onClick={() => (isCurrent ? null : advance(s))}
-              disabled={isCurrent}
-              className={cn(
-                "rounded-md border px-2.5 py-1 text-[10.5px] font-semibold",
-                isCurrent
-                  ? "border-accent bg-accent text-white"
-                  : "border-border bg-surface text-ink hover:border-accent/40 hover:text-accent"
-              )}
-            >
-              {PAYMENT_STATUS_META[s].label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Proof + notes row */}
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] font-semibold hover:border-accent/40 hover:text-accent">
-          <Upload size={11} />
-          {project.payment_proof_r2_key ? "Replace proof" : "Upload proof"}
-          <input
-            type="file"
-            accept=".jpg,.jpeg,.png,.webp,.pdf"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) uploadProof(f);
-              e.target.value = "";
-            }}
-          />
-        </label>
-        {project.payment_proof_r2_key && (
+        <div className="ml-auto flex flex-wrap items-center gap-1.5">
+          {(Object.keys(PAYMENT_STATUS_META) as PaymentStatus[]).map((s) => {
+            const isCurrent = s === current;
+            return (
+              <button
+                key={s}
+                onClick={() => (isCurrent ? null : advance(s))}
+                disabled={isCurrent}
+                className={cn(
+                  "rounded-md border px-2 py-1 text-[10.5px] font-semibold",
+                  isCurrent
+                    ? "border-accent bg-accent text-white"
+                    : "border-border bg-surface text-ink hover:border-accent/40 hover:text-accent"
+                )}
+              >
+                {PAYMENT_STATUS_META[s].label}
+              </button>
+            );
+          })}
           <button
-            onClick={openProof}
-            className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] text-accent hover:border-accent/40"
+            onClick={() => {
+              setNotesDraft(project.payment_notes ?? "");
+              setNotesOpen((x) => !x);
+            }}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10.5px] font-semibold hover:border-accent/40 hover:text-accent"
           >
-            <ExternalLink size={11} />
-            {project.payment_proof_file_name || "View proof"}
+            Notes{project.payment_notes ? " ·" : ""}
           </button>
-        )}
-        {uploading && <span className="text-[10px] text-ink-muted">Uploading…</span>}
-        <button
-          onClick={() => {
-            setNotesDraft(project.payment_notes ?? "");
-            setNotesOpen((x) => !x);
-          }}
-          className="ml-auto inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] font-semibold hover:border-accent/40 hover:text-accent"
-        >
-          Notes{project.payment_notes ? " ·" : ""}
-        </button>
+        </div>
+      </div>
+
+      <div className="mt-2 text-[10px] text-ink-muted">
+        Upload payment proof on the matching Finance Ledger line.
       </div>
 
       {project.payment_notes && !notesOpen && (
-        <div className="mt-2 rounded-md bg-bg/60 px-2.5 py-2 text-[11px] text-ink-secondary">
+        <div className="mt-2 rounded-md bg-surface px-2.5 py-2 text-[11px] text-ink-secondary">
           {project.payment_notes}
         </div>
       )}
@@ -4705,7 +4886,7 @@ function PaymentSection({
           </div>
         </div>
       )}
-    </PanelSection>
+    </div>
   );
 }
 
@@ -5195,8 +5376,10 @@ function PhaseHeader({
   scheduledAt: string | null;
   driverName: string | null;
 }) {
-  // Match Logistics page's tab key — keeps the back-link readable.
-  const eventsHref = "/logistics?tab=events";
+  // Match Logistics outer (`tab=trips`) + Trips inner (`sub=events`).
+  // Inner sub-tabs use `?sub=` so they don't collide with the outer
+  // `?tab=` that picks between Trips and Fleet.
+  const eventsHref = "/logistics?tab=trips&sub=events";
 
   return (
     <div className="mb-2 flex items-center justify-between gap-2">
@@ -5219,11 +5402,11 @@ function PhaseHeader({
       ) : scheduledAt ? (
         <Link
           to={eventsHref}
-          title={`Scheduled ${formatDate(scheduledAt)}${driverName ? ` · ${driverName}` : ""} — open Logistics Events`}
+          title={`Scheduled ${formatDateTime(scheduledAt)}${driverName ? ` · ${driverName}` : ""} — open Logistics Events`}
           className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/40 px-2 py-1 font-mono text-[10px] font-semibold tracking-wider text-accent transition-colors hover:bg-accent-soft/70"
         >
           <Calendar size={11} />
-          <span>{formatDate(scheduledAt)}</span>
+          <span>{formatDateTime(scheduledAt)}</span>
           {driverName && (
             <span className="text-ink-muted/80 normal-case">
               · {driverName}
@@ -5551,232 +5734,6 @@ function AddDefectForm({
   );
 }
 
-// ── Sales reports ────────────────────────────────────────────
-
-function SalesReportsSection({
-  projectId,
-  reports,
-  onChange,
-  toast,
-}: {
-  projectId: number;
-  reports: SalesReport[];
-  onChange: () => void;
-  toast: ReturnType<typeof useToast>;
-}) {
-  const dialog = useDialog();
-  const [adding, setAdding] = useState(false);
-  const total = reports.reduce((s, r) => s + (r.sales_amount || 0), 0);
-
-  return (
-    <PanelSection title={`Sales Reports (${reports.length})`}>
-      {reports.length === 0 ? (
-        <div className="text-[11px] text-ink-muted">No reports uploaded yet.</div>
-      ) : (
-        <div className="space-y-1.5">
-          {reports.map((r) => (
-            <div
-              key={r.id}
-              className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-2 text-[11px]"
-            >
-              <div className="flex-1">
-                <div className="flex flex-wrap items-center gap-x-2 font-semibold">
-                  {r.title || "(untitled)"}
-                  {r.sales_amount != null && (
-                    <span className="font-mono text-accent">
-                      {formatCurrency(r.sales_amount)}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-0.5 text-[10px] text-ink-muted">
-                  {r.uploaded_by_name || "—"} · {formatDate(r.created_at)}
-                  {r.period_start && r.period_end && (
-                    <span className="ml-2">
-                      {formatDate(r.period_start)} → {formatDate(r.period_end)}
-                    </span>
-                  )}
-                </div>
-              </div>
-              {r.r2_key && (
-                <button
-                  onClick={async () => {
-                    try {
-                      const url = await api.fetchBlobUrl(`/api/projects/attachments/${r.r2_key}`);
-                      window.open(url, "_blank");
-                      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-                    } catch (e: any) {
-                      toast.error(e?.message || "Failed");
-                    }
-                  }}
-                  className="rounded p-1 text-ink-muted hover:text-accent"
-                  title="Open attachment"
-                >
-                  <ExternalLink size={12} />
-                </button>
-              )}
-              <button
-                onClick={async () => {
-                  if (!await dialog.confirm("Remove this report? total_sales will be recomputed.")) return;
-                  try {
-                    await api.del(`/api/projects/sales-reports/${r.id}`);
-                    onChange();
-                  } catch (e: any) {
-                    toast.error(e?.message || "Failed");
-                  }
-                }}
-                className="rounded p-1 text-ink-muted hover:bg-err/10 hover:text-err"
-                title="Remove"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-          <div className="pt-1 text-right text-[11px] text-ink-secondary">
-            Total sum: <span className="font-mono font-bold">{formatCurrency(total)}</span>
-          </div>
-        </div>
-      )}
-      {adding ? (
-        <AddSalesReportForm
-          projectId={projectId}
-          onCancel={() => setAdding(false)}
-          onSaved={() => {
-            setAdding(false);
-            onChange();
-          }}
-          toast={toast}
-        />
-      ) : (
-        <button
-          onClick={() => setAdding(true)}
-          className="mt-2 inline-flex items-center gap-1 rounded-md border border-dashed border-border px-3 py-1.5 text-[11px] text-ink-muted hover:border-accent/40 hover:text-accent"
-        >
-          <Plus size={11} /> Add report
-        </button>
-      )}
-    </PanelSection>
-  );
-}
-
-function AddSalesReportForm({
-  projectId,
-  onCancel,
-  onSaved,
-  toast,
-}: {
-  projectId: number;
-  onCancel: () => void;
-  onSaved: () => void;
-  toast: ReturnType<typeof useToast>;
-}) {
-  const [title, setTitle] = useState("");
-  const [amount, setAmount] = useState("");
-  const [periodStart, setPeriodStart] = useState("");
-  const [periodEnd, setPeriodEnd] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  async function submit() {
-    setSubmitting(true);
-    try {
-      let r2Key: string | undefined;
-      let fileName: string | undefined;
-      let mimeType: string | undefined;
-      if (file) {
-        const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
-        if (file.size > 10 * 1024 * 1024) {
-          toast.error("File exceeds 10MB");
-          setSubmitting(false);
-          return;
-        }
-        const buf = await file.arrayBuffer();
-        const up = await api.putBinary<{ key: string; mime_type: string }>(
-          `/api/projects/${projectId}/sales-reports/upload?ext=${ext}`,
-          buf,
-          file.type
-        );
-        r2Key = up.key;
-        fileName = file.name;
-        mimeType = up.mime_type;
-      }
-      await api.post(`/api/projects/${projectId}/sales-reports`, {
-        title: title.trim() || null,
-        sales_amount: amount ? parseFloat(amount) : null,
-        period_start: periodStart || null,
-        period_end: periodEnd || null,
-        r2_key: r2Key,
-        file_name: fileName,
-        mime_type: mimeType,
-      });
-      onSaved();
-    } catch (e: any) {
-      toast.error(e?.message || "Failed");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <div className="mt-3 rounded-md border border-accent/30 bg-accent-soft/20 p-3">
-      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-accent">
-        New sales report
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="Title (e.g. Day 1)"
-          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
-        />
-        <input
-          type="number"
-          step="0.01"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          placeholder="Sales amount (RM)"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-accent"
-        />
-        <input
-          type="file"
-          accept=".jpg,.jpeg,.png,.webp,.pdf"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none"
-        />
-        <input
-          type="date"
-          value={periodStart}
-          onChange={(e) => setPeriodStart(e.target.value)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
-        />
-        <input
-          type="date"
-          value={periodEnd}
-          onChange={(e) => setPeriodEnd(e.target.value)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
-        />
-      </div>
-      <div className="mt-2 text-[10px] text-ink-muted">
-        Sum of all reports syncs into Finance → Total Sales.
-      </div>
-      <div className="mt-2 flex items-center gap-2">
-        <button
-          onClick={submit}
-          disabled={submitting}
-          className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
-        >
-          {submitting ? "Saving…" : "Save"}
-        </button>
-        <button
-          onClick={onCancel}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] text-ink-secondary"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ── Project Sales Entries (rep-facing log, scoped to one project) ──
 // The standalone /sales page used to host this. We moved it inside the
 // project page because the workflow is per-exhibition: a rep opens the
@@ -5879,6 +5836,26 @@ function ProjectSalesEntriesSection({
             <option value="pushed">Pushed</option>
             <option value="void">Void</option>
           </select>
+          <button
+            onClick={async () => {
+              try {
+                const qs = `project_id=${projectId}${
+                  statusFilter ? `&status=${statusFilter}` : ""
+                }`;
+                await api.downloadFile(
+                  `/api/sales/entries/export?${qs}`,
+                  `sales_${projectCode || projectId}.csv`
+                );
+              } catch (e: any) {
+                toast.error(e?.message || "Export failed");
+              }
+            }}
+            className="inline-flex h-6 items-center gap-1 rounded-md border border-border bg-surface px-2 text-[10.5px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+            title="Download CSV"
+            disabled={rows.length === 0}
+          >
+            <Download size={11} /> Export
+          </button>
           {canWrite && (
             <button
               onClick={() => setCreating(true)}
@@ -5899,31 +5876,29 @@ function ProjectSalesEntriesSection({
         </div>
       )}
       {!list.loading && rows.length === 0 && (
-        <div className="rounded-md border border-dashed border-border bg-surface px-3 py-4 text-center text-[11px] text-ink-muted">
-          No sales drafted yet for this exhibition.
-          {canWrite && (
-            <>
-              {" "}
-              <button
-                onClick={() => setCreating(true)}
-                className="font-semibold text-accent hover:underline"
-              >
-                Draft your first sale
-              </button>
-            </>
-          )}
-        </div>
+        <EmptyState
+          compact
+          message="No sales drafted yet for this exhibition."
+          cta={
+            canWrite
+              ? { label: "Draft your first sale", onClick: () => setCreating(true) }
+              : undefined
+          }
+        />
       )}
       {rows.length > 0 && (
-        <div className="overflow-hidden rounded-md border border-border bg-surface">
-          <table className="w-full">
+        <div className="overflow-x-auto rounded-md border border-border bg-surface">
+          <table className="w-full min-w-[760px]">
             <thead className="bg-bg/60">
               <tr className="text-left font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
                 <th className="px-2 py-1.5">Date</th>
+                <th className="px-2 py-1.5">Ref No</th>
                 <th className="px-2 py-1.5">Customer</th>
                 <th className="px-2 py-1.5 text-right">Amount</th>
+                <th className="px-2 py-1.5 text-right">Deposit</th>
+                <th className="px-2 py-1.5 text-right">Balance</th>
+                <th className="px-2 py-1.5">Sales Person</th>
                 <th className="px-2 py-1.5">Status</th>
-                <th className="px-2 py-1.5">By</th>
                 <th className="w-px px-1 py-1.5" />
               </tr>
             </thead>
@@ -5933,6 +5908,14 @@ function ProjectSalesEntriesSection({
                 const isMine = e.created_by === meId;
                 const canEdit = canManage || (isMine && e.status === "draft");
                 const canSubmit = canEdit && e.status === "draft";
+                const deposit = e.deposit_amount ?? e.amount;
+                const balance = Math.max(0, e.amount - deposit);
+                const salesPerson =
+                  e.sales_person_name ||
+                  e.sales_person_email ||
+                  e.created_by_name ||
+                  e.created_by_email ||
+                  "—";
                 return (
                   <tr
                     key={e.id}
@@ -5941,16 +5924,39 @@ function ProjectSalesEntriesSection({
                     <td className="px-2 py-1.5 font-mono text-ink-secondary">
                       {formatDate(e.occurred_at)}
                     </td>
+                    <td className="px-2 py-1.5 font-mono text-[10.5px] text-ink-secondary">
+                      {e.ref_no || "—"}
+                    </td>
                     <td className="px-2 py-1.5">
                       <div className="font-semibold text-ink">{e.customer_name}</div>
-                      {e.customer_code && (
+                      {e.customer_phone && (
                         <div className="font-mono text-[9.5px] text-ink-muted">
-                          {e.customer_code}
+                          {e.customer_phone}
                         </div>
                       )}
                     </td>
                     <td className="px-2 py-1.5 text-right font-mono font-semibold">
                       {formatCurrency(e.amount)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-mono">
+                      <div>{formatCurrency(deposit)}</div>
+                      {e.deposit_payment_type && (
+                        <div className="mt-0.5 text-[9px] text-ink-muted">
+                          {PAYMENT_TYPE_LABEL[e.deposit_payment_type]}
+                        </div>
+                      )}
+                    </td>
+                    <td
+                      className={cn(
+                        "px-2 py-1.5 text-right font-mono",
+                        balance > 0 ? "font-semibold text-amber-700" : "text-ink-muted"
+                      )}
+                      title={balance > 0 ? "Balance to chase post-event" : "Settled in full"}
+                    >
+                      {formatCurrency(balance)}
+                    </td>
+                    <td className="px-2 py-1.5 text-[10.5px] text-ink-muted">
+                      {salesPerson}
                     </td>
                     <td className="px-2 py-1.5">
                       <span
@@ -5961,9 +5967,6 @@ function ProjectSalesEntriesSection({
                       >
                         {badge.label}
                       </span>
-                    </td>
-                    <td className="px-2 py-1.5 text-[10.5px] text-ink-muted">
-                      {e.created_by_name || e.created_by_email || "—"}
                     </td>
                     <td className="px-1 py-1">
                       <div className="flex items-center gap-0.5">
@@ -6338,6 +6341,14 @@ function LedgerGroup({
                 {tone === "err" && "−"}
                 {formatCurrency(l.amount)}
               </span>
+              {l.source === "sales_entry" && (
+                <span
+                  className="rounded-full border border-accent/30 bg-accent-soft/30 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent"
+                  title="Synced from Sales — manage this row in the Sales section"
+                >
+                  Sales
+                </span>
+              )}
               {l.r2_key && (
                 <button
                   onClick={() => openFile(l)}
@@ -6347,13 +6358,15 @@ function LedgerGroup({
                   <ExternalLink size={12} />
                 </button>
               )}
-              <button
-                onClick={() => del(l)}
-                className="rounded p-1 text-ink-muted opacity-0 hover:bg-err/10 hover:text-err group-hover:opacity-100"
-                title="Remove"
-              >
-                <Trash2 size={12} />
-              </button>
+              {!l.source && (
+                <button
+                  onClick={() => del(l)}
+                  className="rounded p-1 text-ink-muted opacity-0 hover:bg-err/10 hover:text-err group-hover:opacity-100"
+                  title="Remove"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
             </div>
           ))}
         </div>

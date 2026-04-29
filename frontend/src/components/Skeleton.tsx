@@ -8,6 +8,23 @@ export function Skeleton({ className }: Props) {
   return <div className={cn("skeleton rounded", className)} />;
 }
 
+/** Stacked placeholder bars for non-table lists (sidebar pickers, sub-panels). */
+export function ListSkeleton({
+  rows = 3,
+  className,
+}: {
+  rows?: number;
+  className?: string;
+}) {
+  return (
+    <div className={cn("space-y-2", className)}>
+      {Array.from({ length: rows }).map((_, i) => (
+        <Skeleton key={i} className="h-4 w-full" />
+      ))}
+    </div>
+  );
+}
+
 export function TableSkeleton({ rows = 5, cols = 6 }: { rows?: number; cols?: number }) {
   return (
     <>

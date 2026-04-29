@@ -18,6 +18,7 @@ import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
 import { api, buildQuery } from "../api/client";
@@ -45,6 +46,27 @@ const TAB_STATUS: Record<TripsTab, string> = {
   history: "completed,cancelled",
 };
 
+const TRIPS_TABS: readonly TripsTab[] = [
+  "queue",
+  "drafts",
+  "live",
+  "tracking",
+  "events",
+  "history",
+];
+
+// `?sub=` (not `?tab=`): the Logistics outer wrapper owns `?tab=` to
+// pick between Trips and Fleet. Sharing the `tab` key collided with
+// the outer router and silently mis-routed deep links.
+const TRIPS_FILTER_KEYS = [
+  "sub",
+  "warehouse",
+  "date_from",
+  "date_to",
+  "search",
+  "page",
+] as const;
+
 /**
  * Dispatcher Trips page.
  *
@@ -59,13 +81,33 @@ export function Trips() {
   const canManage = can("trips.manage");
   const toast = useToast();
   const dialog = useDialog();
-  const [tab, setTab] = useLocalStorage<TripsTab>("trips:tab", "queue");
+  const [params, setParams] = useStickyFilters("trips", TRIPS_FILTER_KEYS);
+  const rawSub = params.get("sub");
+  const tab: TripsTab = (TRIPS_TABS as readonly string[]).includes(rawSub ?? "")
+    ? (rawSub as TripsTab)
+    : "queue";
+  const warehouse = params.get("warehouse") || "";
+  const dateFrom = params.get("date_from") || "";
+  const dateTo = params.get("date_to") || "";
+  const search = params.get("search") || "";
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "" || (k === "sub" && v === "queue") || (k === "page" && v === "1"))
+        next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setTab = (v: TripsTab) => patchParams({ sub: v, page: "1" });
+  const setWarehouse = (v: string) => patchParams({ warehouse: v, page: "1" });
+  const setDateFrom = (v: string) => patchParams({ date_from: v, page: "1" });
+  const setDateTo = (v: string) => patchParams({ date_to: v, page: "1" });
+  const setSearch = (v: string) => patchParams({ search: v, page: "1" });
+  const setPage = (n: number) => patchParams({ page: String(n) });
+
   const [newTripSeed, setNewTripSeed] = useState<SalesOrder[] | null>(null);
-  const [warehouse, setWarehouse] = useState<string>("");
-  const [dateFrom, setDateFrom] = useState<string>("");
-  const [dateTo, setDateTo] = useState<string>("");
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:trips", 50);
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<Trip | null>(null);
@@ -210,10 +252,7 @@ export function Trips() {
     <div>
       <TabStrip<TripsTab>
         value={tab}
-        onChange={(next) => {
-          setTab(next);
-          setPage(1);
-        }}
+        onChange={(next) => setTab(next)}
         options={tabs}
       />
 
@@ -281,11 +320,8 @@ export function Trips() {
         <Filter label="Warehouse">
           <select
             value={warehouse}
-            onChange={(e) => {
-              setPage(1);
-              setWarehouse(e.target.value);
-            }}
-            className="rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
+            onChange={(e) => setWarehouse(e.target.value)}
+            className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] sm:w-auto"
           >
             <option value="">All</option>
             {warehouses.data?.data.map((w) => (
@@ -299,22 +335,16 @@ export function Trips() {
           <input
             type="date"
             value={dateFrom}
-            onChange={(e) => {
-              setPage(1);
-              setDateFrom(e.target.value);
-            }}
-            className="rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] sm:w-auto"
           />
         </Filter>
         <Filter label="To">
           <input
             type="date"
             value={dateTo}
-            onChange={(e) => {
-              setPage(1);
-              setDateTo(e.target.value);
-            }}
-            className="rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
+            onChange={(e) => setDateTo(e.target.value)}
+            className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] sm:w-auto"
           />
         </Filter>
       </div>
@@ -324,10 +354,7 @@ export function Trips() {
         exportName="trips"
         search={{
           value: search,
-          onChange: (v) => {
-            setPage(1);
-            setSearch(v);
-          },
+          onChange: (v) => setSearch(v),
           placeholder: "Search trip no, plate, driver…",
         }}
         columns={[
@@ -502,7 +529,7 @@ export function Trips() {
 
 function Filter({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="flex flex-col gap-0.5">
+    <label className="flex w-full flex-col gap-0.5 sm:w-auto">
       <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-secondary">
         {label}
       </span>
@@ -622,7 +649,7 @@ function NewTripDialog({
         </div>
 
         <div className="space-y-4 px-6 py-5">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Warehouse">
               <select
                 value={warehouse}

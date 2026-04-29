@@ -8,17 +8,13 @@ import {
   CircleUser,
   Grid3x3,
   X,
-  ClipboardList,
-  Truck as TruckIcon,
   ShieldCheck,
-  FolderKanban,
   Bell,
-  Settings as SettingsIcon,
-  Users,
   type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { useNotifications } from "../hooks/useNotifications";
+import { NAV_TABS, type NavTab } from "./Sidebar";
 import { cn } from "../lib/utils";
 
 /**
@@ -165,82 +161,90 @@ function BottomTab({ tab }: { tab: Tab }) {
 }
 
 // ── Menu modal ────────────────────────────────────────────────
-// Bottom-sheet of every nav destination not already on the rail.
-// Permission-filtered. Click → navigate + close. Click backdrop / X
-// to dismiss.
-
-interface MenuItem {
-  to: string;
-  label: string;
-  icon: LucideIcon;
-  perm?: string;
-  anyPerm?: string[];
-  badge?: number;
-  description?: string;
-}
+// Bottom-sheet that mirrors the desktop Sidebar's full nav tree.
+// Both render from the same NAV_TABS registry so they never drift —
+// add a route in Sidebar.tsx and it appears here automatically.
+// Permission-filtered. Click → navigate + close. Backdrop / X to
+// dismiss.
 
 function MenuModal({ onClose }: { onClose: () => void }) {
   const { can } = useAuth();
   const navigate = useNavigate();
   const notifs = useNotifications();
 
-  const items: MenuItem[] = [
-    {
-      to: "/projects",
-      label: "Projects",
-      icon: FolderKanban,
-      perm: "projects.read",
-      description: "Exhibitions and events",
-    },
-    {
-      to: "/orders",
-      label: "Sales Orders",
-      icon: ClipboardList,
-      perm: "sales_orders.read",
-    },
-    {
-      to: "/delivery-orders",
-      label: "Delivery",
-      icon: TruckIcon,
-      perm: "delivery_orders.read",
-    },
-    {
-      to: "/po",
-      label: "Purchase Orders",
-      icon: ClipboardList,
-      perm: "purchase_orders.read",
-    },
-    {
-      to: "/notifications",
-      label: "Inbox",
-      icon: Bell,
-      perm: "projects.read",
-      badge: notifs.totalUnread,
-    },
-    {
-      to: "/team",
-      label: "Team",
-      icon: Users,
-      anyPerm: ["users.read", "roles.read"],
-    },
-    {
-      to: "/settings",
-      label: "Settings",
-      icon: SettingsIcon,
-      perm: "settings.manage",
-    },
-  ];
+  // Recursive permission filter — same shape as Sidebar.tsx's so the
+  // two stay in lockstep.
+  function filterTab(t: NavTab): NavTab | null {
+    if (t.perm && !can(t.perm)) return null;
+    if (t.anyPerm && !t.anyPerm.some((p) => can(p))) return null;
+    if (t.hidePerm && can(t.hidePerm)) return null;
+    if (t.children) {
+      const kids = t.children
+        .map(filterTab)
+        .filter((x): x is NavTab => x !== null);
+      if (kids.length === 0) return null;
+      return { ...t, children: kids };
+    }
+    return t;
+  }
 
-  const visible = items.filter((it) => {
-    if (it.perm && !can(it.perm)) return false;
-    if (it.anyPerm && !it.anyPerm.some((p) => can(p))) return false;
-    return true;
-  });
+  const visibleTabs = NAV_TABS.map(filterTab).filter(
+    (t): t is NavTab => t !== null,
+  );
 
   function go(to: string) {
     navigate(to);
     onClose();
   }
+
+  function renderCard(t: NavTab, badge?: number) {
+    if (!t.to) return null;
+    const Icon = t.icon;
+    return (
+      <button
+        key={t.to}
+        onClick={() => go(t.to!)}
+        className={cn(
+          "group flex items-center gap-3 rounded-xl border border-border bg-bg/40 p-3 text-left transition-all",
+          "hover:border-accent/40 hover:bg-accent-soft/30 active:scale-[0.98]",
+        )}
+      >
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-surface text-accent shadow-stone group-hover:bg-accent group-hover:text-white">
+          <Icon size={17} strokeWidth={2.2} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[13px] font-bold text-ink">
+              {t.label}
+            </span>
+            {badge != null && badge > 0 && (
+              <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-err px-1 font-mono text-[9px] font-bold text-white">
+                {badge > 9 ? "9+" : badge}
+              </span>
+            )}
+          </div>
+        </div>
+      </button>
+    );
+  }
+
+  function renderGroupHeader(label: string, Icon: LucideIcon) {
+    return (
+      <div className="col-span-2 mt-1 flex items-center gap-2 px-1 pt-2">
+        <Icon size={11} className="text-accent" />
+        <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-accent">
+          {label}
+        </span>
+        <span className="h-px flex-1 bg-gradient-to-r from-accent/30 to-transparent" />
+      </div>
+    );
+  }
+
+  // Inbox is a fixed extra entry — surfaces unread notifications with
+  // a live badge. Not in NAV_TABS because the sidebar exposes the bell
+  // via NotificationBell instead. Skip when projects.read is denied
+  // (same gate as before).
+  const showInbox = can("projects.read");
 
   const node = (
     <div className="fixed inset-0 z-50 flex flex-col justify-end lg:hidden">
@@ -255,9 +259,9 @@ function MenuModal({ onClose }: { onClose: () => void }) {
         role="dialog"
         aria-label="Menu"
         className={cn(
-          "relative mx-2 mb-2 overflow-hidden rounded-2xl border border-border bg-surface shadow-slab",
+          "relative mx-2 mb-2 max-h-[85vh] overflow-hidden rounded-2xl border border-border bg-surface shadow-slab",
           "pb-[env(safe-area-inset-bottom)]",
-          "animate-rise"
+          "animate-rise flex flex-col",
         )}
       >
         {/* Drag handle */}
@@ -284,45 +288,40 @@ function MenuModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        {/* Grid */}
-        <div className="grid grid-cols-2 gap-2 px-3 pb-3">
-          {visible.map((it) => {
-            const Icon = it.icon;
-            return (
-              <button
-                key={it.to}
-                onClick={() => go(it.to)}
-                className={cn(
-                  "group flex items-center gap-3 rounded-xl border border-border bg-bg/40 p-3 text-left transition-all",
-                  "hover:border-accent/40 hover:bg-accent-soft/30 active:scale-[0.98]"
-                )}
-              >
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-surface text-accent shadow-stone group-hover:bg-accent group-hover:text-white">
-                  <Icon size={17} strokeWidth={2.2} />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[13px] font-bold text-ink">
-                      {it.label}
-                    </span>
-                    {it.badge != null && it.badge > 0 && (
-                      <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-err px-1 font-mono text-[9px] font-bold text-white">
-                        {it.badge > 9 ? "9+" : it.badge}
-                      </span>
-                    )}
-                  </div>
-                  {it.description && (
-                    <div className="truncate text-[10.5px] text-ink-muted">
-                      {it.description}
-                    </div>
-                  )}
+        {/* Scrollable grid — taller nav trees overflow inside the sheet
+            so the sheet itself never grows past 85vh. */}
+        <div className="thin-scroll grid grid-cols-2 gap-2 overflow-y-auto px-3 pb-3">
+          {showInbox &&
+            renderCard(
+              {
+                to: "/notifications",
+                label: "Inbox",
+                icon: Bell,
+              },
+              notifs.totalUnread,
+            )}
+
+          {visibleTabs.map((t) => {
+            // Group: spans the full row with a section header, then
+            // its leaf children render as cards beneath.
+            if (t.children && t.children.length > 0) {
+              return (
+                <div
+                  key={t.groupId || t.label}
+                  className="col-span-2 contents"
+                >
+                  {renderGroupHeader(t.label, t.icon)}
+                  {t.children.map((k) => renderCard(k))}
                 </div>
-              </button>
-            );
+              );
+            }
+            // Leaf — single card.
+            return renderCard(t);
           })}
-          {visible.length === 0 && (
+
+          {visibleTabs.length === 0 && !showInbox && (
             <div className="col-span-2 px-3 py-8 text-center text-[11px] text-ink-muted">
-              No additional destinations available for your role.
+              No destinations available for your role.
             </div>
           )}
         </div>

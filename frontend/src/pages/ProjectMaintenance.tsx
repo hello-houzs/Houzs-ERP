@@ -6,6 +6,8 @@ import { ColorPicker } from "../components/ColorPicker";
 import { RowActionsMenu } from "../components/RowActionsMenu";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
+import { useDialog } from "../hooks/useDialog";
+import { Skeleton } from "../components/Skeleton";
 import { api } from "../api/client";
 import { cn } from "../lib/utils";
 
@@ -67,24 +69,60 @@ export function ProjectMaintenanceView() {
         title="Project Maintenance"
         description="All the picker lists that drive the new-project form: brands, event types, organizers, venues, plus the default checklist that clones into every new project."
       />
-      <div className="space-y-6">
+      {/* Picker lists are short — pack them two-up on wide screens to
+          kill the vertical whitespace. Tasklist templates stay
+          full-width because their item rows already pack columns
+          internally. */}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <BrandManager />
         <EventTypeManager />
         <OrganizerManager />
         <VenueManager />
+      </div>
+      <div className="mt-6">
         <ChecklistManager />
       </div>
     </div>
   );
 }
 
+// Picker lists collapse to this many rows by default; users hit the
+// expand button to see the rest. Keeps the 2-up grid balanced when one
+// list is much longer than the others.
+const PICKER_PREVIEW_ROWS = 5;
+
+function ExpandToggle({
+  total,
+  expanded,
+  onToggle,
+}: {
+  total: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  if (total <= PICKER_PREVIEW_ROWS) return null;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline"
+    >
+      {expanded
+        ? "Collapse"
+        : `Show all (${total - PICKER_PREVIEW_ROWS} more)`}
+    </button>
+  );
+}
+
 function OrganizerManager() {
   const toast = useToast();
+  const dialog = useDialog();
   const q = useQuery<{ data: OrganizerRow[] }>(
     () => api.get("/api/projects/organizers")
   );
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
+  const [expanded, setExpanded] = useState(false);
 
   async function add() {
     const trimmed = name.trim();
@@ -103,9 +141,18 @@ function OrganizerManager() {
   }
 
   async function remove(o: OrganizerRow) {
-    if (!confirm(`Remove organizer "${o.name}"? Existing projects keep the value.`)) return;
+    if (
+      !(await dialog.confirm({
+        title: "Remove organizer",
+        message: `Remove organizer "${o.name}"? Existing projects keep the value.`,
+        danger: true,
+        confirmLabel: "Remove",
+      }))
+    )
+      return;
     try {
       await api.del(`/api/projects/organizers/${o.id}`);
+      toast.success("Organizer removed");
       q.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -137,12 +184,21 @@ function OrganizerManager() {
 
       <ul className="divide-y divide-border-subtle rounded-md border border-border bg-bg/40">
         {q.loading && (
-          <li className="px-3 py-3 text-[11.5px] text-ink-muted">Loading…</li>
+          <>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <li key={i} className="px-3 py-2">
+                <Skeleton className="h-4 w-2/3" />
+              </li>
+            ))}
+          </>
         )}
         {q.data?.data.length === 0 && (
           <li className="px-3 py-3 text-[11.5px] text-ink-muted">No organizers yet.</li>
         )}
-        {q.data?.data.map((o) => (
+        {(expanded
+          ? q.data?.data ?? []
+          : (q.data?.data ?? []).slice(0, PICKER_PREVIEW_ROWS)
+        ).map((o) => (
           <li
             key={o.id}
             className="flex items-center justify-between gap-3 px-3 py-2"
@@ -162,16 +218,45 @@ function OrganizerManager() {
           </li>
         ))}
       </ul>
+      <ExpandToggle
+        total={q.data?.data.length ?? 0}
+        expanded={expanded}
+        onToggle={() => setExpanded((v) => !v)}
+      />
     </section>
   );
 }
 
+// Malaysian states + federal territories. Source for the venue State
+// dropdown so admins can't typo into a non-canonical value (e.g. "KL"
+// vs "Kuala Lumpur") that downstream filters wouldn't match.
+const MY_STATES = [
+  "Johor",
+  "Kedah",
+  "Kelantan",
+  "Kuala Lumpur",
+  "Labuan",
+  "Melaka",
+  "Negeri Sembilan",
+  "Pahang",
+  "Penang",
+  "Perak",
+  "Perlis",
+  "Putrajaya",
+  "Sabah",
+  "Sarawak",
+  "Selangor",
+  "Terengganu",
+] as const;
+
 function VenueManager() {
   const toast = useToast();
+  const dialog = useDialog();
   const q = useQuery<{ data: VenueRow[] }>(() => api.get("/api/projects/venues"));
   const [name, setName] = useState("");
   const [stateField, setStateField] = useState("");
   const [adding, setAdding] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   async function add() {
     const trimmed = name.trim();
@@ -196,6 +281,7 @@ function VenueManager() {
   async function patch(id: number, body: Record<string, any>) {
     try {
       await api.patch(`/api/projects/venues/${id}`, body);
+      toast.success("Venue saved");
       q.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -203,9 +289,18 @@ function VenueManager() {
   }
 
   async function remove(v: VenueRow) {
-    if (!confirm(`Remove venue "${v.name}"? Existing projects keep the value.`)) return;
+    if (
+      !(await dialog.confirm({
+        title: "Remove venue",
+        message: `Remove venue "${v.name}"? Existing projects keep the value.`,
+        danger: true,
+        confirmLabel: "Remove",
+      }))
+    )
+      return;
     try {
       await api.del(`/api/projects/venues/${v.id}`);
+      toast.success("Venue removed");
       q.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -230,13 +325,19 @@ function VenueManager() {
           placeholder="Venue name…"
           className="h-9 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
         />
-        <input
+        <select
           value={stateField}
           onChange={(e) => setStateField(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
-          placeholder="State (optional)"
-          className="h-9 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-        />
+          className="h-9 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+        >
+          <option value="">— state —</option>
+          {MY_STATES.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
         <Button variant="primary" onClick={add} disabled={adding || !name.trim()}>
           Add
         </Button>
@@ -244,12 +345,21 @@ function VenueManager() {
 
       <ul className="divide-y divide-border-subtle rounded-md border border-border bg-bg/40">
         {q.loading && (
-          <li className="px-3 py-3 text-[11.5px] text-ink-muted">Loading…</li>
+          <>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <li key={i} className="px-3 py-2">
+                <Skeleton className="h-4 w-2/3" />
+              </li>
+            ))}
+          </>
         )}
         {q.data?.data.length === 0 && (
           <li className="px-3 py-3 text-[11.5px] text-ink-muted">No venues yet.</li>
         )}
-        {q.data?.data.map((v) => (
+        {(expanded
+          ? q.data?.data ?? []
+          : (q.data?.data ?? []).slice(0, PICKER_PREVIEW_ROWS)
+        ).map((v) => (
           <li
             key={v.id}
             className="flex items-center justify-between gap-3 px-3 py-2"
@@ -260,16 +370,28 @@ function VenueManager() {
                 <div className="text-[10.5px] text-ink-muted">{v.state}</div>
               )}
             </div>
-            <input
-              defaultValue={v.state || ""}
-              onBlur={(e) => {
-                if (e.target.value !== (v.state || "")) {
-                  patch(v.id, { state: e.target.value || null });
+            <select
+              value={v.state || ""}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (next !== (v.state || "")) {
+                  patch(v.id, { state: next || null });
                 }
               }}
-              placeholder="state"
-              className="h-7 w-32 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-            />
+              className="h-7 w-32 rounded-md border border-border bg-surface px-1.5 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            >
+              <option value="">— state —</option>
+              {/* Preserve any legacy value not in the canonical list so
+                  it keeps showing until an admin re-picks. */}
+              {v.state && !(MY_STATES as readonly string[]).includes(v.state) && (
+                <option value={v.state}>{v.state} (legacy)</option>
+              )}
+              {MY_STATES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
             <RowActionsMenu
               items={[
                 {
@@ -284,6 +406,11 @@ function VenueManager() {
           </li>
         ))}
       </ul>
+      <ExpandToggle
+        total={q.data?.data.length ?? 0}
+        expanded={expanded}
+        onToggle={() => setExpanded((s) => !s)}
+      />
     </section>
   );
 }
@@ -331,7 +458,11 @@ function ChecklistManager() {
           Default template per event type
         </div>
         {eventTypesQ.loading ? (
-          <div className="text-[11.5px] text-ink-muted">Loading…</div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-full" />
+            ))}
+          </div>
         ) : (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {eventTypes.map((et) => (
@@ -398,6 +529,7 @@ function ChecklistManager() {
 
 function ChecklistItemsEditor({ templateId }: { templateId: number }) {
   const toast = useToast();
+  const dialog = useDialog();
   const q = useQuery<{
     data: ChecklistTemplateItem[];
     sections: ChecklistTemplateSection[];
@@ -458,13 +590,17 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
 
   async function deleteSection(id: number, name: string) {
     if (
-      !confirm(
-        `Delete section "${name}"? Template items in it will move to Uncategorised.`
-      )
+      !(await dialog.confirm({
+        title: "Delete section",
+        message: `Delete section "${name}"? Template items in it will move to Uncategorised.`,
+        danger: true,
+        confirmLabel: "Delete",
+      }))
     )
       return;
     try {
       await api.del(`/api/projects/checklist-templates/sections/${id}`);
+      toast.success("Section removed");
       q.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -539,9 +675,18 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
   }
 
   async function removeItem(item: ChecklistTemplateItem) {
-    if (!confirm(`Delete checklist item "${item.title}"?`)) return;
+    if (
+      !(await dialog.confirm({
+        title: "Delete item",
+        message: `Delete checklist item "${item.title}"?`,
+        danger: true,
+        confirmLabel: "Delete",
+      }))
+    )
+      return;
     try {
       await api.del(`/api/projects/checklist-templates/items/${item.id}`);
+      toast.success("Item removed");
       q.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -960,7 +1105,8 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                                   patchItem(item.id, { due_offset_days: n });
                               }}
                               type="number"
-                              placeholder="Due offset"
+                              placeholder="Days from start"
+                              title="Days from project start_date (negative = before)"
                               className="h-7 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
                             />
                             {/* Row actions — both "Need review" and
@@ -1020,7 +1166,8 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                             onKeyDown={(e) =>
                               e.key === "Enter" && addItem(block.sectionId)
                             }
-                            placeholder="Due offset days"
+                            placeholder="Days from start"
+                            title="Days from project start_date (negative = before)"
                             type="number"
                             className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
                           />
@@ -1080,12 +1227,14 @@ interface BrandRow {
 
 function BrandManager() {
   const toast = useToast();
+  const dialog = useDialog();
   const q = useQuery<{ data: BrandRow[] }>(() =>
     api.get("/api/projects/brands?full=1&include_inactive=1")
   );
   const [name, setName] = useState("");
   const [color, setColor] = useState(BRAND_PALETTE[3]);
   const [adding, setAdding] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   async function add() {
     const trimmed = name.trim();
@@ -1121,13 +1270,17 @@ function BrandManager() {
 
   async function remove(b: BrandRow) {
     if (
-      !confirm(
-        `Hide "${b.name}" from the picker? Existing projects keep their brand label; you can re-enable later.`
-      )
+      !(await dialog.confirm({
+        title: "Hide brand",
+        message: `Hide "${b.name}" from the picker? Existing projects keep their brand label; you can re-enable later.`,
+        danger: true,
+        confirmLabel: "Hide",
+      }))
     )
       return;
     try {
       await api.del(`/api/projects/brands/${b.id}`);
+      toast.success("Brand hidden");
       q.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -1165,14 +1318,23 @@ function BrandManager() {
 
       <ul className="divide-y divide-border-subtle rounded-md border border-border bg-bg/40">
         {q.loading && (
-          <li className="px-3 py-3 text-[11.5px] text-ink-muted">Loading…</li>
+          <>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <li key={i} className="px-3 py-2">
+                <Skeleton className="h-4 w-2/3" />
+              </li>
+            ))}
+          </>
         )}
         {q.data?.data.length === 0 && (
           <li className="px-3 py-3 text-[11.5px] text-ink-muted">
             No brands configured.
           </li>
         )}
-        {q.data?.data.map((b) => (
+        {(expanded
+          ? q.data?.data ?? []
+          : (q.data?.data ?? []).slice(0, PICKER_PREVIEW_ROWS)
+        ).map((b) => (
           <li
             key={b.id}
             className={cn(
@@ -1234,6 +1396,11 @@ function BrandManager() {
           </li>
         ))}
       </ul>
+      <ExpandToggle
+        total={q.data?.data.length ?? 0}
+        expanded={expanded}
+        onToggle={() => setExpanded((s) => !s)}
+      />
     </section>
   );
 }
@@ -1243,11 +1410,13 @@ function BrandManager() {
 
 function EventTypeManager() {
   const toast = useToast();
+  const dialog = useDialog();
   const q = useQuery<{ data: EventTypeRow[] }>(() =>
     api.get("/api/projects/event-types?include_inactive=1")
   );
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   async function add() {
     const trimmed = name.trim();
@@ -1279,13 +1448,17 @@ function EventTypeManager() {
 
   async function remove(t: EventTypeRow) {
     if (
-      !confirm(
-        `Hide "${t.name}" from the picker? Existing projects keep their event type.`
-      )
+      !(await dialog.confirm({
+        title: "Hide event type",
+        message: `Hide "${t.name}" from the picker? Existing projects keep their event type.`,
+        danger: true,
+        confirmLabel: "Hide",
+      }))
     )
       return;
     try {
       await api.del(`/api/projects/event-types/${t.id}`);
+      toast.success("Event type hidden");
       q.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -1318,14 +1491,23 @@ function EventTypeManager() {
 
       <ul className="divide-y divide-border-subtle rounded-md border border-border bg-bg/40">
         {q.loading && (
-          <li className="px-3 py-3 text-[11.5px] text-ink-muted">Loading…</li>
+          <>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <li key={i} className="px-3 py-2">
+                <Skeleton className="h-4 w-2/3" />
+              </li>
+            ))}
+          </>
         )}
         {q.data?.data.length === 0 && (
           <li className="px-3 py-3 text-[11.5px] text-ink-muted">
             No event types yet.
           </li>
         )}
-        {q.data?.data.map((t) => {
+        {(expanded
+          ? q.data?.data ?? []
+          : (q.data?.data ?? []).slice(0, PICKER_PREVIEW_ROWS)
+        ).map((t) => {
           const active = (t as any).active !== 0;
           return (
             <li
@@ -1387,6 +1569,11 @@ function EventTypeManager() {
           );
         })}
       </ul>
+      <ExpandToggle
+        total={q.data?.data.length ?? 0}
+        expanded={expanded}
+        onToggle={() => setExpanded((s) => !s)}
+      />
     </section>
   );
 }

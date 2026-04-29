@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/Layout";
 import { ExpandableText } from "../components/ExpandableText";
+import { ListSkeleton } from "../components/Skeleton";
+import { EmptyState } from "../components/EmptyState";
 import { api } from "../api/client";
 import { cn, relativeTime } from "../lib/utils";
 import {
@@ -107,11 +109,13 @@ export function Notifications() {
       )}
 
       {items.length === 0 && !loading ? (
-        <div className="rounded-md border border-dashed border-border bg-surface px-5 py-12 text-center text-[12px] text-ink-muted">
-          {mode === "unread"
-            ? "Nothing unread. You're caught up."
-            : "No activity yet on your projects."}
-        </div>
+        <EmptyState
+          message={
+            mode === "unread"
+              ? "Nothing unread. You're caught up."
+              : "No activity yet on your projects."
+          }
+        />
       ) : (
         <ul className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
           {items.map((a) => (
@@ -172,7 +176,9 @@ export function Notifications() {
         </div>
       )}
       {loading && items.length === 0 && (
-        <div className="mt-2 text-center text-[11px] text-ink-muted">Loading…</div>
+        <div className="mt-2">
+          <ListSkeleton rows={5} />
+        </div>
       )}
     </div>
   );

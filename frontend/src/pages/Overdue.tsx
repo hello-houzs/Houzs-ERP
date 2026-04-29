@@ -10,13 +10,23 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, relativeTime } from "../lib/utils";
 import type { Paginated, OverdueHistoryRow, OverdueSummary } from "../types";
 
+const OVERDUE_FILTER_KEYS = ["page"] as const;
+
 export function Overdue() {
   const toast = useToast();
-  const [page, setPage] = useState(1);
+  const [params, setParams] = useStickyFilters("overdue", OVERDUE_FILTER_KEYS);
+  const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  const setPage = (n: number) => {
+    const next = new URLSearchParams(params);
+    if (n === 1) next.delete("page");
+    else next.set("page", String(n));
+    setParams(next, { replace: true });
+  };
   const [perPage, setPerPage] = useLocalStorage<number>("pp:overdue", 50);
   const [running, setRunning] = useState(false);
 

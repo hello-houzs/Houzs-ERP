@@ -39,11 +39,14 @@ export function DriverLayout({ children }: { children: ReactNode }) {
         </button>
       </header>
 
-      {/* Page body — pad bottom for the fixed bottom nav */}
-      <main className="thin-scroll flex-1 overflow-y-auto pb-20">{children}</main>
+      {/* Page body — pad bottom for the fixed bottom nav (h-16) plus
+          iOS home-indicator safe area. */}
+      <main className="thin-scroll flex-1 overflow-y-auto pb-[calc(5rem+env(safe-area-inset-bottom))]">
+        {children}
+      </main>
 
       {/* Bottom nav */}
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-2 border-t border-border bg-surface/95 backdrop-blur-sm">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-2 border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-sm">
         <BottomTab to="/driver" icon={<Truck size={18} />} label="Today" exact />
         <BottomTab to="/driver/me" icon={<User size={18} />} label="Profile" />
       </nav>

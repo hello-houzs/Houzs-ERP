@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams, useNavigate, useParams, Navigate } from "react-router-dom";
+import { useNavigate, useParams, Navigate } from "react-router-dom";
 import { RefreshCw, Send, ChevronDown, ChevronUp } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import {
@@ -23,6 +23,7 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, formatNumber } from "../lib/utils";
 import type { Paginated, PurchaseOrder, PurchaseOrderDoc, POSummary } from "../types";
@@ -30,19 +31,20 @@ import type { Paginated, PurchaseOrder, PurchaseOrderDoc, POSummary } from "../t
 type View = "list" | "creditors" | "pnl";
 type StatusFilter = "all" | "outstanding" | "delivered" | "cancelled";
 
+const PO_FILTER_KEYS = ["view", "status", "search", "page"] as const;
+
 export function PurchaseOrders() {
   const toast = useToast();
-  // View is URL-driven (?view=...) so global-search deep-links can land
-  // on the right tab. localStorage holds the last viewed tab as fallback.
-  const [params, setParams] = useSearchParams();
-  const [storedView, setStoredView] = useLocalStorage<View>("po:view", "list");
+  // All list-state lives in the URL via useStickyFilters: refresh, back-
+  // button, navbar away-and-back, and shareable deep-links all work.
+  // localStorage mirror is per-scope, so PO has its own snapshot.
+  const [params, setParams] = useStickyFilters("purchase-orders", PO_FILTER_KEYS);
   const urlView = params.get("view") as View | null;
   const view: View =
-    urlView && ["list", "creditors", "pnl"].includes(urlView) ? urlView : storedView;
+    urlView && ["list", "creditors", "pnl"].includes(urlView) ? urlView : "list";
   const setView = (v: View) => {
-    setStoredView(v);
     const next = new URLSearchParams(params);
-    if (v === storedView) next.delete("view");
+    if (v === "list") next.delete("view");
     else next.set("view", v);
     // Don't carry a focus param across tab switches — focus is scoped
     // to whichever record type the current tab renders.
@@ -50,12 +52,22 @@ export function PurchaseOrders() {
     setParams(next, { replace: true });
   };
 
-  const [docStatus, setDocStatus] = useLocalStorage<StatusFilter>(
-    "po:doc-status",
-    "outstanding"
-  );
-  const [docSearch, setDocSearch] = useState("");
-  const [docPage, setDocPage] = useState(1);
+  const docStatus = ((params.get("status") || "outstanding") as StatusFilter);
+  const docSearch = params.get("search") || "";
+  const docPage = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  function patchListParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "" || (k === "status" && v === "outstanding") || (k === "page" && v === "1"))
+        next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setDocStatus = (v: StatusFilter) => patchListParams({ status: v, page: "1" });
+  const setDocSearch = (v: string) => patchListParams({ search: v, page: "1" });
+  const setDocPage = (n: number) => patchListParams({ page: String(n) });
+
   const [docPerPage, setDocPerPage] = useLocalStorage<number>("pp:purchase-order-docs", 50);
   const docSortHook = useServerSort(() => setDocPage(1));
   const [pulling, setPulling] = useState(false);
@@ -213,15 +225,9 @@ export function PurchaseOrders() {
           <DocumentsView
             q={docs}
             status={docStatus}
-            setStatus={(v) => {
-              setDocStatus(v);
-              setDocPage(1);
-            }}
+            setStatus={setDocStatus}
             search={docSearch}
-            setSearch={(v) => {
-              setDocSearch(v);
-              setDocPage(1);
-            }}
+            setSearch={setDocSearch}
             page={docPage}
             setPage={setDocPage}
             perPage={docPerPage}

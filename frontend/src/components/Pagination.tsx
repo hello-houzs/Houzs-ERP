@@ -27,8 +27,8 @@ export function Pagination({
   const end = Math.min(page * perPage, total);
 
   return (
-    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-[11px] font-medium text-ink-secondary">
-      <div className="flex items-center gap-3">
+    <div className="mt-4 flex flex-col gap-2 text-[11px] font-medium text-ink-secondary sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-1.5">
           <span className="font-mono text-ink">
             {start.toLocaleString()}–{end.toLocaleString()}
@@ -38,13 +38,14 @@ export function Pagination({
         </div>
         {onPerPageChange && (
           <div className="flex items-center gap-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <span className="hidden text-[10px] font-semibold uppercase tracking-wider text-ink-muted sm:inline">
               Show
             </span>
             <select
               value={perPage}
               onChange={(e) => onPerPageChange(Number(e.target.value))}
-              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] font-semibold text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+              aria-label="Rows per page"
+              className="h-8 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] font-semibold text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20 sm:h-7"
             >
               {perPageOptions.map((n) => (
                 <option key={n} value={n}>
@@ -52,7 +53,7 @@ export function Pagination({
                 </option>
               ))}
             </select>
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <span className="hidden text-[10px] font-semibold uppercase tracking-wider text-ink-muted sm:inline">
               per page
             </span>
           </div>
@@ -63,7 +64,7 @@ export function Pagination({
           disabled={page <= 1}
           onClick={() => onPageChange(page - 1)}
           className={cn(
-            "flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface transition-colors",
+            "flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface transition-colors sm:h-7 sm:w-7",
             page <= 1
               ? "text-ink-muted opacity-40"
               : "hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
@@ -78,7 +79,7 @@ export function Pagination({
           disabled={page >= totalPages}
           onClick={() => onPageChange(page + 1)}
           className={cn(
-            "flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface transition-colors",
+            "flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface transition-colors sm:h-7 sm:w-7",
             page >= totalPages
               ? "text-ink-muted opacity-40"
               : "hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"

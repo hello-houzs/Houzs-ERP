@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { DataTable, type Column } from "../components/DataTable";
 import { Pagination } from "../components/Pagination";
@@ -7,9 +6,15 @@ import { DashboardGrid, DashboardPanels, DashboardBreakdown } from "../component
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency } from "../lib/utils";
 import type { Paginated, Creditor, CreditorSummary } from "../types";
+
+// Prefixed URL keys (`c_*`) so when CreditorsTab is mounted inside the
+// PurchaseOrders tabbed page, its filters don't collide with the parent
+// PO list's `search` / `page` keys.
+const CREDITORS_FILTER_KEYS = ["c_search", "c_page"] as const;
 
 /**
  * CreditorsTab — embeds inside the PurchaseOrders page as one tab.
@@ -21,8 +26,20 @@ import type { Paginated, Creditor, CreditorSummary } from "../types";
  */
 
 export function CreditorsTab({ refreshKey = 0 }: { refreshKey?: number }) {
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
+  const [params, setParams] = useStickyFilters("creditors", CREDITORS_FILTER_KEYS);
+  const search = params.get("c_search") || "";
+  const page = Math.max(1, parseInt(params.get("c_page") || "1", 10) || 1);
+  function patchParams(patch: Record<string, string>) {
+    const next = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === "" || (k === "c_page" && v === "1")) next.delete(k);
+      else next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  }
+  const setSearch = (v: string) => patchParams({ c_search: v, c_page: "1" });
+  const setPage = (n: number) => patchParams({ c_page: String(n) });
+
   const [perPage, setPerPage] = useLocalStorage<number>("pp:creditors", 50);
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
   const navigate = useNavigate();

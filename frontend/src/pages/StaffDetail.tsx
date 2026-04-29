@@ -56,6 +56,7 @@ export function StaffDetail() {
   const d = detail.data;
   const s = salary.data;
   const tabKind = d?.user_type === "driver" ? "Drivers" : "Helpers";
+  const subKey = d?.user_type === "driver" ? "drivers" : "helpers";
 
   const actions = !d ? null : !editing ? (
     <HeaderButton variant="ghost" onClick={startEdit}>
@@ -77,7 +78,7 @@ export function StaffDetail() {
       breadcrumbs={[
         { label: "Logistics", to: "/logistics" },
         { label: "Fleet", to: "/logistics?tab=fleet" },
-        { label: tabKind, to: "/logistics?tab=fleet" },
+        { label: tabKind, to: `/logistics?tab=fleet&sub=${subKey}` },
         { label: d?.name || d?.email || `#${id}` },
       ]}
       eyebrow={d?.user_type === "driver" ? "Driver" : "Helper"}

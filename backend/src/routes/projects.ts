@@ -1020,9 +1020,13 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
     }
   }
 
-  const ok = await patchProject(c.env, id, body, user?.id ?? 0);
-  if (!ok) return c.json({ error: "No changes" }, 400);
-  return c.json({ ok: true });
+  const result = await patchProject(c.env, id, body, user?.id ?? 0);
+  if (!result.ok) return c.json({ error: "No changes" }, 400);
+  return c.json({
+    ok: true,
+    shifted_tasks: result.shifted_tasks,
+    delta_days: result.delta_days,
+  });
 });
 
 // ── Chat / notes ──────────────────────────────────────────────
@@ -2452,7 +2456,7 @@ app.get("/calendar/events", requirePermission("projects.read"), async (c) => {
 
   // Projects whose [start_date, end_date] overlaps [from, to].
   const projects = await c.env.DB.prepare(
-    `SELECT p.id, p.code, p.name, p.stage, p.brand,
+    `SELECT p.id, p.code, p.name, p.stage, p.brand, p.organizer,
             p.start_date, p.end_date, p.venue, p.state
        FROM projects p
       WHERE p.archived_at IS NULL
@@ -2466,7 +2470,8 @@ app.get("/calendar/events", requirePermission("projects.read"), async (c) => {
   const tasks = await c.env.DB.prepare(
     `SELECT c.id, c.project_id, c.title, c.due_date, c.status,
             c.required_perm, c.review_status,
-            p.code as project_code, p.brand, p.name as project_name,
+            p.code as project_code, p.brand, p.organizer,
+            p.name as project_name,
             u.name as owner_name,
             CASE WHEN date(c.due_date) < date('now') THEN 1 ELSE 0 END as is_overdue
        FROM project_checklist c

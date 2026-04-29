@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Panel, PanelSection } from "./Panel";
+import { ListSkeleton } from "./Skeleton";
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
@@ -32,7 +33,10 @@ import { formatCurrency, formatDate, cn } from "../lib/utils";
  */
 
 export type PnlScope = "all" | "sales" | "projects" | "service" | "po";
-export type PnlGranularity = "yearly" | "monthly" | "weekly";
+// "weekly" was supported but rarely used and made the grid noisy at 53
+// columns; the backend still accepts it for direct callers but the UI
+// only exposes yearly + monthly.
+export type PnlGranularity = "yearly" | "monthly";
 
 interface PnlBucket {
   key: string;            // "2024" | "2024-03" | "2024-W12"
@@ -157,15 +161,13 @@ export function PnlCalendar({
     : 1;
 
   // Yearly anchors a 5-year span ending at `year`, no need to navigate
-  // by individual year inside that view. Weekly/monthly stay year-scoped.
+  // by individual year inside that view. Monthly stays year-scoped.
   const totalsLabel = granularity === "yearly" ? "Total" : "YTD";
   const gridClass =
     granularity === "yearly"
       ? "grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5"
-      : granularity === "weekly"
-      ? "grid grid-cols-3 gap-1.5 sm:grid-cols-6 lg:grid-cols-9 xl:grid-cols-13"
       : "grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4";
-  const skeletonCount = granularity === "yearly" ? 5 : granularity === "weekly" ? 53 : 12;
+  const skeletonCount = granularity === "yearly" ? 5 : 12;
 
   return (
     <section
@@ -190,7 +192,7 @@ export function PnlCalendar({
         <div className="flex items-center gap-2">
           {/* Granularity toggle */}
           <div className="inline-flex rounded-md border border-border bg-surface p-0.5">
-            {(["yearly", "monthly", "weekly"] as PnlGranularity[]).map((g) => (
+            {(["yearly", "monthly"] as PnlGranularity[]).map((g) => (
               <button
                 key={g}
                 onClick={() => setGranularity(g)}
@@ -294,7 +296,6 @@ export function PnlCalendar({
               bucket={b}
               maxAbs={maxAbsMetric}
               scope={scope}
-              granularity={granularity}
               onOpen={() => setOpenBucket(b)}
             />
           ))}
@@ -372,13 +373,11 @@ function BucketCard({
   bucket,
   maxAbs,
   scope,
-  granularity,
   onOpen,
 }: {
   bucket: PnlBucket;
   maxAbs: number;
   scope: PnlScope;
-  granularity: PnlGranularity;
   onOpen: () => void;
 }) {
   const hasAny = bucket.revenue !== 0 || bucket.cost !== 0 || bucket.gross !== 0;
@@ -404,28 +403,19 @@ function BucketCard({
       : headline >= 0
       ? "bg-synced"
       : "bg-err";
-  // Weekly cards are tighter — drop the breakdown row to keep them
-  // scannable in a 13-col grid.
-  const isWeek = granularity === "weekly";
 
   return (
     <button
       onClick={onOpen}
       className={cn(
-        "group flex flex-col gap-1 rounded-md border border-border bg-surface text-left transition-colors",
-        isWeek ? "px-2 py-1.5" : "px-3 py-2",
+        "group flex flex-col gap-1 rounded-md border border-border bg-surface px-3 py-2 text-left transition-colors",
         hasAny
           ? "hover:border-accent/40 hover:bg-accent-soft/20"
           : "opacity-60 hover:opacity-100"
       )}
     >
       <div className="flex items-center justify-between">
-        <div
-          className={cn(
-            "font-bold uppercase tracking-wider text-ink-muted",
-            isWeek ? "text-[9px]" : "text-[10px]"
-          )}
-        >
+        <div className="text-[10px] font-bold uppercase tracking-wider text-ink-muted">
           {bucket.label}
         </div>
         {hasAny && (
@@ -436,13 +426,7 @@ function BucketCard({
       </div>
       {hasAny ? (
         <>
-          <div
-            className={cn(
-              "font-mono font-extrabold leading-tight",
-              isWeek ? "text-[11px]" : "text-[14px]",
-              toneClass
-            )}
-          >
+          <div className={cn("font-mono text-[14px] font-extrabold leading-tight", toneClass)}>
             {formatCurrency(headline, { compact: true })}
           </div>
           <div className="h-[3px] w-full overflow-hidden rounded-full bg-bg">
@@ -451,26 +435,18 @@ function BucketCard({
               style={{ width: `${barPct}%` }}
             />
           </div>
-          {!isWeek && scope === "all" && (
+          {scope === "all" ? (
             <div className="text-[9.5px] text-ink-muted">
               <span>Rev {formatCurrency(bucket.revenue, { compact: true })}</span>
               {" · "}
               <span>Cost {formatCurrency(bucket.cost, { compact: true })}</span>
             </div>
-          )}
-          {!isWeek && scope !== "all" && (
+          ) : (
             <div className="text-[9.5px] text-ink-muted">click to see breakdown</div>
           )}
         </>
       ) : (
-        <div
-          className={cn(
-            "font-mono text-ink-muted",
-            isWeek ? "text-[10px]" : "text-[12px]"
-          )}
-        >
-          —
-        </div>
+        <div className="font-mono text-[12px] text-ink-muted">—</div>
       )}
     </button>
   );
@@ -500,8 +476,6 @@ function BucketDetailPanel({
   const periodLabel =
     granularity === "yearly"
       ? bucket.label
-      : granularity === "weekly"
-      ? `Week of ${formatDate(bucket.start)}`
       : `${bucket.label} ${bucket.start.slice(0, 4)}`;
 
   const showSales = scope === "all" || scope === "sales";
@@ -523,7 +497,7 @@ function BucketDetailPanel({
 
   return (
     <Panel open onClose={onClose} title={periodLabel} subtitle="P&L breakdown" width={560}>
-      {q.loading && <div className="text-[12px] text-ink-muted">Loading…</div>}
+      {q.loading && <ListSkeleton rows={5} />}
       {q.error && (
         <div className="rounded-md border border-err/40 bg-err/5 px-3 py-2 text-[12px] text-err">
           {q.error}

@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { Database, Mail, Send } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
@@ -7,14 +6,18 @@ import { Button } from "../components/Button";
 import { StatusDot } from "../components/StatusDot";
 import { DataTable, type Column } from "../components/DataTable";
 import { Pagination } from "../components/Pagination";
+import { ListSkeleton } from "../components/Skeleton";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api, buildQuery } from "../api/client";
 import { relativeTime } from "../lib/utils";
 import type { SyncStatusResponse, Paginated, ExecutionLog } from "../types";
 
 type SettingsTab = "connection" | "sync" | "email" | "logs";
+
+const SETTINGS_KEYS = ["tab"] as const;
 
 /**
  * Settings page — split into four tabs so each section owns its own
@@ -23,7 +26,7 @@ type SettingsTab = "connection" | "sync" | "email" | "logs";
  * tabs see the same state. Email and Activity Log are self-contained.
  */
 export function Settings() {
-  const [params, setParams] = useSearchParams();
+  const [params, setParams] = useStickyFilters("settings", SETTINGS_KEYS);
 
   const raw = params.get("tab") as SettingsTab | null;
   const active: SettingsTab =
@@ -307,7 +310,7 @@ function EmailTab() {
         <Mail size={12} /> Email Notifications
       </h2>
 
-      {q.loading && <div className="text-xs text-ink-muted">Loading…</div>}
+      {q.loading && <ListSkeleton rows={4} />}
 
       {s && (
         <>
