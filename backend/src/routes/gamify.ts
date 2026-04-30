@@ -181,7 +181,8 @@ app.get("/recipients", async (c) => {
   const q = (c.req.query("q") || "").trim().toLowerCase();
   const list = await c.env.DB.prepare(
     `SELECT u.id, COALESCE(u.name, u.email) AS name, u.email, u.department_id,
-            d.name AS department_name
+            d.name AS department_name,
+            u.profile_pic_r2_key
        FROM users u
        LEFT JOIN departments d ON d.id = u.department_id
       WHERE u.status = 'active' AND u.id <> ?
@@ -194,6 +195,7 @@ app.get("/recipients", async (c) => {
       email: string;
       department_id: number | null;
       department_name: string | null;
+      profile_pic_r2_key: string | null;
     }>();
   let rows = list.results ?? [];
   if (q) {

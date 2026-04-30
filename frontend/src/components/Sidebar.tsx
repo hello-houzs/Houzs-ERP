@@ -179,7 +179,7 @@ export const NAV_TABS: NavTab[] = [
     groupId: "engagement",
     children: [
       { to: "/gamification", label: "Houzs Points", icon: Trophy },
-      { to: "/gamification?sub=shop", label: "Award Shop", icon: ShoppingBag },
+      { to: "/shop", label: "Award Shop", icon: ShoppingBag },
       { to: "/innovations", label: "Innovations", icon: Lightbulb },
       { to: "/suggestions", label: "Suggestions", icon: MessageCircle },
       {

@@ -424,6 +424,7 @@ export interface LeaderboardRow {
   email: string;
   department_id: number | null;
   department_name: string | null;
+  profile_pic_r2_key: string | null;
   points: number;
   current_streak: number;
   rank: number;
@@ -468,6 +469,7 @@ export async function computeLeaderboard(
             u.email,
             u.department_id,
             d.name        AS department_name,
+            u.profile_pic_r2_key,
             u.current_streak,
             COALESCE(SUM(CASE WHEN pt.delta > 0 THEN pt.delta ELSE 0 END), 0) AS points
        FROM users u

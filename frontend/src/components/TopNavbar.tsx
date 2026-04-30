@@ -7,6 +7,7 @@ import { GlobalSearchTrigger } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
 import { PresenceIndicator } from "./PresenceIndicator";
 import { PointsChip } from "./PointsChip";
+import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 
 /**
@@ -85,9 +86,13 @@ export function TopNavbar() {
               title={`${user.name || user.email} — Profile`}
               aria-label="Profile"
             >
-              <span className="grid h-7 w-7 place-items-center rounded-full bg-accent-soft font-mono text-[10px] font-bold uppercase text-accent-ink group-hover:bg-accent group-hover:text-white">
-                {(user.name || user.email).slice(0, 2).toUpperCase()}
-              </span>
+              <Avatar
+                userId={user.id}
+                hasImage={user.profile_pic_r2_key}
+                name={user.name}
+                email={user.email}
+                size={28}
+              />
               <div className="hidden min-w-0 xl:block">
                 <div className="truncate text-[11.5px] font-semibold text-ink group-hover:text-accent">
                   {user.name || user.email.split("@")[0]}

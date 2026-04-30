@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Plus,
@@ -221,8 +221,38 @@ function CatalogRow({
   const [cost, setCost] = useState(String(row.cost_points));
   const [stock, setStock] = useState(row.stock === null ? "" : String(row.stock));
   const [busy, setBusy] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [version, setVersion] = useState(0);
+
+  // Whenever the parent reload brings down updated row data, reset the
+  // local form values so the editor reflects the canonical server state
+  // (and the dirty indicator correctly clears).
+  useEffect(() => {
+    setName(row.name);
+    setDescription(row.description ?? "");
+    setCost(String(row.cost_points));
+    setStock(row.stock === null || row.stock === undefined ? "" : String(row.stock));
+  }, [row.id, row.name, row.description, row.cost_points, row.stock]);
+
+  // Compare local state to canonical row to surface a "dirty" pulse so
+  // the user can see when there are unsaved edits — the most common
+  // reason "Save" feels like nothing happened was that nothing visible
+  // changed when state already matched what the server stored.
+  const dirty =
+    name.trim() !== (row.name || "") ||
+    description.trim() !== (row.description ?? "") ||
+    String(parseInt(cost, 10) || 0) !== String(row.cost_points) ||
+    (stock.trim() === ""
+      ? row.stock !== null && row.stock !== undefined
+      : parseInt(stock, 10) !== row.stock);
+
+  // Brief "saved" flash after a successful save — clears after 1.6 s.
+  useEffect(() => {
+    if (!savedAt) return;
+    const t = window.setTimeout(() => setSavedAt(null), 1600);
+    return () => window.clearTimeout(t);
+  }, [savedAt]);
 
   async function save() {
     setBusy(true);
@@ -239,9 +269,11 @@ function CatalogRow({
         cost_points: c,
         stock: s,
       });
-      toast.success("Saved");
+      toast.success(`Saved "${name.trim() || row.name}"`);
+      setSavedAt(Date.now());
       onChange();
     } catch (e: any) {
+      console.error("[catalog save] failed", e);
       toast.error(e?.message || "Save failed");
     } finally {
       setBusy(false);
@@ -388,10 +420,33 @@ function CatalogRow({
         <button
           type="button"
           onClick={save}
-          disabled={busy}
-          className="flex flex-1 items-center justify-center gap-1 rounded-md bg-accent px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wide text-white transition-all hover:bg-accent/90 active:scale-95 disabled:opacity-50 sm:flex-initial"
+          disabled={busy || (!dirty && !savedAt)}
+          className={cn(
+            "flex flex-1 items-center justify-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wide text-white shadow-sm transition-all active:scale-95 disabled:opacity-50 sm:flex-initial",
+            savedAt
+              ? "bg-synced"
+              : dirty
+                ? "bg-accent ring-2 ring-accent/30 hover:bg-accent/90"
+                : "bg-accent/60 hover:bg-accent",
+          )}
         >
-          <Save size={11} /> Save
+          {savedAt ? (
+            <>
+              <CheckCircle2 size={11} /> Saved
+            </>
+          ) : busy ? (
+            <>
+              <Save size={11} /> Saving…
+            </>
+          ) : dirty ? (
+            <>
+              <Save size={11} /> Save changes
+            </>
+          ) : (
+            <>
+              <Save size={11} /> Saved
+            </>
+          )}
         </button>
         <button
           type="button"

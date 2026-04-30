@@ -511,6 +511,8 @@ export interface AuthUser {
   scope_to_pic?: boolean;
   joined_at?: string | null;
   last_login_at?: string | null;
+  /** R2 key for the user's profile picture (mig 058). */
+  profile_pic_r2_key?: string | null;
 }
 
 export interface TeamMember {

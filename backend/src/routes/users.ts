@@ -153,6 +153,86 @@ app.put("/:id/brands", requirePermission("users.manage"), async (c) => {
   return c.json({ ok: true, brands: valid });
 });
 
+// ── Profile pictures (mig 058) ─────────────────────────────────
+// Image bytes live in R2 (POD_BUCKET); the DB row carries the key.
+// Upload writes the user's own pic; GET streams the bytes back through
+// the worker so <img> can display it via blob URL despite needing the
+// bearer token — same pattern as award images and POD photos.
+
+/**
+ * PUT /api/users/me/profile-pic
+ * Raw binary upload of the caller's own profile picture. The optional
+ * `?name=` query carries the original filename so the R2 key keeps a
+ * recognisable extension.
+ */
+app.put("/me/profile-pic", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const filename = c.req.query("name") || `profile-${Date.now()}.bin`;
+  const contentType =
+    c.req.header("content-type") || "application/octet-stream";
+  const buf = await c.req.arrayBuffer();
+  if (!buf.byteLength) return c.json({ error: "Empty body" }, 400);
+  if (buf.byteLength > 5 * 1024 * 1024) {
+    return c.json({ error: "Image must be under 5 MB" }, 413);
+  }
+
+  const key = `user/${user.id}/${Date.now()}-${filename.replace(/[^\w.\-]+/g, "_")}`;
+  await c.env.POD_BUCKET.put(key, buf, {
+    httpMetadata: { contentType },
+  });
+
+  await c.env.DB.prepare(
+    `UPDATE users SET profile_pic_r2_key = ? WHERE id = ?`,
+  )
+    .bind(key, user.id)
+    .run();
+
+  return c.json({ ok: true, profile_pic_r2_key: key });
+});
+
+/**
+ * DELETE /api/users/me/profile-pic
+ * Clears the caller's profile picture pointer. The R2 object is left
+ * in place — orphans are cheap and keeping them allows undo via the
+ * raw key if a user ever asks.
+ */
+app.delete("/me/profile-pic", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  await c.env.DB.prepare(
+    `UPDATE users SET profile_pic_r2_key = NULL WHERE id = ?`,
+  )
+    .bind(user.id)
+    .run();
+  return c.json({ ok: true });
+});
+
+/**
+ * GET /api/users/:id/profile-pic
+ * Streams the user's profile pic bytes from R2. Any authed user can
+ * view any other authed user's pic — the data is "this is what so-and-so
+ * looks like", not sensitive. 404 when no pic is set.
+ */
+app.get("/:id/profile-pic", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!Number.isFinite(id)) return c.json({ error: "Bad id" }, 400);
+  const row = await c.env.DB.prepare(
+    `SELECT profile_pic_r2_key FROM users WHERE id = ?`,
+  )
+    .bind(id)
+    .first<{ profile_pic_r2_key: string | null }>();
+  if (!row?.profile_pic_r2_key) {
+    return c.json({ error: "No profile picture" }, 404);
+  }
+  const obj = await c.env.POD_BUCKET.get(row.profile_pic_r2_key);
+  if (!obj) return c.json({ error: "Image missing" }, 404);
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set("cache-control", "private, max-age=300");
+  return new Response(obj.body, { headers });
+});
+
 /**
  * POST /api/users/invite
  * Body: { email, role_id }

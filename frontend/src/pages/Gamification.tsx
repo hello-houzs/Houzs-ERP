@@ -27,6 +27,7 @@ import { StatCard } from "../components/StatCard";
 import { SendPointsButton } from "../components/SendPointsButton";
 import { StreakBoard } from "../components/StreakBoard";
 import { AwardImage } from "../components/AwardImage";
+import { Avatar } from "../components/Avatar";
 import { EmptyState } from "../components/EmptyState";
 import { ListSkeleton } from "../components/Skeleton";
 import { useStickyFilters } from "../hooks/useStickyFilters";
@@ -37,11 +38,11 @@ import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
 import { cn, relativeTime } from "../lib/utils";
 
-type GamifyTab = "leaderboard" | "streak" | "shop" | "activity";
+type GamifyTab = "leaderboard" | "streak" | "activity";
 
 const GAMIFY_TAB_KEYS = ["sub", "scope", "period"] as const;
 
-const TABS: readonly GamifyTab[] = ["leaderboard", "streak", "shop", "activity"];
+const TABS: readonly GamifyTab[] = ["leaderboard", "streak", "activity"];
 
 interface MeSnapshot {
   id: number;
@@ -66,6 +67,7 @@ interface LeaderboardRow {
   points: number;
   current_streak: number;
   rank: number;
+  profile_pic_r2_key: string | null;
 }
 
 interface DepartmentRow {
@@ -242,7 +244,6 @@ export function Gamification() {
         options={[
           { value: "leaderboard", label: "Leaderboard" },
           { value: "streak", label: "Streak" },
-          { value: "shop", label: "Shop" },
           { value: "activity", label: "Activity" },
         ] as TabOption<GamifyTab>[]}
       />
@@ -257,7 +258,6 @@ export function Gamification() {
         />
       )}
       {tab === "streak" && <StreakTab />}
-      {tab === "shop" && <ShopTab />}
       {tab === "activity" && <ActivityTab />}
     </div>
   );
@@ -454,18 +454,36 @@ function Podium({
                     className="absolute -top-4 left-1/2 -translate-x-1/2 rotate-[-10deg] fill-accent/30 text-accent drop-shadow-[0_2px_4px_rgba(161,106,46,0.4)]"
                   />
                 )}
-                <div
-                  className={cn(
-                    "grid place-items-center rounded-full bg-gradient-to-br ring-4 ring-offset-2 ring-offset-surface transition-transform hover:scale-105",
-                    "h-16 w-16 sm:h-20 sm:w-20",
-                    c.bar,
-                    c.ring,
-                  )}
-                >
-                  <span className="font-display text-[18px] font-extrabold text-white sm:text-[22px]">
-                    {initials(r.name)}
-                  </span>
-                </div>
+                {r.profile_pic_r2_key ? (
+                  <div
+                    className={cn(
+                      "rounded-full ring-4 ring-offset-2 ring-offset-surface transition-transform hover:scale-105",
+                      c.ring,
+                    )}
+                  >
+                    <Avatar
+                      userId={r.user_id}
+                      hasImage={r.profile_pic_r2_key}
+                      name={r.name}
+                      email={r.email}
+                      size={64}
+                      className="sm:!h-20 sm:!w-20"
+                    />
+                  </div>
+                ) : (
+                  <div
+                    className={cn(
+                      "grid place-items-center rounded-full bg-gradient-to-br ring-4 ring-offset-2 ring-offset-surface transition-transform hover:scale-105",
+                      "h-16 w-16 sm:h-20 sm:w-20",
+                      c.bar,
+                      c.ring,
+                    )}
+                  >
+                    <span className="font-display text-[18px] font-extrabold text-white sm:text-[22px]">
+                      {initials(r.name)}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Name + dept */}
@@ -558,12 +576,13 @@ function RankRow({
       </span>
 
       {/* Avatar */}
-      <span
-        className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent-soft font-mono text-[10px] font-bold uppercase text-accent-ink"
-        aria-hidden="true"
-      >
-        {initials(row.name)}
-      </span>
+      <Avatar
+        userId={row.user_id}
+        hasImage={row.profile_pic_r2_key}
+        name={row.name}
+        email={row.email}
+        size={32}
+      />
 
       {/* Name + dept */}
       <div className="min-w-0 flex-1">
@@ -751,282 +770,6 @@ function ActivityTab() {
   );
 }
 
-// ── Shop tab ───────────────────────────────────────────────────
-
-function ShopTab() {
-  const { user } = useAuth();
-  const { pointsBalance, reload: reloadNotif } = useNotifications();
-  const list = useQuery<{ rows: AwardRow[] }>(() => api.get("/api/awards"));
-  const [picked, setPicked] = useState<AwardRow | null>(null);
-  const isAdmin = !!user?.permissions?.includes("*");
-
-  if (list.loading) return <ListSkeleton rows={6} />;
-  if (list.error) {
-    return (
-      <EmptyState
-        icon={<ShoppingBag size={20} />}
-        message="Couldn't load the shop"
-        description={list.error}
-      />
-    );
-  }
-  const rows = list.data?.rows ?? [];
-  if (rows.length === 0) {
-    return (
-      <EmptyState
-        icon={<ShoppingBag size={20} />}
-        message="The shop is empty"
-        description={
-          isAdmin
-            ? "Add awards in the catalog admin to give the team something to redeem for."
-            : "HR hasn't stocked the catalog yet — check back soon."
-        }
-      />
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      {isAdmin && (
-        <div className="flex items-center justify-between rounded-md border border-dashed border-accent/40 bg-accent-soft/20 px-3 py-2 text-[11px] text-ink-secondary">
-          <span>You can edit the catalog and process redemptions.</span>
-          <Link
-            to="/gamification/admin"
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-white hover:bg-accent/90"
-          >
-            <Wrench size={11} /> Catalog admin
-          </Link>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {rows.map((a, i) => {
-          const affordable = pointsBalance >= a.cost_points;
-          const outOfStock = a.stock !== null && a.stock !== undefined && a.stock <= 0;
-          return (
-            <button
-              key={a.id}
-              type="button"
-              disabled={!affordable || outOfStock}
-              onClick={() => !outOfStock && affordable && setPicked(a)}
-              className={cn(
-                "group relative flex flex-col overflow-hidden rounded-xl border border-border bg-surface text-left shadow-stone transition-all duration-300 animate-rise",
-                "hover:-translate-y-1 hover:border-accent/60 hover:shadow-slab",
-                "focus:outline-none focus:ring-2 focus:ring-accent",
-                (!affordable || outOfStock) &&
-                  "cursor-not-allowed opacity-60 hover:translate-y-0 hover:border-border hover:shadow-stone",
-              )}
-              style={{ animationDelay: `${Math.min(i * 50, 600)}ms` }}
-            >
-              <div className="relative aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-accent-soft/40 via-bg/40 to-accent-soft/20">
-                <AwardImage
-                  awardId={a.id}
-                  hasImage={!!a.image_r2_key}
-                  alt={a.name}
-                  className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-110"
-                  iconSize={32}
-                />
-                {outOfStock && (
-                  <span className="absolute right-2 top-2 rounded-full bg-ink/80 px-2 py-0.5 text-[9px] font-bold uppercase tracking-brand text-white backdrop-blur-sm">
-                    Out of stock
-                  </span>
-                )}
-                {!outOfStock && a.stock !== null && a.stock !== undefined && a.stock <= 5 && (
-                  <span className="absolute right-2 top-2 rounded-full bg-warning-bg/95 px-2 py-0.5 font-mono text-[9px] font-bold text-warning-text backdrop-blur-sm">
-                    {a.stock} left
-                  </span>
-                )}
-              </div>
-              <div className="flex flex-1 flex-col gap-1.5 p-3">
-                <div className="font-display text-[14px] font-extrabold leading-tight tracking-tight text-ink line-clamp-2">
-                  {a.name}
-                </div>
-                {a.description && (
-                  <div className="text-[11px] leading-relaxed text-ink-secondary line-clamp-2">
-                    {a.description}
-                  </div>
-                )}
-                <div className="mt-auto flex items-center justify-between pt-2">
-                  <span className="inline-flex items-center gap-1 font-mono text-[14px] font-bold text-accent">
-                    <Coins size={13} />
-                    {a.cost_points.toLocaleString()}
-                  </span>
-                  <span
-                    className={cn(
-                      "rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-brand transition-colors",
-                      affordable && !outOfStock
-                        ? "bg-accent text-white group-hover:bg-accent/90"
-                        : "bg-bg/60 text-ink-muted",
-                    )}
-                  >
-                    {outOfStock ? "Sold out" : affordable ? "Redeem" : "Locked"}
-                  </span>
-                </div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      {picked && (
-        <RedeemModal
-          award={picked}
-          balance={pointsBalance}
-          onClose={() => setPicked(null)}
-          onSuccess={() => {
-            setPicked(null);
-            reloadNotif();
-            list.reload();
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-function RedeemModal({
-  award,
-  balance,
-  onClose,
-  onSuccess,
-}: {
-  award: AwardRow;
-  balance: number;
-  onClose: () => void;
-  onSuccess: () => void;
-}) {
-  const toast = useToast();
-  const [addr, setAddr] = useState("");
-  const [busy, setBusy] = useState(false);
-  const after = balance - award.cost_points;
-
-  async function handleRedeem() {
-    setBusy(true);
-    try {
-      const r = await api.post<{
-        ok: boolean;
-        redemption: RedemptionRow;
-        new_balance: number;
-      }>(`/api/awards/${award.id}/redeem`, {
-        shipping_addr: addr.trim() || undefined,
-      });
-      toast.success(`Redeemed ${award.name} — pending fulfilment`);
-      onSuccess();
-      void r;
-    } catch (e: any) {
-      toast.error(e?.message || "Redeem failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Redeem ${award.name}`}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4 backdrop-blur-sm animate-fade-in"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-surface shadow-slab animate-rise"
-      >
-        <div className="relative aspect-[16/9] w-full overflow-hidden bg-gradient-to-br from-accent-soft/40 via-bg/40 to-accent-soft/20">
-          <AwardImage
-            awardId={award.id}
-            hasImage={!!award.image_r2_key}
-            alt={award.name}
-            className="h-full w-full object-cover"
-            iconSize={48}
-          />
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-ink/60 text-white backdrop-blur-sm transition-colors hover:bg-ink/80"
-          >
-            <XCircle size={16} />
-          </button>
-        </div>
-        <div className="space-y-3 p-5">
-          <div>
-            <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-              Confirm redemption
-            </div>
-            <h2 className="mt-1 font-display text-[20px] font-extrabold leading-tight tracking-tight text-ink">
-              {award.name}
-            </h2>
-            {award.description && (
-              <p className="mt-1 text-[12px] leading-relaxed text-ink-secondary">
-                {award.description}
-              </p>
-            )}
-          </div>
-
-          <div className="rounded-lg border border-border bg-bg/40 p-3 text-[12px]">
-            <div className="flex items-center justify-between">
-              <span className="text-ink-muted">Cost</span>
-              <span className="font-mono font-bold text-accent">
-                {award.cost_points.toLocaleString()} pts
-              </span>
-            </div>
-            <div className="mt-1 flex items-center justify-between">
-              <span className="text-ink-muted">Your balance</span>
-              <span className="font-mono">{balance.toLocaleString()} pts</span>
-            </div>
-            <div className="mt-1 flex items-center justify-between border-t border-border pt-1">
-              <span className="text-ink-muted">After redemption</span>
-              <span
-                className={cn(
-                  "font-mono font-bold",
-                  after >= 0 ? "text-ink" : "text-err",
-                )}
-              >
-                {after.toLocaleString()} pts
-              </span>
-            </div>
-          </div>
-
-          <label className="block">
-            <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-              Shipping address (optional)
-            </span>
-            <textarea
-              value={addr}
-              onChange={(e) => setAddr(e.target.value.slice(0, 500))}
-              rows={2}
-              placeholder="Where should we send it? Skip for digital prizes."
-              className="thin-scroll mt-1 w-full resize-none rounded-md border border-border bg-paper px-2 py-1.5 text-[12px]"
-            />
-          </label>
-
-          <div className="flex items-center gap-2 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 rounded-md border border-border bg-surface py-2 text-[12px] font-semibold text-ink-secondary transition-colors hover:border-ink-muted hover:text-ink"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={busy || after < 0}
-              onClick={handleRedeem}
-              className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded-md bg-accent py-2 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm transition-all",
-                "hover:bg-accent/90 active:scale-95",
-                (busy || after < 0) && "cursor-not-allowed opacity-50 hover:bg-accent active:scale-100",
-              )}
-            >
-              <ShoppingBag size={13} /> {busy ? "Redeeming…" : "Confirm"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ── My redemptions panel (rendered atop Activity tab) ──────────
 

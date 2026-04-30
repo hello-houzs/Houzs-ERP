@@ -27,6 +27,8 @@ interface ListRow {
   id: number;
   user_id: number;
   user_name: string | null;
+  user_email: string | null;
+  user_profile_pic_r2_key: string | null;
   title: string;
   body: string | null;
   status: string;
@@ -46,6 +48,8 @@ app.get("/", async (c) => {
 
   const rows = await c.env.DB.prepare(
     `SELECT s.id, s.user_id, u.name AS user_name,
+            u.email AS user_email,
+            u.profile_pic_r2_key AS user_profile_pic_r2_key,
             s.title, s.body, s.status,
             s.decided_by, s.decided_at, s.decline_reason, s.created_at,
             (SELECT COUNT(*) FROM votes v
@@ -95,6 +99,8 @@ app.get("/:id", async (c) => {
 
   const row = await c.env.DB.prepare(
     `SELECT s.id, s.user_id, u.name AS user_name,
+            u.email AS user_email,
+            u.profile_pic_r2_key AS user_profile_pic_r2_key,
             s.title, s.body, s.status,
             s.decided_by, du.name AS decided_by_name,
             s.decided_at, s.decline_reason, s.created_at, s.awarded_at,

@@ -20,6 +20,7 @@ import { api } from "../api/client";
 import { cn, relativeTime } from "../lib/utils";
 import { EmptyState } from "./EmptyState";
 import { ListSkeleton } from "./Skeleton";
+import { Avatar } from "./Avatar";
 
 /**
  * Shared list + voting + status pipeline UI for the Innovation
@@ -51,6 +52,8 @@ interface BaseRow {
   id: number;
   user_id: number;
   user_name: string | null;
+  user_email: string | null;
+  user_profile_pic_r2_key: string | null;
   title: string;
   body: string | null;
   status: string;
@@ -92,7 +95,6 @@ export function IdeaList<T extends BaseRow>({
   rewardLabel,
 }: Props<T>) {
   const { user } = useAuth();
-  const isAdmin = !!user?.permissions?.includes("*");
   const [statusFilter, setStatusFilter] = useState<AnyStatus | null>(null);
   const list = useQuery<{ rows: T[] }>(
     () =>
@@ -179,14 +181,11 @@ export function IdeaList<T extends BaseRow>({
                 key={row.id}
                 target={target}
                 row={row}
-                statuses={statuses}
-                isAdmin={isAdmin}
                 isOwner={row.user_id === user?.id}
                 expanded={openId === row.id}
                 onToggle={() =>
                   setOpenId((cur) => (cur === row.id ? null : row.id))
                 }
-                onChange={() => list.reload()}
                 index={i}
               />
             ))}
@@ -211,22 +210,16 @@ export function IdeaList<T extends BaseRow>({
 function IdeaRow<T extends BaseRow>({
   target,
   row,
-  statuses,
-  isAdmin,
   isOwner,
   expanded,
   onToggle,
-  onChange,
   index,
 }: {
   target: Target;
   row: T;
-  statuses: { value: AnyStatus; label: string }[];
-  isAdmin: boolean;
   isOwner: boolean;
   expanded: boolean;
   onToggle: () => void;
-  onChange: () => void;
   index: number;
 }) {
   const toast = useToast();
@@ -308,8 +301,17 @@ function IdeaRow<T extends BaseRow>({
             </p>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-ink-muted">
-            <span>
-              by <span className="font-semibold text-ink-secondary">{row.user_name || `User #${row.user_id}`}</span>
+            <span className="inline-flex items-center gap-1.5">
+              <Avatar
+                userId={row.user_id}
+                hasImage={row.user_profile_pic_r2_key}
+                name={row.user_name}
+                email={row.user_email}
+                size={18}
+              />
+              <span className="font-semibold text-ink-secondary">
+                {row.user_name || `User #${row.user_id}`}
+              </span>
             </span>
             <span className="font-mono">{relativeTime(row.created_at)}</span>
             {tags && (
@@ -344,96 +346,9 @@ function IdeaRow<T extends BaseRow>({
               {row.decline_reason}
             </div>
           )}
-          {isAdmin && (
-            <DecisionPanel
-              target={target}
-              row={row}
-              statuses={statuses}
-              onChange={onChange}
-            />
-          )}
         </div>
       )}
     </li>
-  );
-}
-
-function DecisionPanel<T extends BaseRow>({
-  target,
-  row,
-  statuses,
-  onChange,
-}: {
-  target: Target;
-  row: T;
-  statuses: { value: AnyStatus; label: string }[];
-  onChange: () => void;
-}) {
-  const toast = useToast();
-  const [busy, setBusy] = useState(false);
-  const [reason, setReason] = useState("");
-
-  async function decide(s: AnyStatus) {
-    if (s === row.status) return;
-    if (s === "declined" && !reason.trim()) {
-      toast.error("Add a decline reason first");
-      return;
-    }
-    setBusy(true);
-    try {
-      await api.post(`/api/${target}s/${row.id}/decision`, {
-        status: s,
-        decline_reason: s === "declined" ? reason.trim() : undefined,
-      });
-      const verb =
-        s === "shipped"
-          ? "shipped"
-          : s === "approved"
-            ? "approved"
-            : s === "declined"
-              ? "declined"
-              : `moved to ${s}`;
-      toast.success(`Marked ${verb}`);
-      onChange();
-    } catch (e: any) {
-      toast.error(e?.message || "Decision failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="mt-4 rounded-md border border-dashed border-accent/40 bg-accent-soft/15 p-3">
-      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-accent-ink">
-        <Trophy size={11} /> Admin decision
-      </div>
-      <div className="flex flex-wrap gap-1.5">
-        {statuses.map((s) => (
-          <button
-            key={s.value}
-            type="button"
-            disabled={busy || s.value === row.status}
-            onClick={() => decide(s.value)}
-            className={cn(
-              "rounded-md px-2.5 py-1 text-[10.5px] font-bold uppercase tracking-brand transition-all active:scale-95",
-              s.value === row.status
-                ? "cursor-default bg-ink/10 text-ink-muted"
-                : statusToTone(s.value).button,
-              busy && "opacity-50",
-            )}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
-      <input
-        type="text"
-        value={reason}
-        onChange={(e) => setReason(e.target.value)}
-        placeholder="Decline reason (only required for 'declined')"
-        className="mt-2 w-full rounded-md border border-border bg-paper px-2 py-1.5 text-[11.5px]"
-      />
-    </div>
   );
 }
 

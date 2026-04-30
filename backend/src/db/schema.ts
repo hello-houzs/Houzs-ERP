@@ -34,6 +34,8 @@ export const users = sqliteTable("users", {
   gifting_balance: integer("gifting_balance").notNull().default(0),
   gifting_reset_at: text("gifting_reset_at"),
   current_streak: integer("current_streak").notNull().default(0),
+  // Profile picture (mig 058) — R2 key inside POD_BUCKET.
+  profile_pic_r2_key: text("profile_pic_r2_key"),
 });
 
 // ── roles ──────────────────────────────────────────────────

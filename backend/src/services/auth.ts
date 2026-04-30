@@ -109,6 +109,8 @@ export interface AuthUser {
   points_balance?: number;
   gifting_balance?: number;
   current_streak?: number;
+  // Profile picture (mig 058) — R2 key inside POD_BUCKET.
+  profile_pic_r2_key?: string | null;
 }
 
 export async function createSession(env: Env, userId: number): Promise<string> {
@@ -167,6 +169,7 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     points_balance: row.points_balance ?? 0,
     gifting_balance: row.gifting_balance ?? 0,
     current_streak: row.current_streak ?? 0,
+    profile_pic_r2_key: row.profile_pic_r2_key ?? null,
   };
 }
 
@@ -175,6 +178,7 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
     `SELECT u.id, u.email, u.name, u.role_id, u.status,
             u.manager_id, u.department_id, u.joined_at, u.last_login_at,
             u.points_balance, u.gifting_balance, u.current_streak,
+            u.profile_pic_r2_key,
             r.name as role_name, r.permissions as role_permissions,
             r.scope_to_pic,
             s.expires_at
@@ -202,6 +206,7 @@ export async function getUserById(env: Env, id: number): Promise<AuthUser | null
     `SELECT u.id, u.email, u.name, u.role_id, u.status, u.manager_id,
             u.department_id,
             u.points_balance, u.gifting_balance, u.current_streak,
+            u.profile_pic_r2_key,
             r.name as role_name, r.permissions as role_permissions,
             r.scope_to_pic
      FROM users u

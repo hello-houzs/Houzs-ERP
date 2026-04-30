@@ -16,6 +16,7 @@ import { Settings } from "./pages/Settings";
 import { Team } from "./pages/Team";
 import { Gamification } from "./pages/Gamification";
 import { GamificationAdmin } from "./pages/GamificationAdmin";
+import { Shop } from "./pages/Shop";
 import { Innovations } from "./pages/Innovations";
 import { Suggestions } from "./pages/Suggestions";
 import { Logistics } from "./pages/Logistics";
@@ -307,6 +308,7 @@ export default function App() {
         />
         <Route path="/gamification" element={<Gamification />} />
         <Route path="/gamification/admin" element={<GamificationAdmin />} />
+        <Route path="/shop" element={<Shop />} />
         <Route path="/innovations" element={<Innovations />} />
         <Route path="/suggestions" element={<Suggestions />} />
         <Route path="/profile" element={<Profile />} />

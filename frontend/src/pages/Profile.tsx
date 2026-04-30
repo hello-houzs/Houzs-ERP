@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
-import { User as UserIcon, KeyRound, LogOut, Bell } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { User as UserIcon, KeyRound, LogOut, Bell, Camera, Trash2 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { StatusDot } from "../components/StatusDot";
+import { Avatar } from "../components/Avatar";
 import { useAuth } from "../auth/AuthContext";
 import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
@@ -29,10 +30,52 @@ export function Profile() {
 
   const [name, setName] = useState(user?.name || "");
   const [savingName, setSavingName] = useState(false);
+  const [picBusy, setPicBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setName(user?.name || "");
   }, [user?.name]);
+
+  async function uploadPic(file: File) {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Pick an image file");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image must be under 5 MB");
+      return;
+    }
+    setPicBusy(true);
+    try {
+      await api.putBinary(
+        `/api/users/me/profile-pic?name=${encodeURIComponent(file.name)}`,
+        file,
+        file.type,
+      );
+      await reload();
+      toast.success("Profile picture updated");
+    } catch (e: any) {
+      toast.error(e?.message || "Upload failed");
+    } finally {
+      setPicBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function removePic() {
+    if (!user?.profile_pic_r2_key) return;
+    setPicBusy(true);
+    try {
+      await api.del("/api/users/me/profile-pic");
+      await reload();
+      toast.success("Profile picture removed");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    } finally {
+      setPicBusy(false);
+    }
+  }
 
   async function saveName() {
     if (!name.trim() || name === user?.name) return;
@@ -62,19 +105,68 @@ export function Profile() {
 
       {/* ── Identity ─────────────────────────────── */}
       <section className="mb-6 rounded-md border border-border bg-surface p-6 shadow-stone">
-        <div className="mb-5 flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-accent-soft text-accent">
-            <UserIcon size={18} />
+        <div className="mb-5 flex items-center gap-4">
+          <div className="relative shrink-0">
+            <Avatar
+              userId={user.id}
+              hasImage={user.profile_pic_r2_key}
+              name={user.name}
+              email={user.email}
+              size={72}
+              ring
+            />
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={picBusy}
+              className={cn(
+                "absolute -bottom-1 -right-1 grid h-7 w-7 place-items-center rounded-full border border-border bg-surface text-ink-secondary shadow-stone transition-colors hover:bg-accent hover:text-white",
+                picBusy && "opacity-50",
+              )}
+              title="Change profile picture"
+              aria-label="Change profile picture"
+            >
+              <Camera size={13} />
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) uploadPic(f);
+              }}
+            />
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
               Identity
             </h2>
-            <div className="font-display text-[18px] font-extrabold text-ink">
+            <div className="truncate font-display text-[18px] font-extrabold text-ink">
               {user.name || user.email}
             </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
+              <span className="inline-flex items-center gap-1">
+                <UserIcon size={11} />
+                {picBusy
+                  ? "Uploading…"
+                  : user.profile_pic_r2_key
+                  ? "Click the camera to replace · max 5 MB"
+                  : "Add a photo so teammates recognise you"}
+              </span>
+              {user.profile_pic_r2_key && !picBusy && (
+                <button
+                  type="button"
+                  onClick={removePic}
+                  className="inline-flex items-center gap-0.5 text-err transition-colors hover:underline"
+                >
+                  <Trash2 size={11} /> remove
+                </button>
+              )}
+            </div>
           </div>
-          <div className="ml-auto">
+          <div className="self-start">
             <StatusDot
               variant={user.status === "active" ? "synced" : "neutral"}
               label={user.status}

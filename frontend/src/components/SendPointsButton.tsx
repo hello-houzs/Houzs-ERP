@@ -3,6 +3,7 @@ import { Gift, Search, X } from "lucide-react";
 import { api } from "../api/client";
 import { useToast } from "../hooks/useToast";
 import { useNotifications } from "../hooks/useNotifications";
+import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 
 /**
@@ -25,6 +26,7 @@ interface Recipient {
   name: string;
   email: string;
   department_name: string | null;
+  profile_pic_r2_key?: string | null;
 }
 
 interface Props {
@@ -179,11 +181,20 @@ export function SendPointsButton({ prefill, label, compact, className }: Props) 
                     key={r.id}
                     onClick={() => setPicked(r)}
                     className={cn(
-                      "flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-accent-soft/50",
+                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-accent-soft/50",
                       picked?.id === r.id && "bg-accent-soft/60",
                     )}
                   >
-                    <span className="truncate font-medium text-ink">{r.name}</span>
+                    <Avatar
+                      userId={r.id}
+                      hasImage={r.profile_pic_r2_key}
+                      name={r.name}
+                      email={r.email}
+                      size={22}
+                    />
+                    <span className="min-w-0 flex-1 truncate font-medium text-ink">
+                      {r.name}
+                    </span>
                     {r.department_name && (
                       <span className="shrink-0 font-mono text-[9px] uppercase tracking-brand text-ink-muted">
                         {r.department_name}
