@@ -21,6 +21,7 @@ import { cn, relativeTime } from "../lib/utils";
 import { EmptyState } from "./EmptyState";
 import { ListSkeleton } from "./Skeleton";
 import { Avatar } from "./Avatar";
+import { PullToRefresh } from "./PullToRefresh";
 
 /**
  * Shared list + voting + status pipeline UI for the Innovation
@@ -125,7 +126,7 @@ export function IdeaList<T extends BaseRow>({
   }, [list.data]);
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+    <PullToRefresh onRefresh={() => list.reload()} className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
       <div>
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
@@ -203,7 +204,7 @@ export function IdeaList<T extends BaseRow>({
           onSubmitted={() => list.reload()}
         />
       </aside>
-    </div>
+    </PullToRefresh>
   );
 }
 
