@@ -29,7 +29,7 @@ import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useAuth } from "../auth/AuthContext";
-import { api, tokenStore } from "../api/client";
+import { api } from "../api/client";
 import { cn, relativeTime } from "../lib/utils";
 
 type AdminTab = "catalog" | "redemptions" | "innovations" | "suggestions";
@@ -304,20 +304,11 @@ function CatalogRow({
   async function uploadImage(f: File) {
     setBusy(true);
     try {
-      const buf = await f.arrayBuffer();
-      const token = tokenStore.get();
-      const res = await fetch(
+      await api.putBinary(
         `/api/awards/${row.id}/image?name=${encodeURIComponent(f.name)}`,
-        {
-          method: "PUT",
-          headers: {
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            "Content-Type": f.type || "application/octet-stream",
-          },
-          body: buf,
-        },
+        f,
+        f.type || "application/octet-stream",
       );
-      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       toast.success("Image uploaded");
       setVersion((v) => v + 1);
       onChange();
