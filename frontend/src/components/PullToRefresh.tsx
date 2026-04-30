@@ -19,8 +19,14 @@ interface Props {
   className?: string;
 }
 
-const THRESHOLD = 70;
-const MAX_PULL = 110;
+// Sensitivity tuning. The dead-zone lets the user scroll up casually
+// without engaging the pull, and the resistance multiplier means the
+// indicator only travels a fraction of the finger's distance — so a
+// committed pull is required, not a flick.
+const DEAD_ZONE = 14;
+const RESISTANCE = 0.55;
+const THRESHOLD = 80;
+const MAX_PULL = 130;
 
 function findScrollAncestor(el: HTMLElement | null): HTMLElement | null {
   let node = el?.parentElement ?? null;
@@ -78,20 +84,19 @@ export function PullToRefresh({
     function handleMove(e: TouchEvent) {
       if (refreshing || startYRef.current == null) return;
       const dy = e.touches[0].clientY - startYRef.current;
-      if (dy <= 0) {
-        // user is scrolling up again — abort the pull
+      if (dy <= DEAD_ZONE) {
+        // dead zone — finger hasn't committed to a pull yet. Casual
+        // scroll-up jitter falls in here and never engages.
         setPull(0);
         return;
       }
-      // resistance: linear up to threshold, eased beyond
-      const resisted =
-        dy <= THRESHOLD
-          ? dy
-          : THRESHOLD + (dy - THRESHOLD) * 0.45;
+      // Constant resistance the whole way: the indicator travels at
+      // 0.55 of the finger's distance past the dead zone.
+      const resisted = (dy - DEAD_ZONE) * RESISTANCE;
       setPull(Math.min(resisted, MAX_PULL));
-      // Prevent the browser's own pull-to-refresh / overscroll once we're
-      // actively pulling — but only if we have meaningful movement.
-      if (dy > 6 && e.cancelable) e.preventDefault();
+      // Once we're past the dead zone we own the gesture — block the
+      // browser's own pull-to-refresh / overscroll.
+      if (e.cancelable) e.preventDefault();
     }
 
     async function handleEnd() {
@@ -137,17 +142,22 @@ export function PullToRefresh({
   }, [pull, refreshing, onRefresh]);
 
   const armed = pull >= THRESHOLD;
-  const opacity = Math.min(pull / 30, 1);
+  const opacity = Math.min(pull / 20, 1);
   const rotate = Math.min((pull / THRESHOLD) * 180, 180);
+  const label = refreshing
+    ? "Refreshing…"
+    : armed
+    ? "Release to refresh"
+    : "Pull down to refresh";
 
   return (
     <div ref={wrapperRef} className="relative">
       <div
         aria-hidden={!refreshing && pull === 0}
-        className="pointer-events-none absolute inset-x-0 z-10 flex justify-center"
+        className="pointer-events-none absolute inset-x-0 z-10 flex flex-col items-center gap-1.5"
         style={{
           top: topOffset,
-          transform: `translateY(${pull - 36}px)`,
+          transform: `translateY(${pull - 56}px)`,
           opacity,
           transition: refreshing || pull === 0 ? "transform 200ms ease-out, opacity 200ms ease-out" : "none",
         }}
@@ -174,6 +184,14 @@ export function PullToRefresh({
             />
           )}
         </div>
+        <span
+          className={cn(
+            "rounded-full bg-surface/95 px-2 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-brand shadow-stone backdrop-blur-sm transition-colors",
+            armed || refreshing ? "text-accent" : "text-ink-muted",
+          )}
+        >
+          {label}
+        </span>
       </div>
       <div
         className={className}
