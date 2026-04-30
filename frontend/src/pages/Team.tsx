@@ -7,6 +7,7 @@ import { Button } from "../components/Button";
 import { ColorPicker } from "../components/ColorPicker";
 import { Panel, PanelSection } from "../components/Panel";
 import { StatusDot } from "../components/StatusDot";
+import { Avatar } from "../components/Avatar";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
@@ -331,6 +332,13 @@ function MembersTab({
               key={u.id}
               className="flex flex-wrap items-center gap-3 border-b border-border-subtle px-4 py-4 last:border-b-0 sm:flex-nowrap sm:gap-4 sm:px-5"
             >
+              <Avatar
+                userId={u.id}
+                hasImage={u.profile_pic_r2_key}
+                name={u.name}
+                email={u.email}
+                size={36}
+              />
               <StatusDot
                 variant={
                   u.status === "active"
@@ -1111,7 +1119,6 @@ function OrgCard({
   onPickManager: (userId: number, managerId: number | null) => void;
 }) {
   const [dropHover, setDropHover] = useState(false);
-  const initial = (user.name || user.email).slice(0, 1).toUpperCase();
   const isDragSource = draggingId === user.id;
   const isValidDropTarget =
     draggingId != null &&
@@ -1161,9 +1168,13 @@ function OrgCard({
         />
       )}
       <div className="flex items-start gap-2.5 px-3 py-2.5">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent-soft font-mono text-[12px] font-bold text-accent-ink">
-          {initial}
-        </span>
+        <Avatar
+          userId={user.id}
+          hasImage={user.profile_pic_r2_key}
+          name={user.name}
+          email={user.email}
+          size={36}
+        />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-[12.5px] font-semibold text-ink">

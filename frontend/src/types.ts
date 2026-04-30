@@ -542,6 +542,8 @@ export interface TeamMember {
   joined_at: string | null;
   last_login_at: string | null;
   created_at: string;
+  /** R2 key for the user's profile picture (mig 058). */
+  profile_pic_r2_key: string | null;
 }
 
 export interface Department {

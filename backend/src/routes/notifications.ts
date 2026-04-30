@@ -111,6 +111,8 @@ app.get("/", requirePermission("projects.read"), async (c) => {
       created_at: project_activity.created_at,
       user_id: project_activity.user_id,
       user_name: users.name,
+      user_email: users.email,
+      user_profile_pic_r2_key: users.profile_pic_r2_key,
       project_code: projects.code,
       project_name: projects.name,
       brand: projects.brand,

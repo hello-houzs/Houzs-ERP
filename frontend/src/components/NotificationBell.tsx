@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Bell } from "lucide-react";
 import { cn, relativeTime } from "../lib/utils";
 import { useNotifications, type NotificationItem } from "../hooks/useNotifications";
+import { Avatar } from "./Avatar";
 
 interface Props {
   collapsed: boolean;
@@ -132,26 +133,35 @@ function BellPopover({
                 <Link
                   to={`/projects/${item.project_id}`}
                   onClick={onNavigate}
-                  className="block px-3 py-2 transition-colors hover:bg-bg/50"
+                  className="flex gap-2.5 px-3 py-2 transition-colors hover:bg-bg/50"
                 >
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="truncate text-[11.5px] font-semibold text-ink">
-                      {item.project_code || "Project"}
-                      {item.brand && (
-                        <span className="ml-1.5 font-mono text-[9.5px] font-normal text-ink-muted">
-                          {item.brand}
-                        </span>
-                      )}
-                    </span>
-                    <span
-                      className="shrink-0 font-mono text-[9.5px] text-ink-muted"
-                      title={item.created_at}
-                    >
-                      {relativeTime(item.created_at)}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 truncate text-[11px] text-ink-secondary">
-                    {renderActivityLine(item)}
+                  <Avatar
+                    userId={item.user_id}
+                    hasImage={item.user_profile_pic_r2_key}
+                    name={item.user_name}
+                    email={item.user_email}
+                    size={28}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="truncate text-[11.5px] font-semibold text-ink">
+                        {item.project_code || "Project"}
+                        {item.brand && (
+                          <span className="ml-1.5 font-mono text-[9.5px] font-normal text-ink-muted">
+                            {item.brand}
+                          </span>
+                        )}
+                      </span>
+                      <span
+                        className="shrink-0 font-mono text-[9.5px] text-ink-muted"
+                        title={item.created_at}
+                      >
+                        {relativeTime(item.created_at)}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 truncate text-[11px] text-ink-secondary">
+                      {renderActivityLine(item)}
+                    </div>
                   </div>
                 </Link>
               </li>

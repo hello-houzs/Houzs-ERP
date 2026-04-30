@@ -3,9 +3,8 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { createPortal } from "react-dom";
 import {
   LayoutDashboard,
-  Truck,
-  Headphones,
-  CircleUser,
+  Trophy,
+  ShoppingBag,
   Grid3x3,
   X,
   ShieldCheck,
@@ -15,20 +14,25 @@ import {
 import { useAuth } from "../auth/AuthContext";
 import { useNotifications } from "../hooks/useNotifications";
 import { NAV_TABS, type NavTab } from "./Sidebar";
+import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 
 /**
  * Mobile bottom navigation. Hidden on lg+. Five slots:
  *
- *   [ Home ] [ Logistic ] [ Menu* ] [ ASSR ] [ Profile ]
+ *   [ Home ] [ Points ] [ Menu* ] [ Shop ] [ Profile ]
+ *
+ * The four side tabs are universal — accessible to every role — so the
+ * rail never collapses to two slots for a restricted user. Anything
+ * gated lives behind the centre Menu disc.
  *
  * The middle "Menu" tab is a raised brass circle that protrudes above
  * the rail and opens a bottom-sheet modal with every other
  * destination. Distinct visual so it reads as the "all-things"
  * affordance, not just another tab.
  *
- * Permission gates apply: a tab is hidden if the user lacks access.
- * The Menu modal does the same filter for its grid.
+ * The Profile tab renders the user's avatar instead of an icon so they
+ * see themselves in the rail.
  */
 interface Tab {
   to: string;
@@ -40,42 +44,21 @@ interface Tab {
 }
 
 export function MobileTabBar() {
-  const { can, user } = useAuth();
+  const { user } = useAuth();
   const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
 
   if (!user) return null;
   if (location.pathname.startsWith("/driver")) return null;
 
-  const tabs: Tab[] = [
+  const leftTabs: Tab[] = [
     { to: "/", label: "Home", icon: LayoutDashboard, end: true },
-    {
-      to: "/logistics",
-      label: "Logistic",
-      icon: Truck,
-      anyPerm: ["trips.read.all", "fleet.read"],
-    },
-    {
-      to: "/assr",
-      label: "ASSR",
-      icon: Headphones,
-      perm: "service_cases.read",
-    },
-    { to: "/profile", label: "Profile", icon: CircleUser },
+    { to: "/gamification", label: "Points", icon: Trophy },
   ];
-
-  const visible = tabs.filter((t) => {
-    if (t.perm && !can(t.perm)) return false;
-    if (t.anyPerm && !t.anyPerm.some((p) => can(p))) return false;
-    return true;
-  });
-
-  // Split into halves around the centre so the raised Menu button
-  // always sits in the middle, regardless of how many tabs are
-  // permission-filtered out.
-  const half = Math.ceil(visible.length / 2);
-  const leftTabs = visible.slice(0, half);
-  const rightTabs = visible.slice(half);
+  const rightTabs: Tab[] = [
+    { to: "/shop", label: "Shop", icon: ShoppingBag },
+    { to: "/profile", label: "Profile", icon: LayoutDashboard /* unused — Profile renders avatar */ },
+  ];
 
   return (
     <>
@@ -110,14 +93,60 @@ export function MobileTabBar() {
             </button>
           </div>
 
-          {rightTabs.map((tab) => (
-            <BottomTab key={tab.to} tab={tab} />
-          ))}
+          {rightTabs.map((tab) =>
+            tab.to === "/profile" ? (
+              <ProfileTab key={tab.to} />
+            ) : (
+              <BottomTab key={tab.to} tab={tab} />
+            ),
+          )}
         </div>
       </nav>
 
       {menuOpen && <MenuModal onClose={() => setMenuOpen(false)} />}
     </>
+  );
+}
+
+// ── Profile tab — renders the user's avatar in place of an icon ────
+
+function ProfileTab() {
+  const { user } = useAuth();
+  return (
+    <NavLink
+      to="/profile"
+      className={({ isActive }) =>
+        cn(
+          "relative flex flex-1 flex-col items-center justify-center gap-0.5 text-ink-muted transition-colors active:bg-bg/50",
+          isActive && "text-accent",
+        )
+      }
+      aria-label="Profile"
+    >
+      {({ isActive }) => (
+        <>
+          {isActive && (
+            <span className="pointer-events-none absolute inset-x-5 top-0 h-[2px] rounded-b-full bg-accent" />
+          )}
+          <Avatar
+            userId={user?.id ?? null}
+            hasImage={user?.profile_pic_r2_key}
+            name={user?.name}
+            email={user?.email}
+            size={22}
+            ring={isActive}
+          />
+          <span
+            className={cn(
+              "font-mono text-[9px] font-semibold uppercase tracking-wider",
+              isActive && "text-accent",
+            )}
+          >
+            Profile
+          </span>
+        </>
+      )}
+    </NavLink>
   );
 }
 

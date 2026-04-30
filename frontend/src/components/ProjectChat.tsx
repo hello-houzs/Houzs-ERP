@@ -5,6 +5,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useNotifications } from "../hooks/useNotifications";
 import type { useToast } from "../hooks/useToast";
 import { cn, relativeTime } from "../lib/utils";
+import { Avatar } from "./Avatar";
 
 // ── Types ────────────────────────────────────────────────────
 // Mirrors the ActivityRow shape that /api/projects/:id/activity
@@ -20,6 +21,8 @@ export interface ActivityRow {
   note: string | null;
   user_id: number | null;
   user_name: string | null;
+  user_email?: string | null;
+  user_profile_pic_r2_key?: string | null;
   created_at: string;
 }
 
@@ -375,7 +378,6 @@ function ChatBubble({
   grouped: boolean;
 }) {
   const name = a.user_name || "Unknown";
-  const initial = name.slice(0, 1).toUpperCase();
   return (
     <div
       className={cn(
@@ -387,9 +389,13 @@ function ChatBubble({
       {!isMine && (
         <div className="w-8 shrink-0">
           {!grouped && (
-            <span className="grid h-8 w-8 place-items-center rounded-full bg-accent-soft font-mono text-[11px] font-bold text-accent-ink">
-              {initial}
-            </span>
+            <Avatar
+              userId={a.user_id}
+              hasImage={a.user_profile_pic_r2_key}
+              name={a.user_name}
+              email={a.user_email}
+              size={32}
+            />
           )}
         </div>
       )}

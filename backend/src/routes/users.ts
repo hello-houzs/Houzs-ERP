@@ -64,6 +64,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
       joined_at: users.joined_at,
       last_login_at: users.last_login_at,
       created_at: users.created_at,
+      profile_pic_r2_key: users.profile_pic_r2_key,
       // GROUP_CONCAT joins the user's brand allow-list in one round-trip.
       // Unit-separator (US, 0x1f) keeps multi-word brands ("MY SOFA
       // FACTORY") splittable client-side without ambiguity.

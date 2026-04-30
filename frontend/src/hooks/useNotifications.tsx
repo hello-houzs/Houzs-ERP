@@ -24,6 +24,8 @@ export interface NotificationItem {
   note: string | null;
   user_id: number | null;
   user_name: string | null;
+  user_email: string | null;
+  user_profile_pic_r2_key: string | null;
   created_at: string;
   /** Project's event start date — joined in by the notifications
    *  query so the floating chat list can show the event date next to

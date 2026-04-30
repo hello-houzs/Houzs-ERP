@@ -1060,7 +1060,10 @@ app.get("/:id/activity", requirePermission("projects.read"), async (c) => {
 
   const rows = await c.env.DB.prepare(
     `SELECT act.id, act.action, act.from_value, act.to_value, act.note,
-            act.user_id, u.name AS user_name, act.created_at
+            act.user_id, u.name AS user_name,
+            u.email AS user_email,
+            u.profile_pic_r2_key AS user_profile_pic_r2_key,
+            act.created_at
        FROM project_activity act
        LEFT JOIN users u ON u.id = act.user_id
       WHERE act.project_id = ?
