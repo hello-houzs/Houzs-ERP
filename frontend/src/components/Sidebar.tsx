@@ -22,6 +22,8 @@ import {
   Lightbulb,
   MessageCircle,
   ShoppingBag,
+  Wallet,
+  Briefcase,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -78,34 +80,52 @@ export interface NavTab {
  * filter recurses so groups with no visible kids hide entirely.
  */
 export const NAV_TABS: NavTab[] = [
+  // ── Workspace — universal landing ────────────────────────────
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
-  { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read" },
-  // The rep-facing Sales log used to live here as its own tab. It was
-  // moved into the Project detail page (each exhibition has its own
-  // Sales section) so reps draft sales against the project they're
-  // working on. The /sales route still resolves for managers who
-  // bookmarked it, but it's intentionally hidden from the nav.
-  // Members with delivery_orders.read but no trips.read.all still see
-  // the flat Delivery list. Dispatchers with trips.read.all get the
-  // richer Queue tab inside Trips, so this entry hides for them.
+
+  // ── Sales — order flow + delivery for reps and account owners ─
   {
-    to: "/delivery-orders",
-    label: "Delivery",
-    icon: Truck,
-    perm: "delivery_orders.read",
-    hidePerm: "trips.read.all",
+    label: "Sales",
+    icon: Briefcase,
+    groupId: "sales",
+    anyPerm: ["sales_orders.read", "delivery_orders.read", "purchase_orders.read"],
+    children: [
+      { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read" },
+      // Members with delivery_orders.read but no trips.read.all still see
+      // the flat Delivery list. Dispatchers with trips.read.all get the
+      // richer Queue tab inside Logistics, so this entry hides for them.
+      {
+        to: "/delivery-orders",
+        label: "Delivery",
+        icon: Truck,
+        perm: "delivery_orders.read",
+        hidePerm: "trips.read.all",
+      },
+      { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read" },
+    ],
   },
+
+  // ── Operations — fleet, trips, dispatch ──────────────────────
   {
-    to: "/logistics",
-    label: "Logistics",
+    label: "Operations",
     icon: Route,
+    groupId: "operations",
     anyPerm: ["trips.read.all", "fleet.read"],
+    children: [
+      {
+        to: "/logistics",
+        label: "Logistics",
+        icon: Route,
+        anyPerm: ["trips.read.all", "fleet.read"],
+      },
+    ],
   },
-  { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read" },
+
+  // ── Service — quality + ASSR ─────────────────────────────────
   {
-    label: "Quality Management",
+    label: "Service",
     icon: Zap,
-    groupId: "quality-mgmt",
+    groupId: "service",
     anyPerm: ["service_cases.read"],
     children: [
       {
@@ -140,10 +160,12 @@ export const NAV_TABS: NavTab[] = [
       },
     ],
   },
+
+  // ── Projects — exhibitions, solo events ──────────────────────
   {
-    label: "Project Management",
+    label: "Projects",
     icon: FolderKanban,
-    groupId: "project-mgmt",
+    groupId: "projects",
     anyPerm: ["projects.read"],
     children: [
       {
@@ -172,7 +194,30 @@ export const NAV_TABS: NavTab[] = [
       },
     ],
   },
-  { to: "/team", label: "Team", icon: Users, anyPerm: ["users.read", "roles.read"] },
+
+  // ── Finance — petty cash today, more later ──────────────────
+  {
+    label: "Finance",
+    icon: DollarSign,
+    groupId: "finance",
+    anyPerm: ["petty_cash.read"],
+    children: [
+      { to: "/petty-cash", label: "Petty Cash", icon: Wallet, perm: "petty_cash.read" },
+    ],
+  },
+
+  // ── People — team + roles ────────────────────────────────────
+  {
+    label: "People",
+    icon: Users,
+    groupId: "people",
+    anyPerm: ["users.read", "roles.read"],
+    children: [
+      { to: "/team", label: "Team", icon: Users, anyPerm: ["users.read", "roles.read"] },
+    ],
+  },
+
+  // ── Engagement — universal: every staff sees these ──────────
   {
     label: "Engagement",
     icon: Trophy,
@@ -190,6 +235,8 @@ export const NAV_TABS: NavTab[] = [
       },
     ],
   },
+
+  // ── System — pinned to the bottom ───────────────────────────
   { to: "/settings", label: "Settings", icon: SettingsIcon, perm: "settings.manage" },
 ];
 

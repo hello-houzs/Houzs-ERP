@@ -12,6 +12,10 @@ import {
   Plus,
   Send,
   Trophy,
+  Paperclip,
+  Trash2,
+  FileText,
+  Download,
 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { useToast } from "../hooks/useToast";
@@ -346,10 +350,166 @@ function IdeaRow<T extends BaseRow>({
               {row.decline_reason}
             </div>
           )}
+          <IdeaAttachments target={target} targetId={row.id} isOwner={isOwner} />
         </div>
       )}
     </li>
   );
+}
+
+interface AttachmentRow {
+  id: number;
+  file_name: string;
+  content_type: string | null;
+  size_bytes: number | null;
+  uploaded_by: number | null;
+  uploaded_at: string;
+}
+
+function IdeaAttachments({
+  target,
+  targetId,
+  isOwner,
+}: {
+  target: Target;
+  targetId: number;
+  isOwner: boolean;
+}) {
+  const toast = useToast();
+  const { user } = useAuth();
+  const isAdmin = !!user?.permissions?.includes("*");
+  const canManage = isOwner || isAdmin;
+  const list = useQuery<{ rows: AttachmentRow[] }>(
+    () => api.get(`/api/idea-attachments?target=${target}&target_id=${targetId}`),
+    [target, targetId],
+  );
+  const [busy, setBusy] = useState(false);
+
+  async function upload(file: File) {
+    if (file.size > 25 * 1024 * 1024) {
+      toast.error("File must be under 25 MB");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.putBinary(
+        `/api/idea-attachments/${target}/${targetId}?name=${encodeURIComponent(file.name)}`,
+        file,
+        file.type || "application/octet-stream",
+      );
+      toast.success(`Attached ${file.name}`);
+      list.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(att: AttachmentRow) {
+    if (!confirm(`Remove ${att.file_name}?`)) return;
+    try {
+      await api.del(`/api/idea-attachments/${att.id}`);
+      toast.success("Attachment removed");
+      list.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Remove failed");
+    }
+  }
+
+  const rows = list.data?.rows ?? [];
+  if (!canManage && rows.length === 0) return null;
+
+  return (
+    <div className="mt-3 rounded-md border border-border bg-surface/60 p-2.5">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+          <Paperclip size={11} /> Attachments
+          {rows.length > 0 && (
+            <span className="ml-1 rounded-full bg-bg/60 px-1.5 font-mono text-[9.5px] text-ink-secondary">
+              {rows.length}
+            </span>
+          )}
+        </span>
+        {canManage && (
+          <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold text-ink-secondary transition-colors hover:border-accent/50 hover:text-accent">
+            <Plus size={11} /> {busy ? "Uploading…" : "Add"}
+            <input
+              type="file"
+              className="hidden"
+              disabled={busy}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) upload(f);
+                e.target.value = "";
+              }}
+            />
+          </label>
+        )}
+      </div>
+      {rows.length === 0 ? (
+        <div className="px-1 py-1 text-[10.5px] text-ink-muted">
+          No files yet — drop a brief, mockup, or screenshot.
+        </div>
+      ) : (
+        <ul className="divide-y divide-border-subtle">
+          {rows.map((a) => (
+            <li
+              key={a.id}
+              className="flex items-center gap-2 py-1.5 text-[11.5px]"
+            >
+              <FileText size={13} className="shrink-0 text-ink-muted" />
+              <span className="min-w-0 flex-1 truncate font-semibold text-ink">
+                {a.file_name}
+              </span>
+              {typeof a.size_bytes === "number" && (
+                <span className="shrink-0 font-mono text-[9.5px] text-ink-muted">
+                  {formatBytes(a.size_bytes)}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const url = await api.fetchBlobUrl(`/api/idea-attachments/${a.id}/blob`);
+                    const link = document.createElement("a");
+                    link.href = url;
+                    link.download = a.file_name;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    setTimeout(() => URL.revokeObjectURL(url), 5000);
+                  } catch (e: any) {
+                    toast.error(e?.message || "Download failed");
+                  }
+                }}
+                className="shrink-0 rounded p-1 text-ink-muted transition-colors hover:bg-bg/60 hover:text-accent"
+                title="Download"
+              >
+                <Download size={12} />
+              </button>
+              {canManage && (
+                <button
+                  type="button"
+                  onClick={() => remove(a)}
+                  className="shrink-0 rounded p-1 text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
+                  title="Remove"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function SubmitCard({

@@ -56,6 +56,11 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "sales.write",  resource: "Sales Entries", verb: "write",  label: "Edit sales entries",   description: "Create and edit own draft sales entries, submit for review" },
   { key: "sales.manage", resource: "Sales Entries", verb: "manage", label: "Manage sales entries", description: "Edit any entry, configure fields, void entries, push to AutoCount" },
 
+  // Petty cash (mig 060)
+  { key: "petty_cash.read",   resource: "Petty Cash", verb: "read",   label: "View petty cash",   description: "See entries and the running balance" },
+  { key: "petty_cash.post",   resource: "Petty Cash", verb: "write",  label: "Post petty cash",   description: "Add cash-in / cash-out entries" },
+  { key: "petty_cash.manage", resource: "Petty Cash", verb: "manage", label: "Manage petty cash", description: "Edit or archive any historical entry" },
+
   // System
   { key: "sync.run",   resource: "Sync",     verb: "write",  label: "Run sync", description: "Trigger Sync / Sync All / Retry Errors" },
   { key: "udf.manage", resource: "Custom Fields", verb: "manage", label: "Manage custom fields", description: "Add or remove user-defined fields on tables" },

@@ -708,3 +708,37 @@ export const votes = sqliteTable(
     created_at: text("created_at").default(sql`(datetime('now'))`),
   },
 );
+
+// ── idea_attachments (mig 059) ────────────────────────────
+// Polymorphic file attachments for innovation + suggestion posts.
+// Bytes live in R2 (POD_BUCKET); this table carries the key.
+export const idea_attachments = sqliteTable("idea_attachments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  target_type: text("target_type").notNull(),
+  target_id: integer("target_id").notNull(),
+  r2_key: text("r2_key").notNull(),
+  file_name: text("file_name").notNull(),
+  content_type: text("content_type"),
+  size_bytes: integer("size_bytes"),
+  uploaded_by: integer("uploaded_by"),
+  uploaded_at: text("uploaded_at").default(sql`(datetime('now'))`),
+  archived_at: text("archived_at"),
+});
+
+// ── petty_cash_entries (mig 060) ──────────────────────────
+// Single global petty-cash float for v1. amount_cents is always
+// positive; sign comes from `direction`.
+export const petty_cash_entries = sqliteTable("petty_cash_entries", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  direction: text("direction").notNull(),
+  amount_cents: integer("amount_cents").notNull(),
+  category: text("category"),
+  counterparty: text("counterparty"),
+  note: text("note"),
+  receipt_r2_key: text("receipt_r2_key"),
+  posted_by: integer("posted_by").notNull(),
+  occurred_on: text("occurred_on").notNull(),
+  archived_at: text("archived_at"),
+  created_at: text("created_at").default(sql`(datetime('now'))`),
+  updated_at: text("updated_at").default(sql`(datetime('now'))`),
+});

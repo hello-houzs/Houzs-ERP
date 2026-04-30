@@ -19,6 +19,7 @@ import { GamificationAdmin } from "./pages/GamificationAdmin";
 import { Shop } from "./pages/Shop";
 import { Innovations } from "./pages/Innovations";
 import { Suggestions } from "./pages/Suggestions";
+import { PettyCash } from "./pages/PettyCash";
 import { Logistics } from "./pages/Logistics";
 import { TripDetail } from "./pages/TripDetail";
 import { StaffDetail } from "./pages/StaffDetail";
@@ -309,6 +310,7 @@ export default function App() {
         <Route path="/gamification" element={<Gamification />} />
         <Route path="/gamification/admin" element={<GamificationAdmin />} />
         <Route path="/shop" element={<Shop />} />
+        <Route path="/petty-cash" element={<PettyCash />} />
         <Route path="/innovations" element={<Innovations />} />
         <Route path="/suggestions" element={<Suggestions />} />
         <Route path="/profile" element={<Profile />} />
