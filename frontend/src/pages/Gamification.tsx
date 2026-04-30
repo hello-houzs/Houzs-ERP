@@ -30,7 +30,6 @@ import { AwardImage } from "../components/AwardImage";
 import { Avatar } from "../components/Avatar";
 import { EmptyState } from "../components/EmptyState";
 import { ListSkeleton } from "../components/Skeleton";
-import { PullToRefresh } from "../components/PullToRefresh";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useQuery } from "../hooks/useQuery";
 import { useAuth } from "../auth/AuthContext";
@@ -172,7 +171,7 @@ export function Gamification() {
   const me = useQuery<MeSnapshot>(() => api.get("/api/gamify/me"));
 
   return (
-    <PullToRefresh onRefresh={() => me.reload()}>
+    <div>
       <PageHeader
         eyebrow="Engagement"
         title="Houzs Points"
@@ -260,7 +259,7 @@ export function Gamification() {
       )}
       {tab === "streak" && <StreakTab />}
       {tab === "activity" && <ActivityTab />}
-    </PullToRefresh>
+    </div>
   );
 }
 

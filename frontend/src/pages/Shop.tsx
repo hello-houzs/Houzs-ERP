@@ -16,7 +16,6 @@ import { Button } from "../components/Button";
 import { AwardImage } from "../components/AwardImage";
 import { EmptyState } from "../components/EmptyState";
 import { ListSkeleton } from "../components/Skeleton";
-import { PullToRefresh } from "../components/PullToRefresh";
 import { useQuery } from "../hooks/useQuery";
 import { useAuth } from "../auth/AuthContext";
 import { useNotifications } from "../hooks/useNotifications";
@@ -70,7 +69,7 @@ export function Shop() {
   const rows = list.data?.rows ?? [];
 
   return (
-    <PullToRefresh onRefresh={() => list.reload()}>
+    <div>
       <PageHeader
         eyebrow="Engagement"
         title="Award Shop"
@@ -212,7 +211,7 @@ export function Shop() {
           }}
         />
       )}
-    </PullToRefresh>
+    </div>
   );
 }
 

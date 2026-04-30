@@ -6,6 +6,7 @@ import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TopNavbar } from "./TopNavbar";
 import { MobileTabBar } from "./MobileTabBar";
 import { PointsChip } from "./PointsChip";
+import { PullToRefresh } from "./PullToRefresh";
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
 import type { SyncStatusResponse } from "../types";
@@ -71,9 +72,9 @@ export function Layout({ children }: Props) {
             bottom-20 + safe area + h-12. Total clearance: 160 + safe
             area for mobile/sm, normal for lg+ where the rail is hidden
             and the FAB tucks into the corner. */}
-        <div className="mx-auto w-full max-w-[1400px] px-4 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 lg:px-10 lg:py-10 animate-rise">
+        <PullToRefresh className="mx-auto w-full max-w-[1400px] px-4 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 lg:px-10 lg:py-10 animate-rise">
           {children}
-        </div>
+        </PullToRefresh>
       </main>
 
       {/* Mobile bottom tab rail — visible below lg, sits above the

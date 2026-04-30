@@ -8,8 +8,11 @@ import { ArrowDown, RefreshCw } from "lucide-react";
 import { cn } from "../lib/utils";
 
 interface Props {
-  /** Called when the user pulls past the threshold and releases. */
-  onRefresh: () => Promise<unknown> | void;
+  /**
+   * Called when the user pulls past the threshold and releases.
+   * Defaults to `window.location.reload()` — a hard, F5-style refresh.
+   */
+  onRefresh?: () => Promise<unknown> | void;
   /** Optional extra padding above the indicator (e.g. when there's a sticky bar). */
   topOffset?: number;
   children: ReactNode;
@@ -102,7 +105,14 @@ export function PullToRefresh({
         setRefreshing(true);
         setPull(THRESHOLD);
         try {
-          await onRefresh();
+          if (onRefresh) {
+            await onRefresh();
+          } else {
+            // F5-style hard reload — never returns, no need to clear
+            // refreshing state (the page is being torn down).
+            window.location.reload();
+            return;
+          }
         } catch {
           // swallow — onRefresh's own error handling owns the toast
         } finally {
