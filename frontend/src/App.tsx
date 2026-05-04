@@ -19,6 +19,7 @@ import { GamificationAdmin } from "./pages/GamificationAdmin";
 import { Shop } from "./pages/Shop";
 import { Innovations } from "./pages/Innovations";
 import { Suggestions } from "./pages/Suggestions";
+import { IdeaDetail } from "./pages/IdeaDetail";
 import { PettyCash } from "./pages/PettyCash";
 import { Logistics } from "./pages/Logistics";
 import { TripDetail } from "./pages/TripDetail";
@@ -32,7 +33,7 @@ import { useAuth } from "./auth/AuthContext";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
 import { NotificationsProvider } from "./hooks/useNotifications";
 import { BrowserPushSink } from "./components/BrowserPushSink";
-import { FloatingChatWidget } from "./components/FloatingChatWidget";
+import { QuickActionsFAB } from "./components/QuickActionsFAB";
 import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
 
 /**
@@ -125,7 +126,7 @@ export default function App() {
       <NotificationsProvider>
       <BreadcrumbsProvider>
       <BrowserPushSink />
-      <FloatingChatWidget />
+      <QuickActionsFAB />
       <Layout>
         <Routes>
         <Route path="/" element={<Overview />} />
@@ -312,7 +313,9 @@ export default function App() {
         <Route path="/shop" element={<Shop />} />
         <Route path="/petty-cash" element={<PettyCash />} />
         <Route path="/innovations" element={<Innovations />} />
+        <Route path="/innovations/:id" element={<IdeaDetail target="innovation" />} />
         <Route path="/suggestions" element={<Suggestions />} />
+        <Route path="/suggestions/:id" element={<IdeaDetail target="suggestion" />} />
         <Route path="/profile" element={<Profile />} />
         </Routes>
       </Layout>

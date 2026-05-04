@@ -17,24 +17,10 @@ import { idea_attachments } from "../db/schema";
 
 const app = new Hono<{ Bindings: Env }>();
 
-const ALLOWED_EXT = new Set([
-  "pdf",
-  "png",
-  "jpg",
-  "jpeg",
-  "webp",
-  "heic",
-  "mp4",
-  "mov",
-  "doc",
-  "docx",
-  "xls",
-  "xlsx",
-  "csv",
-  "txt",
-  "ppt",
-  "pptx",
-]);
+// Pictures only — innovation / suggestion posts are X-style cards with
+// a single cover image. Other file types are rejected at upload time.
+const ALLOWED_EXT = new Set(["png", "jpg", "jpeg", "webp", "heic", "gif"]);
+const ALLOWED_MIME_PREFIX = "image/";
 const MAX_BYTES = 25 * 1024 * 1024; // 25 MB
 
 type Target = "innovation" | "suggestion";
@@ -109,13 +95,16 @@ app.put("/:target/:id", async (c) => {
     return c.json({ error: "Only the submitter or an admin can attach" }, 403);
   }
 
-  const filenameRaw = c.req.query("name") || `attachment-${Date.now()}`;
+  const filenameRaw = c.req.query("name") || `image-${Date.now()}`;
   const filename = safeFilename(filenameRaw);
   const ext = (filename.split(".").pop() || "").toLowerCase();
   if (ext && !ALLOWED_EXT.has(ext)) {
-    return c.json({ error: `File type .${ext} not allowed` }, 400);
+    return c.json({ error: "Only image files are allowed" }, 400);
   }
   const contentType = c.req.header("content-type") || "application/octet-stream";
+  if (!contentType.startsWith(ALLOWED_MIME_PREFIX)) {
+    return c.json({ error: "Only image files are allowed" }, 400);
+  }
 
   const buf = await c.req.arrayBuffer();
   if (!buf.byteLength) return c.json({ error: "Empty body" }, 400);

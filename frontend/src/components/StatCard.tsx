@@ -17,7 +17,7 @@ export function StatCard({ label, value, subtitle, tone = "default" }: Props) {
   return (
     <div
       className={cn(
-        "group relative overflow-hidden rounded-lg border border-border bg-surface px-5 py-5 shadow-stone transition-all duration-200 hover:-translate-y-px hover:shadow-slab"
+        "group relative h-full overflow-hidden rounded-lg border border-border bg-surface px-4 py-4 shadow-stone transition-all duration-200 hover:-translate-y-px hover:shadow-slab sm:px-5 sm:py-5"
       )}
     >
       {/* Brass top edge — thin by default, glows on hover */}
@@ -28,7 +28,7 @@ export function StatCard({ label, value, subtitle, tone = "default" }: Props) {
       </div>
       <div
         className={cn(
-          "mt-3 font-display text-[26px] font-extrabold leading-none tracking-tight",
+          "mt-2 font-display text-[22px] font-extrabold leading-none tracking-tight sm:mt-3 sm:text-[26px]",
           tone === "default" && "text-ink",
           tone === "success" && "text-synced",
           tone === "error" && "text-err"

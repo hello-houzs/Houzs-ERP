@@ -119,7 +119,12 @@ export async function award(
   user_id: number,
   reason: Reason | string,
   amount: number,
-  opts: { ref_type?: string; ref_id?: number; note?: string } = {},
+  opts: {
+    ref_type?: string;
+    ref_id?: number;
+    note?: string;
+    counterparty_user_id?: number;
+  } = {},
 ): Promise<void> {
   if (amount <= 0) return;
   await writeLedger(env, {
@@ -129,6 +134,7 @@ export async function award(
     reason,
     ref_type: opts.ref_type,
     ref_id: opts.ref_id,
+    counterparty_user_id: opts.counterparty_user_id ?? null,
     note: opts.note,
   });
 }
@@ -245,20 +251,24 @@ export async function spend(
 
 /**
  * Admin override — direct ledger entry, signed delta. Used for HR
- * corrections. Always writes to the 'earned' pool.
+ * corrections. Always writes to the 'earned' pool. The acting admin's
+ * id is stamped onto `counterparty_user_id` so the activity feed can
+ * surface "Adjusted by <admin name>" without a new column / table.
  */
 export async function adminAdjust(
   env: Env,
   user_id: number,
   delta: number,
   reason: string,
-  note?: string,
+  note: string | undefined,
+  acted_by: number,
 ): Promise<void> {
   await writeLedger(env, {
     user_id,
     pool: "earned",
     delta,
     reason: "admin_adjust",
+    counterparty_user_id: acted_by,
     note: note ? `${reason}: ${note}` : reason,
   });
 }
@@ -359,9 +369,16 @@ export async function recomputeWeeklyStreaks(
   weekStart.setUTCDate(now.getUTCDate() - day);
   const startIso = weekStart.toISOString();
 
-  // Aggregate: how many qualifying ledger rows per user this week?
+  // Aggregate: how many DISTINCT counterparties (givers) per user this
+  // week? Counting raw rows let one persistent voter farm a user's streak
+  // by upvoting many of their posts. Distinct counterparties means
+  // "qualified by N different people gifted/upvoted me", which is the
+  // metric an engagement streak should actually represent.
+  // SQLite's COUNT(DISTINCT) drops NULLs, so legacy rows with no
+  // counterparty_user_id (pre-dedup-fix) silently fall out — acceptable;
+  // those weeks are already in the past.
   const rows = await env.DB.prepare(
-    `SELECT user_id, COUNT(*) AS upvotes
+    `SELECT user_id, COUNT(DISTINCT counterparty_user_id) AS upvotes
        FROM point_transactions
       WHERE created_at >= ?
         AND reason IN ('upvote_received','gift_received')

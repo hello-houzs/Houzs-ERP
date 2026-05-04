@@ -329,6 +329,8 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
       }
       return (
         <div key={tab.groupId || tab.label} className="my-0.5">
+          {/* Group header. Click toggles only on lg+; on mobile the
+              chevron is hidden and children are always visible below. */}
           <button
             onClick={() => toggleGroup(tab.groupId || tab.label)}
             className={cn(
@@ -345,16 +347,21 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
             />
             <span className="flex-1">{tab.label}</span>
             {open ? (
-              <ChevronDown size={12} className="text-sidebar-ink-muted" />
+              <ChevronDown size={12} className="hidden text-sidebar-ink-muted lg:inline" />
             ) : (
-              <ChevronRight size={12} className="text-sidebar-ink-muted" />
+              <ChevronRight size={12} className="hidden text-sidebar-ink-muted lg:inline" />
             )}
           </button>
-          {open && (
-            <div className="ml-3 border-l border-sidebar-border pl-2">
-              {tab.children.map((k) => renderTab(k, depth + 1))}
-            </div>
-          )}
+          {/* Children: always visible on mobile (no per-group expand);
+              on lg+ they obey the localStorage-backed `open` flag. */}
+          <div
+            className={cn(
+              "ml-3 border-l border-sidebar-border pl-2",
+              !open && "lg:hidden",
+            )}
+          >
+            {tab.children.map((k) => renderTab(k, depth + 1))}
+          </div>
         </div>
       );
     }
@@ -406,11 +413,14 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
       <aside
         className={cn(
           "flex flex-col border-r border-sidebar-border bg-sidebar text-sidebar-ink transition-transform duration-200",
-          // Mobile: fixed drawer that slides in from the left.
-          "fixed inset-y-0 left-0 z-50 w-[260px]",
+          // Mobile: fixed drawer that slides in from the left. Width is
+          // 88vw with a 280 px ceiling so a 320 px device retains a
+          // ~38 px tap-out gutter. On `lg+` the explicit w-* below
+          // overrides this entirely.
+          "fixed inset-y-0 left-0 z-50 w-[88vw] max-w-[280px]",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
           // Desktop (lg+): static, takes part in flex layout, no transform.
-          "lg:relative lg:translate-x-0 lg:transition-[width]",
+          "lg:relative lg:max-w-none lg:translate-x-0 lg:transition-[width]",
           effectiveCollapsed ? "lg:w-16" : "lg:w-[232px]"
         )}
       >
@@ -455,7 +465,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
         {onMobileClose && (
           <button
             onClick={onMobileClose}
-            className="text-sidebar-ink-muted transition-colors hover:text-sidebar-ink lg:hidden"
+            className="-mr-2 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded text-sidebar-ink-muted transition-colors hover:text-sidebar-ink lg:hidden"
             aria-label="Close menu"
           >
             <PanelLeftClose size={18} />
@@ -551,7 +561,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
               </NavLink>
               <button
                 onClick={() => logout()}
-                className="rounded p-1.5 text-sidebar-ink-muted transition-colors hover:bg-sidebar-hover hover:text-accent"
+                className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded text-sidebar-ink-muted transition-colors hover:bg-sidebar-hover hover:text-accent"
                 aria-label="Sign out"
                 title="Sign out"
               >

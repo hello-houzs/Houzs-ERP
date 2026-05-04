@@ -75,7 +75,7 @@ export function DetailLayout({
           (Archive / Stage transition / etc.). Mobile still sees the
           breadcrumb inline so nothing gets lost below lg.
       */}
-      <div className="sticky top-0 z-20 -mx-4 -mt-6 mb-4 border-b border-border bg-bg/85 backdrop-blur-md sm:-mx-6 sm:-mt-8 lg:top-12 lg:-mx-10 lg:-mt-10">
+      <div className="sticky top-14 z-20 -mx-4 -mt-6 mb-4 border-b border-border bg-bg/85 backdrop-blur-md sm:-mx-6 sm:-mt-8 lg:top-12 lg:-mx-10 lg:-mt-10">
         <div className="mx-auto flex h-10 max-w-[1400px] items-center gap-3 px-4 sm:px-6 lg:px-10">
           <button
             onClick={goBack}

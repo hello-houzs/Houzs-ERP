@@ -63,7 +63,13 @@ export default {
         // describes, with a slightly friendlier humanist edge.
         body: ['"Manrope"', "system-ui", "sans-serif"],
         display: ['"Manrope"', "system-ui", "sans-serif"],
-        mono: ['"JetBrains Mono"', "ui-monospace", "monospace"],
+        // Was JetBrains Mono — replaced with Plus Jakarta Sans for the
+        // small uppercase eyebrow labels and numeric chips. Tabular
+        // alignment of figures is restored via a `font-variant-numeric:
+        // tabular-nums` rule on `.font-mono` in index.css. The alias
+        // name stays `mono` to avoid touching 440 call sites; the
+        // *meaning* is now "data / labels / numbers".
+        mono: ['"Plus Jakarta Sans"', "system-ui", "sans-serif"],
       },
       letterSpacing: {
         brand: "0.18em",

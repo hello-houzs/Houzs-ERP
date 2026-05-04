@@ -5,6 +5,11 @@ import { cn } from "../lib/utils";
  * A horizontal dashboard strip used at the top of each tab page.
  * Composes a row of stat cards (children) plus optional breakdown panels
  * via <DashboardBreakdown />.
+ *
+ * Mobile (`<sm`): 2-up grid — same shape as the Workspace home page's
+ * stat tiles. Halves vertical footprint vs single-column stack while
+ * keeping every card visible (no swipe required). Step-up to the
+ * original column count at `sm+` / `lg+`.
  */
 export function DashboardGrid({
   children,
@@ -14,13 +19,13 @@ export function DashboardGrid({
   cols?: 2 | 3 | 4 | 5;
 }) {
   const colsClass = {
-    2: "md:grid-cols-2",
-    3: "md:grid-cols-3",
-    4: "md:grid-cols-2 lg:grid-cols-4",
-    5: "md:grid-cols-2 lg:grid-cols-5",
+    2: "grid-cols-2",
+    3: "grid-cols-2 sm:grid-cols-3",
+    4: "grid-cols-2 sm:grid-cols-2 lg:grid-cols-4",
+    5: "grid-cols-2 sm:grid-cols-2 lg:grid-cols-5",
   }[cols];
   return (
-    <div className={cn("mb-4 grid grid-cols-1 gap-3", colsClass)}>{children}</div>
+    <div className={cn("mb-4 grid gap-3", colsClass)}>{children}</div>
   );
 }
 
@@ -86,6 +91,9 @@ export function DashboardBreakdown({
 
 /**
  * Two- or three-column container for breakdown panels under the stat strip.
+ * Breakdown panels carry label + bar-chart rows; they read better
+ * full-width on mobile, so this stays a single-column stack below `lg`
+ * and only steps up at `lg+`.
  */
 export function DashboardPanels({
   children,

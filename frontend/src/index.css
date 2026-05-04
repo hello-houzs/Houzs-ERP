@@ -66,6 +66,40 @@ select {
   font-family: inherit;
 }
 
+/* JetBrains Mono used to give numeric figures a fixed-width grid for
+   free. Plus Jakarta Sans (the new `font-mono` alias) is variable-
+   width — so we explicitly opt into tabular figures via the OpenType
+   `tnum` feature whenever `.font-mono` is on an element. Keeps vote
+   counts, dates, balances, and kbd hints column-aligned. */
+.font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+/* iOS Safari auto-zooms to a focused input when its computed font-size
+   is below 16px. Every form-input style we use is text-[12px]/[13px]
+   for desktop density. This rule overrides on mobile only — the visual
+   density is preserved on sm+, and the keyboard-up jump is suppressed.
+   `!important` is required because Tailwind's `text-[13px]` class
+   selectors win over an element-selector rule in plain CSS. */
+@media (max-width: 639px) {
+  input[type="text"],
+  input[type="search"],
+  input[type="email"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="number"],
+  input[type="password"],
+  input[type="date"],
+  input[type="datetime-local"],
+  input[type="time"],
+  input[type="month"],
+  input[type="week"],
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 /* ──────────────────────────────────────────────────────────
    Dropdown chevron.
    Selects with appearance-none strip the native arrow; we
@@ -93,6 +127,45 @@ select.appearance-none:focus {
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* Honour the user's "reduce motion" OS preference. Disables our named
+   keyframe animations (rise / fade / shimmer / toast / modal) and clamps
+   every transition + animation duration to ~instant so spring-y or
+   long transitions don't surprise users who opted out. The reveal /
+   refresh affordances themselves still trigger — only the visual
+   easing is suppressed. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise,
+  .animate-fade-in,
+  .animate-shimmer,
+  .animate-toast-in,
+  .animate-modal-in,
+  .skeleton {
+    animation: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Right-edge fade for horizontally-scrolling rows on mobile.
+   Signals "more content off-screen" without a scrollbar. Auto-disables
+   above sm where the same rows already become flex-wrap / overflow-visible. */
+.mask-fade-r {
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - 32px), transparent);
+}
+@media (min-width: 640px) {
+  .mask-fade-r {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
 }
 
 /* Subtle scrollbar for main content area */

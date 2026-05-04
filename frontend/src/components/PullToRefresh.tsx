@@ -1,11 +1,65 @@
 import {
+  createContext,
+  useCallback,
+  useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import { ArrowDown, RefreshCw } from "lucide-react";
+import { useToast } from "../hooks/useToast";
 import { cn } from "../lib/utils";
+
+// ── Refresh guard ──────────────────────────────────────────────
+//
+// Pages with unsaved form state (e.g. an open Panel with a dirty
+// draft) don't want a stray pull-to-refresh tearing down the page.
+// `usePullToRefreshBlock(true)` registers a block; PullToRefresh
+// notices and shows a toast instead of refreshing.
+//
+// Implementation is a refcount: many components can hold a block
+// concurrently; refresh only fires when the count is zero.
+
+interface GuardCtx {
+  blocked: boolean;
+  registerBlock: () => () => void;
+}
+
+const GuardContext = createContext<GuardCtx | null>(null);
+
+export function PullToRefreshGuardProvider({ children }: { children: ReactNode }) {
+  const [count, setCount] = useState(0);
+  const registerBlock = useCallback(() => {
+    setCount((c) => c + 1);
+    return () => setCount((c) => Math.max(0, c - 1));
+  }, []);
+  const value = useMemo<GuardCtx>(
+    () => ({ blocked: count > 0, registerBlock }),
+    [count, registerBlock],
+  );
+  return <GuardContext.Provider value={value}>{children}</GuardContext.Provider>;
+}
+
+/**
+ * Block pull-to-refresh while `active` is true. Unblocks on unmount or
+ * when `active` flips back to false. No-op if rendered outside a
+ * `PullToRefreshGuardProvider`.
+ */
+export function usePullToRefreshBlock(active: boolean) {
+  const ctx = useContext(GuardContext);
+  useEffect(() => {
+    if (!ctx) return;
+    if (!active) return;
+    return ctx.registerBlock();
+  }, [ctx, active]);
+}
+
+function usePullToRefreshBlocked(): boolean {
+  const ctx = useContext(GuardContext);
+  return ctx?.blocked ?? false;
+}
 
 interface Props {
   /**
@@ -55,11 +109,33 @@ export function PullToRefresh({
   const startYRef = useRef<number | null>(null);
   const [pull, setPull] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const blocked = usePullToRefreshBlocked();
+  const toast = useToast();
+  // Mirror `blocked` into a ref so the touchend handler can read the
+  // latest value without re-binding listeners every time it flips.
+  const blockedRef = useRef(blocked);
+  useEffect(() => {
+    blockedRef.current = blocked;
+  }, [blocked]);
 
   useEffect(() => {
     const wrap = wrapperRef.current;
     if (!wrap) return;
     scrollRef.current = findScrollAncestor(wrap) ?? document.documentElement;
+  }, []);
+
+  // Track the user's "reduce motion" OS preference. When set, the
+  // pull-to-refresh gesture still triggers the refresh, but the visual
+  // translation of indicator + content is suppressed so the page
+  // doesn't jolt downward as the user pulls.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReducedMotion(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setReducedMotion(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
   }, []);
 
   useEffect(() => {
@@ -107,6 +183,16 @@ export function PullToRefresh({
         return;
       }
       if (pull >= THRESHOLD && !refreshing) {
+        // Honour any registered block — typically a Panel with unsaved
+        // changes. Snap the indicator back, surface a toast, and skip
+        // the refresh entirely so the user's draft survives.
+        if (blockedRef.current) {
+          setPull(0);
+          toast.error(
+            "You have unsaved changes. Save or discard before refreshing.",
+          );
+          return;
+        }
         setRefreshing(true);
         setPull(THRESHOLD);
         try {
@@ -150,6 +236,13 @@ export function PullToRefresh({
     ? "Release to refresh"
     : "Pull down to refresh";
 
+  // Under reduced-motion: indicator stays parked at its top-offset slot
+  // (revealed by opacity only), and the content doesn't translate. The
+  // refresh action itself still fires when the gesture commits.
+  const indicatorTranslate = reducedMotion ? 0 : pull - 56;
+  const arrowRotate = reducedMotion ? 0 : rotate;
+  const contentTranslate = reducedMotion ? 0 : pull * 0.45;
+
   return (
     <div ref={wrapperRef} className="relative">
       <div
@@ -157,7 +250,7 @@ export function PullToRefresh({
         className="pointer-events-none absolute inset-x-0 z-10 flex flex-col items-center gap-1.5"
         style={{
           top: topOffset,
-          transform: `translateY(${pull - 56}px)`,
+          transform: `translateY(${indicatorTranslate}px)`,
           opacity,
           transition: refreshing || pull === 0 ? "transform 200ms ease-out, opacity 200ms ease-out" : "none",
         }}
@@ -178,7 +271,7 @@ export function PullToRefresh({
                 armed ? "text-accent" : "text-ink-muted",
               )}
               style={{
-                transform: `rotate(${rotate}deg)`,
+                transform: `rotate(${arrowRotate}deg)`,
                 transition: "transform 80ms linear",
               }}
             />
@@ -196,7 +289,7 @@ export function PullToRefresh({
       <div
         className={className}
         style={{
-          transform: `translateY(${pull * 0.45}px)`,
+          transform: `translateY(${contentTranslate}px)`,
           transition: refreshing || pull === 0 ? "transform 200ms ease-out" : "none",
         }}
       >

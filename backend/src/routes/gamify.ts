@@ -262,6 +262,7 @@ app.patch("/settings", async (c) => {
 app.post("/admin/adjust", async (c) => {
   const denied = requireAdmin(c);
   if (denied) return denied;
+  const user = c.get("user");
   const body = await c.req.json().catch(() => ({}));
   const target = parseInt(String(body.user_id ?? ""), 10);
   const delta = parseInt(String(body.delta ?? ""), 10);
@@ -270,7 +271,7 @@ app.post("/admin/adjust", async (c) => {
   if (!Number.isFinite(target) || !Number.isFinite(delta) || delta === 0) {
     return c.json({ error: "user_id and non-zero delta are required" }, 400);
   }
-  await adminAdjust(c.env, target, delta, reason, note);
+  await adminAdjust(c.env, target, delta, reason, note, user!.id);
   return c.json({ ok: true });
 });
 

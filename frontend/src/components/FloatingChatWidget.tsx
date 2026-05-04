@@ -199,12 +199,13 @@ export function FloatingChatWidget() {
             : "Active chats"
         }
         className={cn(
-          // On mobile the FAB lifts above the bottom tab rail (h-14)
-          // plus iOS safe-area; on lg+ it sits at the standard
-          // bottom-right corner since the rail is hidden.
+          // On mobile the FAB lifts above the floating tab rail (h-14
+          // pill, bottom-2, plus iOS safe-area) with breathing room so
+          // the rightmost tab's active indicator never grazes it. On
+          // lg+ the rail is hidden so the FAB tucks into the corner.
           "fixed right-4 z-40 inline-flex items-center justify-center rounded-full bg-accent text-white shadow-slab transition-all hover:scale-105 hover:bg-accent-hover",
           "h-12 w-12 lg:h-14 lg:w-14 lg:right-5",
-          "bottom-[calc(theme(spacing.20)+env(safe-area-inset-bottom))] lg:bottom-5",
+          "bottom-[calc(theme(spacing.24)+env(safe-area-inset-bottom))] lg:bottom-5",
           open && "scale-95"
         )}
       >
@@ -223,7 +224,7 @@ export function FloatingChatWidget() {
           className="fixed z-40 flex flex-col overflow-hidden rounded-md border border-border bg-surface shadow-slab
                      bottom-24 right-5 h-[540px] w-[360px]
                      max-sm:inset-x-2 max-sm:top-16 max-sm:h-auto max-sm:w-auto
-                     max-sm:bottom-[calc(theme(spacing.20)+env(safe-area-inset-bottom))]"
+                     max-sm:bottom-[calc(theme(spacing.24)+env(safe-area-inset-bottom))]"
           role="dialog"
           aria-label="Active chats"
         >
@@ -233,7 +234,7 @@ export function FloatingChatWidget() {
               <>
                 <button
                   onClick={() => setSelectedId(null)}
-                  className="rounded p-1 text-ink-muted hover:bg-surface-dim hover:text-ink"
+                  className="-ml-2 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded text-ink-muted hover:bg-surface-dim hover:text-ink sm:-ml-1 sm:h-9 sm:w-9"
                   aria-label="Back to active chats"
                   title="Back"
                 >
@@ -267,7 +268,7 @@ export function FloatingChatWidget() {
             )}
             <button
               onClick={() => setOpen(false)}
-              className="rounded p-1 text-ink-muted hover:bg-surface-dim hover:text-ink"
+              className="-mr-2 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded text-ink-muted hover:bg-surface-dim hover:text-ink sm:-mr-1 sm:h-9 sm:w-9"
               aria-label="Close"
               title="Close"
             >

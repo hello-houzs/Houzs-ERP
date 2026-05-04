@@ -1,12 +1,12 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { useLocation } from "react-router-dom";
-import { ShieldAlert, Menu } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ShieldAlert } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TopNavbar } from "./TopNavbar";
 import { MobileTabBar } from "./MobileTabBar";
 import { PointsChip } from "./PointsChip";
-import { PullToRefresh } from "./PullToRefresh";
+import { PullToRefresh, PullToRefreshGuardProvider } from "./PullToRefresh";
+import { RowActionsMenu, type MenuItem } from "./RowActionsMenu";
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
 import type { SyncStatusResponse } from "../types";
@@ -19,28 +19,10 @@ const LOGO_MARK_SRC = "/logo-mark.png";
 const LOGO_WORDMARK_SRC = "/logo-wordmark.png";
 
 export function Layout({ children }: Props) {
-  // Desktop collapse — only used at lg+
+  // Desktop collapse — only used at lg+. Mobile no longer has a
+  // drawer-opening hamburger; the bottom rail's centre Menu disc
+  // covers nav, so the top bar is just brand + chrome.
   const [collapsed, setCollapsed] = useState(false);
-  // Mobile drawer — only used below lg
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const location = useLocation();
-
-  // Auto-close the mobile drawer whenever the route changes — otherwise
-  // tapping a nav item leaves the drawer covering the page they wanted.
-  useEffect(() => {
-    setMobileOpen(false);
-  }, [location.pathname]);
-
-  // Lock body scroll when the mobile drawer is open so the page
-  // underneath doesn't scroll behind it.
-  useEffect(() => {
-    if (mobileOpen) {
-      document.body.style.overflow = "hidden";
-      return () => {
-        document.body.style.overflow = "";
-      };
-    }
-  }, [mobileOpen]);
 
   // One global poll of /api/sync/status — used to surface the
   // AutoCount-writes-disabled kill switch as a persistent banner.
@@ -50,17 +32,16 @@ export function Layout({ children }: Props) {
   const writesDisabled = status.data?.autocount_writes_disabled === true;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
+    <div className="flex h-dvh min-h-dvh w-screen overflow-hidden">
       <Sidebar
         collapsed={collapsed}
         onToggle={() => setCollapsed((c) => !c)}
-        mobileOpen={mobileOpen}
-        onMobileClose={() => setMobileOpen(false)}
+        mobileOpen={false}
       />
 
       <main className="paper-grain thin-scroll flex-1 overflow-y-auto">
-        {/* Mobile top bar — hamburger + brand mark. Hidden on lg+. */}
-        <MobileTopBar onOpenDrawer={() => setMobileOpen(true)} />
+        {/* Mobile top bar — brand + topbar chrome only. Hidden on lg+. */}
+        <MobileTopBar />
 
         {/* Desktop top navbar — breadcrumb + search + bell + profile. */}
         <TopNavbar />
@@ -71,10 +52,15 @@ export function Layout({ children }: Props) {
             AND the floating chat FAB which sits above the rail at
             bottom-20 + safe area + h-12. Total clearance: 160 + safe
             area for mobile/sm, normal for lg+ where the rail is hidden
-            and the FAB tucks into the corner. */}
-        <PullToRefresh className="mx-auto w-full max-w-[1400px] px-4 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 lg:px-10 lg:py-10 animate-rise">
-          {children}
-        </PullToRefresh>
+            and the FAB tucks into the corner.
+            The Guard provider wraps both PullToRefresh and children so
+            pages with unsaved Panel state can call
+            `usePullToRefreshBlock(true)` to block accidental F5. */}
+        <PullToRefreshGuardProvider>
+          <PullToRefresh className="mx-auto w-full max-w-[1400px] px-4 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 lg:px-10 lg:py-10 animate-rise">
+            {children}
+          </PullToRefresh>
+        </PullToRefreshGuardProvider>
       </main>
 
       {/* Mobile bottom tab rail — visible below lg, sits above the
@@ -87,27 +73,20 @@ export function Layout({ children }: Props) {
 }
 
 /**
- * Mobile-only top bar. Provides the hamburger that opens the sidebar
- * drawer plus a small brand mark so users know which workspace they're
- * in. Hidden on lg+ where the sidebar is always visible.
+ * Mobile-only top bar. Brand mark on the left + PointsChip + collapsed
+ * search on the right. Hidden on lg+. Navigation is handled exclusively
+ * by the bottom rail's centre Menu disc — no hamburger here.
  */
-function MobileTopBar({ onOpenDrawer }: { onOpenDrawer: () => void }) {
+function MobileTopBar() {
   return (
     <div className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-surface/95 px-4 backdrop-blur-sm lg:hidden">
-      <button
-        onClick={onOpenDrawer}
-        className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/50 hover:text-accent"
-        aria-label="Open menu"
-      >
-        <Menu size={18} />
-      </button>
       <img
         src={LOGO_WORDMARK_SRC}
         alt="Houzs Century"
         className="h-7 w-auto max-w-[140px] object-contain"
         draggable={false}
       />
-      <div className="ml-auto flex items-center gap-1.5">
+      <div className="ml-auto flex min-w-0 items-center gap-1.5">
         <PointsChip compact />
         <GlobalSearchTrigger collapsed />
       </div>
@@ -145,24 +124,43 @@ function ReadOnlyBanner() {
 interface PageHeaderProps {
   title: string;
   description?: string;
+  /** Always-rendered ReactNode (status pill, filter strip, bespoke chrome).
+   *  Same shape as before — pages that don't opt into the new split keep working. */
   actions?: ReactNode;
+  /** Primary CTA — always visible. Sits at the right edge of the action row.
+   *  On mobile this is the only inline action besides the optional kebab. */
+  primaryAction?: ReactNode;
+  /** Secondary actions. On `sm+` they render as a row of compact buttons.
+   *  On `<sm` they collapse into a single kebab so the header stays one-row. */
+  secondaryActions?: MenuItem[];
   /** Optional small label rendered above the title — e.g. section name. */
   eyebrow?: string;
 }
 
-export function PageHeader({ title, description, actions, eyebrow }: PageHeaderProps) {
+export function PageHeader({
+  title,
+  description,
+  actions,
+  primaryAction,
+  secondaryActions,
+  eyebrow,
+}: PageHeaderProps) {
+  const secondary = secondaryActions ?? [];
+  const hasSecondary = secondary.length > 0;
+  const hasActions = !!actions || !!primaryAction || hasSecondary;
+
   return (
     <div className="mb-4 flex flex-col gap-3 border-b border-border pb-3 sm:mb-8 sm:gap-3 sm:pb-6 md:flex-row md:items-end md:justify-between">
       <div className="min-w-0">
         {eyebrow && (
           <div className="mb-1.5 flex items-center gap-2 sm:mb-2">
             <span className="h-px w-5 bg-accent sm:w-6" />
-            <span className="text-[9.5px] font-semibold uppercase tracking-brand text-accent sm:text-[10px]">
+            <span className="text-[10.5px] font-semibold uppercase tracking-brand text-accent sm:text-[10px]">
               {eyebrow}
             </span>
           </div>
         )}
-        <h1 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink sm:text-[26px] lg:text-[28px]">
+        <h1 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink max-[359px]:text-[17px] sm:text-[26px] lg:text-[28px]">
           {title}
         </h1>
         {description && (
@@ -171,8 +169,37 @@ export function PageHeader({ title, description, actions, eyebrow }: PageHeaderP
           </p>
         )}
       </div>
-      {actions && (
-        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 md:shrink-0">{actions}</div>
+      {hasActions && (
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 md:shrink-0">
+          {actions}
+          {/* Desktop (sm+): secondary actions render as inline buttons */}
+          {hasSecondary && (
+            <div className="hidden items-center gap-1.5 sm:flex sm:gap-2">
+              {secondary.map((it, i) => {
+                const Icon = it.icon;
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={it.onClick}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+                  >
+                    <Icon size={13} />
+                    {it.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {primaryAction}
+          {/* Mobile (<sm): secondary actions collapse into a kebab so the
+              header stays one row. Trigger sized to the 44 px touch floor. */}
+          {hasSecondary && (
+            <div className="sm:hidden">
+              <RowActionsMenu items={secondary} title="More actions" size={44} />
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

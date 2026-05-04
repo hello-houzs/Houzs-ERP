@@ -44,7 +44,7 @@ export function StreakBoard({ weeks, threshold, currentStreak, loading }: Props)
     return (
       <div className="rounded-lg border border-border bg-surface p-4 shadow-stone">
         <div className="mb-3 h-3 w-32 animate-pulse rounded bg-bg/60" />
-        <div className="grid grid-cols-13 gap-1.5 sm:grid-cols-26">
+        <div className="grid grid-cols-[repeat(13,minmax(0,1fr))] gap-1.5 sm:grid-cols-[repeat(26,minmax(0,1fr))]">
           {Array.from({ length: 26 }).map((_, i) => (
             <div
               key={i}
@@ -73,7 +73,7 @@ export function StreakBoard({ weeks, threshold, currentStreak, loading }: Props)
         </div>
       </div>
 
-      <div className="grid grid-cols-13 gap-1.5 sm:grid-cols-26">
+      <div className="grid grid-cols-[repeat(13,minmax(0,1fr))] gap-1.5 sm:grid-cols-[repeat(26,minmax(0,1fr))]">
         {padded.map((w, i) => {
           if (!w) {
             return (

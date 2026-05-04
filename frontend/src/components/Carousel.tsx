@@ -6,7 +6,7 @@ type Breakpoint = "sm" | "md" | "lg";
 interface Props {
   children: ReactNode;
   /** Number of columns at and above the breakpoint. Static so Tailwind JIT sees the class. */
-  cols: 2 | 3 | 4;
+  cols: 2 | 3 | 4 | 5;
   /** Breakpoint where the swipe row collapses back to a static grid. Defaults to "sm". */
   collapseAt?: Breakpoint;
   className?: string;
@@ -21,9 +21,9 @@ const RESET: Record<Breakpoint, string> = {
 };
 
 const COLS: Record<Breakpoint, Record<number, string>> = {
-  sm: { 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-4" },
-  md: { 2: "md:grid-cols-2", 3: "md:grid-cols-3", 4: "md:grid-cols-4" },
-  lg: { 2: "lg:grid-cols-2", 3: "lg:grid-cols-3", 4: "lg:grid-cols-4" },
+  sm: { 2: "sm:grid-cols-2", 3: "sm:grid-cols-3", 4: "sm:grid-cols-4", 5: "sm:grid-cols-5" },
+  md: { 2: "md:grid-cols-2", 3: "md:grid-cols-3", 4: "md:grid-cols-4", 5: "md:grid-cols-5" },
+  lg: { 2: "lg:grid-cols-2", 3: "lg:grid-cols-3", 4: "lg:grid-cols-4", 5: "lg:grid-cols-5" },
 };
 
 const ITEM_RESET: Record<Breakpoint, string> = {

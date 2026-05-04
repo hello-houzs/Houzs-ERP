@@ -58,7 +58,7 @@ export function Logistics() {
     <div>
       {!onlyOne && visibleTabs.length > 1 && (
         <div className="mb-6 border-b border-border">
-          <div className="no-scrollbar -mx-4 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:px-0 [&>*]:shrink-0">
+          <div className="mask-fade-r no-scrollbar -mx-4 flex items-center gap-1 overflow-x-auto px-4 sm:mx-0 sm:px-0 [&>*]:shrink-0">
             {visibleTabs.map((t) => {
               const Icon = t.icon;
               const isActive = t.value === active;

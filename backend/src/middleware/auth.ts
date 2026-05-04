@@ -14,6 +14,7 @@ const SERVICE_USER: AuthUser = {
   role_name: "Service",
   status: "active",
   permissions: ["*"],
+  permissions_set: new Set(["*"]),
   manager_id: null,
   scope_to_pic: false,
   department_id: null,
@@ -87,7 +88,11 @@ export function requirePermission(perm: string): MiddlewareHandler<{ Bindings: E
   return async (c, next) => {
     const user = c.get("user");
     if (!user) return c.json({ error: "Unauthorized" }, 401);
-    if (!hasPermission(user.permissions, perm)) {
+    // Fast path: O(1) Set lookup. Falls back to the array form for
+    // any caller that builds AuthUser without going through
+    // hydrateAuthUser (e.g. tests / scripts).
+    const granted = user.permissions_set ?? user.permissions;
+    if (!hasPermission(granted, perm)) {
       return c.json({ error: `Forbidden: missing ${perm}` }, 403);
     }
     await next();
@@ -109,7 +114,8 @@ export function requireAnyPermission(perms: string[]): MiddlewareHandler<{ Bindi
   return async (c, next) => {
     const user = c.get("user");
     if (!user) return c.json({ error: "Unauthorized" }, 401);
-    if (!perms.some((p) => hasPermission(user.permissions, p))) {
+    const granted = user.permissions_set ?? user.permissions;
+    if (!perms.some((p) => hasPermission(granted, p))) {
       return c.json(
         { error: `Forbidden: requires one of ${perms.join(", ")}` },
         403

@@ -863,21 +863,21 @@ function ProjectsListView() {
         eyebrow="Operations · Projects"
         title="Project List"
         description="Exhibitions and solo events — lifecycle, checklist, logistics, finance"
-        actions={
-          <div className="flex items-center gap-2">
-            {can("projects.manage") && (
-              <Button
-                variant="secondary"
-                icon={<UploadIcon size={14} />}
-                onClick={() => setShowImport(true)}
-              >
-                Import CSV
-              </Button>
-            )}
-            <Button variant="primary" icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
-              New Project
-            </Button>
-          </div>
+        secondaryActions={
+          can("projects.manage")
+            ? [
+                {
+                  icon: UploadIcon,
+                  label: "Import CSV",
+                  onClick: () => setShowImport(true),
+                },
+              ]
+            : undefined
+        }
+        primaryAction={
+          <Button variant="primary" icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
+            New Project
+          </Button>
         }
       />
 

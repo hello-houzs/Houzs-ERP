@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit -p .",
     "db:reset": "wrangler d1 execute autocount-sync --file=./src/db/schema.sql --remote",
     "db:reset:local": "wrangler d1 execute autocount-sync --local --file=./src/db/schema.sql",
-    "db:migrate": "node -e \"const fs=require('fs'),p=require('path'),{execSync}=require('child_process');const dir='src/db/migrations';for(const f of fs.readdirSync(dir).sort()){console.log('▶',f);try{execSync(`wrangler d1 execute autocount-sync --remote --file=${p.join(dir,f)}`,{stdio:'inherit'})}catch(e){console.log('  (skipped — likely already applied)')}}\""
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:migrate:baseline": "node scripts/migrate.mjs --baseline"
   },
   "dependencies": {
     "drizzle-kit": "^0.31.10",

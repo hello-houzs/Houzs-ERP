@@ -183,7 +183,7 @@ function OrdersView({ toast }: { toast: ReturnType<typeof useToast> }) {
         eyebrow="Operations · Sales"
         title="Sales Orders"
         description="Edit fields auto-save and push to AutoCount"
-        actions={
+        primaryAction={
           <Button
             variant="primary"
             icon={<RefreshCw size={14} />}
@@ -554,7 +554,7 @@ function OverdueView({ toast }: { toast: ReturnType<typeof useToast> }) {
         eyebrow="Finance · Audit"
         title="Overdue Orders"
         description="Orders that have been auto-extended — they stay here even after extension"
-        actions={
+        primaryAction={
           <Button icon={<Play size={14} />} onClick={runCheck} disabled={running}>
             {running ? "Running…" : "Run Check"}
           </Button>

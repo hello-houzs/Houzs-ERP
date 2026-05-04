@@ -231,7 +231,7 @@ function Palette({ onClose }: { onClose: () => void }) {
           </kbd>
           <button
             onClick={onClose}
-            className="rounded p-1 text-ink-muted transition-colors hover:bg-bg/60 hover:text-ink"
+            className="-mr-2 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-bg/60 hover:text-ink sm:-mr-1 sm:h-8 sm:w-8"
             aria-label="Close"
           >
             <X size={14} />
@@ -449,7 +449,10 @@ export function GlobalSearchTrigger({
       <button
         onClick={open}
         className={cn(
-          "flex h-9 w-9 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/50 hover:text-accent",
+          // 44 px hit area on mobile (Pass A touch-target floor),
+          // compresses to 36 px at sm+ where the desktop sidebar wants
+          // tighter chrome.
+          "flex h-11 w-11 sm:h-9 sm:w-9 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/50 hover:text-accent",
           className
         )}
         title={`Search (${shortcut})`}

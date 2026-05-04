@@ -678,6 +678,7 @@ export const innovations = sqliteTable("innovations", {
   decline_reason: text("decline_reason"),
   awarded_at: text("awarded_at"),
   created_at: text("created_at").default(sql`(datetime('now'))`),
+  archived_at: text("archived_at"),
 });
 
 // ── suggestions (mig 057) ─────────────────────────────────
@@ -694,6 +695,7 @@ export const suggestions = sqliteTable("suggestions", {
   decline_reason: text("decline_reason"),
   awarded_at: text("awarded_at"),
   created_at: text("created_at").default(sql`(datetime('now'))`),
+  archived_at: text("archived_at"),
 });
 
 // ── votes (mig 057) ───────────────────────────────────────

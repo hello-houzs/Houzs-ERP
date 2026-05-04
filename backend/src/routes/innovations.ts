@@ -41,6 +41,8 @@ interface ListRow {
   created_at: string | null;
   vote_count: number;
   has_voted: number;
+  comment_count: number;
+  cover_attachment_id: number | null;
 }
 
 // ── GET /api/innovations ────────────────────────────────────────
@@ -60,10 +62,18 @@ app.get("/", async (c) => {
               WHERE v.target_type = 'innovation' AND v.target_id = i.id) AS vote_count,
             (SELECT COUNT(*) FROM votes v
               WHERE v.target_type = 'innovation' AND v.target_id = i.id
-                AND v.user_id = ?) AS has_voted
+                AND v.user_id = ?) AS has_voted,
+            (SELECT COUNT(*) FROM idea_comments ic
+              WHERE ic.target_type = 'innovation' AND ic.target_id = i.id
+                AND ic.archived_at IS NULL) AS comment_count,
+            (SELECT ia.id FROM idea_attachments ia
+              WHERE ia.target_type = 'innovation' AND ia.target_id = i.id
+                AND ia.archived_at IS NULL
+              ORDER BY ia.id ASC
+              LIMIT 1) AS cover_attachment_id
        FROM innovations i
        LEFT JOIN users u ON u.id = i.user_id
-      ${status ? "WHERE i.status = ?" : ""}
+      WHERE i.archived_at IS NULL${status ? " AND i.status = ?" : ""}
       ORDER BY i.created_at DESC, i.id DESC
       LIMIT 200`,
   )
@@ -120,16 +130,80 @@ app.get("/:id", async (c) => {
               WHERE v.target_type = 'innovation' AND v.target_id = i.id) AS vote_count,
             (SELECT COUNT(*) FROM votes v
               WHERE v.target_type = 'innovation' AND v.target_id = i.id
-                AND v.user_id = ?) AS has_voted
+                AND v.user_id = ?) AS has_voted,
+            (SELECT COUNT(*) FROM idea_comments ic
+              WHERE ic.target_type = 'innovation' AND ic.target_id = i.id
+                AND ic.archived_at IS NULL) AS comment_count,
+            (SELECT ia.id FROM idea_attachments ia
+              WHERE ia.target_type = 'innovation' AND ia.target_id = i.id
+                AND ia.archived_at IS NULL
+              ORDER BY ia.id ASC
+              LIMIT 1) AS cover_attachment_id
        FROM innovations i
        LEFT JOIN users u  ON u.id = i.user_id
        LEFT JOIN users du ON du.id = i.decided_by
-      WHERE i.id = ?`,
+      WHERE i.id = ? AND i.archived_at IS NULL`,
   )
     .bind(user.id, id)
     .first();
   if (!row) return c.json({ error: "Not found" }, 404);
   return c.json({ row });
+});
+
+// ── PATCH /api/innovations/:id ──────────────────────────────────
+// Owner can edit ONLY while still under review. Admins do not edit
+// other people's posts — review actions live in the admin console.
+app.patch("/:id", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const id = parseInt(c.req.param("id"), 10);
+  if (!Number.isFinite(id)) return c.json({ error: "Bad id" }, 400);
+
+  const db = getDb(c.env);
+  const row = await db
+    .select()
+    .from(innovations)
+    .where(eq(innovations.id, id))
+    .get();
+  if (!row || row.archived_at) return c.json({ error: "Not found" }, 404);
+
+  if (row.user_id !== user.id) {
+    return c.json({ error: "Only the author can edit this post" }, 403);
+  }
+  if (row.status !== "review") {
+    return c.json({ error: "Can only edit while under review" }, 409);
+  }
+
+  const body = await c.req.json<{
+    title?: string;
+    body?: string;
+    tags?: string | null;
+  }>();
+  const patch: Record<string, unknown> = {};
+  if (typeof body.title === "string") {
+    const t = body.title.trim();
+    if (!t) return c.json({ error: "Title is required" }, 400);
+    patch.title = t;
+  }
+  if (typeof body.body === "string") {
+    const t = body.body.trim();
+    if (!t) return c.json({ error: "Body is required" }, 400);
+    patch.body = t;
+  }
+  if (body.tags !== undefined) {
+    patch.tags = body.tags === null ? null : String(body.tags);
+  }
+  if (Object.keys(patch).length === 0) {
+    return c.json({ row });
+  }
+
+  const updated = await db
+    .update(innovations)
+    .set(patch)
+    .where(eq(innovations.id, id))
+    .returning()
+    .get();
+  return c.json({ row: updated });
 });
 
 // ── POST /api/innovations/:id/vote ──────────────────────────────
@@ -162,14 +236,74 @@ app.post("/:id/vote", async (c) => {
     return c.json({ error: "Already voted" }, 409);
   }
 
-  // Award upvote points to the post author
-  const upvotePoints = await getSettingNumber(c.env, "points.upvote_received", 5);
-  await awardPoints(c.env, target.user_id, "upvote_received", upvotePoints, {
-    ref_type: "innovation",
-    ref_id: id,
-  });
+  // Award upvote points to the post author — but only the first time
+  // this voter ever upvoted this target. Re-toggling an upvote off and
+  // on shouldn't create a fresh ledger row each cycle (it would inflate
+  // the activity feed and skew streak counts).
+  const prior = await c.env.DB.prepare(
+    `SELECT 1 FROM point_transactions
+       WHERE reason = 'upvote_received'
+         AND ref_type = 'innovation'
+         AND ref_id = ?
+         AND counterparty_user_id = ?
+       LIMIT 1`,
+  )
+    .bind(id, user.id)
+    .first();
+
+  // Per-author daily cap on upvote_received credits — the vote row is
+  // always recorded (vote_count unaffected), but past the cap the
+  // points award no-ops. Limits sock-puppet inflation: the most an
+  // author can earn from upvotes in a rolling 24h window is cap × 5.
+  const dailyCap = await getSettingNumber(
+    c.env,
+    "points.upvote_daily_cap_per_author",
+    20,
+  );
+  const todayRow = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM point_transactions
+       WHERE user_id = ?
+         AND reason = 'upvote_received'
+         AND created_at >= datetime('now', '-1 day')`,
+  )
+    .bind(target.user_id)
+    .first<{ n: number }>();
+  const cappedOut = (todayRow?.n ?? 0) >= dailyCap;
+
+  if (!prior && !cappedOut) {
+    const upvotePoints = await getSettingNumber(c.env, "points.upvote_received", 5);
+    await awardPoints(c.env, target.user_id, "upvote_received", upvotePoints, {
+      ref_type: "innovation",
+      ref_id: id,
+      counterparty_user_id: user.id,
+    });
+  }
 
   return c.json({ ok: true });
+});
+
+// ── GET /api/innovations/:id/voters ─────────────────────────────
+// Hydrated list of who upvoted, for the "My posts" panel.
+app.get("/:id/voters", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const id = parseInt(c.req.param("id"), 10);
+  if (!Number.isFinite(id)) return c.json({ error: "Bad id" }, 400);
+
+  const rows = await c.env.DB.prepare(
+    `SELECT u.id   AS user_id,
+            u.name AS user_name,
+            u.email AS user_email,
+            u.profile_pic_r2_key AS user_profile_pic_r2_key,
+            v.created_at AS voted_at
+       FROM votes v
+       JOIN users u ON u.id = v.user_id
+      WHERE v.target_type = 'innovation' AND v.target_id = ?
+      ORDER BY v.created_at DESC`,
+  )
+    .bind(id)
+    .all();
+  return c.json({ rows: rows.results ?? [] });
 });
 
 // ── DELETE /api/innovations/:id/vote ────────────────────────────
@@ -248,6 +382,34 @@ app.post("/:id/decision", async (c) => {
   }
 
   return c.json({ row: updated });
+});
+
+// ── DELETE /api/innovations/:id ─────────────────────────────────
+// Soft-archive. Owner OR `*` admin. Sets archived_at; row drops out of
+// list + detail queries but stays referentially intact for audit.
+app.delete("/:id", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const id = parseInt(c.req.param("id"), 10);
+  if (!Number.isFinite(id)) return c.json({ error: "Bad id" }, 400);
+
+  const db = getDb(c.env);
+  const row = await db
+    .select()
+    .from(innovations)
+    .where(eq(innovations.id, id))
+    .get();
+  if (!row || row.archived_at) return c.json({ error: "Not found" }, 404);
+
+  if (row.user_id !== user.id && !isAdmin(user)) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  await db
+    .update(innovations)
+    .set({ archived_at: sql`datetime('now')` })
+    .where(eq(innovations.id, id));
+  return c.json({ ok: true });
 });
 
 export default app;

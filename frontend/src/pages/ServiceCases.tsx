@@ -179,7 +179,7 @@ export function ServiceCases() {
           eyebrow="Operations · Service"
           title={VIEW_HEADER[view].title}
           description={VIEW_HEADER[view].description}
-          actions={
+          primaryAction={
             view === "cases" ? (
               <Button
                 variant="primary"

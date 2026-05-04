@@ -8,6 +8,9 @@ import {
   ArrowUp,
   ArrowDown,
   ChevronsUpDown,
+  ChevronRight,
+  LayoutList,
+  Table as TableIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { TableSkeleton } from "./Skeleton";
@@ -143,6 +146,14 @@ export function DataTable<T>({
   const [order, setOrder] = useLocalStorage<string[]>(`dt:order:${idKey}`, []);
   const [density, setDensity] = useLocalStorage<Density>(`dt:density:${idKey}`, "comfy");
   const [sort, setSort] = useLocalStorage<SortState | null>(`dt:sort:${idKey}`, null);
+  // Mobile-only view preference. "cards" renders the stacked cards
+  // (default for `<sm`); "table" forces the desktop table with a
+  // horizontal scroll. Persisted per-table so each list page
+  // remembers the user's choice.
+  const [mobileView, setMobileView] = useLocalStorage<"cards" | "table">(
+    `dt:mview:${idKey}`,
+    "cards",
+  );
   const [chooserOpen, setChooserOpen] = useState(false);
   const userHidden = useMemo(() => new Set(hiddenList), [hiddenList]);
   const userShown = useMemo(() => new Set(shownList), [shownList]);
@@ -330,9 +341,11 @@ export function DataTable<T>({
   const cellPad = density === "compact" ? "px-4 py-2" : "px-4 py-3.5";
   const headPad = density === "compact" ? "px-4 py-2.5" : "px-4 py-3";
 
-  // Common toolbar button class — used by Import / Export / Density / Columns
+  // Common toolbar button class — used by Import / Export / Density / Columns.
+  // 44 px on mobile (touch-target floor), compresses to 32 px on sm+ where
+  // mouse precision is available.
   const toolbarBtn =
-    "inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-surface disabled:hover:text-ink-secondary";
+    "inline-flex h-11 sm:h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-surface disabled:hover:text-ink-secondary";
 
   const rowCount = sortedRows?.length ?? 0;
   const visibleCount = chooserOptions.filter((o) => !effectiveHidden.has(o.key)).length;
@@ -378,7 +391,7 @@ export function DataTable<T>({
             )}
           </div>
         </div>
-        <div className="no-scrollbar -mx-4 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0">
+        <div className="mask-fade-r no-scrollbar -mx-4 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0">
           {onImport && (
             <>
               <input
@@ -410,6 +423,32 @@ export function DataTable<T>({
             {density === "comfy" ? <Rows4 size={13} /> : <Rows3 size={13} />}
             {density === "comfy" ? "Comfy" : "Compact"}
           </button>
+          {/* Mobile-only: flip between cards and the desktop-style table
+              (horizontally scrollable). Hidden on `sm+` because the
+              table is already the default there. */}
+          <button
+            onClick={() =>
+              setMobileView(mobileView === "cards" ? "table" : "cards")
+            }
+            className={cn(toolbarBtn, "sm:hidden")}
+            title={
+              mobileView === "cards"
+                ? "Switch to table view"
+                : "Switch to card view"
+            }
+            aria-label={
+              mobileView === "cards"
+                ? "Switch to table view"
+                : "Switch to card view"
+            }
+          >
+            {mobileView === "cards" ? (
+              <TableIcon size={13} />
+            ) : (
+              <LayoutList size={13} />
+            )}
+            {mobileView === "cards" ? "Table" : "Cards"}
+          </button>
           <ColumnsPanelButton
             visibleCount={visibleCount}
             totalCount={chooserOptions.length}
@@ -433,8 +472,16 @@ export function DataTable<T>({
         udfTableLabel={udfTableLabel || udfTable}
       />
 
-      {/* ── Table (sm+) ───────────────────────────────────── */}
-      <div className="hidden overflow-hidden rounded-lg border border-border bg-surface shadow-stone sm:block">
+      {/* ── Table (sm+ always; on `<sm` only when mobileView=table). The
+            outer wrapper drops `overflow-hidden` when forced on mobile
+            so the rounded corners don't clip the horizontal scroll
+            shadow at the right edge. */}
+      <div
+        className={cn(
+          "rounded-lg border border-border bg-surface shadow-stone sm:block sm:overflow-hidden",
+          mobileView === "table" ? "block" : "hidden",
+        )}
+      >
         <div className="thin-scroll overflow-x-auto">
           <table className="w-full border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-10">
@@ -554,7 +601,12 @@ export function DataTable<T>({
           becomes the card title; subsequent columns render as
           label/value rows. Skips the row entirely if the user
           intentionally hid the first column. */}
-      <div className="space-y-2 sm:hidden">
+      <div
+        className={cn(
+          "space-y-2 sm:hidden",
+          mobileView === "table" && "hidden",
+        )}
+      >
         {loading && (
           <>
             {[0, 1, 2, 3, 4].map((i) => (
@@ -628,62 +680,77 @@ export function DataTable<T>({
                     : undefined
                 }
                 className={cn(
-                  "rounded-lg border border-border bg-surface p-3 shadow-stone transition-colors",
+                  "relative overflow-hidden rounded-lg border border-border bg-surface shadow-stone transition-colors",
                   onRowClick &&
                     "cursor-pointer active:bg-accent-soft/40 hover:border-accent/40",
-                  customClass
+                  customClass,
                 )}
               >
-                {primaryCol && (
-                  <div className="mb-2 text-[14px] font-semibold leading-snug text-ink">
-                    {primaryCol.render(row)}
-                  </div>
-                )}
-                {cellCols.length > 0 && layout === "grid-2" && (
-                  <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-[12px]">
-                    {cellCols.map((c) => (
-                      <dd
-                        key={c.key}
-                        className={cn(
-                          "min-w-0 break-words text-ink-secondary",
-                          c.align === "right" && "text-right",
-                          c.align === "center" && "text-center",
-                          c.className
-                        )}
-                      >
-                        {c.render(row)}
-                      </dd>
-                    ))}
-                  </dl>
-                )}
-                {cellCols.length > 0 && layout === "stack" && (
-                  <dl
-                    className={cn(
-                      "grid gap-x-3 gap-y-1.5 text-[12px]",
-                      hideLabels ? "grid-cols-1" : "grid-cols-[auto_1fr]",
-                    )}
-                  >
-                    {cellCols.map((c) => (
-                      <Fragment key={c.key}>
-                        {!hideLabels && (
-                          <dt className="self-start pt-px font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-                            {c.label}
-                          </dt>
-                        )}
+                {/* Brass accent rail — subtle anchor on the left edge,
+                    matches the IdeaList card pattern. */}
+                <span className="pointer-events-none absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-accent/0 via-accent/55 to-accent/0" />
+                <div className="p-3">
+                  {primaryCol && (
+                    <div className="mb-1.5 flex items-start gap-3">
+                      <div className="min-w-0 flex-1 font-display text-[14.5px] font-extrabold leading-snug tracking-tight text-ink">
+                        {primaryCol.render(row)}
+                      </div>
+                      {onRowClick && (
+                        <ChevronRight
+                          size={14}
+                          className="mt-1 shrink-0 text-ink-muted"
+                          aria-hidden
+                        />
+                      )}
+                    </div>
+                  )}
+                  {cellCols.length > 0 && layout === "grid-2" && (
+                    <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-[12px]">
+                      {cellCols.map((c) => (
                         <dd
+                          key={c.key}
                           className={cn(
-                            "min-w-0 break-words text-ink",
-                            c.align === "right" && "text-right",
+                            "min-w-0 break-words text-ink-secondary",
+                            c.align === "right" && "text-right tabular-nums",
                             c.align === "center" && "text-center",
-                            c.className
+                            c.className,
                           )}
                         >
                           {c.render(row)}
                         </dd>
-                      </Fragment>
-                    ))}
-                  </dl>
-                )}
+                      ))}
+                    </dl>
+                  )}
+                  {cellCols.length > 0 && layout === "stack" && (
+                    <dl
+                      className={cn(
+                        "grid gap-x-3 gap-y-1 border-t border-border-subtle pt-2 text-[12.5px]",
+                        hideLabels ? "grid-cols-1" : "grid-cols-[5.5rem_1fr]",
+                      )}
+                    >
+                      {cellCols.map((c) => (
+                        <Fragment key={c.key}>
+                          {!hideLabels && (
+                            <dt className="self-start pt-px font-mono text-[10.5px] font-semibold uppercase tracking-brand text-ink-muted sm:text-[9.5px]">
+                              {c.label}
+                            </dt>
+                          )}
+                          <dd
+                            className={cn(
+                              "min-w-0 break-words font-medium text-ink",
+                              c.align === "right" &&
+                                "text-right tabular-nums font-semibold",
+                              c.align === "center" && "text-center",
+                              c.className,
+                            )}
+                          >
+                            {c.render(row)}
+                          </dd>
+                        </Fragment>
+                      ))}
+                    </dl>
+                  )}
+                </div>
               </div>
             );
           })}

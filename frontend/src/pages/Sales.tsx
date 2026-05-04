@@ -163,27 +163,27 @@ export function Sales() {
         eyebrow="Operations · Income"
         title="Sales"
         description="Log customer sales here. Fields are customisable — admins can add extras via the settings gear. Drafts can be edited freely; submitted entries lock for review and will push to AutoCount once the integration is enabled."
-        actions={
-          <div className="flex items-center gap-1.5">
-            {canManage && (
-              <button
-                onClick={() => setFieldsOpen(true)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
-                title="Configure fields"
-              >
-                <SettingsIcon size={13} /> Fields
-              </button>
-            )}
-            {canWrite && (
-              <Button
-                variant="brass"
-                icon={<Plus size={14} />}
-                onClick={() => setCreating(true)}
-              >
-                New Sale
-              </Button>
-            )}
-          </div>
+        secondaryActions={
+          canManage
+            ? [
+                {
+                  icon: SettingsIcon,
+                  label: "Fields",
+                  onClick: () => setFieldsOpen(true),
+                },
+              ]
+            : undefined
+        }
+        primaryAction={
+          canWrite ? (
+            <Button
+              variant="brass"
+              icon={<Plus size={14} />}
+              onClick={() => setCreating(true)}
+            >
+              New Sale
+            </Button>
+          ) : undefined
         }
       />
 

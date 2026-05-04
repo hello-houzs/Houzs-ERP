@@ -4,7 +4,6 @@ import { createPortal } from "react-dom";
 import {
   LayoutDashboard,
   Trophy,
-  ShoppingBag,
   Grid3x3,
   X,
   ShieldCheck,
@@ -20,7 +19,7 @@ import { cn } from "../lib/utils";
 /**
  * Mobile bottom navigation. Hidden on lg+. Five slots:
  *
- *   [ Home ] [ Points ] [ Menu* ] [ Shop ] [ Profile ]
+ *   [ Home ] [ Points ] [ Menu* ] [ Inbox ] [ Profile ]
  *
  * The four side tabs are universal — accessible to every role — so the
  * rail never collapses to two slots for a restricted user. Anything
@@ -56,7 +55,7 @@ export function MobileTabBar() {
     { to: "/gamification", label: "Points", icon: Trophy },
   ];
   const rightTabs: Tab[] = [
-    { to: "/shop", label: "Shop", icon: ShoppingBag },
+    { to: "/notifications", label: "Inbox", icon: Bell },
     { to: "/profile", label: "Profile", icon: LayoutDashboard /* unused — Profile renders avatar */ },
   ];
 
@@ -65,31 +64,36 @@ export function MobileTabBar() {
       <nav
         aria-label="Mobile navigation"
         className={cn(
-          "fixed inset-x-0 bottom-0 z-30 lg:hidden",
-          "border-t border-border bg-surface/95 backdrop-blur-md",
-          "pb-[env(safe-area-inset-bottom)]"
+          "fixed left-3 right-3 z-30 lg:hidden",
+          // Float the rail above the canvas with a small inset and shadow,
+          // sitting just above iOS safe-area instead of sticking to the
+          // device edge. Reads as a pill, matches the floating-FAB visual
+          // language used elsewhere in the app.
+          "bottom-[calc(env(safe-area-inset-bottom)+0.5rem)]",
+          "rounded-2xl border border-border bg-surface/95 backdrop-blur-md shadow-slab"
         )}
       >
-        {/* Brass hairline above the rail — echoes PageHeader eyebrow */}
-        <div className="pointer-events-none absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-accent/45 to-transparent" />
         <div className="relative flex h-14 items-stretch">
           {leftTabs.map((tab) => (
             <BottomTab key={tab.to} tab={tab} />
           ))}
 
-          {/* Centre — raised brass disc that opens the Menu modal. */}
+          {/* Centre — raised brass disc that opens the Menu modal.
+              48 px disc (h-12 w-12) protrudes 8 px above the floating
+              pill — leaves room for the active-tab indicator on
+              neighbours and avoids cramping at 320 px portrait. */}
           <div className="flex flex-1 items-end justify-center">
             <button
               onClick={() => setMenuOpen(true)}
               aria-expanded={menuOpen}
               aria-label="Open menu"
               className={cn(
-                "relative -translate-y-3 inline-flex h-14 w-14 items-center justify-center rounded-full",
+                "relative -translate-y-2 inline-flex h-12 w-12 items-center justify-center rounded-full",
                 "border-2 border-surface bg-accent text-white shadow-slab transition-transform active:scale-95",
                 "before:absolute before:inset-[-3px] before:-z-10 before:rounded-full before:bg-gradient-to-br before:from-accent/60 before:to-accent-hover/60 before:opacity-70 before:blur-sm"
               )}
             >
-              <Grid3x3 size={22} strokeWidth={2.4} />
+              <Grid3x3 size={20} strokeWidth={2.4} />
             </button>
           </div>
 
@@ -117,7 +121,7 @@ function ProfileTab() {
       to="/profile"
       className={({ isActive }) =>
         cn(
-          "relative flex flex-1 flex-col items-center justify-center gap-0.5 text-ink-muted transition-colors active:bg-bg/50",
+          "relative flex flex-1 flex-col items-center justify-center gap-0.5 px-1 text-ink-muted transition-colors active:bg-bg/50",
           isActive && "text-accent",
         )
       }
@@ -138,7 +142,7 @@ function ProfileTab() {
           />
           <span
             className={cn(
-              "font-mono text-[9px] font-semibold uppercase tracking-wider",
+              "font-mono text-[10.5px] font-semibold uppercase tracking-wider",
               isActive && "text-accent",
             )}
           >
@@ -159,7 +163,7 @@ function BottomTab({ tab }: { tab: Tab }) {
       end={tab.end}
       className={({ isActive }) =>
         cn(
-          "relative flex flex-1 flex-col items-center justify-center gap-0.5 text-ink-muted transition-colors active:bg-bg/50",
+          "relative flex flex-1 flex-col items-center justify-center gap-0.5 px-1 text-ink-muted transition-colors active:bg-bg/50",
           isActive && "text-accent"
         )
       }
@@ -177,7 +181,7 @@ function BottomTab({ tab }: { tab: Tab }) {
           />
           <span
             className={cn(
-              "font-mono text-[9px] font-semibold uppercase tracking-wider",
+              "font-mono text-[10.5px] font-semibold uppercase tracking-wider",
               isActive && "text-accent"
             )}
           >
@@ -311,7 +315,7 @@ function MenuModal({ onClose }: { onClose: () => void }) {
           <button
             onClick={onClose}
             aria-label="Close menu"
-            className="rounded-md border border-border bg-surface p-1.5 text-ink-muted transition-colors hover:border-accent/40 hover:text-accent"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border bg-surface text-ink-muted transition-colors hover:border-accent/40 hover:text-accent"
           >
             <X size={14} />
           </button>

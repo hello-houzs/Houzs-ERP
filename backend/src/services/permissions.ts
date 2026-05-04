@@ -81,11 +81,21 @@ export function isValidPermission(key: string): boolean {
 
 /**
  * Decide if a granted permission set covers a required permission.
- * "*" wildcards grant everything.
+ * "*" wildcards grant everything. Accepts either a string array
+ * (legacy / test fixtures) or a Set (the fast path used by every
+ * authed request — populated by `services/auth.ts::hydrateAuthUser`).
  */
-export function hasPermission(granted: string[], required: string): boolean {
-  if (granted.includes("*")) return true;
-  return granted.includes(required);
+export function hasPermission(
+  granted: ReadonlyArray<string> | ReadonlySet<string>,
+  required: string,
+): boolean {
+  if (Array.isArray(granted)) {
+    return granted.includes("*") || granted.includes(required);
+  }
+  // Narrowed to ReadonlySet<string> in the else branch — assert to
+  // satisfy TS's union-narrowing limitation here.
+  const set = granted as ReadonlySet<string>;
+  return set.has("*") || set.has(required);
 }
 
 export function parsePermissions(json: string | null | undefined): string[] {

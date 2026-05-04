@@ -40,6 +40,7 @@ import portal from "./routes/portal";
 import gamify from "./routes/gamify";
 import awards from "./routes/awards";
 import ideaAttachments from "./routes/ideaAttachments";
+import ideaComments from "./routes/ideaComments";
 import pettyCash from "./routes/pettyCash";
 import innovations from "./routes/innovations";
 import suggestions from "./routes/suggestions";
@@ -123,6 +124,7 @@ app.route("/api/awards", awards);
 app.route("/api/innovations", innovations);
 app.route("/api/suggestions", suggestions);
 app.route("/api/idea-attachments", ideaAttachments);
+app.route("/api/idea-comments", ideaComments);
 app.route("/api/petty-cash", pettyCash);
 
 app.onError((err, c) => {

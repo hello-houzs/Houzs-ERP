@@ -90,6 +90,10 @@ export interface AuthUser {
   role_name: string;
   status: string;
   permissions: string[];
+  /** O(1) lookup mirror of `permissions`. Hydrated once at session
+   *  load so every `requirePermission` middleware call is a Set hit
+   *  instead of a linear array scan. */
+  permissions_set: Set<string>;
   /** Who this user reports to. Drives project-level ACL when scope_to_pic=1. */
   manager_id: number | null;
   /** Role flag — if true, project endpoints filter to pic_id IN (self, manager). */
@@ -152,6 +156,7 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     // the manager.
     brandScope = Array.from(new Set(rows.map((r) => r.brand)));
   }
+  const permissions = parsePermissions(row.role_permissions);
   return {
     id: row.id,
     email: row.email,
@@ -159,7 +164,8 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     role_id: row.role_id,
     role_name: row.role_name,
     status: row.status,
-    permissions: parsePermissions(row.role_permissions),
+    permissions,
+    permissions_set: new Set(permissions),
     manager_id: managerId,
     scope_to_pic: scoped,
     department_id: row.department_id ?? null,

@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
@@ -20,8 +21,12 @@ interface AuthContextValue extends AuthState {
   logout: () => Promise<void>;
   bootstrap: (email: string, name: string, password: string) => Promise<void>;
   acceptInvite: (token: string, name: string, password: string) => Promise<void>;
-  /** True if the current user has the given permission. */
+  /** True if the current user has the given permission. O(1) via Set. */
   can: (perm: string) => boolean;
+  /** True if the user has at least one of `perms`. Short-circuits. */
+  canAny: (perms: readonly string[]) => boolean;
+  /** True if the user has every perm in `perms`. */
+  canAll: (perms: readonly string[]) => boolean;
   /** Reload /me — useful after role/permission changes. */
   reload: () => Promise<void>;
 }
@@ -130,35 +135,69 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, user: null }));
   }, []);
 
+  // Pre-compute a Set so every can() / canAny() / canAll() call is
+  // O(1). Rebuilt only when the actual permissions array reference
+  // changes (i.e. login / logout / role-update via reload()).
+  const permSet = useMemo(
+    () => new Set(state.user?.permissions ?? []),
+    [state.user?.permissions],
+  );
+
   const can = useCallback(
-    (perm: string) => {
-      const u = state.user;
-      if (!u) return false;
-      if (u.permissions.includes("*")) return true;
-      return u.permissions.includes(perm);
+    (perm: string) => permSet.has("*") || permSet.has(perm),
+    [permSet],
+  );
+
+  const canAny = useCallback(
+    (perms: readonly string[]) => {
+      if (permSet.has("*")) return true;
+      for (const p of perms) if (permSet.has(p)) return true;
+      return false;
     },
-    [state.user]
+    [permSet],
+  );
+
+  const canAll = useCallback(
+    (perms: readonly string[]) => {
+      if (permSet.has("*")) return true;
+      for (const p of perms) if (!permSet.has(p)) return false;
+      return true;
+    },
+    [permSet],
   );
 
   const reload = useCallback(async () => {
     await fetchMe();
   }, [fetchMe]);
 
-  return (
-    <AuthContext.Provider
-      value={{
-        ...state,
-        login,
-        logout,
-        bootstrap,
-        acceptInvite,
-        can,
-        reload,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
+  // Memoize the context value so consumers don't re-render whenever
+  // AuthProvider rerenders for unrelated reasons (status poll, etc.).
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      ...state,
+      login,
+      logout,
+      bootstrap,
+      acceptInvite,
+      can,
+      canAny,
+      canAll,
+      reload,
+    }),
+    [
+      state,
+      login,
+      logout,
+      bootstrap,
+      acceptInvite,
+      can,
+      canAny,
+      canAll,
+      reload,
+    ],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthContextValue {
