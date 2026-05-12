@@ -535,7 +535,7 @@ function OverdueView({ toast }: { toast: ReturnType<typeof useToast> }) {
       key: "last_extended_at",
       label: "Last Extended",
       render: (r) => (
-        <span className="font-mono text-xs">{r.last_extended_at?.slice(0, 10) || "—"}</span>
+        <span className="font-mono text-xs">{formatDate(r.last_extended_at)}</span>
       ),
       getValue: (r) => r.last_extended_at,
     },
@@ -584,7 +584,7 @@ function OverdueView({ toast }: { toast: ReturnType<typeof useToast> }) {
               <StatCard
                 label="Last Run"
                 value={s?.last_pull ? relativeTime(s.last_pull) : "Never"}
-                subtitle={s?.last_pull ? new Date(s.last_pull).toISOString().slice(0, 10) : "Schedule: 02:00 daily"}
+                subtitle={s?.last_pull ? formatDate(s.last_pull) : "Schedule: 02:00 daily"}
               />
             </DashboardGrid>
 

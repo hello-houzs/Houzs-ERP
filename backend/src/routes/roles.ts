@@ -1,10 +1,17 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { PERMISSIONS, isValidPermission, parsePermissions } from "../services/permissions";
+import {
+  PAGES,
+  computeBackfillLevel,
+  isValidAccessLevel,
+  isValidPageKey,
+  type AccessLevel,
+} from "../services/pageAccess";
 import { requirePermission } from "../middleware/auth";
 import { getDb } from "../db/client";
-import { roles, users } from "../db/schema";
-import { and, eq, sql } from "drizzle-orm";
+import { roles, role_page_access, users } from "../db/schema";
+import { eq, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -152,6 +159,122 @@ app.patch("/:id", requirePermission("roles.manage"), async (c) => {
 
   await db.update(roles).set(set).where(eq(roles.id, id));
   return c.json({ ok: true });
+});
+
+/**
+ * GET /api/roles/pages
+ * Returns the page catalogue (key, label, partialMeaning, supportsPartial)
+ * for the admin Page Access UI. Independent of role — same payload for
+ * any caller with roles.read.
+ */
+app.get("/pages", requirePermission("roles.read"), async (c) => {
+  return c.json({
+    pages: PAGES.map((p) => ({
+      key: p.key,
+      label: p.label,
+      partialMeaning: p.partialMeaning,
+      supportsPartial: p.supportsPartial,
+    })),
+  });
+});
+
+/**
+ * GET /api/roles/:id/page-access
+ * Returns the role's per-page access map. Pages without an explicit
+ * `role_page_access` row fall back to the catalogue's backfill rule
+ * computed against the role's current `permissions` JSON.
+ */
+app.get("/:id/page-access", requirePermission("roles.read"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+  const db = getDb(c.env);
+
+  const roleRow = await db
+    .select({ permissions: roles.permissions })
+    .from(roles)
+    .where(eq(roles.id, id))
+    .limit(1);
+  if (roleRow.length === 0) return c.json({ error: "Role not found" }, 404);
+
+  const permsSet = new Set(parsePermissions(roleRow[0].permissions));
+
+  const rows = await db
+    .select({ page_key: role_page_access.page_key, level: role_page_access.level })
+    .from(role_page_access)
+    .where(eq(role_page_access.role_id, id));
+
+  const explicit: Record<string, AccessLevel> = {};
+  for (const r of rows) {
+    if (isValidPageKey(r.page_key) && isValidAccessLevel(r.level)) {
+      explicit[r.page_key] = r.level;
+    }
+  }
+
+  const out: Record<string, { level: AccessLevel; explicit: boolean }> = {};
+  for (const p of PAGES) {
+    if (explicit[p.key]) {
+      out[p.key] = { level: explicit[p.key], explicit: true };
+    } else {
+      out[p.key] = { level: computeBackfillLevel(p.key, permsSet), explicit: false };
+    }
+  }
+
+  return c.json({ role_id: id, page_access: out });
+});
+
+/**
+ * PATCH /api/roles/:id/page-access
+ * Body: { entries: Array<{ page_key, level }> }
+ * Upserts one or more (page_key, level) rows for the role.
+ *
+ * System roles (Owner / IT Admin) hold the `*` wildcard which
+ * short-circuits matrix lookups, but we still allow writes for
+ * audit-log visibility — they just have no behavioural effect.
+ */
+app.patch("/:id/page-access", requirePermission("roles.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+
+  const body = await c.req.json<{
+    entries: Array<{ page_key: string; level: string }>;
+  }>();
+  if (!body || !Array.isArray(body.entries) || body.entries.length === 0) {
+    return c.json({ error: "entries[] is required" }, 400);
+  }
+
+  const cleaned: Array<{ page_key: string; level: AccessLevel }> = [];
+  for (const e of body.entries) {
+    if (!isValidPageKey(e.page_key)) {
+      return c.json({ error: `Unknown page_key: ${e.page_key}` }, 400);
+    }
+    if (!isValidAccessLevel(e.level)) {
+      return c.json({ error: `Invalid level: ${e.level}` }, 400);
+    }
+    cleaned.push({ page_key: e.page_key, level: e.level });
+  }
+
+  const db = getDb(c.env);
+  const roleRow = await db
+    .select({ id: roles.id })
+    .from(roles)
+    .where(eq(roles.id, id))
+    .limit(1);
+  if (roleRow.length === 0) return c.json({ error: "Role not found" }, 404);
+
+  // INSERT OR REPLACE — Drizzle's onConflictDoUpdate keeps the diff
+  // small. Done in a loop because Drizzle doesn't bulk multi-row
+  // upsert on D1 yet without raw SQL; the matrix payload is at most
+  // 13 rows so this is fine.
+  for (const e of cleaned) {
+    await c.env.DB.prepare(
+      `INSERT OR REPLACE INTO role_page_access (role_id, page_key, level, updated_at)
+       VALUES (?, ?, ?, datetime('now'))`,
+    )
+      .bind(id, e.page_key, e.level)
+      .run();
+  }
+
+  return c.json({ ok: true, written: cleaned.length });
 });
 
 /**

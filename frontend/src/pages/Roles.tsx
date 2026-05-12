@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Trash2, Lock, Shield } from "lucide-react";
 import { Button } from "../components/Button";
 import { Panel, PanelSection } from "../components/Panel";
@@ -9,7 +9,13 @@ import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { cn } from "../lib/utils";
-import type { Role, PermissionDef } from "../types";
+import type {
+  AccessLevel,
+  PageDef,
+  Role,
+  PermissionDef,
+  RolePageAccess,
+} from "../types";
 
 /**
  * Roles grid + editor panel, extracted for embedding inside the unified
@@ -184,6 +190,43 @@ function RoleEditorPanel({
   const [scopeToPic, setScopeToPic] = useState<boolean>(!!role?.scope_to_pic);
   const [busy, setBusy] = useState(false);
 
+  // ── Page Access (mig 073) ─────────────────────────────────────
+  // Only fetched/edited when we're editing an existing role.
+  const pagesQ = useQuery<{ pages: PageDef[] }>(() => api.get("/api/roles/pages"));
+  const accessQ = useQuery<{
+    role_id: number;
+    page_access: Record<string, RolePageAccess>;
+  }>(
+    () =>
+      role?.id
+        ? api.get(`/api/roles/${role.id}/page-access`)
+        : Promise.resolve({ role_id: 0, page_access: {} }),
+    [role?.id]
+  );
+  const [pageLevels, setPageLevels] = useState<Record<string, AccessLevel>>({});
+  const [pageDirty, setPageDirty] = useState<Set<string>>(new Set());
+
+  // Reset local edits whenever the fetched access map changes.
+  useEffect(() => {
+    if (!accessQ.data) return;
+    const initial: Record<string, AccessLevel> = {};
+    for (const [k, v] of Object.entries(accessQ.data.page_access)) {
+      initial[k] = v.level;
+    }
+    setPageLevels(initial);
+    setPageDirty(new Set());
+  }, [accessQ.data]);
+
+  function changeLevel(pageKey: string, level: AccessLevel) {
+    if (readOnly) return;
+    setPageLevels((prev) => ({ ...prev, [pageKey]: level }));
+    setPageDirty((prev) => {
+      const next = new Set(prev);
+      next.add(pageKey);
+      return next;
+    });
+  }
+
   const grouped = useMemo(() => {
     const m = new Map<string, PermissionDef[]>();
     for (const p of permissions) {
@@ -236,6 +279,15 @@ function RoleEditorPanel({
         toast.success(`Created ${body.name}`);
       } else {
         await api.patch(`/api/roles/${role!.id}`, body);
+        // Push any page-access edits in the same save click. The
+        // backend accepts an empty entries[] as a 400, so guard.
+        if (pageDirty.size > 0) {
+          const entries = Array.from(pageDirty).map((k) => ({
+            page_key: k,
+            level: pageLevels[k],
+          }));
+          await api.patch(`/api/roles/${role!.id}/page-access`, { entries });
+        }
         toast.success(`Updated ${body.name}`);
       }
       onSaved();
@@ -389,6 +441,78 @@ function RoleEditorPanel({
           </div>
         )}
       </PanelSection>
+
+      {!isCreate && !isWildcard && (
+        <PanelSection title="Page access (mig 073)">
+          <p className="text-[11px] text-ink-secondary">
+            Per-page gate. Currently only the Sales page reads this
+            matrix; other pages still use the legacy Permissions list
+            above until migrated. Wildcard roles always have full
+            access regardless of this matrix.
+          </p>
+          {pagesQ.loading || accessQ.loading ? (
+            <Skeleton className="h-24 w-full rounded-md" />
+          ) : (
+            <div className="space-y-2">
+              {pagesQ.data?.pages.map((p) => {
+                const level = pageLevels[p.key] ?? "none";
+                return (
+                  <div
+                    key={p.key}
+                    className="rounded-md border border-border bg-surface p-3"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[12px] font-semibold text-ink">
+                          {p.label}
+                        </div>
+                        <div className="mt-0.5 font-mono text-[9.5px] text-ink-muted">
+                          {p.key}
+                        </div>
+                      </div>
+                      {pageDirty.has(p.key) && (
+                        <span className="rounded bg-warning-bg px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning-text">
+                          unsaved
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-3">
+                      {(["none", "partial", "full"] as const).map((opt) => {
+                        if (opt === "partial" && !p.supportsPartial) return null;
+                        return (
+                          <label
+                            key={opt}
+                            className={cn(
+                              "flex items-center gap-1.5 text-[11px]",
+                              readOnly ? "cursor-default" : "cursor-pointer"
+                            )}
+                          >
+                            <input
+                              type="radio"
+                              name={`pa-${p.key}`}
+                              value={opt}
+                              checked={level === opt}
+                              disabled={readOnly}
+                              onChange={() => changeLevel(p.key, opt)}
+                              className="h-3.5 w-3.5 accent-accent"
+                            />
+                            <span className="capitalize">{opt}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {p.supportsPartial && (
+                      <p className="mt-1.5 text-[10.5px] text-ink-muted">
+                        Partial: {p.partialMeaning}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </PanelSection>
+      )}
 
       {!readOnly && !isWildcard && (
         <div className="sticky bottom-0 -mx-6 mt-4 flex justify-end gap-2 border-t border-border bg-surface px-6 py-3">

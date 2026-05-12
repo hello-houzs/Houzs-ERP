@@ -1,15 +1,53 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { requirePermission } from "../middleware/auth";
+import { requirePageAccess } from "../middleware/auth";
 import { getDb } from "../db/client";
 import { sales_entries, users, projects } from "../db/schema";
 import { and, desc, eq, gte, isNull, lte, like, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import { syncFinanceRollup } from "../services/projects";
+import {
+  nextSalesEntryDocNo,
+  replaceItems,
+  replacePayments,
+  summarisePayments,
+  type SalesItemInput,
+  type SalesPaymentInput,
+} from "../services/salesEntries";
 
 const app = new Hono<{ Bindings: Env }>();
 
-const PAYMENT_TYPES = new Set(["cash", "card_cc", "card_db", "epp"]);
+const PAYMENT_TYPES = new Set(["cash", "card_cc", "card_db", "epp", "cheque", "online"]);
+
+// Header columns added in mig 070 that the form posts and we just
+// pass through to the row. Keeps validation focused on the few that
+// have constraints (amounts / dates / payment-method enum) and lets
+// the rest flow as TEXT.
+const SO_FORM_TEXT_FIELDS = [
+  "doc_no",
+  "processing_date",
+  "delivery_date",
+  "status_2",
+  "customer_address_2",
+  "customer_postcode",
+  "customer_state",
+  "customer_phone_2",
+  "customer_email",
+  "venue",
+  "warehouse",
+  "branding",
+  "po_doc_no",
+  "payment_status",
+  "source",
+  "remarks",
+] as const;
+
+// Quick-log marker. Reps logging from a busy event capture only
+// amount + ref_no; the customer_name column (NOT NULL on the
+// schema) gets this sentinel so the row lands as a draft that
+// can't be submitted until back-filled. Frontend / project ledger
+// renderers swap it out for a friendlier "Quick log · {ref}" label.
+export const QUICK_LOG_SENTINEL = "(quick log)";
 
 /**
  * Roll the project's total_sales after a sales_entry mutation. No-op
@@ -21,8 +59,12 @@ async function bumpProjectFinance(env: Env, projectId: number | null | undefined
   if (!projectId) return;
   try {
     await syncFinanceRollup(env, projectId);
-  } catch {
-    // ignore — rollup will catch up on next ledger mutation
+  } catch (e) {
+    // Surface to Wrangler logs so a silently-failed rollup doesn't
+    // hide a corrupt `project_finance.total_sales`. We still don't
+    // re-throw — the rollup is best-effort and shouldn't 500 the
+    // user's "Save sale" click.
+    console.error("[bumpProjectFinance]", projectId, e);
   }
 }
 
@@ -42,15 +84,20 @@ function buildOwnershipWhere(user: any, canManage: boolean) {
 }
 
 // ── List ─────────────────────────────────────────────────────
-app.get("/entries", requirePermission("sales.read"), async (c) => {
+app.get("/entries", requirePageAccess("sales"), async (c) => {
   const user = c.get("user");
-  const canManage = user?.permissions?.includes("*") || user?.permissions?.includes("sales.manage");
+  const canManage = c.get("access_level") === "full";
   const status = c.req.query("status") || "";
   const projectId = parseInt(c.req.query("project_id") || "", 10);
   const search = c.req.query("search") || "";
   const dateFrom = c.req.query("date_from") || "";
   const dateTo = c.req.query("date_to") || "";
   const includeArchived = c.req.query("include_archived") === "1";
+  // Quick-log filter — drives the dedicated "Quick Logs" tab on the
+  // Sales page. Either narrow to *only* quick-logs (?quick_log=1) or
+  // exclude them entirely (?quick_log=0) so the All view doesn't
+  // double up against the dedicated tab.
+  const quickLogParam = c.req.query("quick_log");
   const page = parseInt(c.req.query("page") || "1", 10);
   const perPage = Math.min(parseInt(c.req.query("per_page") || "50", 10), 200);
   const offset = (page - 1) * perPage;
@@ -80,6 +127,13 @@ app.get("/entries", requirePermission("sales.read"), async (c) => {
     );
     const like = `%${search}%`;
     binds.push(like, like, like, like);
+  }
+  if (quickLogParam === "1") {
+    where.push("s.customer_name = ?");
+    binds.push(QUICK_LOG_SENTINEL);
+  } else if (quickLogParam === "0") {
+    where.push("s.customer_name <> ?");
+    binds.push(QUICK_LOG_SENTINEL);
   }
 
   const ownership = buildOwnershipWhere(user, canManage);
@@ -126,6 +180,20 @@ app.get("/entries", requirePermission("sales.read"), async (c) => {
     .bind(...fullBinds)
     .first<any>();
 
+  // Standalone count of quick-logs awaiting completion — not bound by
+  // the current filters, so the tab badge shows the inbox-style total
+  // even when the user is on a narrowed view.
+  const quickLogTotal = await c.env.DB.prepare(
+    `SELECT COUNT(*) as count
+       FROM sales_entries s
+      WHERE s.archived_at IS NULL
+        AND s.status = 'draft'
+        AND s.customer_name = ?
+        ${ownership.sql ? `AND ${ownership.sql}` : ""}`
+  )
+    .bind(QUICK_LOG_SENTINEL, ...ownership.binds)
+    .first<{ count: number }>();
+
   return c.json({
     data: rows.results ?? [],
     page,
@@ -139,6 +207,7 @@ app.get("/entries", requirePermission("sales.read"), async (c) => {
         submitted: totals?.submitted_count ?? 0,
         pushed: totals?.pushed_count ?? 0,
       },
+      quick_log_pending: quickLogTotal?.count ?? 0,
     },
   });
 });
@@ -154,10 +223,10 @@ app.get("/entries", requirePermission("sales.read"), async (c) => {
 //
 // MUST be declared before /entries/:id — Hono matches in order, so the
 // :id route would otherwise eat /entries/export with id="export".
-app.get("/entries/export", requirePermission("sales.read"), async (c) => {
+app.get("/entries/export", requirePageAccess("sales"), async (c) => {
   const user = c.get("user");
   const canManage =
-    user?.permissions?.includes("*") || user?.permissions?.includes("sales.manage");
+    c.get("access_level") === "full";
 
   const projectIdQ = c.req.query("project_id");
   const projectId = projectIdQ ? parseInt(projectIdQ, 10) : NaN;
@@ -300,11 +369,11 @@ app.get("/entries/export", requirePermission("sales.read"), async (c) => {
 });
 
 // ── Detail ───────────────────────────────────────────────────
-app.get("/entries/:id", requirePermission("sales.read"), async (c) => {
+app.get("/entries/:id", requirePageAccess("sales"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
   const user = c.get("user");
-  const canManage = user?.permissions?.includes("*") || user?.permissions?.includes("sales.manage");
+  const canManage = c.get("access_level") === "full";
 
   const row = await c.env.DB.prepare(
     `SELECT s.*,
@@ -341,11 +410,36 @@ app.get("/entries/:id", requirePermission("sales.read"), async (c) => {
   const custom: Record<string, string | null> = {};
   for (const r of udf.results ?? []) custom[r.field_key] = r.value;
 
-  return c.json({ entry: row, custom });
+  // Mig 070 — items + payments
+  const itemsRes = await c.env.DB.prepare(
+    `SELECT id, entry_id, line_no, item_code, item_description, remarks,
+            qty, unit_price, amount, group_tag
+       FROM sales_entry_items
+      WHERE entry_id = ?
+      ORDER BY line_no, id`
+  )
+    .bind(id)
+    .all();
+  const paymentsRes = await c.env.DB.prepare(
+    `SELECT id, entry_id, paid_at, payment_method, amount,
+            account_sheet, approval_code, collected_by
+       FROM sales_entry_payments
+      WHERE entry_id = ?
+      ORDER BY paid_at, id`
+  )
+    .bind(id)
+    .all();
+
+  return c.json({
+    entry: row,
+    custom,
+    items: itemsRes.results ?? [],
+    payments: paymentsRes.results ?? [],
+  });
 });
 
 // ── Create ───────────────────────────────────────────────────
-app.post("/entries", requirePermission("sales.write"), async (c) => {
+app.post("/entries", requirePageAccess("sales"), async (c) => {
   const user = c.get("user");
   const body = await c.req.json<{
     project_id?: number | null;
@@ -362,10 +456,20 @@ app.post("/entries", requirePermission("sales.write"), async (c) => {
     occurred_at?: string;
     notes?: string | null;
     custom?: Record<string, any>;
+    // Mig 070 form fields — header text columns + line items + payments.
+    items?: SalesItemInput[];
+    payments?: SalesPaymentInput[];
+    [k: string]: any;
+    // Quick-log path — rep is on the floor and only has amount + ref_no.
+    // The row lands as a draft tagged with the QUICK_LOG_SENTINEL in
+    // customer_name. The /submit endpoint blocks the rep from
+    // promoting this to 'submitted' until they back-fill a real name.
+    quick_log?: boolean;
   }>();
 
-  const customerName = (body.customer_name || "").trim();
-  if (!customerName) return c.json({ error: "customer_name is required" }, 400);
+  const customerNameInput = (body.customer_name || "").trim();
+  const isQuickLog = body.quick_log === true || !customerNameInput;
+  const customerName = isQuickLog ? QUICK_LOG_SENTINEL : customerNameInput;
   const amount = Number(body.amount);
   if (!isFinite(amount)) return c.json({ error: "amount must be a number" }, 400);
   const occurredAt = (body.occurred_at || "").trim();
@@ -373,13 +477,38 @@ app.post("/entries", requirePermission("sales.write"), async (c) => {
     return c.json({ error: "occurred_at must be a yyyy-mm-dd date" }, 400);
   }
 
-  // Deposit defaults to the full amount when omitted (rep took payment
-  // up front). When present it must be a non-negative number ≤ amount.
+  const items = Array.isArray(body.items) ? body.items : [];
+  const payments = Array.isArray(body.payments) ? body.payments : [];
+
+  // Validate payment dates / methods up front so we don't insert the
+  // header and orphan a bad payment.
+  for (const p of payments) {
+    if (!/^\d{4}-\d{2}-\d{2}/.test(String(p.paid_at || ""))) {
+      return c.json({ error: "payments[].paid_at must be yyyy-mm-dd" }, 400);
+    }
+    if (!p.payment_method || typeof p.payment_method !== "string") {
+      return c.json({ error: "payments[].payment_method is required" }, 400);
+    }
+    const a = Number(p.amount);
+    if (!isFinite(a) || a < 0) {
+      return c.json({ error: "payments[].amount must be a non-negative number" }, 400);
+    }
+  }
+
+  // Deposit derives from payments when supplied; otherwise honour the
+  // legacy single-deposit body fields (quick-log + old client paths).
+  const paySummary = summarisePayments(payments);
   let depositAmount: number | null = null;
-  if (body.deposit_amount === null) {
+  let paymentType: string | null = null;
+  if (payments.length > 0) {
+    depositAmount = paySummary.total;
+    paymentType = paySummary.firstMethod;
+  } else if (body.deposit_amount === null) {
     depositAmount = null;
+    paymentType = body.deposit_payment_type?.trim() || null;
   } else if (body.deposit_amount === undefined) {
     depositAmount = amount;
+    paymentType = body.deposit_payment_type?.trim() || null;
   } else {
     const d = Number(body.deposit_amount);
     if (!isFinite(d) || d < 0) {
@@ -389,43 +518,64 @@ app.post("/entries", requirePermission("sales.write"), async (c) => {
       return c.json({ error: "deposit_amount cannot exceed amount" }, 400);
     }
     depositAmount = d;
+    paymentType = body.deposit_payment_type?.trim() || null;
   }
 
-  const paymentType = body.deposit_payment_type?.trim() || null;
   if (paymentType && !PAYMENT_TYPES.has(paymentType)) {
     return c.json(
-      { error: "deposit_payment_type must be one of cash, card_cc, card_db, epp" },
+      { error: "deposit_payment_type must be one of cash, card_cc, card_db, epp, cheque, online" },
       400
     );
   }
 
+  // Mint doc_no if the client didn't supply one.
+  const docNo = (body.doc_no?.trim() as string | undefined) || (await nextSalesEntryDocNo(c.env));
+
+  // Build the dynamic insert. Static columns first, then the new
+  // mig-070 text fields driven by SO_FORM_TEXT_FIELDS minus doc_no
+  // (which we already minted above).
+  const cols: string[] = [
+    "doc_no",
+    "project_id", "ref_no", "customer_name", "customer_code",
+    "customer_address", "customer_phone", "amount",
+    "deposit_amount", "deposit_payment_type",
+    "currency", "occurred_at", "notes", "created_by", "sales_person_id",
+  ];
+  const vals: any[] = [
+    docNo,
+    body.project_id ?? null,
+    body.ref_no?.trim() || null,
+    customerName,
+    body.customer_code?.trim() || null,
+    body.customer_address?.trim() || null,
+    body.customer_phone?.trim() || null,
+    amount,
+    depositAmount,
+    paymentType,
+    body.currency?.trim() || "MYR",
+    occurredAt,
+    body.notes?.trim() || null,
+    user?.id ?? 0,
+    body.sales_person_id ?? user?.id ?? null,
+  ];
+  for (const k of SO_FORM_TEXT_FIELDS) {
+    if (k === "doc_no") continue;
+    cols.push(k);
+    const v = body[k];
+    vals.push(typeof v === "string" ? v.trim() || null : v ?? null);
+  }
+
+  const placeholders = cols.map(() => "?").join(", ");
   const r = await c.env.DB.prepare(
-    `INSERT INTO sales_entries
-       (project_id, ref_no, customer_name, customer_code,
-        customer_address, customer_phone, amount,
-        deposit_amount, deposit_payment_type,
-        currency, occurred_at, notes, created_by, sales_person_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO sales_entries (${cols.join(", ")}) VALUES (${placeholders})`
   )
-    .bind(
-      body.project_id ?? null,
-      body.ref_no?.trim() || null,
-      customerName,
-      body.customer_code?.trim() || null,
-      body.customer_address?.trim() || null,
-      body.customer_phone?.trim() || null,
-      amount,
-      depositAmount,
-      paymentType,
-      body.currency?.trim() || "MYR",
-      occurredAt,
-      body.notes?.trim() || null,
-      user?.id ?? 0,
-      body.sales_person_id ?? user?.id ?? null
-    )
+    .bind(...vals)
     .run();
 
   const id = r.meta.last_row_id as number;
+
+  if (items.length) await replaceItems(c.env, id, items);
+  if (payments.length) await replacePayments(c.env, id, payments);
 
   // Persist custom field values via the existing UDF store. Silent-drop
   // anything with an unknown key so a renamed field doesn't 500 the
@@ -436,15 +586,15 @@ app.post("/entries", requirePermission("sales.write"), async (c) => {
 
   await bumpProjectFinance(c.env, body.project_id ?? null);
 
-  return c.json({ id }, 201);
+  return c.json({ id, doc_no: docNo }, 201);
 });
 
 // ── Patch ────────────────────────────────────────────────────
-app.patch("/entries/:id", requirePermission("sales.write"), async (c) => {
+app.patch("/entries/:id", requirePageAccess("sales"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
   const user = c.get("user");
-  const canManage = user?.permissions?.includes("*") || user?.permissions?.includes("sales.manage");
+  const canManage = c.get("access_level") === "full";
 
   const current = await c.env.DB.prepare(
     `SELECT id, created_by, status, project_id FROM sales_entries WHERE id = ?`
@@ -511,11 +661,45 @@ app.patch("/entries/:id", requirePermission("sales.write"), async (c) => {
     "currency",
     "occurred_at",
     "notes",
+    ...SO_FORM_TEXT_FIELDS,
   ] as const;
   for (const k of FIELDS) {
     if (k in body) {
       sets.push(`${k} = ?`);
-      binds.push(body[k] ?? null);
+      const v = body[k];
+      binds.push(typeof v === "string" ? v.trim() || null : v ?? null);
+    }
+  }
+
+  // Items + payments — replace-all when arrays are supplied. Mirrors
+  // the deposit_amount / deposit_payment_type to keep the legacy list
+  // view rendering correctly for these rows.
+  if (Array.isArray(body.items)) {
+    await replaceItems(c.env, id, body.items as SalesItemInput[]);
+  }
+  if (Array.isArray(body.payments)) {
+    const pays = body.payments as SalesPaymentInput[];
+    for (const p of pays) {
+      if (!/^\d{4}-\d{2}-\d{2}/.test(String(p.paid_at || ""))) {
+        return c.json({ error: "payments[].paid_at must be yyyy-mm-dd" }, 400);
+      }
+      if (!p.payment_method) {
+        return c.json({ error: "payments[].payment_method is required" }, 400);
+      }
+      const a = Number(p.amount);
+      if (!isFinite(a) || a < 0) {
+        return c.json({ error: "payments[].amount must be a non-negative number" }, 400);
+      }
+    }
+    await replacePayments(c.env, id, pays);
+    const sum = summarisePayments(pays);
+    if (!("deposit_amount" in body)) {
+      sets.push("deposit_amount = ?");
+      binds.push(sum.total);
+    }
+    if (!("deposit_payment_type" in body)) {
+      sets.push("deposit_payment_type = ?");
+      binds.push(sum.firstMethod);
     }
   }
 
@@ -547,23 +731,32 @@ app.patch("/entries/:id", requirePermission("sales.write"), async (c) => {
 });
 
 // ── Submit (lock as ready for push) ─────────────────────────
-app.post("/entries/:id/submit", requirePermission("sales.write"), async (c) => {
+app.post("/entries/:id/submit", requirePageAccess("sales"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
   const user = c.get("user");
-  const canManage = user?.permissions?.includes("*") || user?.permissions?.includes("sales.manage");
+  const canManage = c.get("access_level") === "full";
 
   const current = await c.env.DB.prepare(
-    `SELECT id, created_by, status FROM sales_entries WHERE id = ?`
+    `SELECT id, created_by, status, customer_name FROM sales_entries WHERE id = ?`
   )
     .bind(id)
-    .first<{ id: number; created_by: number; status: string }>();
+    .first<{ id: number; created_by: number; status: string; customer_name: string }>();
   if (!current) return c.json({ error: "Not found" }, 404);
   if (!canManage && current.created_by !== user?.id) {
     return c.json({ error: "Forbidden" }, 403);
   }
   if (current.status !== "draft") {
     return c.json({ error: `Can't submit a ${current.status} entry` }, 400);
+  }
+  // Quick-log gate: a row sitting on the QUICK_LOG_SENTINEL hasn't
+  // been back-filled with real customer details. Don't let it
+  // promote to 'submitted' (and from there toward AutoCount push).
+  if (current.customer_name === QUICK_LOG_SENTINEL) {
+    return c.json(
+      { error: "Fill customer details before submitting" },
+      400,
+    );
   }
 
   await c.env.DB.prepare(
@@ -575,7 +768,7 @@ app.post("/entries/:id/submit", requirePermission("sales.write"), async (c) => {
 });
 
 // ── Unsubmit (back to draft; managers only) ──────────────────
-app.post("/entries/:id/unsubmit", requirePermission("sales.manage"), async (c) => {
+app.post("/entries/:id/unsubmit", requirePageAccess("sales", "full"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
   await c.env.DB.prepare(
@@ -588,7 +781,7 @@ app.post("/entries/:id/unsubmit", requirePermission("sales.manage"), async (c) =
 });
 
 // ── Void ─────────────────────────────────────────────────────
-app.post("/entries/:id/void", requirePermission("sales.manage"), async (c) => {
+app.post("/entries/:id/void", requirePageAccess("sales", "full"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
   const before = await c.env.DB.prepare(
@@ -606,11 +799,11 @@ app.post("/entries/:id/void", requirePermission("sales.manage"), async (c) => {
 });
 
 // ── Delete (soft) ────────────────────────────────────────────
-app.delete("/entries/:id", requirePermission("sales.write"), async (c) => {
+app.delete("/entries/:id", requirePageAccess("sales"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
   const user = c.get("user");
-  const canManage = user?.permissions?.includes("*") || user?.permissions?.includes("sales.manage");
+  const canManage = c.get("access_level") === "full";
 
   const row = await c.env.DB.prepare(
     `SELECT created_by, status, project_id FROM sales_entries WHERE id = ?`
@@ -639,7 +832,7 @@ app.delete("/entries/:id", requirePermission("sales.write"), async (c) => {
 // AUTOCOUNT_WRITES_DISABLED). Flipping this to a real push is a separate
 // change; for now the endpoint exists so the frontend can wire the
 // "Push" button without a 404.
-app.post("/entries/:id/push", requirePermission("sales.manage"), async (c) => {
+app.post("/entries/:id/push", requirePageAccess("sales", "full"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
   return c.json(

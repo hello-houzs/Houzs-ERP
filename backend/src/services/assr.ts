@@ -40,15 +40,15 @@ function statusForStage(stage: Stage): string {
   return "In Progress";
 }
 
-// Allowed stage transitions
-const TRANSITIONS: Record<Stage, Stage[]> = {
-  registration: ["triage", "closed"],
-  triage: ["action", "closed"],
-  action: ["logistics", "resolution", "closed"],
-  logistics: ["resolution", "closed"],
-  resolution: ["closed"],
-  closed: [],
-};
+// Stage transitions are unrestricted as of mig 064 — ops needs to be
+// able to revert (e.g. flip a closed case back to action when the
+// customer reports the same issue) and skip (registration → resolution
+// when the supplier walks the unit in for an immediate swap). The
+// previous linear table is gone; the CHECK constraint on the column
+// still bounds the value set, so bad inputs still fail loud.
+const ALL_STAGES: ReadonlyArray<Stage> = [
+  "registration", "triage", "action", "logistics", "resolution", "closed",
+];
 
 // ── PO number generator (internal / service-issued) ───────────
 
@@ -318,13 +318,22 @@ export async function transitionStage(
     .first<{ stage: Stage }>();
   if (!row) return false;
 
-  const allowed = TRANSITIONS[row.stage] ?? [];
-  if (!allowed.includes(newStage)) {
-    throw new Error(`Cannot transition from ${row.stage} to ${newStage}`);
+  if (!ALL_STAGES.includes(newStage)) {
+    throw new Error(`Unknown stage: ${newStage}`);
   }
+  // No-op when the stage hasn't actually changed.
+  if (row.stage === newStage) return true;
 
   const newStatus = statusForStage(newStage);
-  const sets = ["stage = ?", "status = ?", "updated_at = datetime('now')"];
+  // stage_changed_at gets refreshed on every transition so the
+  // "days in stage" lead-time column reads cleanly without scanning
+  // the activity log.
+  const sets = [
+    "stage = ?",
+    "status = ?",
+    "stage_changed_at = datetime('now')",
+    "updated_at = datetime('now')",
+  ];
   const binds: any[] = [newStage, newStatus];
 
   if (newStage === "closed") {
@@ -340,7 +349,7 @@ export async function transitionStage(
     .bind(...binds)
     .run();
 
-  await logActivity(env, id, "stage_change", row.stage, newStage, note ?? null, userId);
+  await logActivity(env, id, "stage_change", row.stage, newStage, note ?? null, userId, "system");
   return true;
 }
 
@@ -358,6 +367,8 @@ const PATCH_FIELDS = [
   "po_amount", "customer_amount", "supplier_invoice_ref", "cost_notes",
   // SLA fields — allow manual override (ops can extend a deadline)
   "sla_hours", "deadline_at",
+  // Mig 064 — supplier handover + ready dates
+  "supplier_pickup_at", "items_ready_at",
 ] as const;
 
 export async function patchAssrCase(
@@ -602,6 +613,10 @@ const ASSR_SORT_MAP: Record<string, string> = {
   created_by: "created_by_name",
   stage_since: "stage_since",
   days_in_stage: "days_in_stage",
+  // Mig 064 — supplier handover + ready milestones
+  supplier_pickup_at: "supplier_pickup_at",
+  items_ready_at: "items_ready_at",
+  stage_changed_at: "stage_changed_at",
   hours_to_deadline: "hours_to_deadline",
   is_breached: "is_breached",
   created_at: "created_at",
@@ -791,6 +806,11 @@ export async function exportAssrCases(
 
 // ── Activity log helper ───────────────────────────────────────
 
+// `category` (mig 064) drives the timeline filter pills:
+//   purchasing — internal team / supplier coordination
+//   customer   — customer-visible milestones (rendered on the portal)
+//   system     — automatic events (stage_change, assigned, created)
+// Defaults to 'system' so existing callers don't need to be updated.
 async function logActivity(
   env: Env,
   assrId: number,
@@ -798,13 +818,14 @@ async function logActivity(
   fromValue: string | null,
   toValue: string | null,
   note: string | null,
-  userId?: number | null
+  userId?: number | null,
+  category: "purchasing" | "customer" | "system" = "system",
 ) {
   await env.DB.prepare(
-    `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, user_id)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, user_id, category)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(assrId, action, fromValue, toValue, note, userId ?? null)
+    .bind(assrId, action, fromValue, toValue, note, userId ?? null, category)
     .run();
 }
 

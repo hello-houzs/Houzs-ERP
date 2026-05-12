@@ -289,6 +289,11 @@ export interface AssrCase {
   // Aging fields (populated on list/detail reads — computed from activity log)
   stage_since?: string | null;
   days_in_stage?: number | null;
+  // Mig 064 — supplier handover + items-ready dates, plus the
+  // `stage_changed_at` snapshot the new lead-time column reads.
+  supplier_pickup_at?: string | null;
+  items_ready_at?: string | null;
+  stage_changed_at?: string | null;
   // Soft-delete
   archived_at?: string | null;
   archived_by?: number | null;
@@ -319,6 +324,8 @@ export interface AssrAttachment {
   created_at: string;
 }
 
+export type AssrActivityCategory = "purchasing" | "customer" | "system";
+
 export interface AssrActivity {
   id: number;
   assr_id: number;
@@ -329,6 +336,8 @@ export interface AssrActivity {
   user_id: number | null;
   user_name?: string | null;
   created_at: string;
+  // Mig 064 — drives the timeline filter pills.
+  category?: AssrActivityCategory | null;
 }
 
 export interface AssrLogistics {
@@ -499,6 +508,30 @@ export interface OverdueSummary {
 // ──────────────────────────────────────────────────────────
 // Auth, users, roles
 // ──────────────────────────────────────────────────────────
+/**
+ * Per-page access level. Mirrors backend's `AccessLevel`.
+ * `none` = the page is hidden / 403; `partial` = page-specific
+ * read-only or scoped view; `full` = unrestricted within the page.
+ */
+export type AccessLevel = "none" | "partial" | "full";
+
+/** Page catalogue entry. Returned by GET /api/roles/pages. */
+export interface PageDef {
+  key: string;
+  label: string;
+  partialMeaning: string;
+  supportsPartial: boolean;
+}
+
+/** Per-page access entry on a role. `explicit = true` means the
+ *  level came from a `role_page_access` row; `false` means it's
+ *  computed by backfill rules — i.e. inferred from the role's
+ *  permissions JSON. */
+export interface RolePageAccess {
+  level: AccessLevel;
+  explicit: boolean;
+}
+
 export interface AuthUser {
   id: number;
   email: string;
@@ -507,6 +540,12 @@ export interface AuthUser {
   role_name: string;
   status: string;
   permissions: string[];
+  /**
+   * Per-page access map (mig 073). Keys are stable page identifiers
+   * (e.g. "sales", "projects"). Missing keys default to "none" on
+   * the consuming side. Hydrated once per session at /api/auth/me.
+   */
+  page_access?: Record<string, AccessLevel>;
   manager_id?: number | null;
   scope_to_pic?: boolean;
   joined_at?: string | null;
@@ -810,4 +849,77 @@ export interface CalendarEvent {
   driver_name?: string | null;
   lorry_plate?: string | null;
   end_at?: string | null;
+}
+
+// ── Sales Team (mig 067) ─────────────────────────────────────
+// Retail rep org chart, separate from the workspace `users`
+// directory. A workspace user may or may not be a sales rep, and a
+// sales rep may or may not have a workspace login.
+
+export interface SalesPosition {
+  id: number;
+  slug: string;
+  name: string;
+  level: number; // 10 = Director, 20 = Executive, 30 = Sub-Executive
+  sort_order: number;
+  active: number;
+}
+
+export interface SalesCommissionTier {
+  id: number;
+  slug: string;
+  name: string;
+  rate: number; // percent
+  sort_order: number;
+  active: number;
+}
+
+export interface SalesRep {
+  id: number;
+  code: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  // Mig 068
+  nric?: string | null;
+  position_id: number | null;
+  position_slug?: string | null;
+  position_name?: string | null;
+  position_level?: number | null;
+  upline_id: number | null;
+  upline_secondary_id?: number | null;
+  upline_code?: string | null;
+  upline_name?: string | null;
+  user_id: number | null;
+  user_email?: string | null;
+  user_name?: string | null;
+  status: "active" | "inactive";
+  is_admin: number;
+  commission_rate: number | null;
+  commission_min_rate?: number | null;
+  commission_tier_id: number | null;
+  joined_on: string | null;
+  notes: string | null;
+  archived_at: string | null;
+  brands: string[];
+  team_size?: number; // populated by list endpoint
+}
+
+export interface SalesRepTier {
+  id?: number;
+  threshold: number; // sales threshold in RM
+  rate: number; // percent
+  sort_order?: number;
+}
+
+export interface SalesTeamActivity {
+  id: number;
+  rep_id: number;
+  action: string;
+  from_value: string | null;
+  to_value: string | null;
+  note: string | null;
+  user_id: number | null;
+  user_name?: string | null;
+  created_at: string;
 }

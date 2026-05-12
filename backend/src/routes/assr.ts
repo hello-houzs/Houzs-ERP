@@ -72,6 +72,146 @@ app.put("/settings", async (c) => {
   return c.json({ ok: true });
 });
 
+// ── Lookups (mig 065) ─────────────────────────────────────────
+//
+// Per-module pickers maintained from Service Maintenance. Same
+// shape across the four kinds — slug + name + sort_order + active —
+// so one set of routes handles them all via a `kind` path param.
+// Slugs are stable values; names are display labels admins can
+// rename without breaking historical case data.
+
+const LOOKUP_TABLES = {
+  "issue-categories": "assr_issue_categories",
+  "resolution-methods": "assr_resolution_methods",
+  "priorities": "assr_priorities",
+  "ncr-categories": "assr_ncr_categories",
+} as const;
+type LookupKind = keyof typeof LOOKUP_TABLES;
+
+function lookupTable(kind: string): string | null {
+  return (LOOKUP_TABLES as Record<string, string>)[kind] ?? null;
+}
+
+app.get("/lookups/:kind", async (c) => {
+  const kind = c.req.param("kind");
+  const table = lookupTable(kind);
+  if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
+  const includeInactive = c.req.query("include_inactive") === "1";
+  // priorities surface sla_hours so the manager UI can edit it; the
+  // other three only have the common columns. Casting to ANY at the
+  // bind layer because column shape varies.
+  const slaCol = kind === "priorities" ? ", sla_hours" : "";
+  const rows = await c.env.DB.prepare(
+    `SELECT id, slug, name, sort_order, active${slaCol}
+       FROM ${table}
+      ${includeInactive ? "" : "WHERE active = 1"}
+      ORDER BY sort_order ASC, name ASC`,
+  ).all();
+  return c.json({ data: rows.results ?? [] });
+});
+
+app.post("/lookups/:kind", async (c) => {
+  const kind = c.req.param("kind");
+  const table = lookupTable(kind);
+  if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
+  const body = await c.req.json<{
+    name: string;
+    slug?: string;
+    sort_order?: number;
+    sla_hours?: number;
+  }>();
+  const name = (body.name ?? "").trim();
+  if (!name) return c.json({ error: "name required" }, 400);
+  // Auto-slug when not provided. Lowercased, spaces → underscores,
+  // strip anything that isn't alnum/underscore. Manual override is
+  // accepted to keep historical slugs stable.
+  const slug = (
+    body.slug?.trim() ||
+    name.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "")
+  );
+  const sortOrder = Number.isFinite(body.sort_order) ? Number(body.sort_order) : 0;
+  if (kind === "priorities") {
+    const sla = Number.isFinite(body.sla_hours) ? Number(body.sla_hours) : null;
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO assr_priorities (slug, name, sort_order, sla_hours)
+       VALUES (?, ?, ?, ?)`,
+    )
+      .bind(slug, name, sortOrder, sla)
+      .run();
+  } else {
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO ${table} (slug, name, sort_order) VALUES (?, ?, ?)`,
+    )
+      .bind(slug, name, sortOrder)
+      .run();
+  }
+  return c.json({ ok: true, slug });
+});
+
+app.patch("/lookups/:kind/:id", async (c) => {
+  const kind = c.req.param("kind");
+  const table = lookupTable(kind);
+  if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const body = await c.req.json<Record<string, any>>();
+
+  const allowed = ["name", "sort_order", "active"];
+  if (kind === "priorities") allowed.push("sla_hours");
+  const sets: string[] = [];
+  const binds: any[] = [];
+  for (const k of allowed) {
+    if (k in body) {
+      sets.push(`${k} = ?`);
+      binds.push(body[k] ?? null);
+    }
+  }
+  if (!sets.length) return c.json({ error: "no fields to update" }, 400);
+  binds.push(id);
+  await c.env.DB.prepare(`UPDATE ${table} SET ${sets.join(", ")} WHERE id = ?`)
+    .bind(...binds)
+    .run();
+  return c.json({ ok: true });
+});
+
+// Bulk reorder. Same shape as the project bulk-reorder endpoints:
+// `{ ids: [...] }` in the new display order; sort_order is rewritten
+// in steps of 10 so future inserts can slot between rows.
+app.put("/lookups/:kind/reorder", async (c) => {
+  const kind = c.req.param("kind");
+  const table = lookupTable(kind);
+  if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
+  const body = await c.req.json<{ ids?: unknown }>();
+  if (!Array.isArray(body.ids) || !body.ids.every((n) => Number.isInteger(n))) {
+    return c.json({ error: "ids must be an array of integers" }, 400);
+  }
+  const ids = body.ids as number[];
+  if (ids.length === 0) return c.json({ ok: true });
+  await c.env.DB.batch(
+    ids.map((id, idx) =>
+      c.env.DB.prepare(`UPDATE ${table} SET sort_order = ? WHERE id = ?`)
+        .bind((idx + 1) * 10, id),
+    ),
+  );
+  return c.json({ ok: true });
+});
+
+app.delete("/lookups/:kind/:id", async (c) => {
+  const kind = c.req.param("kind");
+  const table = lookupTable(kind);
+  if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  // Soft-delete only — historical case rows still hold the slug as
+  // their `priority` / `resolution_method` / etc., and we don't want
+  // to break filters retroactively. `active = 0` just hides from the
+  // picker.
+  await c.env.DB.prepare(`UPDATE ${table} SET active = 0 WHERE id = ?`)
+    .bind(id)
+    .run();
+  return c.json({ ok: true });
+});
+
 // ── Cost auto-fill suggestion ─────────────────────────────────
 //
 // Looks up the case's item_code in (a) the linked sales order's lines,
@@ -1013,9 +1153,17 @@ app.post("/:id/notes", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
-  const body = await c.req.json<{ note: string }>();
+  const body = await c.req.json<{
+    note: string;
+    category?: "purchasing" | "customer";
+  }>();
   if (!body.note?.trim()) return c.json({ error: "note is required" }, 400);
-  await logActivity(c.env, id, "note", null, null, body.note, userId);
+  // Manual notes are either internal (purchasing) or customer-visible.
+  // 'system' is reserved for auto-emitted events; reject it here so a
+  // misconfigured client can't impersonate a system event.
+  const category =
+    body.category === "customer" ? "customer" : "purchasing";
+  await logActivity(c.env, id, "note", null, null, body.note, userId, category);
   return c.json({ ok: true });
 });
 

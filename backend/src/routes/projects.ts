@@ -42,6 +42,7 @@ import {
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
+import { recomputeAutoCostLines } from "../services/projectCostRates";
 import { getDb } from "../db/client";
 import {
   project_brands,
@@ -272,12 +273,159 @@ app.delete("/brands/:id", requirePermission("projects.manage"), async (c) => {
   return c.json({ ok: true });
 });
 
+// Bulk reorder. Mirrors the checklist-template items reorder pattern:
+// renumber sort_order in steps of 10 by ID position so future inserts
+// can slot between two rows without a full pass.
+app.put("/brands/reorder", requirePermission("projects.manage"), async (c) => {
+  const body = await c.req.json<{ ids?: unknown }>();
+  if (!Array.isArray(body.ids) || !body.ids.every((n) => Number.isInteger(n))) {
+    return c.json({ error: "ids must be an array of integers" }, 400);
+  }
+  const ids = body.ids as number[];
+  if (ids.length === 0) return c.json({ ok: true });
+  await c.env.DB.batch(
+    ids.map((id, idx) =>
+      c.env.DB.prepare(`UPDATE project_brands SET sort_order = ? WHERE id = ?`)
+        .bind((idx + 1) * 10, id),
+    ),
+  );
+  return c.json({ ok: true });
+});
+
+app.put("/event-types/reorder", requirePermission("projects.manage"), async (c) => {
+  const body = await c.req.json<{ ids?: unknown }>();
+  if (!Array.isArray(body.ids) || !body.ids.every((n) => Number.isInteger(n))) {
+    return c.json({ error: "ids must be an array of integers" }, 400);
+  }
+  const ids = body.ids as number[];
+  if (ids.length === 0) return c.json({ ok: true });
+  await c.env.DB.batch(
+    ids.map((id, idx) =>
+      c.env.DB.prepare(`UPDATE project_event_types SET sort_order = ? WHERE id = ?`)
+        .bind((idx + 1) * 10, id),
+    ),
+  );
+  return c.json({ ok: true });
+});
+
 function normaliseHex(input: string | undefined | null): string | null {
   if (!input) return null;
   const v = String(input).trim().replace(/^#/, "").toLowerCase();
   if (!/^[0-9a-f]{6}$/.test(v)) return null;
   return v;
 }
+
+// ── Cost rates (mig 063) ─────────────────────────────────────
+// Per-brand transport / merchandise / commission rates that drive
+// the auto cost-line engine on every finance edit. Surfaced under
+// Project Maintenance → Cost Rates. `projects.manage` gates writes.
+
+app.get("/cost-rates", requirePermission("projects.read"), async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT cr.brand,
+            cr.transport_pct, cr.merchandise_pct,
+            cr.commission_normal_pct, cr.commission_boost_pct,
+            cr.boost_min_gp_pct, cr.boost_min_sales,
+            cr.updated_at
+       FROM project_cost_rates cr
+       JOIN project_brands pb ON pb.name = cr.brand
+      WHERE pb.active = 1
+      ORDER BY pb.sort_order ASC, pb.name ASC`,
+  ).all();
+  return c.json({ data: rows.results ?? [] });
+});
+
+app.put("/cost-rates/:brand", requirePermission("projects.manage"), async (c) => {
+  const brand = decodeURIComponent(c.req.param("brand")).trim();
+  if (!brand) return c.json({ error: "brand required" }, 400);
+  const user = c.get("user");
+  const body = await c.req.json<{
+    transport_pct?: number;
+    merchandise_pct?: number;
+    commission_normal_pct?: number;
+    commission_boost_pct?: number | null;
+    boost_min_gp_pct?: number | null;
+    boost_min_sales?: number | null;
+  }>();
+
+  // Coerce into clean numerics. Negatives are nonsensical for these
+  // rates and would break the recompute math.
+  const num = (v: unknown, fallback: number | null = null) => {
+    if (v === null || v === "" || v === undefined) return fallback;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return fallback;
+    return n;
+  };
+  const fields = {
+    transport_pct: num(body.transport_pct, 0) ?? 0,
+    merchandise_pct: num(body.merchandise_pct, 0) ?? 0,
+    commission_normal_pct: num(body.commission_normal_pct, 0) ?? 0,
+    commission_boost_pct: num(body.commission_boost_pct, null),
+    boost_min_gp_pct: num(body.boost_min_gp_pct, null),
+    boost_min_sales: num(body.boost_min_sales, null),
+  };
+
+  // Upsert by brand. The seed migration created the row; this UPDATE
+  // is the common path. The fallback INSERT covers brands added
+  // later (e.g. someone added a new brand and now wants a rate card).
+  const upd = await c.env.DB.prepare(
+    `UPDATE project_cost_rates
+        SET transport_pct = ?, merchandise_pct = ?,
+            commission_normal_pct = ?, commission_boost_pct = ?,
+            boost_min_gp_pct = ?, boost_min_sales = ?,
+            updated_at = datetime('now'), updated_by = ?
+      WHERE brand = ?`,
+  )
+    .bind(
+      fields.transport_pct, fields.merchandise_pct,
+      fields.commission_normal_pct, fields.commission_boost_pct,
+      fields.boost_min_gp_pct, fields.boost_min_sales,
+      user?.id ?? null, brand,
+    )
+    .run();
+
+  if ((upd.meta?.changes ?? 0) === 0) {
+    await c.env.DB.prepare(
+      `INSERT INTO project_cost_rates
+         (brand, transport_pct, merchandise_pct,
+          commission_normal_pct, commission_boost_pct,
+          boost_min_gp_pct, boost_min_sales, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        brand,
+        fields.transport_pct, fields.merchandise_pct,
+        fields.commission_normal_pct, fields.commission_boost_pct,
+        fields.boost_min_gp_pct, fields.boost_min_sales,
+        user?.id ?? null,
+      )
+      .run();
+  }
+
+  // Recompute auto lines for every active project on this brand.
+  // Done synchronously so the rate edit is visible immediately —
+  // typical cohorts are small (≤ 50 projects per brand).
+  const projects = await c.env.DB.prepare(
+    `SELECT id FROM projects WHERE brand = ? AND archived_at IS NULL`,
+  )
+    .bind(brand)
+    .all<{ id: number }>();
+  for (const p of projects.results ?? []) {
+    await recomputeAutoCostLines(c.env, p.id, user?.id ?? 0);
+  }
+
+  return c.json({ ok: true, recomputed: projects.results?.length ?? 0 });
+});
+
+// Manual trigger — useful from the project detail page to backfill
+// auto lines on historical projects after the migration lands.
+app.post("/:id/finance/recompute-auto", requirePermission("projects.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
+  await recomputeAutoCostLines(c.env, id, user?.id ?? 0);
+  return c.json({ ok: true });
+});
 
 // ── Summary (dashboard tiles) ─────────────────────────────────
 
@@ -878,8 +1026,15 @@ app.get("/:id", requirePermission("projects.read"), async (c) => {
     return c.json({ error: "Not found" }, 404);
   }
   // Tell the frontend which panels to hide for this user/project.
+  // `level` keeps the legacy 'full' | 'limited' vocabulary for current
+  // callsites; `level_v2` emits the new 'full' | 'partial' vocabulary
+  // used by the page-access model (mig 073). Both reflect the same
+  // row-level decision — PIC vs non-PIC for this specific project.
+  // Phase 2 (Projects migration) drops the legacy `level` field.
+  const rowLevel = projectAccessLevel(user, detail.project);
   const access = {
-    level: projectAccessLevel(user, detail.project),
+    level: rowLevel,
+    level_v2: rowLevel === "limited" ? "partial" : rowLevel,
     is_pic: detail.project.pic_id === user.id,
     scoped: !!user.scope_to_pic,
   };
@@ -1239,8 +1394,21 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
     stage: "stage",
     start: "start_date",
     income: "income",
+    sales: "sales",
+    sales_per_day: "sales_per_day",
+    cogs: "cogs",
+    gp_pct: "gp_pct",
+    rental: "rental",
+    rent_per_sqm: "rent_per_sqm",
+    setup: "setup_cost",
+    transport: "transport_cost",
+    commission: "commission_cost",
+    merchandise: "merchandise_cost",
+    others: "others_cost",
     cost: "cost",
+    total_cost: "cost",
     net: "net",
+    net_profit: "net_profit",
     margin_pct: "margin_pct",
     lines: "line_count",
   };
@@ -1249,6 +1417,8 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
   // The aggregate row per project. Date filter only applies inside
   // each SUM; the project row itself is selected by the project-level
   // WHERE (so projects with zero matching lines still show with 0s).
+  // Per-category breakdown built with one CASE-SUM per dedicated column;
+  // the residue lands in `others_cost`.
   const baseSelect = sql`
     SELECT p.id,
            p.code,
@@ -1257,10 +1427,27 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
            p.stage,
            p.start_date,
            p.end_date,
+           p.size_sqm,
            p.venue,
            p.organizer,
            COALESCE(SUM(CASE WHEN l.kind = 'income' AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS income,
+           COALESCE(SUM(CASE WHEN l.kind = 'income' AND l.category = 'sales' AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS sales,
            COALESCE(SUM(CASE WHEN l.kind = 'cost'   AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS cost,
+           -- COGS family (2026-05-08): legacy cogs slug + the three product
+           -- sub-categories the boss requested. Sums into one column for the
+           -- list view; the detail page breaks them out individually.
+           COALESCE(SUM(CASE WHEN l.kind = 'cost'   AND l.category IN ('cogs','cogs_matt_sofa','cogs_bedframe','cogs_accessories') AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS cogs,
+           COALESCE(SUM(CASE WHEN l.kind = 'cost'   AND l.category = 'rental'      AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS rental,
+           COALESCE(SUM(CASE WHEN l.kind = 'cost'   AND l.category = 'setup'       AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS setup_cost,
+           -- Transport family (2026-05-08): legacy transport slug + the
+           -- new transport_fee (auto rate) and transport_setup_dismantle
+           -- (manual logistics cost) split.
+           COALESCE(SUM(CASE WHEN l.kind = 'cost'   AND l.category IN ('transport','transport_fee','transport_setup_dismantle') AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS transport_cost,
+           COALESCE(SUM(CASE WHEN l.kind = 'cost'   AND l.category = 'commission'  AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS commission_cost,
+           COALESCE(SUM(CASE WHEN l.kind = 'cost'   AND l.category = 'merchandise' AND l.archived_at IS NULL ${dateClause} THEN l.amount ELSE 0 END), 0) AS merchandise_cost,
+           COALESCE(SUM(CASE WHEN l.kind = 'cost'   AND l.archived_at IS NULL
+                            AND l.category NOT IN ('cogs','cogs_matt_sofa','cogs_bedframe','cogs_accessories','rental','setup','transport','transport_fee','transport_setup_dismantle','commission','merchandise')
+                            ${dateClause} THEN l.amount ELSE 0 END), 0) AS others_cost,
            COUNT(CASE WHEN l.archived_at IS NULL ${dateClause} THEN l.id END) AS line_count
       FROM ${projectsTable} p
       LEFT JOIN ${project_finance_lines} l ON l.project_id = p.id
@@ -1268,15 +1455,32 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
       GROUP BY p.id
   `;
 
-  // Build derived columns net + margin_pct on top of the aggregate so
-  // we can sort by them.
+  // Derived columns: net, net_profit, margin_pct, gp_pct, sales_per_day,
+  // rent_per_sqm. Computed on top of the aggregate so we can sort by
+  // them. Duration uses julianday() and falls back to NULL when start /
+  // end are missing — sales_per_day then ends up NULL too.
   const wrapped = sql`
     SELECT *,
            (income - cost) AS net,
+           (sales - cost) AS net_profit,
            CASE WHEN income > 0
                 THEN ((income - cost) * 100.0 / income)
                 ELSE NULL
-           END AS margin_pct
+           END AS margin_pct,
+           CASE WHEN sales > 0
+                THEN ((sales - cogs) * 100.0 / sales)
+                ELSE NULL
+           END AS gp_pct,
+           CASE WHEN start_date IS NOT NULL
+                  AND end_date   IS NOT NULL
+                  AND julianday(end_date) >= julianday(start_date)
+                THEN sales / (julianday(end_date) - julianday(start_date) + 1)
+                ELSE NULL
+           END AS sales_per_day,
+           CASE WHEN size_sqm IS NOT NULL AND size_sqm > 0
+                THEN rental * 1.0 / size_sqm
+                ELSE NULL
+           END AS rent_per_sqm
       FROM (${baseSelect}) sub
   `;
 
@@ -1289,10 +1493,19 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
   );
 
   // Filtered grand totals so the header cards recompute server-side.
-  const totalsRow = await db.get<{ total_income: number; total_cost: number }>(sql`
+  const totalsRow = await db.get<{
+    total_income: number;
+    total_sales: number;
+    total_cost: number;
+    total_cogs: number;
+    total_rental: number;
+  }>(sql`
     SELECT
-      COALESCE(SUM(income), 0) AS total_income,
-      COALESCE(SUM(cost),   0) AS total_cost
+      COALESCE(SUM(income),  0) AS total_income,
+      COALESCE(SUM(sales),   0) AS total_sales,
+      COALESCE(SUM(cost),    0) AS total_cost,
+      COALESCE(SUM(cogs),    0) AS total_cogs,
+      COALESCE(SUM(rental),  0) AS total_rental
     FROM (${wrapped}) tot
   `);
 
@@ -1303,8 +1516,12 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
     total: totalRow?.count ?? 0,
     totals: {
       income: totalsRow?.total_income ?? 0,
+      sales: totalsRow?.total_sales ?? 0,
       cost: totalsRow?.total_cost ?? 0,
+      cogs: totalsRow?.total_cogs ?? 0,
+      rental: totalsRow?.total_rental ?? 0,
       net: (totalsRow?.total_income ?? 0) - (totalsRow?.total_cost ?? 0),
+      net_profit: (totalsRow?.total_sales ?? 0) - (totalsRow?.total_cost ?? 0),
     },
   });
 });
@@ -1534,6 +1751,12 @@ app.post("/:id/payment", requirePermission("projects.write"), async (c) => {
     proof_file_name?: string;
   }>();
   if (!body.status) return c.json({ error: "status required" }, 400);
+  // Read the prior status so the activity entry shows the transition.
+  const prior = await c.env.DB.prepare(
+    `SELECT payment_status FROM projects WHERE id = ?`
+  )
+    .bind(id)
+    .first<{ payment_status: string | null }>();
   try {
     await setPaymentStatus(
       c.env,
@@ -1546,8 +1769,20 @@ app.post("/:id/payment", requirePermission("projects.write"), async (c) => {
       },
       user?.id ?? 0
     );
+    await logProjectActivity(
+      c.env,
+      id,
+      "payment_status",
+      prior?.payment_status ?? null,
+      body.status,
+      body.notes ?? null,
+      user?.id
+    );
     return c.json({ ok: true });
   } catch (e: any) {
+    // Now visible in Wrangler logs so the swallowed message isn't the
+    // only signal when a payment transition fails server-side.
+    console.error("[POST /:id/payment]", id, body.status, e);
     return c.json({ error: e?.message || "Failed" }, 400);
   }
 });
@@ -1625,15 +1860,50 @@ app.post("/stock-transfers/:tid/confirm", requirePermission("projects.write"), a
   const tid = parseInt(c.req.param("tid"), 10);
   if (isNaN(tid)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
+  // Resolve project_id + direction before confirming so the activity
+  // entry survives even if the transfer is then deleted.
+  const xfer = await c.env.DB.prepare(
+    `SELECT project_id, direction FROM project_stock_transfers WHERE id = ?`
+  )
+    .bind(tid)
+    .first<{ project_id: number; direction: string }>();
   const ok = await confirmStockTransfer(c.env, tid, user?.id ?? 0);
   if (!ok) return c.json({ error: "Not found" }, 404);
+  if (xfer) {
+    await logProjectActivity(
+      c.env,
+      xfer.project_id,
+      "stock_transfer_confirmed",
+      null,
+      String(tid),
+      `direction=${xfer.direction}`,
+      user?.id
+    );
+  }
   return c.json({ ok: true });
 });
 
 app.post("/stock-transfers/:tid/unconfirm", requirePermission("projects.write"), async (c) => {
   const tid = parseInt(c.req.param("tid"), 10);
   if (isNaN(tid)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
+  const xfer = await c.env.DB.prepare(
+    `SELECT project_id, direction FROM project_stock_transfers WHERE id = ?`
+  )
+    .bind(tid)
+    .first<{ project_id: number; direction: string }>();
   await unconfirmStockTransfer(c.env, tid);
+  if (xfer) {
+    await logProjectActivity(
+      c.env,
+      xfer.project_id,
+      "stock_transfer_unconfirmed",
+      String(tid),
+      null,
+      `direction=${xfer.direction}`,
+      user?.id
+    );
+  }
   return c.json({ ok: true });
 });
 

@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { recomputeAutoCostLines } from "./projectCostRates";
 
 // ── Codes ─────────────────────────────────────────────────────
 // Format: PRJ-YYYY-NNN (zero-padded 3-digit counter, scoped to the
@@ -42,6 +43,29 @@ export async function logProjectActivity(
     .run();
 }
 
+// ── Auto-derived name ─────────────────────────────────────────
+// Canonical project name format. Used by both createProject() and the
+// seed script so a future re-seed lands at the exact same string as
+// the backfill migration 071.
+//
+//   {state} [{brand}] {organizer | SOLO} @ {venue}
+//
+// Examples:
+//   JOHOR [AKEMI] KAI HAO (KL CHEN) @ PARADIGM MALL
+//   SABAH [AKEMI] SOLO @ SURIA SABAH   (organizer NULL → "SOLO")
+export function deriveProjectName(input: {
+  state?: string | null;
+  brand?: string | null;
+  organizer?: string | null;
+  venue?: string | null;
+}): string {
+  const state = (input.state || "").trim() || "—";
+  const brand = (input.brand || "").trim() || "—";
+  const organizer = (input.organizer || "").trim() || "SOLO";
+  const venue = (input.venue || "").trim() || "—";
+  return `${state} [${brand}] ${organizer} @ ${venue}`;
+}
+
 // ── Create ────────────────────────────────────────────────────
 
 export interface CreateProjectInput {
@@ -72,6 +96,16 @@ export async function createProject(env: Env, input: CreateProjectInput) {
   // own project immediately sees it under the scoped filter. Admins
   // creating on someone else's behalf can override via input.pic_id.
   const picId = input.pic_id ?? input.created_by ?? null;
+  // Auto-derive name when caller doesn't supply one. Keeps the "+ New
+  // Project" form simple — boss just picks state/brand/organizer/venue.
+  const name =
+    input.name?.trim() ||
+    deriveProjectName({
+      state: input.state,
+      brand: input.brand,
+      organizer: input.organizer,
+      venue: input.venue,
+    });
   const r = await env.DB.prepare(
     `INSERT INTO projects (
       code, name, stage,
@@ -82,7 +116,7 @@ export async function createProject(env: Env, input: CreateProjectInput) {
   )
     .bind(
       code,
-      input.name,
+      name,
       input.event_type_id ?? null,
       input.brand ?? null,
       input.start_date ?? null,
@@ -238,22 +272,27 @@ const PATCH_FIELDS = [
 // JS constant rather than a DB enum so we can add a state without a
 // migration. Free-text writes still land (backward-compatible with
 // legacy rows), but the UI surfaces this list for new entries.
+// 13 negeri + 3 federal territories (Wilayah Persekutuan) — ALL CAPS
+// to match the canonical form used across the data. Cities (IPOH,
+// SEREMBAN, KUANTAN, etc.) get rolled up to their state at write
+// time and during data backfills.
 export const MALAYSIA_STATES = [
-  "Kuala Lumpur",
-  "Selangor",
-  "Johor",
-  "Penang",
-  "Perak",
-  "Pahang",
-  "Kedah",
-  "Kelantan",
-  "Terengganu",
-  "Negeri Sembilan",
-  "Melaka",
-  "Sabah",
-  "Sarawak",
-  "Putrajaya",
-  "Labuan",
+  "JOHOR",
+  "KEDAH",
+  "KELANTAN",
+  "KL",
+  "LABUAN",
+  "MELAKA",
+  "NEGERI SEMBILAN",
+  "PAHANG",
+  "PENANG",
+  "PERAK",
+  "PERLIS",
+  "PUTRAJAYA",
+  "SABAH",
+  "SARAWAK",
+  "SELANGOR",
+  "TERENGGANU",
 ] as const;
 
 export const PAYMENT_STATUSES = [
@@ -605,13 +644,20 @@ export async function getProjectDetail(env: Env, id: number) {
       notes: string | null;
       created_by_name: string | null;
     }>();
+  // Quick-log rows (rep entered amount + ref_no only at the project)
+  // carry the sentinel "(quick log)" in customer_name. Render them
+  // with a friendlier "Quick log · {ref}" label in the project finance
+  // ledger so the boss isn't squinting at a parenthesised placeholder.
+  const QUICK_LOG_SENTINEL = "(quick log)";
   const synthIncome = (salesEntryLines.results ?? []).map((s) => ({
     id: -s.id,
     project_id: id,
     kind: "income" as const,
     category: "sales",
     description:
-      (s.ref_no ? `${s.ref_no} · ` : "") + s.customer_name,
+      s.customer_name === QUICK_LOG_SENTINEL
+        ? `Quick log · ${s.ref_no ?? "no ref"}`
+        : (s.ref_no ? `${s.ref_no} · ` : "") + s.customer_name,
     amount: s.amount,
     occurred_at: s.occurred_at,
     r2_key: null,
@@ -1355,9 +1401,31 @@ export async function syncSalesTotalFromReports(env: Env, projectId: number) {
 
 // Categories the UI surfaces in its picker. Any string is accepted on
 // write (forward-compatible with "cleaning fee", "insurance" etc.).
+// The first eight (rental, cogs, setup, transport, commission,
+// merchandise, contractor, license) are the ones surfaced as
+// dedicated columns in the Finance List view + per-project breakdown
+// stat strip; the rest roll up into "Others".
+// 2026-05-08 — boss's Financial Snapshot model split COGS into
+// product sub-categories and transport into rate-driven fee + actual
+// logistics cost. Legacy `cogs` and `transport` slugs are kept so
+// existing rows still display; new lines should pick from the
+// sub-categories below.
 export const LEDGER_COST_CATEGORIES = [
-  "rental", "contractor", "license", "deposit", "permit",
-  "transport", "accommodation", "staffing", "marketing", "misc",
+  // Rental + COGS family
+  "rental",
+  "cogs",                       // legacy bucket — kept for old rows
+  "cogs_matt_sofa",
+  "cogs_bedframe",
+  "cogs_accessories",
+  // Operations
+  "setup",
+  "transport",                  // legacy bucket — kept for old rows
+  "transport_fee",              // % of sales, auto-applied by rate engine
+  "transport_setup_dismantle",  // actual logistics cost
+  "commission", "merchandise",
+  // Misc
+  "contractor", "license", "deposit", "permit",
+  "accommodation", "staffing", "marketing", "misc",
 ] as const;
 
 export const LEDGER_INCOME_CATEGORIES = [
@@ -1406,6 +1474,10 @@ export async function createLedgerLine(
       userId || null
     )
     .run();
+  // Auto cost-line engine (mig 063) runs after non-auto writes only.
+  // Its own writes are tagged `auto_source` and don't traverse this
+  // function, so the guard is mostly for symmetry with patch/archive.
+  await recomputeAutoCostLines(env, input.project_id, userId);
   await syncFinanceRollup(env, input.project_id);
   await logProjectActivity(
     env,
@@ -1431,11 +1503,14 @@ export async function patchLedgerLine(
   userId: number
 ) {
   const line = await env.DB.prepare(
-    `SELECT project_id FROM project_finance_lines WHERE id = ?`
+    `SELECT project_id, auto_source FROM project_finance_lines WHERE id = ?`
   )
     .bind(lineId)
-    .first<{ project_id: number }>();
+    .first<{ project_id: number; auto_source: string | null }>();
   if (!line) return false;
+  // Auto-generated rows are owned by the cost-rate engine — refuse
+  // user edits so the next recompute doesn't silently overwrite them.
+  if (line.auto_source) return false;
 
   const sets: string[] = [];
   const binds: any[] = [];
@@ -1453,6 +1528,7 @@ export async function patchLedgerLine(
   )
     .bind(...binds)
     .run();
+  await recomputeAutoCostLines(env, line.project_id, userId);
   await syncFinanceRollup(env, line.project_id);
   await logProjectActivity(env, line.project_id, "finance_line_edit", null, null, null, userId);
   return true;
@@ -1460,16 +1536,20 @@ export async function patchLedgerLine(
 
 export async function archiveLedgerLine(env: Env, lineId: number, userId: number) {
   const line = await env.DB.prepare(
-    `SELECT project_id FROM project_finance_lines WHERE id = ?`
+    `SELECT project_id, auto_source FROM project_finance_lines WHERE id = ?`
   )
     .bind(lineId)
-    .first<{ project_id: number }>();
+    .first<{ project_id: number; auto_source: string | null }>();
   if (!line) return false;
+  // Auto rows are managed by the cost-rate engine — refuse user
+  // deletes; users edit the rate card instead.
+  if (line.auto_source) return false;
   await env.DB.prepare(
     `UPDATE project_finance_lines SET archived_at = datetime('now') WHERE id = ?`
   )
     .bind(lineId)
     .run();
+  await recomputeAutoCostLines(env, line.project_id, userId);
   await syncFinanceRollup(env, line.project_id);
   await logProjectActivity(env, line.project_id, "finance_line_remove", null, null, null, userId);
   return true;

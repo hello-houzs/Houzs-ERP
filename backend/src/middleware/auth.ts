@@ -2,6 +2,11 @@ import type { MiddlewareHandler } from "hono";
 import type { Env } from "../types";
 import { getUserBySession, type AuthUser } from "../services/auth";
 import { hasPermission } from "../services/permissions";
+import {
+  fullAccessMap,
+  meetsLevel,
+  type AccessLevel,
+} from "../services/pageAccess";
 
 // Legacy "service" user — used when a request authenticates with the
 // shared DASHBOARD_API_KEY env var (cron jobs, internal tooling). Has
@@ -19,11 +24,16 @@ const SERVICE_USER: AuthUser = {
   scope_to_pic: false,
   department_id: null,
   brand_scope: null,
+  page_access: fullAccessMap(),
 };
 
 declare module "hono" {
   interface ContextVariableMap {
     user: AuthUser;
+    /** Page-level access for the current request — set by
+     *  `requirePageAccess`. Routes that need partial/full branching
+     *  read this instead of recomputing. */
+    access_level: AccessLevel;
   }
 }
 
@@ -121,6 +131,47 @@ export function requireAnyPermission(perms: string[]): MiddlewareHandler<{ Bindi
         403
       );
     }
+    await next();
+  };
+}
+
+/**
+ * Per-page access gate. Reads `user.page_access[pageKey]` and compares
+ * against `minLevel` (default 'partial' — i.e. user needs ≥partial to
+ * enter). The wildcard `*` permission short-circuits to 'full'.
+ *
+ * Sets `c.var.access_level` so downstream handlers can branch on the
+ * resolved level without re-checking.
+ *
+ * Usage:
+ *   app.get("/", requirePageAccess("sales"), async (c) => {
+ *     const level = c.get("access_level"); // 'partial' | 'full'
+ *     ...
+ *   });
+ *
+ *   app.post("/", requirePageAccess("sales", "full"), handler); // write
+ */
+export function requirePageAccess(
+  pageKey: string,
+  minLevel: AccessLevel = "partial",
+): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    const user = c.get("user");
+    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    const granted = user.permissions_set ?? user.permissions;
+    if (hasPermission(granted, "*")) {
+      c.set("access_level", "full");
+      await next();
+      return;
+    }
+    const level: AccessLevel = (user.page_access?.[pageKey] ?? "none") as AccessLevel;
+    if (!meetsLevel(level, minLevel)) {
+      return c.json(
+        { error: `Forbidden: needs ${minLevel} access to ${pageKey}` },
+        403,
+      );
+    }
+    c.set("access_level", level);
     await next();
   };
 }

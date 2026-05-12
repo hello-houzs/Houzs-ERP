@@ -331,7 +331,10 @@ function CasesView({
       label: "Stage",
       alwaysVisible: true,
       render: (r) => (
-        <div className="flex flex-wrap items-center gap-1.5">
+        // Single-line — `flex-wrap` removed (was the only thing
+        // letting badges spill to a second row). Badges that overflow
+        // are now clipped with ellipsis at the cell edge.
+        <div className="flex items-center gap-1.5">
           {r.archived_at && (
             <span className="inline-flex items-center rounded-full border border-ink-muted/40 bg-ink-muted/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-muted">
               Archived
@@ -424,6 +427,41 @@ function CasesView({
       label: "Assigned To",
       render: (r) => r.assigned_to_name || "—",
       getValue: (r) => r.assigned_to_name,
+    },
+    {
+      key: "supplier_pickup_at",
+      label: "Supplier Pickup",
+      defaultHidden: true,
+      render: (r) => formatDate(r.supplier_pickup_at),
+      getValue: (r) => r.supplier_pickup_at,
+    },
+    {
+      key: "items_ready_at",
+      label: "Items Ready",
+      defaultHidden: true,
+      render: (r) => formatDate(r.items_ready_at),
+      getValue: (r) => r.items_ready_at,
+    },
+    {
+      key: "stage_lead_days",
+      label: "Lead Time",
+      align: "right",
+      defaultHidden: true,
+      render: (r) =>
+        r.days_in_stage == null ? (
+          "—"
+        ) : (
+          <span
+            className={cn(
+              "font-mono tabular-nums text-[11px]",
+              r.days_in_stage > 3 && r.stage !== "closed" && "text-err font-semibold",
+            )}
+            title={`In ${stageLabel(r.stage)} for ${r.days_in_stage} day(s)`}
+          >
+            {r.days_in_stage}d
+          </span>
+        ),
+      getValue: (r) => r.days_in_stage,
     },
   ];
 
@@ -751,6 +789,16 @@ function CreatePanel({
   const [customerInfo, setCustomerInfo] = useState<{ name?: string; phone?: string; location?: string } | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  // Mig 065 — pull issue categories from the lookup endpoint so the
+  // intake form mirrors what admins maintain in Service Maintenance.
+  // Fall back to the legacy ISSUE_CATEGORIES constant if the call
+  // hasn't returned yet.
+  const issueCategoriesQ = useQuery<{ data: { slug: string; name: string }[] }>(
+    () => api.get("/api/assr/lookups/issue-categories"),
+    [],
+  );
+  const issueCatOptions =
+    issueCategoriesQ.data?.data.map((r) => r.name) ?? [];
 
   const MAX_FILES = 5;
   const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
@@ -971,7 +1019,7 @@ function CreatePanel({
             className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
           >
             <option value="">— select —</option>
-            {ISSUE_CATEGORIES.map((c) => (
+            {(issueCatOptions.length ? issueCatOptions : [...ISSUE_CATEGORIES]).map((c) => (
               <option key={c} value={c}>
                 {c}
               </option>
@@ -1054,15 +1102,60 @@ function DetailContent({
     () => api.get<any>("/api/users").then((r: any) => r.users ?? r.data ?? r ?? []),
     []
   );
+  // Mig 065 — picker values come from the lookup endpoints maintained
+  // in Service Maintenance. Each query is small; the four together
+  // are still cheap. Fall back to the legacy hardcoded constants when
+  // the API hasn't returned yet so the form stays usable.
+  type LookupOpt = { slug: string; name: string };
+  const issueCategoriesQ = useQuery<{ data: LookupOpt[] }>(
+    () => api.get("/api/assr/lookups/issue-categories"),
+    [],
+  );
+  const resolutionMethodsQ = useQuery<{ data: LookupOpt[] }>(
+    () => api.get("/api/assr/lookups/resolution-methods"),
+    [],
+  );
+  const prioritiesQ = useQuery<{ data: LookupOpt[] }>(
+    () => api.get("/api/assr/lookups/priorities"),
+    [],
+  );
+  const ncrCategoriesQ = useQuery<{ data: LookupOpt[] }>(
+    () => api.get("/api/assr/lookups/ncr-categories"),
+    [],
+  );
+  const issueOptions = (issueCategoriesQ.data?.data ?? []).map((r) => r.name);
+  const resolutionOptions = (resolutionMethodsQ.data?.data ?? []).map((r) => r.slug);
+  const priorityOptions = (prioritiesQ.data?.data ?? []).map((r) => r.slug);
+  const ncrOptions = (ncrCategoriesQ.data?.data ?? []).map((r) => r.slug);
   const [note, setNote] = useState("");
+  // Mig 064 — note posting now picks a category. Default 'purchasing'
+  // (internal team comms) since most notes are operational. Switch to
+  // 'customer' to make the entry visible on the customer portal.
+  const [noteCategory, setNoteCategory] = useState<"purchasing" | "customer">(
+    "purchasing",
+  );
+  // Activity timeline filter. 'all' = show everything; the others
+  // narrow to one category. System-emitted events (stage_change,
+  // assigned, etc.) live under 'system'.
+  const [activityFilter, setActivityFilter] = useState<
+    "all" | "purchasing" | "customer" | "system"
+  >("all");
   const [transitioning, setTransitioning] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [showClosePrompt, setShowClosePrompt] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [showAddItem, setShowAddItem] = useState(false);
   const [showAddLogistics, setShowAddLogistics] = useState(false);
-  const [newItemCode, setNewItemCode] = useState("");
-  const [newItemDesc, setNewItemDesc] = useState("");
+  // SO-based item picker for the Add Item panel — mirrors the
+  // intake form's `lookup-items` flow so ops adds items by checkbox
+  // instead of re-typing them. Manual fallback covers ad-hoc entries
+  // that aren't on the original SO.
+  type LookupItem = { item_code: string; item_description: string | null; qty?: number };
+  const [lookupItems, setLookupItems] = useState<LookupItem[] | null>(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [pickedCodes, setPickedCodes] = useState<Set<string>>(new Set());
+  const [manualCode, setManualCode] = useState("");
+  const [manualDesc, setManualDesc] = useState("");
 
   const c = detail.data?.case;
   const items = detail.data?.items ?? [];
@@ -1092,7 +1185,10 @@ function DetailContent({
 
   async function addNote() {
     if (!note.trim()) return;
-    await api.post(`/api/assr/${id}/notes`, { note: note.trim() });
+    await api.post(`/api/assr/${id}/notes`, {
+      note: note.trim(),
+      category: noteCategory,
+    });
     setNote("");
     detail.reload();
   }
@@ -1119,15 +1215,73 @@ function DetailContent({
     }
   }
 
-  async function addItem() {
-    if (!newItemCode.trim()) return;
+  // Open the Add Item panel and lazily fetch the case's SO items —
+  // same `/api/assr/lookup-items/:doc_no` endpoint used by the
+  // intake form. Cached after the first open; user can re-fetch via
+  // the Refresh button if the SO has changed since.
+  async function openAddItem() {
+    setShowAddItem(true);
+    setPickedCodes(new Set());
+    if (!c?.doc_no) return;
+    if (lookupItems !== null) return; // already loaded
+    setLookupLoading(true);
     try {
-      await api.post(`/api/assr/${id}/items`, {
-        items: [{ item_code: newItemCode.trim(), item_description: newItemDesc.trim() || null }],
-      });
-      setNewItemCode("");
-      setNewItemDesc("");
-      setShowAddItem(false);
+      const res = await api.get<{ items: LookupItem[] }>(
+        `/api/assr/lookup-items/${encodeURIComponent(c.doc_no)}`,
+      );
+      setLookupItems(res.items);
+    } catch (e: any) {
+      toast.error(`Lookup failed: ${e?.message || e}`);
+      setLookupItems([]);
+    } finally {
+      setLookupLoading(false);
+    }
+  }
+
+  async function reloadLookup() {
+    if (!c?.doc_no) return;
+    setLookupLoading(true);
+    setLookupItems(null);
+    try {
+      const res = await api.get<{ items: LookupItem[] }>(
+        `/api/assr/lookup-items/${encodeURIComponent(c.doc_no)}`,
+      );
+      setLookupItems(res.items);
+    } catch (e: any) {
+      toast.error(`Lookup failed: ${e?.message || e}`);
+      setLookupItems([]);
+    } finally {
+      setLookupLoading(false);
+    }
+  }
+
+  function closeAddItem() {
+    setShowAddItem(false);
+    setPickedCodes(new Set());
+    setManualCode("");
+    setManualDesc("");
+  }
+
+  async function addPickedItems() {
+    const fromLookup = (lookupItems ?? [])
+      .filter((it) => pickedCodes.has(it.item_code))
+      .map((it) => ({
+        item_code: it.item_code,
+        item_description: it.item_description,
+        qty: it.qty && it.qty > 0 ? it.qty : 1,
+      }));
+    const manualEntry = manualCode.trim()
+      ? [{
+          item_code: manualCode.trim(),
+          item_description: manualDesc.trim() || null,
+          qty: 1,
+        }]
+      : [];
+    const payload = [...fromLookup, ...manualEntry];
+    if (payload.length === 0) return;
+    try {
+      await api.post(`/api/assr/${id}/items`, { items: payload });
+      closeAddItem();
       detail.reload();
     } catch (e: any) {
       toast.error(`Failed: ${e?.message || e}`);
@@ -1147,7 +1301,9 @@ function DetailContent({
     setShowClosePrompt(true);
   }
 
-  const nextStage = c ? NEXT_STAGE[c.stage] : null;
+  // NEXT_STAGE lookup retired in mig 064 — the header picker now
+  // accepts any stage. Kept the constant defined at module scope for
+  // any external consumers (tests, etc.); no live UI consumes it.
   const userOptions = Array.isArray(users.data)
     ? users.data.map((u) => ({ id: u.id, name: u.name }))
     : [];
@@ -1201,13 +1357,27 @@ function DetailContent({
                 Archive
               </HeaderButton>
             )}
-            {c.stage !== "closed" &&
-              !c.archived_at &&
-              c.stage !== "resolution" && (
-                <HeaderButton variant="ghost" onClick={handleCloseClick}>
-                  Close
-                </HeaderButton>
-              )}
+            {/* Free-form stage picker (mig 064) — any → any. The
+                old "next stage" linear button is gone; ops can revert
+                a closed case or skip ahead when supplier ships direct.
+                Closing still gets a one-click button when the case
+                is at resolution since that's the most common path. */}
+            {!c.archived_at && (
+              <select
+                value={c.stage}
+                onChange={(e) => transition(e.target.value as AssrStage)}
+                disabled={transitioning}
+                className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-accent disabled:opacity-60"
+                title="Move this case to any stage"
+              >
+                <option value="registration">Pending Review</option>
+                <option value="triage">Under Verification</option>
+                <option value="action">Pending Solution</option>
+                <option value="logistics">Pending Logistics</option>
+                <option value="resolution">Pending Completion</option>
+                <option value="closed">Completed</option>
+              </select>
+            )}
             {c.stage === "resolution" && !c.archived_at && (
               <HeaderButton
                 variant="primary"
@@ -1215,16 +1385,6 @@ function DetailContent({
                 disabled={transitioning}
               >
                 {transitioning ? "…" : "Close Case"}
-                <ChevronRight size={12} />
-              </HeaderButton>
-            )}
-            {nextStage && c.stage !== "resolution" && !c.archived_at && (
-              <HeaderButton
-                variant="primary"
-                onClick={() => transition(nextStage.stage)}
-                disabled={transitioning}
-              >
-                {transitioning ? "…" : nextStage.label}
                 <ChevronRight size={12} />
               </HeaderButton>
             )}
@@ -1344,43 +1504,131 @@ function DetailContent({
             )}
             {c.stage !== "closed" && !showAddItem && (
               <button
-                onClick={() => setShowAddItem(true)}
+                onClick={openAddItem}
                 className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline"
               >
                 <Plus size={12} /> Add Item
               </button>
             )}
-            {showAddItem && (
-              <div className="mt-2 space-y-2 rounded border border-border bg-bg/60 p-3">
-                <input
-                  value={newItemCode}
-                  onChange={(e) => setNewItemCode(e.target.value)}
-                  placeholder="Item code"
-                  className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
-                />
-                <input
-                  value={newItemDesc}
-                  onChange={(e) => setNewItemDesc(e.target.value)}
-                  placeholder="Description (optional)"
-                  className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
-                />
-                <div className="flex gap-2">
-                  <button
-                    onClick={addItem}
-                    disabled={!newItemCode.trim()}
-                    className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
-                  >
-                    Add
-                  </button>
-                  <button
-                    onClick={() => { setShowAddItem(false); setNewItemCode(""); setNewItemDesc(""); }}
-                    className="rounded-md border border-border px-3 py-1.5 text-[11px] text-ink-secondary"
-                  >
-                    Cancel
-                  </button>
+            {showAddItem && (() => {
+              // Hide items already on the case so users only see what's
+              // still pickable from the SO. Manual fallback below covers
+              // anything not on the original SO.
+              const existingCodes = new Set(items.map((it: any) => it.item_code));
+              const available = (lookupItems ?? []).filter(
+                (it) => !existingCodes.has(it.item_code),
+              );
+              const canAdd = pickedCodes.size > 0 || manualCode.trim().length > 0;
+              return (
+                <div className="mt-2 space-y-2 rounded border border-border bg-bg/60 p-3">
+                  <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                    <span>
+                      Items from SO{" "}
+                      <span className="font-mono normal-case text-ink">
+                        {c.doc_no || "(none)"}
+                      </span>
+                    </span>
+                    <button
+                      onClick={reloadLookup}
+                      disabled={lookupLoading || !c.doc_no}
+                      title="Refetch items from the SO"
+                      className="inline-flex items-center gap-1 rounded p-1 text-ink-muted hover:text-accent disabled:opacity-40"
+                    >
+                      <RefreshCw size={11} className={cn(lookupLoading && "animate-spin")} />
+                    </button>
+                  </div>
+                  {lookupLoading && lookupItems === null && (
+                    <div className="text-[12px] text-ink-muted">Loading SO items…</div>
+                  )}
+                  {!lookupLoading && lookupItems !== null && available.length === 0 && (
+                    <div className="text-[11.5px] text-ink-muted">
+                      {(lookupItems?.length ?? 0) === 0
+                        ? "No items found on this SO. Use the manual entry below."
+                        : "All SO items are already on this case. Use the manual entry below to add anything else."}
+                    </div>
+                  )}
+                  {available.length > 0 && (
+                    <div className="space-y-1.5">
+                      {available.map((item) => {
+                        const checked = pickedCodes.has(item.item_code);
+                        return (
+                          <label
+                            key={item.item_code}
+                            className="flex cursor-pointer items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-sm hover:bg-accent-soft/20"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const next = new Set(pickedCodes);
+                                if (next.has(item.item_code)) next.delete(item.item_code);
+                                else next.add(item.item_code);
+                                setPickedCodes(next);
+                              }}
+                              className="accent-accent"
+                            />
+                            <span className="font-mono text-[11px] font-medium">
+                              {item.item_code}
+                            </span>
+                            {item.item_description && (
+                              <span
+                                className="flex-1 truncate text-ink-secondary"
+                                title={item.item_description}
+                              >
+                                {item.item_description}
+                              </span>
+                            )}
+                            {item.qty != null && item.qty > 0 && (
+                              <span className="ml-auto text-[11px] text-ink-muted">
+                                &times;{item.qty}
+                              </span>
+                            )}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* Manual fallback for items not on the SO. */}
+                  <div className="rounded border border-dashed border-border bg-surface/40 p-2">
+                    <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                      Or add manually (not on SO)
+                    </div>
+                    <div className="space-y-1.5">
+                      <input
+                        value={manualCode}
+                        onChange={(e) => setManualCode(e.target.value)}
+                        placeholder="Item code"
+                        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+                      />
+                      <input
+                        value={manualDesc}
+                        onChange={(e) => setManualDesc(e.target.value)}
+                        placeholder="Description (optional)"
+                        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={addPickedItems}
+                      disabled={!canAdd}
+                      className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
+                    >
+                      Add
+                      {pickedCodes.size > 0 && ` (${pickedCodes.size})`}
+                      {manualCode.trim() && pickedCodes.size === 0 && " (1)"}
+                      {manualCode.trim() && pickedCodes.size > 0 && " + 1"}
+                    </button>
+                    <button
+                      onClick={closeAddItem}
+                      className="rounded-md border border-border px-3 py-1.5 text-[11px] text-ink-secondary"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </PanelSection>
 
           {/* ── Issue (captured at intake) ─────────────────────
@@ -1396,11 +1644,14 @@ function DetailContent({
               value={c.issue_category}
               onSave={(v) => patch({ issue_category: v })}
               dialog={dialog}
+              categories={
+                issueOptions.length ? issueOptions : [...ISSUE_CATEGORIES]
+              }
             />
             <InlineEdit
               label="Priority"
               value={c.priority}
-              options={[...PRIORITY_OPTIONS]}
+              options={priorityOptions.length ? priorityOptions : [...PRIORITY_OPTIONS]}
               onSave={(v) => patch({ priority: v })}
             />
           </PanelSection>
@@ -1410,7 +1661,7 @@ function DetailContent({
             <InlineEdit
               label="Resolution Method"
               value={c.resolution_method}
-              options={[...RESOLUTION_OPTIONS]}
+              options={resolutionOptions.length ? resolutionOptions : [...RESOLUTION_OPTIONS]}
               onSave={(v) => patch({ resolution_method: v })}
             />
             {/* Creditor (AutoCount) — derived from item_code via
@@ -1511,6 +1762,21 @@ function DetailContent({
               textarea
               value={c.action_remark}
               onSave={(v) => patch({ action_remark: v })}
+            />
+            {/* Mig 064 — supplier handover dates. Surfaced inline so
+                ops can record them without opening a separate panel.
+                Both feed the case-list columns + future SLA reports. */}
+            <InlineEdit
+              label="Supplier Pickup Date"
+              type="date"
+              value={c.supplier_pickup_at}
+              onSave={(v) => patch({ supplier_pickup_at: v || null })}
+            />
+            <InlineEdit
+              label="Items Ready Date"
+              type="date"
+              value={c.items_ready_at}
+              onSave={(v) => patch({ items_ready_at: v || null })}
             />
           </PanelSection>
 
@@ -1675,11 +1941,26 @@ function DetailContent({
           {/* Activity */}
           <PanelSection title="Activity">
             <div className="mb-3 flex gap-2">
+              <select
+                value={noteCategory}
+                onChange={(e) =>
+                  setNoteCategory(e.target.value as "purchasing" | "customer")
+                }
+                className="rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-accent"
+                title="Where this note is visible"
+              >
+                <option value="purchasing">Purchasing (internal)</option>
+                <option value="customer">Customer-visible</option>
+              </select>
               <input
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && addNote()}
-                placeholder="Add a note..."
+                placeholder={
+                  noteCategory === "customer"
+                    ? "Note customers will see..."
+                    : "Internal note..."
+                }
                 className="flex-1 rounded-md border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
               />
               <button
@@ -1690,8 +1971,45 @@ function DetailContent({
                 <MessageSquare size={12} />
               </button>
             </div>
+            {/* Filter pills (mig 064) — narrow the timeline to one
+                category. System events (stage changes, assignments)
+                live under 'system'. */}
+            <div className="mb-2 flex flex-wrap gap-1">
+              {(
+                [
+                  { value: "all" as const, label: "All" },
+                  { value: "purchasing" as const, label: "Purchasing" },
+                  { value: "customer" as const, label: "Customer" },
+                  { value: "system" as const, label: "System" },
+                ]
+              ).map((opt) => {
+                const active = activityFilter === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => setActivityFilter(opt.value)}
+                    className={cn(
+                      "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors",
+                      active
+                        ? "border-accent bg-accent text-white"
+                        : "border-border text-ink-muted hover:border-accent/50 hover:text-ink",
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
             <div className="space-y-2">
-              {activity.map((a: any) => (
+              {activity
+                .filter((a: any) => {
+                  if (activityFilter === "all") return true;
+                  // Older rows (pre-mig 064) without a category fall
+                  // into 'system' so they don't disappear when a
+                  // narrower filter is selected.
+                  return (a.category ?? "system") === activityFilter;
+                })
+                .map((a: any) => (
                 <div key={a.id} className={cn("group border-l-2 pl-3 text-[12px]", a.source === "customer" ? "border-accent" : "border-border")}>
                   <div className="flex items-center gap-2 text-ink-muted">
                     <span className="font-medium text-ink-secondary">
@@ -1702,6 +2020,23 @@ function DetailContent({
                     {a.source === "customer" && (
                       <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent">
                         Customer
+                      </span>
+                    )}
+                    {/* Mig 064 category badge — only when set and not
+                        already covered by the source=customer badge. */}
+                    {a.category && a.source !== "customer" && (
+                      <span
+                        className={cn(
+                          "rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider",
+                          a.category === "purchasing" &&
+                            "bg-amber-100 text-amber-800",
+                          a.category === "customer" &&
+                            "bg-accent/15 text-accent",
+                          a.category === "system" &&
+                            "bg-bg text-ink-muted",
+                        )}
+                      >
+                        {a.category}
                       </span>
                     )}
                     <span>&middot;</span>
@@ -1843,7 +2178,7 @@ function DetailContent({
             <InlineEdit
               label="NCR Category"
               value={c.ncr_category}
-              options={[...NCR_OPTIONS]}
+              options={ncrOptions.length ? ncrOptions : [...NCR_OPTIONS]}
               onSave={(v) => patch({ ncr_category: v })}
             />
             {c.approved_at ? (
@@ -1981,12 +2316,18 @@ function IssueCategoryField({
   value,
   onSave,
   dialog,
+  categories,
 }: {
   value: string | null | undefined;
   onSave: (next: string | null) => Promise<void>;
   dialog: ReturnType<typeof useDialog>;
+  // Mig 065 — passed in from the parent so the picker reflects what
+  // admins added in Service Maintenance. Falls back to the legacy
+  // ISSUE_CATEGORIES constant inside the parent if the API hasn't
+  // returned yet.
+  categories: readonly string[];
 }) {
-  const isCanonical = !!value && (ISSUE_CATEGORIES as readonly string[]).includes(value);
+  const isCanonical = !!value && categories.includes(value);
   const showsOther = !!value && !isCanonical;
 
   async function onChange(next: string) {
@@ -2017,7 +2358,7 @@ function IssueCategoryField({
         className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
       >
         <option value="">— select —</option>
-        {ISSUE_CATEGORIES.map((c) => (
+        {categories.map((c) => (
           <option key={c} value={c}>
             {c}
           </option>
@@ -2965,13 +3306,22 @@ function ByCreditorView({ onPickCreditor }: { onPickCreditor: () => void }) {
     {
       key: "contact",
       label: "Contact",
-      render: (r) => (
-        <div className="text-xs">
-          {r.email && <div>{r.email}</div>}
-          {r.phone && <div className="text-ink-muted">{r.phone}</div>}
-          {!r.email && !r.phone && <span className="text-ink-muted">—</span>}
-        </div>
-      ),
+      // Single-line — email + phone separated by a middle dot so the
+      // row stays one line per the 2026-05-08 density rule. Full
+      // value lands in the title attr for hover.
+      render: (r) => {
+        if (!r.email && !r.phone) {
+          return <span className="text-ink-muted">—</span>;
+        }
+        const both = [r.email, r.phone].filter(Boolean).join(" · ");
+        return (
+          <span className="text-xs" title={both}>
+            {r.email && <span>{r.email}</span>}
+            {r.email && r.phone && <span className="text-ink-muted"> · </span>}
+            {r.phone && <span className="text-ink-muted">{r.phone}</span>}
+          </span>
+        );
+      },
       getValue: (r) => `${r.email || ""} ${r.phone || ""}`.trim(),
     },
     {

@@ -14,6 +14,9 @@ import { Notifications } from "./pages/Notifications";
 import { Profile } from "./pages/Profile";
 import { Settings } from "./pages/Settings";
 import { Team } from "./pages/Team";
+import { SalesTeam } from "./pages/SalesTeam";
+import { SalesTeamDetail } from "./pages/SalesTeamDetail";
+import { SalesTeamMaintenance } from "./pages/SalesTeamMaintenance";
 import { Gamification } from "./pages/Gamification";
 import { GamificationAdmin } from "./pages/GamificationAdmin";
 import { Shop } from "./pages/Shop";
@@ -30,6 +33,7 @@ import { DriverHome } from "./pages/DriverHome";
 import { DriverTrip } from "./pages/DriverTrip";
 import { DriverProfile } from "./pages/DriverProfile";
 import { useAuth } from "./auth/AuthContext";
+import { PageGuard } from "./auth/PageGuard";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
 import { NotificationsProvider } from "./hooks/useNotifications";
 import { BrowserPushSink } from "./components/BrowserPushSink";
@@ -258,9 +262,9 @@ export default function App() {
         <Route
           path="/sales"
           element={
-            <Guard perm="sales.read">
+            <PageGuard page="sales">
               <Sales />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
@@ -292,6 +296,30 @@ export default function App() {
           element={
             <Guard anyPerm={["users.read", "roles.read"]}>
               <Team />
+            </Guard>
+          }
+        />
+        <Route
+          path="/sales-team"
+          element={
+            <Guard perm="sales_team.read">
+              <SalesTeam />
+            </Guard>
+          }
+        />
+        <Route
+          path="/sales-team/:id"
+          element={
+            <Guard perm="sales_team.read">
+              <SalesTeamDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/sales-team-maintenance"
+          element={
+            <Guard perm="sales_team.manage">
+              <SalesTeamMaintenance />
             </Guard>
           }
         />

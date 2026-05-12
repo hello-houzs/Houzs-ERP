@@ -24,6 +24,7 @@ import {
   ShoppingBag,
   Wallet,
   Briefcase,
+  Receipt,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -88,8 +89,17 @@ export const NAV_TABS: NavTab[] = [
     label: "Sales",
     icon: Briefcase,
     groupId: "sales",
-    anyPerm: ["sales_orders.read", "delivery_orders.read", "purchase_orders.read"],
+    anyPerm: [
+      "sales.read",
+      "sales_orders.read",
+      "delivery_orders.read",
+      "purchase_orders.read",
+    ],
     children: [
+      // Rep-entered customer sales (sales_entries) — the home for the
+      // quick-log → complete workflow. Listed first because reps live
+      // here daily, while the AutoCount-synced views below are reads.
+      { to: "/sales", label: "Sales Entries", icon: Receipt, perm: "sales.read" },
       { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read" },
       // Members with delivery_orders.read but no trips.read.all still see
       // the flat Delivery list. Dispatchers with trips.read.all get the
@@ -154,7 +164,7 @@ export const NAV_TABS: NavTab[] = [
       },
       {
         to: "/assr?view=settings",
-        label: "Service Settings",
+        label: "Service Maintenance",
         icon: Wrench,
         perm: "service_cases.manage",
       },
@@ -211,9 +221,12 @@ export const NAV_TABS: NavTab[] = [
     label: "People",
     icon: Users,
     groupId: "people",
-    anyPerm: ["users.read", "roles.read"],
+    anyPerm: ["users.read", "roles.read", "sales_team.read"],
     children: [
       { to: "/team", label: "Team", icon: Users, anyPerm: ["users.read", "roles.read"] },
+      // Sales Team is the retail-rep org chart, separate from /team
+      // (workspace logins). Most reps don't have a workspace login.
+      { to: "/sales-team", label: "Sales Team", icon: Briefcase, anyPerm: ["sales_team.read"] },
     ],
   },
 

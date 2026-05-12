@@ -6,8 +6,8 @@ import { cn } from "../lib/utils";
 interface Props {
   open: boolean;
   onClose: () => void;
-  title: string;
-  subtitle?: string;
+  title: ReactNode;
+  subtitle?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
   width?: number;
@@ -133,7 +133,7 @@ export function Panel({
       aria-hidden={!open}
       role="dialog"
       aria-modal="true"
-      aria-label={title}
+      aria-label={typeof title === "string" ? title : undefined}
     >
       <div
         ref={panelRef}

@@ -137,7 +137,7 @@ export function Overdue() {
               <StatCard
                 label="Last Run"
                 value={s?.last_pull ? relativeTime(s.last_pull) : "Never"}
-                subtitle={s?.last_pull ? new Date(s.last_pull).toISOString().slice(0, 10) : " "}
+                subtitle={s?.last_pull ? formatDate(s.last_pull) : " "}
               />
               <StatCard
                 label="Schedule"

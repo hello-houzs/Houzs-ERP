@@ -93,7 +93,10 @@ export function Overview() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   const today = new Date().toISOString().slice(0, 10);
-  const todayHuman = new Date().toLocaleDateString("en-US", {
+  // en-GB locale puts the day before the month ("Monday, 4 May" rather
+  // than en-US's "Monday, May 4"), matching the rest of the SPA's
+  // DD/MM date format.
+  const todayHuman = new Date().toLocaleDateString("en-GB", {
     weekday: "long",
     day: "numeric",
     month: "long",

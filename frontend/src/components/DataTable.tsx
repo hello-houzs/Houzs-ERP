@@ -337,9 +337,15 @@ export function DataTable<T>({
     return copy;
   }, [rows, sort, allColumns, serverSort]);
 
-  // Density-aware cell padding
-  const cellPad = density === "compact" ? "px-4 py-2" : "px-4 py-3.5";
-  const headPad = density === "compact" ? "px-4 py-2.5" : "px-4 py-3";
+  // Density-aware cell padding. Tightened on 2026-05-08 — every row
+  // is one line of data, full stop. Old comfy (py-3.5) and old
+  // compact (py-2) both wasted vertical space; the new values
+  // collapse to a single 13px line + minimal cushion on each side.
+  // Headers stay one notch taller so the column boundary still reads.
+  const cellPad =
+    density === "compact" ? "px-3 py-1 leading-tight" : "px-3 py-1.5 leading-tight";
+  const headPad =
+    density === "compact" ? "px-3 py-1.5 leading-tight" : "px-3 py-2 leading-tight";
 
   // Common toolbar button class — used by Import / Export / Density / Columns.
   // 44 px on mobile (touch-target floor), compresses to 32 px on sm+ where
@@ -577,6 +583,14 @@ export function DataTable<T>({
                           className={cn(
                             "border-b border-border-subtle text-[13px] text-ink transition-colors",
                             cellPad,
+                            // Single-line rule (2026-05-08). Cells stop
+                            // wrapping their text content; long values
+                            // overflow into the next cell visually but
+                            // never push the row to two lines. Render
+                            // functions that genuinely need multi-line
+                            // (rare) can opt back in via `c.className`
+                            // ("whitespace-normal").
+                            "whitespace-nowrap",
                             "group-hover:bg-accent-soft/55",
                             c.align === "right" && "text-right",
                             c.align === "center" && "text-center",
@@ -710,9 +724,12 @@ export function DataTable<T>({
                         <dd
                           key={c.key}
                           className={cn(
-                            "min-w-0 break-words text-ink-secondary",
-                            c.align === "right" && "text-right tabular-nums",
-                            c.align === "center" && "text-center",
+                            // Always left-align in card view so cells
+                            // don't zig-zag between the left and right
+                            // edges of their column. `tabular-nums`
+                            // still keeps numeric digits in lockstep.
+                            "min-w-0 break-words text-left text-ink-secondary",
+                            c.align === "right" && "tabular-nums font-semibold",
                             c.className,
                           )}
                         >
@@ -737,10 +754,16 @@ export function DataTable<T>({
                           )}
                           <dd
                             className={cn(
-                              "min-w-0 break-words font-medium text-ink",
+                              // Always left-align in card view. The
+                              // desktop column's `align: "right"` only
+                              // gets us tabular-nums + a heavier weight
+                              // here — flipping the entire cell to the
+                              // right edge creates a jagged value
+                              // column when stacked with left-aligned
+                              // siblings.
+                              "min-w-0 break-words text-left font-medium text-ink",
                               c.align === "right" &&
-                                "text-right tabular-nums font-semibold",
-                              c.align === "center" && "text-center",
+                                "tabular-nums font-semibold",
                               c.className,
                             )}
                           >

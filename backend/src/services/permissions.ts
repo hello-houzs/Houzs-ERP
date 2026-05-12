@@ -71,6 +71,13 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "users.manage", resource: "Team",  verb: "manage", label: "Manage team", description: "Invite, change role, disable, or remove users" },
   { key: "roles.read",   resource: "Roles", verb: "read",   label: "View roles",  description: "See the list of roles and their permissions" },
   { key: "roles.manage", resource: "Roles", verb: "manage", label: "Manage roles", description: "Create, edit, and delete custom roles" },
+
+  // Sales Team — retail rep org chart (separate from workspace `users`).
+  // Reps live in `sales_reps`, optionally linked 1:1 to a workspace
+  // user. The per-rep `is_admin` flag is independent of these
+  // permissions and gates "edit anyone in your hierarchy".
+  { key: "sales_team.read",   resource: "Sales Team", verb: "read",   label: "View sales team",   description: "See the retail-rep org chart, names, brands, and positions" },
+  { key: "sales_team.manage", resource: "Sales Team", verb: "manage", label: "Manage sales team", description: "Register, edit, delete reps; manage positions and commission tiers" },
 ];
 
 const PERMISSION_KEYS = new Set(PERMISSIONS.map((p) => p.key));

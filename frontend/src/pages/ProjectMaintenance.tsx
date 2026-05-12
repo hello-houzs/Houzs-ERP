@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { GripVertical, ChevronUp, ChevronDown, Plus, Pencil, Trash2, ShieldCheck, Eye, EyeOff } from "lucide-react";
+import { useReorderable } from "../hooks/useReorderable";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { ColorPicker } from "../components/ColorPicker";
@@ -78,6 +79,9 @@ export function ProjectMaintenanceView() {
         <EventTypeManager />
         <OrganizerManager />
         <VenueManager />
+      </div>
+      <div className="mt-6">
+        <CostRateManager />
       </div>
       <div className="mt-6">
         <ChecklistManager />
@@ -227,26 +231,27 @@ function OrganizerManager() {
   );
 }
 
-// Malaysian states + federal territories. Source for the venue State
-// dropdown so admins can't typo into a non-canonical value (e.g. "KL"
-// vs "Kuala Lumpur") that downstream filters wouldn't match.
+// 13 negeri + 3 federal territories (Wilayah Persekutuan). ALL CAPS
+// so the picker can't introduce a casing variant that downstream
+// filters would miss. Cities (SEREMBAN, IPOH, KUANTAN…) are rolled
+// up to their state — they're not valid picks here.
 const MY_STATES = [
-  "Johor",
-  "Kedah",
-  "Kelantan",
-  "Kuala Lumpur",
-  "Labuan",
-  "Melaka",
-  "Negeri Sembilan",
-  "Pahang",
-  "Penang",
-  "Perak",
-  "Perlis",
-  "Putrajaya",
-  "Sabah",
-  "Sarawak",
-  "Selangor",
-  "Terengganu",
+  "JOHOR",
+  "KEDAH",
+  "KELANTAN",
+  "KL",
+  "LABUAN",
+  "MELAKA",
+  "NEGERI SEMBILAN",
+  "PAHANG",
+  "PENANG",
+  "PERAK",
+  "PERLIS",
+  "PUTRAJAYA",
+  "SABAH",
+  "SARAWAK",
+  "SELANGOR",
+  "TERENGGANU",
 ] as const;
 
 function VenueManager() {
@@ -1236,6 +1241,17 @@ function BrandManager() {
   const [adding, setAdding] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
+  // Drag + arrow ordering replaces the old sort_order number input.
+  const reorder = useReorderable(q.data?.data ?? [], async (ids) => {
+    try {
+      await api.put("/api/projects/brands/reorder", { ids });
+      q.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to reorder");
+      q.reload();
+    }
+  });
+
   async function add() {
     const trimmed = name.trim();
     if (!trimmed) return;
@@ -1332,16 +1348,55 @@ function BrandManager() {
           </li>
         )}
         {(expanded
-          ? q.data?.data ?? []
-          : (q.data?.data ?? []).slice(0, PICKER_PREVIEW_ROWS)
-        ).map((b) => (
+          ? reorder.view
+          : reorder.view.slice(0, PICKER_PREVIEW_ROWS)
+        ).map((b, idx) => {
+          const handlers = reorder.rowHandlers(b.id);
+          const isDragging = reorder.isDragging(b.id);
+          const isDropTarget = reorder.isDropTarget(b.id);
+          return (
           <li
             key={b.id}
+            {...handlers}
             className={cn(
-              "flex flex-wrap items-center gap-3 px-3 py-2",
-              !b.active && "opacity-50"
+              "flex flex-wrap items-center gap-2 px-3 py-2 transition-colors",
+              !b.active && "opacity-50",
+              isDragging && "opacity-40",
+              isDropTarget && "bg-accent-soft/40"
             )}
           >
+            {/* Drag + arrow controls — replaces the old sort_order
+                number input for visual consistency with the
+                checklist editor. */}
+            <div className="flex items-center gap-0.5 text-ink-muted">
+              <span
+                className="cursor-grab rounded p-1 hover:bg-bg/70 active:cursor-grabbing"
+                title="Drag to reorder"
+                aria-label="Drag handle"
+              >
+                <GripVertical size={14} />
+              </span>
+              <button
+                type="button"
+                onClick={() => reorder.moveBy(idx, -1)}
+                disabled={idx === 0}
+                title="Move up"
+                aria-label="Move up"
+                className="rounded p-1 hover:bg-bg/70 hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                <ChevronUp size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={() => reorder.moveBy(idx, 1)}
+                disabled={idx === reorder.view.length - 1}
+                title="Move down"
+                aria-label="Move down"
+                className="rounded p-1 hover:bg-bg/70 hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                <ChevronDown size={14} />
+              </button>
+            </div>
             <ColorPicker
               value={b.color}
               onChange={(hex) => patch(b, { color: hex })}
@@ -1350,21 +1405,12 @@ function BrandManager() {
             />
             <input
               defaultValue={b.name}
+              key={`name-${b.id}-${b.name}`}
               onBlur={(e) => {
                 const v = e.target.value.trim();
                 if (v && v !== b.name) patch(b, { name: v });
               }}
               className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[12.5px] font-semibold text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
-            />
-            <input
-              type="number"
-              defaultValue={b.sort_order}
-              onBlur={(e) => {
-                const v = parseInt(e.target.value, 10) || 0;
-                if (v !== b.sort_order) patch(b, { sort_order: v });
-              }}
-              title="Sort order"
-              className="h-8 w-16 rounded-md border border-border bg-surface px-2 font-mono text-[11px]"
             />
             <span
               className={cn(
@@ -1394,7 +1440,8 @@ function BrandManager() {
               ]}
             />
           </li>
-        ))}
+          );
+        })}
       </ul>
       <ExpandToggle
         total={q.data?.data.length ?? 0}
@@ -1417,6 +1464,16 @@ function EventTypeManager() {
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
   const [expanded, setExpanded] = useState(false);
+
+  const reorder = useReorderable(q.data?.data ?? [], async (ids) => {
+    try {
+      await api.put("/api/projects/event-types/reorder", { ids });
+      q.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to reorder");
+      q.reload();
+    }
+  });
 
   async function add() {
     const trimmed = name.trim();
@@ -1505,20 +1562,58 @@ function EventTypeManager() {
           </li>
         )}
         {(expanded
-          ? q.data?.data ?? []
-          : (q.data?.data ?? []).slice(0, PICKER_PREVIEW_ROWS)
-        ).map((t) => {
+          ? reorder.view
+          : reorder.view.slice(0, PICKER_PREVIEW_ROWS)
+        ).map((t, idx) => {
           const active = (t as any).active !== 0;
+          const handlers = reorder.rowHandlers(t.id);
+          const isDragging = reorder.isDragging(t.id);
+          const isDropTarget = reorder.isDropTarget(t.id);
           return (
             <li
               key={t.id}
+              {...handlers}
               className={cn(
-                "flex flex-wrap items-center gap-3 px-3 py-2",
-                !active && "opacity-50"
+                "flex flex-wrap items-center gap-2 px-3 py-2 transition-colors",
+                !active && "opacity-50",
+                isDragging && "opacity-40",
+                isDropTarget && "bg-accent-soft/40"
               )}
             >
+              {/* Drag + arrow controls — replaces the old sort_order
+                  number input. */}
+              <div className="flex items-center gap-0.5 text-ink-muted">
+                <span
+                  className="cursor-grab rounded p-1 hover:bg-bg/70 active:cursor-grabbing"
+                  title="Drag to reorder"
+                  aria-label="Drag handle"
+                >
+                  <GripVertical size={14} />
+                </span>
+                <button
+                  type="button"
+                  onClick={() => reorder.moveBy(idx, -1)}
+                  disabled={idx === 0}
+                  title="Move up"
+                  aria-label="Move up"
+                  className="rounded p-1 hover:bg-bg/70 hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronUp size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => reorder.moveBy(idx, 1)}
+                  disabled={idx === reorder.view.length - 1}
+                  title="Move down"
+                  aria-label="Move down"
+                  className="rounded p-1 hover:bg-bg/70 hover:text-ink disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronDown size={14} />
+                </button>
+              </div>
               <input
                 defaultValue={t.name}
+                key={`name-${t.id}-${t.name}`}
                 onBlur={(e) => {
                   const v = e.target.value.trim();
                   if (v && v !== t.name) patch(t, { name: v });
@@ -1528,16 +1623,6 @@ function EventTypeManager() {
               <span className="font-mono text-[10px] text-ink-muted">
                 {t.slug}
               </span>
-              <input
-                type="number"
-                defaultValue={t.sort_order}
-                onBlur={(e) => {
-                  const v = parseInt(e.target.value, 10) || 0;
-                  if (v !== t.sort_order) patch(t, { sort_order: v });
-                }}
-                title="Sort order"
-                className="h-8 w-16 rounded-md border border-border bg-surface px-2 font-mono text-[11px]"
-              />
               <span
                 className={cn(
                   "rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider",
@@ -1575,5 +1660,212 @@ function EventTypeManager() {
         onToggle={() => setExpanded((s) => !s)}
       />
     </section>
+  );
+}
+
+// ── Cost rates (mig 063) ─────────────────────────────────────
+// Per-brand transport / merchandise / commission rate card. The
+// recompute service runs on every finance edit and on every save
+// here, so changes are visible across all active projects of the
+// brand immediately.
+
+interface CostRateRow {
+  brand: string;
+  transport_pct: number;
+  merchandise_pct: number;
+  commission_normal_pct: number;
+  commission_boost_pct: number | null;
+  boost_min_gp_pct: number | null;
+  boost_min_sales: number | null;
+  updated_at: string | null;
+}
+
+function CostRateManager() {
+  const toast = useToast();
+  const q = useQuery<{ data: CostRateRow[] }>(() =>
+    api.get("/api/projects/cost-rates"),
+  );
+
+  return (
+    <section className="rounded-md border border-border bg-surface p-6 shadow-stone">
+      <h2 className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
+        Cost Rates
+      </h2>
+      <p className="mb-4 text-[12px] text-ink-secondary">
+        Per-brand transport, merchandise, and commission. Saving a
+        row recomputes auto cost lines for every active project on
+        that brand.
+      </p>
+      {q.loading && !q.data ? (
+        <Skeleton className="h-32" />
+      ) : q.error ? (
+        <div className="text-[12px] text-err">{q.error}</div>
+      ) : (
+        <div className="space-y-2">
+          {(q.data?.data ?? []).map((r) => (
+            <CostRateRowEditor
+              key={r.brand}
+              row={r}
+              onSaved={() => {
+                toast.success(`${r.brand} rates saved`);
+                q.reload();
+              }}
+              onError={(msg) => toast.error(msg)}
+            />
+          ))}
+          {(q.data?.data?.length ?? 0) === 0 && (
+            <div className="rounded-md border border-dashed border-border bg-bg/40 px-3 py-2 text-[11.5px] text-ink-muted">
+              No active brands. Add one in the Brands picker first.
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CostRateRowEditor({
+  row,
+  onSaved,
+  onError,
+}: {
+  row: CostRateRow;
+  onSaved: () => void;
+  onError: (msg: string) => void;
+}) {
+  // Local edit state per numeric field. Empty string saves as NULL
+  // for the optional boost columns; clearing those disables the
+  // boost tier for the brand.
+  const [transport, setTransport] = useState(String(row.transport_pct ?? ""));
+  const [merchandise, setMerchandise] = useState(String(row.merchandise_pct ?? ""));
+  const [normal, setNormal] = useState(String(row.commission_normal_pct ?? ""));
+  const [boost, setBoost] = useState(
+    row.commission_boost_pct == null ? "" : String(row.commission_boost_pct),
+  );
+  const [minGp, setMinGp] = useState(
+    row.boost_min_gp_pct == null ? "" : String(row.boost_min_gp_pct),
+  );
+  const [minSales, setMinSales] = useState(
+    row.boost_min_sales == null ? "" : String(row.boost_min_sales),
+  );
+  const [saving, setSaving] = useState(false);
+
+  const dirty =
+    transport !== String(row.transport_pct ?? "") ||
+    merchandise !== String(row.merchandise_pct ?? "") ||
+    normal !== String(row.commission_normal_pct ?? "") ||
+    boost !== (row.commission_boost_pct == null ? "" : String(row.commission_boost_pct)) ||
+    minGp !== (row.boost_min_gp_pct == null ? "" : String(row.boost_min_gp_pct)) ||
+    minSales !== (row.boost_min_sales == null ? "" : String(row.boost_min_sales));
+
+  async function save() {
+    const numOrNull = (s: string): number | null => {
+      const t = s.trim();
+      if (!t) return null;
+      const n = Number(t);
+      if (!Number.isFinite(n) || n < 0) return null;
+      return n;
+    };
+    setSaving(true);
+    try {
+      await api.put(`/api/projects/cost-rates/${encodeURIComponent(row.brand)}`, {
+        transport_pct: numOrNull(transport) ?? 0,
+        merchandise_pct: numOrNull(merchandise) ?? 0,
+        commission_normal_pct: numOrNull(normal) ?? 0,
+        commission_boost_pct: numOrNull(boost),
+        boost_min_gp_pct: numOrNull(minGp),
+        boost_min_sales: numOrNull(minSales),
+      });
+      onSaved();
+    } catch (e: any) {
+      onError(e?.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-border bg-bg/30 px-3 py-2">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-display text-[13px] font-extrabold tracking-tight text-ink">
+          {row.brand}
+        </span>
+        <button
+          onClick={save}
+          disabled={!dirty || saving}
+          className="rounded-md bg-accent px-3 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+        >
+          {saving ? "Saving…" : dirty ? "Save" : "Saved"}
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-3 lg:grid-cols-6">
+        <RateField label="Transport %" value={transport} onChange={setTransport} />
+        <RateField label="Merchandise %" value={merchandise} onChange={setMerchandise} />
+        <RateField label="Comm normal %" value={normal} onChange={setNormal} />
+        <RateField
+          label="Comm boost %"
+          value={boost}
+          onChange={setBoost}
+          optional
+        />
+        <RateField
+          label="Boost ≥ GP %"
+          value={minGp}
+          onChange={setMinGp}
+          optional
+        />
+        <RateField
+          label="Boost ≥ Sales"
+          value={minSales}
+          onChange={setMinSales}
+          optional
+          big
+        />
+      </div>
+      {row.commission_boost_pct != null && (
+        <p className="mt-1.5 text-[10.5px] text-ink-muted">
+          Boost = {row.commission_boost_pct}% applies when{" "}
+          {row.boost_min_gp_pct != null
+            ? `GP ≥ ${row.boost_min_gp_pct}%`
+            : "any GP"}
+          {row.boost_min_sales != null
+            ? ` AND sales ≥ ${row.boost_min_sales.toLocaleString()}`
+            : ""}
+          .
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RateField({
+  label,
+  value,
+  onChange,
+  optional,
+  big,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  optional?: boolean;
+  big?: boolean;
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
+        {label}
+        {optional && <span className="ml-1 normal-case text-ink-muted/70">(optional)</span>}
+      </span>
+      <input
+        type="number"
+        step={big ? "1000" : "0.1"}
+        min="0"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-md border border-border bg-surface px-2 py-1 font-mono text-[12px] outline-none focus:border-accent"
+        placeholder={optional ? "—" : "0"}
+      />
+    </label>
   );
 }

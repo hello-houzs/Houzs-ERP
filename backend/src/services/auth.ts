@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { parsePermissions } from "./permissions";
+import { loadPageAccessForRole, type AccessLevel } from "./pageAccess";
 import { getDb } from "../db/client";
 import { user_brands } from "../db/schema";
 import { inArray } from "drizzle-orm";
@@ -107,6 +108,14 @@ export interface AuthUser {
    * sees no projects until an admin configures the dept.
    */
   brand_scope: string[] | null;
+  /**
+   * Per-page access map. Hydrated from `role_page_access` (mig 073) +
+   * fallback to `computeBackfillLevel` for any page without an explicit
+   * row. Drives the `requirePageAccess` middleware on gated routes and
+   * the frontend `usePageAccess` hook. Phase 1 wires Sales only; other
+   * pages migrate in follow-up slices.
+   */
+  page_access: Record<string, AccessLevel>;
   joined_at?: string | null;
   last_login_at?: string | null;
   // Houzs Points (mig 055) — small per-user counters.
@@ -157,6 +166,8 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     brandScope = Array.from(new Set(rows.map((r) => r.brand)));
   }
   const permissions = parsePermissions(row.role_permissions);
+  const permissionsSet = new Set(permissions);
+  const pageAccess = await loadPageAccessForRole(env, row.role_id, permissionsSet);
   return {
     id: row.id,
     email: row.email,
@@ -165,11 +176,12 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     role_name: row.role_name,
     status: row.status,
     permissions,
-    permissions_set: new Set(permissions),
+    permissions_set: permissionsSet,
     manager_id: managerId,
     scope_to_pic: scoped,
     department_id: row.department_id ?? null,
     brand_scope: brandScope,
+    page_access: pageAccess,
     joined_at: row.joined_at ?? null,
     last_login_at: row.last_login_at ?? null,
     points_balance: row.points_balance ?? 0,

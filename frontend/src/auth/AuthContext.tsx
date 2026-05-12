@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, tokenStore, onUnauthorized } from "../api/client";
-import type { AuthUser } from "../types";
+import type { AccessLevel, AuthUser } from "../types";
 
 interface AuthState {
   user: AuthUser | null;
@@ -27,6 +27,12 @@ interface AuthContextValue extends AuthState {
   canAny: (perms: readonly string[]) => boolean;
   /** True if the user has every perm in `perms`. */
   canAll: (perms: readonly string[]) => boolean;
+  /**
+   * Read the user's access level for a given page (mig 073). The `*`
+   * wildcard short-circuits to "full"; otherwise reads from
+   * `user.page_access[page]`. Missing key → "none".
+   */
+  pageAccess: (page: string) => AccessLevel;
   /** Reload /me — useful after role/permission changes. */
   reload: () => Promise<void>;
 }
@@ -166,6 +172,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [permSet],
   );
 
+  const pageAccess = useCallback(
+    (page: string): AccessLevel => {
+      if (permSet.has("*")) return "full";
+      return (state.user?.page_access?.[page] ?? "none") as AccessLevel;
+    },
+    [permSet, state.user?.page_access],
+  );
+
   const reload = useCallback(async () => {
     await fetchMe();
   }, [fetchMe]);
@@ -182,6 +196,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       can,
       canAny,
       canAll,
+      pageAccess,
       reload,
     }),
     [
@@ -193,6 +208,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       can,
       canAny,
       canAll,
+      pageAccess,
       reload,
     ],
   );

@@ -80,7 +80,9 @@ export function relativeTime(d: string | null | undefined): string {
   if (hr < 24) return `${hr}h ago`;
   const day = Math.floor(hr / 24);
   if (day < 7) return `${day}d ago`;
-  return date.toISOString().slice(0, 10);
+  // Past one week — fall back to the absolute date in DD/MM/YYYY,
+  // matching the rest of the SPA's date format.
+  return formatDate(date.toISOString());
 }
 
 export function isExpired(d: string | null | undefined): boolean {

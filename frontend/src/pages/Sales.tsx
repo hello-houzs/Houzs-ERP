@@ -10,27 +10,31 @@ import { useUdf, type UdfField, type UdfFieldType } from "../hooks/useUdf";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { usePageAccess } from "../auth/PageGuard";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
 import { ListSkeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 
-const SALES_FILTER_KEYS = ["status", "search", "date_from", "date_to"] as const;
+const SALES_FILTER_KEYS = ["status", "search", "date_from", "date_to", "view"] as const;
 
 // ── Types ─────────────────────────────────────────────────────
 
 export type EntryStatus = "draft" | "submitted" | "pushed" | "void";
 
-export type PaymentType = "cash" | "card_cc" | "card_db" | "epp";
+export type PaymentType = "cash" | "card_cc" | "card_db" | "epp" | "cheque" | "online";
 
 export const PAYMENT_TYPE_LABEL: Record<PaymentType, string> = {
   cash: "Cash",
   card_cc: "Credit Card",
   card_db: "Debit Card",
   epp: "EPP",
+  cheque: "Cheque",
+  online: "Online Transfer",
 };
 
 export interface SalesEntry {
   id: number;
+  doc_no: string | null;
   project_id: number | null;
   project_code: string | null;
   project_name: string | null;
@@ -38,12 +42,27 @@ export interface SalesEntry {
   customer_name: string;
   customer_code: string | null;
   customer_address: string | null;
+  customer_address_2: string | null;
+  customer_postcode: string | null;
+  customer_state: string | null;
   customer_phone: string | null;
+  customer_phone_2: string | null;
+  customer_email: string | null;
   amount: number;
   deposit_amount: number | null;
   deposit_payment_type: PaymentType | null;
   currency: string;
   occurred_at: string;
+  processing_date: string | null;
+  delivery_date: string | null;
+  status_2: string | null;
+  venue: string | null;
+  warehouse: string | null;
+  branding: string | null;
+  po_doc_no: string | null;
+  payment_status: string | null;
+  source: string | null;
+  remarks: string | null;
   notes: string | null;
   status: EntryStatus;
   autocount_doc_no: string | null;
@@ -61,6 +80,28 @@ export interface SalesEntry {
   archived_at: string | null;
 }
 
+export interface SalesItemLine {
+  id?: number;
+  line_no?: number;
+  item_code: string;
+  item_description: string;
+  remarks: string;
+  qty: string;
+  unit_price: string;
+  amount: string;
+  group_tag: string;
+}
+
+export interface SalesPaymentLine {
+  id?: number;
+  paid_at: string;
+  payment_method: PaymentType | "";
+  amount: string;
+  account_sheet: string;
+  approval_code: string;
+  collected_by: string;
+}
+
 interface ListResponse {
   data: SalesEntry[];
   page: number;
@@ -70,6 +111,10 @@ interface ListResponse {
     amount: number;
     count: number;
     by_status: { draft: number; submitted: number; pushed: number };
+    // Mig 064 (quick-log workflow) — count of draft rows still
+    // sitting on the "(quick log)" sentinel customer_name. Drives the
+    // badge on the Quick Logs tab.
+    quick_log_pending?: number;
   };
 }
 
@@ -83,18 +128,26 @@ export const STATUS_BADGE: Record<EntryStatus, { label: string; cls: string }> =
 // ── Page ──────────────────────────────────────────────────────
 
 export function Sales() {
-  const { can, user: me } = useAuth();
+  const { user: me } = useAuth();
+  const salesAccess = usePageAccess("sales");
   const toast = useToast();
   const dialog = useDialog();
-  const canManage = can("sales.manage");
-  const canWrite = can("sales.write");
+  // Page-access model (mig 073): "full" = manage/void/push; "partial"
+  // = own entries only, no manage. The route's <PageGuard> already
+  // rejected "none", so writes are always allowed here.
+  const canManage = salesAccess === "full";
+  const canWrite = salesAccess !== "none";
 
   // Filter state lives in the URL — `?status=draft&search=abc` —
   // mirrored to localStorage via useStickyFilters so navbar away-and-back
   // restores the last view. Bookmark / share / refresh / back-button all
   // work because the URL itself is the source of truth.
   const [params, setParams] = useStickyFilters("sales", SALES_FILTER_KEYS);
-  const status = params.get("status") || "";
+  // ?view= drives the tab selector. "quicklogs" narrows to drafts on
+  // the QUICK_LOG_SENTINEL; "all" (default) is the existing list with
+  // quick-logs excluded so the dedicated tab owns those rows.
+  const view = params.get("view") === "quicklogs" ? "quicklogs" : "all";
+  const status = view === "quicklogs" ? "draft" : params.get("status") || "";
   const search = params.get("search") || "";
   const dateFrom = params.get("date_from") || "";
   const dateTo = params.get("date_to") || "";
@@ -118,8 +171,12 @@ export function Sales() {
     if (search) p.set("search", search);
     if (dateFrom) p.set("date_from", dateFrom);
     if (dateTo) p.set("date_to", dateTo);
+    // Quick Logs tab → only quick-log rows.
+    // All tab → exclude quick-logs (the dedicated tab owns them).
+    if (view === "quicklogs") p.set("quick_log", "1");
+    else p.set("quick_log", "0");
     return p.toString();
-  }, [status, search, dateFrom, dateTo]);
+  }, [status, search, dateFrom, dateTo, view]);
 
   const list = useQuery<ListResponse>(
     () => api.get(`/api/sales/entries${qs ? `?${qs}` : ""}`),
@@ -202,19 +259,68 @@ export function Sales() {
         />
       </div>
 
+      {/* Tabs — All Sales vs the dedicated Quick Logs queue. The
+          quick_log_pending count comes back on every list response
+          (computed independently of the current filter), so the
+          badge stays live whichever view is active. */}
+      <div className="mb-4 border-b border-border">
+        <div className="flex items-center gap-1">
+          {(
+            [
+              { value: "all", label: "All Sales" },
+              { value: "quicklogs", label: "Quick Logs" },
+            ] as const
+          ).map((tab) => {
+            const active = view === tab.value;
+            const badge =
+              tab.value === "quicklogs"
+                ? list.data?.totals.quick_log_pending ?? 0
+                : null;
+            return (
+              <button
+                key={tab.value}
+                onClick={() => patchParams({ view: tab.value === "all" ? "" : tab.value })}
+                className={cn(
+                  "relative -mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-4 py-2.5 text-[12px] font-semibold transition-colors",
+                  active
+                    ? "border-accent text-accent"
+                    : "border-transparent text-ink-secondary hover:text-ink",
+                )}
+              >
+                {tab.label}
+                {badge != null && badge > 0 && (
+                  <span
+                    className={cn(
+                      "inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 font-mono text-[9px] font-bold",
+                      active
+                        ? "bg-accent text-white"
+                        : "bg-amber-100 text-amber-800",
+                    )}
+                  >
+                    {badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Filters */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <select
-          value={status}
-          onChange={(e) => patchParams({ status: e.target.value })}
-          className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-        >
-          <option value="">All statuses</option>
-          <option value="draft">Draft</option>
-          <option value="submitted">Submitted</option>
-          <option value="pushed">Pushed</option>
-          <option value="void">Void</option>
-        </select>
+        {view === "all" && (
+          <select
+            value={status}
+            onChange={(e) => patchParams({ status: e.target.value })}
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          >
+            <option value="">All statuses</option>
+            <option value="draft">Draft</option>
+            <option value="submitted">Submitted</option>
+            <option value="pushed">Pushed</option>
+            <option value="void">Void</option>
+          </select>
+        )}
         <input
           type="date"
           value={dateFrom}
@@ -258,9 +364,15 @@ export function Sales() {
       )}
       {list.data && list.data.data.length === 0 && !list.loading && (
         <EmptyState
-          message="No sales logged yet."
+          message={
+            view === "quicklogs"
+              ? "Inbox zero — no quick logs are waiting for completion."
+              : "No sales logged yet."
+          }
           cta={
-            canWrite
+            view === "quicklogs"
+              ? undefined
+              : canWrite
               ? { label: "Add your first entry", onClick: () => setCreating(true) }
               : undefined
           }
@@ -295,11 +407,40 @@ export function Sales() {
                       {formatDate(e.occurred_at)}
                     </td>
                     <td className="px-3 py-2">
-                      <div className="font-semibold text-ink">{e.customer_name}</div>
-                      {e.customer_phone && (
-                        <div className="font-mono text-[10px] text-ink-muted">
-                          {e.customer_phone}
+                      {e.customer_name === "(quick log)" ? (
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-full border border-amber-500/40 bg-amber-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wider text-amber-800">
+                            Quick log
+                          </span>
+                          {canWrite && (
+                            <button
+                              onClick={() => setEditing(e)}
+                              className="text-[11px] font-semibold text-accent hover:underline"
+                              title="Open this draft and fill in the customer details"
+                            >
+                              Complete
+                            </button>
+                          )}
                         </div>
+                      ) : (
+                        // Single-line render — name + phone separated by a
+                        // middle dot instead of stacked, so every row
+                        // stays one line per the 2026-05-08 density rule.
+                        <span
+                          className="inline-flex items-baseline gap-1.5"
+                          title={
+                            e.customer_phone
+                              ? `${e.customer_name} · ${e.customer_phone}`
+                              : e.customer_name
+                          }
+                        >
+                          <span className="font-semibold text-ink">{e.customer_name}</span>
+                          {e.customer_phone && (
+                            <span className="font-mono text-[10px] text-ink-muted">
+                              · {e.customer_phone}
+                            </span>
+                          )}
+                        </span>
                       )}
                     </td>
                     <td className="px-3 py-2 text-right font-mono font-semibold">
@@ -323,7 +464,21 @@ export function Sales() {
                     </td>
                     <td className="px-1 py-1">
                       <div className="flex items-center gap-0.5">
-                        {canSubmit && (
+                        {/* Quick Logs view promotes the Complete CTA
+                            into a real button in the action column —
+                            single obvious next step per row. The
+                            small Customer-cell link still works on
+                            the All view. */}
+                        {view === "quicklogs" && canEdit && (
+                          <button
+                            onClick={() => setEditing(e)}
+                            className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft px-2 py-1 text-[10.5px] font-semibold text-accent hover:bg-accent hover:text-white"
+                            title="Open this draft and fill in the customer details"
+                          >
+                            <Pencil size={11} /> Complete
+                          </button>
+                        )}
+                        {view !== "quicklogs" && canSubmit && (
                           <button
                             onClick={() => submitEntry(e)}
                             className="rounded p-1.5 text-ink-muted hover:bg-accent-soft hover:text-accent"
@@ -332,7 +487,7 @@ export function Sales() {
                             <CheckSquare size={13} />
                           </button>
                         )}
-                        {canEdit && (
+                        {view !== "quicklogs" && canEdit && (
                           <button
                             onClick={() => setEditing(e)}
                             className="rounded p-1.5 text-ink-muted hover:bg-surface-dim hover:text-ink"
@@ -465,24 +620,41 @@ export function EntryPanel({
 }) {
   const toast = useToast();
   const auth = useAuth();
-  const [customerName, setCustomerName] = useState(entry?.customer_name || "");
-  const [customerPhone, setCustomerPhone] = useState(entry?.customer_phone || "");
+  const today = new Date().toISOString().slice(0, 10);
+  // Quick-log rows carry the literal "(quick log)" sentinel in
+  // customer_name. Strip it so the rep sees an empty input and types
+  // a real name into it; the gating below blocks Save & submit until
+  // they do.
+  const isQuickLog = entry?.customer_name === "(quick log)";
+  // ── Header
+  const [docNo] = useState(entry?.doc_no || "");
+  const [orderDate, setOrderDate] = useState(
+    entry?.occurred_at?.slice(0, 10) || today,
+  );
+  const [processingDate, setProcessingDate] = useState(
+    entry?.processing_date?.slice(0, 10) || today,
+  );
+  const [deliveryDate, setDeliveryDate] = useState(
+    entry?.delivery_date?.slice(0, 10) || "",
+  );
+  const [status1, setStatus1] = useState(entry?.status === "draft" ? "" : (entry?.status as string) || "");
+  const [status2, setStatus2] = useState(entry?.status_2 || "MATTRESS/ACC");
+  // ── Customer
+  const [customerName, setCustomerName] = useState(
+    isQuickLog ? "" : entry?.customer_name || "",
+  );
   const [customerAddress, setCustomerAddress] = useState(entry?.customer_address || "");
+  const [customerAddress2, setCustomerAddress2] = useState(entry?.customer_address_2 || "");
+  const [customerPostcode, setCustomerPostcode] = useState(entry?.customer_postcode || "");
+  const [customerState, setCustomerState] = useState(entry?.customer_state || "");
+  const [customerPhone, setCustomerPhone] = useState(entry?.customer_phone || "");
+  const [customerPhone2, setCustomerPhone2] = useState(entry?.customer_phone_2 || "");
+  const [customerEmail, setCustomerEmail] = useState(entry?.customer_email || "");
+  const [venue, setVenue] = useState(entry?.venue || "");
+  const [warehouse, setWarehouse] = useState(entry?.warehouse || "KL");
   const [refNo, setRefNo] = useState(entry?.ref_no || "");
-  const [amount, setAmount] = useState(entry ? String(entry.amount) : "");
-  // When deposit_amount is null on a fresh row, default it to mirror
-  // amount — the rep collected the full sale up front. They can drop
-  // it lower if a balance is being chased.
-  const [depositAmount, setDepositAmount] = useState(
-    entry?.deposit_amount != null
-      ? String(entry.deposit_amount)
-      : entry?.amount != null
-      ? String(entry.amount)
-      : ""
-  );
-  const [depositPaymentType, setDepositPaymentType] = useState<PaymentType | "">(
-    (entry?.deposit_payment_type as PaymentType) || ""
-  );
+  const [source, setSource] = useState(entry?.source || "External");
+  // ── Right column
   const [salesPersonId, setSalesPersonId] = useState<string>(
     entry?.sales_person_id != null
       ? String(entry.sales_person_id)
@@ -490,16 +662,22 @@ export function EntryPanel({
       ? String(auth.user.id)
       : ""
   );
+  const [branding, setBranding] = useState(entry?.branding || "");
+  const [customerCode, setCustomerCode] = useState(entry?.customer_code || "");
+  const [poDocNo, setPoDocNo] = useState(entry?.po_doc_no || "");
+  const [paymentStatus, setPaymentStatus] = useState(entry?.payment_status || "Unchecked");
+  const [notes, setNotes] = useState(entry?.notes || "");
+  // ── Items / payments / footer
+  const [items, setItems] = useState<SalesItemLine[]>([]);
+  const [payments, setPayments] = useState<SalesPaymentLine[]>([]);
+  const [remarks, setRemarks] = useState(entry?.remarks || "");
+  // ── Misc
   const [currency, setCurrency] = useState(entry?.currency || "MYR");
-  const [occurredAt, setOccurredAt] = useState(
-    entry?.occurred_at?.slice(0, 10) || new Date().toISOString().slice(0, 10)
-  );
   const [projectId, setProjectId] = useState<string>(
     lockedProjectId
       ? String(lockedProjectId)
       : entry?.project_id ? String(entry.project_id) : ""
   );
-  const [notes, setNotes] = useState(entry?.notes || "");
   const [custom, setCustom] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
 
@@ -510,21 +688,61 @@ export function EntryPanel({
     () => api.get<{ users: Array<{ id: number; name: string | null; email: string }> }>("/api/users").catch(() => ({ users: [] }))
   );
 
-  // Hydrate custom field values if editing.
+  // Brand list — same source the projects + sales-team modules use.
+  type BrandRow = { id: number; name: string; hex_color: string | null };
+  const brandsQ = useQuery<{ data: BrandRow[] }>(
+    () =>
+      api
+        .get<{ data: BrandRow[] }>("/api/projects/brands?full=1")
+        .catch<{ data: BrandRow[] }>(() => ({ data: [] })),
+  );
+
+  // Hydrate custom field values, items, payments if editing.
   useEffect(() => {
     if (mode !== "edit" || !entry) return;
     let cancelled = false;
     (async () => {
       try {
-        const r = await api.get<{ entry: SalesEntry; custom: Record<string, string | null> }>(
-          `/api/sales/entries/${entry.id}`
-        );
+        const r = await api.get<{
+          entry: SalesEntry;
+          custom: Record<string, string | null>;
+          items?: any[];
+          payments?: any[];
+        }>(`/api/sales/entries/${entry.id}`);
         if (cancelled) return;
         const initial: Record<string, string> = {};
         for (const [k, v] of Object.entries(r.custom || {})) {
           if (v != null) initial[k] = v;
         }
         setCustom(initial);
+        if (Array.isArray(r.items) && r.items.length > 0) {
+          setItems(
+            r.items.map((it) => ({
+              id: it.id,
+              line_no: it.line_no ?? 0,
+              item_code: it.item_code ?? "",
+              item_description: it.item_description ?? "",
+              remarks: it.remarks ?? "",
+              qty: it.qty != null ? String(it.qty) : "1",
+              unit_price: it.unit_price != null ? String(it.unit_price) : "0",
+              amount: it.amount != null ? String(it.amount) : "0",
+              group_tag: it.group_tag ?? "",
+            })),
+          );
+        }
+        if (Array.isArray(r.payments) && r.payments.length > 0) {
+          setPayments(
+            r.payments.map((p) => ({
+              id: p.id,
+              paid_at: p.paid_at?.slice(0, 10) ?? today,
+              payment_method: (p.payment_method as PaymentType) ?? "",
+              amount: p.amount != null ? String(p.amount) : "",
+              account_sheet: p.account_sheet ?? "",
+              approval_code: p.approval_code ?? "",
+              collected_by: p.collected_by ?? "",
+            })),
+          );
+        }
       } catch {
         // silent — form already usable with the row we have
       }
@@ -533,6 +751,25 @@ export function EntryPanel({
       cancelled = true;
     };
   }, [mode, entry]);
+
+  // Live totals derived from items + payments.
+  const itemsTotal = useMemo(() => {
+    let total = 0;
+    for (const it of items) {
+      const a = parseFloat(it.amount);
+      if (Number.isFinite(a)) total += a;
+    }
+    return total;
+  }, [items]);
+  const paidTotal = useMemo(() => {
+    let total = 0;
+    for (const p of payments) {
+      const a = parseFloat(p.amount);
+      if (Number.isFinite(a)) total += a;
+    }
+    return total;
+  }, [payments]);
+  const balance = Math.max(0, itemsTotal - paidTotal);
 
   // Minimal project picker — fetches only recent projects. Free text
   // fallback not shown; pic_id wiring on projects means reps already see
@@ -543,58 +780,78 @@ export function EntryPanel({
   );
 
   async function submit(thenSubmit: boolean) {
-    if (!customerName.trim()) {
+    if (!customerName.trim() && !isQuickLog) {
       toast.error("Customer name is required");
       return;
     }
-    const amt = parseFloat(amount);
-    if (!isFinite(amt)) {
-      toast.error("Amount must be a number");
-      return;
-    }
-    let dep: number | null = null;
-    if (depositAmount.trim() !== "") {
-      const d = parseFloat(depositAmount);
-      if (!isFinite(d) || d < 0) {
-        toast.error("Deposit must be a non-negative number");
-        return;
-      }
-      if (d > amt) {
-        toast.error("Deposit cannot exceed amount");
-        return;
-      }
-      dep = d;
-    }
-    if (dep !== null && dep > 0 && !depositPaymentType) {
-      toast.error("Pick a payment type for the deposit");
-      return;
-    }
+    // Total derived from items if any; else 0 (lets users save a draft
+    // header before keying lines).
+    const amt = items.length > 0 ? itemsTotal : 0;
     setBusy(true);
     try {
+      const itemsPayload = items
+        .filter((it) => it.item_code.trim() || it.item_description.trim() || parseFloat(it.amount) > 0)
+        .map((it, idx) => ({
+          line_no: it.line_no ?? idx + 1,
+          item_code: it.item_code.trim() || null,
+          item_description: it.item_description.trim() || null,
+          remarks: it.remarks.trim() || null,
+          qty: parseFloat(it.qty) || 0,
+          unit_price: parseFloat(it.unit_price) || 0,
+          amount: parseFloat(it.amount) || 0,
+          group_tag: it.group_tag.trim() || null,
+        }));
+      const paymentsPayload = payments
+        .filter((p) => p.payment_method && parseFloat(p.amount) > 0)
+        .map((p) => ({
+          paid_at: p.paid_at,
+          payment_method: p.payment_method,
+          amount: parseFloat(p.amount) || 0,
+          account_sheet: p.account_sheet.trim() || null,
+          approval_code: p.approval_code.trim() || null,
+          collected_by: p.collected_by.trim() || null,
+        }));
       const body: any = {
         project_id: projectId ? parseInt(projectId, 10) : null,
         ref_no: refNo.trim() || null,
-        customer_name: customerName.trim(),
-        customer_phone: customerPhone.trim() || null,
+        customer_name: isQuickLog && !customerName.trim() ? "" : customerName.trim(),
+        customer_code: customerCode.trim() || null,
         customer_address: customerAddress.trim() || null,
+        customer_address_2: customerAddress2.trim() || null,
+        customer_postcode: customerPostcode.trim() || null,
+        customer_state: customerState.trim() || null,
+        customer_phone: customerPhone.trim() || null,
+        customer_phone_2: customerPhone2.trim() || null,
+        customer_email: customerEmail.trim() || null,
         amount: amt,
-        deposit_amount: dep,
-        deposit_payment_type: depositPaymentType || null,
         sales_person_id: salesPersonId ? parseInt(salesPersonId, 10) : null,
         currency: currency.trim() || "MYR",
-        occurred_at: occurredAt,
+        occurred_at: orderDate,
+        processing_date: processingDate || null,
+        delivery_date: deliveryDate || null,
+        status_2: status2.trim() || null,
+        venue: venue.trim() || null,
+        warehouse: warehouse.trim() || null,
+        branding: branding.trim() || null,
+        po_doc_no: poDocNo.trim() || null,
+        payment_status: paymentStatus.trim() || null,
+        source: source.trim() || null,
+        remarks: remarks.trim() || null,
         notes: notes.trim() || null,
         custom,
+        items: itemsPayload,
+        payments: paymentsPayload,
       };
+      if (status1.trim()) body.status = status1.trim();
       let id: number;
       if (mode === "create") {
-        const r = await api.post<{ id: number }>("/api/sales/entries", body);
+        const r = await api.post<{ id: number; doc_no: string }>("/api/sales/entries", body);
         id = r.id;
-        toast.success(`Added ${customerName}`);
+        toast.success(`Created ${r.doc_no}`);
       } else if (entry) {
         await api.patch(`/api/sales/entries/${entry.id}`, body);
         id = entry.id;
-        toast.success(`Updated ${customerName}`);
+        toast.success(`Updated ${entry.doc_no || customerName}`);
       } else {
         return;
       }
@@ -613,215 +870,514 @@ export function EntryPanel({
     }
   }
 
+  // ── Item / payment line helpers
+  function addItem() {
+    setItems((prev) => [
+      ...prev,
+      {
+        line_no: prev.length + 1,
+        item_code: "",
+        item_description: "",
+        remarks: "",
+        qty: "1",
+        unit_price: "0",
+        amount: "0",
+        group_tag: "",
+      },
+    ]);
+  }
+  function updateItem(idx: number, patch: Partial<SalesItemLine>) {
+    setItems((prev) => {
+      const next = [...prev];
+      const merged = { ...next[idx], ...patch };
+      // Auto-recompute amount when qty / unit_price change unless the
+      // user is typing into the amount field directly.
+      if ("qty" in patch || "unit_price" in patch) {
+        const q = parseFloat(merged.qty) || 0;
+        const u = parseFloat(merged.unit_price) || 0;
+        merged.amount = String((q * u).toFixed(2));
+      }
+      next[idx] = merged;
+      return next;
+    });
+  }
+  function removeItem(idx: number) {
+    setItems((prev) => prev.filter((_, i) => i !== idx));
+  }
+  function addPayment() {
+    setPayments((prev) => [
+      ...prev,
+      {
+        paid_at: today,
+        payment_method: "" as PaymentType | "",
+        amount: "",
+        account_sheet: "",
+        approval_code: "",
+        collected_by: "",
+      },
+    ]);
+  }
+  function updatePayment(idx: number, patch: Partial<SalesPaymentLine>) {
+    setPayments((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], ...patch };
+      return next;
+    });
+  }
+  function removePayment(idx: number) {
+    setPayments((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  const headerStatus = (status1 || "Unchecked").toUpperCase();
+  const fmtMoney = (n: number) => `RM ${n.toFixed(2)}`;
+  const inputCls =
+    "h-9 w-full rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:bg-bg/40 disabled:text-ink-muted";
+  const selectCls = inputCls + " appearance-none";
+
   return (
     <Panel
       open
       onClose={onClose}
-      title={mode === "create" ? "New Sale" : `Edit · ${entry?.customer_name}`}
-      subtitle={
-        mode === "create"
-          ? "Log a new customer sale"
-          : `Draft created ${formatDate(entry?.created_at || "")}`
+      title={
+        <div className="flex items-baseline gap-2">
+          <span className="font-display text-[16px] font-extrabold uppercase text-ink">
+            {mode === "create" ? "New Customer" : (entry?.customer_name || "Edit Customer")}
+          </span>
+          <span className="text-[11px] text-ink-secondary">Sales Order</span>
+          <span className="rounded-md bg-bg px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-ink-muted">
+            {headerStatus}
+          </span>
+        </div>
       }
-      width={480}
+      subtitle={
+        <span className="font-mono text-[11px] text-ink-muted">
+          {docNo || (mode === "create" ? "(auto on save)" : "—")} · External ·{" "}
+          {entry?.created_at ? formatDate(entry.created_at) : "just now"}
+        </span>
+      }
+      width={1100}
       footer={
-        <div className="flex items-center justify-between gap-2">
-          <button
-            onClick={onClose}
-            className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] text-ink-secondary"
-          >
-            Cancel
-          </button>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="font-mono text-[11px] text-ink-muted">
+            {items.length} line{items.length === 1 ? "" : "s"} ·{" "}
+            <span className="text-ink">Total: <span className="font-bold">{fmtMoney(itemsTotal)}</span></span> ·{" "}
+            <span className="text-ink">Paid: <span className="font-bold">{fmtMoney(paidTotal)}</span></span> ·{" "}
+            <span className="text-ink">Balance: <span className="font-bold">{fmtMoney(balance)}</span></span>
+          </div>
           <div className="flex items-center gap-2">
             <Button
-              variant="ghost"
-              onClick={() => submit(false)}
-              disabled={busy}
-            >
-              {busy ? "Saving…" : "Save draft"}
-            </Button>
-            <Button
               variant="primary"
-              onClick={() => submit(true)}
+              onClick={() => submit(false)}
+              disabled={busy || (!customerName.trim() && !isQuickLog)}
+            >
+              {busy ? "Saving…" : "Update Details"}
+            </Button>
+            <button
+              onClick={onClose}
+              className="rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] text-ink-secondary hover:border-accent/40"
+            >
+              Cancel
+            </button>
+            <Button
+              variant="ghost"
+              onClick={() =>
+                toast.info("AutoCount push lands in a follow-up slice")
+              }
               disabled={busy}
             >
-              Save & submit
+              Sales Order
             </Button>
           </div>
         </div>
       }
     >
-      <PanelSection title="Customer">
-        <div>
-          <Label>Customer name</Label>
-          <input
-            value={customerName}
-            onChange={(e) => setCustomerName(e.target.value)}
-            placeholder="e.g. Tan Wei Ming"
-            className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-            autoFocus
-          />
-        </div>
-        <div>
-          <Label>Phone</Label>
-          <input
-            value={customerPhone}
-            onChange={(e) => setCustomerPhone(e.target.value)}
-            placeholder="e.g. 012-345 6789"
-            inputMode="tel"
-            className="h-10 w-full rounded-md border border-border bg-surface px-3 font-mono text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-          />
-        </div>
-        <div>
-          <Label>Address</Label>
-          <textarea
-            value={customerAddress}
-            onChange={(e) => setCustomerAddress(e.target.value)}
-            placeholder="Delivery / billing address"
-            rows={2}
-            className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-          />
-        </div>
-      </PanelSection>
-
-      <PanelSection title="Sale">
-        <div>
-          <Label>Reference no.</Label>
-          <input
-            value={refNo}
-            onChange={(e) => setRefNo(e.target.value)}
-            placeholder="e.g. ZNT00001"
-            className="h-10 w-full rounded-md border border-border bg-surface px-3 font-mono text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-          />
-        </div>
-        <div className="grid grid-cols-[1fr_100px] gap-3">
-          <div>
-            <Label>Amount</Label>
-            <input
-              type="number"
-              step="0.01"
-              value={amount}
-              onChange={(e) => {
-                setAmount(e.target.value);
-                // Auto-mirror deposit when the rep hasn't manually
-                // dialled it back yet (deposit==prev amount). Avoids
-                // surprising them when they type the gross first.
-                if (depositAmount === "" || depositAmount === amount) {
-                  setDepositAmount(e.target.value);
-                }
-              }}
-              placeholder="0.00"
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-            />
-          </div>
-          <div>
-            <Label>Currency</Label>
-            <input
-              value={currency}
-              onChange={(e) => setCurrency(e.target.value.toUpperCase())}
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-            />
-          </div>
-        </div>
-        <div className="grid grid-cols-[1fr_1fr] gap-3">
-          <div>
-            <Label>Deposit collected</Label>
-            <input
-              type="number"
-              step="0.01"
-              value={depositAmount}
-              onChange={(e) => setDepositAmount(e.target.value)}
-              placeholder="0.00"
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-            />
-          </div>
-          <div>
-            <Label>Deposit payment type</Label>
-            <select
-              value={depositPaymentType}
-              onChange={(e) => setDepositPaymentType(e.target.value as PaymentType | "")}
-              className="h-10 w-full appearance-none rounded-md border border-border bg-surface px-3 text-[13px]"
-            >
+      {/* Two-column header grid mirrors the boss mockup. */}
+      <div className="grid grid-cols-1 gap-x-6 gap-y-3 lg:grid-cols-2">
+        {/* Left column */}
+        <div className="space-y-3">
+          <Field label="Order Date">
+            <input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} className={inputCls} />
+          </Field>
+          <Field label="Processing Date">
+            <input type="date" value={processingDate} onChange={(e) => setProcessingDate(e.target.value)} className={inputCls} />
+          </Field>
+          <Field label="Delivery Date">
+            <input type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} className={inputCls} placeholder="—" />
+          </Field>
+          <Field label="Status">
+            <input value={status1} onChange={(e) => setStatus1(e.target.value)} placeholder="—" className={inputCls} />
+          </Field>
+          <Field label="Status 2">
+            <input value={status2} onChange={(e) => setStatus2(e.target.value)} placeholder="MATTRESS/ACC" className={inputCls} />
+          </Field>
+          <Field label="Name">
+            <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Customer name" className={inputCls} autoFocus />
+          </Field>
+          <Field label="Address">
+            <input value={customerAddress} onChange={(e) => setCustomerAddress(e.target.value)} placeholder="Street address" className={inputCls} />
+          </Field>
+          <Field label="Address 2">
+            <input value={customerAddress2} onChange={(e) => setCustomerAddress2(e.target.value)} className={inputCls} />
+          </Field>
+          <Field label="Postcode">
+            <input value={customerPostcode} onChange={(e) => setCustomerPostcode(e.target.value)} placeholder="47180" className={inputCls} inputMode="numeric" />
+          </Field>
+          <Field label="State">
+            <select value={customerState} onChange={(e) => setCustomerState(e.target.value)} className={selectCls}>
               <option value="">— select —</option>
-              <option value="cash">Cash</option>
-              <option value="card_cc">Credit Card</option>
-              <option value="card_db">Debit Card</option>
-              <option value="epp">EPP</option>
-            </select>
-          </div>
-        </div>
-        {(() => {
-          const a = parseFloat(amount) || 0;
-          const d = parseFloat(depositAmount) || 0;
-          const balance = Math.max(0, a - d);
-          if (a <= 0) return null;
-          return (
-            <div className="rounded-md border border-border-subtle bg-bg/40 px-3 py-2 text-[11px] text-ink-secondary">
-              Balance to chase post-event:{" "}
-              <span className="font-mono font-bold text-ink">
-                {currency || "MYR"} {balance.toFixed(2)}
-              </span>
-            </div>
-          );
-        })()}
-        <div>
-          <Label>Date</Label>
-          <input
-            type="date"
-            value={occurredAt}
-            onChange={(e) => setOccurredAt(e.target.value)}
-            className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px]"
-          />
-        </div>
-        <div>
-          <Label>Sales person</Label>
-          <select
-            value={salesPersonId}
-            onChange={(e) => setSalesPersonId(e.target.value)}
-            className="h-10 w-full appearance-none rounded-md border border-border bg-surface px-3 text-[13px]"
-          >
-            <option value="">— me —</option>
-            {(usersQ.data?.users ?? []).map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name || u.email}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <Label>Project</Label>
-          {lockedProjectId ? (
-            <div
-              className="flex h-10 items-center rounded-md border border-border bg-bg/40 px-3 text-[13px] text-ink-secondary"
-              title="Locked — drafted from this exhibition's page"
-            >
-              {lockedProjectLabel || `Project #${lockedProjectId}`}
-            </div>
-          ) : (
-            <select
-              value={projectId}
-              onChange={(e) => setProjectId(e.target.value)}
-              className="h-10 w-full appearance-none rounded-md border border-border bg-surface px-3 text-[13px]"
-            >
-              <option value="">— none —</option>
-              {(projectsQ.data?.data ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.code} · {p.name}
+              {STATE_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
                 </option>
               ))}
             </select>
-          )}
+          </Field>
+          <Field label="Contact No">
+            <input value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} placeholder="+60..." inputMode="tel" className={inputCls} />
+          </Field>
+          <Field label="Contact No 2">
+            <input value={customerPhone2} onChange={(e) => setCustomerPhone2(e.target.value)} inputMode="tel" className={inputCls} />
+          </Field>
+          <Field label="Email">
+            <input value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} type="email" className={inputCls} />
+          </Field>
+          <Field label="Venue">
+            <input value={venue} onChange={(e) => setVenue(e.target.value)} placeholder="Fair / Mall name" className={inputCls} />
+          </Field>
+          <Field label="Warehouse">
+            <select value={warehouse} onChange={(e) => setWarehouse(e.target.value)} className={selectCls}>
+              {WAREHOUSE_OPTIONS.map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Reference">
+            <input value={refNo} onChange={(e) => setRefNo(e.target.value)} placeholder="e.g. HC14087" className={inputCls + " font-mono"} />
+          </Field>
+          <Field label="Source">
+            <select value={source} onChange={(e) => setSource(e.target.value)} className={selectCls}>
+              {SOURCE_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </Field>
         </div>
-        <div>
-          <Label>Notes</Label>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="Anything the accounts team should know"
-            className="min-h-[70px] w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-          />
+        {/* Right column */}
+        <div className="space-y-3">
+          <Field label="Salesperson">
+            <select value={salesPersonId} onChange={(e) => setSalesPersonId(e.target.value)} className={selectCls}>
+              <option value="">— me —</option>
+              {(usersQ.data?.users ?? []).map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name || u.email}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Branding">
+            <select value={branding} onChange={(e) => setBranding(e.target.value)} className={selectCls}>
+              <option value="">— select —</option>
+              {(brandsQ.data?.data ?? []).map((b) => (
+                <option key={b.id} value={b.name}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Debtor Code">
+            <input value={customerCode} onChange={(e) => setCustomerCode(e.target.value)} placeholder="300-C001" className={inputCls + " font-mono"} />
+          </Field>
+          <Field label="PO Doc No.">
+            <input value={poDocNo} onChange={(e) => setPoDocNo(e.target.value)} className={inputCls + " font-mono"} />
+          </Field>
+          <Field label="Payment Status">
+            <select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value)} className={selectCls}>
+              {PAYMENT_STATUS_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Note">
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              className={inputCls + " min-h-[70px] resize-y py-2"}
+              placeholder="Anything the accounts team should know"
+            />
+          </Field>
+          {/* Project picker — preserved (locked or selectable). Keeps the
+              quick-log + in-project flow working even though the boss
+              mockup doesn't show this field. */}
+          <Field label="Project">
+            {lockedProjectId ? (
+              <div className="flex h-9 items-center rounded-md border border-border bg-bg/40 px-3 text-[12px] text-ink-secondary">
+                {lockedProjectLabel || `Project #${lockedProjectId}`}
+              </div>
+            ) : (
+              <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className={selectCls}>
+                <option value="">— none —</option>
+                {(projectsQ.data?.data ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.code} · {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
+          <Field label="Currency">
+            <input value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} className={inputCls + " font-mono uppercase"} />
+          </Field>
         </div>
-      </PanelSection>
+      </div>
+
+      {/* Items section */}
+      <div className="mt-6 rounded-md border border-border bg-surface">
+        <div className="flex items-center justify-between border-b border-border px-3 py-2">
+          <h3 className="text-[11px] font-bold uppercase tracking-wider text-ink">Items</h3>
+          <button
+            type="button"
+            onClick={addItem}
+            className="rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+          >
+            + Add Line
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11.5px]">
+            <thead className="text-[10px] uppercase text-ink-muted">
+              <tr>
+                <th className="px-2 py-1.5 text-left font-semibold">No</th>
+                <th className="px-2 py-1.5 text-left font-semibold">Item</th>
+                <th className="px-2 py-1.5 text-left font-semibold">Remarks</th>
+                <th className="px-2 py-1.5 text-right font-semibold">Qty</th>
+                <th className="px-2 py-1.5 text-right font-semibold">Unit Price</th>
+                <th className="px-2 py-1.5 text-right font-semibold">Amount</th>
+                <th className="px-2 py-1.5 text-left font-semibold">Group</th>
+                <th className="w-8" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border-subtle">
+              {items.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-3 py-4 text-center text-[11px] text-ink-muted">
+                    No lines yet — click "+ Add Line" to add one.
+                  </td>
+                </tr>
+              )}
+              {items.map((it, idx) => (
+                <tr key={idx}>
+                  <td className="px-2 py-1.5 text-ink-muted">{idx + 1}</td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={it.item_code}
+                      onChange={(e) => updateItem(idx, { item_code: e.target.value })}
+                      placeholder="Click to select / type to search…"
+                      className="h-7 w-full rounded border border-transparent bg-transparent px-2 text-[11.5px] outline-none focus:border-border focus:bg-surface"
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={it.remarks}
+                      onChange={(e) => updateItem(idx, { remarks: e.target.value })}
+                      placeholder="Type remarks…"
+                      className="h-7 w-full rounded border border-transparent bg-transparent px-2 text-[11.5px] outline-none focus:border-border focus:bg-surface"
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      type="number"
+                      step="any"
+                      value={it.qty}
+                      onChange={(e) => updateItem(idx, { qty: e.target.value })}
+                      className="h-7 w-16 rounded border border-border bg-surface px-2 text-right text-[11.5px]"
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={it.unit_price}
+                      onChange={(e) => updateItem(idx, { unit_price: e.target.value })}
+                      className="h-7 w-24 rounded border border-border bg-surface px-2 text-right text-[11.5px]"
+                    />
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono font-bold">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={it.amount}
+                      onChange={(e) => updateItem(idx, { amount: e.target.value })}
+                      className="h-7 w-24 rounded border border-transparent bg-transparent px-2 text-right text-[11.5px] outline-none focus:border-border focus:bg-surface"
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={it.group_tag}
+                      onChange={(e) => updateItem(idx, { group_tag: e.target.value })}
+                      placeholder="MATTRESS"
+                      className="h-7 w-24 rounded border border-transparent bg-transparent px-2 text-[10px] font-bold uppercase outline-none focus:border-border focus:bg-surface"
+                    />
+                  </td>
+                  <td className="px-1 py-1.5">
+                    <button
+                      type="button"
+                      onClick={() => removeItem(idx)}
+                      title="Remove line"
+                      className="text-ink-muted hover:text-err"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {items.length > 0 && (
+                <tr className="font-bold">
+                  <td colSpan={5} className="px-2 py-1.5 text-right text-ink">Subtotal</td>
+                  <td className="px-2 py-1.5 text-right font-mono">{fmtMoney(itemsTotal)}</td>
+                  <td colSpan={2} />
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Remarks */}
+      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <Field label="Remarks">
+          <input value={remarks} onChange={(e) => setRemarks(e.target.value)} className={inputCls} placeholder="—" />
+        </Field>
+        <Field label="Total">
+          <div className="flex h-9 items-center rounded-md border border-border bg-bg/40 px-3 font-mono text-[13px] font-bold text-ink">
+            {fmtMoney(itemsTotal)}
+          </div>
+        </Field>
+      </div>
+
+      {/* Payments section */}
+      <div className="mt-6 rounded-md border border-border bg-surface">
+        <div className="flex items-center justify-between border-b border-border px-3 py-2">
+          <h3 className="text-[11px] font-bold uppercase tracking-wider text-ink">Payments</h3>
+          <button
+            type="button"
+            onClick={addPayment}
+            className="rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+          >
+            + Add Payment
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11.5px]">
+            <thead className="text-[10px] uppercase text-ink-muted">
+              <tr>
+                <th className="px-2 py-1.5 text-left font-semibold">Date</th>
+                <th className="px-2 py-1.5 text-left font-semibold">Payment Method</th>
+                <th className="px-2 py-1.5 text-right font-semibold">Amount</th>
+                <th className="px-2 py-1.5 text-left font-semibold">Account Sheet</th>
+                <th className="px-2 py-1.5 text-left font-semibold">Approval Code</th>
+                <th className="px-2 py-1.5 text-left font-semibold">Collected By</th>
+                <th className="w-8" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border-subtle">
+              {payments.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-3 py-4 text-center text-[11px] text-ink-muted">
+                    No payments recorded yet · click "Add Payment" to log a deposit
+                  </td>
+                </tr>
+              )}
+              {payments.map((p, idx) => (
+                <tr key={idx}>
+                  <td className="px-2 py-1.5">
+                    <input
+                      type="date"
+                      value={p.paid_at}
+                      onChange={(e) => updatePayment(idx, { paid_at: e.target.value })}
+                      className="h-7 rounded border border-border bg-surface px-2 text-[11.5px]"
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <select
+                      value={p.payment_method}
+                      onChange={(e) => updatePayment(idx, { payment_method: e.target.value as PaymentType })}
+                      className="h-7 rounded border border-border bg-surface px-2 text-[11.5px]"
+                    >
+                      <option value="">—</option>
+                      {(Object.keys(PAYMENT_TYPE_LABEL) as PaymentType[]).map((k) => (
+                        <option key={k} value={k}>
+                          {PAYMENT_TYPE_LABEL[k]}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={p.amount}
+                      onChange={(e) => updatePayment(idx, { amount: e.target.value })}
+                      className="h-7 w-24 rounded border border-border bg-surface px-2 text-right text-[11.5px]"
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={p.account_sheet}
+                      onChange={(e) => updatePayment(idx, { account_sheet: e.target.value })}
+                      className="h-7 w-full rounded border border-transparent bg-transparent px-2 text-[11.5px] outline-none focus:border-border focus:bg-surface"
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={p.approval_code}
+                      onChange={(e) => updatePayment(idx, { approval_code: e.target.value })}
+                      className="h-7 w-full rounded border border-transparent bg-transparent px-2 text-[11.5px] outline-none focus:border-border focus:bg-surface"
+                    />
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <input
+                      value={p.collected_by}
+                      onChange={(e) => updatePayment(idx, { collected_by: e.target.value })}
+                      className="h-7 w-full rounded border border-transparent bg-transparent px-2 text-[11.5px] outline-none focus:border-border focus:bg-surface"
+                    />
+                  </td>
+                  <td className="px-1 py-1.5">
+                    <button
+                      type="button"
+                      onClick={() => removePayment(idx)}
+                      title="Remove payment"
+                      className="text-ink-muted hover:text-err"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {payments.length > 0 && (
+                <>
+                  <tr className="text-[11px]">
+                    <td colSpan={2} className="px-2 py-1.5 text-right text-ink-secondary">Deposit Paid</td>
+                    <td className="px-2 py-1.5 text-right font-mono font-bold">{fmtMoney(paidTotal)}</td>
+                    <td colSpan={4} />
+                  </tr>
+                  <tr className="text-[11px]">
+                    <td colSpan={2} className="px-2 py-1.5 text-right text-ink-secondary">Balance</td>
+                    <td className="px-2 py-1.5 text-right font-mono font-bold text-synced">{fmtMoney(balance)}</td>
+                    <td colSpan={4} />
+                  </tr>
+                </>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       {udfFields.length > 0 && (
         <PanelSection title="Extra fields">
@@ -848,6 +1404,42 @@ export function EntryPanel({
     </Panel>
   );
 }
+
+// ── Field shell — icon-prefixed label like the boss mockup ─
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[110px_1fr] items-center gap-3">
+      <label className="text-right text-[11px] font-semibold text-ink-secondary">
+        {label}
+      </label>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+// ── Static option lists (V1 — promote to lookup tables later) ───
+const STATE_OPTIONS = [
+  "Selangor",
+  "Kuala Lumpur",
+  "Putrajaya",
+  "Johor",
+  "Penang",
+  "Perak",
+  "Pahang",
+  "Kedah",
+  "Kelantan",
+  "Terengganu",
+  "Negeri Sembilan",
+  "Melaka",
+  "Perlis",
+  "Sabah",
+  "Sarawak",
+  "Labuan",
+  "Singapore",
+];
+const WAREHOUSE_OPTIONS = ["KL", "JB", "PG", "SBH", "SWK", "SG"];
+const SOURCE_OPTIONS = ["External", "Walk-in", "Online", "Referral", "Event"];
+const PAYMENT_STATUS_OPTIONS = ["Unchecked", "Partial", "Paid", "Refunded"];
 
 function Label({ children }: { children: React.ReactNode }) {
   return (

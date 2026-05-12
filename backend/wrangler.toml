@@ -1,6 +1,10 @@
 name = "autocount-sync-api"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
+# Required by @cloudflare/vitest-pool-workers; also enables Node-style
+# APIs (Buffer, process.env shims) in production. Purely additive —
+# nothing in the worker today depends on the absence of these.
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
 AUTOCOUNT_API_URL = "https://it-houzs.dev/"
