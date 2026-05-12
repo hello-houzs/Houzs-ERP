@@ -37,6 +37,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    environment: Production
     defaults:
       run:
         working-directory: frontend
