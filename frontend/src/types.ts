@@ -521,6 +521,10 @@ export interface PageDef {
   label: string;
   partialMeaning: string;
   supportsPartial: boolean;
+  /** When set, this page is a sub-tab under `parent`. Used by the
+   *  Roles UI to indent and to disable child radios when the parent
+   *  is full/none (cascade rule). */
+  parent: string | null;
 }
 
 /** Per-page access entry on a role. `explicit = true` means the

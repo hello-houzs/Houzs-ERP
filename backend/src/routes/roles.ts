@@ -174,6 +174,7 @@ app.get("/pages", requirePermission("roles.read"), async (c) => {
       label: p.label,
       partialMeaning: p.partialMeaning,
       supportsPartial: p.supportsPartial,
+      parent: p.parent ?? null,
     })),
   });
 });

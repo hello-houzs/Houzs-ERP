@@ -76,6 +76,7 @@ import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useAuth } from "../auth/AuthContext";
+import { usePageAccess } from "../auth/PageGuard";
 import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery } from "../api/client";
 import { formatDate, formatDateTime, formatCurrency, cn, relativeTime } from "../lib/utils";
@@ -633,20 +634,50 @@ export function Projects() {
     "projects:view",
     "list"
   );
+
+  // Per-view access (mig 073 — sub-page split). Each top-level view
+  // gates on its own `projects.<view>` access level. The PageGuard at
+  // the route already filtered users with `projects = none`; this
+  // narrower check decides which views are reachable.
+  const access: Record<ProjectsView, "none" | "partial" | "full"> = {
+    list: usePageAccess("projects.list"),
+    calendar: usePageAccess("projects.calendar"),
+    finances: usePageAccess("projects.finances"),
+    maintenance: usePageAccess("projects.maintenance"),
+  };
+  const allowed: ProjectsView[] = PROJECTS_VIEWS.filter(
+    (v) => access[v] !== "none"
+  );
+  const firstAllowed: ProjectsView | null = allowed[0] ?? null;
+
   const urlView = params.get("view") as ProjectsView | null;
-  const view: ProjectsView =
+  const rawView: ProjectsView =
     urlView && PROJECTS_VIEWS.includes(urlView)
       ? urlView
       : params.has("focus")
       ? "list"
       : storedView;
+  // If the requested view isn't accessible, fall back to the first
+  // accessible one. If nothing is accessible (shouldn't happen — the
+  // PageGuard would have already redirected), render an empty shell.
+  const view: ProjectsView | null = allowed.includes(rawView)
+    ? rawView
+    : firstAllowed;
 
   // Persist whatever view was rendered so a bare `/projects` lands
-  // back where the user left off.
+  // back where the user left off — but only if it was accessible.
   useEffect(() => {
-    if (view !== storedView) setStoredView(view);
+    if (view && view !== storedView) setStoredView(view);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
+
+  if (!view) {
+    return (
+      <div className="p-6 text-[12px] text-ink-muted">
+        No accessible Project views for your role.
+      </div>
+    );
+  }
 
   return (
     <div>

@@ -443,72 +443,70 @@ function RoleEditorPanel({
       </PanelSection>
 
       {!isCreate && !isWildcard && (
-        <PanelSection title="Page access (mig 073)">
+        <PanelSection title="Page access">
           <p className="text-[11px] text-ink-secondary">
-            Per-page gate. Currently only the Sales page reads this
-            matrix; other pages still use the legacy Permissions list
-            above until migrated. Wildcard roles always have full
-            access regardless of this matrix.
+            Per-page gate. Pages with sub-tabs (Projects, Team,
+            Logistics, ASSR, Orders) can be configured per-tab when
+            the parent is set to <strong>Partial</strong> — pick which
+            sub-tabs this role can reach. Setting the parent to Full
+            or None overrides every sub-tab. Wildcard roles bypass
+            this matrix.
           </p>
           {pagesQ.loading || accessQ.loading ? (
             <Skeleton className="h-24 w-full rounded-md" />
           ) : (
             <div className="space-y-2">
-              {pagesQ.data?.pages.map((p) => {
-                const level = pageLevels[p.key] ?? "none";
-                return (
-                  <div
-                    key={p.key}
-                    className="rounded-md border border-border bg-surface p-3"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-semibold text-ink">
-                          {p.label}
+              {(pagesQ.data?.pages ?? [])
+                .filter((p) => !p.parent)
+                .map((parent) => {
+                  const parentLevel = pageLevels[parent.key] ?? "none";
+                  const children = (pagesQ.data?.pages ?? []).filter(
+                    (c) => c.parent === parent.key
+                  );
+                  // When parent is full or none, children inherit
+                  // visually. When parent is partial, each child uses
+                  // its own stored value.
+                  const childrenLocked =
+                    parentLevel === "full" || parentLevel === "none";
+                  return (
+                    <PageAccessRow
+                      key={parent.key}
+                      page={parent}
+                      level={parentLevel}
+                      readOnly={readOnly}
+                      dirty={pageDirty.has(parent.key)}
+                      onChange={(lvl) => changeLevel(parent.key, lvl)}
+                    >
+                      {children.length > 0 && (
+                        <div className="mt-2 ml-4 space-y-1.5 border-l-2 border-border-subtle pl-3">
+                          {children.map((child) => {
+                            const effective = childrenLocked
+                              ? parentLevel
+                              : pageLevels[child.key] ?? "none";
+                            return (
+                              <PageAccessRow
+                                key={child.key}
+                                page={child}
+                                level={effective}
+                                readOnly={readOnly || childrenLocked}
+                                dirty={
+                                  !childrenLocked && pageDirty.has(child.key)
+                                }
+                                inherited={
+                                  childrenLocked
+                                    ? `inherits ${parentLevel} from ${parent.label}`
+                                    : null
+                                }
+                                onChange={(lvl) => changeLevel(child.key, lvl)}
+                                dense
+                              />
+                            );
+                          })}
                         </div>
-                        <div className="mt-0.5 font-mono text-[9.5px] text-ink-muted">
-                          {p.key}
-                        </div>
-                      </div>
-                      {pageDirty.has(p.key) && (
-                        <span className="rounded bg-warning-bg px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning-text">
-                          unsaved
-                        </span>
                       )}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-3">
-                      {(["none", "partial", "full"] as const).map((opt) => {
-                        if (opt === "partial" && !p.supportsPartial) return null;
-                        return (
-                          <label
-                            key={opt}
-                            className={cn(
-                              "flex items-center gap-1.5 text-[11px]",
-                              readOnly ? "cursor-default" : "cursor-pointer"
-                            )}
-                          >
-                            <input
-                              type="radio"
-                              name={`pa-${p.key}`}
-                              value={opt}
-                              checked={level === opt}
-                              disabled={readOnly}
-                              onChange={() => changeLevel(p.key, opt)}
-                              className="h-3.5 w-3.5 accent-accent"
-                            />
-                            <span className="capitalize">{opt}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                    {p.supportsPartial && (
-                      <p className="mt-1.5 text-[10.5px] text-ink-muted">
-                        Partial: {p.partialMeaning}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
+                    </PageAccessRow>
+                  );
+                })}
             </div>
           )}
         </PanelSection>
@@ -525,5 +523,90 @@ function RoleEditorPanel({
         </div>
       )}
     </Panel>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// PageAccessRow — single page entry in the role editor matrix.
+// Used for both parent pages and indented sub-pages.
+// ──────────────────────────────────────────────────────────
+function PageAccessRow({
+  page,
+  level,
+  readOnly,
+  dirty,
+  inherited,
+  onChange,
+  dense,
+  children,
+}: {
+  page: PageDef;
+  level: AccessLevel;
+  readOnly: boolean;
+  dirty: boolean;
+  inherited?: string | null;
+  onChange: (level: AccessLevel) => void;
+  dense?: boolean;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-md border border-border bg-surface",
+        dense ? "p-2" : "p-3"
+      )}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className={cn("font-semibold text-ink", dense ? "text-[11.5px]" : "text-[12px]")}>
+            {page.label}
+          </div>
+          <div className={cn("mt-0.5 font-mono text-ink-muted", dense ? "text-[9px]" : "text-[9.5px]")}>
+            {page.key}
+          </div>
+        </div>
+        {dirty && (
+          <span className="rounded bg-warning-bg px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning-text">
+            unsaved
+          </span>
+        )}
+        {inherited && (
+          <span className="rounded bg-bg px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+            {inherited}
+          </span>
+        )}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-3">
+        {(["none", "partial", "full"] as const).map((opt) => {
+          if (opt === "partial" && !page.supportsPartial) return null;
+          return (
+            <label
+              key={opt}
+              className={cn(
+                "flex items-center gap-1.5 text-[11px]",
+                readOnly ? "cursor-default opacity-70" : "cursor-pointer"
+              )}
+            >
+              <input
+                type="radio"
+                name={`pa-${page.key}`}
+                value={opt}
+                checked={level === opt}
+                disabled={readOnly}
+                onChange={() => onChange(opt)}
+                className="h-3.5 w-3.5 accent-accent"
+              />
+              <span className="capitalize">{opt}</span>
+            </label>
+          );
+        })}
+      </div>
+      {page.supportsPartial && !inherited && (
+        <p className="mt-1.5 text-[10.5px] text-ink-muted">
+          Partial: {page.partialMeaning}
+        </p>
+      )}
+      {children}
+    </div>
   );
 }
