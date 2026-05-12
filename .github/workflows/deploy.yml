@@ -51,6 +51,12 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+        env:
+          # Vite inlines this into the public JS bundle at build time.
+          # Stored as a GitHub repository VARIABLE (not secret) — it's
+          # baked into client-side JS anyway. See plan file for
+          # rationale.
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
