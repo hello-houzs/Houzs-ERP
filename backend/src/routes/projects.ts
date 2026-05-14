@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { requirePermission, requireAnyPermission } from "../middleware/auth";
+import { requirePermission, requireAnyPermission, requirePageAccess } from "../middleware/auth";
 import {
   createProject,
   patchProject,
@@ -320,7 +320,7 @@ function normaliseHex(input: string | undefined | null): string | null {
 // the auto cost-line engine on every finance edit. Surfaced under
 // Project Maintenance → Cost Rates. `projects.manage` gates writes.
 
-app.get("/cost-rates", requirePermission("projects.read"), async (c) => {
+app.get("/cost-rates", requirePageAccess("projects.finances"), async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT cr.brand,
             cr.transport_pct, cr.merchandise_pct,
@@ -429,7 +429,7 @@ app.post("/:id/finance/recompute-auto", requirePermission("projects.write"), asy
 
 // ── Summary (dashboard tiles) ─────────────────────────────────
 
-app.get("/summary", requirePermission("projects.read"), async (c) => {
+app.get("/summary", requirePageAccess("projects.list"), async (c) => {
   const byStage = await c.env.DB.prepare(
     `SELECT stage, COUNT(*) as count
        FROM projects WHERE archived_at IS NULL
@@ -471,7 +471,7 @@ app.get("/summary", requirePermission("projects.read"), async (c) => {
 
 // ── List ──────────────────────────────────────────────────────
 
-app.get("/", requirePermission("projects.read"), async (c) => {
+app.get("/", requirePageAccess("projects.list"), async (c) => {
   const eventTypeParam = c.req.query("event_type_id");
   const yearParam = c.req.query("year");
   const monthParam = c.req.query("month");
@@ -482,6 +482,7 @@ app.get("/", requirePermission("projects.read"), async (c) => {
     brand: c.req.query("brand"),
     state: c.req.query("state") || undefined,
     event_type_id: eventTypeParam ? parseInt(eventTypeParam, 10) : undefined,
+    section: c.req.query("section") || undefined,
     search: c.req.query("search"),
     year: yearParam ? parseInt(yearParam, 10) : undefined,
     month: monthParam ? parseInt(monthParam, 10) : undefined,
@@ -501,12 +502,33 @@ app.get("/", requirePermission("projects.read"), async (c) => {
 app.get("/states", (c) => c.json({ data: MALAYSIA_STATES }));
 app.get("/payment-statuses", (c) => c.json({ data: PAYMENT_STATUSES }));
 
+// Canonical stage list — pulled from the most recently created
+// active checklist template in Project Maintenance. This way the
+// filter pill row on /projects?view=list mirrors the workflow
+// exactly as admin laid it out (reorder / rename / add / delete in
+// PM flow through on the next list-page load). Cloned per-project
+// sections inherit the same name on project create, so the filter
+// still matches projects whose sections were cloned from an older
+// template version.
+app.get("/sections-distinct", requirePageAccess("projects"), async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT s.name, s.sort_order
+       FROM project_checklist_template_sections s
+      WHERE s.template_id = (
+        SELECT MAX(t.id) FROM project_checklist_templates t
+         WHERE t.active = 1
+      )
+      ORDER BY s.sort_order, s.id`
+  ).all<{ name: string; sort_order: number }>();
+  return c.json({ data: (rows.results ?? []).map((r) => r.name) });
+});
+
 // ── Organizers (lookup) ──────────────────────────────────────
 // Free-form names but de-duplicated centrally so the picker stays clean.
 // The actual projects.organizer column remains free text — this table
 // is a convenience source for the dropdown.
 
-app.get("/organizers", requirePermission("projects.read"), async (c) => {
+app.get("/organizers", requirePageAccess("projects"), async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT id, name, notes, active FROM project_organizers
       WHERE active = 1 ORDER BY name`
@@ -558,7 +580,7 @@ app.delete("/organizers/:id", requirePermission("projects.manage"), async (c) =>
 // Same shape as organizers — picker-backed lookup, free-text column on
 // `projects.venue` stays valid so legacy data still renders.
 
-app.get("/venues", requirePermission("projects.read"), async (c) => {
+app.get("/venues", requirePageAccess("projects"), async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT id, name, state, notes, active FROM project_venues
       WHERE active = 1 ORDER BY name`
@@ -650,7 +672,7 @@ app.delete("/venues/:id", requirePermission("projects.manage"), async (c) => {
 // project_checklist_template_items. These routes let admins manage
 // the template body that gets cloned into every new project.
 
-app.get("/checklist-templates", requirePermission("projects.read"), async (c) => {
+app.get("/checklist-templates", requirePageAccess("projects.list"), async (c) => {
   const templates = await c.env.DB.prepare(
     `SELECT t.id, t.name, t.description,
             (SELECT COUNT(*) FROM project_checklist_template_items WHERE template_id = t.id) AS item_count,
@@ -665,7 +687,7 @@ app.get("/checklist-templates", requirePermission("projects.read"), async (c) =>
 
 app.get(
   "/checklist-templates/:id/items",
-  requirePermission("projects.read"),
+  requirePageAccess("projects.list"),
   async (c) => {
     const id = parseInt(c.req.param("id"), 10);
     if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
@@ -855,7 +877,7 @@ app.put(
 // project list defined by the filter set, so drilling into any
 // dimension reflects the same scope.
 
-app.get("/analytics/profitability", requirePermission("projects.read"), async (c) => {
+app.get("/analytics/profitability", requirePageAccess("projects.finances"), async (c) => {
   const dateFrom = c.req.query("date_from");
   const dateTo = c.req.query("date_to");
   const brand = c.req.query("brand");
@@ -1016,7 +1038,7 @@ app.get("/analytics/profitability", requirePermission("projects.read"), async (c
 
 // ── Detail ────────────────────────────────────────────────────
 
-app.get("/:id", requirePermission("projects.read"), async (c) => {
+app.get("/:id", requirePageAccess("projects.list"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -1206,7 +1228,7 @@ app.post("/:id/notes", requireAnyPermission(["projects.write", "projects.chat"])
 // projects.read gate — the chat pane only opens once the caller has
 // already fetched the full project detail, which is ACL-gated.
 
-app.get("/:id/activity", requirePermission("projects.read"), async (c) => {
+app.get("/:id/activity", requirePageAccess("projects.list"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const since = c.req.query("since") || "";
@@ -1235,7 +1257,7 @@ app.get("/:id/activity", requirePermission("projects.read"), async (c) => {
 // frontend calls this when the user opens the chat / detail page;
 // drives the notification bell's unread count.
 
-app.post("/:id/read", requirePermission("projects.read"), async (c) => {
+app.post("/:id/read", requirePageAccess("projects.list"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -1326,7 +1348,7 @@ app.get("/finance/categories", (c) => {
 // (a project shows up as long as it has any matching activity within
 // the range, OR has its start/end inside the range); brand + search
 // filter the project itself.
-app.get("/finance/by-project", requirePermission("projects.read"), async (c) => {
+app.get("/finance/by-project", requirePageAccess("projects.finances"), async (c) => {
   const user = c.get("user");
   // Finance tab is PIC-only. Scoped reps (who aren't themselves a PIC
   // on any project) get zero rows — finance is in the "limited view"
@@ -1529,7 +1551,7 @@ app.get("/finance/by-project", requirePermission("projects.read"), async (c) => 
 // Cross-project finance lines list — kept as a secondary endpoint for
 // callers that want the raw ledger (audit, exports). Same filter shape
 // as /finance/by-project plus kind + category.
-app.get("/finance/lines", requirePermission("projects.read"), async (c) => {
+app.get("/finance/lines", requirePageAccess("projects.finances"), async (c) => {
   const user = c.get("user");
   // PIC-only panel — scoped reps see no finance lines.
   const finPicScope = user?.scope_to_pic ? [user.id].filter(Boolean) : null;
@@ -2700,7 +2722,7 @@ app.patch("/attachments/:attId", requirePermission("projects.write"), async (c) 
 // Returns projects overlapping [from, to], plus their open checklist
 // items whose due_date falls in the window. Used by the Calendar page.
 
-app.get("/calendar/events", requirePermission("projects.read"), async (c) => {
+app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) => {
   const from = c.req.query("from");
   const to = c.req.query("to");
   if (!from || !to) return c.json({ error: "from & to required (YYYY-MM-DD)" }, 400);
@@ -2727,10 +2749,24 @@ app.get("/calendar/events", requirePermission("projects.read"), async (c) => {
   }
   const scopeWhere = scopeWhereParts.length ? ` AND ${scopeWhereParts.join(" AND ")}` : "";
 
-  // Projects whose [start_date, end_date] overlaps [from, to].
+  // Projects whose [start_date, end_date] overlaps [from, to]. The
+  // active_section_name subquery returns the project's current
+  // template section (lowest sort_order with open tasks) so the
+  // calendar can filter by section the same way the list view does.
   const projects = await c.env.DB.prepare(
     `SELECT p.id, p.code, p.name, p.stage, p.brand, p.organizer,
-            p.start_date, p.end_date, p.venue, p.state
+            p.start_date, p.end_date, p.venue, p.state,
+            (SELECT s.name FROM project_checklist_sections s
+              WHERE s.project_id = p.id
+                AND EXISTS (
+                  SELECT 1 FROM project_checklist c
+                   WHERE c.project_id = p.id
+                     AND c.section_id = s.id
+                     AND c.status NOT IN ('done','na')
+                )
+              ORDER BY s.sort_order LIMIT 1) AS active_section_name,
+            (SELECT COUNT(*) FROM project_checklist_sections s
+              WHERE s.project_id = p.id) AS sections_total
        FROM projects p
       WHERE p.archived_at IS NULL
         AND p.start_date IS NOT NULL

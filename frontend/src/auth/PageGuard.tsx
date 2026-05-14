@@ -1,6 +1,6 @@
-import { Navigate } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useAuth } from "./AuthContext";
+import { Forbidden } from "../pages/Forbidden";
 import type { AccessLevel } from "../types";
 
 /**
@@ -25,8 +25,11 @@ export function usePageAccess(page: string): AccessLevel {
  * partial access to enter. Pass `"full"` for admin-only routes where
  * the partial view doesn't make sense.
  *
- * Users who don't meet the minimum get redirected home, matching
- * the existing `<Guard>` behaviour.
+ * On denial, renders the <Forbidden> page **inline** (URL is
+ * preserved). This is better UX than silently bouncing to home — the
+ * user sees what they tried, why it failed, and how to fix it. They
+ * can refresh later (e.g. after an admin updates their role) without
+ * navigating back.
  */
 export function PageGuard({
   page,
@@ -40,7 +43,7 @@ export function PageGuard({
   const level = usePageAccess(page);
   const rank: Record<AccessLevel, number> = { none: 0, partial: 1, full: 2 };
   if (rank[level] < rank[minLevel]) {
-    return <Navigate to="/" replace />;
+    return <Forbidden page={page} />;
   }
   return <>{children}</>;
 }

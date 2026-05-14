@@ -21,8 +21,11 @@
 // Bumping this purges old caches in the activate step. v2: HTML is now
 // fetched network-first so the stale-on-first-refresh issue from v1 is
 // gone; this one-shot bump also clears any v1 shell entry that has the
-// pre-fix index.html baked in.
-const VERSION = "houzs-erp-v2";
+// pre-fix index.html baked in. v3 (2026-05-12): one-shot purge to
+// recover iPhone Safari clients that were stuck on a cached CSS bundle
+// after the page-access refactor — old cache-first /assets entries
+// were serving pre-rebuild CSS, leaving Tailwind classes unapplied.
+const VERSION = "houzs-erp-v3";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

@@ -146,6 +146,8 @@ describe("Projects module — smoke pack", () => {
     const created = await api("POST", "/api/projects", adminBearer, {
       name: "Archivable",
       brand: "AKEMI",
+      state: "SELANGOR",
+      venue: "TEST VENUE",
     });
     expect(created.status).toBe(201);
     const id = created.json.id;
@@ -188,6 +190,8 @@ describe("Projects module — smoke pack", () => {
     const blocked = await api("POST", "/api/projects", adminBearer, {
       name: "Brand-gated",
       brand: "AKEMI",
+      state: "SELANGOR",
+      venue: "TEST VENUE",
       pic_id: rep.userId,
     });
     expect(blocked.status).toBe(403);
@@ -200,6 +204,8 @@ describe("Projects module — smoke pack", () => {
     const ok = await api("POST", "/api/projects", adminBearer, {
       name: "Brand-gated",
       brand: "AKEMI",
+      state: "SELANGOR",
+      venue: "TEST VENUE",
       pic_id: rep.userId,
     });
     expect(ok.status).toBe(201);
@@ -226,6 +232,8 @@ describe("Projects module — smoke pack", () => {
     const created = await api("POST", "/api/projects", adminBearer, {
       name: "rep B's project",
       brand: "AKEMI",
+      state: "SELANGOR",
+      venue: "TEST VENUE",
       pic_id: repB.userId,
     });
     expect(created.status).toBe(201);
@@ -253,6 +261,8 @@ describe("Projects module — smoke pack", () => {
     const created = await api("POST", "/api/projects", adminBearer, {
       name: "Rollup target",
       brand: "AKEMI",
+      state: "SELANGOR",
+      venue: "TEST VENUE",
     });
     expect(created.status).toBe(201);
     const projectId = created.json.id;

@@ -2,26 +2,57 @@ import type { Env } from "../types";
 import { recomputeAutoCostLines } from "./projectCostRates";
 
 // ── Codes ─────────────────────────────────────────────────────
-// Format: PRJ-YYYY-NNN (zero-padded 3-digit counter, scoped to the
-// project's year). Deliberately brand-neutral so renaming a brand
-// or reassigning doesn't invalidate existing codes.
+// Format: `YYYY-MM-{ORGANIZER}-{STATE}-{VENUE}-{BRAND}` — built from
+// the project's identity fields so the code itself describes the
+// event. Organizer defaults to `SOLO` when null (mirrors the
+// canonical name format). State / venue / brand are required;
+// createProject throws if any are missing. On collision (two
+// projects with identical inputs and dates) `-2`, `-3` … suffixes
+// are appended.
+//
+// Migration 071 backfilled names to this same family; the
+// backfill-project-codes.mjs script rewrites legacy `PRJ-YYYY-NNN`
+// rows to the new format in one pass.
 
-export async function nextProjectCode(env: Env, year: number): Promise<string> {
-  const prefix = `PRJ-${year}-`;
-  const row = await env.DB.prepare(
-    `SELECT code FROM projects
-      WHERE code LIKE ?
-      ORDER BY code DESC LIMIT 1`
+function slugSegment(s: string | null | undefined): string {
+  return (s ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+export function deriveProjectCode(input: {
+  year: number;
+  month: number;
+  organizer?: string | null;
+  state?: string | null;
+  venue?: string | null;
+  brand?: string | null;
+}): string {
+  const state = slugSegment(input.state);
+  const venue = slugSegment(input.venue);
+  const brand = slugSegment(input.brand);
+  if (!state) throw new Error("state is required to generate a project code");
+  if (!venue) throw new Error("venue is required to generate a project code");
+  if (!brand) throw new Error("brand is required to generate a project code");
+  const organizer = slugSegment(input.organizer) || "SOLO";
+  const yyyy = String(input.year);
+  const mm = String(input.month).padStart(2, "0");
+  return `${yyyy}-${mm}-${organizer}-${state}-${venue}-${brand}`;
+}
+
+/** Disambiguate against existing codes by appending -2, -3, … */
+export async function uniqueProjectCode(env: Env, base: string): Promise<string> {
+  const rows = await env.DB.prepare(
+    `SELECT code FROM projects WHERE code = ? OR code LIKE ?`
   )
-    .bind(`${prefix}%`)
-    .first<{ code: string }>();
-  let next = 1;
-  if (row?.code) {
-    const tail = row.code.slice(prefix.length);
-    const n = parseInt(tail, 10);
-    if (Number.isFinite(n)) next = n + 1;
-  }
-  return `${prefix}${String(next).padStart(3, "0")}`;
+    .bind(base, `${base}-%`)
+    .all<{ code: string }>();
+  const used = new Set((rows.results ?? []).map((r) => r.code));
+  if (!used.has(base)) return base;
+  let n = 2;
+  while (used.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
 }
 
 // ── Activity log ──────────────────────────────────────────────
@@ -87,10 +118,20 @@ export async function createProject(env: Env, input: CreateProjectInput) {
     throw new Error("end_date must be on or after start_date");
   }
   const now = new Date();
-  const year = input.start_date
-    ? new Date(input.start_date).getFullYear()
-    : now.getFullYear();
-  const code = await nextProjectCode(env, year);
+  const anchor = input.start_date ? new Date(input.start_date) : now;
+  const year = anchor.getFullYear();
+  const month = anchor.getMonth() + 1;
+  // Derive code from identity fields. Throws if state/venue/brand are
+  // missing; route layer converts to a 400. Organizer null → "SOLO".
+  const baseCode = deriveProjectCode({
+    year,
+    month,
+    organizer: input.organizer,
+    state: input.state,
+    venue: input.venue,
+    brand: input.brand,
+  });
+  const code = await uniqueProjectCode(env, baseCode);
 
   // Default the PIC to the creator so a sales rep who creates their
   // own project immediately sees it under the scoped filter. Admins
@@ -766,6 +807,11 @@ export interface ListProjectsFilters {
   year?: number;
   month?: number;  // 1-12, filters on start_date
   state?: string;
+  /** Active tasklist section name (mig 050). When set, the list only
+   *  returns projects whose lowest-sort_order section with open tasks
+   *  matches. Special values: "__done" = all sections complete; "__none"
+   *  = project has no sections defined. */
+  section?: string;
   page?: number;
   per_page?: number;
   include_archived?: boolean;
@@ -835,6 +881,45 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   if (f.state) {
     where.push("p.state = ?");
     binds.push(f.state);
+  }
+  if (f.section) {
+    if (f.section === "__done") {
+      // Project must have at least one section, and zero of them
+      // have open tasks.
+      where.push(
+        `EXISTS (SELECT 1 FROM project_checklist_sections s WHERE s.project_id = p.id)
+         AND NOT EXISTS (
+           SELECT 1 FROM project_checklist_sections s
+            WHERE s.project_id = p.id
+              AND EXISTS (
+                SELECT 1 FROM project_checklist c
+                 WHERE c.project_id = p.id
+                   AND c.section_id = s.id
+                   AND c.status NOT IN ('done','na')
+              )
+         )`
+      );
+    } else if (f.section === "__none") {
+      where.push(
+        `NOT EXISTS (SELECT 1 FROM project_checklist_sections s WHERE s.project_id = p.id)`
+      );
+    } else {
+      // Match the active section (lowest sort_order with open tasks).
+      where.push(
+        `(
+           SELECT s.name FROM project_checklist_sections s
+            WHERE s.project_id = p.id
+              AND EXISTS (
+                SELECT 1 FROM project_checklist c
+                 WHERE c.project_id = p.id
+                   AND c.section_id = s.id
+                   AND c.status NOT IN ('done','na')
+              )
+            ORDER BY s.sort_order LIMIT 1
+         ) = ?`
+      );
+      binds.push(f.section);
+    }
   }
   if (f.search) {
     where.push("(p.code LIKE ? OR p.name LIKE ? OR p.venue LIKE ? OR p.organizer LIKE ?)");
@@ -908,7 +993,29 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                              AS INTEGER)
                     END
                FROM project_checklist c
-              WHERE c.project_id = p.id) as progress_pct
+              WHERE c.project_id = p.id) as progress_pct,
+            -- Section-driven stage tracker (mig 050).
+            -- active_section = lowest-sort_order section with any open task.
+            (SELECT s.name FROM project_checklist_sections s
+              WHERE s.project_id = p.id
+                AND EXISTS (
+                  SELECT 1 FROM project_checklist c
+                   WHERE c.project_id = p.id
+                     AND c.section_id = s.id
+                     AND c.status NOT IN ('done', 'na')
+                )
+              ORDER BY s.sort_order LIMIT 1) as active_section_name,
+            -- Section totals so the UI can show "complete" when all are done.
+            (SELECT COUNT(*) FROM project_checklist_sections s
+              WHERE s.project_id = p.id) as sections_total,
+            (SELECT COUNT(*) FROM project_checklist_sections s
+              WHERE s.project_id = p.id
+                AND NOT EXISTS (
+                  SELECT 1 FROM project_checklist c
+                   WHERE c.project_id = p.id
+                     AND c.section_id = s.id
+                     AND c.status NOT IN ('done', 'na')
+                )) as sections_complete
        FROM projects p
        LEFT JOIN project_event_types et ON et.id = p.event_type_id
        LEFT JOIN project_finance pf ON pf.project_id = p.id

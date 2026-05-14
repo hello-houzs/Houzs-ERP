@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, Navigate, useSearchParams } from "react-r
 import {
   Plus,
   Calendar,
+  Check,
   CheckCircle2,
   Circle,
   MinusCircle,
@@ -77,6 +78,7 @@ import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
+import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery } from "../api/client";
 import { formatDate, formatDateTime, formatCurrency, cn, relativeTime } from "../lib/utils";
@@ -116,6 +118,13 @@ interface ProjectRow {
   total_sales: number | null;
   contractor_cost: number | null;
   progress_pct: number;
+  // Section-driven stage tracker (mig 050). active_section_name is null
+  // when every section is done OR the project has no sections defined.
+  // Combine with sections_total / sections_complete to distinguish
+  // "everything done" from "no sections yet".
+  active_section_name?: string | null;
+  sections_total?: number;
+  sections_complete?: number;
 }
 
 interface ProjectDetail {
@@ -651,32 +660,35 @@ export function Projects() {
   const firstAllowed: ProjectsView | null = allowed[0] ?? null;
 
   const urlView = params.get("view") as ProjectsView | null;
-  const rawView: ProjectsView =
-    urlView && PROJECTS_VIEWS.includes(urlView)
-      ? urlView
-      : params.has("focus")
+  // Distinguish "explicitly requested" from "fell through to stored".
+  // When the URL explicitly names a view the user can't access, we
+  // show <Forbidden> so they see why — silent fallback to a different
+  // view looked like "no response from the web". When there's no
+  // explicit URL view, pick the first accessible one.
+  const explicit: ProjectsView | null =
+    urlView && PROJECTS_VIEWS.includes(urlView) ? urlView : null;
+  const fallback: ProjectsView | null = params.has("focus")
+    ? allowed.includes("list")
       ? "list"
-      : storedView;
-  // If the requested view isn't accessible, fall back to the first
-  // accessible one. If nothing is accessible (shouldn't happen — the
-  // PageGuard would have already redirected), render an empty shell.
-  const view: ProjectsView | null = allowed.includes(rawView)
-    ? rawView
-    : firstAllowed;
+      : firstAllowed
+    : allowed.includes(storedView)
+      ? storedView
+      : firstAllowed;
+  const view: ProjectsView | null = explicit ?? fallback;
+  const requestedDenied = explicit !== null && !allowed.includes(explicit);
 
   // Persist whatever view was rendered so a bare `/projects` lands
   // back where the user left off — but only if it was accessible.
   useEffect(() => {
-    if (view && view !== storedView) setStoredView(view);
+    if (view && !requestedDenied && view !== storedView) setStoredView(view);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view]);
+  }, [view, requestedDenied]);
 
+  if (requestedDenied) {
+    return <Forbidden page={`projects.${explicit}`} />;
+  }
   if (!view) {
-    return (
-      <div className="p-6 text-[12px] text-ink-muted">
-        No accessible Project views for your role.
-      </div>
-    );
+    return <Forbidden page="projects" />;
   }
 
   return (
@@ -690,7 +702,13 @@ export function Projects() {
 }
 
 const PROJECTS_LIST_FILTER_KEYS = [
+  // `stage` filter retired — the team now tracks progress via tasklist
+  // sections (Pre-event / Setup / Live / Teardown). The legacy stage
+  // enum stays in the DB and detail view for the next-stage button.
+  // Kept in the URL keys list so any old bookmark with ?stage=… still
+  // parses without throwing.
   "stage",
+  "section",
   "search",
   "brand",
   "year",
@@ -707,26 +725,25 @@ function ProjectsListView() {
     "projects-list",
     PROJECTS_LIST_FILTER_KEYS
   );
-  const stage = ((params.get("stage") || "ALL") as "ALL" | ProjectStage);
   const search = params.get("search") || "";
   const brand = params.get("brand") || "";
   const year = params.get("year") || "";
   const month = params.get("month") || "";
+  const section = params.get("section") || "";
   const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
   function patchParams(patch: Record<string, string>) {
     const next = new URLSearchParams(params);
     for (const [k, v] of Object.entries(patch)) {
-      if (v === "" || (k === "stage" && v === "ALL") || (k === "page" && v === "1"))
-        next.delete(k);
+      if (v === "" || (k === "page" && v === "1")) next.delete(k);
       else next.set(k, v);
     }
     setParams(next, { replace: true });
   }
-  const setStage = (v: "ALL" | ProjectStage) => patchParams({ stage: v, page: "1" });
   const setSearch = (v: string) => patchParams({ search: v, page: "1" });
   const setBrand = (v: string) => patchParams({ brand: v, page: "1" });
   const setYear = (v: string) => patchParams({ year: v, page: "1" });
   const setMonth = (v: string) => patchParams({ month: v, page: "1" });
+  const setSection = (v: string) => patchParams({ section: v, page: "1" });
   const setPage = (n: number) => patchParams({ page: String(n) });
 
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
@@ -743,10 +760,10 @@ function ProjectsListView() {
     () =>
       api.get(
         `/api/projects${buildQuery({
-          stage: stage === "ALL" ? undefined : stage,
           brand: brand || undefined,
           year: year || undefined,
           month: month || undefined,
+          section: section || undefined,
           search,
           page,
           per_page: perPage,
@@ -754,7 +771,7 @@ function ProjectsListView() {
           ...sortParams,
         })}`
       ),
-    [stage, brand, year, month, search, page, perPage, showArchived, sort?.key, sort?.dir]
+    [brand, year, month, section, search, page, perPage, showArchived, sort?.key, sort?.dir]
   );
 
   const summary = useQuery<{
@@ -768,12 +785,11 @@ function ProjectsListView() {
   const eventTypes = useQuery<{ data: EventType[] }>(() =>
     api.get("/api/projects/event-types")
   );
-
-  const stageCountMap = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const s of summary.data?.by_stage ?? []) m[s.stage] = s.count;
-    return m;
-  }, [summary.data]);
+  // Distinct active section names — drives the Section filter dropdown.
+  // Empty until any project has tasklist sections defined.
+  const sectionsList = useQuery<{ data: string[] }>(() =>
+    api.get("/api/projects/sections-distinct")
+  );
 
   const columns: Column<ProjectRow>[] = [
     {
@@ -801,6 +817,11 @@ function ProjectsListView() {
                 </span>
               )}
               {r.name}
+              {r.archived_at && (
+                <span className="inline-flex items-center rounded-full border border-ink-muted/40 bg-ink-muted/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-muted">
+                  Archived
+                </span>
+              )}
             </span>
             {r.venue && <span className="text-[10px] text-ink-muted">{r.venue}</span>}
           </div>
@@ -811,17 +832,47 @@ function ProjectsListView() {
     {
       key: "stage",
       label: "Stage",
-      render: (r) => (
-        <div className="flex items-center gap-1.5">
-          {r.archived_at && (
-            <span className="inline-flex items-center rounded-full border border-ink-muted/40 bg-ink-muted/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-muted">
-              Archived
+      // Stage = the project's current template section (mig 050). The
+      // pill matches the visual language of the filter pill row above
+      // the table + StageProgressRow on the detail page. The legacy
+      // draft / setup / dismantle / completed enum is retired here.
+      render: (r) => {
+        const total = r.sections_total ?? 0;
+        const active = r.active_section_name ?? null;
+        const allDone = total > 0 && active == null;
+        if (allDone) {
+          return (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-synced bg-synced/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-synced"
+              title={`${total}/${total} sections complete`}
+            >
+              <CheckCircle2 size={10} /> Complete
             </span>
-          )}
-          <StatusDot variant={stageVariant(r.stage)} label={STAGE_LABEL[r.stage]} />
-        </div>
-      ),
-      getValue: (r) => STAGE_LABEL[r.stage],
+          );
+        }
+        if (active) {
+          return (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-accent"
+              title={`Current stage · ${r.sections_complete ?? 0}/${total} sections complete`}
+            >
+              <Circle size={9} /> {active}
+              <span className="font-mono text-[9px] opacity-70">
+                {r.sections_complete ?? 0}/{total}
+              </span>
+            </span>
+          );
+        }
+        return (
+          <span
+            className="inline-flex items-center rounded-full border border-dashed border-border bg-bg/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted"
+            title="This project has no tasklist sections yet"
+          >
+            No sections
+          </span>
+        );
+      },
+      getValue: (r) => r.active_section_name ?? "",
     },
     {
       key: "progress_pct",
@@ -915,7 +966,7 @@ function ProjectsListView() {
         }
       />
 
-      <DashboardGrid cols={4}>
+      <DashboardGrid cols={3}>
         <StatCard
           label="Live Now"
           value={(summary.data?.live_count ?? 0).toString()}
@@ -928,11 +979,6 @@ function ProjectsListView() {
           subtitle="Starting within the next month"
         />
         <StatCard
-          label="In Planning"
-          value={(stageCountMap.planning ?? 0).toString()}
-          subtitle="Pre-build stage"
-        />
-        <StatCard
           label="Overdue Tasks"
           value={(summary.data?.overdue_tasks ?? 0).toString()}
           subtitle="Checklist items past due"
@@ -941,10 +987,20 @@ function ProjectsListView() {
       </DashboardGrid>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
+        {/* Tasklist-section filter pills — replaces the old draft /
+            setup / dismantle / completed stage filter. Sections are
+            pulled live so any custom workflow shows up here too. */}
         <FilterPills
-          value={stage}
-          onChange={(v) => setStage(v)}
-          options={STAGE_OPTIONS}
+          value={section}
+          onChange={(v) => setSection(v)}
+          options={[
+            { value: "", label: "All" },
+            ...(sectionsList.data?.data ?? []).map((s) => ({
+              value: s,
+              label: s,
+            })),
+            { value: "__done", label: "Completed" },
+          ]}
         />
         <select
           value={brand}
@@ -1105,17 +1161,23 @@ function brandHex(map: Map<string, string>, brand: string | null | undefined): s
 /** Inline-style props for a brand-coloured surface (calendar bar, chip).
  *  Always white text — brand palette is mid-saturation so contrast is
  *  reliable enough; we accept the rare slightly-low-contrast case
- *  rather than pulling in a luminance helper. */
+ *  rather than pulling in a luminance helper.
+ *
+ *  Default alpha is 0.96 so bars read crisp against the surface. Earlier
+ *  the default was 0.78 which left them washed out — the team called
+ *  the colour "not sharp enough". A thin matching-hue border is added
+ *  to firm up the edges on small chips. */
 function brandStyle(
   map: Map<string, string>,
   brand: string | null | undefined,
-  alpha = 0.78
+  alpha = 0.96
 ): React.CSSProperties {
   const hex = brandHex(map, brand);
   return {
     // backgroundColor with rgba would need conversion; "color-mix" works
     // in every evergreen browser and skips the conversion step.
     backgroundColor: `color-mix(in srgb, ${hex} ${Math.round(alpha * 100)}%, transparent)`,
+    borderColor: hex,
     color: "white",
   };
 }
@@ -1200,6 +1262,10 @@ interface CalendarProject {
   end_date: string | null;
   venue: string | null;
   state: string | null;
+  // Section-driven stage (mig 050). Mirrors the list endpoint's
+  // active_section_name + sections_total.
+  active_section_name?: string | null;
+  sections_total?: number;
 }
 
 interface CalendarTask {
@@ -2299,6 +2365,10 @@ const PROJECTS_CALENDAR_FILTER_KEYS = [
   // grid for a single 1×7 row anchored on `week` (Sunday ISO date).
   "mode",
   "week",
+  // 2026-05-15 — `section` replaces the legacy `stage` filter (the
+  // tasklist sections are the new stages). `stage` stays in the keys
+  // list so old bookmarks parse without throwing.
+  "section",
 ] as const;
 
 function ProjectsCalendarView() {
@@ -2309,7 +2379,7 @@ function ProjectsCalendarView() {
     PROJECTS_CALENDAR_FILTER_KEYS
   );
   const brand = params.get("brand") || "";
-  const stage = params.get("stage") || "";
+  const section = params.get("section") || "";
   const organizer = params.get("organizer") || "";
   // anchor lives in URL as `month=YYYY-MM` so a refresh / shared link
   // lands on the same month.
@@ -2322,7 +2392,7 @@ function ProjectsCalendarView() {
     setParams(next, { replace: true });
   }
   const setBrand = (v: string) => patchParams({ brand: v });
-  const setStage = (v: string) => patchParams({ stage: v });
+  const setSection = (v: string) => patchParams({ section: v });
   const setOrganizer = (v: string) => patchParams({ organizer: v });
 
   // showTasks / showHolidays are personal display prefs (checkbox toggles
@@ -2336,35 +2406,15 @@ function ProjectsCalendarView() {
     "projects:cal:showHolidays",
     true
   );
-  // Cell-level overflow popover. When the bar packing exceeds
-  // MAX_LANES the "+N more" button opens a list of the hidden
-  // projects on that cell. `null` = no popover open.
-  const [openOverflow, setOpenOverflow] = useState<number | null>(null);
-  useEffect(() => {
-    if (openOverflow == null) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpenOverflow(null);
-    };
-    const onClick = (e: MouseEvent) => {
-      // Close on any click outside an element opted into the popover.
-      const t = e.target as HTMLElement | null;
-      if (t && t.closest('[data-overflow-popover]')) return;
-      setOpenOverflow(null);
-    };
-    window.addEventListener("keydown", onKey);
-    // capture so the trigger's own onClick still flips state before
-    // this dismiss handler sees the click.
-    window.addEventListener("click", onClick);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("click", onClick);
-    };
-  }, [openOverflow]);
   const brandsQ = useQuery<{ data: string[] }>(() =>
     api.get("/api/projects/brands")
   );
   const organizersQ = useQuery<{ data: { id: number; name: string }[] }>(() =>
     api.get("/api/projects/organizers")
+  );
+  // Active template's sections, mirroring the list-view pill row.
+  const sectionsListQ = useQuery<{ data: string[] }>(() =>
+    api.get("/api/projects/sections-distinct")
   );
   // Full brand rows (with colour) for the legend + bar tints. Keyed by
   // brand name. Replaces the old hardcoded BRAND_COLORS / BRAND_DOT_HEX
@@ -2417,6 +2467,19 @@ function ProjectsCalendarView() {
       patchParams({ month: `${yyyy}-${mm}` });
     }
   };
+  // Jump from a month-view cell straight into week mode anchored on that
+  // cell's week. Used by the "+N more" expanders so users see every
+  // bar/task inline instead of opening a popover. The week-view layout
+  // already has unlimited lane height and shows every task per cell.
+  const expandToWeekForCell = (cellIso: string) => {
+    const d = new Date(`${cellIso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - d.getUTCDay()); // snap to Sunday
+    const yyyy = d.getUTCFullYear();
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    patchParams({ mode: "week", week: `${yyyy}-${mm}-${dd}` });
+  };
+
   const setMode = (next: "month" | "week") => {
     // When flipping to week mode for the first time, snap the week
     // anchor to the Sunday of "today" so the user lands on the
@@ -2472,9 +2535,20 @@ function ProjectsCalendarView() {
   // Client-side filter so the server call stays cacheable at the
   // month granularity. Projects that don't match are excluded; tasks
   // inherit their project's brand via the join server-side already.
+  // Section semantics mirror the list view: "__done" → all sections
+  // complete; "__none" → no sections defined; otherwise match the
+  // project's active_section_name.
+  function matchesSection(p: CalendarProject): boolean {
+    if (!section) return true;
+    const total = p.sections_total ?? 0;
+    const active = p.active_section_name ?? null;
+    if (section === "__done") return total > 0 && active == null;
+    if (section === "__none") return total === 0;
+    return active === section;
+  }
   const projects = allProjects.filter((p) => {
     if (brand && p.brand !== brand) return false;
-    if (stage && p.stage !== stage) return false;
+    if (!matchesSection(p)) return false;
     if (organizer && (p.organizer || "") !== organizer) return false;
     return true;
   });
@@ -2482,9 +2556,9 @@ function ProjectsCalendarView() {
     ? allTasks.filter((t) => {
         if (brand && t.brand !== brand) return false;
         if (organizer && (t.organizer || "") !== organizer) return false;
-        // Tasks don't carry project stage on the wire — match via the
-        // filtered project set.
-        if (stage) {
+        // Tasks don't carry section info on the wire — match via the
+        // filtered project set so section filtering composes correctly.
+        if (section) {
           const match = projects.find((p) => p.id === t.project_id);
           if (!match) return false;
         }
@@ -2535,13 +2609,11 @@ function ProjectsCalendarView() {
   };
   // Week mode has plenty of vertical real estate per column, so don't
   // cap lanes — show every project bar inline. Month mode keeps the
-  // 3-lane cap with a "+N more" overflow popover for tighter cells.
+  // 3-lane cap in month mode; clicking "+N more" on a cell jumps to
+  // week view for that week (unlimited lanes). Week mode never caps.
   const MAX_LANES = mode === "week" ? Infinity : 3;
   const weekSegs: WeekSeg[][] = Array.from({ length: weekCount }, () => []);
   const overflowByCell: number[] = Array(totalCells).fill(0);
-  // Keep the actual overflow segments per cell — clicking "+N more"
-  // needs project IDs / codes / names to render the popover.
-  const overflowSegsByCell: WeekSeg[][] = Array.from({ length: totalCells }, () => []);
   for (let w = 0; w < weekCount; w++) {
     const weekStart = cells[w * 7].iso;
     const weekEnd = cells[w * 7 + 6].iso;
@@ -2586,7 +2658,6 @@ function ProjectsCalendarView() {
       } else {
         for (let ci = seg.startCol; ci <= seg.endCol; ci++) {
           overflowByCell[w * 7 + ci]++;
-          overflowSegsByCell[w * 7 + ci].push(seg);
         }
       }
     }
@@ -2698,17 +2769,18 @@ function ProjectsCalendarView() {
             ))}
           </select>
           <select
-            value={stage}
-            onChange={(e) => setStage(e.target.value)}
+            value={section}
+            onChange={(e) => setSection(e.target.value)}
             className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-            title="Filter by stage"
+            title="Filter by current section (stage)"
           >
-            <option value="">All stages</option>
-            {FINANCE_STAGE_OPTIONS.map((s) => (
+            <option value="">All sections</option>
+            {(sectionsListQ.data?.data ?? []).map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
             ))}
+            <option value="__done">Completed</option>
           </select>
           <select
             value={organizer}
@@ -2747,11 +2819,11 @@ function ProjectsCalendarView() {
           >
             {showHolidays ? "✓" : "○"} MY Holidays
           </button>
-          {(brand || stage || organizer) && (
+          {(brand || section || organizer) && (
             <button
               onClick={() => {
                 setBrand("");
-                setStage("");
+                setSection("");
                 setOrganizer("");
               }}
               className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
@@ -2904,61 +2976,23 @@ function ProjectsCalendarView() {
                         used in this week. */}
                     <div style={{ height: BARS_AREA_H }} aria-hidden />
 
-                    {/* Bar overflow chip is month-mode only. Week
-                        view doesn't cap lanes (MAX_LANES = Infinity)
-                        so this is always 0 anyway, but the explicit
-                        guard prevents accidental render flicker. */}
+                    {/* Bar overflow — month mode only (week mode has
+                        unlimited lanes). Clicking expands the cell's
+                        week into week view, showing every bar inline
+                        without a popover. Old popover behaviour removed
+                        per the team's request. */}
                     {mode === "month" && overflow > 0 && (
-                      <div className="relative" data-overflow-popover>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setOpenOverflow((cur) => (cur === idx ? null : idx));
-                          }}
-                          className="block text-[9px] font-semibold text-accent hover:underline"
-                          title="Show hidden projects on this day"
-                        >
-                          +{overflow} more
-                        </button>
-                        {openOverflow === idx && overflowSegsByCell[idx].length > 0 && (
-                          <div
-                            className="absolute left-0 right-0 top-full z-30 mt-1 rounded-md border border-border bg-surface p-1 shadow-lg"
-                            data-overflow-popover
-                          >
-                            <div className="mb-1 flex items-center justify-between px-1 pt-0.5">
-                              <span className="text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-                                +{overflowSegsByCell[idx].length} hidden
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => setOpenOverflow(null)}
-                                className="text-ink-muted hover:text-ink"
-                                aria-label="Close"
-                              >
-                                <X size={10} />
-                              </button>
-                            </div>
-                            <ul className="space-y-0.5">
-                              {overflowSegsByCell[idx].map((s, i) => (
-                                <li key={`${s.project.id}-${i}`}>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setOpenOverflow(null);
-                                      navigate(`/projects/${s.project.id}`);
-                                    }}
-                                    className="block w-full truncate rounded px-1 py-0.5 text-left text-[10.5px] font-medium text-ink hover:bg-bg/60"
-                                    title={`${s.project.code ?? ""} · ${s.project.name}`.trim()}
-                                  >
-                                    {s.project.name}
-                                  </button>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          expandToWeekForCell(cell.iso);
+                        }}
+                        className="block text-[9px] font-semibold text-accent hover:underline"
+                        title="Switch to week view to see every project on this day"
+                      >
+                        +{overflow} more · show week
+                      </button>
                     )}
 
                     {isHolidayCell && (
@@ -2986,17 +3020,14 @@ function ProjectsCalendarView() {
                         ))}
                         {mode === "month" && cellTasks.length > 2 && (
                           <button
-                            onClick={() => {
-                              const first = cellTasks[2];
-                              if (first) navigate(`/projects/${first.project_id}`);
-                            }}
+                            onClick={() => expandToWeekForCell(cell.iso)}
                             title={cellTasks
                               .slice(2)
                               .map((t) => `${t.project_code}: ${t.title}`)
                               .join("\n")}
                             className="block text-[9px] font-semibold text-accent hover:underline"
                           >
-                            +{cellTasks.length - 2} more task{cellTasks.length - 2 === 1 ? "" : "s"}
+                            +{cellTasks.length - 2} more · show week
                           </button>
                         )}
                       </div>
@@ -3510,6 +3541,18 @@ function ProjectDetailContent({
                 Archive
               </HeaderButton>
             )}
+            <HeaderButton
+              variant="ghost"
+              onClick={async () => {
+                try {
+                  await api.openHtml(`/api/projects-print/${id}`);
+                } catch (e: any) {
+                  toast.error(e?.message || "Failed to open print view");
+                }
+              }}
+            >
+              <Printer size={12} /> Print
+            </HeaderButton>
             {nextStage && !p.archived_at && (
               <HeaderButton
                 variant="primary"
@@ -3543,44 +3586,36 @@ function ProjectDetailContent({
           {/* Banner — optional per-project warning */}
           {p.banner_message && <ProjectBanner message={p.banner_message} tone={p.banner_tone} />}
 
-          {/* Stage + progress header */}
-          <div className="mb-5 flex flex-wrap items-center gap-3 rounded-md border border-border bg-bg/60 px-4 py-3">
+          {/* ── Stage progress (directly under page title) ──────────
+             Per-section pills with completion tick + lead time chip.
+             Print button lives in the title actions now. */}
+          <div className="mb-4 flex flex-wrap items-center gap-2.5 border-b border-border-subtle pb-3">
             <StatusDot variant={stageVariant(p.stage)} label={STAGE_LABEL[p.stage]} />
-            {/* Stage chip row replaces the percent bar (mig 050). One
-                pill per tasklist section; complete sections fill solid,
-                in-progress get a partial gradient, untouched ones stay
-                muted. Falls back to the percent bar when a project has
-                no sections defined yet. */}
             {(detail.data?.section_progress ?? []).length > 0 ? (
-              <StageProgressRow sections={detail.data!.section_progress!} />
+              <StageProgressRow
+                sections={detail.data!.section_progress!}
+                checklist={checklist}
+              />
             ) : (
               <ProgressBar pct={p.progress_pct ?? 0} />
             )}
-            {p.duration_days != null && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-ink-secondary">
-                <Calendar size={11} />
-                {p.duration_days} day{p.duration_days === 1 ? "" : "s"}
-              </span>
-            )}
-            {p.brand && (
-              <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-bold tracking-wide text-accent">
-                {p.brand}
-              </span>
-            )}
-            <button
-              onClick={async () => {
-                try {
-                  await api.openHtml(`/api/projects-print/${id}`);
-                } catch (e: any) {
-                  toast.error(e?.message || "Failed to open print view");
-                }
-              }}
-              className="ml-auto inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1 text-[10.5px] font-semibold text-ink hover:border-accent/40 hover:text-accent"
-              title="Open event summary — A4 printable"
-            >
-              <Printer size={11} /> Print
-            </button>
           </div>
+
+          {/* ── Project spec strip ──────────────────────────────────
+             Editorial titleblock-style metadata grid. Sits under the
+             stage row. Each cell hosts an InlineEdit or read-only
+             field — no PanelSection chrome (the team called the old
+             card grid "weird / too heavy"). */}
+          <ProjectSpecStrip
+            project={p}
+            brands={brands}
+            eventTypes={eventTypes}
+            picUsers={picUsers}
+            picUsersLoading={picUsersQ.loading}
+            fullAccess={fullAccess}
+            patch={patch}
+            toast={toast}
+          />
           {/* Payment sits directly under the stage-progress header so the
               status pills are the first thing the eye lands on after the
               eyebrow + title. No PanelSection chrome — the strip
@@ -3597,294 +3632,494 @@ function ProjectDetailContent({
             />
           )}
 
+          {/* Operational area — Chat on the side; Sales / Tasklist /
+              Logistics / Finance Ledger stacked in Main (Finance at the
+              bottom; Logistics directly above it per the team's request). */}
           <DetailGrid>
             <DetailMain>
-          {/* PIC-only ops sections pack into a 2-col inner grid so the
-              left column doesn't run as a single tall column on wide
-              screens. Sales + Tasklist sit below as full-width because
-              their internal rows already use horizontal columns.
-
-              Stock Transfer section removed — transfers still mirror into
-              the tasklist via createStockTransfer in the backend, so the
-              admin sees them in the Tasklist alongside other work. */}
-          {fullAccess && (
-            <>
-              <LogisticsScheduleSection project={p} trips={trips} patch={patch} />
-              <FinanceLedgerSection
+              <ProjectSalesEntriesSection
                 projectId={id}
-                sizeSqm={p.size_sqm ?? null}
-                durationDays={p.duration_days ?? null}
-                lines={detail.data?.finance_lines ?? []}
-                onChange={() => detail.reload()}
+                projectCode={p.code}
+                projectName={p.name}
+                canWrite={can("sales.write")}
+                canManage={can("sales.manage")}
                 toast={toast}
               />
-            </>
-          )}
 
-          {/* DefectsSection intentionally not rendered — kept in code as a
-              future option but the team isn't using it day-to-day. */}
+              <TasklistSections
+                projectId={id}
+                projectStartDate={p.start_date}
+                projectEndDate={p.end_date}
+                checklist={checklist}
+                sections={detail.data?.sections ?? []}
+                sectionProgress={detail.data?.section_progress ?? []}
+                attachments={detail.data?.checklist_attachments ?? []}
+                comments={detail.data?.checklist_comments ?? []}
+                users={users}
+                canTick={can("projects.write") || can("projects.checklist.tick")}
+                canManage={can("projects.write")}
+                addItemOpen={addItemOpen}
+                setAddItemOpen={setAddItemOpen}
+                onReload={() => detail.reload()}
+                onItemStatus={setItemStatus}
+                onItemDelete={deleteItem}
+                toast={toast}
+              />
 
-          <ProjectSalesEntriesSection
-            projectId={id}
-            projectCode={p.code}
-            projectName={p.name}
-            canWrite={can("sales.write")}
-            canManage={can("sales.manage")}
-            toast={toast}
-          />
-
-          <TasklistSections
-            projectId={id}
-            projectStartDate={p.start_date}
-            projectEndDate={p.end_date}
-            checklist={checklist}
-            sections={detail.data?.sections ?? []}
-            sectionProgress={detail.data?.section_progress ?? []}
-            attachments={detail.data?.checklist_attachments ?? []}
-            comments={detail.data?.checklist_comments ?? []}
-            users={users}
-            canTick={can("projects.write") || can("projects.checklist.tick")}
-            canManage={can("projects.write")}
-            addItemOpen={addItemOpen}
-            setAddItemOpen={setAddItemOpen}
-            onReload={() => detail.reload()}
-            onItemStatus={setItemStatus}
-            onItemDelete={deleteItem}
-            toast={toast}
-          />
-
-          {/* Project-level Attachments panel removed in mig 050 — files
-              now live on tasks via the per-task attachment uploader.
-              Old project_attachments rows still load from the API for
-              legacy data but the UI no longer surfaces them.
-
-              Linked Trips panel removed — surfaced via Logistics Schedule
-              chips above; managed in /logistics?tab=events. */}
-
+              {fullAccess && (
+                <>
+                  <LogisticsScheduleSection project={p} trips={trips} patch={patch} />
+                  <FinanceLedgerSection
+                    projectId={id}
+                    sizeSqm={p.size_sqm ?? null}
+                    durationDays={p.duration_days ?? null}
+                    lines={detail.data?.finance_lines ?? []}
+                    onChange={() => detail.reload()}
+                    toast={toast}
+                  />
+                </>
+              )}
             </DetailMain>
 
             <DetailAside>
-          <PanelSection title="Chat">
-            <ProjectChat
-              projectId={id}
-              activity={activity}
-              canPost={can("projects.write") || can("projects.chat")}
-              onPosted={() => detail.reload()}
-              toast={toast}
-            />
-          </PanelSection>
-
-          <PanelSection title="Basics" muted>
-            <InlineEdit label="Name" value={p.name} onSave={(v) => patch({ name: v })} />
-            {(() => {
-              const slug =
-                eventTypes.find((t) => t.id === p.event_type_id)?.slug ?? null;
-              const suggested = composeDefaultProjectName({
-                state: p.state,
-                brand: p.brand,
-                organizer: p.organizer,
-                venue: p.venue,
-                event_type_slug: slug,
-              });
-              if (!suggested || suggested === p.name) return null;
-              return (
-                <button
-                  onClick={() => patch({ name: suggested })}
-                  className="-mt-1 inline-flex items-center gap-1 self-start rounded-md border border-dashed border-accent/40 bg-accent-soft/20 px-2 py-1 text-[10px] font-semibold text-accent hover:bg-accent-soft/40"
-                  title="Replace name with {state} [{brand}] {organizer | SOLO} @ {venue}"
-                >
-                  Auto-fill: {suggested}
-                </button>
-              );
-            })()}
-            <InlineEdit
-              label="Brand"
-              value={p.brand}
-              options={brands}
-              onSave={(v) => patch({ brand: v })}
-            />
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-                Event Type
-              </div>
-              <select
-                value={p.event_type_id ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  patch({ event_type_id: v ? parseInt(v, 10) : null });
-                }}
-                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
-              >
-                <option value="">— none —</option>
-                {eventTypes.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <FieldRow label="Code" mono>{p.code}</FieldRow>
-            <FieldRow label="Created">
-              {formatDate(p.created_at)} · {p.created_by_name || "—"}
-            </FieldRow>
-            {/* PIC (Person-In-Charge) — sales lead for the project. Drives
-                the team ACL: anyone reporting to this user can see the
-                project under their scoped role. */}
-            {fullAccess ? (
-              <div>
-                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-                  PIC
-                </div>
-                <select
-                  value={p.pic_id ?? ""}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    patch({ pic_id: v ? parseInt(v, 10) : null });
-                  }}
-                  disabled={!p.brand}
-                  className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] disabled:cursor-not-allowed disabled:bg-bg disabled:text-ink-muted"
-                >
-                  <option value="">
-                    {p.brand ? "— unassigned —" : "Pick a brand first"}
-                  </option>
-                  {/* Always include the current PIC so the row stays
-                      labelled even if their dept lost the brand later. */}
-                  {p.pic_id != null && p.pic_name &&
-                    !picUsers.some((u) => u.id === p.pic_id) && (
-                      <option value={p.pic_id}>
-                        {p.pic_name} (out of brand scope)
-                      </option>
-                    )}
-                  {picUsers.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name || u.email}
-                    </option>
-                  ))}
-                </select>
-                {p.brand && picUsers.length === 0 && !picUsersQ.loading && (
-                  <div className="mt-1 text-[10px] leading-snug text-warning-text">
-                    No user has a department covering "{p.brand}". Set
-                    the brand on a department under Team → Departments.
-                  </div>
-                )}
-              </div>
-            ) : (
-              <FieldRow label="PIC">{p.pic_name || "—"}</FieldRow>
-            )}
-          </PanelSection>
-
-          <PanelSection title="Dates" muted>
-            <InlineEdit
-              label="Start Date"
-              type="date"
-              value={p.start_date}
-              onSave={async (v) => {
-                if (v && p.end_date && p.end_date < v) {
-                  toast.error("Start date can't be after end date");
-                  throw new Error("invalid range");
-                }
-                await patch({ start_date: v });
-              }}
-            />
-            <InlineEdit
-              label="End Date"
-              type="date"
-              value={p.end_date}
-              onSave={async (v) => {
-                if (v && p.start_date && v < p.start_date) {
-                  toast.error("End date must be on or after start date");
-                  throw new Error("invalid range");
-                }
-                await patch({ end_date: v });
-              }}
-            />
-          </PanelSection>
-
-          <PanelSection title="Venue">
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-                Venue<span className="ml-1 text-err">*</span>
-              </div>
-              <VenuePicker
-                value={p.venue}
-                onChange={(v) =>
-                  // Clear state when venue is cleared so the project name
-                  // re-derives without a stale state piece.
-                  patch(v ? { venue: v } : { venue: null, state: null })
-                }
-                onStateHint={(s) => {
-                  if (s && s !== p.state) patch({ state: s });
-                }}
-              />
-              <div className="mt-1 text-[10px] text-ink-muted">
-                State is sourced from the venue record.
-                {p.state && (
-                  <span className="ml-1 font-mono text-ink">· {p.state}</span>
-                )}
-              </div>
-            </div>
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-                Organizer
-              </div>
-              <OrganizerPicker
-                value={p.organizer}
-                onChange={(v) => patch({ organizer: v })}
-              />
-            </div>
-          </PanelSection>
-
-          <PanelSection title="Booth">
-            <InlineEdit label="Booth No" value={p.booth_no} onSave={(v) => patch({ booth_no: v })} />
-            <InlineEdit
-              label="Size (m²)"
-              type="number"
-              value={p.size_sqm}
-              onSave={(v) => patch({ size_sqm: v ? parseFloat(v) : null })}
-            />
-          </PanelSection>
-
-          <PanelSection title="External Links">
-            <InlineEdit
-              label="Notion URL"
-              value={p.notion_url}
-              onSave={(v) => patch({ notion_url: v })}
-              placeholder="https://notion.so/…"
-            />
-            {p.notion_url && (
-              <a
-                href={p.notion_url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-[12px] text-accent underline"
-              >
-                Open in Notion ↗
-              </a>
-            )}
-          </PanelSection>
-
-          {p.start_date && (
-            <PanelSection title="Add to Calendar" muted>
-              <a
-                href={googleCalendarUrl(p)}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink hover:border-accent/40 hover:text-accent"
-              >
-                <Calendar size={11} /> Open in Google Calendar
-                <ExternalLink size={10} />
-              </a>
-              <div className="mt-1 text-[10px] text-ink-muted">
-                Opens Google Calendar's prefilled "new event" form. Saves to your own calendar only.
-              </div>
-            </PanelSection>
-          )}
-
+              <PanelSection title="Chat">
+                <ProjectChat
+                  projectId={id}
+                  activity={activity}
+                  canPost={can("projects.write") || can("projects.chat")}
+                  onPosted={() => detail.reload()}
+                  toast={toast}
+                />
+              </PanelSection>
             </DetailAside>
           </DetailGrid>
         </>
       )}
     </DetailLayout>
+  );
+}
+
+// ── ProjectSpecStrip ──────────────────────────────────────────────
+// Editorial titleblock-style metadata grid. Read-only by default;
+// click "Edit" in the header to reveal inputs/selects. The same
+// editor classes are used across InlineSpecText / Date / Select /
+// VenuePicker / OrganizerPicker so dropdowns look consistent.
+
+// Shared className for every editable input in the strip — keeps
+// dropdowns + text inputs + date inputs visually identical.
+const SPEC_INPUT_CLASS =
+  "w-full appearance-none rounded border border-border bg-surface px-2 py-1 text-[12.5px] font-medium text-ink outline-none transition-colors focus:border-accent focus:ring-1 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60";
+
+function ProjectSpecStrip({
+  project: p,
+  brands,
+  eventTypes,
+  picUsers,
+  picUsersLoading,
+  fullAccess,
+  patch,
+  toast,
+}: {
+  project: ProjectDetail["project"];
+  brands: string[];
+  eventTypes: EventType[];
+  picUsers: Array<{ id: number; name: string | null; email: string }>;
+  picUsersLoading: boolean;
+  fullAccess: boolean;
+  patch: (body: Record<string, any>) => Promise<void>;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const slug = eventTypes.find((t) => t.id === p.event_type_id)?.slug ?? null;
+  const suggested = composeDefaultProjectName({
+    state: p.state,
+    brand: p.brand,
+    organizer: p.organizer,
+    venue: p.venue,
+    event_type_slug: slug,
+  });
+  const hasAutoSuggestion = suggested && suggested !== p.name;
+
+  // Helper for resolving a foreign-key label so read mode shows the
+  // human-readable name instead of an opaque id.
+  const eventTypeLabel = p.event_type_id
+    ? (eventTypes.find((t) => t.id === p.event_type_id)?.name ?? "—")
+    : "—";
+
+  return (
+    <section className="mb-6">
+      <header className="mb-2 flex items-center justify-between border-b border-border-strong pb-2">
+        <div className="flex items-baseline gap-3">
+          <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[0.22em] text-ink-muted">
+            Project Detail
+          </h2>
+          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-muted">
+            {p.code ?? "—"}
+          </span>
+        </div>
+        {fullAccess && (
+          <button
+            type="button"
+            onClick={() => setEditing((e) => !e)}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-[10.5px] font-semibold transition-colors",
+              editing
+                ? "border-accent bg-accent text-white hover:bg-accent-hover"
+                : "border-border bg-surface text-ink hover:border-accent/40 hover:text-accent"
+            )}
+            title={editing ? "Lock edits" : "Edit project details"}
+          >
+            {editing ? (
+              <>
+                <Check size={11} /> Done
+              </>
+            ) : (
+              <>
+                <Pencil size={11} /> Edit
+              </>
+            )}
+          </button>
+        )}
+      </header>
+      <div className="grid grid-cols-1 divide-x divide-y divide-border-subtle border-y border-border-subtle md:grid-cols-2 lg:grid-cols-4">
+        <SpecCell label="Brand">
+          {editing ? (
+            <select
+              value={p.brand ?? ""}
+              onChange={(e) => patch({ brand: e.target.value || null })}
+              className={SPEC_INPUT_CLASS}
+            >
+              <option value="">— none —</option>
+              {brands.map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <SpecValue>{p.brand ?? "—"}</SpecValue>
+          )}
+        </SpecCell>
+        <SpecCell label="Event Type">
+          {editing ? (
+            <select
+              value={p.event_type_id ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                patch({ event_type_id: v ? parseInt(v, 10) : null });
+              }}
+              className={SPEC_INPUT_CLASS}
+            >
+              <option value="">— none —</option>
+              {eventTypes.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <SpecValue>{eventTypeLabel}</SpecValue>
+          )}
+        </SpecCell>
+        <SpecCell label="PIC">
+          {editing && fullAccess ? (
+            <>
+              <select
+                value={p.pic_id ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  patch({ pic_id: v ? parseInt(v, 10) : null });
+                }}
+                disabled={!p.brand}
+                className={SPEC_INPUT_CLASS}
+              >
+                <option value="">
+                  {p.brand ? "— unassigned —" : "Pick a brand first"}
+                </option>
+                {p.pic_id != null && p.pic_name &&
+                  !picUsers.some((u) => u.id === p.pic_id) && (
+                    <option value={p.pic_id}>
+                      {p.pic_name} (out of scope)
+                    </option>
+                  )}
+                {picUsers.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name || u.email}
+                  </option>
+                ))}
+              </select>
+              {p.brand && picUsers.length === 0 && !picUsersLoading && (
+                <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
+                  No user covers {p.brand}.
+                </div>
+              )}
+            </>
+          ) : (
+            <SpecValue>{p.pic_name || "—"}</SpecValue>
+          )}
+        </SpecCell>
+        <SpecCell label="Created">
+          <SpecValue muted>
+            {formatDate(p.created_at)} · {p.created_by_name || "—"}
+          </SpecValue>
+        </SpecCell>
+
+        <SpecCell label="Start">
+          {editing ? (
+            <input
+              type="date"
+              value={p.start_date ?? ""}
+              onChange={async (e) => {
+                const v = e.target.value || null;
+                if (v && p.end_date && p.end_date < v) {
+                  toast.error("Start date can't be after end date");
+                  return;
+                }
+                await patch({ start_date: v });
+              }}
+              className={SPEC_INPUT_CLASS}
+            />
+          ) : (
+            <SpecValue mono>{p.start_date ?? "—"}</SpecValue>
+          )}
+        </SpecCell>
+        <SpecCell label="End">
+          {editing ? (
+            <input
+              type="date"
+              value={p.end_date ?? ""}
+              onChange={async (e) => {
+                const v = e.target.value || null;
+                if (v && p.start_date && v < p.start_date) {
+                  toast.error("End date must be on or after start date");
+                  return;
+                }
+                await patch({ end_date: v });
+              }}
+              className={SPEC_INPUT_CLASS}
+            />
+          ) : (
+            <SpecValue mono>{p.end_date ?? "—"}</SpecValue>
+          )}
+        </SpecCell>
+        <SpecCell label="Duration">
+          <SpecValue>
+            {p.duration_days != null
+              ? `${p.duration_days} day${p.duration_days === 1 ? "" : "s"}`
+              : "—"}
+          </SpecValue>
+        </SpecCell>
+        <SpecCell label="Booth">
+          <SpecTextField
+            editing={editing}
+            value={p.booth_no}
+            placeholder="—"
+            onChange={(v) => patch({ booth_no: v })}
+          />
+        </SpecCell>
+
+        <SpecCell label="Venue *">
+          {editing ? (
+            <VenuePicker
+              value={p.venue}
+              onChange={(v) =>
+                patch(v ? { venue: v } : { venue: null, state: null })
+              }
+              onStateHint={(s) => {
+                if (s && s !== p.state) patch({ state: s });
+              }}
+              className={SPEC_INPUT_CLASS}
+            />
+          ) : (
+            <SpecValue>{p.venue ?? "—"}</SpecValue>
+          )}
+        </SpecCell>
+        <SpecCell label="State">
+          <SpecValue muted mono>{p.state ?? "—"}</SpecValue>
+        </SpecCell>
+        <SpecCell label="Organizer">
+          {editing ? (
+            <OrganizerPicker
+              value={p.organizer}
+              onChange={(v) => patch({ organizer: v })}
+              className={SPEC_INPUT_CLASS}
+            />
+          ) : (
+            <SpecValue>{p.organizer ?? "—"}</SpecValue>
+          )}
+        </SpecCell>
+        <SpecCell label="Size · m²">
+          <SpecTextField
+            editing={editing}
+            type="number"
+            value={p.size_sqm}
+            placeholder="—"
+            onChange={(v) => patch({ size_sqm: v ? parseFloat(v) : null })}
+          />
+        </SpecCell>
+
+        <SpecCell label="Name" span={p.start_date ? 2 : 3}>
+          <SpecTextField
+            editing={editing}
+            value={p.name}
+            placeholder="—"
+            onChange={(v) => patch({ name: v })}
+          />
+          {editing && hasAutoSuggestion && (
+            <button
+              onClick={() => patch({ name: suggested! })}
+              className="mt-1.5 inline-flex max-w-full items-center gap-1 truncate rounded border border-dashed border-accent/40 bg-accent-soft/20 px-1.5 py-0.5 text-[9.5px] font-semibold text-accent transition-colors hover:bg-accent-soft/40"
+              title="Replace name with {state} [{brand}] {organizer | SOLO} @ {venue}"
+            >
+              <span className="truncate">↺ {suggested}</span>
+            </button>
+          )}
+        </SpecCell>
+        <SpecCell label="Notion">
+          {editing ? (
+            <SpecTextField
+              editing
+              value={p.notion_url}
+              placeholder="https://notion.so/…"
+              onChange={(v) => patch({ notion_url: v })}
+            />
+          ) : p.notion_url ? (
+            <a
+              href={p.notion_url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-[12.5px] font-medium text-accent hover:underline"
+            >
+              Open <ExternalLink size={10} />
+            </a>
+          ) : (
+            <SpecValue muted>—</SpecValue>
+          )}
+        </SpecCell>
+        {p.start_date && (
+          <SpecCell label="Add to Calendar">
+            <a
+              href={googleCalendarUrl(p)}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-[12px] font-semibold text-ink hover:text-accent"
+            >
+              <Calendar size={11} /> Google Calendar
+              <ExternalLink size={9} />
+            </a>
+          </SpecCell>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// Text input that flips between read-only display and an editable
+// input depending on `editing`. Centralised here so every text field
+// in the spec strip looks identical.
+function SpecTextField({
+  editing,
+  value,
+  placeholder,
+  type = "text",
+  onChange,
+}: {
+  editing: boolean;
+  value: string | number | null | undefined;
+  placeholder?: string;
+  type?: "text" | "number";
+  onChange: (v: string | null) => Promise<void> | void;
+}) {
+  const [draft, setDraft] = useState<string>(value == null ? "" : String(value));
+  useEffect(() => {
+    setDraft(value == null ? "" : String(value));
+  }, [value]);
+  async function commit() {
+    const original = value == null ? "" : String(value);
+    if (draft === original) return;
+    try {
+      await onChange(draft === "" ? null : draft);
+    } catch {
+      setDraft(original);
+    }
+  }
+  if (!editing) {
+    return (
+      <SpecValue muted={value == null || value === ""}>
+        {value == null || value === "" ? "—" : String(value)}
+      </SpecValue>
+    );
+  }
+  return (
+    <input
+      type={type}
+      value={draft}
+      placeholder={placeholder}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        if (e.key === "Escape") {
+          setDraft(value == null ? "" : String(value));
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      className={SPEC_INPUT_CLASS}
+    />
+  );
+}
+
+// ── Spec-strip helpers ────────────────────────────────────────────
+// Each cell renders its own label + a children slot for the value
+// (text or input). Designed to be visually flat — the dividing
+// borders come from the parent `divide-x divide-y` on the grid.
+
+function SpecCell({
+  label,
+  span,
+  children,
+}: {
+  label: string;
+  span?: 2 | 3;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "min-w-0 px-3.5 py-2.5",
+        span === 2 && "md:col-span-2",
+        span === 3 && "md:col-span-2 lg:col-span-3"
+      )}
+    >
+      <div className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-[0.16em] text-ink-muted">
+        {label}
+      </div>
+      <div className="min-w-0 text-[12.5px] font-medium text-ink">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SpecValue({
+  children,
+  muted,
+  mono,
+}: {
+  children: React.ReactNode;
+  muted?: boolean;
+  mono?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "truncate",
+        muted && "text-ink-secondary",
+        mono && "font-mono tracking-tight"
+      )}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -4049,31 +4284,108 @@ function TaskAttachmentChip({
 // in the section is done; partial gradient based on done/total when
 // in-progress; muted outline when nothing's started. Replaces the
 // percentage progress bar (mig 050).
-function StageProgressRow({ sections }: { sections: SectionProgress[] }) {
+function StageProgressRow({
+  sections,
+  checklist,
+}: {
+  sections: SectionProgress[];
+  /** Optional — when provided, each pill shows a lead-time chip
+   *  derived from the latest due_date among unfinished items in that
+   *  section. Falls back to a plain "done/N" count when omitted. */
+  checklist?: ChecklistItem[];
+}) {
+  // Pre-bucket the checklist by section so each pill's lead-time calc
+  // is O(items) total, not O(sections × items).
+  const itemsBySection = useMemo(() => {
+    const m = new Map<number, ChecklistItem[]>();
+    for (const it of checklist ?? []) {
+      const key = it.section_id ?? 0;
+      const arr = m.get(key) ?? [];
+      arr.push(it);
+      m.set(key, arr);
+    }
+    return m;
+  }, [checklist]);
+
+  function leadTimeFor(sectionId: number): { days: number; targetIso: string } | null {
+    const items = itemsBySection.get(sectionId);
+    if (!items) return null;
+    const dates = items
+      .filter((i) => i.status !== "done" && i.status !== "na" && !!i.due_date)
+      .map((i) => i.due_date as string);
+    if (dates.length === 0) return null;
+    const latest = dates.sort().slice(-1)[0];
+    const target = new Date(`${latest}T00:00:00Z`);
+    const now = new Date();
+    now.setUTCHours(0, 0, 0, 0);
+    return {
+      days: Math.round((target.getTime() - now.getTime()) / 86400000),
+      targetIso: latest,
+    };
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {sections.map((s) => {
         const denom = s.total - s.na;
         const pct = denom > 0 ? Math.round((s.done / denom) * 100) : 0;
         const complete = s.complete === 1;
+        const lt = !complete ? leadTimeFor(s.id) : null;
+        const ltTone =
+          lt == null
+            ? null
+            : lt.days < 0
+              ? "overdue"
+              : lt.days <= 3
+                ? "soon"
+                : "ok";
         return (
           <span
             key={s.id || s.name}
-            title={`${s.name} — ${s.done}/${denom || 0} done${s.na ? ` · ${s.na} N/A` : ""}`}
+            title={
+              `${s.name} — ${s.done}/${denom || 0} done${s.na ? ` · ${s.na} N/A` : ""}` +
+              (lt
+                ? `\nLatest open task due ${lt.targetIso}${
+                    lt.days < 0 ? ` (${-lt.days}d overdue)` : ` (${lt.days}d left)`
+                  }`
+                : "")
+            }
             className={cn(
               "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors",
               complete
                 ? "border-synced bg-synced/15 text-synced"
                 : pct > 0
-                ? "border-accent/40 bg-accent/10 text-accent"
-                : "border-border text-ink-muted"
+                  ? "border-accent/40 bg-accent/10 text-accent"
+                  : "border-border text-ink-muted"
             )}
           >
-            {complete ? <CheckCircle2 size={10} /> : <Circle size={10} />}
+            {complete ? (
+              <CheckCircle2 size={11} className="text-synced" />
+            ) : (
+              <Circle size={10} />
+            )}
             <span>{s.name}</span>
             {!complete && pct > 0 && (
               <span className="font-mono text-[9px] opacity-70">
                 {s.done}/{denom}
+              </span>
+            )}
+            {lt && (
+              <span
+                className={cn(
+                  "rounded px-1 py-px font-mono text-[8.5px] font-semibold tracking-tight",
+                  ltTone === "overdue"
+                    ? "bg-err/15 text-err"
+                    : ltTone === "soon"
+                      ? "bg-warning-bg text-warning-text"
+                      : "bg-bg/60 text-ink-muted"
+                )}
+              >
+                {lt.days < 0
+                  ? `${-lt.days}d over`
+                  : lt.days === 0
+                    ? "today"
+                    : `${lt.days}d`}
               </span>
             )}
           </span>
@@ -4430,6 +4742,24 @@ function TasklistSections({
             section?.name ?? (sort === "due" ? "By due date" : "Uncategorised");
           const denom = items.length - items.filter((i) => i.status === "na").length;
           const done = items.filter((i) => i.status === "done").length;
+          // Section lead time — latest due_date among unfinished items in
+          // the section. Tells the team "this section needs to be wrapped
+          // up by X". Skips done/na rows so a finished item doesn't peg
+          // the deadline in the past. Returns null when there are no
+          // dated open items.
+          const sectionLeadTime: { days: number; targetIso: string } | null = (() => {
+            const dates = items
+              .filter((i) => i.status !== "done" && i.status !== "na" && !!i.due_date)
+              .map((i) => i.due_date as string);
+            if (dates.length === 0) return null;
+            const latest = dates.sort().slice(-1)[0];
+            const target = new Date(`${latest}T00:00:00Z`);
+            const now = new Date();
+            now.setUTCHours(0, 0, 0, 0);
+            const ms = target.getTime() - now.getTime();
+            const days = Math.round(ms / 86400000);
+            return { days, targetIso: latest };
+          })();
           return (
             <div
               key={section?.id ?? "uncat"}
@@ -4460,6 +4790,25 @@ function TasklistSections({
                     <span className="flex-1 text-[11.5px] font-semibold uppercase tracking-wider text-ink-secondary">
                       {headerName}
                     </span>
+                    {sectionLeadTime && (
+                      <span
+                        className={cn(
+                          "rounded px-1.5 py-px font-mono text-[9.5px] font-semibold uppercase tracking-wider",
+                          sectionLeadTime.days < 0
+                            ? "bg-err/15 text-err"
+                            : sectionLeadTime.days <= 3
+                              ? "bg-warning-bg text-warning-text"
+                              : "bg-bg text-ink-muted"
+                        )}
+                        title={`Last open task due ${sectionLeadTime.targetIso}`}
+                      >
+                        {sectionLeadTime.days < 0
+                          ? `${-sectionLeadTime.days}d overdue`
+                          : sectionLeadTime.days === 0
+                            ? "due today"
+                            : `${sectionLeadTime.days}d left`}
+                      </span>
+                    )}
                     <span className="font-mono text-[10px] text-ink-muted">
                       {done}/{denom || 0}
                     </span>

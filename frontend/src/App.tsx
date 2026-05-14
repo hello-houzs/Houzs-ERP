@@ -34,6 +34,7 @@ import { DriverTrip } from "./pages/DriverTrip";
 import { DriverProfile } from "./pages/DriverProfile";
 import { useAuth } from "./auth/AuthContext";
 import { PageGuard } from "./auth/PageGuard";
+import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
 import { NotificationsProvider } from "./hooks/useNotifications";
 import { BrowserPushSink } from "./components/BrowserPushSink";
@@ -41,9 +42,11 @@ import { QuickActionsFAB } from "./components/QuickActionsFAB";
 import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
 
 /**
- * Wraps a route element in a permission check. Routes the user can't
- * access redirect home — the sidebar already hides them, but this is a
- * defense-in-depth in case someone navigates by URL.
+ * Wraps a route element in a permission check. Failures render the
+ * <Forbidden> page inline (URL preserved) so the user understands why
+ * they were blocked — see frontend/src/pages/Forbidden.tsx. Old
+ * behaviour was a silent redirect to "/", which left people
+ * confused.
  */
 function Guard({
   perm,
@@ -55,8 +58,9 @@ function Guard({
   children: React.ReactNode;
 }) {
   const { can } = useAuth();
-  if (perm && !can(perm)) return <Navigate to="/" replace />;
-  if (anyPerm && !anyPerm.some((p) => can(p))) return <Navigate to="/" replace />;
+  if (perm && !can(perm)) return <Forbidden page={perm} />;
+  if (anyPerm && !anyPerm.some((p) => can(p)))
+    return <Forbidden page={anyPerm.join(" / ")} />;
   return <>{children}</>;
 }
 
@@ -270,17 +274,17 @@ export default function App() {
         <Route
           path="/projects"
           element={
-            <Guard perm="projects.read">
+            <PageGuard page="projects">
               <Projects />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/projects/:id"
           element={
-            <Guard perm="projects.read">
+            <PageGuard page="projects.list">
               <ProjectDetail />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
@@ -345,6 +349,7 @@ export default function App() {
         <Route path="/suggestions" element={<Suggestions />} />
         <Route path="/suggestions/:id" element={<IdeaDetail target="suggestion" />} />
         <Route path="/profile" element={<Profile />} />
+        <Route path="*" element={<Forbidden kind="not-found" />} />
         </Routes>
       </Layout>
       </BreadcrumbsProvider>

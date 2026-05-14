@@ -66,6 +66,13 @@ export interface NavTab {
    *  flat Delivery list from dispatchers who already have the Trips Queue
    *  tab). */
   hidePerm?: string;
+  /** Page-access key required (default minLevel: partial). Use for tabs
+   *  whose visibility should follow the new per-page matrix instead of
+   *  legacy permission keys. */
+  pageAccess?: string;
+  /** Same as `pageAccess` but requires `full` access — for admin-only
+   *  tabs (e.g. Project Maintenance). */
+  pageAccessFull?: string;
   /** Optional sub-entries. When present, this tab renders as an
    *  expandable group header instead of a click target. */
   children?: NavTab[];
@@ -172,35 +179,37 @@ export const NAV_TABS: NavTab[] = [
   },
 
   // ── Projects — exhibitions, solo events ──────────────────────
+  // Gated on page-access (mig 073). Each sub-tab uses `pageAccess`
+  // so a role with calendar-only access only sees the Calendar entry.
   {
     label: "Projects",
     icon: FolderKanban,
     groupId: "projects",
-    anyPerm: ["projects.read"],
+    pageAccess: "projects",
     children: [
       {
         to: "/projects?view=list",
         label: "Project List",
         icon: ClipboardList,
-        perm: "projects.read",
+        pageAccess: "projects.list",
       },
       {
         to: "/projects?view=calendar",
         label: "Calendar",
         icon: Calendar,
-        perm: "projects.read",
+        pageAccess: "projects.calendar",
       },
       {
         to: "/projects?view=finances",
         label: "Finances",
         icon: DollarSign,
-        perm: "projects.read",
+        pageAccess: "projects.finances",
       },
       {
         to: "/projects?view=maintenance",
         label: "Project Maintenance",
         icon: Wrench,
-        perm: "projects.write",
+        pageAccessFull: "projects.maintenance",
       },
     ],
   },
@@ -261,7 +270,7 @@ const LOGO_MARK_SRC = "/logo-mark.png"; // 1:1 square — collapsed sidebar
 const LOGO_WORDMARK_SRC = "/logo-wordmark.png"; // 1:4 horizontal — expanded sidebar
 
 export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Props) {
-  const { user, can, logout } = useAuth();
+  const { user, can, pageAccess, logout } = useAuth();
   const location = useLocation();
   // On mobile the drawer is always full-width — collapsed state is
   // a desktop-only concept.
@@ -306,6 +315,11 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     if (t.perm && !can(t.perm)) return null;
     if (t.anyPerm && !t.anyPerm.some((p) => can(p))) return null;
     if (t.hidePerm && can(t.hidePerm)) return null;
+    // Page-access (mig 073) — `pageAccess` requires ≥ partial; the
+    // -Full variant requires "full". Wildcard short-circuits to full
+    // inside `pageAccess(...)`.
+    if (t.pageAccess && pageAccess(t.pageAccess) === "none") return null;
+    if (t.pageAccessFull && pageAccess(t.pageAccessFull) !== "full") return null;
     if (t.children) {
       const kids = t.children
         .map(filterTab)

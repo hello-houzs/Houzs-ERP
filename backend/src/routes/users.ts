@@ -413,14 +413,25 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
 });
 
 /**
- * DELETE /api/users/:id
- * Disables the user and revokes sessions instead of hard-deleting,
- * because trips, clock records, salary lines etc. reference the user.
- * If the user has no references (e.g. never accepted invite), hard-delete.
+ * DELETE /api/users/:id[?hard=1]
+ *
+ * Default (no `?hard=1`): soft-delete — status='disabled', sessions
+ * revoked, default-driver clears. Preserves FK references in trips,
+ * sales, etc. This is the right call for established users.
+ *
+ * `?hard=1`: true hard delete. Cleans up CASCADE-safe rows manually
+ * for tables that lack ON DELETE CASCADE (sessions, invitations,
+ * driver_clock_entries, lorry_incidents, etc.), then `DELETE FROM
+ * users`. If a non-cascading FK reference remains (e.g. sales_entries
+ * created_by, trips driver_user_id), the FK constraint trips and we
+ * return a helpful message naming what blocks the delete. Use this
+ * for never-used test accounts. For users with real activity, use
+ * the soft-delete (Disable) path instead.
  */
 app.delete("/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const me = c.get("user");
+  const hard = c.req.query("hard") === "1";
   if (!id) return c.json({ error: "Bad id" }, 400);
   if (id === me.id) return c.json({ error: "You cannot delete yourself" }, 400);
 
@@ -450,17 +461,53 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
     }
   }
 
-  // Revoke sessions
+  // Revoke sessions (any path)
   await db.delete(sessions).where(eq(sessions.user_id, id));
 
-  // If never joined (still invited), safe to hard-delete
-  if (target.status === "invited") {
+  // Hard-delete path — either explicit ?hard=1 or never-joined user.
+  if (hard || target.status === "invited") {
+    // Best-effort cleanup of tables whose FK to users(id) is missing
+    // ON DELETE CASCADE/SET NULL, so the final DELETE doesn't trip.
+    // Tables that already cascade (project_reads, password_resets,
+    // user_brands) are not touched here — SQLite handles them.
     await db.delete(invitations).where(eq(invitations.email, target.email));
-    await db.delete(users).where(eq(users.id, id));
+    await c.env.DB.prepare(`UPDATE lorries SET default_driver_user_id = NULL WHERE default_driver_user_id = ?`).bind(id).run();
+    // Be defensive — only run these if the tables exist on the deployed schema.
+    // SQLite's "no such table" errors get swallowed for tables that haven't
+    // shipped yet (cron-only / future migrations).
+    const safeExec = async (sql: string) => {
+      try { await c.env.DB.prepare(sql).bind(id).run(); } catch {}
+    };
+    // Audit / chat / activity — historically tied to a user_id but the user
+    // record is the source of truth. If you hard-delete, the audit is lost.
+    await safeExec(`DELETE FROM project_activity WHERE user_id = ?`);
+    await safeExec(`DELETE FROM project_reads WHERE user_id = ?`);
+    // Engagement (Houzs Points + Awards + Idea boxes). Hard-deleting a user
+    // wipes their ledger; this is what the caller is asking for.
+    await safeExec(`DELETE FROM point_transactions WHERE user_id = ? OR counterparty_user_id = ?`);
+    await safeExec(`DELETE FROM user_streak_weeks WHERE user_id = ?`);
+    await safeExec(`DELETE FROM award_redemptions WHERE user_id = ?`);
+
+    try {
+      await db.delete(users).where(eq(users.id, id));
+    } catch (e: any) {
+      const msg = String(e?.message ?? e ?? "");
+      if (/FOREIGN KEY|SQLITE_CONSTRAINT/i.test(msg)) {
+        return c.json(
+          {
+            error:
+              "Cannot hard-delete: this user is referenced by trips, sales entries, or other records. Disable the user instead (soft-delete) to preserve those rows.",
+            detail: msg,
+          },
+          400,
+        );
+      }
+      throw e;
+    }
     return c.json({ ok: true, action: "deleted" });
   }
 
-  // Otherwise disable — preserves FK references in trips, salary, etc.
+  // Soft-delete (default for joined users).
   await db.update(users).set({ status: "disabled" }).where(eq(users.id, id));
 
   // Clear default_driver on lorries

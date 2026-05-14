@@ -279,10 +279,19 @@ function MembersTab({
   }
 
   async function removeUser(u: TeamMember) {
-    if (!(await dialog.confirm(`Remove ${u.email}? This cannot be undone.`))) return;
+    // True hard-delete via ?hard=1. Backend errors out with a helpful
+    // message if FK references block it; in that case the admin should
+    // use the Disable button (soft-delete) instead.
+    const confirmed = await dialog.confirm(
+      `Permanently delete ${u.email}?\n\n` +
+        "This wipes their account, sessions, audit log entries, and engagement history. " +
+        "Trips, sales entries, and projects they created may block the delete — " +
+        "use Disable instead for users with real activity.",
+    );
+    if (!confirmed) return;
     try {
-      await api.del(`/api/users/${u.id}`);
-      toast.success(`${u.email} removed`);
+      await api.del(`/api/users/${u.id}?hard=1`);
+      toast.success(`${u.email} permanently deleted`);
       reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -501,8 +510,8 @@ function MembersTab({
                   <button
                     onClick={() => removeUser(u)}
                     className="rounded p-1.5 text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
-                    aria-label="Remove"
-                    title="Remove user"
+                    aria-label="Delete permanently"
+                    title="Delete permanently (irreversible)"
                   >
                     <Trash2 size={14} />
                   </button>
