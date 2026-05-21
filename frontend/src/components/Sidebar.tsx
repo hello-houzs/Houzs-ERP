@@ -170,6 +170,10 @@ export const NAV_TABS: NavTab[] = [
         perm: "service_cases.read",
       },
       {
+        // Lead Time Portal merged into Service Maintenance as a tab.
+        // Sidebar entry removed; reach it via Service Maintenance →
+        // Lead Time tab. Old /assr?view=lead_time URL still works
+        // (redirects in ServiceCases.tsx).
         to: "/assr?view=settings",
         label: "Service Maintenance",
         icon: Wrench,

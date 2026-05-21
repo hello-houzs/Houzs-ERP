@@ -273,9 +273,8 @@ export function SalesTeam() {
             <Button
               variant="brass"
               icon={<Plus size={14} />}
-              onClick={() =>
-                toast.info("Register Member modal lands in slice 4")
-              }
+              onClick={() => navigate("/team?view=members")}
+              title="Members are registered via Team → Members. Assign the Sales department there and they appear here automatically."
             >
               Register Member
             </Button>
@@ -293,6 +292,21 @@ export function SalesTeam() {
             : undefined
         }
       />
+
+      {canManage && (
+        <div className="mb-4 rounded-md border border-accent/30 bg-accent/5 px-3 py-2 text-[11px] text-ink-secondary">
+          New members are registered via{" "}
+          <button
+            type="button"
+            onClick={() => navigate("/team?view=members")}
+            className="font-semibold text-accent hover:underline"
+          >
+            Team → Members
+          </button>
+          . Anyone whose department is set to <span className="font-semibold">Sales</span>{" "}
+          appears here automatically — edit their position, upline, brands and commission below.
+        </div>
+      )}
 
       {/* Roles & Permissions panel */}
       <div className="mb-4 rounded-md border border-border bg-surface p-4 shadow-stone">

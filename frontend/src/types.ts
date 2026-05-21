@@ -226,7 +226,18 @@ export interface PurchaseOrderDoc {
   updated_at: string;
 }
 
-export type AssrStage = "registration" | "triage" | "action" | "logistics" | "resolution" | "closed";
+// v3.1 9-stage workflow (backend mig 074). Stage names mirror the SQL
+// enum. The legacy 6-stage vocabulary is no longer accepted by writes.
+export type AssrStage =
+  | "pending_review"
+  | "under_verification"
+  | "pending_solution"
+  | "pending_inspection"
+  | "pending_item_pickup"
+  | "pending_supplier_pickup"
+  | "pending_item_ready"
+  | "pending_delivery_service"
+  | "completed";
 export type ResolutionMethod = "replace_unit" | "supplier_repair" | "field_service_own" | "field_service_supplier" | "return_visit";
 
 export interface AssrCase {
@@ -275,6 +286,13 @@ export interface AssrCase {
   approved_by_name?: string | null;
   quality_review_passed?: number | null; // 0 | 1 | null
   ncr_category?: string | null;
+  // v3.1 — separate CSAT survey recipient (mig 074)
+  email_for_survey?: string | null;
+  inspection_result?: "pass" | "fail" | "na" | null;
+  // v3.1 — per-stage lifecycle snapshots (mig 074)
+  stage_entered_at?: string | null;
+  stage_target_days?: number | null;
+  lead_time_profile_id?: number | null;
   // QMS: cost tracking
   po_amount?: number | null;
   customer_amount?: number | null;
@@ -294,6 +312,15 @@ export interface AssrCase {
   supplier_pickup_at?: string | null;
   items_ready_at?: string | null;
   stage_changed_at?: string | null;
+  // Mig 081 — Verification card (gate between Under Verification and
+  // Pending Solution). 'accepted' = real defect we'll fix, 'rejected' =
+  // not-our-issue short-circuit to Completed, 'needs_more_info' = wait
+  // on customer.
+  verification_outcome?: "accepted" | "rejected" | "needs_more_info" | null;
+  verified_root_cause?: string | null;
+  verified_by?: number | null;
+  verified_by_name?: string | null;
+  verified_at?: string | null;
   // Soft-delete
   archived_at?: string | null;
   archived_by?: number | null;
@@ -319,7 +346,7 @@ export interface AssrAttachment {
   r2_key: string;
   file_name: string | null;
   content_type: string | null;
-  category: "complaint" | "evidence" | "completion" | "signature";
+  category: "complaint" | "evidence" | "completion" | "signature" | "sign_off";
   uploaded_by: number | null;
   created_at: string;
 }
@@ -355,6 +382,21 @@ export interface AssrLogistics {
   updated_at: string;
 }
 
+// v3.1 — per-stage lifecycle row. One per (case, stage) entry, in
+// chronological order. The Workflow Progress Tracker walks this list.
+export interface AssrStageHistoryRow {
+  id: number;
+  stage: AssrStage;
+  entered_at: string;
+  exited_at: string | null;
+  target_days: number | null;
+  status: "green" | "amber" | "red" | null;
+  skipped: number;
+  skip_reason: string | null;
+  alerts_fired: number;
+  snoozes_applied: number;
+}
+
 export interface AssrDetail {
   case: AssrCase;
   items: AssrItem[];
@@ -363,6 +405,7 @@ export interface AssrDetail {
   logistics: AssrLogistics[];
   related_pos: PurchaseOrder[];
   portal_token?: string | null;
+  stage_history?: AssrStageHistoryRow[];
 }
 
 export interface OverdueHistoryRow {
@@ -472,6 +515,8 @@ export interface AssrMetrics {
     avg_satisfaction: number | null;
   };
   ncr: Array<{ category: string; count: number }>;
+  /** Customer-facing intake category (Product defect / Incorrect item / …). */
+  issue_categories: Array<{ category: string; count: number }>;
   resolutions: Array<{ method: string; count: number }>;
   repeat_items: Array<{ item_code: string; cases: number; latest: string }>;
   repeat_customers: Array<{ customer_name: string; phone: string | null; cases: number; latest: string }>;
@@ -485,6 +530,15 @@ export interface AssrMetrics {
     avg_resolution_hours: number | null;
   }>;
   monthly_trend: Array<{ month: string; opened: number; closed: number }>;
+  /** Mirrors the legacy Excel "Case Duration" tile. All counts are *open* cases. */
+  case_duration: {
+    opening_count: number;
+    over_1_month: number;
+    over_3_weeks: number;
+    over_2_weeks: number;
+    /** Rolling monthly intake, last 4 months. */
+    avg_per_month: number | null;
+  };
 }
 
 export interface AssrSummary {

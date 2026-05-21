@@ -30,6 +30,10 @@ const SERVICE_USER: AuthUser = {
 declare module "hono" {
   interface ContextVariableMap {
     user: AuthUser;
+    /** Shortcut for `c.get("user").id` — set in the auth middleware
+     *  alongside `user`. ASSR routes read this for audit columns
+     *  (created_by, verified_by, etc.). */
+    userId: number | null;
     /** Page-level access for the current request — set by
      *  `requirePageAccess`. Routes that need partial/full branching
      *  read this instead of recomputing. */
@@ -75,6 +79,7 @@ export const auth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   // Legacy shared key — service-tier access for tooling and cron.
   if (c.env.DASHBOARD_API_KEY && token === c.env.DASHBOARD_API_KEY) {
     c.set("user", SERVICE_USER);
+    c.set("userId", (SERVICE_USER as any).id ?? null);
     await next();
     return;
   }
@@ -85,6 +90,11 @@ export const auth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
   c.set("user", user);
+  // ASSR routes (assr.ts + assrPortal.ts) read `c.get("userId")` for
+  // audit columns (created_by, verified_by, etc.). Set it alongside
+  // `user` so those 15+ callsites don't all need to be rewritten —
+  // and so `verified_by` no longer ends up as NULL on every patch.
+  c.set("userId", user.id);
   await next();
 };
 

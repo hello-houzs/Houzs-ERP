@@ -43,10 +43,17 @@ export function deriveProjectCode(input: {
 
 /** Disambiguate against existing codes by appending -2, -3, … */
 export async function uniqueProjectCode(env: Env, base: string): Promise<string> {
+  // Avoid LIKE here — D1's pattern-complexity guard has been observed
+  // to reject even short LIKE patterns ("LIKE or GLOB pattern too
+  // complex"), and a plain prefix comparison via substr() is both
+  // immune to that and indexable.
+  const prefix = `${base}-`;
   const rows = await env.DB.prepare(
-    `SELECT code FROM projects WHERE code = ? OR code LIKE ?`
+    `SELECT code FROM projects
+      WHERE code = ?1
+         OR (length(code) > ?2 AND substr(code, 1, ?2) = ?3)`
   )
-    .bind(base, `${base}-%`)
+    .bind(base, prefix.length, prefix)
     .all<{ code: string }>();
   const used = new Set((rows.results ?? []).map((r) => r.code));
   if (!used.has(base)) return base;
@@ -812,6 +819,12 @@ export interface ListProjectsFilters {
    *  matches. Special values: "__done" = all sections complete; "__none"
    *  = project has no sections defined. */
   section?: string;
+  /** When true, drop projects whose every section is complete (the
+   *  same predicate `section === "__done"` matches positively). Used
+   *  by the list page's "Hide completed" toggle. Independent of
+   *  `section` — if the section filter is `__done`, this is ignored
+   *  so the user can explicitly view the completed bucket. */
+  exclude_done?: boolean;
   page?: number;
   per_page?: number;
   include_archived?: boolean;
@@ -846,6 +859,8 @@ const PROJECT_SORT_MAP: Record<string, string> = {
   total_sales: "pf.total_sales",
   contractor_cost: "pf.contractor_cost",
   progress_pct: "progress_pct",
+  pic_name: "pic.name",
+  created_by_name: "cb.name",
 };
 
 export async function listProjects(env: Env, f: ListProjectsFilters) {
@@ -882,23 +897,29 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     where.push("p.state = ?");
     binds.push(f.state);
   }
+  // "Completed project" predicate — reused by both the positive
+  // (section=__done) filter and the negative (exclude_done) toggle.
+  const SECTION_DONE_PREDICATE = `(
+    EXISTS (SELECT 1 FROM project_checklist_sections s WHERE s.project_id = p.id)
+    AND NOT EXISTS (
+      SELECT 1 FROM project_checklist_sections s
+       WHERE s.project_id = p.id
+         AND EXISTS (
+           SELECT 1 FROM project_checklist c
+            WHERE c.project_id = p.id
+              AND c.section_id = s.id
+              AND c.status NOT IN ('done','na')
+         )
+    )
+  )`;
+
+  if (f.exclude_done && f.section !== "__done") {
+    where.push(`NOT ${SECTION_DONE_PREDICATE}`);
+  }
+
   if (f.section) {
     if (f.section === "__done") {
-      // Project must have at least one section, and zero of them
-      // have open tasks.
-      where.push(
-        `EXISTS (SELECT 1 FROM project_checklist_sections s WHERE s.project_id = p.id)
-         AND NOT EXISTS (
-           SELECT 1 FROM project_checklist_sections s
-            WHERE s.project_id = p.id
-              AND EXISTS (
-                SELECT 1 FROM project_checklist c
-                 WHERE c.project_id = p.id
-                   AND c.section_id = s.id
-                   AND c.status NOT IN ('done','na')
-              )
-         )`
-      );
+      where.push(SECTION_DONE_PREDICATE);
     } else if (f.section === "__none") {
       where.push(
         `NOT EXISTS (SELECT 1 FROM project_checklist_sections s WHERE s.project_id = p.id)`
@@ -981,6 +1002,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
             p.state, p.venue, p.booth_no, p.size_sqm,
             p.archived_at,
             p.pic_id, pic.name as pic_name,
+            p.created_by, cb.name as created_by_name,
             et.name as event_type_name,
             pf.rental, pf.total_sales, pf.contractor_cost,
             -- Computed progress %: done / (total − na). SUM(CASE…) for
@@ -1020,6 +1042,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
        LEFT JOIN project_event_types et ON et.id = p.event_type_id
        LEFT JOIN project_finance pf ON pf.project_id = p.id
        LEFT JOIN users pic ON pic.id = p.pic_id
+       LEFT JOIN users cb ON cb.id = p.created_by
      ${whereSql}
      ${orderBy}
      LIMIT ? OFFSET ?`

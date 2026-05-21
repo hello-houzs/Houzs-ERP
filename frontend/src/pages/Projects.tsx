@@ -118,6 +118,10 @@ interface ProjectRow {
   total_sales: number | null;
   contractor_cost: number | null;
   progress_pct: number;
+  pic_id: number | null;
+  pic_name: string | null;
+  created_by: number | null;
+  created_by_name: string | null;
   // Section-driven stage tracker (mig 050). active_section_name is null
   // when every section is done OR the project has no sections defined.
   // Combine with sections_total / sections_complete to distinguish
@@ -581,6 +585,28 @@ function composeDefaultProjectName(p: {
   return `${left} @ ${venue}`;
 }
 
+// Canonical Malaysian states — kept in sync with ProjectMaintenance's
+// MY_STATES (single source of truth lives there, mirrored here so the
+// New Project form can offer the same dropdown without an import cycle).
+const PROJECT_STATES = [
+  "JOHOR",
+  "KEDAH",
+  "KELANTAN",
+  "KL",
+  "LABUAN",
+  "MELAKA",
+  "NEGERI SEMBILAN",
+  "PAHANG",
+  "PENANG",
+  "PERAK",
+  "PERLIS",
+  "PUTRAJAYA",
+  "SABAH",
+  "SARAWAK",
+  "SELANGOR",
+  "TERENGGANU",
+] as const;
+
 // ── Stage helpers ────────────────────────────────────────────
 
 const STAGE_OPTIONS: { value: "ALL" | ProjectStage; label: string }[] = [
@@ -750,11 +776,21 @@ function ProjectsListView() {
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showArchived, setShowArchived] = useLocalStorage<boolean>("projects:showArchived", false);
+  // Hide projects whose every tasklist section is complete — same
+  // predicate as the section=__done filter, just inverted. Disabled
+  // automatically when the user picks the Completed pill so the
+  // controls don't fight each other.
+  const [hideCompleted, setHideCompleted] = useLocalStorage<boolean>("projects:hideCompleted", false);
 
   // ?focus=ID — Overview inbox deep-links straight to the detail page.
   useFocusFromUrl((id) => navigate(`/projects/${id}`, { replace: true }));
 
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
+
+  // Skip exclude_done when the user explicitly picked the Completed
+  // section pill — otherwise the page would show zero rows.
+  const excludeDoneParam =
+    hideCompleted && section !== "__done" ? 1 : undefined;
 
   const list = useQuery<Paginated<ProjectRow>>(
     () =>
@@ -764,6 +800,7 @@ function ProjectsListView() {
           year: year || undefined,
           month: month || undefined,
           section: section || undefined,
+          exclude_done: excludeDoneParam,
           search,
           page,
           per_page: perPage,
@@ -771,7 +808,7 @@ function ProjectsListView() {
           ...sortParams,
         })}`
       ),
-    [brand, year, month, section, search, page, perPage, showArchived, sort?.key, sort?.dir]
+    [brand, year, month, section, excludeDoneParam, search, page, perPage, showArchived, sort?.key, sort?.dir]
   );
 
   const summary = useQuery<{
@@ -892,6 +929,26 @@ function ProjectsListView() {
       label: "Type",
       render: (r) => <span className="text-[11px]">{r.event_type_name || "—"}</span>,
       getValue: (r) => r.event_type_name,
+    },
+    {
+      key: "pic_name",
+      label: "PIC",
+      // Falls back to the creator when no PIC is assigned — matches the
+      // scope rules (COALESCE(pic_id, created_by)) used by the ACL.
+      render: (r) => (
+        <span className="text-[11px]">
+          {r.pic_name || (
+            <span className="text-ink-muted">{r.created_by_name ?? "—"}</span>
+          )}
+        </span>
+      ),
+      getValue: (r) => r.pic_name ?? r.created_by_name ?? "",
+    },
+    {
+      key: "created_by_name",
+      label: "Created By",
+      render: (r) => <span className="text-[11px]">{r.created_by_name || "—"}</span>,
+      getValue: (r) => r.created_by_name ?? "",
     },
     {
       key: "start_date",
@@ -1047,6 +1104,20 @@ function ProjectsListView() {
           ))}
         </select>
         <label className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-ink-secondary">
+          <input
+            type="checkbox"
+            checked={!!hideCompleted}
+            onChange={(e) => {
+              setPage(1);
+              setHideCompleted(e.target.checked);
+            }}
+            className="accent-accent"
+            disabled={section === "__done"}
+            title={section === "__done" ? "Disabled while the Completed section pill is active" : undefined}
+          />
+          Hide completed
+        </label>
+        <label className="inline-flex items-center gap-1.5 text-[11px] text-ink-secondary">
           <input
             type="checkbox"
             checked={showArchived}
@@ -3167,9 +3238,20 @@ function CreateProjectPanel({
     }
   }, [users, picId]);
 
+  // The backend derives the project code from state/venue/brand and
+  // throws when any are missing. Validate all three client-side so the
+  // user gets a clear inline message instead of a server round-trip.
   async function submit() {
+    if (!brand) {
+      toast.error("Brand is required");
+      return;
+    }
     if (!venue.trim()) {
       toast.error("Venue is required");
+      return;
+    }
+    if (!stateName.trim()) {
+      toast.error("This venue has no state set. Open Project Maintenance → Venues and add one.");
       return;
     }
     if (!derivedName.trim()) {
@@ -3220,7 +3302,14 @@ function CreateProjectPanel({
           <Button
             variant="primary"
             onClick={submit}
-            disabled={submitting || !derivedName.trim() || !venue.trim() || dateInvalid}
+            disabled={
+              submitting ||
+              !brand ||
+              !venue.trim() ||
+              !stateName.trim() ||
+              !derivedName.trim() ||
+              dateInvalid
+            }
           >
             {submitting ? "Creating…" : "Create Project"}
           </Button>
@@ -3263,20 +3352,25 @@ function CreateProjectPanel({
           </div>
           <div>
             <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-              Brand
+              Brand<span className="ml-1 text-err">*</span>
             </div>
             <select
               value={brand}
               onChange={(e) => setBrand(e.target.value)}
               className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
             >
-              <option value="">— none —</option>
+              <option value="">— pick a brand —</option>
               {brands.map((b) => (
                 <option key={b} value={b}>
                   {b}
                 </option>
               ))}
             </select>
+            {brands.length === 0 && (
+              <div className="mt-1 text-[10px] text-warning-text">
+                No brands configured yet. Add one under Project Maintenance → Brands.
+              </div>
+            )}
           </div>
         </div>
       </PanelSection>
@@ -3330,11 +3424,27 @@ function CreateProjectPanel({
             }}
             onStateHint={(s) => setStateName(s ?? "")}
           />
-          <div className="mt-1 text-[10px] text-ink-muted">
-            State is read from the venue's record in Project Maintenance.
-            {venue && stateName && (
-              <span className="ml-1 font-mono text-ink">· {stateName}</span>
+        </div>
+        <div>
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            State<span className="ml-1 text-err">*</span>
+          </div>
+          <select
+            value={stateName}
+            onChange={(e) => setStateName(e.target.value)}
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          >
+            <option value="">— pick a state —</option>
+            {stateName && !(PROJECT_STATES as readonly string[]).includes(stateName) && (
+              <option value={stateName}>{stateName}</option>
             )}
+            {PROJECT_STATES.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+          <div className="mt-1 text-[10px] text-ink-muted">
+            Auto-fills from the venue's record. Override here if the venue
+            doesn't have one set yet — fix it later in Project Maintenance → Venues.
           </div>
         </div>
         <div>

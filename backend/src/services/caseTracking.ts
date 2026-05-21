@@ -147,12 +147,23 @@ export function customerStatusFor(stage: string | null | undefined): {
   color: "grey" | "blue" | "amber" | "violet" | "green";
 } {
   switch (stage) {
-    case "registration": return { label: "Pending Review", color: "grey" };
-    case "triage":       return { label: "Under Verification", color: "blue" };
-    case "action":       return { label: "Pending Solution", color: "amber" };
-    case "logistics":    return { label: "In Progress", color: "violet" };
-    case "resolution":   return { label: "Pending Completion", color: "violet" };
-    case "closed":       return { label: "Completed", color: "green" };
-    default:             return { label: stage || "Unknown", color: "grey" };
+    // v3.1 9-stage workflow (mig 074)
+    case "pending_review":            return { label: "Pending Review", color: "grey" };
+    case "under_verification":        return { label: "Under Verification", color: "blue" };
+    case "pending_solution":          return { label: "Pending Solution", color: "amber" };
+    case "pending_inspection":        return { label: "Pending Inspection", color: "amber" };
+    case "pending_item_pickup":       return { label: "Pending Item Pickup", color: "violet" };
+    case "pending_supplier_pickup":   return { label: "Pending Supplier Pickup", color: "violet" };
+    case "pending_item_ready":        return { label: "Pending Item Ready", color: "violet" };
+    case "pending_delivery_service":  return { label: "Pending Delivery / Service", color: "violet" };
+    case "completed":                 return { label: "Completed", color: "green" };
+    // Legacy aliases — covers any unmigrated row label.
+    case "registration":              return { label: "Pending Review", color: "grey" };
+    case "triage":                    return { label: "Under Verification", color: "blue" };
+    case "action":                    return { label: "Pending Solution", color: "amber" };
+    case "logistics":                 return { label: "Pending Item Pickup", color: "violet" };
+    case "resolution":                return { label: "Pending Delivery / Service", color: "violet" };
+    case "closed":                    return { label: "Completed", color: "green" };
+    default:                          return { label: stage || "Unknown", color: "grey" };
   }
 }

@@ -1,7 +1,10 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Wrench } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { LookupManager } from "../components/LookupManager";
+import { TabStrip } from "../components/TabStrip";
+import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
@@ -29,17 +32,49 @@ interface UserOption {
  *   - Issue Categories (mig 065 lookup)
  *   - Resolution Methods (mig 065 lookup)
  *   - Priorities (mig 065 lookup, with optional SLA hours)
- *   - NCR Categories (mig 065 lookup)
+ *   - Issue Categories (mig 065 lookup, formerly "NCR")
  */
+type SettingsTab = "general" | "lead_time";
+
 export function ServiceSettingsView() {
+  // Tab state in the URL so the back button + sidebar deep-links work.
+  // ?view=settings stays — &tab=... drives the sub-tab.
+  const [params, setParams] = useSearchParams();
+  const rawTab = params.get("tab");
+  const tab: SettingsTab = rawTab === "lead_time" ? "lead_time" : "general";
+  function setTab(next: SettingsTab) {
+    const p = new URLSearchParams(params);
+    if (next === "general") p.delete("tab");
+    else p.set("tab", next);
+    setParams(p, { replace: true });
+  }
+
   return (
     <div>
       <PageHeader
         eyebrow="Operations · Service"
         title="Service Maintenance"
-        description="Module defaults plus all the picker lists that drive the case form — issue categories, resolution methods, priorities, NCR categories. Edit here once, every dropdown updates."
+        description="Module defaults, picker lists that drive the case form, and the Lead Time Portal — manager-editable per-stage SLA targets."
       />
 
+      <TabStrip
+        value={tab}
+        onChange={setTab}
+        options={[
+          { value: "general", label: "General" },
+          { value: "lead_time", label: "Lead Time" },
+        ]}
+      />
+
+      {tab === "general" && <GeneralTab />}
+      {tab === "lead_time" && <ServiceLeadTimePortal />}
+    </div>
+  );
+}
+
+function GeneralTab() {
+  return (
+    <>
       <DefaultAssigneeSection />
 
       {/* Two-up grid on wide screens, single column on narrow. Same
@@ -63,11 +98,11 @@ export function ServiceSettingsView() {
         />
         <LookupManager
           apiPath="/api/assr/lookups/ncr-categories"
-          title="NCR Categories"
-          description="Quality root-cause classifications used on closed cases for the NCR / Pareto report."
+          title="Root-Cause Classifications"
+          description="Quality root-cause tags used on closed cases for Pareto reporting (material defect, transit damage, installation, etc.)."
         />
       </div>
-    </div>
+    </>
   );
 }
 

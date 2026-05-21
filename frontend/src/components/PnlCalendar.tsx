@@ -10,7 +10,7 @@ import {
   Layers,
   Wrench,
 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Panel, PanelSection } from "./Panel";
 import { ListSkeleton } from "./Skeleton";
 import { useQuery } from "../hooks/useQuery";
@@ -465,6 +465,7 @@ function BucketDetailPanel({
   granularity: PnlGranularity;
   onClose: () => void;
 }) {
+  const navigate = useNavigate();
   const q = useQuery<PnlBucketDetail>(
     () =>
       api.get(
@@ -473,6 +474,13 @@ function BucketDetailPanel({
     [bucket.start, bucket.endExclusive]
   );
   const d = q.data;
+  // Common click handler for drill rows — close the panel first then
+  // navigate so the back button returns to the page that opened the
+  // panel, not back inside the panel.
+  function open(href: string) {
+    onClose();
+    navigate(href);
+  }
   const periodLabel =
     granularity === "yearly"
       ? bucket.label
@@ -536,8 +544,15 @@ function BucketDetailPanel({
                     </thead>
                     <tbody>
                       {d.sales.map((r) => (
-                        <tr key={r.doc_no} className="border-t border-border-subtle">
-                          <td className="px-2 py-1 font-mono text-[10px]">{r.doc_no}</td>
+                        <tr
+                          key={r.doc_no}
+                          className="group cursor-pointer border-t border-border-subtle hover:bg-bg/60"
+                          onClick={() => open(`/orders/${encodeURIComponent(r.doc_no)}`)}
+                          title="Open order"
+                        >
+                          <td className="px-2 py-1 font-mono text-[10px] text-ink group-hover:text-accent">
+                            {r.doc_no}
+                          </td>
                           <td className="px-2 py-1 truncate">{r.debtor_name || "—"}</td>
                           <td className="px-2 py-1">{formatDate(r.doc_date)}</td>
                           <td className="px-2 py-1 text-right font-mono font-bold text-synced">
@@ -565,7 +580,9 @@ function BucketDetailPanel({
                     {d.project_cost_lines.map((l) => (
                       <li
                         key={l.id}
-                        className="flex items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px]"
+                        onClick={() => open(`/projects/${l.project_id}`)}
+                        className="group flex cursor-pointer items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] hover:border-accent/40 hover:bg-accent-soft/20"
+                        title="Open project"
                       >
                         <Layers size={11} className="mt-0.5 shrink-0 text-accent" />
                         <div className="min-w-0 flex-1">
@@ -573,7 +590,7 @@ function BucketDetailPanel({
                             <span className="font-mono text-[10px] text-ink-muted">
                               {l.project_code}
                             </span>
-                            <span className="truncate">{l.project_name}</span>
+                            <span className="truncate group-hover:text-accent">{l.project_name}</span>
                           </div>
                           <div className="mt-0.5 text-[10px] text-ink-muted">
                             {l.category}
@@ -585,14 +602,7 @@ function BucketDetailPanel({
                         <span className="shrink-0 font-mono text-[11px] font-bold text-err">
                           −{formatCurrency(l.amount, { compact: true })}
                         </span>
-                        <Link
-                          to={`/projects?focus=${l.project_id}`}
-                          onClick={onClose}
-                          className="shrink-0 text-ink-muted hover:text-accent"
-                          title="Open project"
-                        >
-                          <ExternalLink size={11} />
-                        </Link>
+                        <ExternalLink size={11} className="shrink-0 text-ink-muted group-hover:text-accent" />
                       </li>
                     ))}
                   </ul>
@@ -616,13 +626,15 @@ function BucketDetailPanel({
                     {d.po_lines.map((p) => (
                       <li
                         key={`${p.doc_no}|${p.item_code}`}
-                        className="flex items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px]"
+                        onClick={() => open(`/po/${encodeURIComponent(p.doc_no)}`)}
+                        className="group flex cursor-pointer items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] hover:border-accent/40 hover:bg-accent-soft/20"
+                        title="Open PO"
                       >
                         <ShoppingCart size={11} className="mt-0.5 shrink-0 text-accent" />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2">
                             <span className="font-mono text-[10px] text-ink-muted">{p.doc_no}</span>
-                            <span className="truncate">{p.item_code}</span>
+                            <span className="truncate group-hover:text-accent">{p.item_code}</span>
                             {p.amount_source === "manual" && (
                               <span className="rounded bg-accent-soft/60 px-1 text-[8.5px] font-bold uppercase tracking-wider text-accent">
                                 manual
@@ -639,14 +651,7 @@ function BucketDetailPanel({
                         <span className="shrink-0 font-mono text-[11px] font-bold text-err">
                           −{formatCurrency(p.amount, { compact: true })}
                         </span>
-                        <Link
-                          to={`/po?focus=${encodeURIComponent(p.doc_no)}`}
-                          onClick={onClose}
-                          className="shrink-0 text-ink-muted hover:text-accent"
-                          title="Open PO"
-                        >
-                          <ExternalLink size={11} />
-                        </Link>
+                        <ExternalLink size={11} className="shrink-0 text-ink-muted group-hover:text-accent" />
                       </li>
                     ))}
                   </ul>
@@ -668,13 +673,15 @@ function BucketDetailPanel({
                     {d.service_cases.map((c) => (
                       <li
                         key={c.id}
-                        className="flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px]"
+                        onClick={() => open(`/assr/${c.id}`)}
+                        className="group flex cursor-pointer items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] hover:border-accent/40 hover:bg-accent-soft/20"
+                        title="Open case"
                       >
                         <Wrench size={11} className="shrink-0 text-accent" />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2">
                             <span className="font-mono text-[10px] text-ink-muted">{c.assr_no}</span>
-                            <span className="truncate">{c.customer_name || "—"}</span>
+                            <span className="truncate group-hover:text-accent">{c.customer_name || "—"}</span>
                           </div>
                           <div className="text-[10px] text-ink-muted">
                             {c.supplier_name || "no supplier"} · {formatDate(c.anchor_date)}
@@ -683,14 +690,7 @@ function BucketDetailPanel({
                         <span className="shrink-0 font-mono text-[11px] font-bold text-err">
                           −{formatCurrency(c.po_amount, { compact: true })}
                         </span>
-                        <Link
-                          to={`/assr?focus=${c.id}`}
-                          onClick={onClose}
-                          className="shrink-0 text-ink-muted hover:text-accent"
-                          title="Open case"
-                        >
-                          <ExternalLink size={11} />
-                        </Link>
+                        <ExternalLink size={11} className="shrink-0 text-ink-muted group-hover:text-accent" />
                       </li>
                     ))}
                   </ul>

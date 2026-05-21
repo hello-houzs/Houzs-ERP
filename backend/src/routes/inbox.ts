@@ -87,7 +87,7 @@ async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: bo
               CAST((julianday(c.deadline_at) - julianday('now')) * 24 AS INTEGER) as hours_to_deadline
          FROM assr_cases c
         WHERE c.archived_at IS NULL
-          AND c.stage != 'closed'
+          AND c.stage != 'completed'
           AND c.assigned_to = ?
         ORDER BY
           CASE WHEN c.deadline_at IS NULL THEN 1 ELSE 0 END,
@@ -250,15 +250,18 @@ async function loadReviewQueue(env: Env, userId: number, perms: string[], isStar
     }
   }
 
-  // ASSR cases in resolution stage (awaiting manager close + QA pass)
-  // when the viewer can manage service cases.
+  // ASSR cases in the final-leg stages (awaiting manager close +
+  // QA pass) when the viewer can manage service cases. With the v3.1
+  // 9-stage workflow, "approaching close" maps to the supplier-pickup
+  // → item-ready → delivery span; the legacy 'resolution' value is
+  // covered by 'pending_delivery_service'.
   if (isStar || hasPermission(perms, "service_cases.manage")) {
     const rows = await env.DB.prepare(
       `SELECT c.id, c.assr_no, c.customer_name, c.stage,
               c.quality_review_passed, c.approved_at
          FROM assr_cases c
         WHERE c.archived_at IS NULL
-          AND c.stage = 'resolution'
+          AND c.stage = 'pending_delivery_service'
           AND c.approved_at IS NULL
         ORDER BY c.updated_at DESC
         LIMIT 10`
@@ -302,7 +305,7 @@ async function loadBlockers(env: Env, userId: number, perms: string[], isStar: b
               CAST(julianday('now') - julianday(c.deadline_at) AS INTEGER) as days_overdue
          FROM assr_cases c
         WHERE c.archived_at IS NULL
-          AND c.stage != 'closed'
+          AND c.stage != 'completed'
           AND c.deadline_at IS NOT NULL
           AND datetime('now') > c.deadline_at
           AND (c.assigned_to = ? OR c.assigned_to IS NULL)
@@ -386,7 +389,7 @@ async function loadBlockers(env: Env, userId: number, perms: string[], isStar: b
                 ) AS INTEGER) as days_in_stage
            FROM assr_cases c
           WHERE c.archived_at IS NULL
-            AND c.stage != 'closed'
+            AND c.stage != 'completed'
             AND c.assigned_to = ?
        )
        WHERE days_in_stage > 3

@@ -5,19 +5,30 @@ interface Props {
   label: string;
   value: ReactNode;
   subtitle?: ReactNode;
-  tone?: "default" | "success" | "error";
+  tone?: "default" | "success" | "warning" | "error";
+  /** When set, the card renders as a button — focusable, keyboard-activatable. */
+  onClick?: () => void;
 }
 
 /**
  * Atelier stat card — a slab on the cream canvas with a thin brass
  * top hairline that turns full-brass on hover. The number takes the
  * display weight; the label is a small uppercase eyebrow.
+ *
+ * Pass `onClick` to make the card a drill-down affordance. The element
+ * type switches to <button> so it's keyboard-accessible; we also bump
+ * hover affordance to make it read as clickable.
  */
-export function StatCard({ label, value, subtitle, tone = "default" }: Props) {
+export function StatCard({ label, value, subtitle, tone = "default", onClick }: Props) {
+  const Tag = onClick ? "button" : "div";
   return (
-    <div
+    <Tag
+      onClick={onClick}
+      type={onClick ? "button" : undefined}
       className={cn(
-        "group relative h-full overflow-hidden rounded-lg border border-border bg-surface px-4 py-4 shadow-stone transition-all duration-200 hover:-translate-y-px hover:shadow-slab sm:px-5 sm:py-5"
+        "group relative h-full overflow-hidden rounded-lg border border-border bg-surface px-4 py-4 text-left shadow-stone transition-all duration-200 hover:-translate-y-px hover:shadow-slab sm:px-5 sm:py-5",
+        onClick &&
+          "cursor-pointer hover:border-accent/40 focus:outline-none focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/30"
       )}
     >
       {/* Brass top edge — thin by default, glows on hover */}
@@ -31,6 +42,7 @@ export function StatCard({ label, value, subtitle, tone = "default" }: Props) {
           "mt-2 font-display text-[22px] font-extrabold leading-none tracking-tight sm:mt-3 sm:text-[26px]",
           tone === "default" && "text-ink",
           tone === "success" && "text-synced",
+          tone === "warning" && "text-amber-700",
           tone === "error" && "text-err"
         )}
       >
@@ -39,6 +51,6 @@ export function StatCard({ label, value, subtitle, tone = "default" }: Props) {
       {subtitle && (
         <div className="mt-2 text-[11px] font-medium text-ink-secondary">{subtitle}</div>
       )}
-    </div>
+    </Tag>
   );
 }

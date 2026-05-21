@@ -1,9 +1,10 @@
 import { useSearchParams } from "react-router-dom";
-import { Route as RouteIcon, Users } from "lucide-react";
+import { Route as RouteIcon, Users, Wrench } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAuth } from "../auth/AuthContext";
 import { Trips } from "./Trips";
 import { Fleet } from "./Fleet";
+import { ServiceLogistics } from "./ServiceLogistics";
 
 /**
  * Logistics shell — a single sidebar entry that hosts the Trips and
@@ -17,7 +18,7 @@ import { Fleet } from "./Fleet";
  * App.tsx, which carry the rest of the query string through).
  */
 
-type LogisticsTab = "trips" | "fleet";
+type LogisticsTab = "trips" | "fleet" | "service";
 
 export function Logistics() {
   const { can } = useAuth();
@@ -25,18 +26,22 @@ export function Logistics() {
 
   const canTrips = can("trips.read.all");
   const canFleet = can("fleet.read");
+  // Service tab uses the same permission as the ASSR module — anyone
+  // who can read service cases can see their pickups + deliveries here.
+  const canService = can("service_cases.read");
 
-  // If the user can only read one side, there's no point showing the
-  // tab strip at all — just render that one.
-  const onlyOne = canTrips !== canFleet;
+  const visibleCount = [canTrips, canFleet, canService].filter(Boolean).length;
+  const onlyOne = visibleCount === 1;
 
   const raw = params.get("tab") as LogisticsTab | null;
   const active: LogisticsTab =
-    raw && ["trips", "fleet"].includes(raw)
+    raw && ["trips", "fleet", "service"].includes(raw)
       ? raw
       : canTrips
       ? "trips"
-      : "fleet";
+      : canFleet
+      ? "fleet"
+      : "service";
 
   function setTab(next: LogisticsTab) {
     const p = new URLSearchParams(params);
@@ -51,6 +56,7 @@ export function Logistics() {
   const tabs: Array<{ value: LogisticsTab; label: string; icon: typeof RouteIcon; show: boolean }> = [
     { value: "trips", label: "Trips", icon: RouteIcon, show: canTrips },
     { value: "fleet", label: "Fleet", icon: Users, show: canFleet },
+    { value: "service", label: "Service", icon: Wrench, show: canService },
   ];
   const visibleTabs = tabs.filter((t) => t.show);
 
@@ -84,6 +90,7 @@ export function Logistics() {
 
       {active === "trips" && canTrips && <Trips />}
       {active === "fleet" && canFleet && <Fleet />}
+      {active === "service" && canService && <ServiceLogistics />}
     </div>
   );
 }

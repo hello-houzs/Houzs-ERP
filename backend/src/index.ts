@@ -35,9 +35,11 @@ import search from "./routes/search";
 import creditors from "./routes/creditors";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
+import assrPortal from "./routes/assrPortal";
 import survey from "./routes/survey";
 import track from "./routes/track";
 import portal from "./routes/portal";
+import supplierPortal from "./routes/supplierPortal";
 import gamify from "./routes/gamify";
 import awards from "./routes/awards";
 import ideaAttachments from "./routes/ideaAttachments";
@@ -46,10 +48,13 @@ import pettyCash from "./routes/pettyCash";
 import innovations from "./routes/innovations";
 import suggestions from "./routes/suggestions";
 import { caseTrack } from "./middleware/caseTrack";
+import { supplierTrack } from "./middleware/supplierTrack";
 import { runPull } from "./services/pull";
 import { runPOPull, runPODocsPull } from "./services/po";
 import { runOverdue } from "./services/overdue";
 import { runSlaEscalation } from "./services/assrEscalation";
+import { runAssrAlerts, runAssrDailyDigest } from "./services/assrAlerts";
+import { runScheduledLeadTimeActivations } from "./services/assrLeadTime";
 import { runProjectDueReminders } from "./services/projectReminders";
 import { runCreditorsPull } from "./services/creditors";
 import { runStockItemsRefresh } from "./services/stockItems";
@@ -85,6 +90,10 @@ app.route("/api/track", track);
 app.use("/api/portal/*", caseTrack);
 app.route("/api/portal", portal);
 
+// Supplier portal — same shape as customer portal, different middleware.
+app.use("/api/supplier-portal/*", supplierTrack);
+app.route("/api/supplier-portal", supplierPortal);
+
 // Auth gate for everything else under /api/*. Mounted AFTER the
 // public API routes above so they stay unauthenticated.
 app.use("/api/*", auth);
@@ -93,6 +102,9 @@ app.route("/api/orders", orders);
 app.route("/api/sync", sync);
 app.route("/api/balance", balance);
 app.route("/api/po", po);
+// Mount the Lead Time Portal first so /api/assr/portal/* doesn't
+// fall through into the catch-all /:id handler on the main module.
+app.route("/api/assr/portal", assrPortal);
 app.route("/api/assr", assr);
 app.route("/api/overdue", overdue);
 app.route("/api/logs", logs);
@@ -153,6 +165,30 @@ export default {
           .then((r) => console.log(`[cron po-lines] ${r.message}`))
           .catch((e) => console.error("[cron po-lines]", e))
       );
+      // ASSR/QMS v3.1 — per-stage alert scanner (half / approaching /
+      // breach). Cheap: one query over open stage_history rows,
+      // idempotent via the alerts_fired bit-mask, so safe to share
+      // this 30-min slot with the PO pulls.
+      ctx.waitUntil(
+        runAssrAlerts(env)
+          .then((r) =>
+            console.log(
+              `[cron assr-alerts] scanned=${r.cases_scanned} half=${r.half} appr=${r.approaching} breach=${r.breach}`
+            )
+          )
+          .catch((e) => console.error("[cron assr-alerts]", e))
+      );
+      // Lead-time scheduled activations (mig 080). Cheap: one indexed
+      // SELECT for pending rows whose scheduled_for is past; the loop
+      // only does write work when there's something due. 30-min
+      // granularity is fine for "swap at the start of next Monday".
+      ctx.waitUntil(
+        runScheduledLeadTimeActivations(env)
+          .then((r) => {
+            if (r.fired > 0) console.log(`[cron lead-time-schedule] fired=${r.fired}`);
+          })
+          .catch((e) => console.error("[cron lead-time-schedule]", e))
+      );
     } else if (event.cron === "0 2 * * *") {
       ctx.waitUntil(runOverdue(env, "SCHEDULED").catch((e) => console.error("[cron overdue]", e)));
       // Piggyback the daily 02:00 slot: run SLA escalation right after
@@ -161,6 +197,15 @@ export default {
         runSlaEscalation(env)
           .then((r) => console.log(`[cron sla] escalated ${r.escalated} case(s)`))
           .catch((e) => console.error("[cron sla]", e))
+      );
+      // ASSR v3.1 daily digest — runs at 02:00 UTC (10:00 MYT). A bit
+      // later than proposal §9's 08:00 MYT target but folded into the
+      // existing daily slot to stay under the Workers free-plan cron
+      // cap. Acceptable trade-off for the internal-only audience.
+      ctx.waitUntil(
+        runAssrDailyDigest(env)
+          .then((r) => console.log(`[cron assr-digest] sent=${r.recipients} cases=${r.cases}`))
+          .catch((e) => console.error("[cron assr-digest]", e))
       );
       // Daily project checklist reminders ride the same slot.
       ctx.waitUntil(

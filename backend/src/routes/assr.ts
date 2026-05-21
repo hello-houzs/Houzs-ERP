@@ -299,6 +299,16 @@ app.get("/:id/cost-suggestion", async (c) => {
 // ── Summary ───────────────────────────────────────────────────
 
 app.get("/summary", async (c) => {
+  // Accept the same period filter the /metrics endpoint takes so the
+  // ServiceMetrics dashboard can share one dropdown. The pulse row
+  // (Pending Review / Aging / Breach) and Stage Funnel below now narrow
+  // to cases whose complaint / creation date falls inside the window —
+  // previously they were always "real-time across all data" and so
+  // looked frozen as the user switched periods.
+  const sinceDays = parseInt(c.req.query("since_days") || "90", 10);
+  const periodAnd =
+    `AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`;
+
   const totals = await c.env.DB.prepare(
     `SELECT COUNT(*) as total FROM assr_cases`
   ).first<{ total: number }>();
@@ -336,7 +346,8 @@ app.get("/summary", async (c) => {
   const aging = await c.env.DB.prepare(
     `SELECT COUNT(*) as count
        FROM assr_cases c
-      WHERE c.stage != 'closed'
+      WHERE c.stage != 'completed'
+        ${periodAnd}
         AND julianday('now') - julianday(
               COALESCE(
                 (SELECT MAX(a.created_at)
@@ -351,11 +362,66 @@ app.get("/summary", async (c) => {
 
   // SLA breach: open cases past their deadline.
   const breach = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count FROM assr_cases
-      WHERE stage != 'closed'
-        AND deadline_at IS NOT NULL
-        AND datetime('now') > deadline_at`
+    `SELECT COUNT(*) as count FROM assr_cases c
+      WHERE c.stage != 'completed'
+        ${periodAnd}
+        AND c.deadline_at IS NOT NULL
+        AND datetime('now') > c.deadline_at`
   ).first<{ count: number }>();
+
+  // v3.1 — Pending Review tile
+  const pendingReview = await c.env.DB.prepare(
+    `SELECT COUNT(*) as count FROM assr_cases c
+      WHERE c.stage = 'pending_review' AND c.archived_at IS NULL
+        ${periodAnd}`
+  ).first<{ count: number }>();
+
+  // v3.1 — Avg end-to-end lead time (days), completed cases only.
+  // Filter out rows where closed_at < created_at — legacy data has
+  // some rows with a closed_at predating the case created_at (likely
+  // imported from AutoCount with a different timestamp source), and
+  // including them produces a wildly negative average. Window now
+  // honours the dashboard's since_days instead of the old hardcoded 90d.
+  const avgE2E = await c.env.DB.prepare(
+    `SELECT AVG(julianday(closed_at) - julianday(created_at)) AS avg_days
+       FROM assr_cases
+      WHERE stage = 'completed'
+        AND closed_at IS NOT NULL
+        AND julianday(closed_at) > julianday(created_at)
+        AND (julianday(closed_at) - julianday(created_at)) < 365
+        AND closed_at >= date('now', '-${sinceDays} days')`
+  ).first<{ avg_days: number | null }>();
+
+  // v3.1 — Stage funnel: count by 9-stage enum, in canonical order,
+  // with breach-aware fill colour (% of cases in this stage that have
+  // crossed 100% of their snapshotted target).
+  const funnel = await c.env.DB.prepare(
+    `SELECT c.stage AS stage,
+            COUNT(*) AS total,
+            SUM(CASE
+                  WHEN h.target_days IS NOT NULL AND h.target_days > 0
+                   AND (julianday('now') - julianday(h.entered_at)) / h.target_days >= 1
+                  THEN 1 ELSE 0 END) AS breached
+       FROM assr_cases c
+       LEFT JOIN assr_stage_history h
+              ON h.assr_id = c.id AND h.exited_at IS NULL
+      WHERE c.archived_at IS NULL
+        ${periodAnd}
+      GROUP BY c.stage`
+  ).all<{ stage: string; total: number; breached: number }>();
+
+  // v3.1 — CSAT 13-week rolling trend (weekly average ratings)
+  const csatTrend = await c.env.DB.prepare(
+    `SELECT strftime('%Y-W%W', closed_at) AS week,
+            AVG(satisfaction_rating) AS avg_rating,
+            COUNT(satisfaction_rating) AS n
+       FROM assr_cases
+      WHERE stage = 'completed'
+        AND satisfaction_rating IS NOT NULL
+        AND closed_at >= date('now', '-91 days')
+      GROUP BY week
+      ORDER BY week`
+  ).all<{ week: string; avg_rating: number; n: number }>();
 
   return c.json({
     total: totals?.total || 0,
@@ -366,6 +432,11 @@ app.get("/summary", async (c) => {
     recent_30d: recent?.count || 0,
     aging_count: aging?.count || 0,
     breach_count: breach?.count || 0,
+    // v3.1 enrichments
+    pending_review_count: pendingReview?.count || 0,
+    avg_e2e_days: avgE2E?.avg_days != null ? Number(avgE2E.avg_days.toFixed(1)) : null,
+    stage_funnel: funnel.results ?? [],
+    csat_trend: csatTrend.results ?? [],
   });
 });
 
@@ -382,6 +453,7 @@ app.get("/", async (c) => {
     page: parseInt(c.req.query("page") || "1", 10),
     per_page: parseInt(c.req.query("per_page") || "50", 10),
     include_archived: c.req.query("include_archived") === "1",
+    exclude_stage: c.req.query("exclude_stage") || undefined,
     sort_by: c.req.query("sort_by") || undefined,
     sort_dir: (c.req.query("sort_dir") || "").toLowerCase() === "asc" ? "asc" : "desc",
   });
@@ -435,9 +507,9 @@ app.get("/by-creditor", async (c) => {
             cr.email        AS email,
             cr.phone1       AS phone,
             COUNT(*) AS total,
-            SUM(CASE WHEN c.stage != 'closed' THEN 1 ELSE 0 END) AS open,
-            SUM(CASE WHEN c.stage  = 'closed' THEN 1 ELSE 0 END) AS closed,
-            SUM(CASE WHEN c.stage != 'closed'
+            SUM(CASE WHEN c.stage != 'completed' THEN 1 ELSE 0 END) AS open,
+            SUM(CASE WHEN c.stage  = 'completed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN c.stage != 'completed'
                       AND c.deadline_at IS NOT NULL
                       AND datetime('now') > c.deadline_at THEN 1 ELSE 0 END) AS breached,
             MAX(c.updated_at) AS last_activity_at
@@ -455,7 +527,7 @@ app.get("/by-creditor", async (c) => {
 
   const unassigned = await c.env.DB.prepare(
     `SELECT COUNT(*) AS total,
-            SUM(CASE WHEN stage != 'closed' THEN 1 ELSE 0 END) AS open
+            SUM(CASE WHEN stage != 'completed' THEN 1 ELSE 0 END) AS open
        FROM assr_cases
       WHERE archived_at IS NULL AND (creditor_code IS NULL OR creditor_code = '')`
   ).first<{ total: number; open: number }>();
@@ -559,6 +631,7 @@ app.get("/export.csv", async (c) => {
     status: c.req.query("status"),
     search: c.req.query("search"),
     include_archived: c.req.query("include_archived") === "1",
+    exclude_stage: c.req.query("exclude_stage") || undefined,
   });
   const headers = [
     "ASSR No", "SO No", "Stage", "Status", "Priority",
@@ -609,7 +682,13 @@ app.get("/lookup-items/:docNo", async (c) => {
 
 // ── Detail ────────────────────────────────────────────────────
 
-app.get("/:id", async (c) => {
+// Numeric-only guard on the catch-all detail route. Hono's
+// RegExpRouter is order-sensitive — declaring `/:id` before
+// `/metrics` lets `/:id` swallow `GET /api/assr/metrics` because
+// "metrics" matches the param. The `{[0-9]+}` constraint scopes the
+// param to digits so /metrics + any future literal route under
+// /api/assr falls through to its dedicated handler.
+app.get("/:id{[0-9]+}", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const detail = await getAssrDetail(c.env, id);
@@ -631,21 +710,23 @@ app.get("/:id", async (c) => {
 app.get("/:id/customer-history", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  // Column is `phone`, not `customer_phone` — pre-v3.1 naming kept for
+  // SQL compatibility. Same applies to the WHERE below.
   const cur = await c.env.DB.prepare(
-    `SELECT customer_name, customer_phone FROM assr_cases WHERE id = ?`
+    `SELECT customer_name, phone FROM assr_cases WHERE id = ?`
   )
     .bind(id)
-    .first<{ customer_name: string | null; customer_phone: string | null }>();
+    .first<{ customer_name: string | null; phone: string | null }>();
   if (!cur) return c.json({ error: "Not found" }, 404);
 
-  const phone = (cur.customer_phone || "").trim();
+  const phone = (cur.phone || "").trim();
   const name = (cur.customer_name || "").trim();
   if (!phone && !name) return c.json({ cases: [] });
 
   const where: string[] = ["c.id != ?", "c.archived_at IS NULL"];
   const binds: any[] = [id];
   if (phone) {
-    where.push("c.customer_phone = ?");
+    where.push("c.phone = ?");
     binds.push(phone);
   } else {
     where.push("c.customer_name = ?");
@@ -675,6 +756,7 @@ app.post("/", async (c) => {
     item_code?: string;
     complaint_issue: string;
     issue_category?: string | null;
+    priority?: string | null;
   }>();
 
   if (!body.doc_no || !body.complaint_issue) {
@@ -697,6 +779,7 @@ app.post("/", async (c) => {
     items,
     complaint_issue: body.complaint_issue,
     issue_category: body.issue_category ?? null,
+    priority: body.priority ?? null,
     created_by: userId,
   });
   return c.json(result, 201);
@@ -704,7 +787,10 @@ app.post("/", async (c) => {
 
 // ── Patch ─────────────────────────────────────────────────────
 
-app.patch("/:id", async (c) => {
+// Same digit-only constraint as the GET — keeps any future literal
+// route under /api/assr (e.g. /metrics, /summary) reachable when the
+// methods overlap.
+app.patch("/:id{[0-9]+}", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -729,6 +815,26 @@ app.post("/:id/track-link", async (c) => {
   if (!exists) return c.json({ error: "Not found" }, 404);
   const token = await issueStaffToken(c.env, id);
   return c.json({ token, path: `/portal/case/${token}` }, 201);
+});
+
+// ── Supplier portal link (v3.1) ───────────────────────────────
+//
+// Idempotent: re-clicking the button returns the existing active
+// token. Scoped to the case's resolved creditor_code so the supplier
+// only sees jobs assigned to them.
+
+app.post("/:id/supplier-link", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const row = await c.env.DB.prepare(
+    `SELECT id, creditor_code FROM assr_cases WHERE id = ?`
+  )
+    .bind(id)
+    .first<{ id: number; creditor_code: string | null }>();
+  if (!row) return c.json({ error: "Not found" }, 404);
+  const { issueSupplierToken } = await import("../services/supplierPortal");
+  const token = await issueSupplierToken(c.env, id, row.creditor_code);
+  return c.json({ token, path: `/portal/supplier/${token}` }, 201);
 });
 
 // ── Generate satisfaction survey token ────────────────────────
@@ -890,18 +996,31 @@ app.post("/run-escalation", async (c) => {
 
 app.get("/metrics", async (c) => {
   const sinceDays = parseInt(c.req.query("since_days") || "90", 10);
-  const sinceClause = `AND complained_date >= date('now', '-${sinceDays} days')`;
+  // Period filter falls back to created_at when complained_date is
+  // NULL — legacy rows + manual SQL inserts often skipped the intake
+  // date, so a strict `complained_date >= …` was silently excluding
+  // them from EVERY window (which makes 30d / 90d / 365d look identical
+  // because the same too-small subset survives the filter).
+  const sinceFor = (prefix = "") =>
+    `AND COALESCE(${prefix}complained_date, ${prefix}created_at) >= date('now', '-${sinceDays} days')`;
+  const sinceClause = sinceFor();
 
-  // Headline numbers
+  // Headline numbers. avg_resolution_hours filters out legacy rows
+  // where julianday(closed_at) <= julianday(created_at) (corrupt
+  // timestamps from old imports) OR the diff exceeds 1 year — a
+  // healthy ASSR case never takes that long, so it's almost certainly
+  // a data anomaly skewing the mean.
   const headline = await c.env.DB.prepare(
     `SELECT
         COUNT(*) as total,
-        SUM(CASE WHEN stage = 'closed' THEN 1 ELSE 0 END) as closed,
-        SUM(CASE WHEN stage != 'closed' THEN 1 ELSE 0 END) as open_count,
-        SUM(CASE WHEN stage != 'closed' AND deadline_at IS NOT NULL
+        SUM(CASE WHEN stage = 'completed' THEN 1 ELSE 0 END) as closed,
+        SUM(CASE WHEN stage != 'completed' THEN 1 ELSE 0 END) as open_count,
+        SUM(CASE WHEN stage != 'completed' AND deadline_at IS NOT NULL
                   AND datetime('now') > deadline_at THEN 1 ELSE 0 END) as breached,
         SUM(CASE WHEN quality_review_passed = 1 THEN 1 ELSE 0 END) as qa_passed,
-        AVG(CASE WHEN stage = 'closed' AND closed_at IS NOT NULL
+        AVG(CASE WHEN stage = 'completed' AND closed_at IS NOT NULL
+                  AND julianday(closed_at) > julianday(created_at)
+                  AND (julianday(closed_at) - julianday(created_at)) < 365
                   THEN (julianday(closed_at) - julianday(created_at)) * 24
                   END) as avg_resolution_hours,
         AVG(CASE WHEN satisfaction_rating IS NOT NULL THEN satisfaction_rating END) as avg_satisfaction
@@ -909,7 +1028,10 @@ app.get("/metrics", async (c) => {
      WHERE 1=1 ${sinceClause}`
   ).first();
 
-  // NCR category breakdown
+  // NCR category breakdown — engineering taxonomy (material_defect /
+  // workmanship / transit_damage / …). Used for quality root-cause
+  // analysis. Distinct from `issue_category` below, which is the
+  // customer-facing category captured at intake.
   const ncr = await c.env.DB.prepare(
     `SELECT COALESCE(ncr_category, 'unclassified') as category, COUNT(*) as count
        FROM assr_cases
@@ -917,6 +1039,56 @@ app.get("/metrics", async (c) => {
       GROUP BY ncr_category
       ORDER BY count DESC`
   ).all();
+
+  // Customer-facing issue category — what the dashboards in the legacy
+  // Excel called "Service issues category". One row per ISSUE_CATEGORIES
+  // value (Product defect / Incorrect item delivered / etc.) plus an
+  // "Other" bucket for anything else.
+  const issueCategories = await c.env.DB.prepare(
+    `SELECT COALESCE(issue_category, 'Other') as category, COUNT(*) as count
+       FROM assr_cases
+      WHERE 1=1 ${sinceClause}
+      GROUP BY issue_category
+      ORDER BY count DESC`
+  ).all();
+
+  // Case Duration buckets — mirrors the legacy Excel "Case Duration"
+  // tile. All counts are *open* cases (stage != 'completed') bucketed by
+  // age since complaint date. The buckets are non-overlapping so the
+  // sum + still-younger-than-2wks == opening_count.
+  //
+  // avg_per_month is the rolling monthly intake over the last 4 months
+  // (matching the Excel formula `monthly_case/month (last 4 month data)`).
+  const caseDuration = await c.env.DB.prepare(
+    `SELECT
+        SUM(CASE WHEN stage != 'completed' THEN 1 ELSE 0 END) AS opening_count,
+        SUM(CASE WHEN stage != 'completed'
+                  AND complained_date IS NOT NULL
+                  AND julianday('now') - julianday(complained_date) >= 30
+                 THEN 1 ELSE 0 END) AS over_1_month,
+        SUM(CASE WHEN stage != 'completed'
+                  AND complained_date IS NOT NULL
+                  AND julianday('now') - julianday(complained_date) >= 21
+                  AND julianday('now') - julianday(complained_date) < 30
+                 THEN 1 ELSE 0 END) AS over_3_weeks,
+        SUM(CASE WHEN stage != 'completed'
+                  AND complained_date IS NOT NULL
+                  AND julianday('now') - julianday(complained_date) >= 14
+                  AND julianday('now') - julianday(complained_date) < 21
+                 THEN 1 ELSE 0 END) AS over_2_weeks
+       FROM assr_cases`
+  ).first<{
+    opening_count: number;
+    over_1_month: number;
+    over_3_weeks: number;
+    over_2_weeks: number;
+  }>();
+
+  const avgPerMonth = await c.env.DB.prepare(
+    `SELECT CAST(COUNT(*) AS REAL) / 4.0 AS avg_per_month
+       FROM assr_cases
+      WHERE COALESCE(complained_date, created_at) >= date('now', '-4 months')`
+  ).first<{ avg_per_month: number | null }>();
 
   // Resolution method mix
   const resolutions = await c.env.DB.prepare(
@@ -934,7 +1106,7 @@ app.get("/metrics", async (c) => {
             MAX(c.complained_date) as latest
        FROM assr_items i
        JOIN assr_cases c ON c.id = i.assr_id
-      WHERE 1=1 ${sinceClause.replace("complained_date", "c.complained_date")}
+      WHERE 1=1 ${sinceFor("c.")}
       GROUP BY i.item_code
       HAVING cases >= 2
       ORDER BY cases DESC, latest DESC
@@ -962,31 +1134,39 @@ app.get("/metrics", async (c) => {
     `SELECT a.creditor_code as creditor_code,
             cr.company_name as name,
             COUNT(DISTINCT a.id) as total_cases,
-            SUM(CASE WHEN a.stage = 'closed' THEN 1 ELSE 0 END) as closed_cases,
-            SUM(CASE WHEN a.stage != 'closed' AND a.deadline_at IS NOT NULL
+            SUM(CASE WHEN a.stage = 'completed' THEN 1 ELSE 0 END) as closed_cases,
+            SUM(CASE WHEN a.stage != 'completed' AND a.deadline_at IS NOT NULL
                       AND datetime('now') > a.deadline_at THEN 1 ELSE 0 END) as breached,
             AVG(CASE WHEN a.satisfaction_rating IS NOT NULL
                       THEN a.satisfaction_rating END) as avg_rating,
-            AVG(CASE WHEN a.stage = 'closed' AND a.closed_at IS NOT NULL
+            AVG(CASE WHEN a.stage = 'completed' AND a.closed_at IS NOT NULL
+                      AND julianday(a.closed_at) > julianday(a.created_at)
+                      AND (julianday(a.closed_at) - julianday(a.created_at)) < 365
                       THEN (julianday(a.closed_at) - julianday(a.created_at)) * 24
                       END) as avg_resolution_hours
        FROM assr_cases a
        LEFT JOIN creditors cr ON cr.creditor_code = a.creditor_code
       WHERE a.creditor_code IS NOT NULL
-        ${sinceClause.replace("complained_date", "a.complained_date")}
+        ${sinceFor("a.")}
       GROUP BY a.creditor_code
       ORDER BY total_cases DESC
       LIMIT 15`
   ).all();
 
-  // Monthly trend (last 12 months of case opens)
+  // Monthly trend (last 12 months of case opens). Use complained_date
+  // when populated, fall back to created_at — legacy rows imported
+  // before the intake form required complained_date have it NULL, and
+  // excluding them left the chart blank for tenants whose oldest data
+  // predated the form change. strftime returns NULL on bad inputs;
+  // HAVING strips those rows so the chart never receives a NULL month.
   const trend = await c.env.DB.prepare(
-    `SELECT strftime('%Y-%m', complained_date) as month,
+    `SELECT strftime('%Y-%m', COALESCE(complained_date, created_at)) as month,
             COUNT(*) as opened,
-            SUM(CASE WHEN stage = 'closed' THEN 1 ELSE 0 END) as closed
+            SUM(CASE WHEN stage = 'completed' THEN 1 ELSE 0 END) as closed
        FROM assr_cases
-      WHERE complained_date >= date('now', '-12 months')
+      WHERE COALESCE(complained_date, created_at) >= date('now', '-12 months')
       GROUP BY month
+      HAVING month IS NOT NULL
       ORDER BY month`
   ).all();
 
@@ -994,11 +1174,187 @@ app.get("/metrics", async (c) => {
     since_days: sinceDays,
     headline,
     ncr: ncr.results ?? [],
+    issue_categories: issueCategories.results ?? [],
     resolutions: resolutions.results ?? [],
     repeat_items: repeatItems.results ?? [],
     repeat_customers: repeatCustomers.results ?? [],
     creditor_performance: creditorPerf.results ?? [],
     monthly_trend: trend.results ?? [],
+    case_duration: {
+      opening_count: caseDuration?.opening_count ?? 0,
+      over_1_month: caseDuration?.over_1_month ?? 0,
+      over_3_weeks: caseDuration?.over_3_weeks ?? 0,
+      over_2_weeks: caseDuration?.over_2_weeks ?? 0,
+      avg_per_month: avgPerMonth?.avg_per_month ?? null,
+    },
+  });
+});
+
+// ── Metric drill-down ─────────────────────────────────────────
+//
+// Returns the case list behind a single ServiceMetrics card. The
+// frontend just passes which card was clicked (`metric=`) plus the
+// active period window (`since_days=`, matching the dashboard's
+// FilterPills) and the route resolves both into a WHERE clause.
+//
+// Response shape is slim — only what the side-panel rows render. The
+// case detail page is fetched separately when the user clicks through.
+
+const DRILL_METRICS = new Set([
+  "pending_review",
+  "aging",
+  "breach_now",
+  "open_now",
+  "total_period",
+  "closed_period",
+  "breach_period",
+  "qa_passed",
+  "over_1_month",
+  "over_3_weeks",
+  "over_2_weeks",
+  "opening_count",
+  "customer_cases",
+  "item_cases",
+] as const);
+
+app.get("/metrics/drill", async (c) => {
+  const metric = (c.req.query("metric") || "").trim();
+  if (!DRILL_METRICS.has(metric as any)) {
+    return c.json({ error: `Unknown metric: ${metric}` }, 400);
+  }
+  const sinceDays = parseInt(c.req.query("since_days") || "90", 10);
+  const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
+
+  // Collect WHERE fragments + their bind values together so user input
+  // (customer_name / phone / item_code) is always parameterised. The
+  // hard-coded `sinceDays` is parsed to an int above so interpolating
+  // it into the SQL string is safe.
+  const conds: string[] = ["c.archived_at IS NULL"];
+  const binds: any[] = [];
+  let joinItems = false;
+
+  switch (metric) {
+    case "pending_review":
+      conds.push("c.stage = 'pending_review'");
+      break;
+    case "aging":
+      conds.push(`c.stage != 'completed'
+        AND julianday('now') - julianday(
+              COALESCE(
+                (SELECT MAX(a.created_at)
+                   FROM assr_activity a
+                  WHERE a.assr_id = c.id
+                    AND a.action = 'stage_change'
+                    AND a.to_value = c.stage),
+                c.created_at
+              )
+            ) > 3`);
+      break;
+    case "breach_now":
+      conds.push(`c.stage != 'completed'
+        AND c.deadline_at IS NOT NULL
+        AND datetime('now') > c.deadline_at`);
+      break;
+    case "open_now":
+    case "opening_count":
+      conds.push("c.stage != 'completed'");
+      break;
+    case "total_period":
+      conds.push(`COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`);
+      break;
+    case "closed_period":
+      conds.push(`c.stage = 'completed' AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`);
+      break;
+    case "breach_period":
+      conds.push(`c.stage != 'completed'
+        AND c.deadline_at IS NOT NULL
+        AND datetime('now') > c.deadline_at
+        AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`);
+      break;
+    case "qa_passed":
+      conds.push(`c.quality_review_passed = 1 AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`);
+      break;
+    case "over_1_month":
+      conds.push(`c.stage != 'completed'
+        AND c.complained_date IS NOT NULL
+        AND julianday('now') - julianday(c.complained_date) >= 30`);
+      break;
+    case "over_3_weeks":
+      conds.push(`c.stage != 'completed'
+        AND c.complained_date IS NOT NULL
+        AND julianday('now') - julianday(c.complained_date) >= 21
+        AND julianday('now') - julianday(c.complained_date) < 30`);
+      break;
+    case "over_2_weeks":
+      conds.push(`c.stage != 'completed'
+        AND c.complained_date IS NOT NULL
+        AND julianday('now') - julianday(c.complained_date) >= 14
+        AND julianday('now') - julianday(c.complained_date) < 21`);
+      break;
+    case "customer_cases": {
+      // Repeat-customer drill — feeds the "Repeat Customers" panel
+      // when a row is clicked. Match by name (required) and phone
+      // (optional, mirroring how the metrics group identifies a
+      // customer). Window by sinceDays so the panel matches the
+      // count on the originating card.
+      const name = (c.req.query("customer_name") || "").trim();
+      const phone = (c.req.query("phone") || "").trim();
+      if (!name) {
+        return c.json({ error: "customer_name is required for customer_cases" }, 400);
+      }
+      conds.push(`c.customer_name = ? AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`);
+      binds.push(name);
+      if (phone) {
+        conds.push("c.phone = ?");
+        binds.push(phone);
+      } else {
+        // The metrics aggregate groups by (customer_name, phone) so a
+        // NULL-phone row is its own bucket. Match the same shape here.
+        conds.push("c.phone IS NULL");
+      }
+      break;
+    }
+    case "item_cases": {
+      // Repeat-item drill — joins assr_items so we can filter by
+      // item_code. Window by sinceDays for parity with the card.
+      const code = (c.req.query("item_code") || "").trim();
+      if (!code) {
+        return c.json({ error: "item_code is required for item_cases" }, 400);
+      }
+      joinItems = true;
+      conds.push(`i.item_code = ? AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`);
+      binds.push(code);
+      break;
+    }
+  }
+
+  const fromClause = joinItems
+    ? "FROM assr_cases c LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code JOIN assr_items i ON i.assr_id = c.id"
+    : "FROM assr_cases c LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code";
+  const distinct = joinItems ? "DISTINCT" : "";
+  const where = conds.join(" AND ");
+
+  const rows = await c.env.DB.prepare(
+    `SELECT ${distinct} c.id, c.assr_no, c.customer_name, c.stage, c.priority,
+            c.complained_date, c.deadline_at, c.issue_category,
+            c.creditor_code,
+            cr.company_name AS creditor_name,
+            (julianday('now') - julianday(c.complained_date)) AS age_days,
+            CASE WHEN c.deadline_at IS NOT NULL AND datetime('now') > c.deadline_at
+                 THEN 1 ELSE 0 END AS is_breached
+       ${fromClause}
+      WHERE ${where}
+      ORDER BY c.complained_date DESC, c.id DESC
+      LIMIT ${limit}`
+  )
+    .bind(...binds)
+    .all();
+
+  return c.json({
+    metric,
+    cases: rows.results ?? [],
+    total: rows.results?.length ?? 0,
+    limited: (rows.results?.length ?? 0) >= limit,
   });
 });
 
@@ -1100,23 +1456,32 @@ app.post("/:id/transition", async (c) => {
     const ok = await transitionStage(c.env, id, body.stage as any, userId, body.note);
     if (!ok) return c.json({ error: "Not found" }, 404);
 
-    // Auto-dispatch satisfaction survey when case is closed.  Fire-and-
-    // -forget: if email is disabled or the customer has no email, the
-    // email service silently skips (and still logs the attempt).
-    if (body.stage === "closed") {
+    // Auto-dispatch satisfaction survey when case is completed.
+    // Fire-and-forget: if email is disabled or the customer has no
+    // survey recipient, the email service silently skips (and still
+    // logs the attempt). Prefer `email_for_survey` (proposal §14 —
+    // separate from notify channel) and fall back to `customer_email`.
+    if (body.stage === "completed") {
       const row = await c.env.DB.prepare(
-        `SELECT assr_no, customer_name, customer_email FROM assr_cases WHERE id = ?`
+        `SELECT assr_no, customer_name, customer_email, email_for_survey
+           FROM assr_cases WHERE id = ?`
       )
         .bind(id)
-        .first<{ assr_no: string; customer_name: string | null; customer_email: string | null }>();
-      if (row?.customer_email) {
+        .first<{
+          assr_no: string;
+          customer_name: string | null;
+          customer_email: string | null;
+          email_for_survey: string | null;
+        }>();
+      const surveyTo = row?.email_for_survey || row?.customer_email;
+      if (surveyTo) {
         const token = await issueSurveyToken(c.env, id);
         const link = publicUrl(c.env, `/survey/${token}`);
-        const name = (row.customer_name || "").split(" ")[0] || "there";
+        const name = (row!.customer_name || "").split(" ")[0] || "there";
         await sendEmail(c.env, {
-          to: row.customer_email,
-          subject: `How was your experience with case ${row.assr_no}?`,
-          html: surveyEmailHtml(name, row.assr_no, link),
+          to: surveyTo,
+          subject: `How was your experience with case ${row!.assr_no}?`,
+          html: surveyEmailHtml(name, row!.assr_no, link),
           purpose: "assr_survey",
           refType: "assr",
           refId: id,
@@ -1163,9 +1528,125 @@ app.post("/:id/notes", async (c) => {
   // misconfigured client can't impersonate a system event.
   const category =
     body.category === "customer" ? "customer" : "purchasing";
-  await logActivity(c.env, id, "note", null, null, body.note, userId, category);
+  await logActivity(c.env, id, "note", null, null, body.note, userId, {
+    category,
+    source_channel: "app",
+  });
   return c.json({ ok: true });
 });
+
+// ── Service Log corrections (v3.1 mig 077) ────────────────────
+//
+// assr_activity is append-only: instead of editing a row, post a new
+// "correction" entry that references the prior one. Useful for fixing
+// a misposted note or stage_change without erasing the audit trail.
+
+app.post("/:id/notes/:noteId/correct", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const noteId = parseInt(c.req.param("noteId"), 10);
+  if (isNaN(id) || isNaN(noteId)) return c.json({ error: "Invalid ID" }, 400);
+  const userId = (c as any).get?.("userId") ?? 0;
+  const body = await c.req.json<{ note: string; category?: "purchasing" | "customer" }>();
+  if (!body.note?.trim()) return c.json({ error: "correction note is required" }, 400);
+
+  // Verify the referenced entry belongs to this case.
+  const prior = await c.env.DB.prepare(
+    `SELECT id FROM assr_activity WHERE id = ? AND assr_id = ?`
+  )
+    .bind(noteId, id)
+    .first<{ id: number }>();
+  if (!prior) return c.json({ error: "Referenced entry not found on this case" }, 404);
+
+  await logActivity(c.env, id, "note", null, null, body.note, userId, {
+    category: body.category === "customer" ? "customer" : "purchasing",
+    source_channel: "app",
+    references_entry_id: noteId,
+    is_correction: true,
+  });
+  return c.json({ ok: true });
+});
+
+// ── Service Log export (CSV) ────────────────────────────────────
+//
+// Full audit trail for one case in CSV form. Manager-only — internal
+// notes + supplier comms aren't customer-safe.
+
+app.get("/:id/timeline.csv", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+
+  const row = await c.env.DB.prepare(
+    `SELECT assr_no FROM assr_cases WHERE id = ?`
+  )
+    .bind(id)
+    .first<{ assr_no: string }>();
+  if (!row) return c.json({ error: "Not found" }, 404);
+
+  const rows = await c.env.DB.prepare(
+    `SELECT a.id, a.created_at, a.action, a.category, a.source_channel,
+            a.from_value, a.to_value, a.note,
+            a.stage_elapsed_days, a.stage_target_days,
+            a.is_correction, a.references_entry_id,
+            u.name AS user_name
+       FROM assr_activity a
+       LEFT JOIN users u ON u.id = a.user_id
+      WHERE a.assr_id = ? AND a.archived_at IS NULL
+      ORDER BY a.created_at ASC, a.id ASC`
+  )
+    .bind(id)
+    .all<any>();
+
+  const lines: string[] = [
+    [
+      "id",
+      "timestamp",
+      "action",
+      "category",
+      "source_channel",
+      "from",
+      "to",
+      "elapsed_days",
+      "target_days",
+      "user",
+      "note",
+      "is_correction",
+      "references_entry_id",
+    ].join(","),
+  ];
+  for (const r of rows.results ?? []) {
+    const fields = [
+      r.id,
+      r.created_at,
+      r.action,
+      r.category,
+      r.source_channel || "",
+      r.from_value || "",
+      r.to_value || "",
+      r.stage_elapsed_days != null ? Number(r.stage_elapsed_days).toFixed(2) : "",
+      r.stage_target_days != null ? Number(r.stage_target_days).toFixed(2) : "",
+      r.user_name || "",
+      r.note || "",
+      r.is_correction ? "1" : "0",
+      r.references_entry_id ?? "",
+    ];
+    lines.push(fields.map(csvField).join(","));
+  }
+
+  return new Response(lines.join("\n"), {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="${row.assr_no}-timeline.csv"`,
+    },
+  });
+});
+
+function csvField(v: any): string {
+  const s = v == null ? "" : String(v);
+  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
 
 // ── Items ─────────────────────────────────────────────────────
 
@@ -1236,6 +1717,59 @@ app.get("/attachments/:key{.+}", async (c) => {
 });
 
 // ── Logistics ─────────────────────────────────────────────────
+
+/**
+ * Service-wide logistics feed for the Logistics tab's Service sub-tab.
+ * Returns ASSR logistics rows joined with case context so ops can see
+ * pickups/deliveries across all open cases in one list.
+ */
+app.get("/logistics/all", async (c) => {
+  const page = Math.max(1, parseInt(c.req.query("page") || "1", 10));
+  const perPage = Math.min(200, Math.max(10, parseInt(c.req.query("per_page") || "50", 10)));
+  const status = c.req.query("status");
+  const type = c.req.query("type");
+  const search = (c.req.query("search") || "").trim();
+
+  const where: string[] = ["l.archived_at IS NULL", "ca.archived_at IS NULL"];
+  const binds: any[] = [];
+  if (status) { where.push("l.status = ?"); binds.push(status); }
+  if (type) { where.push("l.type = ?"); binds.push(type); }
+  if (search) {
+    where.push("(ca.assr_no LIKE ? OR ca.customer_name LIKE ? OR l.notes LIKE ?)");
+    binds.push(`%${search}%`, `%${search}%`, `%${search}%`);
+  }
+  const whereSql = `WHERE ${where.join(" AND ")}`;
+
+  const totalRow = await c.env.DB.prepare(
+    `SELECT COUNT(*) as n
+       FROM assr_logistics l
+       JOIN assr_cases ca ON ca.id = l.assr_id
+      ${whereSql}`
+  ).bind(...binds).first<{ n: number }>();
+
+  const offset = (page - 1) * perPage;
+  const rows = await c.env.DB.prepare(
+    `SELECT l.*,
+            ca.assr_no,
+            ca.customer_name,
+            ca.stage,
+            ca.priority,
+            u.name as assigned_to_name
+       FROM assr_logistics l
+       JOIN assr_cases ca ON ca.id = l.assr_id
+       LEFT JOIN users u ON u.id = l.assigned_to
+      ${whereSql}
+      ORDER BY COALESCE(l.scheduled_date, l.created_at) DESC, l.id DESC
+      LIMIT ? OFFSET ?`
+  ).bind(...binds, perPage, offset).all<any>();
+
+  return c.json({
+    rows: rows.results ?? [],
+    total: totalRow?.n ?? 0,
+    page,
+    per_page: perPage,
+  });
+});
 
 app.post("/:id/logistics", async (c) => {
   const id = parseInt(c.req.param("id"), 10);

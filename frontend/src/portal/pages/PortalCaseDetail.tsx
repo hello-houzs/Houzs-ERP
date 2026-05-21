@@ -227,7 +227,7 @@ export function PortalCaseDetailPage() {
                 source={a.source ?? "staff"}
                 onClick={() => setLightboxIndex(i)}
                 onRemove={
-                  a.source === "customer" && cs.stage !== "closed"
+                  a.source === "customer" && cs.stage !== "completed"
                     ? () => archivePhoto(a.id)
                     : undefined
                 }
@@ -251,7 +251,7 @@ export function PortalCaseDetailPage() {
               <div className="flex items-center gap-2 text-[11px] text-ink-muted">
                 <span>{fmtTs(t.at)}</span>
                 {/* Customer can retract their own comments */}
-                {t.source === "customer" && t.action === "customer_comment" && cs.stage !== "closed" && (
+                {t.source === "customer" && t.action === "customer_comment" && cs.stage !== "completed" && (
                   <button
                     onClick={() => archiveComment(t.id)}
                     className="ml-auto rounded p-0.5 opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
@@ -280,7 +280,7 @@ export function PortalCaseDetailPage() {
       </section>
 
       {/* Comment box */}
-      {cs.stage !== "closed" && (
+      {cs.stage !== "completed" && (
         <section className="mt-5 rounded-lg border border-border bg-surface p-5">
           <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
             Add an update or question
@@ -305,8 +305,8 @@ export function PortalCaseDetailPage() {
         </section>
       )}
 
-      {/* Closed-case satisfaction summary */}
-      {cs.stage === "closed" && cs.satisfaction_rating && (
+      {/* Completed-case satisfaction summary */}
+      {cs.stage === "completed" && cs.satisfaction_rating && (
         <section className="mt-5 rounded-lg border border-border bg-surface p-5 text-center">
           <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
             Thanks for your feedback

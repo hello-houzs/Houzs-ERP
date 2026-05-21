@@ -50,11 +50,22 @@ function fmtDateTime(s: string | null | undefined): string {
 }
 
 const STAGE_LABEL: Record<string, string> = {
+  // v3.1 9-stage workflow (mig 074)
+  pending_review: "Pending Review",
+  under_verification: "Under Verification",
+  pending_solution: "Pending Solution",
+  pending_inspection: "Pending Inspection",
+  pending_item_pickup: "Pending Item Pickup",
+  pending_supplier_pickup: "Pending Supplier Pickup",
+  pending_item_ready: "Pending Item Ready",
+  pending_delivery_service: "Pending Delivery / Service",
+  completed: "Completed",
+  // Legacy aliases — kept so any unmigrated row label still renders.
   registration: "Pending Review",
   triage: "Under Verification",
   action: "Pending Solution",
-  logistics: "Pending Logistics",
-  resolution: "Pending Completion",
+  logistics: "Pending Item Pickup",
+  resolution: "Pending Delivery / Service",
   closed: "Completed",
 };
 
@@ -731,7 +742,7 @@ app.get("/:id", async (c) => {
       </div>
     </section>
 
-    ${cs.stage === "closed" ? `
+    ${cs.stage === "completed" ? `
     <section>
       <h2 class="sec">Case Closure</h2>
       <div class="rows rows-2col">

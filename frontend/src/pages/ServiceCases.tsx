@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { Link, useSearchParams, useNavigate, useParams, Navigate } from "react-router-dom";
 import {
@@ -11,11 +11,13 @@ import {
   MessageSquare,
   Truck as TruckIcon,
   Trash2,
+  Pencil,
   Star,
   Package,
   UserPlus,
   Calendar,
   ShieldCheck,
+  Clock,
   DollarSign,
   Printer,
   Download,
@@ -45,7 +47,7 @@ import { Panel, PanelSection, FieldRow } from "../components/Panel";
 import { InlineEdit } from "../components/InlineEdit";
 import { ExpandableText } from "../components/ExpandableText";
 import { StatCard } from "../components/StatCard";
-import { DashboardGrid, DashboardPanels, DashboardBreakdown } from "../components/Dashboard";
+import { DashboardGrid } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
@@ -57,10 +59,11 @@ import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
 import { ServiceMetrics } from "./ServiceMetrics";
 import { ServiceSettingsView } from "./ServiceSettings";
+import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
+import { ServiceProgressTracker } from "../components/ServiceProgressTracker";
 import type {
   Paginated,
   AssrCase,
-  AssrSummary,
   AssrDetail,
   AssrAttachment,
   AssrStage,
@@ -69,14 +72,19 @@ import type {
 
 type StageFilter = "ALL" | AssrStage;
 
+// v3.1 9-stage workflow (mig 074). Labels match the canonical proposal
+// vocabulary; values are the SQL enum.
 const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "ALL", label: "All" },
-  { value: "registration", label: "Pending Review" },
-  { value: "triage", label: "Under Verification" },
-  { value: "action", label: "Pending Solution" },
-  { value: "logistics", label: "Pending Logistics" },
-  { value: "resolution", label: "Pending Completion" },
-  { value: "closed", label: "Completed" },
+  { value: "pending_review", label: "Pending Review" },
+  { value: "under_verification", label: "Under Verification" },
+  { value: "pending_solution", label: "Pending Solution" },
+  { value: "pending_inspection", label: "Pending Inspection" },
+  { value: "pending_item_pickup", label: "Pending Item Pickup" },
+  { value: "pending_supplier_pickup", label: "Pending Supplier Pickup" },
+  { value: "pending_item_ready", label: "Pending Item Ready" },
+  { value: "pending_delivery_service", label: "Pending Delivery / Service" },
+  { value: "completed", label: "Completed" },
 ];
 
 const RESOLUTION_OPTIONS = [
@@ -99,12 +107,21 @@ const NCR_OPTIONS = [
   "other",
 ] as const;
 
+// Default "next" suggestion for the in-form transition button. Skips
+// (Replace Unit → no inspection / supplier pickup / item ready;
+// Field-Service Own Team → no supplier pickup / item ready;
+// Return Visit → no item pickup / supplier pickup / item ready) are
+// honored by the service-admin manually picking the correct next
+// stage from the dropdown — this map only seeds the primary button.
 const NEXT_STAGE: Record<string, { stage: AssrStage; label: string }> = {
-  registration: { stage: "triage", label: "Start Verification" },
-  triage: { stage: "action", label: "Move to Solution" },
-  action: { stage: "logistics", label: "Assign Logistics" },
-  logistics: { stage: "resolution", label: "Mark Ready to Complete" },
-  resolution: { stage: "closed", label: "Close Case" },
+  pending_review:           { stage: "under_verification",       label: "Start Verification" },
+  under_verification:       { stage: "pending_solution",         label: "Move to Solution" },
+  pending_solution:         { stage: "pending_inspection",       label: "Schedule Inspection" },
+  pending_inspection:       { stage: "pending_item_pickup",      label: "Arrange Item Pickup" },
+  pending_item_pickup:      { stage: "pending_supplier_pickup",  label: "Hand to Supplier" },
+  pending_supplier_pickup:  { stage: "pending_item_ready",       label: "Mark Item Ready" },
+  pending_item_ready:       { stage: "pending_delivery_service", label: "Arrange Delivery" },
+  pending_delivery_service: { stage: "completed",                label: "Close Case" },
 };
 
 // ── Main page ─────────────────────────────────────────────────
@@ -113,13 +130,14 @@ const NEXT_STAGE: Record<string, { stage: AssrStage; label: string }> = {
 // The metrics used to live at /service-metrics as its own sidebar
 // entry; it's just a report about cases so it belongs here alongside
 // them rather than as a top-level module.
-type ServiceView = "cases" | "by_creditor" | "metrics" | "pnl" | "settings";
+type ServiceView = "cases" | "by_creditor" | "metrics" | "pnl" | "lead_time" | "settings";
 
 const SERVICE_VIEWS: ServiceView[] = [
   "cases",
   "by_creditor",
   "metrics",
   "pnl",
+  "lead_time",
   "settings",
 ];
 
@@ -146,6 +164,10 @@ const VIEW_HEADER: Record<
     title: "Finances",
     description: "Supplier PO payments from closed cases, grouped by month.",
   },
+  lead_time: {
+    title: "Lead Time Portal",
+    description: "Per-stage SLA targets. Switch profile (Normal / Peak / Custom) and amend with reason.",
+  },
 };
 
 export function ServiceCases() {
@@ -168,6 +190,16 @@ export function ServiceCases() {
     if (view !== storedView) setStoredView(view);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
+
+  // Legacy `/assr?view=lead_time` URL — Lead Time Portal merged into
+  // Service Maintenance as a tab. Redirect any old bookmarks to the
+  // new deep-link so they don't 404.
+  useEffect(() => {
+    if (urlView === "lead_time") {
+      navigate("/assr?view=settings&tab=lead_time", { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlView]);
 
   // "New Case" action lives on the Cases view's header.
   const [showCreate, setShowCreate] = useState(false);
@@ -207,6 +239,7 @@ export function ServiceCases() {
           subtitle="Supplier PO payments from closed cases, grouped by month."
         />
       )}
+      {view === "lead_time" && <ServiceLeadTimePortal />}
       {view === "settings" && <ServiceSettingsView />}
     </div>
   );
@@ -229,6 +262,9 @@ function CasesView({
   const [perPage, setPerPage] = useLocalStorage<number>("pp:assr", 50);
   const [showArchived, setShowArchived] = useLocalStorage<boolean>("assr:showArchived", false);
   const [myCases, setMyCases] = useLocalStorage<boolean>("assr:myCases", false);
+  // Hide completed cases from the working list — closed cases pile up
+  // and ops mostly only cares about what's still open.
+  const [hideCompleted, setHideCompleted] = useLocalStorage<boolean>("assr:hideCompleted", false);
   const [bulkSelected, setBulkSelected] = useState<Set<number>>(new Set());
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
   const [params, setParams] = useSearchParams();
@@ -236,6 +272,12 @@ function CasesView({
 
   // ?focus=ID — Overview inbox deep-links straight to the detail page.
   useFocusFromUrl((id) => navigate(`/assr/${id}`, { replace: true }));
+
+  // Skip the hide-completed param when the stage filter is explicitly
+  // "completed" — otherwise the page would return zero rows and look
+  // broken. Lets the user override the toggle by picking that stage.
+  const excludeStageParam =
+    hideCompleted && stage !== "completed" ? "completed" : undefined;
 
   const list = useQuery<Paginated<AssrCase>>(
     () =>
@@ -246,12 +288,13 @@ function CasesView({
           page,
           per_page: perPage,
           include_archived: showArchived ? 1 : undefined,
+          exclude_stage: excludeStageParam,
           assigned_to: myCases && user?.id ? user.id : undefined,
           creditor_code: creditorFilter || undefined,
           ...sortParams,
         })}`
       ),
-    [stage, search, page, perPage, showArchived, myCases, user?.id, creditorFilter, sort?.key, sort?.dir]
+    [stage, search, page, perPage, showArchived, excludeStageParam, myCases, user?.id, creditorFilter, sort?.key, sort?.dir]
   );
 
   // Drop selections that are no longer on screen — keeps the bulk
@@ -293,8 +336,6 @@ function CasesView({
     else next.add(id);
     setBulkSelected(next);
   }
-
-  const summary = useQuery<AssrSummary>(() => api.get("/api/assr/summary"));
 
   const columns: Column<AssrCase>[] = [
     {
@@ -341,7 +382,7 @@ function CasesView({
             </span>
           )}
           <StatusDot variant={stageVariant(r.stage)} label={stageLabel(r.stage)} />
-          {r.stage !== "closed" && r.is_breached === 1 && (
+          {r.stage !== "completed" && r.is_breached === 1 && (
             <span
               className="inline-flex items-center rounded-full bg-err px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white"
               title={`SLA breached by ${Math.abs(r.hours_to_deadline ?? 0)}h`}
@@ -349,7 +390,7 @@ function CasesView({
               SLA
             </span>
           )}
-          {r.stage !== "closed" && r.escalated_at && (
+          {r.stage !== "completed" && r.escalated_at && (
             <span
               className="inline-flex items-center rounded-full border border-err px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-err"
               title={`Auto-escalated ${r.escalated_at.slice(0, 10)} — SLA overdue >24h`}
@@ -357,7 +398,7 @@ function CasesView({
               Esc
             </span>
           )}
-          {r.stage !== "closed" && r.days_in_stage != null && r.days_in_stage > 3 && (
+          {r.stage !== "completed" && r.days_in_stage != null && r.days_in_stage > 3 && (
             <span
               className="inline-flex items-center rounded-full bg-err/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-err"
               title={`In this stage for ${r.days_in_stage} day(s)`}
@@ -454,7 +495,7 @@ function CasesView({
           <span
             className={cn(
               "font-mono tabular-nums text-[11px]",
-              r.days_in_stage > 3 && r.stage !== "closed" && "text-err font-semibold",
+              r.days_in_stage > 3 && r.stage !== "completed" && "text-err font-semibold",
             )}
             title={`In ${stageLabel(r.stage)} for ${r.days_in_stage} day(s)`}
           >
@@ -464,12 +505,6 @@ function CasesView({
       getValue: (r) => r.days_in_stage,
     },
   ];
-
-  const stageCountMap = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const s of summary.data?.by_stage ?? []) m[s.stage] = s.count;
-    return m;
-  }, [summary.data]);
 
   return (
     <div>
@@ -492,44 +527,6 @@ function CasesView({
           </button>
         </div>
       )}
-      <DashboardGrid cols={4}>
-        <StatCard
-          label="Pending Review"
-          value={stageCountMap.registration?.toLocaleString() ?? "0"}
-          subtitle="Awaiting verification"
-          tone={stageCountMap.registration > 0 ? "error" : "default"}
-        />
-        <StatCard
-          label="SLA Breached"
-          value={summary.data?.breach_count?.toLocaleString() ?? "—"}
-          subtitle="Open cases past deadline"
-          tone={(summary.data?.breach_count ?? 0) > 0 ? "error" : "default"}
-        />
-        <StatCard
-          label="Completed"
-          value={stageCountMap.closed?.toLocaleString() ?? "0"}
-          subtitle="Closed cases"
-          tone="success"
-        />
-        <StatCard
-          label="Aging (&gt;3d)"
-          value={summary.data?.aging_count?.toLocaleString() ?? "—"}
-          subtitle="Open cases stuck in a stage"
-          tone={(summary.data?.aging_count ?? 0) > 0 ? "error" : "default"}
-        />
-      </DashboardGrid>
-
-      <DashboardPanels cols={2}>
-        <DashboardBreakdown
-          title="By Location"
-          items={summary.data?.by_location.map((l) => ({ label: l.location, count: l.count })) ?? []}
-        />
-        <DashboardBreakdown
-          title="By Category"
-          items={summary.data?.by_category.map((c) => ({ label: c.name, count: c.count })) ?? []}
-        />
-      </DashboardPanels>
-
       <div className="mb-4 flex items-center gap-4">
         <FilterPills
           value={stage}
@@ -545,6 +542,17 @@ function CasesView({
             disabled={!user?.id}
           />
           My cases
+        </label>
+        <label className="inline-flex items-center gap-1.5 text-[11px] text-ink-secondary">
+          <input
+            type="checkbox"
+            checked={!!hideCompleted}
+            onChange={(e) => { setPage(1); setHideCompleted(e.target.checked); }}
+            className="accent-accent"
+            disabled={stage === "completed"}
+            title={stage === "completed" ? "Disabled while the Completed stage filter is active" : undefined}
+          />
+          Hide completed
         </label>
         <label className="inline-flex items-center gap-1.5 text-[11px] text-ink-secondary">
           <input
@@ -565,6 +573,7 @@ function CasesView({
                   stage: stage === "ALL" ? undefined : stage,
                   search,
                   include_archived: showArchived ? 1 : undefined,
+                  exclude_stage: excludeStageParam,
                 })}`,
                 "service-cases.csv"
               );
@@ -597,7 +606,6 @@ function CasesView({
               );
               setBulkSelected(new Set());
               list.reload();
-              summary.reload();
             } catch (e: any) {
               toast.error(e?.message || "Bulk archive failed");
             }
@@ -614,7 +622,6 @@ function CasesView({
               );
               setBulkSelected(new Set());
               list.reload();
-              summary.reload();
             } catch (e: any) {
               toast.error(e?.message || "Bulk restore failed");
             }
@@ -681,7 +688,6 @@ function CasesView({
             setShowCreate(false);
             navigate(`/assr/${id}`);
             list.reload();
-            summary.reload();
           }}
           toast={toast}
         />
@@ -784,6 +790,10 @@ function CreatePanel({
   // any other string → either a canonical category or a custom label.
   const [issueCategory, setIssueCategory] = useState<string>("");
   const [customCategory, setCustomCategory] = useState("");
+  // Mig 082 — priority drives the per-stage SLA targets via
+  // assr_priority_stage_targets. Default "normal" matches the column
+  // default; picking Urgent at intake compresses every internal stage.
+  const [priority, setPriority] = useState<string>("normal");
   const [lookingUp, setLookingUp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [customerInfo, setCustomerInfo] = useState<{ name?: string; phone?: string; location?: string } | null>(null);
@@ -875,6 +885,7 @@ function CreatePanel({
         items,
         complaint_issue: issue.trim(),
         issue_category: resolvedCategory,
+        priority,
       });
 
       // Upload any staged defect photos/videos as "complaint" attachments.
@@ -1035,6 +1046,24 @@ function CreatePanel({
             />
           )}
         </div>
+        {/* Mig 082 — picking the priority here drives both the e2e SLA
+            window AND the per-stage target snapshot at create time. */}
+        <div className="mt-3">
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            Priority
+          </div>
+          <select
+            value={priority}
+            onChange={(e) => setPriority(e.target.value)}
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          >
+            {[...PRIORITY_OPTIONS].map((p) => (
+              <option key={p} value={p}>
+                {p.charAt(0).toUpperCase() + p.slice(1)}
+              </option>
+            ))}
+          </select>
+        </div>
       </PanelSection>
 
       <PanelSection title={`Defect Photos / Videos (${files.length}/${MAX_FILES})`}>
@@ -1126,6 +1155,14 @@ function DetailContent({
   const issueOptions = (issueCategoriesQ.data?.data ?? []).map((r) => r.name);
   const resolutionOptions = (resolutionMethodsQ.data?.data ?? []).map((r) => r.slug);
   const priorityOptions = (prioritiesQ.data?.data ?? []).map((r) => r.slug);
+  // Map slug → display name so the Lead Time pill can render "Urgent"
+  // instead of the raw "urgent" slug. Recomputes only when the
+  // priorities lookup changes.
+  const priorityMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const p of prioritiesQ.data?.data ?? []) m[p.slug] = p.name;
+    return m;
+  }, [prioritiesQ.data]);
   const ncrOptions = (ncrCategoriesQ.data?.data ?? []).map((r) => r.slug);
   const [note, setNote] = useState("");
   // Mig 064 — note posting now picks a category. Default 'purchasing'
@@ -1182,6 +1219,13 @@ function DetailContent({
       setTransitioning(false);
     }
   }
+
+  // Auto-stage-transition watcher (TODO item 5). When the predicate
+  // for the current stage flips from unsatisfied → satisfied, prompt
+  // the user to advance. Row 2 (Under Verification → Pending Solution)
+  // is owned by VerificationCard so it can use the richer outcome
+  // semantics; the other six rows route through here.
+  useStageAutoAdvance({ c, logistics, transition, dialog });
 
   async function addNote() {
     if (!note.trim()) return;
@@ -1370,15 +1414,18 @@ function DetailContent({
                 className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-accent disabled:opacity-60"
                 title="Move this case to any stage"
               >
-                <option value="registration">Pending Review</option>
-                <option value="triage">Under Verification</option>
-                <option value="action">Pending Solution</option>
-                <option value="logistics">Pending Logistics</option>
-                <option value="resolution">Pending Completion</option>
-                <option value="closed">Completed</option>
+                <option value="pending_review">Pending Review</option>
+                <option value="under_verification">Under Verification</option>
+                <option value="pending_solution">Pending Solution</option>
+                <option value="pending_inspection">Pending Inspection</option>
+                <option value="pending_item_pickup">Pending Item Pickup</option>
+                <option value="pending_supplier_pickup">Pending Supplier Pickup</option>
+                <option value="pending_item_ready">Pending Item Ready</option>
+                <option value="pending_delivery_service">Pending Delivery / Service</option>
+                <option value="completed">Completed</option>
               </select>
             )}
-            {c.stage === "resolution" && !c.archived_at && (
+            {c.stage === "pending_delivery_service" && !c.archived_at && (
               <HeaderButton
                 variant="primary"
                 onClick={handleCloseClick}
@@ -1410,7 +1457,7 @@ function DetailContent({
             <ClosePrompt
               onConfirm={async (rating, notes) => {
                 if (rating) await patch({ satisfaction_rating: rating, satisfaction_notes: notes || null });
-                await transition("closed");
+                await transition("completed");
                 setShowClosePrompt(false);
               }}
               onCancel={() => setShowClosePrompt(false)}
@@ -1427,6 +1474,15 @@ function DetailContent({
             </div>
           )}
 
+          {/* v3.1 Workflow Progress Tracker — 9-step stepper, top of detail */}
+          <div className="border-b border-border bg-bg/40 px-5 py-4">
+            <ServiceProgressTracker
+              history={(detail.data as any)?.stage_history ?? []}
+              currentStage={c.stage}
+              variant="full"
+            />
+          </div>
+
           {/* Stage + Priority header */}
           <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-3">
             <StatusDot variant={stageVariant(c.stage)} label={stageLabel(c.stage)} />
@@ -1434,12 +1490,13 @@ function DetailContent({
               <span className={cn("h-2 w-2 rounded-full", priorityColor(c.priority))} />
               <span className="text-[11px] capitalize text-ink-secondary">{c.priority}</span>
             </span>
+            <LeadTimePill c={c} priorityMap={priorityMap} />
             {c.resolution_method && (
               <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-semibold text-accent">
                 {resolutionLabel(c.resolution_method)}
               </span>
             )}
-            {c.deadline_at && c.stage !== "closed" && (
+            {c.deadline_at && c.stage !== "completed" && (
               <span
                 className={cn(
                   "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
@@ -1489,7 +1546,7 @@ function DetailContent({
                       {item.item_description || ""}
                     </span>
                     <span className="text-[11px] text-ink-muted">&times;{item.qty}</span>
-                    {c.stage !== "closed" && (
+                    {c.stage !== "completed" && (
                       <button
                         onClick={() => removeItem(item.id)}
                         className="rounded p-0.5 text-ink-muted hover:text-err"
@@ -1502,7 +1559,7 @@ function DetailContent({
                 ))}
               </div>
             )}
-            {c.stage !== "closed" && !showAddItem && (
+            {c.stage !== "completed" && !showAddItem && (
               <button
                 onClick={openAddItem}
                 className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline"
@@ -1639,7 +1696,13 @@ function DetailContent({
               intake form was simplified — the issue_category taxonomy
               now drives both the dashboard breakdown and triage. */}
           <PanelSection title="Issue">
-            <FieldRow label="Complaint">{c.complaint_issue || "—"}</FieldRow>
+            <InlineEdit
+              label="Complaint"
+              textarea
+              value={c.complaint_issue}
+              onSave={(v) => patch({ complaint_issue: v })}
+              placeholder="What the customer reported"
+            />
             <IssueCategoryField
               value={c.issue_category}
               onSave={(v) => patch({ issue_category: v })}
@@ -1655,6 +1718,70 @@ function DetailContent({
               onSave={(v) => patch({ priority: v })}
             />
           </PanelSection>
+
+          {/* Attachments — sits right under Issue so intake evidence
+              lives next to the complaint that prompted it. Resolution-
+              stage evidence (signatures, completion photos) still drops
+              here too via the same upload box. */}
+          <PanelSection title={`Attachments (${attachments.length})`}>
+            {attachments.length > 0 && (
+              <div className="mb-2 grid grid-cols-3 gap-2">
+                {attachments.map((att: any, i: number) => (
+                  <AttachmentThumb
+                    key={att.id}
+                    att={att}
+                    onClick={() => {
+                      if ((att.content_type || "").startsWith("image/")) {
+                        setLightboxIndex(i);
+                      }
+                    }}
+                    onVisibilityChange={async (visible) => {
+                      try {
+                        await api.patch(`/api/assr/attachments/${att.id}/visibility`, { visible_to_customer: visible });
+                        toast.success(visible ? "Now visible to customer" : "Hidden from customer");
+                        detail.reload();
+                      } catch (e: any) {
+                        toast.error(e?.message || "Failed");
+                      }
+                    }}
+                    onArchive={c.archived_at ? undefined : async () => {
+                      if (!await dialog.confirm("Archive this attachment? It'll be hidden everywhere.")) return;
+                      try {
+                        await api.post(`/api/assr/attachments/${att.id}/archive`);
+                        toast.success("Archived");
+                        detail.reload();
+                      } catch (e: any) {
+                        toast.error(e?.message || "Failed");
+                      }
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink hover:border-accent/40">
+              <Upload size={12} />
+              {uploading ? "Uploading..." : "Upload"}
+              <input
+                type="file"
+                accept="image/*,video/mp4,.pdf"
+                className="hidden"
+                onChange={(e) => uploadFile(e, c.stage === "completed" ? "completion" : "evidence")}
+                disabled={uploading}
+              />
+            </label>
+          </PanelSection>
+
+          {/* ── Verification (gate between Under Verification and
+              Pending Solution). Mig 081. QA's acceptance decision —
+              when outcome=accepted AND root cause is filled, a modal
+              offers to advance the stage. 'rejected' offers to short-
+              circuit to Completed; 'needs_more_info' is a hold. */}
+          <VerificationCard
+            c={c}
+            patch={patch}
+            transition={transition}
+            dialog={dialog}
+          />
 
           {/* ── Resolution (filled as the case progresses) ────── */}
           <PanelSection title="Resolution">
@@ -1740,7 +1867,7 @@ function DetailContent({
               value={c.po_no}
               onSave={(v) => patch({ po_no: v })}
             />
-            {!c.po_no && c.creditor_code && c.stage !== "closed" && (
+            {!c.po_no && c.creditor_code && c.stage !== "completed" && (
               <button
                 onClick={async () => {
                   try {
@@ -1780,105 +1907,22 @@ function DetailContent({
             />
           </PanelSection>
 
-          {/* Attachments */}
-          <PanelSection title={`Attachments (${attachments.length})`}>
-            {attachments.length > 0 && (
-              <div className="mb-2 grid grid-cols-3 gap-2">
-                {attachments.map((att: any, i: number) => (
-                  <AttachmentThumb
-                    key={att.id}
-                    att={att}
-                    onClick={() => {
-                      // Only open the lightbox for images; PDFs/videos
-                      // just open via the usual thumb click otherwise.
-                      if ((att.content_type || "").startsWith("image/")) {
-                        setLightboxIndex(i);
-                      }
-                    }}
-                    onVisibilityChange={async (visible) => {
-                      try {
-                        await api.patch(`/api/assr/attachments/${att.id}/visibility`, { visible_to_customer: visible });
-                        toast.success(visible ? "Now visible to customer" : "Hidden from customer");
-                        detail.reload();
-                      } catch (e: any) {
-                        toast.error(e?.message || "Failed");
-                      }
-                    }}
-                    onArchive={c.archived_at ? undefined : async () => {
-                      if (!await dialog.confirm("Archive this attachment? It'll be hidden everywhere.")) return;
-                      try {
-                        await api.post(`/api/assr/attachments/${att.id}/archive`);
-                        toast.success("Archived");
-                        detail.reload();
-                      } catch (e: any) {
-                        toast.error(e?.message || "Failed");
-                      }
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink hover:border-accent/40">
-              <Upload size={12} />
-              {uploading ? "Uploading..." : "Upload"}
-              <input
-                type="file"
-                accept="image/*,video/mp4,.pdf"
-                className="hidden"
-                onChange={(e) => uploadFile(e, c.stage === "closed" ? "completion" : "evidence")}
-                disabled={uploading}
-              />
-            </label>
-          </PanelSection>
-
           {/* Logistics */}
-          {(c.stage === "logistics" || c.stage === "resolution" || c.stage === "closed" || logistics.length > 0) && (
+          {(c.stage === "pending_item_pickup" || c.stage === "pending_supplier_pickup" || c.stage === "pending_item_ready" || c.stage === "pending_delivery_service" || c.stage === "completed" || logistics.length > 0) && (
             <PanelSection title={`Logistics (${logistics.length})`}>
               {logistics.map((l) => (
-                <div key={l.id} className="group rounded border border-border px-3 py-2 text-sm">
-                  <div className="flex items-center gap-2">
-                    <TruckIcon size={12} className="text-ink-muted" />
-                    <span className="font-semibold capitalize">{l.type}</span>
-                    <span className={cn(
-                      "ml-auto rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                      l.status === "completed" && "bg-synced/10 text-synced",
-                      l.status === "scheduled" && "bg-accent/10 text-accent",
-                      l.status === "pending" && "bg-amber-500/10 text-amber-700",
-                      l.status === "cancelled" && "bg-ink-muted/10 text-ink-muted"
-                    )}>
-                      {l.status}
-                    </span>
-                    {!c.archived_at && (
-                      <button
-                        onClick={async () => {
-                          if (!await dialog.confirm("Archive this logistics entry?")) return;
-                          try {
-                            await api.post(`/api/assr/${id}/logistics/${l.id}/archive`);
-                            toast.success("Archived");
-                            detail.reload();
-                          } catch (e: any) {
-                            toast.error(e?.message || "Failed");
-                          }
-                        }}
-                        className="rounded p-1 text-ink-muted opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
-                        title="Archive entry"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
-                  </div>
-                  {l.scheduled_date && (
-                    <div className="mt-1 text-[11px] text-ink-secondary">
-                      {formatDate(l.scheduled_date)} {l.scheduled_time_range || ""}
-                    </div>
-                  )}
-                  {l.assigned_to_name && (
-                    <div className="text-[11px] text-ink-secondary">Assigned: {l.assigned_to_name}</div>
-                  )}
-                  {l.notes && <div className="mt-1 text-[11px] text-ink-muted">{l.notes}</div>}
-                </div>
+                <LogisticsRow
+                  key={l.id}
+                  l={l}
+                  caseId={id}
+                  archived={!!c.archived_at}
+                  users={userOptions}
+                  detail={detail}
+                  dialog={dialog}
+                  toast={toast}
+                />
               ))}
-              {c.stage !== "closed" && !showAddLogistics && (
+              {c.stage !== "completed" && !showAddLogistics && (
                 <button
                   onClick={() => setShowAddLogistics(true)}
                   className="mt-2 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline"
@@ -2123,9 +2167,15 @@ function DetailContent({
             <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
             <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
             <InlineEdit
-              label="Email (for survey)"
+              label="Email (notify)"
               value={c.customer_email}
               onSave={(v) => patch({ customer_email: v })}
+              placeholder="customer@example.com"
+            />
+            <InlineEdit
+              label="Email (survey)"
+              value={c.email_for_survey ?? null}
+              onSave={(v) => patch({ email_for_survey: v })}
               placeholder="customer@example.com"
             />
             <FieldRow label="Location">{c.location || "—"}</FieldRow>
@@ -2138,6 +2188,7 @@ function DetailContent({
               toast={toast}
               onGenerated={() => detail.reload()}
             />
+            <SupplierPortalLinkRow id={id} toast={toast} />
           </PanelSection>
 
           <CustomerHistory id={id} />
@@ -2173,13 +2224,28 @@ function DetailContent({
           <PanelSection title="Quality Review">
             <div className="mb-2 flex items-center gap-1.5 text-[10px] text-ink-muted">
               <ShieldCheck size={11} />
-              Manager sign-off and NCR classification
+              Manager sign-off and issue classification
             </div>
+            {/* Relabelled from "Issue Category" — the intake Issue
+                Category is QA's pre-work guess; here at sign-off we
+                want the actual confirmed root cause. Storage column
+                stays `ncr_category` to preserve historical Pareto data. */}
             <InlineEdit
-              label="NCR Category"
+              label="Issue Cause"
               value={c.ncr_category}
               options={ncrOptions.length ? ncrOptions : [...NCR_OPTIONS]}
               onSave={(v) => patch({ ncr_category: v })}
+            />
+            {/* Sign-off attachment slot — verification photo / doc the
+                QA wants on record before flipping the case to Completed.
+                Uses the existing /attachments endpoint with category=sign_off. */}
+            <SignOffAttachmentSlot
+              caseId={id}
+              attachments={attachments}
+              archived={!!c.archived_at}
+              detail={detail}
+              dialog={dialog}
+              toast={toast}
             />
             {c.approved_at ? (
               <div className="rounded-md border border-synced/40 bg-synced/5 p-3 text-[12px]">
@@ -2220,8 +2286,8 @@ function DetailContent({
             )}
           </PanelSection>
 
-          {/* Satisfaction (shown when closed) */}
-          {c.stage === "closed" && (
+          {/* Satisfaction (shown when completed) */}
+          {c.stage === "completed" && (
             <PanelSection title="Customer Satisfaction">
               {c.satisfaction_rating ? (
                 <>
@@ -2311,6 +2377,680 @@ const ISSUE_CATEGORIES = [
 ] as const;
 
 const OTHER_SENTINEL = "__other__";
+
+// ── Stage auto-advance (TODO item 5) ───────────────────────────
+// Each non-completed stage has a "completion predicate" — when it goes
+// from unsatisfied to satisfied, prompt the user to advance. They keep
+// the existing manual override (Next stage button + stage chip menu).
+//
+// Row 2 (Under Verification → Pending Solution) is intentionally NOT in
+// this table — VerificationCard owns it because the predicate is an
+// explicit acceptance decision rather than a field-fill, and it has
+// side-paths (rejected/needs_more_info) the other rows don't have.
+
+interface StagePredicate {
+  next: AssrStage;
+  satisfied: boolean;
+  label: string;
+}
+
+function getStageAdvancePredicate(
+  c: AssrCase,
+  logistics: any[]
+): StagePredicate | null {
+  const activeLog = (logistics ?? []).filter((l) => !l.archived_at);
+  switch (c.stage) {
+    case "pending_review":
+      return {
+        next: "under_verification",
+        satisfied: !!(c.complaint_issue?.trim() && c.issue_category && c.priority),
+        label: "Issue card complete",
+      };
+    case "pending_solution":
+      return {
+        next: "pending_inspection",
+        satisfied: !!(c.resolution_method && c.po_no && c.action_remark?.trim()),
+        label: "Resolution card complete",
+      };
+    case "pending_inspection":
+      return {
+        next: "pending_item_pickup",
+        satisfied: !!c.supplier_pickup_at,
+        label: "Supplier pickup date set",
+      };
+    case "pending_item_pickup":
+      return {
+        next: "pending_item_ready",
+        satisfied: !!c.items_ready_at,
+        label: "Items ready date set",
+      };
+    case "pending_item_ready":
+      return {
+        next: "pending_delivery_service",
+        satisfied: activeLog.some((l) => l.scheduled_date),
+        label: "Delivery scheduled",
+      };
+    case "pending_delivery_service":
+      return {
+        next: "completed",
+        satisfied: activeLog.some(
+          (l) => l.type === "delivery" && l.status === "completed"
+        ),
+        label: "Delivery completed",
+      };
+    default:
+      return null;
+  }
+}
+
+function useStageAutoAdvance({
+  c,
+  logistics,
+  transition,
+  dialog,
+}: {
+  c: AssrCase | undefined;
+  logistics: any[];
+  transition: (stage: AssrStage) => Promise<void>;
+  dialog: ReturnType<typeof useDialog>;
+}) {
+  const lastRef = useRef<{
+    caseId: number;
+    stage: string;
+    satisfied: boolean;
+  } | null>(null);
+
+  // Stable key derived from the fields that any predicate cares about.
+  // Limited to those so unrelated patches (e.g. issuing a PO note) don't
+  // re-run the effect.
+  const key = useMemo(() => {
+    if (!c) return "";
+    return JSON.stringify({
+      id: c.id,
+      stage: c.stage,
+      complaint: c.complaint_issue ?? "",
+      cat: c.issue_category ?? "",
+      prio: c.priority ?? "",
+      res: c.resolution_method ?? "",
+      po: c.po_no ?? "",
+      act: c.action_remark ?? "",
+      sp: c.supplier_pickup_at ?? "",
+      ir: c.items_ready_at ?? "",
+      log: (logistics ?? [])
+        .filter((l) => !l.archived_at)
+        .map(
+          (l) =>
+            `${l.id}|${l.type}|${l.status}|${l.scheduled_date ?? ""}`
+        )
+        .join(";"),
+    });
+  }, [c, logistics]);
+
+  useEffect(() => {
+    if (!c) return;
+    const p = getStageAdvancePredicate(c, logistics);
+    if (!p) {
+      lastRef.current = null;
+      return;
+    }
+    const last = lastRef.current;
+    const sameCaseAndStage =
+      last && last.caseId === c.id && last.stage === c.stage;
+
+    if (!sameCaseAndStage) {
+      // First sighting of this case/stage: set baseline silently so we
+      // don't pop the modal on initial mount of an already-ready case.
+      lastRef.current = {
+        caseId: c.id,
+        stage: c.stage,
+        satisfied: p.satisfied,
+      };
+      return;
+    }
+
+    const wasSatisfied = last!.satisfied;
+    lastRef.current = {
+      caseId: c.id,
+      stage: c.stage,
+      satisfied: p.satisfied,
+    };
+
+    if (p.satisfied && !wasSatisfied) {
+      (async () => {
+        const nextName = stageLabel(p.next);
+        const ok = await dialog.confirm(
+          `${p.label}. Advance the case to ${nextName}?`
+        );
+        if (ok) {
+          await transition(p.next);
+        }
+      })();
+    }
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+// ── Verification card ──────────────────────────────────────────
+// Mig 081. The Under Verification → Pending Solution transition is the
+// only stage gate that's a true judgement call (everything else fires
+// off a date/text field being filled). Three outcomes:
+//
+//   accepted        → real defect we'll fix. When root cause is also
+//                     filled, prompt to advance the stage.
+//   rejected        → not our issue. Prompt to short-circuit to Completed.
+//   needs_more_info → wait on the customer; case stays put.
+//
+// `verified_at` / `verified_by` are server-stamped on PATCH, so the
+// timestamp can't drift from the actor.
+
+const VERIFICATION_OPTIONS = [
+  { value: "accepted", label: "Accepted", tone: "ok" as const },
+  { value: "needs_more_info", label: "Needs more info", tone: "warn" as const },
+  { value: "rejected", label: "Rejected", tone: "err" as const },
+];
+
+function VerificationCard({
+  c,
+  patch,
+  transition,
+  dialog,
+}: {
+  c: AssrCase;
+  patch: (body: Record<string, any>) => Promise<void>;
+  transition: (stage: AssrStage) => Promise<void>;
+  dialog: ReturnType<typeof useDialog>;
+}) {
+  const [rootDraft, setRootDraft] = useState(c.verified_root_cause ?? "");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setRootDraft(c.verified_root_cause ?? "");
+  }, [c.verified_root_cause, c.id]);
+
+  const outcome = c.verification_outcome ?? null;
+  const rootCause = (c.verified_root_cause ?? "").trim();
+  const isUnderVerification = c.stage === "under_verification";
+
+  async function setOutcome(next: string | null) {
+    if (next === outcome) return;
+    setSaving(true);
+    try {
+      await patch({ verification_outcome: next });
+      // Side-paths off the outcome itself.
+      if (next === "rejected" && c.stage !== "completed") {
+        if (
+          await dialog.confirm(
+            "Rejected means this isn't our issue. Close the case as Completed?"
+          )
+        ) {
+          await transition("completed");
+        }
+      } else if (next === "accepted" && isUnderVerification && rootCause) {
+        if (
+          await dialog.confirm(
+            "Mark verified and advance to Pending Solution?"
+          )
+        ) {
+          await transition("pending_solution");
+        }
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveRootCause() {
+    const next = rootDraft.trim();
+    if (next === (c.verified_root_cause ?? "")) return;
+    setSaving(true);
+    try {
+      await patch({ verified_root_cause: next || null });
+      // If outcome was already 'accepted' and we just supplied the
+      // missing root cause, prompt the same advance dialog so the user
+      // doesn't have to re-tap the outcome chip.
+      if (next && outcome === "accepted" && isUnderVerification) {
+        if (
+          await dialog.confirm(
+            "Mark verified and advance to Pending Solution?"
+          )
+        ) {
+          await transition("pending_solution");
+        }
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <PanelSection title="Verification">
+      <div>
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          Outcome
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {VERIFICATION_OPTIONS.map((opt) => {
+            const active = outcome === opt.value;
+            const toneClass =
+              opt.tone === "ok"
+                ? active
+                  ? "border-ok bg-ok/15 text-ok"
+                  : "border-border text-ink-secondary hover:border-ok/40"
+                : opt.tone === "warn"
+                ? active
+                  ? "border-warn bg-warn/15 text-warn"
+                  : "border-border text-ink-secondary hover:border-warn/40"
+                : active
+                ? "border-err bg-err/15 text-err"
+                : "border-border text-ink-secondary hover:border-err/40";
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                disabled={saving}
+                onClick={() => setOutcome(active ? null : opt.value)}
+                className={cn(
+                  "rounded-full border px-3 py-1 text-[11.5px] font-semibold transition-colors disabled:opacity-50",
+                  toneClass
+                )}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {outcome && (
+        <div>
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            Root cause
+          </label>
+          <input
+            type="text"
+            value={rootDraft}
+            onChange={(e) => setRootDraft(e.target.value)}
+            onBlur={saveRootCause}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+            disabled={saving}
+            placeholder={
+              outcome === "accepted"
+                ? "Material defect, transit damage, installation, etc."
+                : outcome === "rejected"
+                ? "Why this isn't our issue"
+                : "What's missing from the customer"
+            }
+            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+          />
+          {outcome === "accepted" && !rootCause && isUnderVerification && (
+            <div className="mt-1.5 text-[11px] text-ink-muted">
+              Fill the root cause to advance to Pending Solution.
+            </div>
+          )}
+        </div>
+      )}
+
+      {c.verified_at && (
+        <div className="rounded-md border border-border bg-bg/40 px-3 py-2 text-[11.5px] text-ink-secondary">
+          Verified by {c.verified_by_name || `user #${c.verified_by}`} ·{" "}
+          {formatDate(c.verified_at)}
+        </div>
+      )}
+    </PanelSection>
+  );
+}
+
+// ── Sign-off attachment slot ───────────────────────────────────
+// Item 2 of the QMS TODO. Single-file slot inside Quality Review for
+// the verification photo / doc the QA wants on record before the case
+// flips to Completed. Reuses the existing attachments endpoint with
+// category=sign_off so storage + visibility toggles already work.
+
+function SignOffAttachmentSlot({
+  caseId,
+  attachments,
+  archived,
+  detail,
+  dialog,
+  toast,
+}: {
+  caseId: number;
+  attachments: any[];
+  archived: boolean;
+  detail: ReturnType<typeof useQuery>;
+  dialog: ReturnType<typeof useDialog>;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const signOffs = (attachments ?? []).filter(
+    (a: any) => a?.category === "sign_off"
+  );
+
+  async function upload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/assr/${caseId}/attachments?category=sign_off&ext=${ext}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type
+      );
+      detail.reload();
+      toast.success("Sign-off attachment uploaded");
+    } catch (err: any) {
+      toast.error(err?.message || "Upload failed");
+    } finally {
+      setUploading(false);
+      e.target.value = "";
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        Sign-off Attachment
+      </div>
+      {signOffs.length > 0 ? (
+        <div className="mb-2 grid grid-cols-3 gap-2">
+          {signOffs.map((att: any) => (
+            <AttachmentThumb
+              key={att.id}
+              att={att}
+              onArchive={archived ? undefined : async () => {
+                if (!await dialog.confirm("Archive this sign-off attachment?")) return;
+                try {
+                  await api.post(`/api/assr/attachments/${att.id}/archive`);
+                  toast.success("Archived");
+                  detail.reload();
+                } catch (err: any) {
+                  toast.error(err?.message || "Failed");
+                }
+              }}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="mb-2 rounded-md border border-dashed border-border bg-bg/30 px-3 py-2 text-[11px] text-ink-muted">
+          No sign-off evidence yet.
+        </div>
+      )}
+      {!archived && (
+        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink hover:border-accent/40">
+          <Upload size={12} />
+          {uploading ? "Uploading..." : signOffs.length ? "Replace / Add" : "Upload sign-off evidence"}
+          <input
+            type="file"
+            accept="image/*,.pdf"
+            className="hidden"
+            onChange={upload}
+            disabled={uploading}
+          />
+        </label>
+      )}
+    </div>
+  );
+}
+
+// ── Logistics row (view + inline edit) ─────────────────────────
+// TODO item 4. Each ASSR logistics row gets an Edit toggle so ops can
+// fix the scheduled date / time / assignee / status / remark after
+// saving — previously the only way to change one was archive + recreate.
+// Uses the existing PATCH /api/assr/:id/logistics/:logId endpoint.
+
+function LogisticsRow({
+  l,
+  caseId,
+  archived,
+  users,
+  detail,
+  dialog,
+  toast,
+}: {
+  l: any;
+  caseId: number;
+  archived: boolean;
+  users: { id: number; name: string | null; email?: string }[];
+  detail: ReturnType<typeof useQuery>;
+  dialog: ReturnType<typeof useDialog>;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState({
+    scheduled_date: l.scheduled_date ?? "",
+    scheduled_time_range: l.scheduled_time_range ?? "",
+    assigned_to: l.assigned_to ?? "",
+    status: l.status ?? "pending",
+    notes: l.notes ?? "",
+  });
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.patch(`/api/assr/${caseId}/logistics/${l.id}`, {
+        scheduled_date: draft.scheduled_date || null,
+        scheduled_time_range: draft.scheduled_time_range || null,
+        assigned_to: draft.assigned_to ? Number(draft.assigned_to) : null,
+        status: draft.status,
+        notes: draft.notes || null,
+      });
+      toast.success("Logistics updated");
+      detail.reload();
+      setEditing(false);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="rounded border border-accent/40 bg-accent-soft/20 px-3 py-2.5 text-sm">
+        <div className="mb-2 flex items-center gap-2">
+          <TruckIcon size={12} className="text-ink-muted" />
+          <span className="font-semibold capitalize">{l.type}</span>
+          <span className="ml-auto text-[10px] uppercase tracking-wider text-accent">Editing</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Date</span>
+            <input
+              type="date"
+              value={draft.scheduled_date}
+              onChange={(e) => setDraft((d) => ({ ...d, scheduled_date: e.target.value }))}
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Time</span>
+            <input
+              type="text"
+              placeholder="9:00 – 11:00"
+              value={draft.scheduled_time_range}
+              onChange={(e) => setDraft((d) => ({ ...d, scheduled_time_range: e.target.value }))}
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Assigned</span>
+            <select
+              value={draft.assigned_to}
+              onChange={(e) => setDraft((d) => ({ ...d, assigned_to: e.target.value }))}
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+            >
+              <option value="">— Unassigned —</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>{u.name || u.email}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Status</span>
+            <select
+              value={draft.status}
+              onChange={(e) => setDraft((d) => ({ ...d, status: e.target.value }))}
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+            >
+              <option value="pending">Pending</option>
+              <option value="scheduled">Scheduled</option>
+              <option value="completed">Completed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </label>
+        </div>
+        <label className="mt-2 block">
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Remark</span>
+          <textarea
+            value={draft.notes}
+            onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
+            rows={2}
+            placeholder="e.g. driver needs warehouse code; pickup gate B"
+            className="w-full rounded border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-accent"
+          />
+        </label>
+        <div className="mt-2 flex justify-end gap-2">
+          <button
+            onClick={() => setEditing(false)}
+            disabled={saving}
+            className="rounded-md border border-border px-3 py-1 text-[11px] font-semibold text-ink-secondary hover:border-ink-muted disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="rounded-md bg-accent px-3 py-1 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group rounded border border-border px-3 py-2 text-sm">
+      <div className="flex items-center gap-2">
+        <TruckIcon size={12} className="text-ink-muted" />
+        <span className="font-semibold capitalize">{l.type}</span>
+        <span className={cn(
+          "ml-auto rounded-full px-2 py-0.5 text-[10px] font-semibold",
+          l.status === "completed" && "bg-synced/10 text-synced",
+          l.status === "scheduled" && "bg-accent/10 text-accent",
+          l.status === "pending" && "bg-amber-500/10 text-amber-700",
+          l.status === "cancelled" && "bg-ink-muted/10 text-ink-muted"
+        )}>
+          {l.status}
+        </span>
+        {!archived && (
+          <>
+            <button
+              onClick={() => setEditing(true)}
+              className="rounded p-1 text-ink-muted opacity-0 transition-opacity hover:text-accent group-hover:opacity-100"
+              title="Edit entry"
+            >
+              <Pencil size={12} />
+            </button>
+            <button
+              onClick={async () => {
+                if (!await dialog.confirm("Archive this logistics entry?")) return;
+                try {
+                  await api.post(`/api/assr/${caseId}/logistics/${l.id}/archive`);
+                  toast.success("Archived");
+                  detail.reload();
+                } catch (e: any) {
+                  toast.error(e?.message || "Failed");
+                }
+              }}
+              className="rounded p-1 text-ink-muted opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
+              title="Archive entry"
+            >
+              <Trash2 size={12} />
+            </button>
+          </>
+        )}
+      </div>
+      {l.scheduled_date && (
+        <div className="mt-1 text-[11px] text-ink-secondary">
+          {formatDate(l.scheduled_date)} {l.scheduled_time_range || ""}
+        </div>
+      )}
+      {l.assigned_to_name && (
+        <div className="text-[11px] text-ink-secondary">Assigned: {l.assigned_to_name}</div>
+      )}
+      {l.notes && (
+        <div className="mt-1 whitespace-pre-wrap text-[11px] text-ink-muted">
+          <span className="mr-1 font-semibold uppercase tracking-wider text-ink-secondary">Remark:</span>
+          {l.notes}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Lead Time pill (header) ────────────────────────────────────
+// Glanceable answer to "which priority is driving this case's SLA,
+// and what's the target for the current stage?" — reads
+// stage_target_days (snapshotted at stage entry per mig 082) and
+// tints by elapsed/target ratio so an over-budget stage jumps out.
+// Hidden on completed cases and on legacy rows without a snapshot.
+
+function LeadTimePill({
+  c,
+  priorityMap,
+}: {
+  c: AssrCase;
+  priorityMap: Record<string, string>;
+}) {
+  if (c.stage === "completed") return null;
+  if (c.stage_target_days == null) return null;
+
+  const target = c.stage_target_days;
+  // Elapsed days since the case entered the current stage. stage_entered_at
+  // is ISO without a Z suffix on some rows — normalise to UTC.
+  let elapsed = 0;
+  if (c.stage_entered_at) {
+    const iso = c.stage_entered_at.endsWith("Z")
+      ? c.stage_entered_at
+      : c.stage_entered_at + "Z";
+    elapsed = (Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60 * 24);
+  }
+  const pct = target > 0 ? elapsed / target : 0;
+  const tone =
+    pct >= 1
+      ? "bg-err/10 text-err"
+      : pct >= 0.5
+      ? "bg-amber-500/10 text-amber-700"
+      : "bg-synced/10 text-synced";
+
+  const priorityName =
+    priorityMap[c.priority] ||
+    c.priority.charAt(0).toUpperCase() + c.priority.slice(1);
+  const snapshotIso = c.stage_entered_at
+    ? c.stage_entered_at.slice(0, 16).replace("T", " ")
+    : null;
+  const title = snapshotIso
+    ? `Stage target snapshotted on ${snapshotIso}. Changes to the priority's stage targets only affect future stages.`
+    : "Stage target from the case's priority. Changes to the priority's stage targets only affect future stages.";
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+        tone
+      )}
+      title={title}
+    >
+      <Clock size={10} />
+      Lead Time: {target.toFixed(1)}d · {priorityName}
+    </span>
+  );
+}
 
 function IssueCategoryField({
   value,
@@ -2727,6 +3467,85 @@ function PortalLinkRow({
             className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/20 px-3 py-1.5 text-[11px] font-semibold text-accent hover:bg-accent-soft/40 disabled:opacity-50"
           >
             {busy ? "Generating…" : "Generate Portal Link"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Supplier portal link (v3.1) ─────────────────────────────────
+//
+// Mirrors PortalLinkRow but minted via /supplier-link. The endpoint is
+// idempotent on (case, creditor_code), so calling it twice returns the
+// same active token. The token isn't surfaced in the case detail
+// payload (yet) — Generate fetches it lazily.
+
+function SupplierPortalLinkRow({
+  id,
+  toast,
+}: {
+  id: number;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [link, setLink] = useState<string | null>(null);
+
+  async function generate() {
+    setBusy(true);
+    try {
+      const r = await api.post<{ token: string; path: string }>(
+        `/api/assr/${id}/supplier-link`
+      );
+      setLink(`${window.location.origin}/portal/supplier/${r.token}`);
+      toast.success("Supplier link generated.");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to generate link");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-md border border-border bg-bg/40 p-3">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        Supplier Portal Link
+      </div>
+      {link ? (
+        <>
+          <div className="flex items-center gap-2">
+            <input
+              readOnly
+              value={link}
+              onFocus={(e) => e.currentTarget.select()}
+              className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-[11px]"
+            />
+            <button
+              onClick={() => {
+                navigator.clipboard?.writeText(link);
+                toast.success("Copied");
+              }}
+              className="rounded-md border border-border bg-surface px-2 py-1.5 text-[10px] font-semibold"
+            >
+              Copy
+            </button>
+          </div>
+          <div className="mt-1.5 text-[10px] text-ink-muted">
+            30-day link. Supplier can mark pickup / ready / returned.
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mb-1.5 text-[11px] text-ink-secondary">
+            Share with the supplier — Picked Up → Repair → Ready →
+            Returned status updates, plus QC photo uploads.
+          </div>
+          <button
+            onClick={generate}
+            disabled={busy}
+            className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/20 px-3 py-1.5 text-[11px] font-semibold text-accent hover:bg-accent-soft/40 disabled:opacity-50"
+          >
+            {busy ? "Generating…" : "Generate Supplier Link"}
           </button>
         </>
       )}

@@ -14,10 +14,28 @@ export interface CreateAssrInput {
    *  custom). Replaces the older service_category-driven flow on the
    *  intake form. */
   issue_category?: string | null;
+  /** Optional priority slug — drives both `sla_hours` and the per-stage
+   *  target snapshot (mig 082). Defaults to 'normal' when omitted. */
+  priority?: string | null;
   created_by?: number;
 }
 
-type Stage = "registration" | "triage" | "action" | "logistics" | "resolution" | "closed";
+// v3.1 9-stage workflow. Old enum (registration / triage / action /
+// logistics / resolution / closed) was renamed in mig 074. Inspection
+// is now its own stage, and the legacy "logistics" stage split into 4
+// explicit handover steps (item pickup / supplier pickup / item ready
+// / delivery).
+export type Stage =
+  | "pending_review"            // Stage 1 — Service Admin
+  | "under_verification"        // Stage 2 — Service Admin
+  | "pending_solution"          // Stage 3 — Service Admin / Manager
+  | "pending_inspection"        // Stage 4 — SA assigns Logistic Admin
+  | "pending_item_pickup"       // Stage 5 — SA assigns Logistic Admin
+  | "pending_supplier_pickup"   // Stage 6 — SA contacts supplier
+  | "pending_item_ready"        // Stage 7 — SA updates on supplier return
+  | "pending_delivery_service"  // Stage 8 — SA assigns Logistic Admin
+  | "completed";                // Stage 9 — system
+
 type Priority = "low" | "normal" | "high" | "urgent";
 
 // Default SLA in hours per priority — single source of truth.
@@ -33,22 +51,116 @@ export function slaHoursFor(priority: string | null | undefined): number {
   return SLA_HOURS_BY_PRIORITY[(priority as Priority) || "normal"] ?? 168;
 }
 
-// Maps stage → user-facing status (backward compat)
+// Maps stage → user-facing status (backward compat for legacy list
+// renderers that still read `status`).
 function statusForStage(stage: Stage): string {
-  if (stage === "registration") return "Open";
-  if (stage === "closed") return "Closed";
+  if (stage === "pending_review") return "Open";
+  if (stage === "completed") return "Closed";
   return "In Progress";
 }
 
-// Stage transitions are unrestricted as of mig 064 — ops needs to be
-// able to revert (e.g. flip a closed case back to action when the
-// customer reports the same issue) and skip (registration → resolution
-// when the supplier walks the unit in for an immediate swap). The
-// previous linear table is gone; the CHECK constraint on the column
-// still bounds the value set, so bad inputs still fail loud.
-const ALL_STAGES: ReadonlyArray<Stage> = [
-  "registration", "triage", "action", "logistics", "resolution", "closed",
+// Stage transitions are unrestricted — ops can revert (e.g. flip a
+// completed case back when the customer reports the same issue) or
+// skip (proposal §8.3 legitimate skips: Replace Unit with in-stock SKU
+// skips inspection + supplier pickup + item ready; Field Service Own
+// Team skips supplier pickup + item ready; Return Visit skips item
+// pickup + supplier pickup + item ready). The CHECK on the column
+// still bounds the value set so bad inputs fail loud.
+export const ALL_STAGES: ReadonlyArray<Stage> = [
+  "pending_review",
+  "under_verification",
+  "pending_solution",
+  "pending_inspection",
+  "pending_item_pickup",
+  "pending_supplier_pickup",
+  "pending_item_ready",
+  "pending_delivery_service",
+  "completed",
 ];
+
+// Default per-stage target days (proposal §8.1 — Normal profile).
+// Phase B replaces this fallback with a lookup against the active
+// assr_lead_time_profiles + assr_stage_targets row.
+const DEFAULT_STAGE_TARGET_DAYS: Record<Stage, number> = {
+  pending_review: 1,
+  under_verification: 2,
+  pending_solution: 2,
+  pending_inspection: 2,
+  pending_item_pickup: 2,
+  pending_supplier_pickup: 3,
+  pending_item_ready: 5,
+  pending_delivery_service: 4,
+  completed: 0,
+};
+
+/**
+ * Snapshot of the per-stage target in days at the moment a case
+ * enters that stage. Lookup order (mig 082 layered the priority
+ * source on top of the existing profile):
+ *
+ *   1. The case's priority — `assr_priority_stage_targets` row for
+ *      this (priority_slug, stage). Allows Urgent / Low to compress
+ *      or stretch each stage independently.
+ *   2. The currently-active Lead Time profile (mig 075) — fallback
+ *      for legacy cases without a priority or priorities that haven't
+ *      had targets defined yet.
+ *   3. The hardcoded Normal defaults — last-resort safety net so a
+ *      stage transition can never crash on missing config.
+ */
+async function lookupStageTargetDays(
+  env: Env,
+  stage: Stage,
+  prioritySlug?: string | null
+): Promise<number> {
+  if (prioritySlug) {
+    try {
+      const row = await env.DB.prepare(
+        `SELECT t.target_days
+           FROM assr_priority_stage_targets t
+           JOIN assr_priorities p ON p.id = t.priority_id
+          WHERE p.slug = ? AND t.stage = ?
+          LIMIT 1`
+      )
+        .bind(prioritySlug, stage)
+        .first<{ target_days: number }>();
+      if (row?.target_days != null) return row.target_days;
+    } catch (e) {
+      console.warn("[assr.lookupStageTargetDays] priority read failed:", e);
+    }
+  }
+  try {
+    const row = await env.DB.prepare(
+      `SELECT t.target_days
+         FROM assr_stage_targets t
+         JOIN assr_lead_time_profiles p ON p.id = t.profile_id
+        WHERE p.is_active = 1 AND t.stage = ?
+        LIMIT 1`
+    )
+      .bind(stage)
+      .first<{ target_days: number }>();
+    if (row?.target_days != null) return row.target_days;
+  } catch (e) {
+    console.warn("[assr.lookupStageTargetDays] profile read failed:", e);
+  }
+  return DEFAULT_STAGE_TARGET_DAYS[stage] ?? 0;
+}
+
+/**
+ * Returns the active Lead Time profile id, or null if none exists.
+ * Stamped onto `assr_cases.lead_time_profile_id` at create time so
+ * SLA accounting stays deterministic across amendments.
+ */
+export async function getActiveLeadTimeProfileId(env: Env): Promise<number | null> {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT id FROM assr_lead_time_profiles WHERE is_active = 1 LIMIT 1`
+    ).first<{ id: number }>();
+    return row?.id ?? null;
+  } catch (e) {
+    console.warn("[assr.getActiveLeadTimeProfileId] read failed:", e);
+    return null;
+  }
+}
 
 // ── PO number generator (internal / service-issued) ───────────
 
@@ -122,10 +234,11 @@ export async function createAssrCase(
   // Use first item_code for the legacy column
   const firstItem = input.items[0]?.item_code ?? null;
 
-  // Default SLA window = 'normal' (168h) — priority defaults to 'normal'
-  // on the case row, so this stays consistent with whatever priority
-  // the row ends up with unless changed immediately after.
-  const slaHours = slaHoursFor("normal");
+  // SLA window from the case's priority (defaults to 'normal' = 168h
+  // when intake didn't pick one). Priority is stored as the slug on
+  // assr_cases.priority; mig 082 also drives per-stage targets off it.
+  const prioritySlug = input.priority ?? "normal";
+  const slaHours = slaHoursFor(prioritySlug);
   const deadlineAt = new Date(Date.now() + slaHours * 3600 * 1000).toISOString();
 
   // Optional default assignee — admin sets this in Settings → Service.
@@ -144,15 +257,29 @@ export async function createAssrCase(
     console.warn("[assr.create] could not read default assignee:", e);
   }
 
+  // v3.1 — new cases enter Stage 1 (pending_review). Stage target is
+  // snapshotted from the active profile so the alert engine has a
+  // deterministic SLA even if the portal is amended later. The
+  // lead_time_profile_id is stamped so reporting can show which
+  // profile each case ran under.
+  const initialStage: Stage = "pending_review";
+  // Mig 082 — pass the priority slug so the lookup checks priority
+  // targets before falling back to the active Lead Time profile.
+  const initialTargetDays = await lookupStageTargetDays(env, initialStage, prioritySlug);
+  const activeProfileId = await getActiveLeadTimeProfileId(env);
+  const nowIso = new Date().toISOString();
+
   const result = await env.DB.prepare(
     `INSERT INTO assr_cases (
        assr_no, status, stage, doc_no, complained_date, customer_name, phone, location,
-       sales_agent, item_code, complaint_issue, issue_category, po_no, addr1, addr2, addr3, addr4, created_by,
-       assigned_to, sla_hours, deadline_at
-     ) VALUES (?, 'Open', 'registration', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       sales_agent, item_code, complaint_issue, issue_category, priority, po_no, addr1, addr2, addr3, addr4, created_by,
+       assigned_to, sla_hours, deadline_at,
+       stage_entered_at, stage_target_days, stage_changed_at, lead_time_profile_id
+     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       assrNo,
+      initialStage,
       input.doc_no,
       today,
       context?.DebtorName ?? null,
@@ -162,6 +289,7 @@ export async function createAssrCase(
       firstItem,
       input.complaint_issue,
       input.issue_category ?? null,
+      prioritySlug,
       context?.SOUDF_ToPONo ?? null,
       context?.InvAddr1 ?? null,
       context?.InvAddr2 ?? null,
@@ -170,11 +298,26 @@ export async function createAssrCase(
       input.created_by ?? null,
       defaultAssigneeId,
       slaHours,
-      deadlineAt
+      deadlineAt,
+      nowIso,
+      initialTargetDays,
+      nowIso,
+      activeProfileId
     )
     .run();
 
   const assrId = result.meta.last_row_id as number;
+
+  // Seed the per-stage lifecycle row for Stage 1 so the Workflow
+  // Progress Tracker has data and the alert engine has a target.
+  // alerts_fired = 1 stamps FLAG_ENTERED so the scanner doesn't
+  // double-fire on first tick.
+  await env.DB.prepare(
+    `INSERT INTO assr_stage_history (assr_id, stage, entered_at, target_days, alerts_fired)
+     VALUES (?, ?, ?, ?, 1)`
+  )
+    .bind(assrId, initialStage, nowIso, initialTargetDays)
+    .run();
 
   // Insert items
   for (const item of input.items) {
@@ -187,7 +330,7 @@ export async function createAssrCase(
   }
 
   // Activity log
-  await logActivity(env, assrId, "created", null, "registration", null, input.created_by);
+  await logActivity(env, assrId, "created", null, initialStage, null, input.created_by);
 
   // Log the default assignment so the timeline reflects who got it.
   if (defaultAssigneeId != null) {
@@ -222,6 +365,7 @@ export async function getAssrDetail(env: Env, id: number) {
             u1.name as assigned_to_name,
             u2.name as created_by_name,
             u3.name as approved_by_name,
+            u4.name as verified_by_name,
             cr.company_name as creditor_name,
             cr.email as creditor_email,
             cr.phone1 as creditor_phone,
@@ -229,7 +373,7 @@ export async function getAssrDetail(env: Env, id: number) {
             cr.attention as creditor_attention,
             CAST((julianday(c.deadline_at) - julianday('now')) * 24 AS INTEGER) as hours_to_deadline,
             CASE
-              WHEN c.stage = 'closed' THEN 0
+              WHEN c.stage = 'completed' THEN 0
               WHEN c.deadline_at IS NOT NULL AND datetime('now') > c.deadline_at THEN 1
               ELSE 0
             END as is_breached
@@ -237,6 +381,7 @@ export async function getAssrDetail(env: Env, id: number) {
        LEFT JOIN users u1 ON u1.id = c.assigned_to
        LEFT JOIN users u2 ON u2.id = c.created_by
        LEFT JOIN users u3 ON u3.id = c.approved_by
+       LEFT JOIN users u4 ON u4.id = c.verified_by
        LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code
       WHERE c.id = ?`
   )
@@ -281,6 +426,20 @@ export async function getAssrDetail(env: Env, id: number) {
     .bind(id)
     .all();
 
+  // v3.1 — per-stage lifecycle for the Workflow Progress Tracker.
+  // Returns one row per stage (entered + exited timestamps), ordered
+  // chronologically. The Tracker UI walks this list to colour completed
+  // / current / skipped / future nodes.
+  const stageHistory = await env.DB.prepare(
+    `SELECT id, stage, entered_at, exited_at, target_days, status,
+            skipped, skip_reason, alerts_fired, snoozes_applied
+       FROM assr_stage_history
+      WHERE assr_id = ?
+      ORDER BY entered_at ASC, id ASC`
+  )
+    .bind(id)
+    .all();
+
   const relatedPOs = await env.DB.prepare(
     `SELECT * FROM purchase_orders WHERE so_doc_no = ? ORDER BY doc_date DESC`
   )
@@ -299,6 +458,7 @@ export async function getAssrDetail(env: Env, id: number) {
     logistics: logistics.results ?? [],
     related_pos: relatedPOs.results ?? [],
     portal_token: portalToken,
+    stage_history: stageHistory.results ?? [],
   };
 }
 
@@ -309,13 +469,14 @@ export async function transitionStage(
   id: number,
   newStage: Stage,
   userId: number,
-  note?: string
+  note?: string,
+  sourceChannel: string = "app",
 ): Promise<boolean> {
   const row = await env.DB.prepare(
-    `SELECT stage FROM assr_cases WHERE id = ?`
+    `SELECT stage, stage_entered_at, stage_target_days, priority FROM assr_cases WHERE id = ?`
   )
     .bind(id)
-    .first<{ stage: Stage }>();
+    .first<{ stage: Stage; stage_entered_at: string | null; stage_target_days: number | null; priority: string | null }>();
   if (!row) return false;
 
   if (!ALL_STAGES.includes(newStage)) {
@@ -325,21 +486,26 @@ export async function transitionStage(
   if (row.stage === newStage) return true;
 
   const newStatus = statusForStage(newStage);
-  // stage_changed_at gets refreshed on every transition so the
+  // Mig 082 — priority-driven per-stage targets. Falls back to active
+  // Lead Time profile when the priority has no targets defined.
+  const newTargetDays = await lookupStageTargetDays(env, newStage, row.priority);
+  const nowIso = new Date().toISOString();
+  // stage_changed_at + stage_entered_at both get refreshed so the
   // "days in stage" lead-time column reads cleanly without scanning
-  // the activity log.
+  // the activity log. stage_target_days snapshots the new target.
   const sets = [
     "stage = ?",
     "status = ?",
-    "stage_changed_at = datetime('now')",
+    "stage_changed_at = ?",
+    "stage_entered_at = ?",
+    "stage_target_days = ?",
     "updated_at = datetime('now')",
   ];
-  const binds: any[] = [newStage, newStatus];
+  const binds: any[] = [newStage, newStatus, nowIso, nowIso, newTargetDays];
 
-  if (newStage === "closed") {
+  if (newStage === "completed") {
     sets.push("closed_at = ?", "completion_date = ?");
-    const now = new Date().toISOString();
-    binds.push(now, now.slice(0, 10));
+    binds.push(nowIso, nowIso.slice(0, 10));
   }
 
   binds.push(id);
@@ -349,7 +515,44 @@ export async function transitionStage(
     .bind(...binds)
     .run();
 
-  await logActivity(env, id, "stage_change", row.stage, newStage, note ?? null, userId, "system");
+  // Close the prior open stage-history row (set exited_at = now) and
+  // insert a new open row for the new stage. The "open" row is
+  // identified by exited_at IS NULL.
+  await env.DB.prepare(
+    `UPDATE assr_stage_history
+        SET exited_at = ?
+      WHERE assr_id = ? AND exited_at IS NULL`
+  )
+    .bind(nowIso, id)
+    .run();
+
+  // alerts_fired = 1 stamps the FLAG_ENTERED bit so the v3.1 alert
+  // scanner (services/assrAlerts.ts) doesn't re-fire the entered
+  // event on its next tick — the in-app timeline + assignment row
+  // already cover "stage entered" notification.
+  await env.DB.prepare(
+    `INSERT INTO assr_stage_history (assr_id, stage, entered_at, target_days, alerts_fired)
+     VALUES (?, ?, ?, ?, 1)`
+  )
+    .bind(id, newStage, nowIso, newTargetDays)
+    .run();
+
+  // v3.1 (mig 077): stamp how long the OLD stage took + what its
+  // target was, plus the request's source_channel so the timeline can
+  // distinguish app/portal/email-driven moves.
+  let elapsedDays: number | null = null;
+  if (row.stage_entered_at) {
+    const enteredMs = new Date(
+      row.stage_entered_at.endsWith("Z") ? row.stage_entered_at : row.stage_entered_at + "Z"
+    ).getTime();
+    elapsedDays = (Date.now() - enteredMs) / (1000 * 60 * 60 * 24);
+  }
+  await logActivity(env, id, "stage_change", row.stage, newStage, note ?? null, userId, {
+    category: "system",
+    stage_elapsed_days: elapsedDays,
+    stage_target_days: row.stage_target_days,
+    source_channel: sourceChannel,
+  });
   return true;
 }
 
@@ -369,6 +572,10 @@ const PATCH_FIELDS = [
   "sla_hours", "deadline_at",
   // Mig 064 — supplier handover + ready dates
   "supplier_pickup_at", "items_ready_at",
+  // Mig 074 — v3.1 fields
+  "inspection_result", "email_for_survey",
+  // Mig 081 — verification card (Under Verification → Pending Solution gate)
+  "verification_outcome", "verified_root_cause",
 ] as const;
 
 export async function patchAssrCase(
@@ -387,6 +594,32 @@ export async function patchAssrCase(
     }
   }
   if (!sets.length) return false;
+
+  // Mig 081 — when QA sets the verification outcome, server-stamp
+  // verified_at + verified_by so the actor can't be spoofed from the
+  // client. Clearing the outcome clears the stamps too. NULL the
+  // verified_by FK when userId is 0/falsy (no auth context) — anything
+  // else would trip the foreign-key constraint.
+  if ("verification_outcome" in body) {
+    if (body.verification_outcome) {
+      sets.push("verified_at = datetime('now')", "verified_by = ?");
+      binds.push(userId && userId > 0 ? userId : null);
+    } else {
+      sets.push("verified_at = NULL", "verified_by = NULL");
+    }
+  }
+
+  // For audited fields (complaint_issue), capture the OLD value so the
+  // service-log row reflects an actual diff, not just "edited at X".
+  let prevComplaint: string | null = null;
+  if ("complaint_issue" in body) {
+    const prev = await env.DB.prepare(
+      `SELECT complaint_issue FROM assr_cases WHERE id = ?`
+    )
+      .bind(id)
+      .first<{ complaint_issue: string | null }>();
+    prevComplaint = prev?.complaint_issue ?? null;
+  }
 
   // When priority changes (and deadline isn't being set explicitly in the
   // same request), recompute deadline_at off the case's created_at so the
@@ -417,6 +650,24 @@ export async function patchAssrCase(
   // Log assignment changes
   if ("assigned_to" in body) {
     await logActivity(env, id, "assignment", null, String(body.assigned_to ?? ""), null, userId);
+  }
+
+  // Audit complaint edits so the customer-facing description has a
+  // diffable trail in the service log (mig 077).
+  if ("complaint_issue" in body) {
+    const next = body.complaint_issue ?? null;
+    if ((prevComplaint ?? null) !== (next ?? null)) {
+      await logActivity(
+        env,
+        id,
+        "complaint_edited",
+        prevComplaint,
+        next,
+        null,
+        userId,
+        { category: "customer" }
+      );
+    }
   }
 
   // When the case's item_code changes, re-resolve the creditor so the
@@ -589,6 +840,10 @@ export interface ListAssrFilters {
   page?: number;
   per_page?: number;
   include_archived?: boolean;
+  /** Comma-separated stage slugs to exclude. Used by the "Hide
+   *  completed" toggle to drop finished cases from the working list
+   *  without dropping them from the dataset. */
+  exclude_stage?: string;
   sort_by?: string;
   sort_dir?: "asc" | "desc";
 }
@@ -642,6 +897,16 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
     } else if (stages.length > 1) {
       where.push(`c.stage IN (${stages.map(() => "?").join(",")})`);
       binds.push(...stages);
+    }
+  }
+  if (f.exclude_stage) {
+    const ex = f.exclude_stage.split(",").map((s) => s.trim()).filter(Boolean);
+    if (ex.length === 1) {
+      where.push("c.stage != ?");
+      binds.push(ex[0]);
+    } else if (ex.length > 1) {
+      where.push(`c.stage NOT IN (${ex.map(() => "?").join(",")})`);
+      binds.push(...ex);
     }
   }
   if (f.status) {
@@ -715,7 +980,7 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
              (julianday(c.deadline_at) - julianday('now')) * 24 AS INTEGER
            ) as hours_to_deadline,
            CASE
-             WHEN c.stage = 'closed' THEN 0
+             WHEN c.stage = 'completed' THEN 0
              WHEN c.deadline_at IS NOT NULL AND datetime('now') > c.deadline_at THEN 1
              ELSE 0
            END as is_breached
@@ -762,6 +1027,16 @@ export async function exportAssrCases(
       binds.push(...stages);
     }
   }
+  if (f.exclude_stage) {
+    const ex = f.exclude_stage.split(",").map((s) => s.trim()).filter(Boolean);
+    if (ex.length === 1) {
+      where.push("c.stage != ?");
+      binds.push(ex[0]);
+    } else if (ex.length > 1) {
+      where.push(`c.stage NOT IN (${ex.map(() => "?").join(",")})`);
+      binds.push(...ex);
+    }
+  }
   if (f.status) {
     where.push("c.status = ?");
     binds.push(f.status);
@@ -787,7 +1062,7 @@ export async function exportAssrCases(
             c.creditor_code as creditor_code,
             cr.company_name as creditor_name,
             CASE
-              WHEN c.stage = 'closed' THEN 0
+              WHEN c.stage = 'completed' THEN 0
               WHEN c.deadline_at IS NOT NULL AND datetime('now') > c.deadline_at THEN 1
               ELSE 0
             END as is_breached
@@ -810,7 +1085,22 @@ export async function exportAssrCases(
 //   purchasing — internal team / supplier coordination
 //   customer   — customer-visible milestones (rendered on the portal)
 //   system     — automatic events (stage_change, assigned, created)
-// Defaults to 'system' so existing callers don't need to be updated.
+//
+// v3.1 (mig 077) adds:
+//   stage_elapsed_days / stage_target_days — snapshots on stage_change rows
+//   source_channel    — request origin (app / customer_portal / supplier_portal / email / cron)
+//   references_entry_id + is_correction — append-only correction pointer
+//
+// All v3.1 fields are optional; existing callers don't need updating.
+export type LogActivityExtras = {
+  category?: "purchasing" | "customer" | "system";
+  stage_elapsed_days?: number | null;
+  stage_target_days?: number | null;
+  source_channel?: string | null;
+  references_entry_id?: number | null;
+  is_correction?: boolean;
+};
+
 async function logActivity(
   env: Env,
   assrId: number,
@@ -819,13 +1109,32 @@ async function logActivity(
   toValue: string | null,
   note: string | null,
   userId?: number | null,
-  category: "purchasing" | "customer" | "system" = "system",
+  categoryOrExtras: "purchasing" | "customer" | "system" | LogActivityExtras = "system",
 ) {
+  const extras: LogActivityExtras =
+    typeof categoryOrExtras === "string" ? { category: categoryOrExtras } : categoryOrExtras;
+  const category = extras.category ?? "system";
   await env.DB.prepare(
-    `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, user_id, category)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO assr_activity (
+       assr_id, action, from_value, to_value, note, user_id, category,
+       stage_elapsed_days, stage_target_days, source_channel,
+       references_entry_id, is_correction
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(assrId, action, fromValue, toValue, note, userId ?? null, category)
+    .bind(
+      assrId,
+      action,
+      fromValue,
+      toValue,
+      note,
+      userId ?? null,
+      category,
+      extras.stage_elapsed_days ?? null,
+      extras.stage_target_days ?? null,
+      extras.source_channel ?? null,
+      extras.references_entry_id ?? null,
+      extras.is_correction ? 1 : 0,
+    )
     .run();
 }
 

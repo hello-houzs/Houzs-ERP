@@ -17,6 +17,13 @@ import type { Env } from "../types";
 export type EmailPurpose =
   | "assr_survey"
   | "assr_sla_escalation"
+  // v3.1 per-stage alert events (one toggle each so admins can mute
+  // half-time chatter while leaving breach alerts on)
+  | "assr_alert_stage_entered"
+  | "assr_alert_half_time"
+  | "assr_alert_approaching_breach"
+  | "assr_alert_breach"
+  | "assr_daily_digest"
   | "supplier_invite"
   | "project_due_reminder"
   | "password_reset"
@@ -42,6 +49,11 @@ export interface SendResult {
 const PURPOSE_TOGGLE_KEYS: Record<EmailPurpose, string> = {
   assr_survey: "email.assr_survey",
   assr_sla_escalation: "email.assr_sla_escalation",
+  assr_alert_stage_entered: "email.assr_alert_stage_entered",
+  assr_alert_half_time: "email.assr_alert_half_time",
+  assr_alert_approaching_breach: "email.assr_alert_approaching_breach",
+  assr_alert_breach: "email.assr_alert_breach",
+  assr_daily_digest: "email.assr_daily_digest",
   supplier_invite: "email.supplier_invite",
   project_due_reminder: "email.project_due_reminder",
   password_reset: "email.password_reset",

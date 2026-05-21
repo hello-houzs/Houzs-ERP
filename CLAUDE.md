@@ -49,6 +49,21 @@ Not generic narrative.
   remain hand-written `.sql` files** in `src/db/migrations/`, numbered
   and immutable after deploy. Drizzle-kit is for type generation /
   schema diffing only, never as the migration runner.
+- **Demo / test seed data does NOT belong in numbered migrations.**
+  Numbered migrations run in prod. Mig 067 + 069 seeded ~40 fake
+  `sales_reps` with `@example.my` emails; mig 079 then had to delete
+  them — every new environment now pays a seed-then-cleanup cost
+  forever. Put demo data in a one-shot `backend/scripts/seed-*.mjs`
+  script you run manually against the local D1 (precedent: existing
+  `backend/scripts/backfill-project-codes.mjs`). Numbered migrations
+  are for schema changes + production-required data only — lookup
+  tables, default roles / permissions, canonical enum rows. If a
+  table needs sample rows to develop against, that's a script, not
+  a migration.
+- **Keep schema and data in separate migrations when both are large.**
+  An `ALTER TABLE` + 100-line `INSERT` block in the same file makes
+  rollback awkward and the diff hard to read. Numbered migrations are
+  cheap; prefer two small ones over one big one.
 - **No WebSockets yet.** Polling is the realtime mechanism — see the
   wiki's *Polling Strategy* note for cadence and rationale.
 - **URL is state.** Filters/tabs/modes go in `useSearchParams`.
@@ -80,7 +95,8 @@ Not generic narrative.
 - For UI changes, test in the browser before claiming success.
 - Confirm before destructive ops (force push, dropping tables, deleting
   branches). Auto-mode is not blanket consent for risky writes.
-- After meaningful work lands, end the reply with a one-line offer to
+  - Write TODO when planning is confirmed 
+  - After meaningful work lands, end the reply with a one-line offer to
   `/sync-wiki` if the wiki should be updated.
 
 ## See also

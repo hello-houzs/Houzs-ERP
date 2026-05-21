@@ -3,6 +3,7 @@ import type { Env } from "../types";
 import { generateToken, isoIn } from "../services/auth";
 import { requirePermission } from "../middleware/auth";
 import { sendEmail, publicUrl } from "../services/email";
+import { syncSalesRepFromUser } from "../services/salesTeam";
 import { getDb } from "../db/client";
 import {
   departments,
@@ -407,6 +408,14 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   // If we disabled a user, revoke their sessions.
   if (body.status === "disabled") {
     await db.delete(sessions).where(eq(sessions.user_id, id));
+  }
+
+  // Keep the Sales Team roster in lockstep with the user's department.
+  // Department change → create / unarchive / archive the linked
+  // sales_reps row. No-op for non-Sales departments and users that
+  // already have the expected sales_reps state.
+  if (body.department_id !== undefined) {
+    await syncSalesRepFromUser(c.env, id, me.id);
   }
 
   return c.json({ ok: true });

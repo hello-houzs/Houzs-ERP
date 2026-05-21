@@ -483,6 +483,7 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     state: c.req.query("state") || undefined,
     event_type_id: eventTypeParam ? parseInt(eventTypeParam, 10) : undefined,
     section: c.req.query("section") || undefined,
+    exclude_done: c.req.query("exclude_done") === "1",
     search: c.req.query("search"),
     year: yearParam ? parseInt(yearParam, 10) : undefined,
     month: monthParam ? parseInt(monthParam, 10) : undefined,
@@ -1130,20 +1131,31 @@ app.post("/", requirePermission("projects.write"), async (c) => {
       );
     }
   }
-  const result = await createProject(c.env, {
-    name: body.name.trim(),
-    event_type_id: body.event_type_id ?? null,
-    brand: body.brand ?? null,
-    start_date: body.start_date ?? null,
-    end_date: body.end_date ?? null,
-    venue: body.venue ?? null,
-    state: body.state ?? null,
-    organizer: body.organizer ?? null,
-    notion_url: body.notion_url ?? null,
-    pic_id: picId,
-    created_by: user?.id ?? 0,
-  });
-  return c.json(result, 201);
+  // `deriveProjectCode` throws when state/venue/brand are missing —
+  // surface that as a clean 400 so the toast says exactly which field
+  // is missing instead of "Internal server error".
+  try {
+    const result = await createProject(c.env, {
+      name: body.name.trim(),
+      event_type_id: body.event_type_id ?? null,
+      brand: body.brand ?? null,
+      start_date: body.start_date ?? null,
+      end_date: body.end_date ?? null,
+      venue: body.venue ?? null,
+      state: body.state ?? null,
+      organizer: body.organizer ?? null,
+      notion_url: body.notion_url ?? null,
+      pic_id: picId,
+      created_by: user?.id ?? 0,
+    });
+    return c.json(result, 201);
+  } catch (e: any) {
+    const msg = e?.message || "Failed to create project";
+    if (/required to generate a project code|end_date must be/i.test(msg)) {
+      return c.json({ error: msg }, 400);
+    }
+    throw e;
+  }
 });
 
 // ── Patch ─────────────────────────────────────────────────────

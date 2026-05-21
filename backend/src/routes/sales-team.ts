@@ -33,6 +33,7 @@ import {
   wouldCreateUplineCycle,
   subtreeRepIds,
   logSalesTeamActivity,
+  autoBackfillSalesReps,
 } from "../services/salesTeam";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -118,6 +119,12 @@ async function setBrands(
 // ── Reps ─────────────────────────────────────────────────────
 
 app.get("/reps", requirePermission("sales_team.read"), async (c) => {
+  // Self-heal: ensure every user currently in the Sales department has
+  // a linked sales_reps row. Cheap when there's no drift (one indexed
+  // query); only does write work the first time after a user lands in
+  // Sales without going through the PATCH hook in users.ts.
+  await autoBackfillSalesReps(c.env);
+
   const status = c.req.query("status") || "";
   const positionSlug = c.req.query("position") || "";
   const brand = c.req.query("brand") || "";
