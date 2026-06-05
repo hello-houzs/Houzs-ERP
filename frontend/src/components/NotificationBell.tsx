@@ -145,7 +145,7 @@ function BellPopover({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline justify-between gap-2">
                       <span className="truncate text-[11.5px] font-semibold text-ink">
-                        {item.project_code || "Project"}
+                        {item.project_name || "Project"}
                         {item.brand && (
                           <span className="ml-1.5 font-mono text-[9.5px] font-normal text-ink-muted">
                             {item.brand}

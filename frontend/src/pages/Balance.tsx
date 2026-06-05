@@ -217,6 +217,14 @@ export function Balance() {
           onChange: (v) => setSearch(v),
           placeholder: "Search doc no, customer, phone…",
         }}
+        resetFilters={{
+          active: !!(search || filter !== "all"),
+          onReset: () => {
+            const next = new URLSearchParams(params);
+            ["search", "filter", "page"].forEach((k) => next.delete(k));
+            setParams(next, { replace: true });
+          },
+        }}
         columns={columns}
         rows={list.data?.data ?? null}
         loading={list.loading}

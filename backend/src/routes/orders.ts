@@ -250,6 +250,136 @@ app.get("/summary", async (c) => {
   });
 });
 
+// Flattened per-item list — mirrors GET / but emits one row per line
+// item by fanning out to AutoCount's getDetail() per SO on the page.
+// Pagination remains by SO (so `total` matches /api/orders); item rows
+// expand under each SO. Item-level filtering/sorting is out of scope
+// because lines are fetched after the D1 page boundary.
+app.get("/items", async (c) => {
+  const view = c.req.query("view");
+  const region = c.req.query("region");
+  const status = c.req.query("status");
+  const search = c.req.query("search");
+  const unscheduled = c.req.query("unscheduled") === "true";
+  const warehouseQ = c.req.query("warehouse");
+  const page = parseInt(c.req.query("page") || "1", 10);
+  // Cap lower than /api/orders (200) since each row triggers a getDetail call.
+  const perPage = Math.min(parseInt(c.req.query("per_page") || "25", 10), 100);
+  const offset = (page - 1) * perPage;
+
+  const db = getDb(c.env);
+
+  const conds: any[] = [];
+  if (view === "do") conds.push(sql`(${sql.raw(DELIVERY_WHERE)})`);
+  if (region) conds.push(sql`so.region = ${region}`);
+  if (warehouseQ) conds.push(sql`od.warehouse = ${warehouseQ}`);
+  if (unscheduled) {
+    conds.push(sql`NOT EXISTS (
+      SELECT 1 FROM trip_stops ts
+        JOIN trips t ON t.id = ts.trip_id
+       WHERE ts.doc_no = so.doc_no
+         AND t.status IN ('assigned','started','in_progress','completed')
+    )`);
+    conds.push(sql`NOT EXISTS (
+      SELECT 1 FROM trip_proposal_trips ptt
+        JOIN trip_proposals tp ON tp.id = ptt.proposal_id
+       WHERE tp.status = 'draft'
+         AND json_extract(ptt.payload_json, '$.stops') LIKE '%"' || so.doc_no || '"%'
+    )`);
+  }
+  if (status) conds.push(sql`so.sync_status = ${status}`);
+  if (search) {
+    const likeStr = `%${search}%`;
+    conds.push(sql`(so.doc_no LIKE ${likeStr} OR so.debtor_name LIKE ${likeStr} OR so.phone LIKE ${likeStr})`);
+  }
+  const whereClause = conds.length ? sql`WHERE ${sql.join(conds, sql` AND `)}` : sql``;
+
+  const totalRow = await db.get<{ count: number }>(sql`
+    SELECT COUNT(*) as count
+      FROM ${sales_orders} so
+      LEFT JOIN ${order_details} od ON od.doc_no = so.doc_no
+      ${whereClause}
+  `);
+
+  const sortBy = c.req.query("sort_by") || "";
+  const sortDir =
+    (c.req.query("sort_dir") || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+  const sortExpr = SORT_MAP[sortBy];
+  const orderByClause = sortExpr
+    ? sql`ORDER BY ${sql.raw(`${sortExpr} ${sortDir}`)}, so.doc_no DESC`
+    : sql`ORDER BY so.updated_at DESC, so.doc_no DESC`;
+
+  const orders = await db.all<any>(sql`
+    SELECT so.*, od.delivery_date, od.time_range, od.lorry_plate, od.driver_name,
+           od.driver_contact, od.property_type, od.consignment_no, od.eta_port,
+           od.estimate_delivery, od.shipout_date,
+           od.warehouse, od.state, od.lat, od.lng, od.order_type,
+           od.proposed_delivery_date
+      FROM ${sales_orders} so
+      LEFT JOIN ${order_details} od ON od.doc_no = so.doc_no
+      ${whereClause}
+      ${orderByClause}
+      LIMIT ${perPage} OFFSET ${offset}
+  `);
+
+  const client = new AutoCountClient(c.env);
+  const fetch_errors: Array<{ doc_no: string; error: string }> = [];
+
+  const linesByDoc = await Promise.all(
+    orders.map(async (o: any) => {
+      try {
+        const lines = await client.getDetail(o.doc_no);
+        return { doc_no: o.doc_no, lines };
+      } catch (e: any) {
+        fetch_errors.push({ doc_no: o.doc_no, error: e?.message || "fetch failed" });
+        return { doc_no: o.doc_no, lines: [] as any[] };
+      }
+    })
+  );
+  const lineMap = new Map(linesByDoc.map((x) => [x.doc_no, x.lines]));
+
+  const data: any[] = [];
+  let total_items = 0;
+  for (const o of orders) {
+    const lines = lineMap.get(o.doc_no) || [];
+    if (!lines.length) {
+      data.push({
+        ...o,
+        item_line_no: null,
+        item_code: null,
+        item_description: null,
+        item_uom: null,
+        item_qty: null,
+        item_unit_price: null,
+        item_amount: null,
+      });
+      continue;
+    }
+    lines.forEach((ln: any, idx: number) => {
+      data.push({
+        ...o,
+        item_line_no: idx + 1,
+        item_code: ln.ItemCode ?? null,
+        item_description: ln.Description ?? ln.ItemDescription ?? null,
+        item_uom: ln.UOM ?? null,
+        item_qty: ln.Qty ?? null,
+        item_unit_price: ln.UnitPrice ?? null,
+        item_amount: ln.Amount ?? null,
+      });
+      total_items += 1;
+    });
+  }
+
+  return c.json({
+    data,
+    page,
+    per_page: perPage,
+    total: totalRow?.count || 0,
+    total_items,
+    fetch_errors,
+  });
+});
+
 // Single order
 app.get("/:docNo", async (c) => {
   const docNo = c.req.param("docNo");

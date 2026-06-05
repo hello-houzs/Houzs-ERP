@@ -25,6 +25,7 @@ import {
   Wallet,
   Briefcase,
   Receipt,
+  ListTree,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -108,6 +109,7 @@ export const NAV_TABS: NavTab[] = [
       // here daily, while the AutoCount-synced views below are reads.
       { to: "/sales", label: "Sales Entries", icon: Receipt, perm: "sales.read" },
       { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read" },
+      { to: "/orders/items", label: "Sales Order Detail", icon: ListTree, perm: "sales_orders.read" },
       // Members with delivery_orders.read but no trips.read.all still see
       // the flat Delivery list. Dispatchers with trips.read.all get the
       // richer Queue tab inside Logistics, so this entry hides for them.

@@ -6,7 +6,7 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useAuth } from "../auth/AuthContext";
 import { api } from "../api/client";
-import { cn, formatDate } from "../lib/utils";
+import { cn, formatDate, formatDateTime } from "../lib/utils";
 import type {
   SalesRep,
   SalesPosition,
@@ -157,7 +157,7 @@ export function SalesTeamDetail() {
                       <span className="font-semibold text-ink">{a.to_value}</span>
                     )}
                     <span className="ml-auto font-mono text-[10px] text-ink-muted">
-                      {a.created_at.slice(0, 16).replace("T", " ")}
+                      {formatDateTime(a.created_at)}
                     </span>
                   </div>
                   {a.note && (

@@ -204,7 +204,7 @@ function EventCard({
               className="inline-flex shrink-0 items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/40 px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent hover:bg-accent-soft/70"
               title="Open project"
             >
-              {event.project_code || "Open"}
+              Open
               <ExternalLink size={10} />
             </Link>
           )

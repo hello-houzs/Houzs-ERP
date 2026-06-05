@@ -189,6 +189,16 @@ export function DeliveryTracking() {
           onChange: (v) => { setSearch(v); setPage(1); },
           placeholder: "Search doc no, customer…",
         }}
+        resetFilters={{
+          active: !!(search || region || status || overdueOnly),
+          onReset: () => {
+            setSearch("");
+            setRegion("");
+            setStatus("");
+            setOverdueOnly(false);
+            setPage(1);
+          },
+        }}
         columns={[
           {
             key: "doc_no",

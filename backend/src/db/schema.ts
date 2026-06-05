@@ -84,6 +84,8 @@ export const projects = sqliteTable("projects", {
   code: text("code").unique(),
   name: text("name").notNull(),
   stage: text("stage").notNull().default("draft"),
+  // mig 088 — boss-facing lifecycle: confirmed | pending | cancelled.
+  status: text("status").notNull().default("pending"),
   start_date: text("start_date"),
   end_date: text("end_date"),
   venue: text("venue"),
@@ -102,6 +104,26 @@ export const projects = sqliteTable("projects", {
   setup_lorry_id: integer("setup_lorry_id"),
   dismantle_driver_user_id: integer("dismantle_driver_user_id"),
   dismantle_lorry_id: integer("dismantle_lorry_id"),
+  setup_helper_1_id: integer("setup_helper_1_id"),
+  setup_helper_2_id: integer("setup_helper_2_id"),
+  setup_helper_outsourced: integer("setup_helper_outsourced").notNull().default(0),
+  dismantle_helper_1_id: integer("dismantle_helper_1_id"),
+  dismantle_helper_2_id: integer("dismantle_helper_2_id"),
+  dismantle_helper_outsourced: integer("dismantle_helper_outsourced").notNull().default(0),
+});
+
+// ── project_phase_photos — crew-uploaded evidence for setup/dismantle
+// phases. Separate from legacy project_attachments because the access
+// model is "crew member on this phase may upload", not "manager only".
+export const project_phase_photos = sqliteTable("project_phase_photos", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  project_id: integer("project_id").notNull(),
+  phase: text("phase").notNull(),
+  r2_key: text("r2_key").notNull(),
+  content_type: text("content_type"),
+  caption: text("caption"),
+  uploaded_by: integer("uploaded_by"),
+  uploaded_at: text("uploaded_at").notNull().default(sql`(datetime('now'))`),
 });
 
 // ── project_brands lookup ─────────────────────────────────
@@ -454,6 +476,8 @@ export const project_checklist_sections = sqliteTable("project_checklist_section
   project_id: integer("project_id").notNull(),
   name: text("name").notNull(),
   sort_order: integer("sort_order").notNull().default(0),
+  // mig 085 — "list" (default) or "documents" (6-col table layout).
+  display_mode: text("display_mode").notNull().default("list"),
   created_at: text("created_at").default(sql`(datetime('now'))`),
 });
 
@@ -468,6 +492,7 @@ export const project_checklist_template_sections = sqliteTable(
     template_id: integer("template_id").notNull(),
     name: text("name").notNull(),
     sort_order: integer("sort_order").notNull().default(0),
+    display_mode: text("display_mode").notNull().default("list"),
     created_at: text("created_at").default(sql`(datetime('now'))`),
   }
 );
@@ -501,6 +526,10 @@ export const project_checklist = sqliteTable("project_checklist", {
   title: text("title").notNull(),
   description: text("description"),
   required_perm: text("required_perm"),
+  // mig 085 — display-only owner tag, separate from required_perm.
+  role_label: text("role_label"),
+  // mig 086 — opt-in flag; when 1 the row surfaces in the Driver App.
+  crew_visible: integer("crew_visible").notNull().default(0),
   due_date: text("due_date"),
   due_offset_days: integer("due_offset_days"),
   owner_user_id: integer("owner_user_id"),
@@ -535,6 +564,8 @@ export const project_checklist_template_items = sqliteTable(
     title: text("title").notNull(),
     description: text("description"),
     required_perm: text("required_perm"),
+    role_label: text("role_label"),
+    crew_visible: integer("crew_visible").notNull().default(0),
     due_offset_days: integer("due_offset_days"),
     requires_review: integer("requires_review").notNull().default(0),
   }
@@ -913,3 +944,19 @@ export const sales_team_activity = sqliteTable("sales_team_activity", {
   user_id: integer("user_id"),
   created_at: text("created_at").default(sql`(datetime('now'))`),
 });
+
+// ── project_sales_attendees (mig 087) ─────────────────────────
+// N reps attend per project (booth duty etc). Separate from pic_id
+// which is one User who owns the project.
+export const project_sales_attendees = sqliteTable(
+  "project_sales_attendees",
+  {
+    project_id: integer("project_id").notNull(),
+    sales_rep_id: integer("sales_rep_id").notNull(),
+    created_at: text("created_at").default(sql`(datetime('now'))`),
+    created_by: integer("created_by"),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.project_id, t.sales_rep_id] }),
+  })
+);

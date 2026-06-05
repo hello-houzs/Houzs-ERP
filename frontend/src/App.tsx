@@ -4,6 +4,7 @@ import { DriverLayout } from "./components/DriverLayout";
 import { Overview } from "./pages/Overview";
 import { Orders } from "./pages/Orders";
 import { OrderDetail } from "./pages/OrderDetail";
+import { SalesOrderItems } from "./pages/SalesOrderItems";
 import { DeliveryOrders } from "./pages/DeliveryOrders";
 import { PurchaseOrders, PurchaseOrderDetail } from "./pages/PurchaseOrders";
 import { CreditorDetail } from "./pages/CreditorDetail";
@@ -32,6 +33,8 @@ import { DeliveryDetail } from "./pages/DeliveryTracking";
 import { DriverHome } from "./pages/DriverHome";
 import { DriverTrip } from "./pages/DriverTrip";
 import { DriverProfile } from "./pages/DriverProfile";
+import { DriverProjects } from "./pages/DriverProjects";
+import { DriverProjectDetail } from "./pages/DriverProjectDetail";
 import { useAuth } from "./auth/AuthContext";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
@@ -123,6 +126,8 @@ export default function App() {
           <Route path="/driver" element={<DriverHome />} />
           <Route path="/driver/me" element={<DriverProfile />} />
           <Route path="/driver/trips/:id" element={<DriverTrip />} />
+          <Route path="/driver/projects" element={<DriverProjects />} />
+          <Route path="/driver/projects/:id" element={<DriverProjectDetail />} />
           <Route path="*" element={<Navigate to="/driver" replace />} />
         </Routes>
       </DriverLayout>
@@ -143,6 +148,14 @@ export default function App() {
           element={
             <Guard perm="sales_orders.read">
               <Orders />
+            </Guard>
+          }
+        />
+        <Route
+          path="/orders/items"
+          element={
+            <Guard perm="sales_orders.read">
+              <SalesOrderItems />
             </Guard>
           }
         />

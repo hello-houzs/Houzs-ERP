@@ -303,7 +303,7 @@ export function FloatingChatWidget() {
                         className="flex w-full items-start gap-2 px-3 py-2.5 text-left hover:bg-bg/60"
                       >
                         <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent-soft font-mono text-[10px] font-bold uppercase text-accent-ink">
-                          {(r.project_code || r.project_name || "?")
+                          {(r.project_name || r.project_code || "?")
                             .slice(0, 2)
                             .toUpperCase()}
                         </div>
@@ -321,7 +321,7 @@ export function FloatingChatWidget() {
                               }
                             >
                               <span className="truncate">
-                                {r.project_code || `#${r.project_id}`}
+                                {r.project_name || `#${r.project_id}`}
                               </span>
                               {r.project_start_date && (
                                 <>

@@ -6,23 +6,11 @@ import { portalApi } from "../portalApi";
 import { PortalFrame } from "../components/PortalFrame";
 import { StatusPill } from "../components/StatusPill";
 import { useDialog } from "../../hooks/useDialog";
-import { formatDate } from "../../lib/utils";
+import { formatDate, formatDateTime } from "../../lib/utils";
 import type { PortalCaseDetail } from "../types";
 
 const ALLOWED_EXT = ["jpg", "jpeg", "png", "webp"];
 const MAX_SIZE = 10 * 1024 * 1024;
-
-function fmtTs(s: string | null | undefined): string {
-  if (!s) return "";
-  const d = new Date(s);
-  if (isNaN(d.getTime())) return s.slice(0, 16).replace("T", " ");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mi = String(d.getMinutes()).padStart(2, "0");
-  return `${dd}/${mm}/${yyyy} ${hh}:${mi}`;
-}
 
 export function PortalCaseDetailPage() {
   const dialog = useDialog();
@@ -249,7 +237,7 @@ export function PortalCaseDetailPage() {
           {timeline.map((t) => (
             <li key={t.id} className="group border-l-2 border-border pl-3 text-[13px]">
               <div className="flex items-center gap-2 text-[11px] text-ink-muted">
-                <span>{fmtTs(t.at)}</span>
+                <span>{formatDateTime(t.at)}</span>
                 {/* Customer can retract their own comments */}
                 {t.source === "customer" && t.action === "customer_comment" && cs.stage !== "completed" && (
                   <button

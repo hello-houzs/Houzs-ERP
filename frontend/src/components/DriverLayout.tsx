@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
-import { Truck, User, LogOut } from "lucide-react";
+import { Truck, User, LogOut, FolderKanban } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { cn } from "../lib/utils";
 
@@ -46,8 +46,9 @@ export function DriverLayout({ children }: { children: ReactNode }) {
       </main>
 
       {/* Bottom nav */}
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-2 border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-sm">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-sm">
         <BottomTab to="/driver" icon={<Truck size={18} />} label="Today" exact />
+        <BottomTab to="/driver/projects" icon={<FolderKanban size={18} />} label="Projects" />
         <BottomTab to="/driver/me" icon={<User size={18} />} label="Profile" />
       </nav>
     </div>

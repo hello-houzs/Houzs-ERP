@@ -36,12 +36,14 @@ import {
   confirmStockTransfer,
   unconfirmStockTransfer,
   archiveStockTransfer,
+  getUserPhasesOnProject,
 } from "../services/projects";
 import {
   getProjectScope,
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
+import { hasPermission } from "../services/permissions";
 import { recomputeAutoCostLines } from "../services/projectCostRates";
 import { getDb } from "../db/client";
 import {
@@ -695,8 +697,8 @@ app.get(
     // Return items + sections together so the editor renders one
     // round-trip. mig 050: section_id + requires_review on items.
     const items = await c.env.DB.prepare(
-      `SELECT id, seq, title, description, required_perm, due_offset_days,
-              section_id, requires_review
+      `SELECT id, seq, title, description, required_perm, role_label, crew_visible,
+              due_offset_days, section_id, requires_review
          FROM project_checklist_template_items
         WHERE template_id = ?
         ORDER BY seq, id`
@@ -704,7 +706,7 @@ app.get(
       .bind(id)
       .all();
     const sections = await c.env.DB.prepare(
-      `SELECT id, name, sort_order
+      `SELECT id, name, sort_order, display_mode
          FROM project_checklist_template_sections
         WHERE template_id = ?
         ORDER BY sort_order, id`
@@ -728,6 +730,8 @@ app.post(
       title?: string;
       description?: string | null;
       required_perm?: string | null;
+      role_label?: string | null;
+      crew_visible?: boolean;
       due_offset_days?: number | null;
       seq?: number;
       section_id?: number | null;
@@ -747,9 +751,9 @@ app.post(
     }
     const r = await c.env.DB.prepare(
       `INSERT INTO project_checklist_template_items
-         (template_id, seq, title, description, required_perm, due_offset_days,
-          section_id, requires_review)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (template_id, seq, title, description, required_perm, role_label,
+          crew_visible, due_offset_days, section_id, requires_review)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         id,
@@ -757,6 +761,8 @@ app.post(
         title,
         body.description ?? null,
         body.required_perm ?? null,
+        body.role_label ?? null,
+        body.crew_visible ? 1 : 0,
         body.due_offset_days ?? null,
         body.section_id ?? null,
         body.requires_review ? 1 : 0
@@ -776,6 +782,8 @@ app.patch(
       title?: string;
       description?: string | null;
       required_perm?: string | null;
+      role_label?: string | null;
+      crew_visible?: boolean | number;
       due_offset_days?: number | null;
       seq?: number;
       section_id?: number | null;
@@ -789,7 +797,7 @@ app.patch(
       sets.push("title = ?");
       binds.push(t);
     }
-    for (const k of ["description", "required_perm", "due_offset_days", "seq", "section_id"] as const) {
+    for (const k of ["description", "required_perm", "role_label", "due_offset_days", "seq", "section_id"] as const) {
       if (k in body) {
         sets.push(`${k} = ?`);
         binds.push((body as any)[k] ?? null);
@@ -798,6 +806,10 @@ app.patch(
     if ("requires_review" in body) {
       sets.push("requires_review = ?");
       binds.push(body.requires_review ? 1 : 0);
+    }
+    if ("crew_visible" in body) {
+      sets.push("crew_visible = ?");
+      binds.push(body.crew_visible ? 1 : 0);
     }
     if (sets.length === 0) return c.json({ ok: true });
     await c.env.DB.prepare(
@@ -1764,6 +1776,145 @@ app.put("/:id/finance/upload", requirePermission("projects.write"), async (c) =>
   return c.json({ key, mime_type: mime });
 });
 
+// ── Phase photos (crew-uploaded evidence for setup / dismantle) ──
+// Two-step upload like the finance + payment patterns:
+//   1) PUT  /:id/phase-photos/upload?phase=...&ext=... — pushes the
+//      bytes into R2, returns { key, mime_type }.
+//   2) POST /:id/phase-photos — registers the row.
+// Auth is permission-OR-crew: a member of projects.write can manage
+// any project's photos; a crew member can only act on the phase they
+// are assigned to. Mirrors mig 049's PIC-scope pattern.
+
+app.put("/:id/phase-photos/upload", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
+  const phase = (c.req.query("phase") || "").toLowerCase();
+  if (phase !== "setup" && phase !== "dismantle") {
+    return c.json({ error: "phase must be setup or dismantle" }, 400);
+  }
+
+  const granted = user?.permissions_set ?? user?.permissions;
+  const canManage = !!user && hasPermission(granted, "projects.write");
+  if (!canManage) {
+    const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0);
+    if (!phases.includes(phase as "setup" | "dismantle")) {
+      return c.json({ error: "Not crewed on this phase" }, 403);
+    }
+  }
+
+  const ext = (c.req.query("ext") || "jpg").toLowerCase();
+  // Images render inline; documents get a download link; videos play in
+  // MediaLightbox. 50MB cap so phone clips upload cleanly. Limits and
+  // MIME map mirror the driver-facing endpoint.
+  const MIME_BY_EXT: Record<string, string> = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    webp: "image/webp",
+    heic: "image/heic",
+    pdf: "application/pdf",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    mp4: "video/mp4",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    m4v: "video/x-m4v",
+  };
+  const mime = MIME_BY_EXT[ext];
+  if (!mime) return c.json({ error: "unsupported type" }, 400);
+  const body = await c.req.arrayBuffer();
+  if (body.byteLength > 50 * 1024 * 1024) return c.json({ error: "Max 50MB" }, 400);
+  const key = `project-phase-photos/${id}/${phase}/${Date.now()}-${crypto.randomUUID()}.${ext}`;
+  await c.env.POD_BUCKET.put(key, body, { httpMetadata: { contentType: mime } });
+  return c.json({ key, mime_type: mime });
+});
+
+app.post("/:id/phase-photos", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
+  const body = await c.req.json<{
+    phase?: "setup" | "dismantle";
+    r2_key?: string;
+    content_type?: string;
+    caption?: string | null;
+  }>();
+  const phase = body.phase;
+  if (phase !== "setup" && phase !== "dismantle") {
+    return c.json({ error: "phase required" }, 400);
+  }
+  if (!body.r2_key) return c.json({ error: "r2_key required" }, 400);
+
+  const granted = user?.permissions_set ?? user?.permissions;
+  const canManage = !!user && hasPermission(granted, "projects.write");
+  if (!canManage) {
+    const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0);
+    if (!phases.includes(phase)) {
+      return c.json({ error: "Not crewed on this phase" }, 403);
+    }
+  }
+
+  const r = await c.env.DB.prepare(
+    `INSERT INTO project_phase_photos
+       (project_id, phase, r2_key, content_type, caption, uploaded_by)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  )
+    .bind(id, phase, body.r2_key, body.content_type ?? null, body.caption ?? null, user?.id ?? null)
+    .run();
+  return c.json({ id: r.meta.last_row_id });
+});
+
+app.get("/:id/phase-photos", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
+
+  const grantedR = user?.permissions_set ?? user?.permissions;
+  const canRead =
+    !!user &&
+    (hasPermission(grantedR, "projects.read") || hasPermission(grantedR, "projects.write"));
+  if (!canRead) {
+    const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0);
+    if (!phases.length) return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const rows = await c.env.DB.prepare(
+    `SELECT pp.id, pp.phase, pp.r2_key, pp.content_type, pp.caption,
+            pp.uploaded_by, u.name as uploaded_by_name, pp.uploaded_at
+       FROM project_phase_photos pp
+       LEFT JOIN users u ON u.id = pp.uploaded_by
+      WHERE pp.project_id = ?
+      ORDER BY pp.uploaded_at DESC, pp.id DESC`
+  )
+    .bind(id)
+    .all();
+  return c.json({ photos: rows.results ?? [] });
+});
+
+app.delete("/phase-photos/:photoId", async (c) => {
+  const photoId = parseInt(c.req.param("photoId"), 10);
+  if (isNaN(photoId)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
+  const row = await c.env.DB.prepare(
+    `SELECT project_id, uploaded_by, r2_key FROM project_phase_photos WHERE id = ?`
+  )
+    .bind(photoId)
+    .first<{ project_id: number; uploaded_by: number | null; r2_key: string }>();
+  if (!row) return c.json({ error: "Not found" }, 404);
+
+  const granted = user?.permissions_set ?? user?.permissions;
+  const canManage = !!user && hasPermission(granted, "projects.write");
+  const isUploader = user?.id != null && row.uploaded_by === user.id;
+  if (!canManage && !isUploader) return c.json({ error: "Forbidden" }, 403);
+
+  await c.env.DB.prepare(`DELETE FROM project_phase_photos WHERE id = ?`)
+    .bind(photoId)
+    .run();
+  await c.env.POD_BUCKET.delete(row.r2_key).catch(() => {});
+  return c.json({ ok: true });
+});
+
 // Manual resync endpoint — rebuilds project_finance from the lines.
 app.post("/:id/finance/resync", requirePermission("projects.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
@@ -2111,7 +2262,11 @@ app.post("/:id/sections", requirePermission("projects.write"), async (c) => {
 app.patch("/sections/:sectionId", requirePermission("projects.write"), async (c) => {
   const sectionId = parseInt(c.req.param("sectionId"), 10);
   if (isNaN(sectionId)) return c.json({ error: "Invalid ID" }, 400);
-  const body = await c.req.json<{ name?: string; sort_order?: number }>();
+  const body = await c.req.json<{
+    name?: string;
+    sort_order?: number;
+    display_mode?: "list" | "documents";
+  }>();
   const sets: string[] = [];
   const binds: any[] = [];
   if ("name" in body) {
@@ -2123,6 +2278,11 @@ app.patch("/sections/:sectionId", requirePermission("projects.write"), async (c)
   if ("sort_order" in body) {
     sets.push("sort_order = ?");
     binds.push(body.sort_order ?? 0);
+  }
+  if ("display_mode" in body) {
+    const mode = body.display_mode === "documents" ? "documents" : "list";
+    sets.push("display_mode = ?");
+    binds.push(mode);
   }
   if (sets.length === 0) return c.json({ error: "No fields to update" }, 400);
   binds.push(sectionId);
@@ -2297,7 +2457,11 @@ app.patch(
   async (c) => {
     const sectionId = parseInt(c.req.param("sectionId"), 10);
     if (isNaN(sectionId)) return c.json({ error: "Invalid ID" }, 400);
-    const body = await c.req.json<{ name?: string; sort_order?: number }>();
+    const body = await c.req.json<{
+      name?: string;
+      sort_order?: number;
+      display_mode?: "list" | "documents";
+    }>();
     const sets: string[] = [];
     const binds: any[] = [];
     if ("name" in body) {
@@ -2309,6 +2473,11 @@ app.patch(
     if ("sort_order" in body) {
       sets.push("sort_order = ?");
       binds.push(body.sort_order ?? 0);
+    }
+    if ("display_mode" in body) {
+      const mode = body.display_mode === "documents" ? "documents" : "list";
+      sets.push("display_mode = ?");
+      binds.push(mode);
     }
     if (sets.length === 0) return c.json({ error: "No fields to update" }, 400);
     binds.push(sectionId);
@@ -2542,6 +2711,103 @@ app.delete("/team/:teamId", requirePermission("projects.write"), async (c) => {
   return c.json({ ok: true });
 });
 
+// ── Sales attendees (mig 087) ────────────────────────────────
+// Reps from the sales_reps master who'll physically attend the
+// project (booth duty etc). Separate from pic_id (a User) and the
+// generic project_team (also Users).
+
+// Project-scoped picker source. We deliberately don't reuse
+// /api/sales-team/reps because that endpoint is gated on
+// `sales_team.read` (which project roles don't carry) AND returns
+// PII (phone, email, NRIC) the picker doesn't need. This endpoint
+// is gated on `projects.write` (same as add/remove below), filters
+// to position=sales_person (boss's call: that's the role that
+// attends), and matches brand case-insensitively so a future hand-
+// edit drift doesn't silently empty the picker.
+app.get("/sales-rep-options", requirePermission("projects.write"), async (c) => {
+  const brand = c.req.query("brand") || null;
+  const rows = await c.env.DB.prepare(
+    `SELECT r.id, r.code, r.name
+       FROM sales_reps r
+       JOIN sales_positions p ON p.id = r.position_id
+       LEFT JOIN sales_rep_brands srb ON srb.rep_id = r.id
+      WHERE r.archived_at IS NULL
+        AND r.status = 'active'
+        AND p.slug = 'sales_person'
+        AND (?1 IS NULL OR UPPER(srb.brand) = UPPER(?1))
+      GROUP BY r.id
+      ORDER BY r.code`
+  )
+    .bind(brand)
+    .all<{ id: number; code: string; name: string }>();
+  return c.json({ data: rows.results ?? [] });
+});
+
+app.post("/:id/sales-attendees", requirePermission("projects.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
+  const body = await c.req.json<{ sales_rep_id?: number }>();
+  if (!body.sales_rep_id) return c.json({ error: "sales_rep_id required" }, 400);
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO project_sales_attendees (project_id, sales_rep_id, created_by)
+       VALUES (?, ?, ?)`
+    )
+      .bind(id, body.sales_rep_id, user?.id ?? null)
+      .run();
+    const rep = await c.env.DB.prepare(
+      `SELECT code, name FROM sales_reps WHERE id = ?`
+    )
+      .bind(body.sales_rep_id)
+      .first<{ code: string; name: string }>();
+    await logProjectActivity(
+      c.env,
+      id,
+      "sales_attendee_add",
+      null,
+      rep ? `${rep.code} ${rep.name}` : String(body.sales_rep_id),
+      null,
+      user?.id
+    );
+    return c.json({ ok: true }, 201);
+  } catch (e: any) {
+    return c.json({ error: e?.message || "Duplicate" }, 409);
+  }
+});
+
+app.delete(
+  "/:id/sales-attendees/:repId",
+  requirePermission("projects.write"),
+  async (c) => {
+    const id = parseInt(c.req.param("id"), 10);
+    const repId = parseInt(c.req.param("repId"), 10);
+    if (isNaN(id) || isNaN(repId)) return c.json({ error: "Invalid ID" }, 400);
+    const user = c.get("user");
+    const rep = await c.env.DB.prepare(
+      `SELECT code, name FROM sales_reps WHERE id = ?`
+    )
+      .bind(repId)
+      .first<{ code: string; name: string }>();
+    await c.env.DB.prepare(
+      `DELETE FROM project_sales_attendees
+        WHERE project_id = ? AND sales_rep_id = ?`
+    )
+      .bind(id, repId)
+      .run();
+    await logProjectActivity(
+      c.env,
+      id,
+      "sales_attendee_remove",
+      rep ? `${rep.code} ${rep.name}` : String(repId),
+      null,
+      null,
+      user?.id
+    );
+    return c.json({ ok: true });
+  }
+);
+
 // ── Trip linkage ─────────────────────────────────────────────
 // The trip create flow expects SO stops (doc_no-based), which don't
 // apply to booth setup/teardown. So for projects we just link existing
@@ -2554,13 +2820,91 @@ app.post("/:id/trips/link", requirePermission("projects.write"), async (c) => {
   const user = c.get("user");
   const body = await c.req.json<{ trip_id?: number }>();
   if (!body.trip_id) return c.json({ error: "trip_id required" }, 400);
+  const tripId = body.trip_id;
   const r = await c.env.DB.prepare(
     `UPDATE trips SET project_id = ? WHERE id = ?`
   )
-    .bind(id, body.trip_id)
+    .bind(id, tripId)
     .run();
   if (!r.meta.changes) return c.json({ error: "Trip not found" }, 404);
-  await logProjectActivity(c.env, id, "trip_link", null, String(body.trip_id), null, user?.id);
+  await logProjectActivity(c.env, id, "trip_link", null, String(tripId), null, user?.id);
+
+  // Auto-copy crew from project's matching phase into the trip's empty
+  // slots. COALESCE-style so we never overwrite a value the dispatcher
+  // already set on the trip.
+  const trip = await c.env.DB.prepare(
+    `SELECT trip_type, driver_user_id, helper_1_id, helper_2_id, helper_outsourced
+       FROM trips WHERE id = ?`
+  )
+    .bind(tripId)
+    .first<{
+      trip_type: string | null;
+      driver_user_id: number | null;
+      helper_1_id: number | null;
+      helper_2_id: number | null;
+      helper_outsourced: number | null;
+    }>();
+  const phase = (trip?.trip_type || "").toLowerCase();
+  if (phase === "setup" || phase === "dismantle") {
+    const prefix = phase; // "setup" or "dismantle"
+    const proj = await c.env.DB.prepare(
+      `SELECT ${prefix}_driver_user_id   as driver_id,
+              ${prefix}_helper_1_id      as h1,
+              ${prefix}_helper_2_id      as h2,
+              ${prefix}_helper_outsourced as outsourced
+         FROM projects WHERE id = ?`
+    )
+      .bind(id)
+      .first<{
+        driver_id: number | null;
+        h1: number | null;
+        h2: number | null;
+        outsourced: number | null;
+      }>();
+    if (proj) {
+      const copied: string[] = [];
+      const sets: string[] = [];
+      const binds: any[] = [];
+      if (trip?.driver_user_id == null && proj.driver_id != null) {
+        sets.push("driver_user_id = ?");
+        binds.push(proj.driver_id);
+        copied.push("driver");
+      }
+      if (trip?.helper_1_id == null && proj.h1 != null) {
+        sets.push("helper_1_id = ?");
+        binds.push(proj.h1);
+        copied.push("helper_1");
+      }
+      if (trip?.helper_2_id == null && proj.h2 != null) {
+        sets.push("helper_2_id = ?");
+        binds.push(proj.h2);
+        copied.push("helper_2");
+      }
+      if (!trip?.helper_outsourced && proj.outsourced) {
+        sets.push("helper_outsourced = ?");
+        binds.push(1);
+        copied.push("outsourced");
+      }
+      if (sets.length) {
+        binds.push(tripId);
+        await c.env.DB.prepare(
+          `UPDATE trips SET ${sets.join(", ")} WHERE id = ?`
+        )
+          .bind(...binds)
+          .run();
+        await logProjectActivity(
+          c.env,
+          id,
+          "trip_crew_copied",
+          null,
+          String(tripId),
+          JSON.stringify({ phase, fields: copied }),
+          user?.id
+        );
+      }
+    }
+  }
+
   return c.json({ ok: true });
 });
 
@@ -2766,7 +3110,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
   // template section (lowest sort_order with open tasks) so the
   // calendar can filter by section the same way the list view does.
   const projects = await c.env.DB.prepare(
-    `SELECT p.id, p.code, p.name, p.stage, p.brand, p.organizer,
+    `SELECT p.id, p.code, p.name, p.stage, p.status, p.brand, p.organizer,
             p.start_date, p.end_date, p.venue, p.state,
             (SELECT s.name FROM project_checklist_sections s
               WHERE s.project_id = p.id
@@ -2791,7 +3135,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
   const tasks = await c.env.DB.prepare(
     `SELECT c.id, c.project_id, c.title, c.due_date, c.status,
             c.required_perm, c.review_status,
-            p.code as project_code, p.brand, p.organizer,
+            p.code as project_code, p.brand, p.organizer, p.status as project_status,
             p.name as project_name,
             u.name as owner_name,
             CASE WHEN date(c.due_date) < date('now') THEN 1 ELSE 0 END as is_overdue

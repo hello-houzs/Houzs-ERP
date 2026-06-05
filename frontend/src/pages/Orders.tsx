@@ -276,6 +276,14 @@ function OrdersView({ toast }: { toast: ReturnType<typeof useToast> }) {
           onChange: (v) => setSearch(v),
           placeholder: "Search doc no, customer, phone…",
         }}
+        resetFilters={{
+          active: !!(search || region !== "ALL"),
+          onReset: () => {
+            const next = new URLSearchParams(params);
+            ["search", "region", "page"].forEach((k) => next.delete(k));
+            setParams(next, { replace: true });
+          },
+        }}
         columns={columns}
         rows={list.data?.data ?? null}
         loading={list.loading}
@@ -439,6 +447,14 @@ function BalanceView() {
           value: search,
           onChange: (v) => setSearch(v),
           placeholder: "Search doc no, customer, phone…",
+        }}
+        resetFilters={{
+          active: !!(search || filter !== "all"),
+          onReset: () => {
+            const next = new URLSearchParams(params);
+            ["search", "filter", "page"].forEach((k) => next.delete(k));
+            setParams(next, { replace: true });
+          },
         }}
         columns={columns}
         rows={list.data?.data ?? null}
@@ -613,6 +629,14 @@ function OverdueView({ toast }: { toast: ReturnType<typeof useToast> }) {
           value: search,
           onChange: (v) => setSearch(v),
           placeholder: "Search doc no, customer, phone…",
+        }}
+        resetFilters={{
+          active: !!search,
+          onReset: () => {
+            const next = new URLSearchParams(params);
+            ["search", "page"].forEach((k) => next.delete(k));
+            setParams(next, { replace: true });
+          },
         }}
         columns={columns}
         rows={list.data?.data ?? null}

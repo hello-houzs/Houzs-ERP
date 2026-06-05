@@ -12,7 +12,7 @@ import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api, buildQuery } from "../api/client";
-import { formatCurrency, formatDate, relativeTime } from "../lib/utils";
+import { formatCurrency, formatDate, formatDateTime, relativeTime } from "../lib/utils";
 import type { Paginated, OverdueHistoryRow, OverdueSummary } from "../types";
 
 const OVERDUE_FILTER_KEYS = ["page"] as const;
@@ -62,7 +62,7 @@ export function Overdue() {
       label: "Date",
       alwaysVisible: true,
       render: (r) => (
-        <span className="font-mono text-xs">{r.pull_date.slice(0, 16).replace("T", " ")}</span>
+        <span className="font-mono text-xs">{formatDateTime(r.pull_date)}</span>
       ),
       getValue: (r) => r.pull_date,
     },

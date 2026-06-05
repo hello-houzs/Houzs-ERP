@@ -63,9 +63,7 @@ export function BrowserPushSink() {
 
 function fireNotification(a: NotificationItem) {
   try {
-    const title = a.project_code
-      ? `${a.project_code} · ${a.project_name ?? ""}`.trim()
-      : "Houzs ERP";
+    const title = a.project_name || "Houzs ERP";
     const body = summarise(a);
     const tag = `houzs-${a.project_id}-${a.id}`;
     const n = new Notification(title, {

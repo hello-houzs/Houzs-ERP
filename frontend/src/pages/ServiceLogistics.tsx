@@ -200,6 +200,15 @@ export function ServiceLogistics() {
             rows={list.data.rows}
             getRowKey={(r) => r.id}
             onRowClick={(r) => nav(`/assr/${r.assr_id}`)}
+            resetFilters={{
+              active: !!(search || status || type),
+              onReset: () => {
+                setSearch("");
+                setStatus("");
+                setType("");
+                setPage(1);
+              },
+            }}
           />
           <div className="mt-4">
             <Pagination

@@ -670,6 +670,14 @@ function DocumentsView(props: DocsViewProps) {
           onChange: setSearch,
           placeholder: "Search PO no, supplier, ref…",
         }}
+        resetFilters={{
+          active: !!(search || status !== "outstanding"),
+          onReset: () => {
+            setSearch("");
+            setStatus("outstanding");
+            setPage(1);
+          },
+        }}
         columns={columns}
         rows={enrichedRows}
         loading={q.loading}

@@ -3,7 +3,6 @@ import { GripVertical, ChevronUp, ChevronDown, Plus, Pencil, Trash2, ShieldCheck
 import { useReorderable } from "../hooks/useReorderable";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
-import { ColorPicker } from "../components/ColorPicker";
 import { RowActionsMenu } from "../components/RowActionsMenu";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
@@ -51,6 +50,11 @@ interface ChecklistTemplateItem {
   title: string;
   description: string | null;
   required_perm: string | null;
+  /** mig 085 — display-only owner tag (DRIVER / SALES PIC / BD / PURCHASER). */
+  role_label: string | null;
+  /** mig 086 — when 1, every project instantiated from this template
+   *  surfaces this row in the Driver App's Documents card. */
+  crew_visible: number;
   due_offset_days: number | null;
   section_id: number | null;
   requires_review: number; // 0 | 1 — admin-driven flag (mig 050)
@@ -60,6 +64,8 @@ interface ChecklistTemplateSection {
   id: number;
   name: string;
   sort_order: number;
+  /** mig 085 — "list" (default) or "documents" (column-headed layout). */
+  display_mode?: "list" | "documents";
 }
 
 export function ProjectMaintenanceView() {
@@ -1052,7 +1058,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                               setDragOverSectionKey(null);
                             }}
                             className={cn(
-                              "grid grid-cols-1 gap-2 px-3 py-2 transition-colors sm:grid-cols-[auto_1fr_120px_auto] sm:items-center",
+                              "grid grid-cols-1 gap-2 px-3 py-2 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_110px_96px_auto] sm:items-center",
                               isDragging && "opacity-40",
                               isRowDropTarget && "bg-accent-soft/40"
                             )}
@@ -1100,6 +1106,18 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                               className="h-7 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
                             />
                             <input
+                              defaultValue={item.role_label ?? ""}
+                              key={`role-${item.id}-${item.role_label ?? ""}`}
+                              onBlur={(e) => {
+                                const v = e.target.value.trim().toUpperCase() || null;
+                                if (v !== (item.role_label ?? null))
+                                  patchItem(item.id, { role_label: v });
+                              }}
+                              placeholder="Role"
+                              title="Display-only owner tag (e.g. DRIVER, SALES PIC, BD, PURCHASER)"
+                              className="h-7 w-full rounded-md border border-border bg-surface px-2 text-[11px] uppercase tracking-wider outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                            />
+                            <input
                               defaultValue={item.due_offset_days ?? ""}
                               key={`offset-${item.id}-${item.due_offset_days ?? ""}`}
                               onBlur={(e) => {
@@ -1110,21 +1128,36 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                                   patchItem(item.id, { due_offset_days: n });
                               }}
                               type="number"
-                              placeholder="Days from start"
+                              placeholder="±d"
                               title="Days from project start_date (negative = before)"
-                              className="h-7 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                              className="h-7 w-full rounded-md border border-border bg-surface px-2 text-[11px] tabular-nums outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
                             />
-                            {/* Row actions — both "Need review" and
-                                Delete moved into a single ellipsis
-                                menu so the visible row only carries
-                                handle / title / offset / menu. The
-                                trigger gets a tiny brass dot when the
-                                template item is review-gated, so admins
-                                can scan the list without opening every
-                                menu. */}
-                            <RowActionsMenu
-                              indicator={!!item.requires_review}
-                              items={[
+                            {/* State strip — visible chips for the
+                                review-required and crew-visible flags
+                                (otherwise hidden inside the kebab menu
+                                and easy to miss across 19 rows). The
+                                same kebab still shows the toggles for
+                                editing. */}
+                            <div className="flex items-center justify-end gap-1.5">
+                              {!!item.requires_review && (
+                                <span
+                                  className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-800"
+                                  title="Review required before this task can be marked done"
+                                >
+                                  <ShieldCheck size={9} /> Review
+                                </span>
+                              )}
+                              {!!item.crew_visible && (
+                                <span
+                                  className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-accent"
+                                  title="Visible to crew (drivers + helpers) in the Driver App"
+                                >
+                                  <Eye size={9} /> Crew
+                                </span>
+                              )}
+                              <RowActionsMenu
+                                indicator={!!item.requires_review || !!item.crew_visible}
+                                items={[
                                 {
                                   type: "toggle",
                                   icon: ShieldCheck,
@@ -1136,6 +1169,16 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                                     }),
                                 },
                                 {
+                                  type: "toggle",
+                                  icon: Eye,
+                                  label: "Crew can view",
+                                  active: !!item.crew_visible,
+                                  onClick: () =>
+                                    patchItem(item.id, {
+                                      crew_visible: !item.crew_visible,
+                                    }),
+                                },
+                                {
                                   type: "action",
                                   icon: Trash2,
                                   label: "Delete",
@@ -1143,7 +1186,8 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                                   onClick: () => removeItem(item),
                                 },
                               ]}
-                            />
+                              />
+                            </div>
                           </li>
                         );
                       })}
@@ -1214,13 +1258,9 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
 }
 
 // ── Brand manager ────────────────────────────────────────────
-// Brands live in project_brands (migration 044). Colour shows up on
-// the calendar and list chips; sort_order decides dropdown position.
-
-const BRAND_PALETTE = [
-  "64748b", "3b82f6", "06b6d4", "10b981",
-  "f59e0b", "f97316", "ec4899", "8b5cf6",
-];
+// Brands live in project_brands (migration 044). The calendar now
+// tints by project status (mig 088), so brand colour is unused;
+// the column still exists in the DB for backward compatibility.
 
 interface BrandRow {
   id: number;
@@ -1237,7 +1277,6 @@ function BrandManager() {
     api.get("/api/projects/brands?full=1&include_inactive=1")
   );
   const [name, setName] = useState("");
-  const [color, setColor] = useState(BRAND_PALETTE[3]);
   const [adding, setAdding] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
@@ -1259,7 +1298,6 @@ function BrandManager() {
     try {
       await api.post("/api/projects/brands", {
         name: trimmed,
-        color,
         sort_order: (q.data?.data.length ?? 0) * 10,
       });
       setName("");
@@ -1309,8 +1347,8 @@ function BrandManager() {
         Brands
       </h2>
       <p className="mb-4 text-[12px] text-ink-secondary">
-        Shown in the project Brand dropdown and coloured chips. Renames cascade
-        to existing projects so historical data stays in sync.
+        Shown in the project Brand dropdown. Renames cascade to existing
+        projects so historical data stays in sync.
       </p>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -1320,12 +1358,6 @@ function BrandManager() {
           onKeyDown={(e) => e.key === "Enter" && add()}
           placeholder="New brand name…"
           className="h-9 min-w-[200px] flex-1 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-        />
-        <ColorPicker
-          value={color}
-          onChange={setColor}
-          presets={BRAND_PALETTE}
-          size={32}
         />
         <Button variant="primary" onClick={add} disabled={adding || !name.trim()}>
           Add
@@ -1397,12 +1429,6 @@ function BrandManager() {
                 <ChevronDown size={14} />
               </button>
             </div>
-            <ColorPicker
-              value={b.color}
-              onChange={(hex) => patch(b, { color: hex })}
-              presets={BRAND_PALETTE}
-              size={24}
-            />
             <input
               defaultValue={b.name}
               key={`name-${b.id}-${b.name}`}

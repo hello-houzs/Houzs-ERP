@@ -357,6 +357,16 @@ export function Trips() {
           onChange: (v) => setSearch(v),
           placeholder: "Search trip no, plate, driver…",
         }}
+        resetFilters={{
+          active: !!(search || warehouse || dateFrom || dateTo),
+          onReset: () => {
+            const next = new URLSearchParams(params);
+            ["search", "warehouse", "date_from", "date_to", "page"].forEach((k) =>
+              next.delete(k)
+            );
+            setParams(next, { replace: true });
+          },
+        }}
         columns={[
           {
             key: "trip_no",

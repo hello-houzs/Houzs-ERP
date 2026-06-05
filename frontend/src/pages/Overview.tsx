@@ -20,7 +20,7 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useAuth } from "../auth/AuthContext";
 import { api } from "../api/client";
-import { formatCurrency, formatDate, cn } from "../lib/utils";
+import { formatCurrency, formatDate, cn, APP_TZ, todayInAppTz } from "../lib/utils";
 import type {
   OrdersSummary,
   POSummary,
@@ -92,11 +92,13 @@ export function Overview() {
   const data = inbox.data;
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInAppTz();
   // en-GB locale puts the day before the month ("Monday, 4 May" rather
   // than en-US's "Monday, May 4"), matching the rest of the SPA's
-  // DD/MM date format.
+  // DD/MM date format. Pinned to GMT+8 so the headline reads as
+  // Malaysia time regardless of the browser's local zone.
   const todayHuman = new Date().toLocaleDateString("en-GB", {
+    timeZone: APP_TZ,
     weekday: "long",
     day: "numeric",
     month: "long",

@@ -154,7 +154,7 @@ async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: bo
         type: "project_task",
         id: r.id,
         title: r.title,
-        subtitle: `${r.project_code} · ${r.project_name}`,
+        subtitle: r.project_name,
         severity: overdue ? "error" : "info",
         due_date: r.due_date,
         link: `/projects`,
@@ -238,7 +238,7 @@ async function loadReviewQueue(env: Env, userId: number, perms: string[], isStar
         type: "project_review",
         id: r.id,
         title: r.title,
-        subtitle: `${r.project_code} · ${r.project_name} · ${r.review_status}`,
+        subtitle: `${r.project_name} · ${r.review_status}`,
         severity: "warning",
         link: `/projects`,
         meta: {
@@ -340,7 +340,7 @@ async function loadBlockers(env: Env, userId: number, perms: string[], isStar: b
     const rows = await env.DB.prepare(
       `SELECT d.id, d.phase, d.reported_by_role,
               d.item_code, d.item_description, d.reported_at,
-              p.id as project_id, p.code as project_code
+              p.id as project_id, p.name as project_name
          FROM project_defects d
          JOIN projects p ON p.id = d.project_id
         WHERE p.archived_at IS NULL
@@ -357,14 +357,14 @@ async function loadBlockers(env: Env, userId: number, perms: string[], isStar: b
         item_description: string | null;
         reported_at: string;
         project_id: number;
-        project_code: string;
+        project_name: string;
       }>();
     for (const r of rows.results ?? []) {
       items.push({
         type: "project_defect",
         id: r.id,
         title: r.item_code || r.item_description || "(unnamed defect)",
-        subtitle: `${r.project_code} · ${r.phase} · reported by ${r.reported_by_role}`,
+        subtitle: `${r.project_name} · ${r.phase} · reported by ${r.reported_by_role}`,
         severity: "warning",
         link: `/projects`,
         meta: { project_id: r.project_id, phase: r.phase },

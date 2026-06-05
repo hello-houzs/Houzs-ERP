@@ -20,7 +20,7 @@
  */
 import { Check, Clock } from "lucide-react";
 import type { AssrStage, AssrStageHistoryRow } from "../types";
-import { cn } from "../lib/utils";
+import { cn, formatTimestamp } from "../lib/utils";
 
 // ── Canonical 9-stage order + display labels (mirrors backend mig 074) ──
 
@@ -308,16 +308,16 @@ function buildTooltip(state: NodeState | undefined, idx: number, fullLabel: stri
   const lines: string[] = [`Stage ${idx + 1}: ${fullLabel}`, `Owner: ${owner}`];
   if (!state) return lines.join("\n");
   if (state.kind === "current") {
-    lines.push(`Entered: ${new Date(state.entered_at + (state.entered_at.endsWith("Z") ? "" : "Z")).toLocaleString()}`);
+    lines.push(`Entered: ${formatTimestamp(state.entered_at)}`);
     if (state.target_days != null && state.target_days > 0) {
       lines.push(`Elapsed: ${state.elapsed_days.toFixed(1)} / ${state.target_days} days (${Math.round(state.pct * 100)}%)`);
     }
   } else if (state.kind === "completed") {
     if (state.entered_at) {
-      lines.push(`Entered: ${new Date(state.entered_at + (state.entered_at.endsWith("Z") ? "" : "Z")).toLocaleString()}`);
+      lines.push(`Entered: ${formatTimestamp(state.entered_at)}`);
     }
     if (state.exited_at) {
-      lines.push(`Exited: ${new Date(state.exited_at + (state.exited_at.endsWith("Z") ? "" : "Z")).toLocaleString()}`);
+      lines.push(`Exited: ${formatTimestamp(state.exited_at)}`);
     }
     if (state.days_actual != null && state.target_days) {
       lines.push(`Took: ${state.days_actual.toFixed(1)} / ${state.target_days} days`);

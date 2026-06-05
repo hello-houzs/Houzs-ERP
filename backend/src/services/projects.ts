@@ -28,6 +28,11 @@ export function deriveProjectCode(input: {
   state?: string | null;
   venue?: string | null;
   brand?: string | null;
+  /** Optional event-type slug. When "solo", the organizer slot is
+   *  forced to the literal "SOLO" regardless of whether an organizer
+   *  was picked — a solo event is by definition not organised by
+   *  anyone. Mirrors `composeDefaultProjectName` on the frontend. */
+  event_type_slug?: string | null;
 }): string {
   const state = slugSegment(input.state);
   const venue = slugSegment(input.venue);
@@ -35,7 +40,8 @@ export function deriveProjectCode(input: {
   if (!state) throw new Error("state is required to generate a project code");
   if (!venue) throw new Error("venue is required to generate a project code");
   if (!brand) throw new Error("brand is required to generate a project code");
-  const organizer = slugSegment(input.organizer) || "SOLO";
+  const isSolo = (input.event_type_slug || "").toLowerCase() === "solo";
+  const organizer = isSolo ? "SOLO" : (slugSegment(input.organizer) || "SOLO");
   const yyyy = String(input.year);
   const mm = String(input.month).padStart(2, "0");
   return `${yyyy}-${mm}-${organizer}-${state}-${venue}-${brand}`;
@@ -81,6 +87,50 @@ export async function logProjectActivity(
     .run();
 }
 
+// ── Crew membership ───────────────────────────────────────────
+// Returns the phase(s) on which `userId` is crewed for `projectId`.
+// Empty array = not on the crew. Used by the Driver App project
+// endpoints (row-level gate) and by the phase-photo upload guard so
+// a setup-only helper can't upload to dismantle.
+export async function getUserPhasesOnProject(
+  env: Env,
+  projectId: number,
+  userId: number
+): Promise<Array<"setup" | "dismantle">> {
+  if (!userId) return [];
+  const row = await env.DB.prepare(
+    `SELECT setup_driver_user_id, setup_helper_1_id, setup_helper_2_id,
+            dismantle_driver_user_id, dismantle_helper_1_id, dismantle_helper_2_id
+       FROM projects WHERE id = ?`
+  )
+    .bind(projectId)
+    .first<{
+      setup_driver_user_id: number | null;
+      setup_helper_1_id: number | null;
+      setup_helper_2_id: number | null;
+      dismantle_driver_user_id: number | null;
+      dismantle_helper_1_id: number | null;
+      dismantle_helper_2_id: number | null;
+    }>();
+  if (!row) return [];
+  const phases: Array<"setup" | "dismantle"> = [];
+  if (
+    row.setup_driver_user_id === userId ||
+    row.setup_helper_1_id === userId ||
+    row.setup_helper_2_id === userId
+  ) {
+    phases.push("setup");
+  }
+  if (
+    row.dismantle_driver_user_id === userId ||
+    row.dismantle_helper_1_id === userId ||
+    row.dismantle_helper_2_id === userId
+  ) {
+    phases.push("dismantle");
+  }
+  return phases;
+}
+
 // ── Auto-derived name ─────────────────────────────────────────
 // Canonical project name format. Used by both createProject() and the
 // seed script so a future re-seed lands at the exact same string as
@@ -96,11 +146,17 @@ export function deriveProjectName(input: {
   brand?: string | null;
   organizer?: string | null;
   venue?: string | null;
+  /** Optional event-type slug. When "solo", the organizer slot is
+   *  forced to the literal "SOLO" regardless of organizer input. */
+  event_type_slug?: string | null;
 }): string {
   const state = (input.state || "").trim() || "—";
   const brand = (input.brand || "").trim() || "—";
-  const organizer = (input.organizer || "").trim() || "SOLO";
   const venue = (input.venue || "").trim() || "—";
+  const isSolo = (input.event_type_slug || "").toLowerCase() === "solo";
+  const organizer = isSolo
+    ? "SOLO"
+    : ((input.organizer || "").trim() || "SOLO");
   return `${state} [${brand}] ${organizer} @ ${venue}`;
 }
 
@@ -128,8 +184,22 @@ export async function createProject(env: Env, input: CreateProjectInput) {
   const anchor = input.start_date ? new Date(input.start_date) : now;
   const year = anchor.getFullYear();
   const month = anchor.getMonth() + 1;
+  // Resolve event-type slug from the id so the derive helpers can
+  // force the organizer slot to "SOLO" for solo events (matches the
+  // frontend's auto-fill). Missing or unknown ids fall through as
+  // null — derive helpers treat that as a non-solo event.
+  let eventTypeSlug: string | null = null;
+  if (input.event_type_id != null) {
+    const et = await env.DB.prepare(
+      `SELECT slug FROM project_event_types WHERE id = ?`
+    )
+      .bind(input.event_type_id)
+      .first<{ slug: string | null }>();
+    eventTypeSlug = et?.slug ?? null;
+  }
   // Derive code from identity fields. Throws if state/venue/brand are
-  // missing; route layer converts to a 400. Organizer null → "SOLO".
+  // missing; route layer converts to a 400. Organizer null OR
+  // event_type=solo → "SOLO".
   const baseCode = deriveProjectCode({
     year,
     month,
@@ -137,6 +207,7 @@ export async function createProject(env: Env, input: CreateProjectInput) {
     state: input.state,
     venue: input.venue,
     brand: input.brand,
+    event_type_slug: eventTypeSlug,
   });
   const code = await uniqueProjectCode(env, baseCode);
 
@@ -153,6 +224,7 @@ export async function createProject(env: Env, input: CreateProjectInput) {
       brand: input.brand,
       organizer: input.organizer,
       venue: input.venue,
+      event_type_slug: eventTypeSlug,
     });
   const r = await env.DB.prepare(
     `INSERT INTO projects (
@@ -221,21 +293,21 @@ export async function instantiateChecklistFromEventType(
   // 1. Clone sections, keeping a map from template section id → new
   //    project section id so we can translate item.section_id below.
   const tplSections = await env.DB.prepare(
-    `SELECT id, name, sort_order
+    `SELECT id, name, sort_order, display_mode
        FROM project_checklist_template_sections
       WHERE template_id = ?
       ORDER BY sort_order, id`
   )
     .bind(templateId)
-    .all<{ id: number; name: string; sort_order: number }>();
+    .all<{ id: number; name: string; sort_order: number; display_mode: string | null }>();
 
   const sectionIdMap = new Map<number, number>();
   for (const s of tplSections.results ?? []) {
     const ins = await env.DB.prepare(
-      `INSERT INTO project_checklist_sections (project_id, name, sort_order)
-       VALUES (?, ?, ?)`
+      `INSERT INTO project_checklist_sections (project_id, name, sort_order, display_mode)
+       VALUES (?, ?, ?, ?)`
     )
-      .bind(projectId, s.name, s.sort_order)
+      .bind(projectId, s.name, s.sort_order, s.display_mode || "list")
       .run();
     sectionIdMap.set(s.id, ins.meta.last_row_id as number);
   }
@@ -244,8 +316,8 @@ export async function instantiateChecklistFromEventType(
   //    (unless the template already specifies a custom perm). Section_id
   //    maps via sectionIdMap; unmapped sections fall through as null.
   const items = await env.DB.prepare(
-    `SELECT seq, title, description, required_perm, due_offset_days,
-            section_id, requires_review
+    `SELECT seq, title, description, required_perm, role_label, crew_visible,
+            due_offset_days, section_id, requires_review
        FROM project_checklist_template_items
       WHERE template_id = ?
       ORDER BY seq`
@@ -256,6 +328,8 @@ export async function instantiateChecklistFromEventType(
       title: string;
       description: string | null;
       required_perm: string | null;
+      role_label: string | null;
+      crew_visible: number | null;
       due_offset_days: number | null;
       section_id: number | null;
       requires_review: number | null;
@@ -272,8 +346,9 @@ export async function instantiateChecklistFromEventType(
       (item.requires_review ? "projects.approve" : null);
     await env.DB.prepare(
       `INSERT INTO project_checklist
-         (project_id, section_id, seq, title, description, required_perm, due_date, due_offset_days)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (project_id, section_id, seq, title, description, required_perm,
+          role_label, crew_visible, due_date, due_offset_days)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         projectId,
@@ -282,6 +357,8 @@ export async function instantiateChecklistFromEventType(
         item.title,
         item.description,
         requiredPerm,
+        item.role_label,
+        item.crew_visible ? 1 : 0,
         due,
         item.due_offset_days
       )
@@ -300,7 +377,7 @@ function resolveDueDate(startDate: string | null, offsetDays: number | null): st
 // ── Patch ─────────────────────────────────────────────────────
 
 const PATCH_FIELDS = [
-  "name", "stage",
+  "name", "stage", "status",
   "start_date", "end_date",
   "organizer", "state", "venue", "venue_address",
   "brand", "event_type_id",
@@ -312,6 +389,11 @@ const PATCH_FIELDS = [
   "dismantle_start_at", "dismantle_end_at",
   "setup_driver_user_id", "setup_lorry_id",
   "dismantle_driver_user_id", "dismantle_lorry_id",
+  // Phase helper crew (mig 083) — mirrors trips.helper_1_id / helper_2_id /
+  // helper_outsourced per phase so the trip-link auto-copy can fill the
+  // trip's empty crew slots from the project's planned crew.
+  "setup_helper_1_id", "setup_helper_2_id", "setup_helper_outsourced",
+  "dismantle_helper_1_id", "dismantle_helper_2_id", "dismantle_helper_outsourced",
   // Banner
   "banner_message", "banner_tone",
 ] as const;
@@ -489,13 +571,21 @@ export async function getProjectDetail(env: Env, id: number) {
             ud1.name as setup_driver_name,
             ud2.name as dismantle_driver_name,
             l1.plate as setup_lorry_plate,
-            l2.plate as dismantle_lorry_plate
+            l2.plate as dismantle_lorry_plate,
+            uhs1.name as setup_helper_1_name,
+            uhs2.name as setup_helper_2_name,
+            uhd1.name as dismantle_helper_1_name,
+            uhd2.name as dismantle_helper_2_name
        FROM projects p
        LEFT JOIN project_event_types et ON et.id = p.event_type_id
        LEFT JOIN users u1 ON u1.id = p.created_by
        LEFT JOIN users pic ON pic.id = p.pic_id
        LEFT JOIN users ud1 ON ud1.id = p.setup_driver_user_id
        LEFT JOIN users ud2 ON ud2.id = p.dismantle_driver_user_id
+       LEFT JOIN users uhs1 ON uhs1.id = p.setup_helper_1_id
+       LEFT JOIN users uhs2 ON uhs2.id = p.setup_helper_2_id
+       LEFT JOIN users uhd1 ON uhd1.id = p.dismantle_helper_1_id
+       LEFT JOIN users uhd2 ON uhd2.id = p.dismantle_helper_2_id
        LEFT JOIN lorries l1 ON l1.id = p.setup_lorry_id
        LEFT JOIN lorries l2 ON l2.id = p.dismantle_lorry_id
       WHERE p.id = ?`
@@ -525,7 +615,7 @@ export async function getProjectDetail(env: Env, id: number) {
   // by section_id; tasks with section_id IS NULL render as
   // "Uncategorised" on the frontend.
   const sections = await env.DB.prepare(
-    `SELECT id, name, sort_order, created_at
+    `SELECT id, name, sort_order, display_mode, created_at
        FROM project_checklist_sections
       WHERE project_id = ?
       ORDER BY sort_order, id`
@@ -785,6 +875,24 @@ export async function getProjectDetail(env: Env, id: number) {
     });
   }
 
+  // Sales attendees (mig 087) — reps physically attending the project.
+  // Reading from the sales_reps master so we can show code + name + the
+  // user-name fallback when the rep has a workspace login.
+  const salesAttendees = await env.DB.prepare(
+    `SELECT a.sales_rep_id, a.created_at,
+            r.code      as rep_code,
+            r.name      as rep_name,
+            r.user_id   as rep_user_id,
+            u.name      as user_name
+       FROM project_sales_attendees a
+       LEFT JOIN sales_reps r ON r.id = a.sales_rep_id
+       LEFT JOIN users u      ON u.id = r.user_id
+      WHERE a.project_id = ?
+      ORDER BY r.code, r.name`
+  )
+    .bind(id)
+    .all();
+
   return {
     project: { ...project, progress_pct, duration_days },
     finance: finance ?? null,
@@ -798,6 +906,7 @@ export async function getProjectDetail(env: Env, id: number) {
     attachments: attachments.results ?? [],
     defects: defects.results ?? [],
     sales_reports: salesReports.results ?? [],
+    sales_attendees: salesAttendees.results ?? [],
     activity: activity.results ?? [],
     team: team.results ?? [],
     trips: trips.results ?? [],
@@ -997,7 +1106,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
          p.start_date DESC, p.id DESC`;
 
   const rows = await env.DB.prepare(
-    `SELECT p.id, p.code, p.name, p.stage, p.brand,
+    `SELECT p.id, p.code, p.name, p.stage, p.status, p.brand,
             p.start_date, p.end_date,
             p.state, p.venue, p.booth_no, p.size_sqm,
             p.archived_at,
@@ -1166,6 +1275,8 @@ const CHECKLIST_PATCH_FIELDS = [
   "title", "description", "required_perm",
   "due_date", "owner_user_id", "seq", "notes",
   "section_id",
+  "role_label",
+  "crew_visible",
 ] as const;
 
 export async function patchChecklistItem(

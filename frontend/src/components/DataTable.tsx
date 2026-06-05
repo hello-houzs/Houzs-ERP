@@ -13,6 +13,7 @@ import {
   Table as TableIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
+import { ResetFiltersButton } from "./ResetFiltersButton";
 import { TableSkeleton } from "./Skeleton";
 import { ColumnsPanel, ColumnsPanelButton } from "./ColumnsPanel";
 import { UdfCell } from "./UdfCell";
@@ -83,6 +84,17 @@ interface Props<T> {
     placeholder?: string;
   };
   /**
+   * When provided, renders a "Reset" button next to the search input
+   * that is visible only while `filtersActive` is true. The page owns
+   * the meaning of "active" and the actual clear logic (URL params,
+   * sticky storage, pagination).
+   */
+  resetFilters?: {
+    active: boolean;
+    onReset: () => void;
+    label?: string;
+  };
+  /**
    * Server-side sort. When true, clicking a header doesn't sort the
    * visible rows in-memory — instead the parent gets the new sort via
    * `onSortChange` and is expected to re-query with `sort_by` /
@@ -133,6 +145,7 @@ export function DataTable<T>({
   udfTable,
   udfTableLabel,
   search,
+  resetFilters,
   serverSort,
   onSortChange,
   mobileCard,
@@ -374,6 +387,13 @@ export function DataTable<T>({
                 className="h-9 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20 sm:h-8 sm:text-[12px]"
               />
             </div>
+          )}
+          {resetFilters && (
+            <ResetFiltersButton
+              active={resetFilters.active}
+              onReset={resetFilters.onReset}
+              label={resetFilters.label}
+            />
           )}
           <div className="flex items-center gap-2 text-[11px] font-medium text-ink-secondary">
             {caption && (

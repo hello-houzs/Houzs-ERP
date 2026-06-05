@@ -50,11 +50,14 @@ app.get("/case", async (c) => {
     .bind(assr_id)
     .all();
 
-  // Timeline: only safe events. Staff free-text notes are never
-  // surfaced — we show stage transitions (no note), customer's own
-  // posts, case creation, and the satisfaction-survey submission.
+  // Timeline: only safe events. We surface stage transitions (no
+  // note), the customer's own posts, case creation, satisfaction
+  // survey submissions, AND staff notes that were explicitly flagged
+  // for the customer (category = 'customer', written via the staff
+  // POST /:id/notes with category="customer"). Internal/purchasing
+  // notes stay hidden.
   const activityRaw = await c.env.DB.prepare(
-    `SELECT id, action, from_value, to_value, note, source, created_at
+    `SELECT id, action, from_value, to_value, note, source, category, created_at
        FROM assr_activity
       WHERE assr_id = ? AND archived_at IS NULL
       ORDER BY created_at ASC`
@@ -67,6 +70,7 @@ app.get("/case", async (c) => {
       if (a.action === "stage_change") return true;
       if (a.action === "created") return true;
       if (a.action === "survey_submitted") return true;
+      if (a.action === "note" && a.category === "customer") return true;
       return false;
     })
     .map((a: any) => {
@@ -88,6 +92,9 @@ app.get("/case", async (c) => {
         base.label = "Photo uploaded";
       } else if (a.action === "survey_submitted") {
         base.label = "Satisfaction survey submitted";
+      } else if (a.action === "note" && a.category === "customer") {
+        base.label = "Note from Houzs";
+        base.note = a.note;
       } else {
         base.label = a.action;
       }

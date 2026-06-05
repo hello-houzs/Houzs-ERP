@@ -56,7 +56,7 @@ import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
 import { api, buildQuery } from "../api/client";
-import { formatCurrency, formatDate, cn } from "../lib/utils";
+import { formatCurrency, formatDate, formatDateTime, cn } from "../lib/utils";
 import { ServiceMetrics } from "./ServiceMetrics";
 import { ServiceSettingsView } from "./ServiceSettings";
 import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
@@ -658,6 +658,29 @@ function CasesView({
           onChange: (v) => { setPage(1); setSearch(v); },
           placeholder: "Search ASSR no, SO no, customer…",
         }}
+        resetFilters={{
+          active: !!(
+            search ||
+            stage !== "ALL" ||
+            showArchived ||
+            myCases ||
+            hideCompleted ||
+            creditorFilter
+          ),
+          onReset: () => {
+            setSearch("");
+            setStage("ALL");
+            setShowArchived(false);
+            setMyCases(false);
+            setHideCompleted(false);
+            setPage(1);
+            if (creditorFilter) {
+              const next = new URLSearchParams(params);
+              next.delete("creditor_code");
+              setParams(next, { replace: true });
+            }
+          },
+        }}
         columns={columns}
         rows={list.data?.data ?? null}
         loading={list.loading}
@@ -1165,6 +1188,7 @@ function DetailContent({
   }, [prioritiesQ.data]);
   const ncrOptions = (ncrCategoriesQ.data?.data ?? []).map((r) => r.slug);
   const [note, setNote] = useState("");
+  const [noteFormOpen, setNoteFormOpen] = useState(false);
   // Mig 064 — note posting now picks a category. Default 'purchasing'
   // (internal team comms) since most notes are operational. Switch to
   // 'customer' to make the entry visible on the customer portal.
@@ -1234,6 +1258,7 @@ function DetailContent({
       category: noteCategory,
     });
     setNote("");
+    setNoteFormOpen(false);
     detail.reload();
   }
 
@@ -1470,7 +1495,7 @@ function DetailContent({
             <div className="border-b border-border bg-ink-muted/5 px-5 py-2 text-[11px] text-ink-muted">
               <span className="font-semibold uppercase tracking-wider text-ink-secondary">Archived</span>
               {" · "}
-              {c.archived_at.slice(0, 16).replace("T", " ")} — read-only. Use Restore to reactivate.
+              {formatDateTime(c.archived_at)} — read-only. Use Restore to reactivate.
             </div>
           )}
 
@@ -1506,7 +1531,7 @@ function DetailContent({
                     ? "bg-amber-500/10 text-amber-700"
                     : "bg-synced/10 text-synced"
                 )}
-                title={`Deadline: ${c.deadline_at.slice(0, 16).replace("T", " ")}`}
+                title={`Deadline: ${formatDateTime(c.deadline_at)}`}
               >
                 <Calendar size={10} />
                 {c.is_breached === 1
@@ -1514,19 +1539,10 @@ function DetailContent({
                   : `${c.hours_to_deadline ?? 0}h left`}
               </span>
             )}
-            <button
-              onClick={async () => {
-                try {
-                  await api.openHtml(`/api/assr-print/${id}`);
-                } catch (e: any) {
-                  toast.error(e?.message || "Failed to open print view");
-                }
-              }}
-              className="ml-auto inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink hover:border-accent/40"
-              title="Open print / PDF view"
-            >
-              <Printer size={11} /> Print
-            </button>
+            <PrintMenu
+              caseId={id}
+              toast={toast}
+            />
           </div>
           <DetailGrid>
             <DetailMain>
@@ -1783,6 +1799,22 @@ function DetailContent({
             dialog={dialog}
           />
 
+          {/* ── Inspection (QA's inspection findings + report).
+              Renders once the case has reached pending_inspection or
+              later, or if a result / report is already on file.
+              `inspection_result` was added in mig 074 but never had a
+              UI surface — this is where it lives. */}
+          <InspectionCard
+            c={c}
+            patch={patch}
+            caseId={id}
+            attachments={attachments}
+            archived={!!c.archived_at}
+            detail={detail}
+            dialog={dialog}
+            toast={toast}
+          />
+
           {/* ── Resolution (filled as the case progresses) ────── */}
           <PanelSection title="Resolution">
             <InlineEdit
@@ -1899,12 +1931,40 @@ function DetailContent({
               value={c.supplier_pickup_at}
               onSave={(v) => patch({ supplier_pickup_at: v || null })}
             />
+            {(c.supplier_pickup_at || attachments.some((a: any) => a?.category === "pickup_form")) && (
+              <MilestoneAttachmentSlot
+                caseId={id}
+                category="pickup_form"
+                label="Pickup Form / Consignment Note"
+                emptyLabel="No pickup form yet."
+                uploadLabel="Upload pickup form"
+                attachments={attachments}
+                archived={!!c.archived_at}
+                detail={detail}
+                dialog={dialog}
+                toast={toast}
+              />
+            )}
             <InlineEdit
               label="Items Ready Date"
               type="date"
               value={c.items_ready_at}
               onSave={(v) => patch({ items_ready_at: v || null })}
             />
+            {(c.items_ready_at || attachments.some((a: any) => a?.category === "ready_doc")) && (
+              <MilestoneAttachmentSlot
+                caseId={id}
+                category="ready_doc"
+                label="Supplier Work Completion"
+                emptyLabel="No completion doc yet."
+                uploadLabel="Upload completion doc"
+                attachments={attachments}
+                archived={!!c.archived_at}
+                detail={detail}
+                dialog={dialog}
+                toast={toast}
+              />
+            )}
           </PanelSection>
 
           {/* Logistics */}
@@ -1917,6 +1977,7 @@ function DetailContent({
                   caseId={id}
                   archived={!!c.archived_at}
                   users={userOptions}
+                  attachments={attachments}
                   detail={detail}
                   dialog={dialog}
                   toast={toast}
@@ -1982,43 +2043,87 @@ function DetailContent({
             </PanelSection>
           )}
 
-          {/* Activity */}
-          <PanelSection title="Activity">
-            <div className="mb-3 flex gap-2">
-              <select
-                value={noteCategory}
-                onChange={(e) =>
-                  setNoteCategory(e.target.value as "purchasing" | "customer")
-                }
-                className="rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-accent"
-                title="Where this note is visible"
-              >
-                <option value="purchasing">Purchasing (internal)</option>
-                <option value="customer">Customer-visible</option>
-              </select>
-              <input
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addNote()}
-                placeholder={
-                  noteCategory === "customer"
-                    ? "Note customers will see..."
-                    : "Internal note..."
-                }
-                className="flex-1 rounded-md border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
-              />
-              <button
-                onClick={addNote}
-                disabled={!note.trim()}
-                className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
-              >
-                <MessageSquare size={12} />
-              </button>
+          {/* Timeline — chronological log of stage changes, notes,
+              customer comments, escalations, etc. Add-note form is
+              behind the header button so the timeline reads cleanly. */}
+          <section className="mb-3 rounded-md border border-border bg-surface p-3">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="h-px w-3 bg-accent/60" />
+              <Clock size={12} className="text-ink-secondary" />
+              <h3 className="flex-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                Timeline
+              </h3>
+              {!c.archived_at && (
+                <button
+                  onClick={() => setNoteFormOpen((x) => !x)}
+                  className="inline-flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-white shadow-sm hover:bg-accent/90"
+                >
+                  <Plus size={11} /> Add Note
+                </button>
+              )}
             </div>
+
+            {/* Add-note form — toggled by the header button. Stays
+                compact so it doesn't push the timeline below the fold. */}
+            {noteFormOpen && !c.archived_at && (
+              <div className="mb-3 rounded-md border border-accent/30 bg-accent-soft/15 p-2">
+                <div className="mb-2 flex items-center gap-2">
+                  <select
+                    value={noteCategory}
+                    onChange={(e) =>
+                      setNoteCategory(e.target.value as "purchasing" | "customer")
+                    }
+                    className="rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-accent"
+                    title="Where this note is visible"
+                  >
+                    <option value="purchasing">Purchasing (internal)</option>
+                    <option value="customer">Customer-visible</option>
+                  </select>
+                  <span className="text-[10px] text-ink-muted">
+                    {noteCategory === "customer"
+                      ? "The customer will see this note on the portal."
+                      : "Internal only — hidden from the customer."}
+                  </span>
+                </div>
+                <textarea
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) addNote();
+                  }}
+                  placeholder={
+                    noteCategory === "customer"
+                      ? "Write a note for the customer…"
+                      : "Internal note…"
+                  }
+                  rows={2}
+                  className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] outline-none focus:border-accent"
+                />
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setNote("");
+                      setNoteFormOpen(false);
+                    }}
+                    className="rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink-secondary hover:text-ink"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={addNote}
+                    disabled={!note.trim()}
+                    className="ml-auto rounded-md bg-accent px-4 py-1.5 text-[11px] font-bold uppercase tracking-wide text-white disabled:opacity-50"
+                  >
+                    Post note
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Filter pills (mig 064) — narrow the timeline to one
                 category. System events (stage changes, assignments)
                 live under 'system'. */}
-            <div className="mb-2 flex flex-wrap gap-1">
+            <div className="mb-3 flex flex-wrap gap-1">
               {(
                 [
                   { value: "all" as const, label: "All" },
@@ -2044,120 +2149,192 @@ function DetailContent({
                 );
               })}
             </div>
-            <div className="space-y-2">
-              {activity
-                .filter((a: any) => {
-                  if (activityFilter === "all") return true;
-                  // Older rows (pre-mig 064) without a category fall
-                  // into 'system' so they don't disappear when a
-                  // narrower filter is selected.
-                  return (a.category ?? "system") === activityFilter;
-                })
-                .map((a: any) => (
-                <div key={a.id} className={cn("group border-l-2 pl-3 text-[12px]", a.source === "customer" ? "border-accent" : "border-border")}>
-                  <div className="flex items-center gap-2 text-ink-muted">
-                    <span className="font-medium text-ink-secondary">
-                      {a.source === "customer"
-                        ? (a.customer_name_display || a.customer_email || "Customer")
-                        : (a.user_name || "System")}
-                    </span>
-                    {a.source === "customer" && (
-                      <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent">
-                        Customer
-                      </span>
-                    )}
-                    {/* Mig 064 category badge — only when set and not
-                        already covered by the source=customer badge. */}
-                    {a.category && a.source !== "customer" && (
-                      <span
-                        className={cn(
-                          "rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider",
-                          a.category === "purchasing" &&
-                            "bg-amber-100 text-amber-800",
-                          a.category === "customer" &&
-                            "bg-accent/15 text-accent",
-                          a.category === "system" &&
-                            "bg-bg text-ink-muted",
-                        )}
-                      >
-                        {a.category}
-                      </span>
-                    )}
-                    <span>&middot;</span>
-                    <span>{a.created_at.slice(0, 16).replace("T", " ")}</span>
-                    {/* Archive button — only on retractable action types.
-                        Stage changes, approvals, POs, escalations etc. are
-                        audit-trail and intentionally NOT archivable. */}
-                    {!c.archived_at && (a.action === "note" || a.action === "customer_comment") && (
-                      <button
-                        onClick={async () => {
-                          if (!await dialog.confirm("Archive this entry?")) return;
-                          try {
-                            await api.post(`/api/assr/activity/${a.id}/archive`);
-                            toast.success("Archived");
-                            detail.reload();
-                          } catch (e: any) {
-                            toast.error(e?.message || "Failed");
-                          }
-                        }}
-                        className="ml-auto rounded p-0.5 text-ink-muted opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
-                        title="Archive entry"
-                      >
-                        <Trash2 size={10} />
-                      </button>
-                    )}
+
+            {/* Timeline list. A vertical guide runs down the left edge;
+                each row anchors to a small ring marker so the eye can
+                trace the case's history at a glance. */}
+            {(() => {
+              const rows = activity.filter((a: any) => {
+                if (activityFilter === "all") return true;
+                return (a.category ?? "system") === activityFilter;
+              });
+              if (rows.length === 0) {
+                return (
+                  <div className="text-[12px] text-ink-muted">
+                    No activity yet
                   </div>
-                  {a.action === "stage_change" && (
-                    <div className="text-ink-secondary">
-                      Stage: {stageLabel(a.from_value || "")} &rarr; <span className="font-semibold">{stageLabel(a.to_value || "")}</span>
-                    </div>
-                  )}
-                  {a.action === "note" && <div className="text-ink">{a.note}</div>}
-                  {a.action === "created" && <div className="text-ink-secondary">Case created</div>}
-                  {a.action === "assignment" && (
-                    <div className="text-ink-secondary">
-                      Assigned to {userOptions.find((u) => String(u.id) === a.to_value)?.name || `user #${a.to_value}`}
-                    </div>
-                  )}
-                  {a.action === "approval" && (
-                    <div className="text-ink-secondary">
-                      Quality review: <span className="font-semibold">{a.to_value === "passed" ? "Passed" : "Reviewed"}</span>
-                    </div>
-                  )}
-                  {a.action === "po_generated" && (
-                    <div className="text-ink-secondary">
-                      PO generated: <span className="font-mono font-semibold">{a.to_value}</span>
-                    </div>
-                  )}
-                  {a.action === "escalated" && (
-                    <div className="text-err font-semibold">
-                      Case escalated — SLA breached &gt;24h
-                    </div>
-                  )}
-                  {a.action === "survey_submitted" && (
-                    <div className="text-ink-secondary">
-                      Customer submitted satisfaction survey: <span className="font-semibold">{a.to_value}/5</span>
-                      {a.note && <span className="ml-1 italic text-ink-muted">— {a.note}</span>}
-                    </div>
-                  )}
-                  {a.action === "customer_comment" && (
-                    <div className="text-ink">{a.note}</div>
-                  )}
-                  {a.action === "customer_upload" && (
-                    <div className="text-ink-secondary">
-                      Uploaded a photo{a.note ? ` (${a.note})` : ""}
-                    </div>
-                  )}
-                  {a.note && a.action === "stage_change" && (
-                    <div className="text-ink-muted italic">{a.note}</div>
-                  )}
-                </div>
-              ))}
-              {activity.length === 0 && (
-                <div className="text-[12px] text-ink-muted">No activity yet</div>
-              )}
-            </div>
-          </PanelSection>
+                );
+              }
+              return (
+                <ol className="relative space-y-3 pl-5">
+                  <span className="pointer-events-none absolute left-[7px] top-1.5 bottom-1.5 w-px bg-border" />
+                  {rows.map((a: any) => {
+                    const author =
+                      a.source === "customer"
+                        ? a.customer_name_display || a.customer_email || "Customer"
+                        : a.user_name || "System";
+                    const isEscalated = a.action === "escalated";
+                    const isCustomer = a.source === "customer";
+                    const archivable =
+                      !c.archived_at &&
+                      (a.action === "note" || a.action === "customer_comment");
+                    let title: React.ReactNode = a.action;
+                    let body: React.ReactNode = null;
+                    switch (a.action) {
+                      case "stage_change":
+                        title = (
+                          <>
+                            Status changed to{" "}
+                            <span className="font-bold">
+                              {stageLabel(a.to_value || "")}
+                            </span>
+                          </>
+                        );
+                        if (a.note) body = a.note;
+                        break;
+                      case "note":
+                        // Title is redundant — the CUSTOMER/PURCHASING
+                        // pill on the "by" row already says which kind.
+                        // The note body becomes the prominent line.
+                        title = null;
+                        body = a.note;
+                        break;
+                      case "created":
+                        title = "Case created";
+                        if (a.note) body = a.note;
+                        break;
+                      case "assignment":
+                        title = `Assigned to ${
+                          userOptions.find((u) => String(u.id) === a.to_value)
+                            ?.name || `user #${a.to_value}`
+                        }`;
+                        break;
+                      case "approval":
+                        title = (
+                          <>
+                            Quality review:{" "}
+                            <span className="font-bold">
+                              {a.to_value === "passed" ? "Passed" : "Reviewed"}
+                            </span>
+                          </>
+                        );
+                        break;
+                      case "po_generated":
+                        title = (
+                          <>
+                            PO generated:{" "}
+                            <span className="font-mono font-bold">
+                              {a.to_value}
+                            </span>
+                          </>
+                        );
+                        break;
+                      case "escalated":
+                        title = "Case escalated — SLA breached >24h";
+                        break;
+                      case "survey_submitted":
+                        title = (
+                          <>
+                            Satisfaction survey ·{" "}
+                            <span className="font-bold">{a.to_value}/5</span>
+                          </>
+                        );
+                        if (a.note) body = a.note;
+                        break;
+                      case "customer_comment":
+                        // Same reasoning as 'note' — the customer-coloured
+                        // ring marker + author "Customer" already convey
+                        // the kind. Comment body becomes the headline.
+                        title = null;
+                        body = a.note;
+                        break;
+                      case "customer_upload":
+                        title = "Photo uploaded";
+                        if (a.note) body = a.note;
+                        break;
+                    }
+                    return (
+                      <li key={a.id} className="group relative">
+                        <span
+                          className={cn(
+                            "absolute -left-5 top-1 h-3.5 w-3.5 rounded-full border-2 bg-surface",
+                            isEscalated
+                              ? "border-err"
+                              : isCustomer
+                                ? "border-accent"
+                                : "border-border"
+                          )}
+                        />
+                        <div className="flex items-center gap-2 text-[10.5px] text-ink-muted">
+                          <span>{formatDateTime(a.created_at)}</span>
+                          {archivable && (
+                            <button
+                              onClick={async () => {
+                                if (!(await dialog.confirm("Archive this entry?")))
+                                  return;
+                                try {
+                                  await api.post(
+                                    `/api/assr/activity/${a.id}/archive`
+                                  );
+                                  toast.success("Archived");
+                                  detail.reload();
+                                } catch (e: any) {
+                                  toast.error(e?.message || "Failed");
+                                }
+                              }}
+                              className="ml-auto rounded p-0.5 text-ink-muted opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
+                              title="Archive entry"
+                            >
+                              <Trash2 size={10} />
+                            </button>
+                          )}
+                        </div>
+                        {title && (
+                          <div
+                            className={cn(
+                              "text-[12.5px] font-bold",
+                              isEscalated ? "text-err" : "text-ink"
+                            )}
+                          >
+                            {title}
+                          </div>
+                        )}
+                        <div className="text-[10.5px] text-ink-muted">
+                          by {author}
+                          {a.category && a.source !== "customer" && (
+                            <span
+                              className={cn(
+                                "ml-1.5 inline-block rounded-full px-1.5 py-0 text-[9px] font-semibold uppercase tracking-wider align-middle",
+                                a.category === "purchasing" &&
+                                  "bg-amber-100 text-amber-800",
+                                a.category === "customer" &&
+                                  "bg-accent/15 text-accent",
+                                a.category === "system" && "bg-bg text-ink-muted"
+                              )}
+                            >
+                              {a.category}
+                            </span>
+                          )}
+                        </div>
+                        {body && (
+                          <div
+                            className={cn(
+                              "mt-1 whitespace-pre-line",
+                              title
+                                ? "text-[12px] text-ink-secondary"
+                                : "text-[12.5px] text-ink"
+                            )}
+                          >
+                            {body}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ol>
+              );
+            })()}
+          </section>
             </DetailMain>
 
             <DetailAside>
@@ -2257,7 +2434,7 @@ function DetailContent({
                 </div>
                 <div className="mt-1 text-ink-secondary">
                   By {c.approved_by_name || `user #${c.approved_by}`} ·{" "}
-                  {c.approved_at.slice(0, 16).replace("T", " ")}
+                  {formatDateTime(c.approved_at)}
                 </div>
               </div>
             ) : (
@@ -2548,6 +2725,74 @@ const VERIFICATION_OPTIONS = [
   { value: "rejected", label: "Rejected", tone: "err" as const },
 ];
 
+// ── Inspection card ────────────────────────────────────────────
+// Surfaces the v3.1 `inspection_result` field (pass / fail / na) +
+// an inspection-report attachment slot. Hidden on early-stage cases
+// to keep the page uncluttered; renders once the case has reached
+// pending_inspection or beyond, OR when there's already a result /
+// report on file.
+
+const INSPECTION_STAGES_OR_LATER: AssrStage[] = [
+  "pending_inspection",
+  "pending_item_pickup",
+  "pending_supplier_pickup",
+  "pending_item_ready",
+  "pending_delivery_service",
+  "completed",
+];
+
+const INSPECTION_OPTIONS = ["pass", "fail", "na"] as const;
+
+function InspectionCard({
+  c,
+  patch,
+  caseId,
+  attachments,
+  archived,
+  detail,
+  dialog,
+  toast,
+}: {
+  c: AssrCase;
+  patch: (body: Record<string, any>) => Promise<void>;
+  caseId: number;
+  attachments: any[];
+  archived: boolean;
+  detail: ReturnType<typeof useQuery>;
+  dialog: ReturnType<typeof useDialog>;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const stageReached = INSPECTION_STAGES_OR_LATER.includes(c.stage);
+  const hasResult = c.inspection_result != null;
+  const hasReport = (attachments ?? []).some(
+    (a: any) => a?.category === "inspection_report"
+  );
+  if (!stageReached && !hasResult && !hasReport) return null;
+
+  return (
+    <PanelSection title="Inspection">
+      <InlineEdit
+        label="Inspection Result"
+        value={c.inspection_result}
+        options={[...INSPECTION_OPTIONS]}
+        onSave={(v) => patch({ inspection_result: v })}
+      />
+      <MilestoneAttachmentSlot
+        caseId={caseId}
+        category="inspection_report"
+        label="Inspection Report"
+        emptyLabel="No inspection report uploaded yet."
+        uploadLabel="Upload inspection report"
+        attachments={attachments}
+        archived={archived}
+        detail={detail}
+        dialog={dialog}
+        toast={toast}
+      />
+    </PanelSection>
+  );
+}
+
 function VerificationCard({
   c,
   patch,
@@ -2707,24 +2952,51 @@ function VerificationCard({
 // flips to Completed. Reuses the existing attachments endpoint with
 // category=sign_off so storage + visibility toggles already work.
 
-function SignOffAttachmentSlot({
+// ── Milestone attachment slot ──────────────────────────────────
+// Generic per-category attachment slot, used at every stage handoff
+// where ops needs a paper trail (sign-off, inspection report, pickup
+// form, item-ready doc, delivery POD). Filters the case's existing
+// attachments by the given category and exposes a small Upload button
+// that hits the existing /api/assr/:id/attachments PUT route.
+
+type MilestoneCategory =
+  | "sign_off"
+  | "inspection_report"
+  | "pickup_form"
+  | "ready_doc"
+  | "delivery_pod";
+
+function MilestoneAttachmentSlot({
   caseId,
+  category,
+  label,
+  emptyLabel,
+  uploadLabel,
   attachments,
   archived,
   detail,
   dialog,
   toast,
+  compact,
 }: {
   caseId: number;
+  category: MilestoneCategory;
+  label: string;
+  emptyLabel?: string;
+  uploadLabel?: string;
   attachments: any[];
   archived: boolean;
   detail: ReturnType<typeof useQuery>;
   dialog: ReturnType<typeof useDialog>;
   toast: ReturnType<typeof useToast>;
+  /** Slimmer layout for inline use under a date field — drops the
+   *  uppercase header label since the surrounding field already
+   *  contextualises the slot. */
+  compact?: boolean;
 }) {
   const [uploading, setUploading] = useState(false);
-  const signOffs = (attachments ?? []).filter(
-    (a: any) => a?.category === "sign_off"
+  const matches = (attachments ?? []).filter(
+    (a: any) => a?.category === category
   );
 
   async function upload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -2735,12 +3007,12 @@ function SignOffAttachmentSlot({
       const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
       const buf = await file.arrayBuffer();
       await api.putBinary(
-        `/api/assr/${caseId}/attachments?category=sign_off&ext=${ext}&name=${encodeURIComponent(file.name)}`,
+        `/api/assr/${caseId}/attachments?category=${category}&ext=${ext}&name=${encodeURIComponent(file.name)}`,
         buf,
         file.type
       );
       detail.reload();
-      toast.success("Sign-off attachment uploaded");
+      toast.success(`${label} uploaded`);
     } catch (err: any) {
       toast.error(err?.message || "Upload failed");
     } finally {
@@ -2751,17 +3023,19 @@ function SignOffAttachmentSlot({
 
   return (
     <div>
-      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-        Sign-off Attachment
-      </div>
-      {signOffs.length > 0 ? (
+      {!compact && (
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          {label}
+        </div>
+      )}
+      {matches.length > 0 ? (
         <div className="mb-2 grid grid-cols-3 gap-2">
-          {signOffs.map((att: any) => (
+          {matches.map((att: any) => (
             <AttachmentThumb
               key={att.id}
               att={att}
               onArchive={archived ? undefined : async () => {
-                if (!await dialog.confirm("Archive this sign-off attachment?")) return;
+                if (!await dialog.confirm(`Archive this ${label.toLowerCase()}?`)) return;
                 try {
                   await api.post(`/api/assr/attachments/${att.id}/archive`);
                   toast.success("Archived");
@@ -2773,15 +3047,19 @@ function SignOffAttachmentSlot({
             />
           ))}
         </div>
-      ) : (
+      ) : !compact ? (
         <div className="mb-2 rounded-md border border-dashed border-border bg-bg/30 px-3 py-2 text-[11px] text-ink-muted">
-          No sign-off evidence yet.
+          {emptyLabel || `No ${label.toLowerCase()} yet.`}
         </div>
-      )}
+      ) : null}
       {!archived && (
         <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink hover:border-accent/40">
           <Upload size={12} />
-          {uploading ? "Uploading..." : signOffs.length ? "Replace / Add" : "Upload sign-off evidence"}
+          {uploading
+            ? "Uploading..."
+            : matches.length
+            ? "Replace / Add"
+            : (uploadLabel || `Upload ${label.toLowerCase()}`)}
           <input
             type="file"
             accept="image/*,.pdf"
@@ -2792,6 +3070,28 @@ function SignOffAttachmentSlot({
         </label>
       )}
     </div>
+  );
+}
+
+// Thin wrapper preserves the existing Quality Review call site —
+// shipped this morning with `category="sign_off"`. Future call sites
+// should use MilestoneAttachmentSlot directly.
+function SignOffAttachmentSlot(props: {
+  caseId: number;
+  attachments: any[];
+  archived: boolean;
+  detail: ReturnType<typeof useQuery>;
+  dialog: ReturnType<typeof useDialog>;
+  toast: ReturnType<typeof useToast>;
+}) {
+  return (
+    <MilestoneAttachmentSlot
+      {...props}
+      category="sign_off"
+      label="Sign-off Attachment"
+      emptyLabel="No sign-off evidence yet."
+      uploadLabel="Upload sign-off evidence"
+    />
   );
 }
 
@@ -2806,6 +3106,7 @@ function LogisticsRow({
   caseId,
   archived,
   users,
+  attachments,
   detail,
   dialog,
   toast,
@@ -2814,6 +3115,7 @@ function LogisticsRow({
   caseId: number;
   archived: boolean;
   users: { id: number; name: string | null; email?: string }[];
+  attachments: any[];
   detail: ReturnType<typeof useQuery>;
   dialog: ReturnType<typeof useDialog>;
   toast: ReturnType<typeof useToast>;
@@ -2989,7 +3291,126 @@ function LogisticsRow({
           {l.notes}
         </div>
       )}
+      {/* Delivery POD slot — case-level attachment shown on every
+          delivery row so ops can attach the signed POD next to the
+          row it belongs to. Single PODs per case in v1 (the
+          attachment is keyed by case, not by logistics row). */}
+      {l.type === "delivery" && (
+        <div className="mt-2 border-t border-border/60 pt-2">
+          <MilestoneAttachmentSlot
+            caseId={caseId}
+            category="delivery_pod"
+            label="Proof of Delivery"
+            emptyLabel="No POD uploaded yet."
+            uploadLabel="Upload POD"
+            attachments={attachments}
+            archived={archived}
+            detail={detail}
+            dialog={dialog}
+            toast={toast}
+            compact
+          />
+        </div>
+      )}
     </div>
+  );
+}
+
+// ── Print menu (header) ────────────────────────────────────────
+// Replaces the single Print button with a 3-variant chooser per the
+// proposal §12 print artifacts: Customer / Supplier / Office. Each
+// option appends a `?variant=` query param to the existing print
+// route — backend defaults to "office" so any legacy bookmark still
+// works.
+
+function PrintMenu({
+  caseId,
+  toast,
+}: {
+  caseId: number;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const [open, setOpen] = useState(false);
+
+  async function go(variant: "customer" | "supplier" | "office") {
+    setOpen(false);
+    try {
+      await api.openHtml(`/api/assr-print/${caseId}?variant=${variant}`);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to open print view");
+    }
+  }
+
+  // Click-outside close — listen on document while open.
+  useEffect(() => {
+    if (!open) return;
+    function onDown(ev: MouseEvent) {
+      const target = ev.target as HTMLElement | null;
+      if (target?.closest?.("[data-print-menu]")) return;
+      setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div className="relative ml-auto" data-print-menu>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink hover:border-accent/40"
+        title="Open print / PDF view"
+      >
+        <Printer size={11} /> Print
+        <ChevronRight
+          size={10}
+          className={cn("transition-transform", open ? "rotate-90" : "rotate-90")}
+          style={{ transform: open ? "rotate(270deg)" : "rotate(90deg)" }}
+        />
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 top-full z-30 mt-1 w-48 overflow-hidden rounded-md border border-border bg-surface shadow-stone"
+          role="menu"
+        >
+          <PrintMenuItem
+            label="Customer Copy"
+            hint="Tracker + QR to portal"
+            onClick={() => go("customer")}
+          />
+          <PrintMenuItem
+            label="Supplier Copy"
+            hint="PO, deadline, acknowledgement"
+            onClick={() => go("supplier")}
+          />
+          <PrintMenuItem
+            label="Office Copy"
+            hint="Full internal view"
+            onClick={() => go("office")}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PrintMenuItem({
+  label,
+  hint,
+  onClick,
+}: {
+  label: string;
+  hint: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      role="menuitem"
+      className="block w-full border-b border-border px-3 py-2 text-left text-[11.5px] last:border-b-0 hover:bg-bg/60"
+    >
+      <div className="font-semibold text-ink">{label}</div>
+      <div className="text-[10.5px] text-ink-muted">{hint}</div>
+    </button>
   );
 }
 
@@ -3032,7 +3453,7 @@ function LeadTimePill({
     priorityMap[c.priority] ||
     c.priority.charAt(0).toUpperCase() + c.priority.slice(1);
   const snapshotIso = c.stage_entered_at
-    ? c.stage_entered_at.slice(0, 16).replace("T", " ")
+    ? formatDateTime(c.stage_entered_at)
     : null;
   const title = snapshotIso
     ? `Stage target snapshotted on ${snapshotIso}. Changes to the priority's stage targets only affect future stages.`
@@ -4271,6 +4692,10 @@ function ByCreditorView({ onPickCreditor }: { onPickCreditor: () => void }) {
           value: search,
           onChange: setSearch,
           placeholder: "Search creditor code or name…",
+        }}
+        resetFilters={{
+          active: !!search,
+          onReset: () => setSearch(""),
         }}
         columns={columns}
         rows={q.data?.rows ?? null}

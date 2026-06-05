@@ -346,7 +346,16 @@ export interface AssrAttachment {
   r2_key: string;
   file_name: string | null;
   content_type: string | null;
-  category: "complaint" | "evidence" | "completion" | "signature" | "sign_off";
+  category:
+    | "complaint"
+    | "evidence"
+    | "completion"
+    | "signature"
+    | "sign_off"
+    | "inspection_report"
+    | "pickup_form"
+    | "ready_doc"
+    | "delivery_pod";
   uploaded_by: number | null;
   created_at: string;
 }

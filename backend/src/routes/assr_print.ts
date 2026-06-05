@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { getAssrDetail } from "../services/assr";
+import { renderStageTrackerHtml, STAGE_TRACKER_CSS } from "../services/printTracker";
+import { qrSvg, getOrIssueCustomerPortalToken, customerPortalUrlFor } from "../services/printQr";
 
 // Formal service-case document modeled on a standard Malaysian business
 // invoice/service report:
@@ -11,8 +13,15 @@ import { getAssrDetail } from "../services/assr";
 //   · Plain numbered sections
 //   · Black & white, light use of a single accent rule
 // No coloured backgrounds, no pills, no zebra rows, no decorative blocks.
+//
+// Three variants share the same chrome; differ in which sections they
+// include and what extras (tracker SVG, QR code, acknowledgement) ride
+// along. Variant chosen via `?variant=customer|supplier|office`.
+// Default `office` preserves the legacy single-template behaviour.
 
 const app = new Hono<{ Bindings: Env }>();
+
+type Variant = "office" | "customer" | "supplier";
 
 function esc(s: unknown): string {
   if (s === null || s === undefined) return "";
@@ -50,7 +59,6 @@ function fmtDateTime(s: string | null | undefined): string {
 }
 
 const STAGE_LABEL: Record<string, string> = {
-  // v3.1 9-stage workflow (mig 074)
   pending_review: "Pending Review",
   under_verification: "Under Verification",
   pending_solution: "Pending Solution",
@@ -60,7 +68,6 @@ const STAGE_LABEL: Record<string, string> = {
   pending_item_ready: "Pending Item Ready",
   pending_delivery_service: "Pending Delivery / Service",
   completed: "Completed",
-  // Legacy aliases — kept so any unmigrated row label still renders.
   registration: "Pending Review",
   triage: "Under Verification",
   action: "Pending Solution",
@@ -102,14 +109,38 @@ async function fetchAsDataUri(env: Env, key: string, fallbackMime = "image/png")
   }
 }
 
+/**
+ * Compute the on-paper "Target Completion" for the supplier variant.
+ * Uses `stage_entered_at + stage_target_days` for the case's CURRENT
+ * stage — i.e. the supplier sees how long they've got from now to
+ * the next handoff, not the case's e2e deadline.
+ */
+function supplierTargetDateIso(stageEnteredAt: string | null, stageTargetDays: number | null | undefined): string | null {
+  if (!stageEnteredAt || !stageTargetDays) return null;
+  const iso = stageEnteredAt.endsWith("Z") ? stageEnteredAt : stageEnteredAt + "Z";
+  const t0 = new Date(iso).getTime();
+  if (isNaN(t0)) return null;
+  return new Date(t0 + stageTargetDays * 24 * 60 * 60 * 1000).toISOString();
+}
+
 app.get("/:id", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.text("Invalid ID", 400);
+
+  const rawVariant = (c.req.query("variant") || "office").toLowerCase();
+  const variant: Variant =
+    rawVariant === "customer" ? "customer"
+    : rawVariant === "supplier" ? "supplier"
+    : "office";
+  const isCustomer = variant === "customer";
+  const isSupplier = variant === "supplier";
+  const isOffice = variant === "office";
 
   const detail = await getAssrDetail(c.env, id);
   if (!detail) return c.text("Not found", 404);
 
   const { case: cs, items, attachments, activity, logistics } = detail;
+  const stageHistory = (detail as any).stage_history ?? [];
 
   const logoUri = await fetchAsDataUri(c.env, "static/logo-wordmark.png");
 
@@ -119,8 +150,17 @@ app.get("/:id", async (c) => {
   const otherAttachments = attachments.filter(
     (a: any) => !(a.content_type || "").startsWith("image/")
   );
+  // Customer print only shows attachments flagged visible_to_customer.
+  // Supplier print shows everything that isn't customer-marked-private.
+  // Office sees the lot.
+  const showImage = (a: any): boolean => {
+    if (isOffice) return true;
+    if (isCustomer) return a.visible_to_customer === 1 || a.visible_to_customer === true;
+    return true; // supplier
+  };
   const inlinedImages: Array<{ category: string; file_name: string | null; data_url: string }> = [];
   for (const att of imageAttachments as any[]) {
+    if (!showImage(att)) continue;
     const uri = await fetchAsDataUri(c.env, att.r2_key as string, att.content_type || "image/jpeg");
     if (!uri) continue;
     inlinedImages.push({
@@ -130,22 +170,48 @@ app.get("/:id", async (c) => {
     });
   }
 
+  // Customer variant — generate (or reuse) a portal token + render QR.
+  let customerPortalUrl = "";
+  let qrInlineSvg = "";
+  if (isCustomer) {
+    const token = await getOrIssueCustomerPortalToken(c.env, id);
+    customerPortalUrl = customerPortalUrlFor(c.env, token);
+    qrInlineSvg = qrSvg(customerPortalUrl, 4);
+  }
+
+  // Supplier variant — derive the target-completion date for the
+  // current stage from the snapshotted `stage_target_days`.
+  const supplierTargetIso = isSupplier
+    ? supplierTargetDateIso((cs as any).stage_entered_at, (cs as any).stage_target_days)
+    : null;
+
+  const trackerHtml = (isCustomer || isSupplier)
+    ? renderStageTrackerHtml({
+        history: stageHistory,
+        currentStage: cs.stage,
+      })
+    : "";
+
+  const docTitle =
+    isCustomer ? "Customer Service Notice"
+    : isSupplier ? "Supplier Service Order"
+    : "After-Sales Service Report";
+
+  const docSubtitle =
+    isCustomer ? "Customer Copy"
+    : isSupplier ? "Supplier Copy — for acknowledgement"
+    : "";
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Service Report — ${esc(cs.assr_no)}</title>
+  <title>${esc(docTitle)} — ${esc(cs.assr_no)}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    /* A4 paper margin — the printable frame around every page.
-       Header & footer get repeated on each page via the CSS
-       table-group technique below; they live INSIDE this frame. */
-    @page {
-      size: A4;
-      margin: 12mm 10mm 12mm 10mm;
-    }
+    @page { size: A4; margin: 12mm 10mm 12mm 10mm; }
 
     *, *::before, *::after {
       box-sizing: border-box;
@@ -165,14 +231,6 @@ app.get("/:id", async (c) => {
       -moz-osx-font-smoothing: grayscale;
     }
 
-    /* ── Running header / footer via a real <table> element ───
-       Chrome only reliably paginates thead/tfoot when they sit
-       inside an actual <table>, not a <div display:table>. We
-       use a single-column table: thead for the letterhead,
-       tbody for the body content, tfoot for the computer-
-       generated notice. Browsers repeat thead + tfoot on every
-       printed page automatically — same mechanism that wraps
-       long HTML tables across page breaks. */
     table.sheet {
       width: 210mm;
       margin: 0 auto;
@@ -182,12 +240,6 @@ app.get("/:id", async (c) => {
     table.sheet td,
     table.sheet th { padding: 0; }
 
-    /* Stretch the full chain: html → body → table → tbody so a
-       filler row at the end of tbody can soak up leftover page
-       height and keep tfoot glued to the page bottom on short
-       content. Without explicit heights at every level, the
-       filler collapses to 0 and tfoot floats right after
-       content. */
     html, body { height: 100%; }
     table.sheet { height: 100%; }
     table.sheet > tbody > tr > td { vertical-align: top; }
@@ -209,22 +261,11 @@ app.get("/:id", async (c) => {
       }
     }
 
-    /* Cell padding — keeps content off the left/right edges
-       of the printable area. Kept tight because @page margin
-       already provides outer whitespace. */
     table.sheet > thead > tr > td { padding: 2mm 10mm 3mm 10mm; }
     table.sheet > tbody > tr > td { padding: 2mm 10mm 2mm 10mm; }
     table.sheet > tfoot > tr > td { padding: 2mm 10mm 2mm 10mm; }
-    /* Filler row — absorbs leftover vertical space on the last
-       page so the tfoot sticks to the page bottom. */
-    table.sheet > tbody > tr.filler > td {
-      padding: 0 !important;
-      height: 100%;
-    }
+    table.sheet > tbody > tr.filler > td { padding: 0 !important; height: 100%; }
 
-    /* ── Letterhead layout (inside .lh-cell) ──────────────────
-       Logo left, company particulars right, separated from the
-       body content by a single bold rule. */
     .letterhead {
       display: flex;
       justify-content: space-between;
@@ -232,307 +273,145 @@ app.get("/:id", async (c) => {
       padding-bottom: 4mm;
       border-bottom: 1.5pt solid #000;
     }
-    .letterhead .logo {
-      max-height: 46px;
-      max-width: 210px;
-      object-fit: contain;
-      display: block;
-    }
-    .letterhead .logo-fallback {
-      font-weight: 700;
-      font-size: 18pt;
-      letter-spacing: 1.2pt;
-      color: #000;
-      text-transform: uppercase;
-    }
-    .letterhead .company {
-      text-align: right;
-      font-size: 8.5pt;
-      line-height: 1.4;
-      color: #000;
-      max-width: 95mm;
-    }
-    .letterhead .company .co-name {
-      font-weight: 700;
-      font-size: 10pt;
-      letter-spacing: 0.3pt;
-      text-transform: uppercase;
-    }
-    .letterhead .company .reg-no {
-      font-family: "Roboto Mono", monospace;
-      font-size: 8pt;
-      margin-top: 0.5pt;
-    }
+    .letterhead .logo { max-height: 46px; max-width: 210px; object-fit: contain; display: block; }
+    .letterhead .logo-fallback { font-weight: 700; font-size: 18pt; letter-spacing: 1.2pt; color: #000; text-transform: uppercase; }
+    .letterhead .company { text-align: right; font-size: 8.5pt; line-height: 1.4; color: #000; max-width: 95mm; }
+    .letterhead .company .co-name { font-weight: 700; font-size: 10pt; letter-spacing: 0.3pt; text-transform: uppercase; }
+    .letterhead .company .reg-no { font-family: "Roboto Mono", monospace; font-size: 8pt; margin-top: 0.5pt; }
 
-    /* ── Document title ─────────────────────────────────────
-       Plain, centered, all caps, tracked. The way every formal
-       document names itself (INVOICE, DELIVERY ORDER, etc.). */
-    .doc-title {
-      text-align: center;
-      margin: 0 0 8mm 0;
-    }
-    .doc-title h1 {
-      margin: 0;
-      font-size: 14pt;
-      font-weight: 500;
-      letter-spacing: 4pt;
-      text-transform: uppercase;
-    }
-    .doc-title .ref {
-      margin-top: 3mm;
-      font-family: "Roboto Mono", monospace;
-      font-size: 10pt;
-    }
+    .doc-title { text-align: center; margin: 0 0 6mm 0; }
+    .doc-title h1 { margin: 0; font-size: 14pt; font-weight: 500; letter-spacing: 4pt; text-transform: uppercase; }
+    .doc-title .subtitle { margin-top: 2mm; font-size: 9pt; letter-spacing: 2pt; text-transform: uppercase; color: #555; }
+    .doc-title .ref { margin-top: 3mm; font-family: "Roboto Mono", monospace; font-size: 10pt; }
 
-    /* ── Info rows (Customer / Service Details) ────────────
-       Two columns of labeled key/value lines — no borders,
-       no boxes. Customer on left, document metadata on right. */
+    /* Info strip with optional QR panel on the side */
     .info {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 10mm;
-      margin-bottom: 10mm;
+      margin-bottom: 8mm;
+    }
+    .info.with-qr {
+      grid-template-columns: 1fr 1fr 38mm;
     }
     .info .col .label {
-      font-size: 8pt;
-      letter-spacing: 1pt;
-      text-transform: uppercase;
-      color: #555;
-      border-bottom: 0.5pt solid #000;
-      padding-bottom: 1.5mm;
-      margin-bottom: 2.5mm;
-      font-weight: 700;
+      font-size: 8pt; letter-spacing: 1pt; text-transform: uppercase; color: #555;
+      border-bottom: 0.5pt solid #000; padding-bottom: 1.5mm; margin-bottom: 2.5mm; font-weight: 700;
     }
     .info .col .line {
-      display: flex;
-      gap: 4mm;
-      padding: 2mm 0;
-      border-bottom: 0.4pt solid #d0d0d0;
-      font-size: 10pt;
+      display: flex; gap: 4mm; padding: 2mm 0; border-bottom: 0.4pt solid #d0d0d0; font-size: 10pt;
     }
     .info .col .line:last-child { border-bottom: none; }
-    .info .col .line .k {
-      flex: 0 0 26mm;
-      color: #555;
-    }
-    .info .col .line .v {
-      flex: 1;
-      color: #000;
-      font-weight: 500;
-    }
-    .info .col .name-line {
-      font-size: 11pt;
-      font-weight: 700;
-      margin-bottom: 1mm;
-    }
+    .info .col .line .k { flex: 0 0 26mm; color: #555; }
+    .info .col .line .v { flex: 1; color: #000; font-weight: 500; }
+    .info .col .name-line { font-size: 11pt; font-weight: 700; margin-bottom: 1mm; }
 
-    /* ── Section heading ────────────────────────────────────
-       Small-caps label followed by a thin full-width rule.
-       Clean sectioning used in invoices and service reports. */
-    section { margin-top: 8mm; page-break-inside: avoid; }
+    .qr-panel {
+      border: 0.6pt solid #000; padding: 3mm; text-align: center;
+      display: flex; flex-direction: column; align-items: center; gap: 2mm;
+    }
+    .qr-panel .qr-cap {
+      font-size: 7.5pt; letter-spacing: 1pt; text-transform: uppercase; color: #555; font-weight: 700;
+    }
+    .qr-panel .qr-svg { width: 32mm; height: 32mm; }
+    .qr-panel .qr-svg svg { width: 100%; height: 100%; display: block; }
+    .qr-panel .qr-url { font-family: "Roboto Mono", monospace; font-size: 6.5pt; word-break: break-all; line-height: 1.3; color: #333; }
+
+    section { margin-top: 7mm; page-break-inside: avoid; }
     h2.sec {
-      font-size: 9.5pt;
-      font-weight: 700;
-      letter-spacing: 2pt;
-      text-transform: uppercase;
-      margin: 0 0 3mm 0;
-      padding-bottom: 2mm;
-      border-bottom: 0.8pt solid #000;
+      font-size: 9.5pt; font-weight: 700; letter-spacing: 2pt; text-transform: uppercase;
+      margin: 0 0 3mm 0; padding-bottom: 2mm; border-bottom: 0.8pt solid #000;
     }
 
-    /* ── Items list ────────────────────────────────────────
-       Invoice-style list: thin rules only, no fills, no zebra.
-       Header row uses bold uppercase, body is plain. */
-    .items {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    .items th {
-      text-align: left;
-      font-size: 8pt;
-      letter-spacing: 1pt;
-      text-transform: uppercase;
-      font-weight: 700;
-      padding: 2mm 2mm;
-      color: #555;
-      border-bottom: 0.4pt solid #d0d0d0;
-    }
-    .items td {
-      font-size: 10pt;
-      padding: 2mm 2mm;
-      border-bottom: 0.4pt solid #d0d0d0;
-      vertical-align: top;
-    }
+    .items { width: 100%; border-collapse: collapse; }
+    .items th { text-align: left; font-size: 8pt; letter-spacing: 1pt; text-transform: uppercase; font-weight: 700; padding: 2mm 2mm; color: #555; border-bottom: 0.4pt solid #d0d0d0; }
+    .items td { font-size: 10pt; padding: 2mm 2mm; border-bottom: 0.4pt solid #d0d0d0; vertical-align: top; }
     .items tr:last-child td { border-bottom: 0.4pt solid #d0d0d0; }
     .items .num { text-align: right; font-variant-numeric: tabular-nums; font-family: "Roboto Mono", monospace; }
     .items .code { font-family: "Roboto Mono", monospace; font-size: 9.5pt; }
 
-    /* ── Labeled info rows (used inside sections) ──────────
-       Simple two-column list, one label per line. Used for
-       Issue Details / Resolution / Cost / Closure blocks. */
-    .rows .row {
-      display: flex;
-      gap: 4mm;
-      padding: 2mm 0;
-      border-bottom: 0.4pt solid #d0d0d0;
-      font-size: 10pt;
-    }
+    .rows .row { display: flex; gap: 4mm; padding: 2mm 0; border-bottom: 0.4pt solid #d0d0d0; font-size: 10pt; }
     .rows .row:last-child { border-bottom: none; }
-    .rows .row .k {
-      flex: 0 0 48mm;
-      color: #555;
-    }
-    .rows .row .v {
-      flex: 1;
-      color: #000;
-      font-weight: 500;
-    }
+    .rows .row .k { flex: 0 0 48mm; color: #555; }
+    .rows .row .v { flex: 1; color: #000; font-weight: 500; }
     .rows .row .v.mono { font-family: "Roboto Mono", monospace; }
-    .rows-2col {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0 10mm;
-    }
+    .rows-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10mm; }
     .rows-2col .row .k { flex-basis: 38mm; }
 
-    /* ── Paragraph-style descriptive text ──────────────────
-       No colored backgrounds or bordered blocks — plain
-       indented paragraphs with a preceding caption, like the
-       "Remarks:" or "Particulars:" section on an invoice. */
     .para { margin-top: 2mm; font-size: 10pt; line-height: 1.6; }
-    .para .cap {
-      font-size: 8pt;
-      font-weight: 700;
-      letter-spacing: 1pt;
-      text-transform: uppercase;
-      color: #555;
-      margin-bottom: 1mm;
-    }
+    .para .cap { font-size: 8pt; font-weight: 700; letter-spacing: 1pt; text-transform: uppercase; color: #555; margin-bottom: 1mm; }
     .para .body { white-space: pre-line; }
 
-    /* ── Photo grid ────────────────────────────────────────
-       Plain bordered photos with a small caption. */
-    .photos {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 3mm;
-    }
-    .photo {
-      border: 0.5pt solid #000;
-      page-break-inside: avoid;
-    }
+    .photos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; }
+    .photo { border: 0.5pt solid #000; page-break-inside: avoid; }
     .photo img { width: 100%; height: 44mm; object-fit: cover; display: block; }
-    .photo .cap {
-      padding: 2mm 2mm;
-      font-size: 7.5pt;
-      letter-spacing: 0.8pt;
-      text-transform: uppercase;
-      color: #555;
-      border-top: 0.4pt solid #000;
-      text-align: center;
-    }
+    .photo .cap { padding: 2mm 2mm; font-size: 7.5pt; letter-spacing: 0.8pt; text-transform: uppercase; color: #555; border-top: 0.4pt solid #000; text-align: center; }
 
-    /* ── Timeline (simple two-column list) ─────────────────
-       Left: timestamp. Right: action description. */
-    .timeline .entry {
-      display: grid;
-      grid-template-columns: 40mm 1fr;
-      gap: 5mm;
-      padding: 2mm 0;
-      border-bottom: 0.4pt solid #d0d0d0;
-      font-size: 10pt;
-      page-break-inside: avoid;
-    }
+    .timeline .entry { display: grid; grid-template-columns: 40mm 1fr; gap: 5mm; padding: 2mm 0; border-bottom: 0.4pt solid #d0d0d0; font-size: 10pt; page-break-inside: avoid; }
     .timeline .entry:last-child { border-bottom: none; }
-    .timeline .when {
-      font-family: "Roboto Mono", monospace;
-      font-size: 8.5pt;
-      color: #333;
-    }
-    .timeline .who {
-      font-weight: 700;
-      color: #000;
-      margin-right: 3pt;
-    }
+    .timeline .when { font-family: "Roboto Mono", monospace; font-size: 8.5pt; color: #333; }
+    .timeline .who { font-weight: 700; color: #000; margin-right: 3pt; }
 
-    /* ── Totals line ───────────────────────────────────────
-       Right-aligned, single row above a heavy rule — like
-       the total on an invoice. */
-    .total-line {
-      margin-top: 4mm;
-      display: flex;
-      justify-content: flex-end;
-    }
-    .total-line .row {
-      display: flex;
-      justify-content: space-between;
-      gap: 18mm;
-      min-width: 80mm;
-      padding: 2mm 0;
-      border-top: 1pt solid #000;
-      border-bottom: 1.5pt solid #000;
-      font-size: 11pt;
-      font-weight: 700;
-      letter-spacing: 0.5pt;
-      text-transform: uppercase;
-    }
+    .total-line { margin-top: 4mm; display: flex; justify-content: flex-end; }
+    .total-line .row { display: flex; justify-content: space-between; gap: 18mm; min-width: 80mm; padding: 2mm 0; border-top: 1pt solid #000; border-bottom: 1.5pt solid #000; font-size: 11pt; font-weight: 700; letter-spacing: 0.5pt; text-transform: uppercase; }
     .total-line .v { font-family: "Roboto Mono", monospace; }
 
-    /* ── Footer layout (inside .ft-cell) ──────────────────────
-       One-line computer-generated notice. Repeats on every
-       page via table-footer-group. */
-    .foot {
-      padding-top: 2mm;
-      border-top: 0.5pt solid #000;
-      text-align: center;
-      font-size: 8pt;
-      color: #555;
-      letter-spacing: 0.5pt;
+    /* Supplier-only PO banner — highlighted across the page */
+    .po-banner {
+      display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 4mm;
+      padding: 3mm 4mm; border: 1.5pt solid #000; margin-top: 4mm;
+    }
+    .po-banner .col .k {
+      font-size: 7.5pt; letter-spacing: 1pt; text-transform: uppercase; color: #555; font-weight: 700;
+    }
+    .po-banner .col .v {
+      font-family: "Roboto Mono", monospace; font-size: 12pt; font-weight: 700; margin-top: 1mm;
+    }
+    .po-banner .col.deadline .v { color: #b91c1c; }
+
+    /* Supplier-only acknowledgement section */
+    .ack { margin-top: 8mm; page-break-inside: avoid; }
+    .ack .check-row {
+      display: flex; align-items: center; gap: 6mm; padding: 3mm 0;
+      border-bottom: 0.4pt solid #d0d0d0; font-size: 10pt;
+    }
+    .ack .check-row .box {
+      width: 5mm; height: 5mm; border: 1pt solid #000; flex-shrink: 0;
+    }
+    .ack .sig-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10mm 14mm; margin-top: 6mm;
+    }
+    .ack .sig-grid .sig {
+      border-top: 0.6pt solid #000; padding-top: 1.5mm;
+      font-size: 8pt; letter-spacing: 1pt; text-transform: uppercase; color: #555; font-weight: 700;
+    }
+    .ack .sig-grid .sig-box {
+      height: 18mm; border-bottom: 0.6pt solid #000;
     }
 
-    /* ── Screen-only action bar ────────────────────────── */
+    .foot { padding-top: 2mm; border-top: 0.5pt solid #000; text-align: center; font-size: 8pt; color: #555; letter-spacing: 0.5pt; }
+
     .print-bar {
-      position: fixed;
-      top: 14px; right: 14px;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      z-index: 100;
-      padding: 6px;
-      background: rgba(255,255,255,0.95);
-      backdrop-filter: blur(6px);
-      border-radius: 3pt;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+      position: fixed; top: 14px; right: 14px;
+      display: flex; gap: 8px; align-items: center; z-index: 100;
+      padding: 6px; background: rgba(255,255,255,0.95); backdrop-filter: blur(6px);
+      border-radius: 3pt; box-shadow: 0 4px 16px rgba(0,0,0,0.15);
     }
-    .print-bar .tip {
-      max-width: 260px;
-      padding: 0 8px;
-      font-size: 10.5px;
-      line-height: 1.4;
-      color: #444;
-    }
+    .print-bar .tip { max-width: 260px; padding: 0 8px; font-size: 10.5px; line-height: 1.4; color: #444; }
     .print-bar .tip strong { color: #000; }
     .print-bar .tip em { font-style: normal; background: #f2ead9; padding: 0 3px; border-radius: 2px; }
     .print-bar button {
-      padding: 8pt 14pt;
-      background: #000;
-      color: #fff;
-      border: none;
-      border-radius: 2pt;
-      font-family: "Google Sans", "Roboto", Helvetica, Arial, sans-serif;
-      font-size: 8.5pt;
-      font-weight: 700;
-      letter-spacing: 1.5pt;
-      text-transform: uppercase;
-      cursor: pointer;
+      padding: 8pt 14pt; background: #000; color: #fff; border: none; border-radius: 2pt;
+      font-family: "Google Sans", "Roboto", Helvetica, Arial, sans-serif; font-size: 8.5pt;
+      font-weight: 700; letter-spacing: 1.5pt; text-transform: uppercase; cursor: pointer;
     }
-    .print-bar button.secondary {
-      background: #fff; color: #000; border: 0.5pt solid #000;
-    }
+    .print-bar button.secondary { background: #fff; color: #000; border: 0.5pt solid #000; }
     @media print { .print-bar { display: none !important; } }
 
     .muted { color: #555; }
     .small { font-size: 8.5pt; }
+
+    ${STAGE_TRACKER_CSS}
   </style>
 </head>
 <body>
@@ -548,7 +427,6 @@ app.get("/:id", async (c) => {
 
   <table class="sheet">
 
-    <!-- ═══ Running letterhead (thead repeats every page) ═══ -->
     <thead><tr><td>
       <div class="letterhead">
         <div>
@@ -565,36 +443,63 @@ app.get("/:id", async (c) => {
       </div>
     </td></tr></thead>
 
-    <!-- ═══ Main content ═══ -->
     <tbody><tr><td>
 
-    <!-- Title -->
     <div class="doc-title">
-      <h1>After-Sales Service Report</h1>
+      <h1>${esc(docTitle)}</h1>
+      ${docSubtitle ? `<div class="subtitle">${esc(docSubtitle)}</div>` : ""}
       <div class="ref">Report No. ${esc(cs.assr_no)}</div>
     </div>
 
-    <!-- Customer / Report metadata -->
-    <div class="info">
+    ${trackerHtml}
+
+    <!-- Customer / Report metadata. Customer variant adds a QR panel
+         in a third column; Supplier variant keeps the 2-col layout but
+         drops customer phone + address from the customer block. -->
+    <div class="info${isCustomer ? " with-qr" : ""}">
       <div class="col">
-        <div class="label">Customer</div>
+        <div class="label">${isSupplier ? "Bill To" : "Customer"}</div>
         <div class="name-line">${esc(cs.customer_name || "—")}</div>
-        <div class="line"><span class="k">Phone</span><span class="v">${esc(cs.phone || "—")}</span></div>
+        ${isSupplier ? "" : `<div class="line"><span class="k">Phone</span><span class="v">${esc(cs.phone || "—")}</span></div>`}
         <div class="line"><span class="k">Location</span><span class="v">${esc(cs.location || "—")}</span></div>
-        ${cs.addr1 ? `<div class="line"><span class="k">Address</span><span class="v">${esc([cs.addr1, cs.addr2, cs.addr3, cs.addr4].filter(Boolean).join(", "))}</span></div>` : ""}
-        <div class="line"><span class="k">Sales Agent</span><span class="v">${esc(cs.sales_agent || "—")}</span></div>
+        ${cs.addr1 && !isSupplier ? `<div class="line"><span class="k">Address</span><span class="v">${esc([cs.addr1, cs.addr2, cs.addr3, cs.addr4].filter(Boolean).join(", "))}</span></div>` : ""}
+        ${isOffice ? `<div class="line"><span class="k">Sales Agent</span><span class="v">${esc(cs.sales_agent || "—")}</span></div>` : ""}
       </div>
       <div class="col">
-        <div class="label">Report Details</div>
+        <div class="label">${isSupplier ? "Service Order" : "Report Details"}</div>
         <div class="line"><span class="k">Date</span><span class="v">${fmtDate(cs.complained_date)}</span></div>
         <div class="line"><span class="k">SO No.</span><span class="v">${esc(cs.doc_no)}</span></div>
         ${cs.po_no ? `<div class="line"><span class="k">PO No.</span><span class="v">${esc(cs.po_no)}</span></div>` : ""}
         <div class="line"><span class="k">Status</span><span class="v">${esc(STAGE_LABEL[cs.stage] || cs.stage)}</span></div>
         <div class="line"><span class="k">Priority</span><span class="v" style="text-transform: capitalize;">${esc(cs.priority || "normal")}</span></div>
-        ${cs.deadline_at ? `<div class="line"><span class="k">Deadline</span><span class="v">${fmtDateTime(cs.deadline_at)}</span></div>` : ""}
-        <div class="line"><span class="k">Prepared By</span><span class="v">${esc(cs.created_by_name || "—")}</span></div>
+        ${cs.deadline_at && !isCustomer ? `<div class="line"><span class="k">Deadline</span><span class="v">${fmtDateTime(cs.deadline_at)}</span></div>` : ""}
+        ${isOffice ? `<div class="line"><span class="k">Prepared By</span><span class="v">${esc((cs as any).created_by_name || "—")}</span></div>` : ""}
+      </div>
+      ${isCustomer ? `
+      <div class="qr-panel">
+        <div class="qr-cap">Track this case</div>
+        <div class="qr-svg">${qrInlineSvg}</div>
+        <div class="qr-url">${esc(customerPortalUrl)}</div>
+      </div>` : ""}
+    </div>
+
+    ${isSupplier ? `
+    <!-- Supplier PO banner — highlighted PO + creditor + deadline -->
+    <div class="po-banner">
+      <div class="col">
+        <div class="k">Supplier (Creditor)</div>
+        <div class="v" style="font-size: 11pt;">${esc((cs as any).creditor_name || (cs as any).creditor_code || "—")}</div>
+      </div>
+      <div class="col">
+        <div class="k">PO Number</div>
+        <div class="v">${esc(cs.po_no || "—")}</div>
+      </div>
+      <div class="col deadline">
+        <div class="k">Target Completion</div>
+        <div class="v">${supplierTargetIso ? fmtDate(supplierTargetIso) : "—"}</div>
       </div>
     </div>
+    ` : ""}
 
     <!-- 1. Items -->
     <section>
@@ -625,8 +530,8 @@ app.get("/:id", async (c) => {
       <h2 class="sec">2. Reported Issue</h2>
       <div class="rows rows-2col">
         <div class="row"><span class="k">Issue Category</span><span class="v">${esc(cs.issue_category || "—")}</span></div>
-        <div class="row"><span class="k">NCR Category</span><span class="v">${esc(cs.ncr_category || "—")}</span></div>
-        <div class="row"><span class="k">Service Category</span><span class="v">${esc(cs.service_category || "—")}</span></div>
+        ${isOffice ? `<div class="row"><span class="k">NCR Category</span><span class="v">${esc(cs.ncr_category || "—")}</span></div>` : ""}
+        ${isOffice ? `<div class="row"><span class="k">Service Category</span><span class="v">${esc(cs.service_category || "—")}</span></div>` : ""}
         <div class="row"><span class="k">Priority Level</span><span class="v" style="text-transform: capitalize;">${esc(cs.priority || "normal")}</span></div>
       </div>
       <div class="para">
@@ -640,13 +545,13 @@ app.get("/:id", async (c) => {
       <h2 class="sec">3. Resolution Plan</h2>
       <div class="rows rows-2col">
         <div class="row"><span class="k">Resolution Method</span><span class="v">${esc(cs.resolution_method ? (RESOLUTION_LABEL[cs.resolution_method] || cs.resolution_method) : "—")}</span></div>
-        <div class="row"><span class="k">Assigned To</span><span class="v">${esc(cs.assigned_to_name || "—")}</span></div>
-        <div class="row"><span class="k">Supplier</span><span class="v">${esc(cs.supplier_name || cs.supplier || "—")}</span></div>
-        <div class="row"><span class="k">Supplier Contact</span><span class="v">${esc(cs.supplier_phone || "—")}</span></div>
-        <div class="row"><span class="k">PO Number</span><span class="v mono">${esc(cs.po_no || "—")}</span></div>
+        ${isCustomer ? "" : `<div class="row"><span class="k">Assigned To</span><span class="v">${esc((cs as any).assigned_to_name || "—")}</span></div>`}
+        ${isCustomer ? "" : `<div class="row"><span class="k">Supplier</span><span class="v">${esc((cs as any).supplier_name || (cs as any).supplier || "—")}</span></div>`}
+        ${isOffice ? `<div class="row"><span class="k">Supplier Contact</span><span class="v">${esc((cs as any).supplier_phone || "—")}</span></div>` : ""}
+        ${isCustomer ? "" : `<div class="row"><span class="k">PO Number</span><span class="v mono">${esc(cs.po_no || "—")}</span></div>`}
         <div class="row"><span class="k">Target Completion</span><span class="v">${fmtDate(cs.completion_date)}</span></div>
       </div>
-      ${cs.action_remark ? `
+      ${cs.action_remark && !isCustomer ? `
       <div class="para">
         <div class="cap">Action Remarks</div>
         <div class="body">${esc(cs.action_remark)}</div>
@@ -680,7 +585,7 @@ app.get("/:id", async (c) => {
     </section>
     ` : ""}
 
-    ${(cs.po_amount != null || cs.supplier_invoice_ref || cs.cost_notes) ? `
+    ${isOffice && (cs.po_amount != null || cs.supplier_invoice_ref || cs.cost_notes) ? `
     <section>
       <h2 class="sec">${logistics.length > 0 ? "5." : "4."} Cost &amp; Reconciliation</h2>
       <div class="rows rows-2col">
@@ -712,7 +617,7 @@ app.get("/:id", async (c) => {
     </section>
     ` : ""}
 
-    ${otherAttachments.length > 0 ? `
+    ${isOffice && otherAttachments.length > 0 ? `
     <section>
       <h2 class="sec">Additional Attachments</h2>
       <ul style="padding-left: 16pt; font-size: 9.5pt; margin: 2mm 0;">
@@ -721,6 +626,7 @@ app.get("/:id", async (c) => {
     </section>
     ` : ""}
 
+    ${isOffice ? `
     <section>
       <h2 class="sec">Case Timeline</h2>
       <div class="timeline">
@@ -741,16 +647,17 @@ app.get("/:id", async (c) => {
         }).join("")}
       </div>
     </section>
+    ` : ""}
 
-    ${cs.stage === "completed" ? `
+    ${cs.stage === "completed" && !isSupplier ? `
     <section>
       <h2 class="sec">Case Closure</h2>
       <div class="rows rows-2col">
         <div class="row"><span class="k">Closed At</span><span class="v">${fmtDateTime(cs.closed_at)}</span></div>
         <div class="row"><span class="k">Satisfaction Rating</span><span class="v">${cs.satisfaction_rating ? `${esc(cs.satisfaction_rating)} / 5` : "—"}</span></div>
-        ${cs.approved_at ? `<div class="row"><span class="k">Quality Review</span><span class="v">${esc(cs.approved_by_name || `User #${cs.approved_by}`)} · ${fmtDateTime(cs.approved_at)}${cs.quality_review_passed === 1 ? " · Passed" : ""}</span></div>` : ""}
+        ${(cs as any).approved_at && isOffice ? `<div class="row"><span class="k">Quality Review</span><span class="v">${esc((cs as any).approved_by_name || `User #${(cs as any).approved_by}`)} · ${fmtDateTime((cs as any).approved_at)}${(cs as any).quality_review_passed === 1 ? " · Passed" : ""}</span></div>` : ""}
       </div>
-      ${cs.satisfaction_notes ? `
+      ${cs.satisfaction_notes && isOffice ? `
       <div class="para">
         <div class="cap">Customer Feedback</div>
         <div class="body">${esc(cs.satisfaction_notes)}</div>
@@ -758,14 +665,52 @@ app.get("/:id", async (c) => {
     </section>
     ` : ""}
 
+    ${isSupplier ? `
+    <!-- Supplier acknowledgement — paper signature lines + condition check -->
+    <section class="ack">
+      <h2 class="sec">Acknowledgement</h2>
+      <div class="check-row">
+        <span class="box"></span>
+        <span>Goods inspected and received in good condition by the supplier.</span>
+      </div>
+      <div class="check-row">
+        <span class="box"></span>
+        <span>Service / repair completed per the resolution plan above.</span>
+      </div>
+      <div class="sig-grid">
+        <div>
+          <div class="sig-box"></div>
+          <div class="sig">Supplier — printed name &amp; signature</div>
+        </div>
+        <div>
+          <div class="sig-box"></div>
+          <div class="sig">Date</div>
+        </div>
+        <div>
+          <div class="sig-box"></div>
+          <div class="sig">Houzs Century representative — printed name &amp; signature</div>
+        </div>
+        <div>
+          <div class="sig-box"></div>
+          <div class="sig">Date</div>
+        </div>
+      </div>
+    </section>
+    ` : ""}
+
+    ${isCustomer ? `
+    <section>
+      <div class="para muted small" style="text-align: center; margin-top: 6mm;">
+        Track your case anytime — scan the code above or visit the URL.<br/>
+        For questions, contact us at the address on the letterhead.
+      </div>
+    </section>
+    ` : ""}
+
     </td></tr>
-    <!-- Filler row: absorbs extra vertical space on the last
-         page so the tfoot stays anchored to the page bottom
-         even when content is short. -->
     <tr class="filler"><td>&nbsp;</td></tr>
     </tbody>
 
-    <!-- ═══ Running footer (tfoot repeats every page) ═══ -->
     <tfoot><tr><td>
       <div class="foot">
         This is a computer-generated document and does not require a signature.

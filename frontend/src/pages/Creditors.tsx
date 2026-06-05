@@ -201,6 +201,14 @@ export function CreditorsTab({ refreshKey = 0 }: { refreshKey?: number }) {
           },
           placeholder: "Search code, name, email, phone…",
         }}
+        resetFilters={{
+          active: !!search,
+          onReset: () => {
+            const next = new URLSearchParams(params);
+            ["c_search", "c_page"].forEach((k) => next.delete(k));
+            setParams(next, { replace: true });
+          },
+        }}
         columns={columns}
         rows={list.data?.data ?? null}
         loading={list.loading}

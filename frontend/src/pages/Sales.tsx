@@ -1125,7 +1125,7 @@ export function EntryPanel({
                 <option value="">— none —</option>
                 {(projectsQ.data?.data ?? []).map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.code} · {p.name}
+                    {p.name}
                   </option>
                 ))}
               </select>

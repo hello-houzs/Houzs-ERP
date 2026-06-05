@@ -587,9 +587,6 @@ function BucketDetailPanel({
                         <Layers size={11} className="mt-0.5 shrink-0 text-accent" />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2">
-                            <span className="font-mono text-[10px] text-ink-muted">
-                              {l.project_code}
-                            </span>
                             <span className="truncate group-hover:text-accent">{l.project_name}</span>
                           </div>
                           <div className="mt-0.5 text-[10px] text-ink-muted">

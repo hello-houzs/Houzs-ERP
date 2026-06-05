@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { Link, useNavigate, useParams, Navigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -6,7 +7,6 @@ import {
   Check,
   CheckCircle2,
   Circle,
-  MinusCircle,
   Ban,
   Lock,
   Trash2,
@@ -33,6 +33,11 @@ import {
   ChevronDown,
   ChevronUp,
   Paperclip,
+  Eye,
+  EyeOff,
+  Play,
+  UserCircle2,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
@@ -48,7 +53,6 @@ import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
 import { ProjectChat } from "../components/ProjectChat";
 import { ProjectGantt } from "../components/ProjectGantt";
-import { RowActionsMenu } from "../components/RowActionsMenu";
 import {
   DetailLayout,
   DetailGrid,
@@ -81,7 +85,9 @@ import { usePageAccess } from "../auth/PageGuard";
 import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery } from "../api/client";
-import { formatDate, formatDateTime, formatCurrency, cn, relativeTime } from "../lib/utils";
+import { MediaLightbox } from "../components/MediaLightbox";
+import { ResetFiltersButton } from "../components/ResetFiltersButton";
+import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime } from "../lib/utils";
 
 // ── Types (module-local) ─────────────────────────────────────
 // Kept in this file until something else imports them. Promoting to
@@ -100,11 +106,17 @@ type ProjectStage =
 
 type ChecklistStatus = "pending" | "done" | "na" | "blocked";
 
+// mig 088 — boss-facing lifecycle, drives the calendar tint and replaces
+// the old Go Live button. Independent from `stage` which keeps driving
+// the internal workflow + section tracker.
+type ProjectStatus = "confirmed" | "pending" | "cancelled";
+
 interface ProjectRow {
   id: number;
   code: string;
   name: string;
   stage: ProjectStage;
+  status: ProjectStatus;
   brand: string | null;
   start_date: string | null;
   end_date: string | null;
@@ -158,6 +170,17 @@ interface ProjectDetail {
     dismantle_driver_name: string | null;
     dismantle_lorry_id: number | null;
     dismantle_lorry_plate: string | null;
+    // Phase helper crew (mig 083)
+    setup_helper_1_id: number | null;
+    setup_helper_1_name: string | null;
+    setup_helper_2_id: number | null;
+    setup_helper_2_name: string | null;
+    setup_helper_outsourced: number;
+    dismantle_helper_1_id: number | null;
+    dismantle_helper_1_name: string | null;
+    dismantle_helper_2_id: number | null;
+    dismantle_helper_2_name: string | null;
+    dismantle_helper_outsourced: number;
     banner_message: string | null;
     banner_tone: "info" | "warning" | "error" | null;
     // Payment workflow
@@ -199,12 +222,25 @@ interface ProjectDetail {
   activity: ActivityRow[];
   team: any[];
   trips: ProjectTrip[];
+  /** Sales reps attending the project (mig 087). */
+  sales_attendees?: SalesAttendee[];
+}
+
+interface SalesAttendee {
+  sales_rep_id: number;
+  rep_code: string | null;
+  rep_name: string | null;
+  rep_user_id: number | null;
+  user_name: string | null;
+  created_at: string | null;
 }
 
 interface TasklistSection {
   id: number;
   name: string;
   sort_order: number;
+  /** mig 085 — "list" (default) or "documents" (6-col table layout). */
+  display_mode?: "list" | "documents";
 }
 
 interface SectionProgress {
@@ -333,6 +369,10 @@ interface ChecklistItem {
   title: string;
   description: string | null;
   required_perm: string | null;
+  /** mig 085 — display-only owner tag (e.g. "DRIVER", "SALES PIC"). */
+  role_label: string | null;
+  /** mig 086 — when 1, surfaces in the Driver App. */
+  crew_visible: number;
   due_date: string | null;
   owner_user_id: number | null;
   owner_name: string | null;
@@ -558,9 +598,11 @@ function composeEventName(p: {
 
 // Default project-name format used by the create form.
 //   "{state} [{brand}] {organizer | SOLO} @ {venue}"
-// Solo events override the organizer slot with the literal string "SOLO".
-// Missing fields collapse cleanly so a half-filled form still produces a
-// reasonable name; the user can always override by typing.
+// SOLO is event-type-driven: when the event type is "solo", the
+// organizer slot is the literal "SOLO" regardless of whether an
+// organizer was picked (a solo event is by definition not organised
+// by anyone). For non-solo event types, the chosen organizer fills
+// the slot; if empty, it's omitted.
 function composeDefaultProjectName(p: {
   state?: string | null;
   brand?: string | null;
@@ -642,12 +684,63 @@ function stageVariant(
   }
 }
 
-const NEXT_STAGE: Partial<Record<ProjectStage, { stage: ProjectStage; label: string }>> = {
-  draft: { stage: "setup", label: "Move to Setup" },
-  setup: { stage: "live", label: "Go Live" },
-  live: { stage: "dismantle", label: "Start Dismantle" },
-  dismantle: { stage: "completed", label: "Complete Project" },
-};
+// Project status palette — drives the calendar tint, the spec strip
+// pill, and the header dropdown.
+const STATUS_OPTIONS: Array<{ value: ProjectStatus; label: string; hex: string; chip: string; ring: string }> = [
+  { value: "confirmed", label: "Confirmed", hex: "#2563eb", chip: "bg-blue-100 text-blue-700", ring: "ring-blue-400/30" },
+  { value: "pending",   label: "Pending",   hex: "#f59e0b", chip: "bg-amber-100 text-amber-800", ring: "ring-amber-400/30" },
+  { value: "cancelled", label: "Cancelled", hex: "#ef4444", chip: "bg-red-100 text-red-700", ring: "ring-red-400/30" },
+];
+
+const STATUS_BY_VALUE: Record<ProjectStatus, typeof STATUS_OPTIONS[number]> = STATUS_OPTIONS.reduce(
+  (acc, s) => ({ ...acc, [s.value]: s }),
+  {} as Record<ProjectStatus, typeof STATUS_OPTIONS[number]>
+);
+
+function statusBarStyle(status: ProjectStatus | null | undefined): React.CSSProperties {
+  const opt = STATUS_BY_VALUE[status ?? "pending"] ?? STATUS_BY_VALUE.pending;
+  return {
+    backgroundColor: `color-mix(in srgb, ${opt.hex} 96%, transparent)`,
+    color: "white",
+  };
+}
+
+function ProjectStatusSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: ProjectStatus;
+  onChange: (next: ProjectStatus) => void;
+  disabled?: boolean;
+}) {
+  const cur = STATUS_BY_VALUE[value] ?? STATUS_BY_VALUE.pending;
+  return (
+    <div className="relative inline-flex">
+      <span
+        className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2"
+        style={{ background: cur.hex, width: 8, height: 8, borderRadius: 999 }}
+        aria-hidden
+      />
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as ProjectStatus)}
+        disabled={disabled}
+        className={cn(
+          "appearance-none rounded-md border border-border bg-surface py-1.5 pl-6 pr-7 text-[12px] font-semibold uppercase tracking-wide text-ink outline-none transition-colors focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60",
+          cur.chip
+        )}
+      >
+        {STATUS_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted" />
+    </div>
+  );
+}
 
 // ── Main page ────────────────────────────────────────────────
 
@@ -830,9 +923,12 @@ function ProjectsListView() {
 
   const columns: Column<ProjectRow>[] = [
     {
+      // Hidden by default — the team identifies projects by name, not the
+      // long hyphenated code. Still in the column chooser for the rare
+      // admin who needs to grep, and still exported in CSV via getValue.
       key: "code",
       label: "Code",
-      alwaysVisible: true,
+      defaultHidden: true,
       render: (r) => <span className="font-mono text-xs font-medium">{r.code}</span>,
       getValue: (r) => r.code,
     },
@@ -1139,6 +1235,16 @@ function ProjectsListView() {
           onChange: (v) => setSearch(v),
           placeholder: "Search code, name, venue, organizer…",
         }}
+        resetFilters={{
+          active: !!(search || brand || year || month || section),
+          onReset: () => {
+            const next = new URLSearchParams(params);
+            ["search", "brand", "year", "month", "section", "page"].forEach((k) =>
+              next.delete(k)
+            );
+            setParams(next, { replace: true });
+          },
+        }}
         columns={columns}
         rows={list.data?.data ?? null}
         loading={list.loading}
@@ -1195,75 +1301,18 @@ function ProjectsListView() {
 
 // ── Calendar view ────────────────────────────────────────────
 // Month grid: events render as colored bars spanning their date range,
-// overdue checklist items render as dots on their due date. Brand is
-// used as the color key. The colour palette is admin-maintained in
-// Project Maintenance (project_brands.color, hex without '#') and
-// loaded via /api/projects/brands?full=1 — see useBrandPalette below.
+// overdue checklist items render as dots on their due date. Bars are
+// tinted by project status (mig 088) — see STATUS_OPTIONS + statusBarStyle.
 
-interface BrandRow {
-  id: number;
-  name: string;
-  color: string;       // 6-char hex, no '#'
-  sort_order: number;
-  active: number;
-}
-
-const BRAND_FALLBACK_HEX = "#8a8e85";
-
-/** Read the admin-maintained brand list once, expose colour lookups. */
-function useBrandPalette() {
-  const q = useQuery<{ data: BrandRow[] }>(() =>
-    api.get("/api/projects/brands?full=1")
-  );
-  const rows = q.data?.data ?? [];
-  const map = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const b of rows) m.set(b.name, `#${b.color}`);
-    return m;
-  }, [rows]);
-  return { rows, map, loading: q.loading };
-}
-
-function brandHex(map: Map<string, string>, brand: string | null | undefined): string {
-  if (!brand) return BRAND_FALLBACK_HEX;
-  return map.get(brand) ?? BRAND_FALLBACK_HEX;
-}
-
-/** Inline-style props for a brand-coloured surface (calendar bar, chip).
- *  Always white text — brand palette is mid-saturation so contrast is
- *  reliable enough; we accept the rare slightly-low-contrast case
- *  rather than pulling in a luminance helper.
- *
- *  Default alpha is 0.96 so bars read crisp against the surface. Earlier
- *  the default was 0.78 which left them washed out — the team called
- *  the colour "not sharp enough". A thin matching-hue border is added
- *  to firm up the edges on small chips. */
-function brandStyle(
-  map: Map<string, string>,
-  brand: string | null | undefined,
-  alpha = 0.96
-): React.CSSProperties {
-  const hex = brandHex(map, brand);
-  return {
-    // backgroundColor with rgba would need conversion; "color-mix" works
-    // in every evergreen browser and skips the conversion step.
-    backgroundColor: `color-mix(in srgb, ${hex} ${Math.round(alpha * 100)}%, transparent)`,
-    borderColor: hex,
-    color: "white",
-  };
-}
-
-// Per-task chip rendered inside a calendar cell. Compact: brand dot,
+// Per-task chip rendered inside a calendar cell. Compact: status dot,
 // truncated title, owner initials, overdue tint. Click opens the
 // parent project's detail panel.
 function CalendarTaskChip({
   task,
   onOpen,
-  brandMap,
 }: {
   task: CalendarTask;
   onOpen: () => void;
-  brandMap: Map<string, string>;
 }) {
   const overdue = task.is_overdue === 1;
   const initials = (task.owner_name || "")
@@ -1291,7 +1340,7 @@ function CalendarTaskChip({
     >
       <span
         className="h-1.5 w-1.5 shrink-0 rounded-full"
-        style={{ background: brandHex(brandMap, task.brand) }}
+        style={{ background: (STATUS_BY_VALUE[task.project_status ?? "pending"] ?? STATUS_BY_VALUE.pending).hex }}
       />
       <span
         className={cn(
@@ -1327,6 +1376,7 @@ interface CalendarProject {
   code: string;
   name: string;
   stage: ProjectStage;
+  status: ProjectStatus;
   brand: string | null;
   organizer: string | null;
   start_date: string;
@@ -1349,6 +1399,8 @@ interface CalendarTask {
   title: string;
   due_date: string;
   status: string;
+  /** Parent project's status — drives the calendar tint. */
+  project_status: ProjectStatus | null;
   required_perm: string | null;
   review_status: string | null;
   owner_name: string | null;
@@ -1621,10 +1673,7 @@ function FinanceListView() {
       alwaysVisible: true,
       render: (r) => (
         <div>
-          <div className="font-mono text-[11.5px] font-semibold text-ink">
-            {r.code}
-          </div>
-          <div className="truncate text-[11.5px] text-ink-secondary">
+          <div className="truncate text-[12px] font-semibold text-ink">
             {r.name}
           </div>
           {r.venue && (
@@ -2029,6 +2078,23 @@ function FinanceListView() {
           onChange: (v) => setSearch(v),
           placeholder: "Search project code, name, venue, organizer…",
         }}
+        resetFilters={{
+          active: !!(
+            search ||
+            brand ||
+            stage ||
+            includeArchived ||
+            dateFrom !== defaultFrom ||
+            dateTo !== defaultTo
+          ),
+          onReset: () => {
+            const next = new URLSearchParams(params);
+            ["search", "brand", "stage", "date_from", "date_to", "include_archived", "page"].forEach(
+              (k) => next.delete(k)
+            );
+            setParams(next, { replace: true });
+          },
+        }}
         columns={columns}
         rows={list.data?.data ?? null}
         loading={list.loading}
@@ -2377,7 +2443,6 @@ function RankedCard({
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
-                    <span className="font-mono text-[10px] text-ink-muted">{r.code}</span>
                     {r.brand && (
                       <span className="rounded bg-accent/10 px-1 text-[9px] font-bold text-accent">
                         {r.brand}
@@ -2477,6 +2542,10 @@ function ProjectsCalendarView() {
     "projects:cal:showHolidays",
     true
   );
+  const [expandAll, setExpandAll] = useLocalStorage<boolean>(
+    "projects:cal:expandAll",
+    false
+  );
   const brandsQ = useQuery<{ data: string[] }>(() =>
     api.get("/api/projects/brands")
   );
@@ -2487,11 +2556,6 @@ function ProjectsCalendarView() {
   const sectionsListQ = useQuery<{ data: string[] }>(() =>
     api.get("/api/projects/sections-distinct")
   );
-  // Full brand rows (with colour) for the legend + bar tints. Keyed by
-  // brand name. Replaces the old hardcoded BRAND_COLORS / BRAND_DOT_HEX
-  // maps so newly-added brands in Project Maintenance light up here
-  // without a deploy.
-  const brandPalette = useBrandPalette();
   // ?mode=week swaps the 6×7 month grid for a single 1×7 row anchored
   // on `?week=YYYY-MM-DD` (Sunday). `?month=YYYY-MM` is the existing
   // monthly anchor; both URL params persist via stickyFilters.
@@ -2519,15 +2583,16 @@ function ProjectsCalendarView() {
       d = new Date();
       d.setUTCHours(0, 0, 0, 0);
     }
-    // Normalise to Sunday of that week (UTC).
-    d.setUTCDate(d.getUTCDate() - d.getUTCDay());
+    // Normalise to Monday of that week (UTC). (day + 6) % 7 so that
+    // Mon → 0 days back, Tue → 1, …, Sun → 6 days back.
+    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
     return d;
   })();
   const anchor = mode === "week" ? weekAnchor : monthAnchor;
 
   const setAnchor = (next: Date) => {
     if (mode === "week") {
-      // Save the Sunday ISO date.
+      // Save the Monday ISO date.
       const yyyy = next.getUTCFullYear();
       const mm = String(next.getUTCMonth() + 1).padStart(2, "0");
       const dd = String(next.getUTCDate()).padStart(2, "0");
@@ -2538,27 +2603,20 @@ function ProjectsCalendarView() {
       patchParams({ month: `${yyyy}-${mm}` });
     }
   };
-  // Jump from a month-view cell straight into week mode anchored on that
-  // cell's week. Used by the "+N more" expanders so users see every
-  // bar/task inline instead of opening a popover. The week-view layout
-  // already has unlimited lane height and shows every task per cell.
-  const expandToWeekForCell = (cellIso: string) => {
-    const d = new Date(`${cellIso}T00:00:00Z`);
-    d.setUTCDate(d.getUTCDate() - d.getUTCDay()); // snap to Sunday
-    const yyyy = d.getUTCFullYear();
-    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const dd = String(d.getUTCDate()).padStart(2, "0");
-    patchParams({ mode: "week", week: `${yyyy}-${mm}-${dd}` });
-  };
+  // Day modal — opened by month-view "+N more" expanders to surface every
+  // project / task that lands on a single day without forcing a switch to
+  // week mode. Previously these expanders called expandToWeekForCell()
+  // which navigated the whole view; ops asked for a lighter overlay.
+  const [dayModalIso, setDayModalIso] = useState<string | null>(null);
 
   const setMode = (next: "month" | "week") => {
     // When flipping to week mode for the first time, snap the week
-    // anchor to the Sunday of "today" so the user lands on the
+    // anchor to the Monday of "today" so the user lands on the
     // current week instead of an unrelated one.
     if (next === "week" && !weekStartStr) {
       const d = new Date();
       d.setUTCHours(0, 0, 0, 0);
-      d.setUTCDate(d.getUTCDate() - d.getUTCDay());
+      d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
       const yyyy = d.getUTCFullYear();
       const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
       const dd = String(d.getUTCDate()).padStart(2, "0");
@@ -2568,7 +2626,7 @@ function ProjectsCalendarView() {
     }
   };
 
-  // Window: month = 6 weeks (42 cells) from the first Sunday on/before
+  // Window: month = 6 weeks (42 cells) from the first Monday on/before
   // the 1st; week = 1 week (7 cells) from the week anchor.
   const weekCount = mode === "week" ? 1 : 6;
   const totalCells = weekCount * 7;
@@ -2579,7 +2637,7 @@ function ProjectsCalendarView() {
   } else {
     const first = new Date(Date.UTC(anchor.getFullYear(), anchor.getMonth(), 1));
     startDay = new Date(first);
-    startDay.setUTCDate(first.getUTCDate() - first.getUTCDay());
+    startDay.setUTCDate(first.getUTCDate() - ((first.getUTCDay() + 6) % 7));
   }
   const endDay = new Date(startDay);
   endDay.setUTCDate(startDay.getUTCDate() + totalCells - 1);
@@ -2682,7 +2740,7 @@ function ProjectsCalendarView() {
   // cap lanes — show every project bar inline. Month mode keeps the
   // 3-lane cap in month mode; clicking "+N more" on a cell jumps to
   // week view for that week (unlimited lanes). Week mode never caps.
-  const MAX_LANES = mode === "week" ? Infinity : 3;
+  const MAX_LANES = mode === "week" || expandAll ? Infinity : 3;
   const weekSegs: WeekSeg[][] = Array.from({ length: weekCount }, () => []);
   const overflowByCell: number[] = Array(totalCells).fill(0);
   for (let w = 0; w < weekCount; w++) {
@@ -2750,7 +2808,7 @@ function ProjectsCalendarView() {
     0,
   );
   const BARS_AREA_H =
-    mode === "week"
+    mode === "week" || expandAll
       ? Math.max(maxLaneUsed, 1) * LANE_TOTAL
       : 3 * LANE_TOTAL;
 
@@ -2866,6 +2924,27 @@ function ProjectsCalendarView() {
               </option>
             ))}
           </select>
+          <ResetFiltersButton
+            active={!!(brand || section || organizer || params.get("stage"))}
+            onReset={() => {
+              // Functional form so the latest URL state is read at call
+              // time rather than the closure-captured `params` snapshot
+              // — avoids losing later deletes when React re-renders
+              // between paint and click. Also clears legacy `stage` key
+              // that mig-050 retired but still sits in some sticky
+              // storage entries.
+              setParams(
+                (prev) => {
+                  const next = new URLSearchParams(prev);
+                  ["brand", "section", "organizer", "stage"].forEach((k) =>
+                    next.delete(k)
+                  );
+                  return next;
+                },
+                { replace: true }
+              );
+            }}
+          />
           <button
             onClick={() => setShowTasks(!showTasks)}
             className={cn(
@@ -2890,6 +2969,18 @@ function ProjectsCalendarView() {
           >
             {showHolidays ? "✓" : "○"} MY Holidays
           </button>
+          <button
+            onClick={() => setExpandAll(!expandAll)}
+            className={cn(
+              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider transition-colors",
+              expandAll
+                ? "border-accent/40 bg-accent-soft/40 text-accent"
+                : "border-border bg-surface text-ink-muted hover:text-ink"
+            )}
+            title="Show every project bar + task inline (no +N more)"
+          >
+            {expandAll ? "✓" : "○"} Expand all
+          </button>
           {(brand || section || organizer) && (
             <button
               onClick={() => {
@@ -2905,15 +2996,15 @@ function ProjectsCalendarView() {
         </div>
       </div>
 
-      {/* Brand legend — sourced from project_brands so admins control it. */}
-      <div className="mb-3 flex flex-wrap items-center gap-2 text-[10px]">
-        {brandPalette.rows.map((b) => (
-          <span key={b.id} className="inline-flex items-center gap-1">
+      {/* Status legend — bars are tinted by project status (mig 088). */}
+      <div className="mb-3 flex flex-wrap items-center gap-3 text-[10px]">
+        {STATUS_OPTIONS.map((s) => (
+          <span key={s.value} className="inline-flex items-center gap-1">
             <span
               className="h-2 w-2 rounded-full"
-              style={{ background: `#${b.color}` }}
+              style={{ background: s.hex }}
             />
-            <span className="text-ink-muted">{b.name}</span>
+            <span className="text-ink-muted">{s.label}</span>
           </span>
         ))}
       </div>
@@ -2925,13 +3016,19 @@ function ProjectsCalendarView() {
         </div>
       )}
 
-      <div className="rounded-md border border-border bg-surface">
+      {/* Mobile + tablet: scroll horizontally so each day cell stays
+          wide enough to fit project name pills without truncation.
+          The inner min-w-[1024px] preserves desktop-density columns;
+          on lg+ (>=1024px viewport) the override drops and the grid
+          fills the container as before. */}
+      <div className="thin-scroll overflow-x-auto lg:overflow-visible">
+        <div className="min-w-[1024px] rounded-md border border-border bg-surface lg:min-w-0">
         {/* Weekday header — month view only. In week view each cell
             renders its own "Day. DD/MM" header with a today pill, so
             this row would be redundant. */}
         {mode === "month" && (
           <div className="grid grid-cols-7 border-b border-border bg-bg/60">
-            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
               <div
                 key={d}
                 className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted"
@@ -3052,17 +3149,17 @@ function ProjectsCalendarView() {
                         week into week view, showing every bar inline
                         without a popover. Old popover behaviour removed
                         per the team's request. */}
-                    {mode === "month" && overflow > 0 && (
+                    {mode === "month" && !expandAll && overflow > 0 && (
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          expandToWeekForCell(cell.iso);
+                          setDayModalIso(cell.iso);
                         }}
                         className="block text-[9px] font-semibold text-accent hover:underline"
-                        title="Switch to week view to see every project on this day"
+                        title="Show every project + task on this day"
                       >
-                        +{overflow} more · show week
+                        +{overflow} more
                       </button>
                     )}
 
@@ -3081,24 +3178,23 @@ function ProjectsCalendarView() {
                         {/* Week mode shows every task — there's room.
                             Month mode keeps the 2-task cap + "+N more"
                             expander since cells are tighter. */}
-                        {(mode === "week" ? cellTasks : cellTasks.slice(0, 2)).map((t) => (
+                        {(mode === "week" || expandAll ? cellTasks : cellTasks.slice(0, 2)).map((t) => (
                           <CalendarTaskChip
                             key={t.id}
                             task={t}
-                            brandMap={brandPalette.map}
                             onOpen={() => navigate(`/projects/${t.project_id}`)}
                           />
                         ))}
-                        {mode === "month" && cellTasks.length > 2 && (
+                        {mode === "month" && !expandAll && cellTasks.length > 2 && (
                           <button
-                            onClick={() => expandToWeekForCell(cell.iso)}
+                            onClick={() => setDayModalIso(cell.iso)}
                             title={cellTasks
                               .slice(2)
                               .map((t) => `${t.project_code}: ${t.title}`)
                               .join("\n")}
                             className="block text-[9px] font-semibold text-accent hover:underline"
                           >
-                            +{cellTasks.length - 2} more · show week
+                            +{cellTasks.length - 2} more
                           </button>
                         )}
                       </div>
@@ -3131,7 +3227,7 @@ function ProjectsCalendarView() {
                         width: `calc(${widthPct}% - 8px)`,
                         top: seg.lane * LANE_TOTAL,
                         height: BAR_H,
-                        ...brandStyle(brandPalette.map, seg.project.brand),
+                        ...statusBarStyle(seg.project.status),
                       }}
                       className={cn(
                         "pointer-events-auto truncate px-2 text-left text-[10.5px] font-semibold leading-[18px] shadow-sm transition-transform hover:-translate-y-px hover:shadow",
@@ -3149,9 +3245,212 @@ function ProjectsCalendarView() {
             </div>
           );
         })}
+        </div>
       </div>
 
+      {dayModalIso && (
+        <CalendarDayModal
+          iso={dayModalIso}
+          projects={projects.filter((p) => {
+            const s = p.start_date.slice(0, 10);
+            const e = (p.end_date || p.start_date).slice(0, 10);
+            return s <= dayModalIso && e >= dayModalIso;
+          })}
+          tasks={tasksByDate.get(dayModalIso) ?? []}
+          holidays={showHolidays ? getHolidaysOn(dayModalIso) : []}
+          onClose={() => setDayModalIso(null)}
+          onOpenProject={(id) => {
+            setDayModalIso(null);
+            navigate(`/projects/${id}`);
+          }}
+        />
+      )}
+
     </div>
+  );
+}
+
+// ── Calendar "+N more" day modal ─────────────────────────────
+// Surfaces every project + task on a single day without forcing the
+// user to swap into week view. Triggered by the month-view "+N more"
+// expanders on bar and task overflow.
+
+function CalendarDayModal({
+  iso,
+  projects,
+  tasks,
+  holidays,
+  onClose,
+  onOpenProject,
+}: {
+  iso: string;
+  projects: CalendarProject[];
+  tasks: CalendarTask[];
+  holidays: Array<{ name: string; type?: string | null }>;
+  onClose: () => void;
+  onOpenProject: (id: number) => void;
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  const heading = (() => {
+    const [y, m, d] = iso.split("-");
+    const date = new Date(Number(y), Number(m) - 1, Number(d));
+    return date.toLocaleDateString("en-GB", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+  })();
+
+  // Portal into document.body so the fixed-position overlay escapes any
+  // transformed ancestor (the calendar's transformed bar segments would
+  // otherwise scope the "fixed" element to the calendar, not the
+  // viewport — leaving the modal offscreen on long calendars).
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div
+        className="thin-scroll max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-xl bg-surface p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
+              Day view
+            </div>
+            <h2 className="font-display text-[16px] font-extrabold tracking-tight text-ink">
+              {heading}
+            </h2>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-full border border-border bg-bg/40 p-1.5 text-ink-secondary transition-colors hover:border-accent/50 hover:text-accent"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {holidays.length > 0 && (
+          <div className="mb-3 rounded-md border border-err/30 bg-err/5 px-3 py-2 text-[12px] text-err">
+            <div className="text-[10px] font-semibold uppercase tracking-wider">
+              Holiday
+            </div>
+            <div className="mt-0.5">{holidays.map((h) => h.name).join(", ")}</div>
+          </div>
+        )}
+
+        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          Projects · {projects.length}
+        </div>
+        {projects.length === 0 ? (
+          <div className="mb-4 rounded-md border border-dashed border-border px-3 py-3 text-[12px] text-ink-muted">
+            No projects on this day.
+          </div>
+        ) : (
+          <ul className="mb-4 divide-y divide-border-subtle rounded-md border border-border">
+            {projects.map((p) => {
+              const opt = STATUS_BY_VALUE[p.status] ?? STATUS_BY_VALUE.pending;
+              return (
+                <li key={p.id}>
+                  <button
+                    onClick={() => onOpenProject(p.id)}
+                    className="flex w-full items-start gap-3 px-3 py-2 text-left transition-colors hover:bg-bg/40"
+                  >
+                    <span
+                      className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: opt.hex }}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={cn(
+                            "rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
+                            opt.chip
+                          )}
+                        >
+                          {opt.label}
+                        </span>
+                        {p.brand && (
+                          <span className="font-mono text-[9px] text-ink-muted">
+                            {p.brand}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-0.5 truncate text-[12px] text-ink">
+                        {p.name}
+                      </div>
+                      {p.venue && (
+                        <div className="mt-0.5 truncate text-[11px] text-ink-secondary">
+                          {p.venue}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {tasks.length > 0 && (
+          <>
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              Tasks due · {tasks.length}
+            </div>
+            <ul className="divide-y divide-border-subtle rounded-md border border-border">
+              {tasks.map((t) => (
+                <li key={t.id}>
+                  <button
+                    onClick={() => onOpenProject(t.project_id)}
+                    className="flex w-full items-start gap-3 px-3 py-2 text-left transition-colors hover:bg-bg/40"
+                  >
+                    <span
+                      className={cn(
+                        "mt-1 h-2 w-2 shrink-0 rounded-full",
+                        t.is_overdue ? "bg-err" : "bg-amber-500"
+                      )}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span className="font-mono font-bold text-ink-secondary">
+                          {t.project_code}
+                        </span>
+                        {t.is_overdue && (
+                          <span className="rounded-full bg-err/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-err">
+                            Overdue
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-0.5 truncate text-[12px] text-ink">
+                        {t.title}
+                      </div>
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -3600,15 +3899,13 @@ function ProjectDetailContent({
     }
   }
 
-  const nextStage = p ? NEXT_STAGE[p.stage] : null;
-
   return (
     <DetailLayout
       breadcrumbs={[
         { label: "Projects", to: "/projects" },
-        { label: p?.code || "Loading…" },
+        { label: p?.name || "Loading…" },
       ]}
-      eyebrow={p?.code ? `Project · ${p.code}` : "Project"}
+      eyebrow="Project"
       title={p?.name || "Loading…"}
       description={p ? `${STAGE_LABEL[p.stage]}${p.brand ? ` · ${p.brand}` : ""}${p.venue ? ` · ${p.venue}` : ""}${p.duration_days ? ` · ${p.duration_days} day${p.duration_days === 1 ? "" : "s"}` : ""}` : undefined}
       backTo="/projects"
@@ -3663,14 +3960,21 @@ function ProjectDetailContent({
             >
               <Printer size={12} /> Print
             </HeaderButton>
-            {nextStage && !p.archived_at && (
-              <HeaderButton
-                variant="primary"
-                onClick={() => transition(nextStage.stage)}
+            {!p.archived_at && (
+              <ProjectStatusSelect
+                value={p.status}
                 disabled={transitioning}
-              >
-                {transitioning ? "…" : nextStage.label}
-              </HeaderButton>
+                onChange={async (next) => {
+                  setTransitioning(true);
+                  try {
+                    await patch({ status: next });
+                  } catch (e: any) {
+                    toast.error(e?.message || "Failed to update status");
+                  } finally {
+                    setTransitioning(false);
+                  }
+                }}
+              />
             )}
           </>
         ) : undefined
@@ -3720,8 +4024,6 @@ function ProjectDetailContent({
             project={p}
             brands={brands}
             eventTypes={eventTypes}
-            picUsers={picUsers}
-            picUsersLoading={picUsersQ.loading}
             fullAccess={fullAccess}
             patch={patch}
             toast={toast}
@@ -3779,6 +4081,7 @@ function ProjectDetailContent({
               {fullAccess && (
                 <>
                   <LogisticsScheduleSection project={p} trips={trips} patch={patch} />
+                  <PhasePhotosSection projectId={id} />
                   <FinanceLedgerSection
                     projectId={id}
                     sizeSqm={p.size_sqm ?? null}
@@ -3792,6 +4095,17 @@ function ProjectDetailContent({
             </DetailMain>
 
             <DetailAside>
+              <ProjectTeamSection
+                projectId={id}
+                project={p}
+                attendees={detail.data?.sales_attendees ?? []}
+                picUsers={picUsers}
+                picUsersLoading={picUsersQ.loading}
+                fullAccess={fullAccess}
+                patch={patch}
+                onChanged={() => detail.reload()}
+                toast={toast}
+              />
               <PanelSection title="Chat">
                 <ProjectChat
                   projectId={id}
@@ -3806,6 +4120,244 @@ function ProjectDetailContent({
         </>
       )}
     </DetailLayout>
+  );
+}
+
+// ── ProjectTeamSection ────────────────────────────────────────────
+// Lives in the right sidebar above Chat. Carries the project's PIC
+// (one User, the project owner) plus the list of sales reps who'll
+// physically attend the event (project_sales_attendees, mig 087).
+// Both are brand-scoped: the PIC picker filters users who cover the
+// project's brand, the attendee picker filters sales_reps tied to
+// the same brand.
+
+interface SalesRepBrief {
+  id: number;
+  code: string;
+  name: string;
+  brands?: string[];
+  brands_csv?: string | null;
+}
+
+function ProjectTeamSection({
+  projectId,
+  project: p,
+  attendees,
+  picUsers,
+  picUsersLoading,
+  fullAccess,
+  patch,
+  onChanged,
+  toast,
+}: {
+  projectId: number;
+  project: ProjectDetail["project"];
+  attendees: SalesAttendee[];
+  picUsers: Array<{ id: number; name: string | null; email: string }>;
+  picUsersLoading: boolean;
+  fullAccess: boolean;
+  patch: (body: Record<string, any>) => Promise<void>;
+  onChanged: () => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const dialog = useDialog();
+  const brand = p.brand ?? "";
+  // Project-scoped picker — gated on projects.write, role-filtered to
+  // sales_person, brand match is case-insensitive. See
+  // GET /api/projects/sales-rep-options.
+  const repsQ = useQuery<{ data: SalesRepBrief[] }>(
+    () =>
+      api.get(
+        brand
+          ? `/api/projects/sales-rep-options?brand=${encodeURIComponent(brand)}`
+          : `/api/projects/sales-rep-options`
+      ),
+    [brand]
+  );
+  const reps = repsQ.data?.data ?? [];
+  const takenRepIds = new Set(attendees.map((a) => a.sales_rep_id));
+  const availableReps = reps.filter((r) => !takenRepIds.has(r.id));
+  const [picking, setPicking] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function addRep(repId: number) {
+    if (!repId) return;
+    setBusy(true);
+    try {
+      await api.post(`/api/projects/${projectId}/sales-attendees`, {
+        sales_rep_id: repId,
+      });
+      setPicking(false);
+      onChanged();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to add");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeRep(a: SalesAttendee) {
+    const label = a.rep_name || a.user_name || `Rep #${a.sales_rep_id}`;
+    const ok = await dialog.confirm({
+      title: "Remove from attendance?",
+      message: `${label} will no longer be listed as attending this project.`,
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.del(
+        `/api/projects/${projectId}/sales-attendees/${a.sales_rep_id}`
+      );
+      onChanged();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to remove");
+    }
+  }
+
+  return (
+    <PanelSection title="Project Team">
+      {/* PIC row */}
+      <div>
+        <div className="mb-1 flex items-center gap-1.5 text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+          <UserCircle2 size={11} /> PIC
+        </div>
+        {fullAccess ? (
+          <>
+            <select
+              value={p.pic_id ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                patch({ pic_id: v ? parseInt(v, 10) : null });
+              }}
+              disabled={!brand}
+              className={SPEC_INPUT_CLASS}
+            >
+              <option value="">
+                {brand ? "— unassigned —" : "Pick a brand first"}
+              </option>
+              {p.pic_id != null && p.pic_name &&
+                !picUsers.some((u) => u.id === p.pic_id) && (
+                  <option value={p.pic_id}>
+                    {p.pic_name} (out of scope)
+                  </option>
+                )}
+              {picUsers.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name || u.email}
+                </option>
+              ))}
+            </select>
+            {brand && picUsers.length === 0 && !picUsersLoading && (
+              <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
+                No user covers {brand}.
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="text-[12.5px] font-medium text-ink">
+            {p.pic_name || "—"}
+          </div>
+        )}
+      </div>
+
+      {/* Sales attending */}
+      <div className="border-t border-border pt-2">
+        <div className="mb-1.5 flex items-center gap-1.5 text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+          <Users size={11} /> Sales Attending
+          <span className="ml-auto font-mono text-[9.5px] text-ink-muted">
+            {attendees.length}
+          </span>
+        </div>
+        {attendees.length === 0 && !picking && (
+          <div className="text-[11px] italic text-ink-muted">
+            No sales reps assigned.
+          </div>
+        )}
+        {attendees.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {attendees.map((a) => (
+              <span
+                key={a.sales_rep_id}
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-bg/60 py-0.5 pl-2 pr-0.5 text-[11px]"
+                title={a.rep_code ?? undefined}
+              >
+                <span className="font-medium text-ink">
+                  {a.rep_name || a.user_name || `#${a.sales_rep_id}`}
+                </span>
+                {a.rep_code && (
+                  <span className="font-mono text-[9px] text-ink-muted">
+                    {a.rep_code}
+                  </span>
+                )}
+                {fullAccess && (
+                  <button
+                    onClick={() => removeRep(a)}
+                    aria-label={`Remove ${a.rep_name ?? "rep"}`}
+                    className="rounded-full p-0.5 text-ink-muted hover:bg-err/10 hover:text-err"
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
+        {fullAccess && (
+          <div className="mt-2">
+            {!picking ? (
+              <button
+                onClick={() => setPicking(true)}
+                disabled={!brand}
+                className="inline-flex items-center gap-1 rounded-md border border-dashed border-border bg-surface px-2 py-1 text-[10.5px] font-semibold text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                title={!brand ? "Pick a brand first" : "Add a sales rep"}
+              >
+                <Plus size={11} /> Add rep
+              </button>
+            ) : (
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    autoFocus
+                    disabled={busy}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v) addRep(parseInt(v, 10));
+                    }}
+                    className={SPEC_INPUT_CLASS}
+                  >
+                    <option value="">
+                      {repsQ.loading
+                        ? "Loading…"
+                        : availableReps.length === 0
+                        ? "No Sales Persons available"
+                        : "— pick a rep —"}
+                    </option>
+                    {availableReps.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.code} · {r.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => setPicking(false)}
+                    className="rounded p-1 text-ink-muted hover:text-ink"
+                    aria-label="Cancel"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+                {!repsQ.loading && reps.length === 0 && brand && (
+                  <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
+                    No Sales Persons cover {brand}. Assign brands to reps in Sales Team → Rep Detail.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </PanelSection>
   );
 }
 
@@ -3824,8 +4376,6 @@ function ProjectSpecStrip({
   project: p,
   brands,
   eventTypes,
-  picUsers,
-  picUsersLoading,
   fullAccess,
   patch,
   toast,
@@ -3833,8 +4383,6 @@ function ProjectSpecStrip({
   project: ProjectDetail["project"];
   brands: string[];
   eventTypes: EventType[];
-  picUsers: Array<{ id: number; name: string | null; email: string }>;
-  picUsersLoading: boolean;
   fullAccess: boolean;
   patch: (body: Record<string, any>) => Promise<void>;
   toast: ReturnType<typeof useToast>;
@@ -3863,9 +4411,6 @@ function ProjectSpecStrip({
           <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[0.22em] text-ink-muted">
             Project Detail
           </h2>
-          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink-muted">
-            {p.code ?? "—"}
-          </span>
         </div>
         {fullAccess && (
           <button
@@ -3929,43 +4474,6 @@ function ProjectSpecStrip({
             </select>
           ) : (
             <SpecValue>{eventTypeLabel}</SpecValue>
-          )}
-        </SpecCell>
-        <SpecCell label="PIC">
-          {editing && fullAccess ? (
-            <>
-              <select
-                value={p.pic_id ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  patch({ pic_id: v ? parseInt(v, 10) : null });
-                }}
-                disabled={!p.brand}
-                className={SPEC_INPUT_CLASS}
-              >
-                <option value="">
-                  {p.brand ? "— unassigned —" : "Pick a brand first"}
-                </option>
-                {p.pic_id != null && p.pic_name &&
-                  !picUsers.some((u) => u.id === p.pic_id) && (
-                    <option value={p.pic_id}>
-                      {p.pic_name} (out of scope)
-                    </option>
-                  )}
-                {picUsers.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name || u.email}
-                  </option>
-                ))}
-              </select>
-              {p.brand && picUsers.length === 0 && !picUsersLoading && (
-                <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
-                  No user covers {p.brand}.
-                </div>
-              )}
-            </>
-          ) : (
-            <SpecValue>{p.pic_name || "—"}</SpecValue>
           )}
         </SpecCell>
         <SpecCell label="Created">
@@ -4269,13 +4777,13 @@ function formatBytes(n: number | null | undefined): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-// ── Task attachment chip ─────────────────────────────────────
-// Shows a thumbnail (image attachments) or file-type icon (everything
-// else), the filename, and an ellipsis menu with Download / Remove.
-// Auth-protected R2 fetch goes through api.fetchBlobUrl so the
-// browser's <img> tag can render the bytes (it can't carry the
+// ── Task attachment row ──────────────────────────────────────
+// Renders one attachment as a table row: Name (with thumbnail or
+// file-type icon, clickable to download) | Uploaded by | Date |
+// Delete. Auth-protected R2 fetch goes through api.fetchBlobUrl so
+// the browser's <img> tag can render the bytes (it can't carry the
 // Bearer header on its own).
-function TaskAttachmentChip({
+function TaskAttachmentRow({
   attachment,
   canManage,
   onDelete,
@@ -4312,13 +4820,6 @@ function TaskAttachmentChip({
     };
   }, [attachment.r2_key, isImage]);
 
-  function FileTypeIcon() {
-    const ct = attachment.content_type ?? "";
-    if (ct.startsWith("video/")) return <FileText size={12} />;
-    if (ct === "application/pdf") return <FileText size={12} />;
-    return <FileText size={12} />;
-  }
-
   async function download() {
     try {
       await api.downloadFile(
@@ -4330,29 +4831,9 @@ function TaskAttachmentChip({
     }
   }
 
-  const menuItems = [
-    {
-      type: "action" as const,
-      icon: Download,
-      label: "Download",
-      onClick: download,
-    },
-    ...(canManage
-      ? [
-          {
-            type: "action" as const,
-            icon: Trash2,
-            label: "Remove",
-            danger: true,
-            onClick: onDelete,
-          },
-        ]
-      : []),
-  ];
-
   return (
-    <span
-      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-bg/40 pr-1"
+    <div
+      className="grid grid-cols-[minmax(0,1fr)_110px_90px_28px] items-center gap-2 border-t border-border-subtle px-2 py-1 text-[10.5px]"
       title={`${attachment.file_name} · ${formatBytes(attachment.size_bytes)}`}
     >
       <button
@@ -4361,31 +4842,39 @@ function TaskAttachmentChip({
           e.stopPropagation();
           download();
         }}
-        className="flex items-center gap-1.5 rounded-l-md hover:bg-bg/60"
+        className="flex min-w-0 items-center gap-1.5 text-left text-ink hover:text-accent"
       >
         {isImage && thumbUrl ? (
-          <img
-            src={thumbUrl}
-            alt=""
-            className="h-7 w-7 rounded-l-md object-cover"
-          />
-        ) : isImage ? (
-          // Image being fetched — placeholder square at the same
-          // dimension to avoid layout shift when the blob arrives.
-          <span className="grid h-7 w-7 place-items-center rounded-l-md bg-bg/60 text-ink-muted">
-            <ImageIcon size={12} />
-          </span>
+          <img src={thumbUrl} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
         ) : (
-          <span className="grid h-7 w-7 place-items-center rounded-l-md bg-bg/60 text-ink-muted">
-            <FileTypeIcon />
+          <span className="grid h-6 w-6 shrink-0 place-items-center rounded bg-bg/60 text-ink-muted">
+            {isImage ? <ImageIcon size={11} /> : <FileText size={11} />}
           </span>
         )}
-        <span className="max-w-[140px] truncate text-[10.5px] text-ink-secondary">
-          {attachment.file_name}
-        </span>
+        <span className="truncate">{attachment.file_name}</span>
       </button>
-      <RowActionsMenu items={menuItems} size={22} title="Attachment actions" />
-    </span>
+      <span className="truncate text-ink-secondary">
+        {attachment.uploader_name || "—"}
+      </span>
+      <span className="font-mono text-[10px] text-ink-muted">
+        {formatDate(attachment.uploaded_at)}
+      </span>
+      {canManage ? (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="justify-self-end rounded p-1 text-ink-muted hover:bg-err/10 hover:text-err"
+          aria-label="Remove attachment"
+          title="Remove"
+        >
+          <Trash2 size={11} />
+        </button>
+      ) : (
+        <span />
+      )}
+    </div>
   );
 }
 
@@ -4975,7 +5464,6 @@ function TasklistSections({
                   <ChecklistRow
                     key={item.id}
                     item={item}
-                    users={users}
                     comments={comments.filter((c) => c.item_id === item.id)}
                     canTick={canTick}
                     canApprove={!item.required_perm || can(item.required_perm)}
@@ -4983,10 +5471,10 @@ function TasklistSections({
                     attachments={attachmentsByItem.get(item.id) ?? []}
                     onStatus={(s) => onItemStatus(item, s)}
                     onDelete={() => onItemDelete(item)}
-                    onReassign={async (ownerId) => {
+                    onCrewVisible={async (visible) => {
                       try {
                         await api.patch(`/api/projects/checklist/${item.id}`, {
-                          owner_user_id: ownerId,
+                          crew_visible: visible ? 1 : 0,
                         });
                         onReload();
                       } catch (e: any) {
@@ -5024,29 +5512,28 @@ function TasklistSections({
                     <Plus size={10} /> Add task
                   </button>
                 )}
+                {canManage && addItemOpen && addInSectionId === sectionId && (
+                  <AddChecklistItem
+                    projectId={projectId}
+                    users={users}
+                    sectionId={sectionId}
+                    onAdded={() => {
+                      setAddItemOpen(false);
+                      setAddInSectionId(null);
+                      onReload();
+                    }}
+                    onCancel={() => {
+                      setAddItemOpen(false);
+                      setAddInSectionId(null);
+                    }}
+                    toast={toast}
+                  />
+                )}
               </div>
             </div>
           );
         })}
       </div>
-      )}
-
-      {view === "list" && addItemOpen && (
-        <AddChecklistItem
-          projectId={projectId}
-          users={users}
-          sectionId={addInSectionId}
-          onAdded={() => {
-            setAddItemOpen(false);
-            setAddInSectionId(null);
-            onReload();
-          }}
-          onCancel={() => {
-            setAddItemOpen(false);
-            setAddInSectionId(null);
-          }}
-          toast={toast}
-        />
       )}
     </PanelSection>
   );
@@ -5064,7 +5551,6 @@ const REVIEW_BADGES: Record<string, { label: string; cls: string }> = {
 function ChecklistRow({
   item,
   comments,
-  users,
   canTick,
   canApprove,
   canManage,
@@ -5072,13 +5558,12 @@ function ChecklistRow({
   onStatus,
   onDelete,
   onReview,
-  onReassign,
+  onCrewVisible,
   onAttachmentsChanged,
   toast,
 }: {
   item: ChecklistItem;
   comments: ChecklistComment[];
-  users: { id: number; name: string }[];
   canTick: boolean;
   canApprove: boolean;
   canManage?: boolean;
@@ -5089,7 +5574,7 @@ function ChecklistRow({
     action: "submit" | "reject" | "amend" | "approve" | "comment",
     payload: { reason?: string; note?: string }
   ) => void | Promise<void>;
-  onReassign: (ownerId: number | null) => void | Promise<void>;
+  onCrewVisible?: (visible: boolean) => void | Promise<void>;
   onAttachmentsChanged?: () => void;
   toast?: ReturnType<typeof useToast>;
 }) {
@@ -5193,6 +5678,14 @@ function ChecklistRow({
             >
               {item.title}
             </span>
+            {item.role_label && (
+              <span
+                className="rounded-full border border-border bg-bg/40 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-secondary"
+                title="Owner role"
+              >
+                {item.role_label}
+              </span>
+            )}
             {item.required_perm && (
               <span
                 className="inline-flex items-center gap-0.5 rounded-full bg-accent-soft px-1.5 py-0.5 text-[9px] font-semibold text-accent"
@@ -5227,27 +5720,44 @@ function ChecklistRow({
             {item.description && (
               <span className="basis-full text-ink-secondary">{item.description}</span>
             )}
+            {attachments && attachments.length > 0 && (
+              <span className="basis-full text-ink-muted">
+                {attachments[0].uploader_name || "Unknown"} ·{" "}
+                {formatDate(attachments[0].uploaded_at)}
+                {attachments.length > 1 && ` · +${attachments.length - 1} more`}
+              </span>
+            )}
             {item.rejection_reason && item.review_status === "rejected" && (
               <span className="basis-full rounded bg-err/10 px-2 py-1 text-err">
                 Rejected: {item.rejection_reason}
               </span>
             )}
-            {/* Per-task attachments (mig 050). Each chip carries a
-                thumbnail (for image content types) or a file-type
-                icon, plus an ellipsis menu with Download / Remove. */}
+            {/* Per-task attachments (mig 050). Table layout: clicking
+                the name downloads; delete button on the right when the
+                user can manage. */}
             {((attachments && attachments.length > 0) || canManage) && (
-              <div className="mt-1 flex basis-full flex-wrap items-center gap-1.5">
-                {(attachments ?? []).map((a) => (
-                  <TaskAttachmentChip
-                    key={a.id}
-                    attachment={a}
-                    canManage={canManage}
-                    onDelete={() => deleteAttachment(a.id)}
-                    toast={toast}
-                  />
-                ))}
+              <div className="mt-1 basis-full">
+                {attachments && attachments.length > 0 && (
+                  <div className="overflow-hidden rounded-md border border-border-subtle">
+                    <div className="grid grid-cols-[minmax(0,1fr)_110px_90px_28px] items-center gap-2 bg-bg/60 px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+                      <span>Name</span>
+                      <span>Uploaded by</span>
+                      <span>Date</span>
+                      <span />
+                    </div>
+                    {attachments.map((a) => (
+                      <TaskAttachmentRow
+                        key={a.id}
+                        attachment={a}
+                        canManage={canManage}
+                        onDelete={() => deleteAttachment(a.id)}
+                        toast={toast}
+                      />
+                    ))}
+                  </div>
+                )}
                 {canManage && (
-                  <>
+                  <div className="mt-1.5">
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -5268,75 +5778,68 @@ function ChecklistRow({
                       <Plus size={10} />
                       {uploading ? "Uploading…" : "Attach"}
                     </button>
-                  </>
+                  </div>
                 )}
               </div>
             )}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="flex shrink-0 items-center gap-1">
           <button
             onClick={() => setExpanded((x) => !x)}
             className={cn(
-              "inline-flex items-center gap-0.5 rounded px-1 py-1 text-[10px] font-semibold hover:text-accent",
+              "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:text-accent",
               comments.length > 0 ? "text-accent" : "text-ink-muted"
             )}
             title="Review / comments"
           >
-            <MessageSquare size={12} />
-            {comments.length > 0 && <span>{comments.length}</span>}
+            <MessageSquare size={13} />
+            <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">
+              {comments.length > 0 ? comments.length : "Review"}
+            </span>
           </button>
-          {item.status !== "na" && (
-            <button
-              onClick={() => onStatus("na")}
-              className="rounded p-1 text-ink-muted hover:bg-surface-dim hover:text-ink"
-              title="Not applicable"
-            >
-              <MinusCircle size={13} />
-            </button>
-          )}
           {item.status !== "blocked" && item.status !== "done" && (
             <button
               onClick={() => onStatus("blocked")}
-              className="rounded p-1 text-ink-muted hover:bg-surface-dim hover:text-amber-600"
+              className="inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 text-ink-muted hover:bg-surface-dim hover:text-amber-600"
               title="Blocked"
             >
               <Ban size={13} />
+              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">Block</span>
+            </button>
+          )}
+          {canManage && onCrewVisible && (
+            <button
+              onClick={() => onCrewVisible(!item.crew_visible)}
+              className={cn(
+                "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:bg-surface-dim",
+                item.crew_visible
+                  ? "text-accent hover:text-accent"
+                  : "text-ink-muted hover:text-accent"
+              )}
+              title={
+                item.crew_visible
+                  ? "Visible to crew in Driver App — click to hide"
+                  : "Show to crew (drivers + helpers) in Driver App"
+              }
+            >
+              {item.crew_visible ? <Eye size={13} /> : <EyeOff size={13} />}
+              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">Crew</span>
             </button>
           )}
           <button
             onClick={onDelete}
-            className="rounded p-1 text-ink-muted hover:bg-err/10 hover:text-err"
+            className="inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 text-ink-muted hover:bg-err/10 hover:text-err"
             title="Remove"
           >
             <Trash2 size={13} />
+            <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">Del</span>
           </button>
         </div>
       </div>
 
       {expanded && (
         <div className="mt-2 border-t border-border pt-2">
-          {/* Assignment — pick who owns this item */}
-          <div className="mb-2 flex items-center gap-2 rounded-md bg-bg/60 px-2 py-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-              Assigned to
-            </span>
-            <select
-              value={item.owner_user_id ?? ""}
-              onChange={(e) =>
-                onReassign(e.target.value ? parseInt(e.target.value, 10) : null)
-              }
-              className="flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-accent"
-            >
-              <option value="">— unassigned —</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
           {/* Review actions row */}
           <div className="mb-2 flex flex-wrap items-center gap-1.5">
             {!item.review_status && (
@@ -5908,7 +6411,7 @@ function StockTransferSection({
         <div className="flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             {t.transferred_at && (
-              <span>{t.transferred_at.slice(0, 16).replace("T", " ")}</span>
+              <span>{formatDateTime(t.transferred_at)}</span>
             )}
             {t.notes && <span className="text-ink-secondary">— {t.notes}</span>}
           </div>
@@ -6126,18 +6629,21 @@ function LogisticsScheduleSection({
   trips: ProjectTrip[];
   patch: (body: Record<string, any>) => Promise<void>;
 }) {
-  const [drivers, setDrivers] = useState<{ id: number; name: string }[]>([]);
+  const [crew, setCrew] = useState<{ id: number; name: string; user_type: string | null; role_name: string | null }[]>([]);
   const [lorries, setLorries] = useState<{ id: number; plate: string; size: string | null }[]>([]);
+  // /api/fleet/staff filters server-side by role.name IN ('Driver','Helper');
+  // user_type is a parallel column that isn't always populated, so we
+  // discriminate on role_name (the field the server already filters on).
+  const isType = (u: { user_type: string | null; role_name: string | null }, kind: string) =>
+    (u.role_name || "").toLowerCase() === kind ||
+    (u.user_type || "").toLowerCase() === kind;
+  const drivers = useMemo(() => crew.filter((u) => isType(u, "driver")), [crew]);
+  const helpers = useMemo(() => crew.filter((u) => isType(u, "helper")), [crew]);
 
   useEffect(() => {
-    // Fleet endpoints already return the full crew + vehicle list.
-    // Fail silently if either is missing (e.g. permission issue) —
-    // the section still works with free-text fields.
     api
-      .get<{ users?: { id: number; name: string }[] } | { id: number; name: string }[]>(
-        "/api/users"
-      )
-      .then((r: any) => setDrivers(r.users ?? r.data ?? r ?? []))
+      .get<{ data: { id: number; name: string; user_type: string | null; role_name: string | null }[] }>("/api/fleet/staff")
+      .then((r) => setCrew(r.data ?? []))
       .catch(() => {});
     api
       .get<{ data: { id: number; plate: string; size: string | null }[] }>("/api/lorries")
@@ -6223,6 +6729,28 @@ function LogisticsScheduleSection({
           </select>
         </div>
       </div>
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <HelperSelect
+          label="Setup Helper 1"
+          value={project.setup_helper_1_id}
+          helpers={helpers}
+          onChange={(v) => patch({ setup_helper_1_id: v })}
+        />
+        <HelperSelect
+          label="Setup Helper 2"
+          value={project.setup_helper_2_id}
+          helpers={helpers}
+          onChange={(v) => patch({ setup_helper_2_id: v })}
+        />
+      </div>
+      <label className="mt-2 inline-flex items-center gap-2 text-[12px] text-ink-secondary">
+        <input
+          type="checkbox"
+          checked={!!project.setup_helper_outsourced}
+          onChange={(e) => patch({ setup_helper_outsourced: e.target.checked ? 1 : 0 })}
+        />
+        Outsourced helpers
+      </label>
 
       <div className="mt-4 border-t border-border pt-3">
         <PhaseHeader
@@ -6286,8 +6814,248 @@ function LogisticsScheduleSection({
           </select>
         </div>
         </div>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <HelperSelect
+            label="Dismantle Helper 1"
+            value={project.dismantle_helper_1_id}
+            helpers={helpers}
+            onChange={(v) => patch({ dismantle_helper_1_id: v })}
+          />
+          <HelperSelect
+            label="Dismantle Helper 2"
+            value={project.dismantle_helper_2_id}
+            helpers={helpers}
+            onChange={(v) => patch({ dismantle_helper_2_id: v })}
+          />
+        </div>
+        <label className="mt-2 inline-flex items-center gap-2 text-[12px] text-ink-secondary">
+          <input
+            type="checkbox"
+            checked={!!project.dismantle_helper_outsourced}
+            onChange={(e) => patch({ dismantle_helper_outsourced: e.target.checked ? 1 : 0 })}
+          />
+          Outsourced helpers
+        </label>
       </div>
     </PanelSection>
+  );
+}
+
+// Small reusable select for helper rows inside LogisticsScheduleSection.
+function HelperSelect({
+  label,
+  value,
+  helpers,
+  onChange,
+}: {
+  label: string;
+  value: number | null;
+  helpers: { id: number; name: string }[];
+  onChange: (id: number | null) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        {label}
+      </div>
+      <select
+        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px]"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value ? parseInt(e.target.value, 10) : null)}
+      >
+        <option value="">— none —</option>
+        {helpers.map((u) => (
+          <option key={u.id} value={u.id}>
+            {u.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+// ── Phase Photos — crew-uploaded evidence panel (read-only office side) ──
+
+interface PhasePhoto {
+  id: number;
+  phase: "setup" | "dismantle";
+  r2_key: string;
+  content_type: string | null;
+  caption: string | null;
+  uploaded_by: number | null;
+  uploaded_by_name: string | null;
+  uploaded_at: string;
+}
+
+function PhasePhotosSection({ projectId }: { projectId: number }) {
+  const photos = useQuery<{ photos: PhasePhoto[] }>(
+    () => api.get(`/api/projects/${projectId}/phase-photos`),
+    [projectId]
+  );
+  const setup = (photos.data?.photos ?? []).filter((p) => p.phase === "setup");
+  const dismantle = (photos.data?.photos ?? []).filter((p) => p.phase === "dismantle");
+
+  return (
+    <PanelSection title="Phase Photos" muted>
+      <div className="text-[11px] text-ink-muted">
+        Uploaded by setup / dismantle crew from the Driver App.
+      </div>
+      <PhotoGroup label="Setup" photos={setup} onChange={() => photos.reload()} />
+      <PhotoGroup label="Dismantle" photos={dismantle} onChange={() => photos.reload()} />
+    </PanelSection>
+  );
+}
+
+function PhotoGroup({
+  label,
+  photos,
+  onChange,
+}: {
+  label: string;
+  photos: PhasePhoto[];
+  onChange: () => void;
+}) {
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  return (
+    <div className="mt-3">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        {label} · {photos.length}
+      </div>
+      {photos.length === 0 ? (
+        <div className="text-[12px] text-ink-muted">No {label.toLowerCase()} photos yet.</div>
+      ) : (
+        <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+          {photos.map((p, i) => (
+            <PhasePhotoThumb
+              key={p.id}
+              photo={p}
+              onOpen={() => setLightboxIndex(i)}
+              onDeleted={onChange}
+            />
+          ))}
+        </div>
+      )}
+      {lightboxIndex !== null && (
+        <MediaLightbox
+          items={photos}
+          index={lightboxIndex}
+          onChange={setLightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+          baseUrl="/api/projects/attachments"
+          badge={label}
+        />
+      )}
+    </div>
+  );
+}
+
+function PhasePhotoThumb({
+  photo,
+  onOpen,
+  onDeleted,
+}: {
+  photo: PhasePhoto;
+  onOpen: () => void;
+  onDeleted: () => void;
+}) {
+  const dialog = useDialog();
+  const isImage = (photo.content_type || "").startsWith("image/");
+  const isVideo = (photo.content_type || "").startsWith("video/");
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isImage) return;
+    let revoke: string | null = null;
+    api
+      .fetchBlobUrl(`/api/projects/attachments/${photo.r2_key}`)
+      .then((u) => {
+        revoke = u;
+        setUrl(u);
+      })
+      .catch(() => {});
+    return () => {
+      if (revoke) URL.revokeObjectURL(revoke);
+    };
+  }, [photo.r2_key, isImage]);
+
+  const extLabel = (() => {
+    const m = photo.r2_key.match(/\.([a-z0-9]+)$/i);
+    return m ? m[1].toUpperCase() : "FILE";
+  })();
+
+  // Compact card: thumb fills the cell; uploader + delete sit in a tiny
+  // hover-revealed strip so the grid reads as a dense gallery rather
+  // than a stack of metadata cards. Lightbox surfaces the full caption
+  // + uploader, so this surface stays terse on purpose.
+  return (
+    <div className="group relative overflow-hidden rounded-md border border-border bg-surface">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label="Open preview"
+        title={
+          [photo.caption, photo.uploaded_by_name, formatTimestamp(photo.uploaded_at)]
+            .filter(Boolean)
+            .join(" · ")
+        }
+        className="block w-full"
+      >
+        <div className="aspect-square bg-bg">
+          {isImage ? (
+            url ? (
+              <img src={url} alt={photo.caption || ""} className="h-full w-full object-cover" />
+            ) : (
+              <div className="h-full w-full" />
+            )
+          ) : isVideo ? (
+            <div className="relative flex h-full w-full items-center justify-center bg-ink/90">
+              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white/90 shadow-md">
+                <Play size={13} className="ml-0.5 text-ink" fill="currentColor" />
+              </div>
+              <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 text-[7px] font-bold uppercase tracking-wider text-white">
+                {extLabel}
+              </span>
+            </div>
+          ) : (
+            <div className="flex h-full w-full flex-col items-center justify-center gap-0.5 p-1 text-center">
+              <FileText size={18} className="text-ink-secondary" />
+              <div className="text-[8px] font-semibold uppercase tracking-wide text-ink-muted">
+                {extLabel}
+              </div>
+            </div>
+          )}
+        </div>
+      </button>
+      {/* Uploader strip — single line at the bottom edge, very small.
+          Stays visible (not hover-gated) so a glance reads "who took
+          this" without opening the lightbox. */}
+      <div className="flex items-center justify-between gap-1 border-t border-border-subtle bg-bg/40 px-1.5 py-0.5">
+        <span className="truncate text-[9px] text-ink-secondary" title={photo.uploaded_by_name || "Unknown"}>
+          {photo.uploaded_by_name || "—"}
+        </span>
+        <button
+          className="rounded p-0.5 text-ink-muted opacity-0 transition-opacity hover:bg-err/10 hover:text-err group-hover:opacity-100"
+          title="Delete"
+          onClick={async (e) => {
+            e.stopPropagation();
+            const ok = await dialog.confirm({
+              title: "Delete this file?",
+              message:
+                photo.caption ||
+                photo.uploaded_by_name
+                  ? `Uploaded by ${photo.uploaded_by_name || "Unknown"}. This can't be undone.`
+                  : "This can't be undone.",
+              confirmLabel: "Delete",
+              danger: true,
+            });
+            if (!ok) return;
+            await api.del(`/api/projects/phase-photos/${photo.id}`).catch(() => {});
+            onDeleted();
+          }}
+        >
+          <Trash2 size={10} />
+        </button>
+      </div>
+    </div>
   );
 }
 

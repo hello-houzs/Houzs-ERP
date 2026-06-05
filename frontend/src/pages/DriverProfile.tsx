@@ -13,6 +13,10 @@ import { formatCurrency, formatDate, cn } from "../lib/utils";
 export function DriverProfile() {
   const { user, logout } = useAuth();
   const toast = useToast();
+  // Clock in/out is parked for now — UI hidden; backend, hooks and history
+  // stay intact so toggling this back is a one-liner. See 2026-05-28
+  // decision in the wiki.
+  const CLOCK_ENABLED = false;
   const [tab, setTab] = useState<"profile" | "salary" | "clock">("profile");
 
   const profile = useQuery<any>(() => api.get("/api/fleet/me"));
@@ -36,11 +40,13 @@ export function DriverProfile() {
       </div>
 
       {/* Clock in/out card */}
-      <ClockCard
-        clocked={clocked}
-        isClockedIn={isClockedIn}
-        onReload={() => clockStatus.reload()}
-      />
+      {CLOCK_ENABLED && (
+        <ClockCard
+          clocked={clocked}
+          isClockedIn={isClockedIn}
+          onReload={() => clockStatus.reload()}
+        />
+      )}
 
       {/* Today's earnings */}
       {todayEarnings.data && (
@@ -72,7 +78,7 @@ export function DriverProfile() {
       {/* Tab strip */}
       <div className="mb-4 border-b border-border">
         <div className="no-scrollbar -mx-4 flex gap-1 overflow-x-auto px-4 sm:mx-0 sm:px-0 [&>*]:shrink-0">
-          {(["profile", "salary", "clock"] as const).map((t) => (
+          {((CLOCK_ENABLED ? ["profile", "salary", "clock"] : ["profile", "salary"]) as Array<"profile" | "salary" | "clock">).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -89,7 +95,7 @@ export function DriverProfile() {
 
       {tab === "profile" && <ProfileTab profile={profile.data} onUpdated={() => profile.reload()} />}
       {tab === "salary" && <SalaryTab />}
-      {tab === "clock" && <ClockHistoryTab />}
+      {CLOCK_ENABLED && tab === "clock" && <ClockHistoryTab />}
 
       <button
         onClick={() => logout()}

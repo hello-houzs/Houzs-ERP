@@ -128,21 +128,16 @@ export function Notifications() {
                 className="flex items-start gap-3 px-4 py-2.5 transition-colors hover:bg-bg/40"
               >
                 <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent-soft font-mono text-[10px] font-bold text-accent-ink">
-                  {(a.user_name || a.project_code || "?").slice(0, 1).toUpperCase()}
+                  {(a.user_name || a.project_name || "?").slice(0, 1).toUpperCase()}
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
                     <span className="truncate text-[12.5px] font-semibold text-ink">
-                      {a.project_code || "Project"}
+                      {a.project_name || "Project"}
                     </span>
                     {a.brand && (
                       <span className="font-mono text-[9.5px] text-ink-muted">
                         {a.brand}
-                      </span>
-                    )}
-                    {a.project_name && (
-                      <span className="truncate text-[11px] text-ink-muted">
-                        {a.project_name}
                       </span>
                     )}
                     <span
