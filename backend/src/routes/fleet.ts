@@ -49,8 +49,8 @@ app.get("/me", async (c) => {
 app.patch("/me", async (c) => {
   const user = c.get("user");
   const body = await c.req.json<any>();
-  // Self-service: only allow contact fields, not salary/type
-  const allowed = ["phone", "emergency_contact_name", "emergency_contact_phone"];
+  // Self-service: only allow name + contact fields, never salary/type/role.
+  const allowed = ["name", "phone", "emergency_contact_name", "emergency_contact_phone"];
   const filtered: Record<string, any> = {};
   for (const k of allowed) {
     if (k in body) filtered[k] = body[k];

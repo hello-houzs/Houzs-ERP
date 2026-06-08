@@ -11,7 +11,7 @@ import { formatCurrency, formatDate, cn } from "../lib/utils";
  * Shows: profile info, clock in/out, today's earnings, monthly salary, inspection status.
  */
 export function DriverProfile() {
-  const { user, logout } = useAuth();
+  const { user, logout, reload } = useAuth();
   const toast = useToast();
   // Clock in/out is parked for now — UI hidden; backend, hooks and history
   // stay intact so toggling this back is a one-liner. See 2026-05-28
@@ -93,7 +93,16 @@ export function DriverProfile() {
         </div>
       </div>
 
-      {tab === "profile" && <ProfileTab profile={profile.data} onUpdated={() => profile.reload()} />}
+      {tab === "profile" && (
+        <ProfileTab
+          profile={profile.data}
+          onUpdated={async () => {
+            await profile.reload();
+            // Name change must refresh /me so the header + nav reflect it.
+            await reload();
+          }}
+        />
+      )}
       {tab === "salary" && <SalaryTab />}
       {CLOCK_ENABLED && tab === "clock" && <ClockHistoryTab />}
 
@@ -181,6 +190,7 @@ function ProfileTab({ profile, onUpdated }: { profile: any; onUpdated: () => voi
   const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
+    name: "",
     phone: "",
     emergency_contact_name: "",
     emergency_contact_phone: "",
@@ -189,6 +199,7 @@ function ProfileTab({ profile, onUpdated }: { profile: any; onUpdated: () => voi
 
   function startEdit() {
     setForm({
+      name: profile?.name || "",
       phone: profile?.phone || "",
       emergency_contact_name: profile?.emergency_contact_name || "",
       emergency_contact_phone: profile?.emergency_contact_phone || "",
@@ -197,9 +208,13 @@ function ProfileTab({ profile, onUpdated }: { profile: any; onUpdated: () => voi
   }
 
   async function save() {
+    if (!form.name.trim()) {
+      toast.error("Name cannot be empty");
+      return;
+    }
     setBusy(true);
     try {
-      await api.patch("/api/fleet/me", form);
+      await api.patch("/api/fleet/me", { ...form, name: form.name.trim() });
       setEditing(false);
       onUpdated();
     } catch (e: any) {
@@ -214,9 +229,10 @@ function ProfileTab({ profile, onUpdated }: { profile: any; onUpdated: () => voi
   return (
     <div>
       <div className="rounded-xl border border-border bg-surface divide-y divide-border">
-        <Field label="Email" value={profile.email} />
         {!editing ? (
           <>
+            <Field label="Name" value={profile.name} />
+            <Field label="Email" value={profile.email} />
             <Field label="Phone" value={profile.phone} />
             <Field label="IC" value={profile.ic_number} />
             {profile.user_type === "driver" && (
@@ -230,6 +246,7 @@ function ProfileTab({ profile, onUpdated }: { profile: any; onUpdated: () => voi
           </>
         ) : (
           <div className="space-y-3 p-4">
+            <EditableField label="Name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
             <EditableField label="Phone" value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} type="tel" />
             <div className="rounded-md bg-paper p-3">
               <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-secondary mb-1">IC</div>

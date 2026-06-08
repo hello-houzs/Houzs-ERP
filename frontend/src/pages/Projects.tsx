@@ -3016,13 +3016,10 @@ function ProjectsCalendarView() {
         </div>
       )}
 
-      {/* Mobile + tablet: scroll horizontally so each day cell stays
-          wide enough to fit project name pills without truncation.
-          The inner min-w-[1024px] preserves desktop-density columns;
-          on lg+ (>=1024px viewport) the override drops and the grid
-          fills the container as before. */}
-      <div className="thin-scroll overflow-x-auto lg:overflow-visible">
-        <div className="min-w-[1024px] rounded-md border border-border bg-surface lg:min-w-0">
+      {/* The grid always fits its container: the 7 day columns shrink to
+          the viewport width on mobile rather than scrolling horizontally. */}
+      <div>
+        <div className="rounded-md border border-border bg-surface">
         {/* Weekday header — month view only. In week view each cell
             renders its own "Day. DD/MM" header with a today pill, so
             this row would be redundant. */}
@@ -4482,6 +4479,13 @@ function ProjectSpecStrip({
           </SpecValue>
         </SpecCell>
 
+        <SpecCell label="Duration">
+          <SpecValue>
+            {p.duration_days != null
+              ? `${p.duration_days} day${p.duration_days === 1 ? "" : "s"}`
+              : "—"}
+          </SpecValue>
+        </SpecCell>
         <SpecCell label="Start">
           {editing ? (
             <input
@@ -4519,13 +4523,6 @@ function ProjectSpecStrip({
           ) : (
             <SpecValue mono>{p.end_date ?? "—"}</SpecValue>
           )}
-        </SpecCell>
-        <SpecCell label="Duration">
-          <SpecValue>
-            {p.duration_days != null
-              ? `${p.duration_days} day${p.duration_days === 1 ? "" : "s"}`
-              : "—"}
-          </SpecValue>
         </SpecCell>
         <SpecCell label="Booth">
           <SpecTextField
@@ -6629,7 +6626,7 @@ function LogisticsScheduleSection({
   trips: ProjectTrip[];
   patch: (body: Record<string, any>) => Promise<void>;
 }) {
-  const [crew, setCrew] = useState<{ id: number; name: string; user_type: string | null; role_name: string | null }[]>([]);
+  const [crew, setCrew] = useState<CrewMember[]>([]);
   const [lorries, setLorries] = useState<{ id: number; plate: string; size: string | null }[]>([]);
   // /api/fleet/staff filters server-side by role.name IN ('Driver','Helper');
   // user_type is a parallel column that isn't always populated, so we
@@ -6642,7 +6639,7 @@ function LogisticsScheduleSection({
 
   useEffect(() => {
     api
-      .get<{ data: { id: number; name: string; user_type: string | null; role_name: string | null }[] }>("/api/fleet/staff")
+      .get<{ data: CrewMember[] }>("/api/fleet/staff")
       .then((r) => setCrew(r.data ?? []))
       .catch(() => {});
     api
@@ -6658,13 +6655,15 @@ function LogisticsScheduleSection({
     (t) => (t.trip_type || "").toLowerCase() === "dismantle"
   );
 
-  // Driver name resolution for the phase header chips. The select
-  // already loaded the full users list, so reuse it instead of relying
-  // on a denormalised name on the project row.
-  const setupDriverName =
-    drivers.find((u) => u.id === project.setup_driver_user_id)?.name ?? null;
-  const dismantleDriverName =
-    drivers.find((u) => u.id === project.dismantle_driver_user_id)?.name ?? null;
+  // Driver resolution for the phase header chips and the info cards. The
+  // select already loaded the full crew list, so reuse it instead of
+  // relying on a denormalised name on the project row.
+  const setupDriver =
+    drivers.find((u) => u.id === project.setup_driver_user_id) ?? null;
+  const dismantleDriver =
+    drivers.find((u) => u.id === project.dismantle_driver_user_id) ?? null;
+  const setupDriverName = setupDriver?.name ?? null;
+  const dismantleDriverName = dismantleDriver?.name ?? null;
 
   return (
     <PanelSection title="Logistics Schedule" muted>
@@ -6705,6 +6704,7 @@ function LogisticsScheduleSection({
               </option>
             ))}
           </select>
+          {setupDriver && <CrewInfoCard member={setupDriver} />}
         </div>
         <div>
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
@@ -6790,6 +6790,7 @@ function LogisticsScheduleSection({
               </option>
             ))}
           </select>
+          {dismantleDriver && <CrewInfoCard member={dismantleDriver} />}
         </div>
         <div>
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
@@ -6850,9 +6851,10 @@ function HelperSelect({
 }: {
   label: string;
   value: number | null;
-  helpers: { id: number; name: string }[];
+  helpers: CrewMember[];
   onChange: (id: number | null) => void;
 }) {
+  const selected = helpers.find((u) => u.id === value) ?? null;
   return (
     <div>
       <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
@@ -6870,6 +6872,63 @@ function HelperSelect({
           </option>
         ))}
       </select>
+      {selected && <CrewInfoCard member={selected} />}
+    </div>
+  );
+}
+
+// Driver / helper profile surfaced when one is picked in the Logistics
+// Schedule. Fields come straight from /api/fleet/staff (set up in the
+// Driver App or Logistics > Fleet > Driver). Pay rates are intentionally
+// omitted — they don't belong in the project view.
+type CrewMember = {
+  id: number;
+  name: string;
+  phone: string | null;
+  ic_number: string | null;
+  user_type: string | null;
+  role_name: string | null;
+};
+
+function CrewInfoCard({ member }: { member: CrewMember }) {
+  return (
+    <div className="mt-1.5 rounded-md border border-border bg-paper px-3 py-2">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+        <InfoBit
+          label="Phone"
+          value={member.phone}
+          href={member.phone ? `tel:${member.phone}` : undefined}
+        />
+        <InfoBit label="IC" value={member.ic_number} />
+      </div>
+    </div>
+  );
+}
+
+function InfoBit({
+  label,
+  value,
+  href,
+}: {
+  label: string;
+  value: string | null | undefined;
+  href?: string;
+}) {
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        {label}
+      </span>
+      {href && value ? (
+        <a
+          href={href}
+          className="font-medium text-ink underline-offset-2 hover:underline"
+        >
+          {value}
+        </a>
+      ) : (
+        <span className="font-medium text-ink">{value || "—"}</span>
+      )}
     </div>
   );
 }
@@ -8024,18 +8083,32 @@ function FinanceLedgerSection({
     }
     setSavingCat(category);
     try {
-      // Archive existing — sequential to keep the rollup cache coherent.
-      for (const line of existing) {
-        await api.del(`/api/projects/finance/lines/${line.id}`);
-      }
-      // Insert the new consolidated line, unless the user is zeroing
-      // out the row (then archive only).
-      if (nextAmount > 0) {
+      if (nextAmount <= 0) {
+        // Zeroing the row — archive every line in the category.
+        for (const line of existing) {
+          await api.del(`/api/projects/finance/lines/${line.id}`);
+        }
+      } else if (existing.length === 1) {
+        // Edit the amount in place so the line keeps its receipt
+        // (r2_key) and identity. Delete+recreate would drop the file.
+        await api.patch(`/api/projects/finance/lines/${existing[0].id}`, {
+          amount: nextAmount,
+        });
+      } else {
+        // Consolidating many into one. Carry the first attached receipt
+        // forward so collapsing the rows never silently loses a file.
+        const withReceipt = existing.find((l) => l.r2_key);
+        for (const line of existing) {
+          await api.del(`/api/projects/finance/lines/${line.id}`);
+        }
         await api.post(`/api/projects/${projectId}/finance/lines`, {
           kind: "cost",
           category,
           amount: nextAmount,
           description: `${catLabel(category)} (snapshot)`,
+          r2_key: withReceipt?.r2_key ?? undefined,
+          file_name: withReceipt?.file_name ?? undefined,
+          mime_type: withReceipt?.mime_type ?? undefined,
         });
       }
       onChange();
@@ -8241,11 +8314,11 @@ function FinanceLedgerSection({
           />
         </div>
 
-        {/* Attachments — single section at the bottom of the snapshot
-            card. Lists every non-auto cost line that carries a
-            receipt (r2_key), regardless of category. "+ Add receipt"
-            opens AddFinanceLineForm with a category dropdown so the
-            user picks where the new line lands. */}
+        {/* Cost lines — single section at the bottom of the snapshot
+            card. Lists every non-auto cost line (with or without a
+            receipt) so each can be edited in place and have a file
+            attached. "+ Add cost line" opens AddFinanceLineForm, whose
+            dropdown hides already-used categories to prevent duplicates. */}
         <FinanceAttachmentsSection
           projectId={projectId}
           lines={lines}
@@ -8257,16 +8330,18 @@ function FinanceLedgerSection({
         />
       </div>
       <p className="mt-1 text-[10.5px] text-ink-muted">
-        Tap a row to set its amount. Receipts live in the Attachments section above. Sales live in the Sales section above; auto rows are computed from the rate card.
+        Tap a row to set its amount. Individual cost lines and their receipts live in the Cost lines section above. Sales live in the Sales section above; auto rows are computed from the rate card.
       </p>
     </PanelSection>
   );
 }
 
-// Single Attachments section at the bottom of the Financial Snapshot.
-// Renders every non-auto cost line that has an r2_key as a receipt
-// row with open / edit / delete affordances, plus a "+ Add receipt"
-// button that opens AddFinanceLineForm with a category dropdown.
+// Single Cost Lines section at the bottom of the Financial Snapshot.
+// Lists every non-auto, manually-entered cost line (with or without a
+// receipt) with open / edit / delete affordances, so each can be edited
+// in place and have a receipt attached. "+ Add cost line" opens
+// AddFinanceLineForm, whose category dropdown hides already-used
+// categories so a category never gets a duplicate line.
 function FinanceAttachmentsSection({
   projectId,
   lines,
@@ -8284,32 +8359,36 @@ function FinanceAttachmentsSection({
   onChange: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
-  const receipts = lines.filter(
-    (l) => l.kind === "cost" && !l.auto_source && !l.source && !!l.r2_key,
+  const costLines = lines.filter(
+    (l) => l.kind === "cost" && !l.auto_source && !l.source,
   );
+  // Categories that already have an editable cost line. The add form
+  // hides these so a category never gets a duplicate line — the user
+  // edits the existing row instead.
+  const usedCategories = new Set(costLines.map((l) => (l.category ?? "").trim()));
   return (
     <div className="border-t border-border px-4 py-3">
       <div className="mb-2 flex items-center justify-between">
         <h4 className="text-[10.5px] font-bold uppercase tracking-brand text-ink-muted">
-          Attachments ({receipts.length})
+          Cost lines ({costLines.length})
         </h4>
         {!adding && (
           <button
             onClick={onAddOpen}
             className="inline-flex items-center gap-1 text-[10.5px] font-semibold text-accent hover:underline"
           >
-            <Plus size={11} /> Add receipt
+            <Plus size={11} /> Add cost line
           </button>
         )}
       </div>
-      {receipts.length === 0 && !adding && (
+      {costLines.length === 0 && !adding && (
         <div className="text-[11px] text-ink-muted">
-          No receipts yet. Add one to attach a file to a cost line.
+          No cost lines yet. Add one to record a cost and attach a receipt.
         </div>
       )}
-      {receipts.length > 0 && (
+      {costLines.length > 0 && (
         <CategoryDetailLines
-          lines={receipts}
+          lines={costLines}
           onChange={onChange}
           toast={toast}
         />
@@ -8319,6 +8398,7 @@ function FinanceAttachmentsSection({
           <AddFinanceLineForm
             projectId={projectId}
             kind="cost"
+            usedCategories={usedCategories}
             onCancel={onAddClose}
             onSaved={() => {
               onAddClose();
@@ -8831,6 +8911,7 @@ function AddFinanceLineForm({
   onSaved,
   toast,
   categoryDefault,
+  usedCategories,
 }: {
   projectId: number;
   kind: "income" | "cost";
@@ -8841,9 +8922,17 @@ function AddFinanceLineForm({
   // hidden) so the row-level "+ Add detailed line" CTA goes straight
   // to amount + description + date + receipt.
   categoryDefault?: string;
+  // Categories that already have a line — hidden from the dropdown so
+  // the user edits the existing row rather than adding a duplicate.
+  usedCategories?: Set<string>;
 }) {
-  const categories = kind === "income" ? LEDGER_INCOME_CATS : LEDGER_COST_CATS;
-  const [category, setCategory] = useState<string>(categoryDefault ?? categories[0]);
+  const allCategories = kind === "income" ? LEDGER_INCOME_CATS : LEDGER_COST_CATS;
+  const categories = categoryDefault
+    ? allCategories
+    : allCategories.filter((c) => !usedCategories?.has(c));
+  const [category, setCategory] = useState<string>(
+    categoryDefault ?? categories[0] ?? "",
+  );
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
   const [occurredAt, setOccurredAt] = useState("");
@@ -8894,6 +8983,23 @@ function AddFinanceLineForm({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (!categoryDefault && categories.length === 0) {
+    return (
+      <div className="mt-3 rounded-md border border-border bg-surface p-3 text-[11px] text-ink-secondary">
+        Every category already has a line. Edit the existing row to change its
+        amount or attach a receipt instead of adding a duplicate.
+        <div className="mt-2">
+          <button
+            onClick={onCancel}
+            className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] text-ink-secondary"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -8987,6 +9093,7 @@ function EditFinanceLineRow({
   const [occurredAt, setOccurredAt] = useState<string>(
     line.occurred_at ? line.occurred_at.slice(0, 10) : ""
   );
+  const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   async function submit() {
@@ -8997,12 +9104,33 @@ function EditFinanceLineRow({
     }
     setSubmitting(true);
     try {
-      await api.patch(`/api/projects/finance/lines/${line.id}`, {
+      const patch: Record<string, any> = {
         category,
         amount: n,
         description: description.trim() || null,
         occurred_at: occurredAt || null,
-      });
+      };
+      // Replacing / attaching a receipt — upload then carry the key on
+      // the patch. An existing r2_key is left untouched when no new file
+      // is picked.
+      if (file) {
+        if (file.size > 10 * 1024 * 1024) {
+          toast.error("File exceeds 10MB");
+          setSubmitting(false);
+          return;
+        }
+        const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+        const buf = await file.arrayBuffer();
+        const up = await api.putBinary<{ key: string; mime_type: string }>(
+          `/api/projects/${line.project_id}/finance/upload?ext=${ext}`,
+          buf,
+          file.type,
+        );
+        patch.r2_key = up.key;
+        patch.file_name = file.name;
+        patch.mime_type = up.mime_type;
+      }
+      await api.patch(`/api/projects/finance/lines/${line.id}`, patch);
       onSaved();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -9052,6 +9180,20 @@ function EditFinanceLineRow({
           className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
           title="Payment date"
         />
+        <div className="col-span-2">
+          {line.r2_key && (
+            <div className="mb-1 text-[10px] text-ink-muted">
+              Current receipt: {line.file_name || "attached"} · pick a file to replace
+            </div>
+          )}
+          <input
+            type="file"
+            accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            className="w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none"
+            title={line.r2_key ? "Replace receipt" : "Attach receipt"}
+          />
+        </div>
       </div>
       <div className="mt-2 flex items-center gap-2">
         <button
