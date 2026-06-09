@@ -317,7 +317,7 @@ export async function instantiateChecklistFromEventType(
   //    maps via sectionIdMap; unmapped sections fall through as null.
   const items = await env.DB.prepare(
     `SELECT seq, title, description, required_perm, role_label, crew_visible,
-            due_offset_days, section_id, requires_review
+            due_offset_days, section_id, requires_review, pill_kind, pill_value
        FROM project_checklist_template_items
       WHERE template_id = ?
       ORDER BY seq`
@@ -333,6 +333,8 @@ export async function instantiateChecklistFromEventType(
       due_offset_days: number | null;
       section_id: number | null;
       requires_review: number | null;
+      pill_kind: string | null;
+      pill_value: string | null;
     }>();
 
   const rows = items.results ?? [];
@@ -347,8 +349,8 @@ export async function instantiateChecklistFromEventType(
     await env.DB.prepare(
       `INSERT INTO project_checklist
          (project_id, section_id, seq, title, description, required_perm,
-          role_label, crew_visible, due_date, due_offset_days)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          role_label, crew_visible, due_date, due_offset_days, status, pill_kind, pill_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         projectId,
@@ -360,7 +362,12 @@ export async function instantiateChecklistFromEventType(
         item.role_label,
         item.crew_visible ? 1 : 0,
         due,
-        item.due_offset_days
+        item.due_offset_days,
+        // Pill rows (payment/deposit) never count toward checklist
+        // progress, so they clone in as 'na'.
+        item.pill_kind ? "na" : "pending",
+        item.pill_kind,
+        item.pill_value
       )
       .run();
   }
@@ -1277,6 +1284,7 @@ const CHECKLIST_PATCH_FIELDS = [
   "section_id",
   "role_label",
   "crew_visible",
+  "pill_value",
 ] as const;
 
 export async function patchChecklistItem(

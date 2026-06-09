@@ -384,6 +384,10 @@ interface ChecklistItem {
   completed_at: string | null;
   notes: string | null;
   section_id: number | null;
+  /** mig 090 — when set, row renders multi-state payment pills instead
+   *  of the done/pending circle. 'rental_payment' | 'security_deposit'. */
+  pill_kind: string | null;
+  pill_value: string | null;
 }
 
 interface ActivityRow {
@@ -410,19 +414,6 @@ interface Paginated<T> {
   per_page: number;
   total: number;
 }
-
-// ── Payment workflow ─────────────────────────────────────────
-
-const PAYMENT_STATUS_META: Record<
-  PaymentStatus,
-  { label: string; tone: "default" | "open" | "synced" | "warning"; next?: PaymentStatus }
-> = {
-  not_started:    { label: "Not started",    tone: "default", next: "deposit_paid" },
-  deposit_paid:   { label: "Deposit paid",   tone: "open",    next: "paid" },
-  paid:           { label: "Paid in full",   tone: "synced",  next: "refund_pending" },
-  refund_pending: { label: "Refund pending", tone: "warning", next: "refunded" },
-  refunded:       { label: "Refunded",       tone: "synced" },
-};
 
 // Canonical event name helper. Builds the `STATE - BRAND - TYPE - VENUE`
 // convention teams use internally. Empty fields are skipped so a
@@ -4025,21 +4016,9 @@ function ProjectDetailContent({
             patch={patch}
             toast={toast}
           />
-          {/* Payment sits directly under the stage-progress header so the
-              status pills are the first thing the eye lands on after the
-              eyebrow + title. No PanelSection chrome — the strip
-              integrates visually with the header. */}
-          {fullAccess && (
-            <PaymentSection
-              projectId={id}
-              project={p}
-              onChange={() => {
-                detail.reload();
-                onUpdated();
-              }}
-              toast={toast}
-            />
-          )}
+          {/* Payment status now lives in the checklist as the "Rental
+              Payment" pill row (PAYMENT section) — see mig 090. The old
+              standalone Payment panel was removed at the boss's request. */}
 
           {/* Operational area — Chat on the side; Sales / Tasklist /
               Logistics / Finance Ledger stacked in Main (Finance at the
@@ -5465,7 +5444,26 @@ function TasklistSections({
                     canTick={canTick}
                     canApprove={!item.required_perm || can(item.required_perm)}
                     canManage={canManage}
-                    attachments={attachmentsByItem.get(item.id) ?? []}
+                    attachments={
+                      // 3D shared upload: the Peter approval row mirrors the
+                      // file uploaded on the "3D Checked by MGT" row.
+                      item.title === "3D Approved by Peter"
+                        ? attachmentsByItem.get(
+                            items.find((i) => i.title === "3D Checked by MGT")?.id ?? -1
+                          ) ?? []
+                        : attachmentsByItem.get(item.id) ?? []
+                    }
+                    readOnlyAttach={
+                      item.title === "3D Approved by Peter" &&
+                      !!items.find((i) => i.title === "3D Checked by MGT")
+                    }
+                    attachCaption={
+                      item.title === "3D Approved by Peter"
+                        ? "3D file shared from the “3D Checked by MGT” step."
+                        : item.title === "3D Checked by MGT"
+                          ? "Shared 3D file — also shown on the “3D Approved by Peter” step."
+                          : undefined
+                    }
                     onStatus={(s) => onItemStatus(item, s)}
                     onDelete={() => onItemDelete(item)}
                     onCrewVisible={async (visible) => {
@@ -5557,6 +5555,8 @@ function ChecklistRow({
   onReview,
   onCrewVisible,
   onAttachmentsChanged,
+  readOnlyAttach,
+  attachCaption,
   toast,
 }: {
   item: ChecklistItem;
@@ -5573,6 +5573,10 @@ function ChecklistRow({
   ) => void | Promise<void>;
   onCrewVisible?: (visible: boolean) => void | Promise<void>;
   onAttachmentsChanged?: () => void;
+  /** mig: 3D shared-file — when set, the row shows another item's
+   *  attachments read-only (no upload button) plus a caption. */
+  readOnlyAttach?: boolean;
+  attachCaption?: string;
   toast?: ReturnType<typeof useToast>;
 }) {
   const dialog = useDialog();
@@ -5631,6 +5635,74 @@ function ChecklistRow({
     new Date(item.due_date) < new Date(new Date().toISOString().slice(0, 10));
   const reviewBadge = item.review_status ? REVIEW_BADGES[item.review_status] : null;
   const awaitingReview = item.review_status === "pending_review" || item.review_status === "amended";
+
+  // mig 090 — payment / deposit rows render as multi-state pills instead
+  // of the done/pending circle. pill_value is stored via the standard
+  // checklist PATCH; the row's status stays 'na' (off the progress bar).
+  if (item.pill_kind) {
+    const opts: [string, string][] =
+      item.pill_kind === "rental_payment"
+        ? [["none", "NONE"], ["unpaid", "UNPAID"], ["fully_paid", "FULLY PAID"]]
+        : [["none", "NONE"], ["unpaid", "UNPAID"], ["paid", "PAID"], ["refunded", "REFUNDED"]];
+    const cur = item.pill_value || "unpaid";
+    const selTone = (v: string) =>
+      v === "unpaid"
+        ? "border-warning bg-warning-bg text-warning-text"
+        : v === "none"
+          ? "border-border bg-surface-dim text-ink-muted"
+          : "border-synced bg-synced/15 text-synced";
+    const setPill = async (v: string) => {
+      if (v === cur) return;
+      try {
+        await api.patch(`/api/projects/checklist/${item.id}`, { pill_value: v });
+        onAttachmentsChanged?.();
+      } catch (e: any) {
+        toast?.error(e?.message || "Failed");
+      }
+    };
+    return (
+      <div
+        className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-2"
+        data-task-id={item.id}
+      >
+        <Circle size={16} className="shrink-0 text-ink-muted" />
+        <span className="flex-1 text-[12px] font-medium">{item.title}</span>
+        <input
+          ref={fileInputRef}
+          type="file"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) uploadAttachment(f);
+          }}
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading || !canManage}
+          className="rounded-md border border-border bg-surface p-1.5 text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
+          title={attachments && attachments.length ? `${attachments.length} file(s)` : "Attach"}
+        >
+          <Paperclip size={12} />
+        </button>
+        {opts.map(([v, label]) => (
+          <button
+            key={v}
+            onClick={() => setPill(v)}
+            disabled={!canTick}
+            className={cn(
+              "rounded-md border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
+              v === cur
+                ? selTone(v)
+                : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent",
+              !canTick && "cursor-not-allowed opacity-60"
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -5753,7 +5825,7 @@ function ChecklistRow({
                     ))}
                   </div>
                 )}
-                {canManage && (
+                {canManage && !readOnlyAttach && (
                   <div className="mt-1.5">
                     <input
                       ref={fileInputRef}
@@ -5775,6 +5847,11 @@ function ChecklistRow({
                       <Plus size={10} />
                       {uploading ? "Uploading…" : "Attach"}
                     </button>
+                  </div>
+                )}
+                {attachCaption && (
+                  <div className="mt-1 text-[10px] italic text-ink-muted">
+                    {attachCaption}
                   </div>
                 )}
               </div>
@@ -6188,150 +6265,6 @@ function ProjectBanner({
 // Separate from the customer-facing event date range. This is when
 // the booth is actually being built / torn down, who's driving, and
 // which lorry is moving stock.
-
-// ── Payment workflow section ─────────────────────────────────
-// Five-state machine shown as pill buttons. Clicking advances to
-// that state (any → any allowed, ops reality isn't linear). Upload
-// a rental-proof image/PDF + notes with each status change.
-
-function PaymentSection({
-  projectId,
-  project,
-  onChange,
-  toast,
-}: {
-  projectId: number;
-  project: ProjectDetail["project"];
-  onChange: () => void;
-  toast: ReturnType<typeof useToast>;
-}) {
-  const [notesOpen, setNotesOpen] = useState(false);
-  const [notesDraft, setNotesDraft] = useState(project.payment_notes ?? "");
-  const current = (project.payment_status || "not_started") as PaymentStatus;
-  const meta = PAYMENT_STATUS_META[current];
-
-  async function advance(next: PaymentStatus) {
-    try {
-      await api.post(`/api/projects/${projectId}/payment`, { status: next });
-      toast.success(`Payment: ${PAYMENT_STATUS_META[next].label}`);
-      onChange();
-    } catch (e: any) {
-      toast.error(e?.message || "Failed");
-    }
-  }
-
-  async function saveNotes() {
-    try {
-      await api.post(`/api/projects/${projectId}/payment`, {
-        status: current,
-        notes: notesDraft,
-      });
-      setNotesOpen(false);
-      onChange();
-    } catch (e: any) {
-      toast.error(e?.message || "Failed");
-    }
-  }
-
-  const toneCls: Record<typeof meta.tone, string> = {
-    default: "bg-surface-dim text-ink-muted",
-    open: "bg-amber-100 text-amber-800",
-    synced: "bg-synced/15 text-synced",
-    warning: "bg-amber-500/15 text-amber-900",
-  };
-
-  // Compact strip — sits directly under the stage-progress header, so
-  // no PanelSection chrome. Proof of payment is uploaded as an
-  // attachment on the corresponding Finance Ledger line (income or
-  // cost), keeping the receipt next to the money it documents.
-  return (
-    <div className="mb-5 rounded-md border border-border bg-bg/60 px-4 py-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
-          Payment
-        </span>
-        <span
-          className={cn(
-            "rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
-            toneCls[meta.tone]
-          )}
-        >
-          {meta.label}
-        </span>
-        {project.payment_updated_at && (
-          <span className="text-[10px] text-ink-muted">
-            updated {formatDate(project.payment_updated_at)}
-          </span>
-        )}
-        <div className="ml-auto flex flex-wrap items-center gap-1.5">
-          {(Object.keys(PAYMENT_STATUS_META) as PaymentStatus[]).map((s) => {
-            const isCurrent = s === current;
-            return (
-              <button
-                key={s}
-                onClick={() => (isCurrent ? null : advance(s))}
-                disabled={isCurrent}
-                className={cn(
-                  "rounded-md border px-2 py-1 text-[10.5px] font-semibold",
-                  isCurrent
-                    ? "border-accent bg-accent text-white"
-                    : "border-border bg-surface text-ink hover:border-accent/40 hover:text-accent"
-                )}
-              >
-                {PAYMENT_STATUS_META[s].label}
-              </button>
-            );
-          })}
-          <button
-            onClick={() => {
-              setNotesDraft(project.payment_notes ?? "");
-              setNotesOpen((x) => !x);
-            }}
-            className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10.5px] font-semibold hover:border-accent/40 hover:text-accent"
-          >
-            Notes{project.payment_notes ? " ·" : ""}
-          </button>
-        </div>
-      </div>
-
-      <div className="mt-2 text-[10px] text-ink-muted">
-        Upload payment proof on the matching Finance Ledger line.
-      </div>
-
-      {project.payment_notes && !notesOpen && (
-        <div className="mt-2 rounded-md bg-surface px-2.5 py-2 text-[11px] text-ink-secondary">
-          {project.payment_notes}
-        </div>
-      )}
-
-      {notesOpen && (
-        <div className="mt-2 rounded-md border border-accent/30 bg-accent-soft/20 p-2">
-          <textarea
-            value={notesDraft}
-            onChange={(e) => setNotesDraft(e.target.value)}
-            rows={3}
-            placeholder="Payment notes…"
-            className="w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
-          />
-          <div className="mt-1.5 flex items-center gap-2">
-            <button
-              onClick={saveNotes}
-              className="rounded-md bg-accent px-3 py-1 text-[11px] font-semibold text-white"
-            >
-              Save
-            </button>
-            <button
-              onClick={() => setNotesOpen(false)}
-              className="rounded-md border border-border bg-surface px-2 py-1 text-[11px] text-ink-secondary"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ── Stock transfer section ───────────────────────────────────
 // OUT (to venue) + RETURN (back to warehouse). Each row has optional
