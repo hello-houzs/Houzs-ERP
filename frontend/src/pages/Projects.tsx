@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { Fragment, useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate, useParams, Navigate, useSearchParams } from "react-router-dom";
 import {
@@ -5437,8 +5437,8 @@ function TasklistSections({
               </div>
               <div className="space-y-1.5 p-2">
                 {items.map((item) => (
+                  <Fragment key={item.id}>
                   <ChecklistRow
-                    key={item.id}
                     item={item}
                     comments={comments.filter((c) => c.item_id === item.id)}
                     canTick={canTick}
@@ -5490,6 +5490,10 @@ function TasklistSections({
                     onAttachmentsChanged={onReload}
                     toast={toast}
                   />
+                  {item.title === "Deco / Coffee Table" && (
+                    <ChecklistRemark item={item} onSaved={onReload} toast={toast} />
+                  )}
+                  </Fragment>
                 ))}
                 {items.length === 0 && (
                   <div className="px-1 py-1 text-[10.5px] text-ink-muted">
@@ -5542,6 +5546,54 @@ const REVIEW_BADGES: Record<string, { label: string; cls: string }> = {
   amended: { label: "Amended", cls: "bg-accent/15 text-accent" },
   approved: { label: "Approved", cls: "bg-synced/15 text-synced" },
 };
+
+// Inline remark box rendered under specific checklist items (e.g.
+// "Deco / Coffee Table"). Edits the item's notes field; saves on blur.
+function ChecklistRemark({
+  item,
+  onSaved,
+  toast,
+}: {
+  item: ChecklistItem;
+  onSaved: () => void;
+  toast?: ReturnType<typeof useToast>;
+}) {
+  const [val, setVal] = useState(item.notes ?? "");
+  const [saving, setSaving] = useState(false);
+  const dirty = val !== (item.notes ?? "");
+  async function save() {
+    if (!dirty) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/projects/checklist/${item.id}`, { notes: val });
+      onSaved();
+    } catch (e: any) {
+      toast?.error(e?.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="rounded-md border border-border bg-bg/40 px-2.5 py-2">
+      <div className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+        Remark
+      </div>
+      <textarea
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={save}
+        rows={2}
+        placeholder="Theme / items / vendor notes…"
+        className="w-full resize-y rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] text-ink placeholder:text-ink-muted focus:border-accent/40 focus:outline-none"
+      />
+      {dirty && (
+        <div className="mt-1 text-[9.5px] text-ink-muted">
+          {saving ? "Saving…" : "Unsaved — click away to save"}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ChecklistRow({
   item,
