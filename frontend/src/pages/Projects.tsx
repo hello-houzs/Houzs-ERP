@@ -5547,6 +5547,16 @@ const REVIEW_BADGES: Record<string, { label: string; cls: string }> = {
   approved: { label: "Approved", cls: "bg-synced/15 text-synced" },
 };
 
+// The submit/approve/reject review workflow applies ONLY to these
+// checklist items. Every other row shows no review controls.
+const REVIEWABLE_TITLES = new Set([
+  "Agreement / Quotation",
+  "3D Checked by MGT",
+  "3D Approved by Peter",
+  "Stock Out Transfer Record",
+  "Stock In Transfer Record",
+]);
+
 // Inline remark box rendered under specific checklist items (e.g.
 // "Deco / Coffee Table"). Edits the item's notes field; saves on blur.
 function ChecklistRemark({
@@ -5687,6 +5697,7 @@ function ChecklistRow({
     new Date(item.due_date) < new Date(new Date().toISOString().slice(0, 10));
   const reviewBadge = item.review_status ? REVIEW_BADGES[item.review_status] : null;
   const awaitingReview = item.review_status === "pending_review" || item.review_status === "amended";
+  const reviewable = REVIEWABLE_TITLES.has(item.title);
 
   // mig 090 — payment / deposit rows render as multi-state pills instead
   // of the done/pending circle. pill_value is stored via the standard
@@ -5924,14 +5935,19 @@ function ChecklistRow({
               {comments.length > 0 ? comments.length : "Review"}
             </span>
           </button>
-          {item.status !== "blocked" && item.status !== "done" && (
+          {item.status !== "done" && (
             <button
-              onClick={() => onStatus("blocked")}
-              className="inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 text-ink-muted hover:bg-surface-dim hover:text-amber-600"
-              title="Blocked"
+              onClick={() => onStatus(item.status === "na" ? "pending" : "na")}
+              className={cn(
+                "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:bg-surface-dim",
+                item.status === "na"
+                  ? "text-accent"
+                  : "text-ink-muted hover:text-accent"
+              )}
+              title={item.status === "na" ? "Mark applicable" : "Mark N/A"}
             >
               <Ban size={13} />
-              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">Block</span>
+              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">N/A</span>
             </button>
           )}
           {canManage && onCrewVisible && (
@@ -5966,7 +5982,9 @@ function ChecklistRow({
 
       {expanded && (
         <div className="mt-2 border-t border-border pt-2">
-          {/* Review actions row */}
+          {/* Review actions row — only on reviewable items (Agreement,
+              3D MGT/Peter, Stock Out/In Transfer Record). */}
+          {reviewable && (
           <div className="mb-2 flex flex-wrap items-center gap-1.5">
             {!item.review_status && (
               <button
@@ -6001,6 +6019,7 @@ function ChecklistRow({
               </>
             )}
           </div>
+          )}
 
           {rejectOpen && (
             <div className="mb-2 rounded-md border border-err/30 bg-err/5 p-2">
