@@ -5435,6 +5435,28 @@ function TasklistSections({
                   </>
                 )}
               </div>
+              {section?.display_mode === "documents" ? (
+                <DocumentTable
+                  items={items}
+                  canManage={!!canManage}
+                  canApproveFor={(it) => !it.required_perm || can(it.required_perm)}
+                  attachmentsByItem={attachmentsByItem}
+                  onStatus={(it, s) => onItemStatus(it, s)}
+                  onReview={async (it, action, payload) => {
+                    try {
+                      await api.post(`/api/projects/checklist/${it.id}/review`, {
+                        action,
+                        ...payload,
+                      });
+                      onReload();
+                    } catch (e: any) {
+                      toast.error(e?.message || "Failed");
+                    }
+                  }}
+                  onReload={onReload}
+                  toast={toast}
+                />
+              ) : (
               <div className="space-y-1.5 p-2">
                 {items.map((item) => (
                   <Fragment key={item.id}>
@@ -5529,6 +5551,7 @@ function TasklistSections({
                   />
                 )}
               </div>
+              )}
             </div>
           );
         })}
@@ -5556,6 +5579,340 @@ const REVIEWABLE_TITLES = new Set([
   "Stock Out Transfer Record",
   "Stock In Transfer Record",
 ]);
+
+// ── Document table (section display_mode = 'documents') ───────
+// Renders a section's items as a 6-column document table
+// (DOCUMENT / REMARKS / FILES / UPLOADED BY / APPROVAL / ACTIONS).
+// Approve/Reject reuses the review pipeline and shows only on
+// reviewable items (e.g. Stock Out Transfer Record).
+function DocumentTable({
+  items,
+  canManage,
+  canApproveFor,
+  attachmentsByItem,
+  onStatus,
+  onReview,
+  onReload,
+  toast,
+}: {
+  items: ChecklistItem[];
+  canManage: boolean;
+  canApproveFor: (it: ChecklistItem) => boolean;
+  attachmentsByItem: Map<number, TaskAttachment[]>;
+  onStatus: (it: ChecklistItem, s: ChecklistStatus) => void;
+  onReview: (
+    it: ChecklistItem,
+    action: "submit" | "reject" | "approve",
+    payload: { reason?: string }
+  ) => void | Promise<void>;
+  onReload: () => void;
+  toast?: ReturnType<typeof useToast>;
+}) {
+  return (
+    <div className="overflow-x-auto p-2">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="border-b border-border-subtle text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+            <th className="px-3 py-2 text-left">Document</th>
+            <th className="px-3 py-2 text-left">Remarks</th>
+            <th className="px-3 py-2 text-left">Files</th>
+            <th className="px-3 py-2 text-left">Uploaded By</th>
+            <th className="px-3 py-2 text-left">Approval</th>
+            <th className="px-3 py-2 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border-subtle">
+          {items.map((it) => (
+            <DocRow
+              key={it.id}
+              item={it}
+              attachments={attachmentsByItem.get(it.id) ?? []}
+              canManage={canManage}
+              canApprove={canApproveFor(it)}
+              onStatus={onStatus}
+              onReview={onReview}
+              onReload={onReload}
+              toast={toast}
+            />
+          ))}
+          {items.length === 0 && (
+            <tr>
+              <td colSpan={6} className="px-3 py-2 text-ink-muted">
+                No documents.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DocRow({
+  item,
+  attachments,
+  canManage,
+  canApprove,
+  onStatus,
+  onReview,
+  onReload,
+  toast,
+}: {
+  item: ChecklistItem;
+  attachments: TaskAttachment[];
+  canManage: boolean;
+  canApprove: boolean;
+  onStatus: (it: ChecklistItem, s: ChecklistStatus) => void;
+  onReview: (
+    it: ChecklistItem,
+    action: "submit" | "reject" | "approve",
+    payload: { reason?: string }
+  ) => void | Promise<void>;
+  onReload: () => void;
+  toast?: ReturnType<typeof useToast>;
+}) {
+  const dialog = useDialog();
+  const [open, setOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const reviewable = REVIEWABLE_TITLES.has(item.title);
+  const latest = attachments[0];
+  const rs = item.review_status;
+  const awaiting = rs === "pending_review" || rs === "amended";
+  const naActive = item.status === "na";
+
+  async function upload(file: File) {
+    if (!file) return;
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      toast?.error("File needs an extension");
+      return;
+    }
+    setUploading(true);
+    try {
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/projects/checklist/${item.id}/attachments?ext=${encodeURIComponent(
+          ext
+        )}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type || "application/octet-stream"
+      );
+      toast?.success("Uploaded");
+      onReload();
+    } catch (e: any) {
+      toast?.error(e?.message || "Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function removeAtt(attId: number) {
+    if (
+      !(await dialog.confirm({
+        message: "Remove this attachment?",
+        danger: true,
+        confirmLabel: "Remove",
+      }))
+    )
+      return;
+    try {
+      await api.del(`/api/projects/checklist/attachments/${attId}`);
+      onReload();
+    } catch (e: any) {
+      toast?.error(e?.message || "Failed");
+    }
+  }
+
+  return (
+    <Fragment>
+      <tr className={cn("align-top", naActive && "opacity-60")}>
+        <td className="px-3 py-2">
+          <div className="flex items-center gap-1.5">
+            <FileText size={13} className="shrink-0 text-ink-muted" />
+            <span className="font-medium text-ink">{item.title}</span>
+            {item.role_label && (
+              <span className="rounded-full border border-border bg-bg/40 px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider text-ink-secondary">
+                {item.role_label}
+              </span>
+            )}
+          </div>
+        </td>
+        <td className="px-3 py-2 text-ink-secondary">
+          {item.notes ? item.notes : <span className="text-ink-muted">—</span>}
+        </td>
+        <td className="px-3 py-2">
+          {attachments.length > 0 ? (
+            <button
+              onClick={() => setOpen((x) => !x)}
+              className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-0.5 text-ink hover:border-accent/40 hover:text-accent"
+            >
+              <Paperclip size={11} /> {attachments.length}
+            </button>
+          ) : (
+            <span className="text-ink-muted">—</span>
+          )}
+        </td>
+        <td className="px-3 py-2">
+          {latest ? (
+            <div>
+              <div className="text-ink">{latest.uploader_name || "Unknown"}</div>
+              <div className="text-[9.5px] text-ink-muted">{formatDate(latest.uploaded_at)}</div>
+            </div>
+          ) : (
+            <span className="text-ink-muted">—</span>
+          )}
+        </td>
+        <td className="px-3 py-2">
+          {!reviewable ? (
+            <span className="text-ink-muted">—</span>
+          ) : rs === "approved" ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-synced/15 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-synced">
+              <Check size={10} /> Approved
+            </span>
+          ) : rs === "rejected" ? (
+            <div>
+              <span className="inline-flex items-center gap-1 rounded-full bg-err/10 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-err">
+                <X size={10} /> Rejected
+              </span>
+              {item.rejection_reason && (
+                <div className="mt-0.5 text-[9.5px] italic text-ink-muted">
+                  note: {item.rejection_reason}
+                </div>
+              )}
+            </div>
+          ) : awaiting ? (
+            canApprove ? (
+              <div className="flex flex-wrap items-center gap-1">
+                <button
+                  onClick={() => onReview(item, "approve", {})}
+                  className="rounded-md bg-synced/90 px-2 py-0.5 text-[9.5px] font-semibold text-white hover:bg-synced"
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => setRejectOpen((x) => !x)}
+                  className="rounded-md border border-err/40 bg-surface px-2 py-0.5 text-[9.5px] font-semibold text-err hover:bg-err/5"
+                >
+                  Reject…
+                </button>
+              </div>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-amber-800">
+                In Review
+              </span>
+            )
+          ) : attachments.length > 0 ? (
+            <button
+              onClick={() => onReview(item, "submit", {})}
+              className="rounded-md border border-border bg-surface px-2 py-0.5 text-[9.5px] font-semibold hover:border-accent/40 hover:text-accent"
+            >
+              Submit
+            </button>
+          ) : (
+            <span className="text-ink-muted">—</span>
+          )}
+        </td>
+        <td className="px-3 py-2">
+          <div className="flex items-center justify-end gap-1">
+            <input
+              ref={fileRef}
+              type="file"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) upload(f);
+              }}
+            />
+            {attachments.length > 0 && (
+              <button
+                onClick={() => setOpen((x) => !x)}
+                className="rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold text-ink hover:border-accent/40 hover:text-accent"
+              >
+                View
+              </button>
+            )}
+            {canManage && (
+              <button
+                onClick={() => fileRef.current?.click()}
+                disabled={uploading}
+                className="rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
+              >
+                {uploading ? "…" : "+ Add"}
+              </button>
+            )}
+            {canManage && (
+              <button
+                onClick={() => onStatus(item, naActive ? "pending" : "na")}
+                className={cn(
+                  "rounded-md border px-2 py-0.5 text-[10px] font-semibold",
+                  naActive
+                    ? "border-accent bg-accent/10 text-accent"
+                    : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent"
+                )}
+              >
+                N/A
+              </button>
+            )}
+          </div>
+        </td>
+      </tr>
+      {rejectOpen && (
+        <tr>
+          <td colSpan={6} className="px-3 pb-2">
+            <div className="rounded-md border border-err/30 bg-err/5 p-2">
+              <input
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Reason for rejection…"
+                className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] outline-none focus:border-err"
+              />
+              <div className="mt-1.5 flex gap-2">
+                <button
+                  onClick={async () => {
+                    if (!reason.trim()) return;
+                    await onReview(item, "reject", { reason: reason.trim() });
+                    setRejectOpen(false);
+                    setReason("");
+                  }}
+                  className="rounded-md bg-err px-2 py-1 text-[10px] font-semibold text-white"
+                >
+                  Confirm reject
+                </button>
+                <button
+                  onClick={() => setRejectOpen(false)}
+                  className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink-muted"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+      {open && attachments.length > 0 && (
+        <tr>
+          <td colSpan={6} className="px-3 pb-2">
+            <div className="overflow-hidden rounded-md border border-border-subtle">
+              {attachments.map((a) => (
+                <TaskAttachmentRow
+                  key={a.id}
+                  attachment={a}
+                  canManage={canManage}
+                  onDelete={() => removeAtt(a.id)}
+                  toast={toast}
+                />
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
+}
 
 // Inline remark box rendered under specific checklist items (e.g.
 // "Deco / Coffee Table"). Edits the item's notes field; saves on blur.
