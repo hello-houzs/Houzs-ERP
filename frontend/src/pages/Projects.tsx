@@ -5821,10 +5821,11 @@ function DocRow({
             <input
               ref={fileRef}
               type="file"
+              multiple
               hidden
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) upload(f);
+              onChange={async (e) => {
+                const files = Array.from(e.target.files || []);
+                for (const f of files) await upload(f);
               }}
             />
             {attachments.length > 0 && (
@@ -6082,11 +6083,30 @@ function ChecklistRow({
     };
     return (
       <div
-        className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-2"
+        className="rounded-md border border-border bg-surface px-2.5 py-2"
         data-task-id={item.id}
       >
-        <Circle size={16} className="shrink-0 text-ink-muted" />
-        <span className="flex-1 text-[12px] font-medium">{item.title}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <Circle size={16} className="shrink-0 text-ink-muted" />
+          <span className="flex-1 text-[12px] font-medium">{item.title}</span>
+          {opts.map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setPill(v)}
+              disabled={!canTick}
+              className={cn(
+                "rounded-md border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                v === cur
+                  ? selTone(v)
+                  : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent",
+                !canTick && "cursor-not-allowed opacity-60"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {/* Attach below the row — same style as the other sections. */}
         <input
           ref={fileInputRef}
           type="file"
@@ -6096,30 +6116,27 @@ function ChecklistRow({
             if (f) uploadAttachment(f);
           }}
         />
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploading || !canManage}
-          className="rounded-md border border-border bg-surface p-1.5 text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
-          title={attachments && attachments.length ? `${attachments.length} file(s)` : "Attach"}
-        >
-          <Paperclip size={12} />
-        </button>
-        {opts.map(([v, label]) => (
-          <button
-            key={v}
-            onClick={() => setPill(v)}
-            disabled={!canTick}
-            className={cn(
-              "rounded-md border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
-              v === cur
-                ? selTone(v)
-                : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent",
-              !canTick && "cursor-not-allowed opacity-60"
-            )}
-          >
-            {label}
-          </button>
-        ))}
+        {attachments && attachments.length > 0 && (
+          <div className="mt-1.5 flex items-center gap-1 text-[10px] text-ink-muted">
+            <Paperclip size={11} className="shrink-0" />
+            <span className="truncate">
+              {attachments.length === 1
+                ? attachments[0].file_name
+                : `${attachments[0].file_name} + ${attachments.length - 1} more`}
+            </span>
+          </div>
+        )}
+        {canManage && (
+          <div className="mt-1.5">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="inline-flex items-center gap-0.5 rounded-full border border-dashed border-border bg-surface px-2 py-0.5 text-[10px] text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
+            >
+              <Plus size={10} /> {uploading ? "Uploading…" : "Attach"}
+            </button>
+          </div>
+        )}
       </div>
     );
   }
