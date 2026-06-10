@@ -6370,8 +6370,8 @@ function ChecklistRow({
   if (item.pill_kind) {
     const opts: [string, string][] =
       item.pill_kind === "rental_payment"
-        ? [["none", "NONE"], ["unpaid", "UNPAID"], ["fully_paid", "FULLY PAID"]]
-        : [["none", "NONE"], ["unpaid", "UNPAID"], ["paid", "PAID"], ["refunded", "REFUNDED"]];
+        ? [["none", "N/A"], ["unpaid", "PENDING"], ["fully_paid", "FULLY PAID"]]
+        : [["none", "N/A"], ["unpaid", "PENDING"], ["refunded", "REFUNDED"]];
     const cur = item.pill_value || "unpaid";
     const selTone = (v: string) =>
       v === "unpaid"
@@ -6402,6 +6402,16 @@ function ChecklistRow({
             </span>
           )}
           <span className="flex-1" />
+          {canManage && (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="rounded-md border border-border bg-surface p-1.5 text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
+              title={attachments && attachments.length ? `${attachments.length} file(s)` : "Attach"}
+            >
+              <Paperclip size={13} />
+            </button>
+          )}
           {opts.map(([v, label]) => (
             <button
               key={v}
@@ -6437,17 +6447,6 @@ function ChecklistRow({
                 ? attachments[0].file_name
                 : `${attachments[0].file_name} + ${attachments.length - 1} more`}
             </span>
-          </div>
-        )}
-        {canManage && (
-          <div className="mt-1.5">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="inline-flex items-center gap-0.5 rounded-full border border-dashed border-border bg-surface px-2 py-0.5 text-[10px] text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
-            >
-              <Plus size={10} /> {uploading ? "Uploading…" : "Attach"}
-            </button>
           </div>
         )}
       </div>
@@ -6620,21 +6619,19 @@ function ChecklistRow({
               {comments.length > 0 ? comments.length : "Remark"}
             </span>
           </button>
-          {item.status !== "done" && (
-            <button
-              onClick={() => onStatus(item.status === "na" ? "pending" : "na")}
-              className={cn(
-                "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:bg-surface-dim",
-                item.status === "na"
-                  ? "text-accent"
-                  : "text-ink-muted hover:text-accent"
-              )}
-              title={item.status === "na" ? "Mark applicable" : "Mark N/A"}
-            >
-              <Ban size={13} />
-              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">N/A</span>
-            </button>
-          )}
+          <button
+            onClick={() => onStatus(item.status === "na" ? "pending" : "na")}
+            className={cn(
+              "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:bg-surface-dim",
+              item.status === "na"
+                ? "text-accent"
+                : "text-ink-muted hover:text-accent"
+            )}
+            title={item.status === "na" ? "Mark applicable" : "Mark N/A"}
+          >
+            <Ban size={13} />
+            <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">N/A</span>
+          </button>
         </div>
       </div>
 
