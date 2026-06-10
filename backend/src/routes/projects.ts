@@ -3112,6 +3112,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
   const projects = await c.env.DB.prepare(
     `SELECT p.id, p.code, p.name, p.stage, p.status, p.brand, p.organizer,
             p.start_date, p.end_date, p.venue, p.state,
+            et.name AS event_type_name,
             (SELECT s.name FROM project_checklist_sections s
               WHERE s.project_id = p.id
                 AND EXISTS (
@@ -3124,6 +3125,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
             (SELECT COUNT(*) FROM project_checklist_sections s
               WHERE s.project_id = p.id) AS sections_total
        FROM projects p
+       LEFT JOIN project_event_types et ON et.id = p.event_type_id
       WHERE p.archived_at IS NULL
         AND p.start_date IS NOT NULL
         AND date(p.start_date) <= date(?)

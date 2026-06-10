@@ -1378,6 +1378,8 @@ interface CalendarProject {
   // active_section_name + sections_total.
   active_section_name?: string | null;
   sections_total?: number;
+  /** Calendar masks the title to "Solo" for solo event types. */
+  event_type_name?: string | null;
 }
 
 interface CalendarTask {
@@ -3208,7 +3210,11 @@ function ProjectsCalendarView() {
                     <button
                       key={`${w}-${seg.project.id}-${seg.startCol}`}
                       onClick={() => navigate(`/projects/${seg.project.id}`)}
-                      title={`${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`}
+                      title={
+                        (seg.project.event_type_name || "").toLowerCase() === "solo"
+                          ? `${seg.project.code} — Solo`
+                          : `${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`
+                      }
                       style={{
                         position: "absolute",
                         left: `calc(${leftPct}% + 4px)`,
@@ -3224,7 +3230,9 @@ function ProjectsCalendarView() {
                       )}
                     >
                       {seg.clipLeft && "‹ "}
-                      {seg.project.name}
+                      {(seg.project.event_type_name || "").toLowerCase() === "solo"
+                        ? "Solo"
+                        : seg.project.name}
                       {seg.clipRight && " ›"}
                     </button>
                   );
