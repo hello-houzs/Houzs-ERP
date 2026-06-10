@@ -4913,7 +4913,7 @@ const PROJECT_STAGES: { label: string; offset: number; titles: string[] }[] = [
   { label: "Stocks Request", offset: -10, titles: ["Stocks Request Listing"] },
   { label: "Stocks Transfer", offset: -7, titles: ["Stock Out Transfer Record"] },
   { label: "Driver Info", offset: -3, titles: ["Stock In Transfer Record"] },
-  { label: "Setup Image", offset: 0, titles: ["Setup Image (Driver)", "Setup Image (Sales PIC)"] },
+  { label: "Setup Image", offset: 0, titles: ["Setup Image"] },
   { label: "Filled Floorplan", offset: 3, titles: ["Filled Floorplan"] },
   { label: "Event Complete", offset: 7, titles: ["Event Complete Image"] },
   { label: "Done", offset: 7, titles: [] },
@@ -4931,7 +4931,7 @@ function ProjectStageStepper({
   const stepDone = (idx: number): boolean => {
     const st = PROJECT_STAGES[idx];
     if (st.titles.length === 0) return false; // final "Done" handled below
-    const present = st.titles.map(byTitle).filter(Boolean) as ChecklistItem[];
+    const present = items.filter((i) => st.titles.includes(i.title));
     if (present.length === 0) return true; // no signal → pass-through
     return present.every((i) => i.status === "done");
   };
@@ -5717,6 +5717,7 @@ const REVIEWABLE_TITLES = new Set([
   "Display Floor Plan",
   "3D Design",
   "2D Design",
+  "Exchange List",
 ]);
 
 // ── Document table (section display_mode = 'documents') ───────
@@ -6390,7 +6391,13 @@ function ChecklistRow({
       >
         <div className="flex flex-wrap items-center gap-2">
           <Circle size={16} className="shrink-0 text-ink-muted" />
-          <span className="flex-1 text-[12px] font-medium">{item.title}</span>
+          <span className="text-[12px] font-medium">{item.title}</span>
+          {item.role_label && (
+            <span className="rounded-full border border-border bg-bg/40 px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider text-ink-secondary">
+              {item.role_label}
+            </span>
+          )}
+          <span className="flex-1" />
           {opts.map(([v, label]) => (
             <button
               key={v}
