@@ -5653,9 +5653,6 @@ function TasklistSections({
                     onAttachmentsChanged={onReload}
                     toast={toast}
                   />
-                  {item.title === "Deco / Coffee Table" && (
-                    <ChecklistRemark item={item} onSaved={onReload} toast={toast} />
-                  )}
                   </Fragment>
                 ))}
                 {items.length === 0 && (
@@ -5715,10 +5712,11 @@ const REVIEW_BADGES: Record<string, { label: string; cls: string }> = {
 // checklist items. Every other row shows no review controls.
 const REVIEWABLE_TITLES = new Set([
   "Agreement / Quotation",
-  "3D Checked by MGT",
-  "3D Approved by Peter",
   "Stock Out Transfer Record",
   "Stock In Transfer Record",
+  "Display Floor Plan",
+  "3D Design",
+  "2D Design",
 ]);
 
 // ── Document table (section display_mode = 'documents') ───────
@@ -6650,80 +6648,48 @@ function ChecklistRow({
         </div>
       </div>
 
+      {/* Management approve/reject — shows inline as soon as a file is
+          attached (no need to open the review panel). Approver only. */}
+      {reviewable &&
+        attachments &&
+        attachments.length > 0 &&
+        item.review_status !== "approved" &&
+        canApprove && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Management remark (required to reject)…"
+              className="min-w-[160px] flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-accent/40"
+            />
+            <button
+              onClick={async () => {
+                if (reason.trim()) await onReview("comment", { note: reason.trim() });
+                await onReview("approve", {});
+                setReason("");
+              }}
+              className="rounded-md bg-synced/90 px-2.5 py-1 text-[10px] font-semibold text-white hover:bg-synced"
+            >
+              Approve
+            </button>
+            <button
+              onClick={async () => {
+                if (!reason.trim()) {
+                  toast?.error("Add a remark to reject");
+                  return;
+                }
+                await onReview("reject", { reason: reason.trim() });
+                setReason("");
+              }}
+              className="rounded-md border border-err/40 bg-surface px-2.5 py-1 text-[10px] font-semibold text-err hover:bg-err/5"
+            >
+              Reject
+            </button>
+          </div>
+        )}
+
       {expanded && (
         <div className="mt-2 border-t border-border pt-2">
-          {/* Review actions row — only on reviewable items (Agreement,
-              3D MGT/Peter, Stock Out/In Transfer Record). */}
-          {reviewable && (
-          <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            {!item.review_status && (
-              <button
-                onClick={() => onReview("submit", {})}
-                className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold hover:border-accent/40 hover:text-accent"
-              >
-                Submit for review
-              </button>
-            )}
-            {item.review_status === "rejected" && (
-              <button
-                onClick={() => onReview("amend", { note: note.trim() || undefined })}
-                className="rounded-md border border-accent/40 bg-accent/5 px-2 py-1 text-[10px] font-semibold text-accent hover:bg-accent/10"
-              >
-                Mark amended
-              </button>
-            )}
-            {awaitingReview && canApprove && (
-              <>
-                <button
-                  onClick={() => onReview("approve", {})}
-                  className="rounded-md bg-synced/90 px-2 py-1 text-[10px] font-semibold text-white hover:bg-synced"
-                >
-                  Approve
-                </button>
-                <button
-                  onClick={() => setRejectOpen((x) => !x)}
-                  className="rounded-md border border-err/40 bg-surface px-2 py-1 text-[10px] font-semibold text-err hover:bg-err/5"
-                >
-                  Reject…
-                </button>
-              </>
-            )}
-          </div>
-          )}
-
-          {rejectOpen && (
-            <div className="mb-2 rounded-md border border-err/30 bg-err/5 p-2">
-              <input
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="Reason for rejection…"
-                className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] outline-none focus:border-err"
-              />
-              <div className="mt-1.5 flex items-center gap-2">
-                <button
-                  onClick={async () => {
-                    if (!reason.trim()) return;
-                    await onReview("reject", { reason: reason.trim() });
-                    setReason("");
-                    setRejectOpen(false);
-                  }}
-                  className="rounded-md bg-err px-2.5 py-1 text-[10px] font-semibold text-white"
-                >
-                  Confirm reject
-                </button>
-                <button
-                  onClick={() => {
-                    setRejectOpen(false);
-                    setReason("");
-                  }}
-                  className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] text-ink-secondary"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Comment thread */}
           {comments.length > 0 && (
             <div className="mb-2 space-y-1">
