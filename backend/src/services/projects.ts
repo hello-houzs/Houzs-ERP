@@ -401,6 +401,9 @@ const PATCH_FIELDS = [
   // trip's empty crew slots from the project's planned crew.
   "setup_helper_1_id", "setup_helper_2_id", "setup_helper_outsourced",
   "dismantle_helper_1_id", "dismantle_helper_2_id", "dismantle_helper_outsourced",
+  // Phase crew editor (mig 097) — JSON: drivers/helpers (name+phone),
+  // lorries, outsourced (name/phone/plate).
+  "setup_crew", "dismantle_crew",
   // Banner
   "banner_message", "banner_tone",
 ] as const;

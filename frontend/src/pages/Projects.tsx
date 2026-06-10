@@ -181,6 +181,10 @@ interface ProjectDetail {
     dismantle_helper_2_id: number | null;
     dismantle_helper_2_name: string | null;
     dismantle_helper_outsourced: number;
+    // Phase crew editor (mig 097) — JSON: drivers/helpers (name+phone),
+    // lorries, outsourced (name/phone/plate).
+    setup_crew: string | null;
+    dismantle_crew: string | null;
     banner_message: string | null;
     banner_tone: "info" | "warning" | "error" | null;
     // Payment workflow
@@ -4071,7 +4075,7 @@ function ProjectDetailContent({
 
               {fullAccess && (
                 <>
-                  <LogisticsScheduleSection project={p} trips={trips} patch={patch} />
+                  <LogisticsCrewSection project={p} patch={patch} />
                   <PhasePhotosSection projectId={id} />
                   <FinanceLedgerSection
                     projectId={id}
@@ -7235,6 +7239,225 @@ function AddStockTransferForm({
         </button>
       </div>
     </div>
+  );
+}
+
+// ── Setup & Dismantle crew editor (JSON: setup_crew / dismantle_crew) ──
+type CrewSlot = { name: string; phone: string };
+interface PhaseCrew {
+  drivers: CrewSlot[];
+  helpers: CrewSlot[];
+  lorries: string[];
+  outsourced: { enabled: boolean; name: string; phone: string; plate: string };
+}
+function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
+  const empty: PhaseCrew = {
+    drivers: [],
+    helpers: [],
+    lorries: [],
+    outsourced: { enabled: false, name: "", phone: "", plate: "" },
+  };
+  if (!s) return empty;
+  try {
+    const p = JSON.parse(s) || {};
+    return {
+      drivers: Array.isArray(p.drivers) ? p.drivers : [],
+      helpers: Array.isArray(p.helpers) ? p.helpers : [],
+      lorries: Array.isArray(p.lorries) ? p.lorries : [],
+      outsourced: {
+        enabled: !!(p.outsourced && p.outsourced.enabled),
+        name: p.outsourced?.name ?? "",
+        phone: p.outsourced?.phone ?? "",
+        plate: p.outsourced?.plate ?? "",
+      },
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function CrewSlotRow({
+  label,
+  color,
+  options,
+  slot,
+  onChange,
+}: {
+  label: string;
+  color: string;
+  options: CrewMember[];
+  slot: CrewSlot | undefined;
+  onChange: (s: CrewSlot) => void;
+}) {
+  const cur = slot ?? { name: "", phone: "" };
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <UserCircle2 size={13} className={cn("shrink-0", color)} />
+        <span className="w-14 shrink-0 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+          {label}
+        </span>
+        <select
+          className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
+          value={cur.name}
+          onChange={(e) => {
+            const u = options.find((o) => o.name === e.target.value);
+            onChange({ name: e.target.value, phone: u?.phone ?? (e.target.value ? cur.phone : "") });
+          }}
+        >
+          <option value="">Name…</option>
+          {options.map((o) => (
+            <option key={o.id} value={o.name}>
+              {o.name}
+            </option>
+          ))}
+          {cur.name && !options.some((o) => o.name === cur.name) && (
+            <option value={cur.name}>{cur.name}</option>
+          )}
+        </select>
+      </div>
+      <input
+        className="rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] disabled:bg-bg/40"
+        placeholder={cur.name ? "Phone…" : "(pick a name first)"}
+        value={cur.phone}
+        disabled={!cur.name}
+        onChange={(e) => onChange({ name: cur.name, phone: e.target.value })}
+      />
+    </div>
+  );
+}
+
+function OutsourcedBox({
+  value,
+  onSave,
+}: {
+  value: { name: string; phone: string; plate: string };
+  onSave: (o: { name: string; phone: string; plate: string }) => void;
+}) {
+  const [d, setD] = useState({ name: value.name, phone: value.phone, plate: value.plate });
+  useEffect(() => {
+    setD({ name: value.name, phone: value.phone, plate: value.plate });
+  }, [value.name, value.phone, value.plate]);
+  return (
+    <div className="space-y-2 rounded-md border border-dashed border-border bg-bg/40 p-2">
+      <input value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} placeholder="Name…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
+      <input value={d.phone} onChange={(e) => setD({ ...d, phone: e.target.value })} placeholder="Phone number…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
+      <input value={d.plate} onChange={(e) => setD({ ...d, plate: e.target.value })} placeholder="Lorry plate…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
+      <button onClick={() => onSave(d)} className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced">
+        Save
+      </button>
+    </div>
+  );
+}
+
+function PhaseCrewEditor({
+  title,
+  field,
+  value,
+  drivers,
+  helpers,
+  patch,
+  emptyHint,
+}: {
+  title: string;
+  field: "setup_crew" | "dismantle_crew";
+  value: string | null | undefined;
+  drivers: CrewMember[];
+  helpers: CrewMember[];
+  patch: (body: Record<string, any>) => Promise<void>;
+  emptyHint?: string;
+}) {
+  const [pc, setPc] = useState<PhaseCrew>(() => parsePhaseCrew(value));
+  useEffect(() => {
+    setPc(parsePhaseCrew(value));
+  }, [value]);
+  const [newPlate, setNewPlate] = useState("");
+  function save(next: PhaseCrew) {
+    setPc(next);
+    patch({ [field]: JSON.stringify(next) });
+  }
+  const setSlot = (kind: "drivers" | "helpers", i: number, s: CrewSlot) => {
+    const arr = [...pc[kind]];
+    while (arr.length <= i) arr.push({ name: "", phone: "" });
+    arr[i] = s;
+    save({ ...pc, [kind]: arr });
+  };
+  return (
+    <div className="mt-3 space-y-2">
+      {emptyHint && <div className="text-[9px] italic text-ink-muted">{emptyHint}</div>}
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} Drivers</div>
+      <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={pc.drivers[0]} onChange={(s) => setSlot("drivers", 0, s)} />
+      <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={pc.drivers[1]} onChange={(s) => setSlot("drivers", 1, s)} />
+      <div className="pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} Helpers</div>
+      <CrewSlotRow label="Helper 1" color="text-warning-text" options={helpers} slot={pc.helpers[0]} onChange={(s) => setSlot("helpers", 0, s)} />
+      <CrewSlotRow label="Helper 2" color="text-warning-text" options={helpers} slot={pc.helpers[1]} onChange={(s) => setSlot("helpers", 1, s)} />
+      <div className="pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} Lorry / Vehicle</div>
+      {pc.lorries.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {pc.lorries.map((pl, i) => (
+            <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
+              <Truck size={11} /> {pl}
+              <button onClick={() => save({ ...pc, lorries: pc.lorries.filter((_, j) => j !== i) })} className="text-ink-muted hover:text-err">
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input value={newPlate} onChange={(e) => setNewPlate(e.target.value)} placeholder="Plate e.g. NCN 6553…" className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
+        <button
+          onClick={() => {
+            const p = newPlate.trim();
+            if (!p) return;
+            save({ ...pc, lorries: [...pc.lorries, p] });
+            setNewPlate("");
+          }}
+          className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
+        >
+          + Add
+        </button>
+      </div>
+      <label className="mt-1 flex items-center gap-2 text-[11px] font-semibold text-ink-secondary">
+        <input
+          type="checkbox"
+          checked={pc.outsourced.enabled}
+          onChange={(e) => save({ ...pc, outsourced: { ...pc.outsourced, enabled: e.target.checked } })}
+        />
+        Outsourced
+      </label>
+      {pc.outsourced.enabled && (
+        <OutsourcedBox value={pc.outsourced} onSave={(o) => save({ ...pc, outsourced: { ...o, enabled: true } })} />
+      )}
+    </div>
+  );
+}
+
+function LogisticsCrewSection({
+  project,
+  patch,
+}: {
+  project: ProjectDetail["project"];
+  patch: (body: Record<string, any>) => Promise<void>;
+}) {
+  const [crew, setCrew] = useState<CrewMember[]>([]);
+  useEffect(() => {
+    api.get<{ data: CrewMember[] }>("/api/fleet/staff").then((r) => setCrew(r.data ?? [])).catch(() => {});
+  }, []);
+  const isType = (u: CrewMember, kind: string) =>
+    (u.role_name || "").toLowerCase() === kind || (u.user_type || "").toLowerCase() === kind;
+  const drivers = useMemo(() => crew.filter((u) => isType(u, "driver")), [crew]);
+  const helpers = useMemo(() => crew.filter((u) => isType(u, "helper")), [crew]);
+  return (
+    <PanelSection title="Setup & Dismantle" muted>
+      <div className="grid grid-cols-2 gap-3">
+        <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} />
+        <DateTimeField label="Dismantle Time" value={project.dismantle_start_at} onSave={(v) => patch({ dismantle_start_at: v })} />
+      </div>
+      <PhaseCrewEditor title="Setup" field="setup_crew" value={project.setup_crew} drivers={drivers} helpers={helpers} patch={patch} />
+      <div className="my-3 border-t border-dashed border-border" />
+      <PhaseCrewEditor title="Dismantle" field="dismantle_crew" value={project.dismantle_crew} drivers={drivers} helpers={helpers} patch={patch} emptyHint="Leave empty if same as setup" />
+    </PanelSection>
   );
 }
 
