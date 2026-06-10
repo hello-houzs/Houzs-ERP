@@ -3860,6 +3860,12 @@ function ProjectDetailContent({
     onUpdated();
   }
 
+  async function patchFinance(body: Record<string, any>) {
+    await api.patch(`/api/projects/${id}/finance`, body);
+    detail.reload();
+    onUpdated();
+  }
+
   async function transition(stage: ProjectStage) {
     setTransitioning(true);
     try {
@@ -4022,6 +4028,8 @@ function ProjectDetailContent({
             eventTypes={eventTypes}
             fullAccess={fullAccess}
             patch={patch}
+            finance={detail.data?.finance ?? null}
+            patchFinance={patchFinance}
             toast={toast}
           />
           {/* Payment status now lives in the checklist as the "Rental
@@ -4362,6 +4370,8 @@ function ProjectSpecStrip({
   eventTypes,
   fullAccess,
   patch,
+  finance,
+  patchFinance,
   toast,
 }: {
   project: ProjectDetail["project"];
@@ -4369,6 +4379,8 @@ function ProjectSpecStrip({
   eventTypes: EventType[];
   fullAccess: boolean;
   patch: (body: Record<string, any>) => Promise<void>;
+  finance: ProjectDetail["finance"] | null | undefined;
+  patchFinance: (body: Record<string, any>) => Promise<void>;
   toast: ReturnType<typeof useToast>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -4559,6 +4571,28 @@ function ProjectSpecStrip({
             onChange={(v) => patch({ size_sqm: v ? parseFloat(v) : null })}
           />
         </SpecCell>
+        {fullAccess && (
+          <SpecCell label="Rental · RM">
+            <SpecTextField
+              editing={editing}
+              type="number"
+              value={finance?.rental ?? null}
+              placeholder="—"
+              onChange={(v) => patchFinance({ rental: v ? parseFloat(v) : null })}
+            />
+          </SpecCell>
+        )}
+        {fullAccess && (
+          <SpecCell label="Total Sales · RM">
+            <SpecTextField
+              editing={editing}
+              type="number"
+              value={finance?.total_sales ?? null}
+              placeholder="—"
+              onChange={(v) => patchFinance({ total_sales: v ? parseFloat(v) : null })}
+            />
+          </SpecCell>
+        )}
 
         <SpecCell label="Name" span={p.start_date ? 2 : 3}>
           <SpecTextField
@@ -5430,13 +5464,6 @@ function TasklistSections({
                           title="Rename"
                         >
                           <Pencil size={11} />
-                        </button>
-                        <button
-                          onClick={() => deleteSection(section.id, section.name)}
-                          className="rounded p-0.5 text-ink-muted hover:bg-err/10 hover:text-err"
-                          title="Delete section"
-                        >
-                          <Trash2 size={11} />
                         </button>
                       </>
                     )}
@@ -6524,14 +6551,6 @@ function ChecklistRow({
               <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">Crew</span>
             </button>
           )}
-          <button
-            onClick={onDelete}
-            className="inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 text-ink-muted hover:bg-err/10 hover:text-err"
-            title="Remove"
-          >
-            <Trash2 size={13} />
-            <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">Del</span>
-          </button>
         </div>
       </div>
 
