@@ -4448,6 +4448,12 @@ function ProjectSpecStrip({
   const eventTypeLabel = p.event_type_id
     ? (eventTypes.find((t) => t.id === p.event_type_id)?.name ?? "—")
     : "—";
+  const durationDays =
+    p.start_date && p.end_date
+      ? Math.round(
+          (new Date(p.end_date).getTime() - new Date(p.start_date).getTime()) / 86400000
+        ) + 1
+      : null;
 
   return (
     <section className="mb-6">
@@ -4481,6 +4487,50 @@ function ProjectSpecStrip({
           </button>
         )}
       </header>
+      {!editing ? (
+        <div className="grid grid-cols-1 gap-x-6 gap-y-3 border-y border-border-subtle py-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <div className="mb-1 flex items-center gap-1 font-mono text-[9px] font-semibold uppercase tracking-[0.16em] text-ink-muted">
+              <Calendar size={11} /> Dates
+            </div>
+            <div className="text-[12.5px] font-medium text-ink">
+              {p.start_date
+                ? p.end_date
+                  ? `${p.start_date} → ${p.end_date}`
+                  : p.start_date
+                : "—"}
+            </div>
+            {durationDays != null && (
+              <div className="text-[10px] text-ink-muted">
+                {durationDays} day{durationDays === 1 ? "" : "s"}
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-[0.16em] text-ink-muted">
+              Location
+            </div>
+            <div className="text-[12.5px] font-medium text-ink">{p.venue ?? "—"}</div>
+            {p.state && <div className="text-[10px] text-ink-muted">{p.state}</div>}
+          </div>
+          <div>
+            <div className="mb-1 font-mono text-[9px] font-semibold uppercase tracking-[0.16em] text-ink-muted">
+              Booth
+            </div>
+            <div className="text-[12.5px] font-medium text-ink">{p.booth_no || "—"}</div>
+            {p.size_sqm != null && (
+              <div className="text-[10px] text-ink-muted">{p.size_sqm} sqm</div>
+            )}
+          </div>
+          <div>
+            <div className="mb-1 flex items-center gap-1 font-mono text-[9px] font-semibold uppercase tracking-[0.16em] text-ink-muted">
+              <UserCircle2 size={11} /> Organizer
+            </div>
+            <div className="text-[12.5px] font-medium text-ink">{p.organizer ?? "—"}</div>
+            <div className="text-[10px] text-ink-muted">{eventTypeLabel}</div>
+          </div>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 divide-x divide-y divide-border-subtle border-y border-border-subtle md:grid-cols-2 lg:grid-cols-4">
         <SpecCell label="Brand">
           {editing ? (
@@ -4695,6 +4745,7 @@ function ProjectSpecStrip({
           </SpecCell>
         )}
       </div>
+      )}
     </section>
   );
 }
