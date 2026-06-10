@@ -6571,30 +6571,6 @@ function ChecklistRow({
                     ))}
                   </div>
                 )}
-                {canManage && !readOnlyAttach && (
-                  <div className="mt-1.5">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      hidden
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) uploadAttachment(f);
-                      }}
-                    />
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        fileInputRef.current?.click();
-                      }}
-                      disabled={uploading}
-                      className="inline-flex items-center gap-0.5 rounded-full border border-dashed border-border bg-surface px-2 py-0.5 text-[10px] text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                    >
-                      <Plus size={10} />
-                      {uploading ? "Uploading…" : "Attach"}
-                    </button>
-                  </div>
-                )}
                 {attachCaption && (
                   <div className="mt-1 text-[10px] italic text-ink-muted">
                     {attachCaption}
@@ -6605,17 +6581,39 @@ function ChecklistRow({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          <input
+            ref={fileInputRef}
+            type="file"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) uploadAttachment(f);
+            }}
+          />
+          {canManage && !readOnlyAttach && (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 text-ink-muted hover:text-accent disabled:opacity-50"
+              title="Attach file"
+            >
+              <Paperclip size={13} />
+              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">
+                {uploading ? "…" : "Attach"}
+              </span>
+            </button>
+          )}
           <button
             onClick={() => setExpanded((x) => !x)}
             className={cn(
               "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:text-accent",
               comments.length > 0 ? "text-accent" : "text-ink-muted"
             )}
-            title="Review / comments"
+            title="Remark / comments"
           >
             <MessageSquare size={13} />
             <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">
-              {comments.length > 0 ? comments.length : "Review"}
+              {comments.length > 0 ? comments.length : "Remark"}
             </span>
           </button>
           {item.status !== "done" && (
@@ -6631,25 +6629,6 @@ function ChecklistRow({
             >
               <Ban size={13} />
               <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">N/A</span>
-            </button>
-          )}
-          {canManage && onCrewVisible && (
-            <button
-              onClick={() => onCrewVisible(!item.crew_visible)}
-              className={cn(
-                "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:bg-surface-dim",
-                item.crew_visible
-                  ? "text-accent hover:text-accent"
-                  : "text-ink-muted hover:text-accent"
-              )}
-              title={
-                item.crew_visible
-                  ? "Visible to crew in Driver App — click to hide"
-                  : "Show to crew (drivers + helpers) in Driver App"
-              }
-            >
-              {item.crew_visible ? <Eye size={13} /> : <EyeOff size={13} />}
-              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">Crew</span>
             </button>
           )}
         </div>
