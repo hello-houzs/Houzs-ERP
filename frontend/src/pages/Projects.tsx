@@ -5724,16 +5724,20 @@ const REVIEWABLE_TITLES = new Set([
   "Exchange List",
 ]);
 
-// PIC role chip colour by role: Sales PIC = green, Driver = blue,
-// Purchaser = orange; everything else (BD, etc.) stays neutral.
+// PIC role chip colour by role.
 function roleChipClass(role: string | null | undefined): string {
   switch ((role || "").toUpperCase()) {
     case "SALES PIC":
-      return "border-green-300 bg-green-100 text-green-700";
+      return "border-pink-300 bg-pink-100 text-pink-700";
     case "DRIVER":
       return "border-blue-300 bg-blue-100 text-blue-700";
     case "PURCHASER":
       return "border-orange-300 bg-orange-100 text-orange-700";
+    case "LOGISTIC":
+    case "LOGISTICS":
+      return "border-green-300 bg-green-100 text-green-700";
+    case "BD":
+      return "border-purple-300 bg-purple-100 text-purple-700";
     default:
       return "border-border bg-bg/40 text-ink-secondary";
   }
