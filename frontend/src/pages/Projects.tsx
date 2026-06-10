@@ -5456,6 +5456,16 @@ function TasklistSections({
                   onReload={onReload}
                   toast={toast}
                 />
+              ) : section?.name === "3D APPROVAL" ? (
+                <ThreeDApprovalBlock
+                  items={items}
+                  attachmentsByItem={attachmentsByItem}
+                  canManage={!!canManage}
+                  canTick={canTick}
+                  onStatus={(it, s) => onItemStatus(it, s)}
+                  onReload={onReload}
+                  toast={toast}
+                />
               ) : (
               <div className="space-y-1.5 p-2">
                 {items.map((item) => (
@@ -5912,6 +5922,169 @@ function DocRow({
         </tr>
       )}
     </Fragment>
+  );
+}
+
+// ── 3D Approval block ─────────────────────────────────────────
+// Renders the 3D APPROVAL section as simple status rows
+// (PENDING / DONE / N/A) with ONE shared "Upload 3D" panel between
+// the MGT and Peter steps (the file is shared between both).
+function ThreeDApprovalBlock({
+  items,
+  attachmentsByItem,
+  canManage,
+  canTick,
+  onStatus,
+  onReload,
+  toast,
+}: {
+  items: ChecklistItem[];
+  attachmentsByItem: Map<number, TaskAttachment[]>;
+  canManage: boolean;
+  canTick: boolean;
+  onStatus: (it: ChecklistItem, s: ChecklistStatus) => void;
+  onReload: () => void;
+  toast?: ReturnType<typeof useToast>;
+}) {
+  const mgt = items.find((i) => i.title === "3D Checked by MGT");
+  const peter = items.find((i) => i.title === "3D Approved by Peter");
+  const ordered = [mgt, peter].filter(Boolean) as ChecklistItem[];
+  const list = ordered.length ? ordered : items;
+  const sharedItem = mgt ?? items[0];
+  const sharedAtt = sharedItem ? attachmentsByItem.get(sharedItem.id) ?? [] : [];
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function upload(file: File) {
+    if (!file || !sharedItem) return;
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      toast?.error("File needs an extension");
+      return;
+    }
+    setUploading(true);
+    try {
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/projects/checklist/${sharedItem.id}/attachments?ext=${encodeURIComponent(
+          ext
+        )}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type || "application/octet-stream"
+      );
+      toast?.success("Uploaded");
+      onReload();
+    } catch (e: any) {
+      toast?.error(e?.message || "Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  const STAT: [ChecklistStatus, string][] = [
+    ["pending", "PENDING"],
+    ["done", "DONE"],
+    ["na", "N/A"],
+  ];
+  const tone = (s: ChecklistStatus, active: boolean) =>
+    !active
+      ? "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent"
+      : s === "done"
+        ? "border-synced bg-synced/15 text-synced"
+        : s === "na"
+          ? "border-border bg-surface-dim text-ink-muted"
+          : "border-warning bg-warning-bg text-warning-text";
+
+  return (
+    <div className="p-2">
+      {list.map((it, idx) => (
+        <Fragment key={it.id}>
+          <div className="flex flex-wrap items-center gap-2 px-1 py-1.5">
+            {it.status === "done" ? (
+              <CheckCircle2 size={16} className="shrink-0 text-synced" />
+            ) : (
+              <Circle
+                size={16}
+                className={cn(
+                  "shrink-0",
+                  it.status === "na" ? "text-ink-muted" : "text-warning-text"
+                )}
+              />
+            )}
+            <span
+              className={cn(
+                "flex-1 text-[12px] font-medium",
+                it.status === "done" && "text-ink-muted"
+              )}
+            >
+              {it.title}
+            </span>
+            {it.required_perm && (
+              <span className="inline-flex items-center gap-0.5 rounded-full bg-accent-soft px-1.5 py-0.5 text-[9px] font-semibold text-accent">
+                <Lock size={8} /> gated
+              </span>
+            )}
+            <div className="flex items-center gap-1">
+              {STAT.map(([s, label]) => {
+                const active = it.status === s || (s === "pending" && it.status === "blocked");
+                return (
+                  <button
+                    key={s}
+                    onClick={() => onStatus(it, s)}
+                    disabled={!canTick}
+                    className={cn(
+                      "rounded-md border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                      tone(s, active),
+                      !canTick && "cursor-not-allowed opacity-60"
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {idx === 0 && sharedItem && (
+            <div className="my-1 ml-6 flex flex-wrap items-center justify-center gap-2 rounded-md border border-dashed border-border bg-bg/40 px-3 py-2">
+              <input
+                ref={fileRef}
+                type="file"
+                multiple
+                hidden
+                onChange={async (e) => {
+                  const fs = Array.from(e.target.files || []);
+                  for (const f of fs) await upload(f);
+                }}
+              />
+              {canManage && (
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  disabled={uploading}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                >
+                  <Paperclip size={12} />
+                  {sharedAtt.length > 0
+                    ? `${sharedAtt.length} file${sharedAtt.length > 1 ? "s" : ""}`
+                    : uploading
+                      ? "Uploading…"
+                      : "Upload 3D"}
+                </button>
+              )}
+              {sharedAtt.length > 0 && (
+                <span className="max-w-[260px] truncate text-[11px] text-ink-secondary">
+                  {sharedAtt[0].file_name}
+                  {sharedAtt.length > 1 ? ` + ${sharedAtt.length - 1}` : ""}
+                </span>
+              )}
+              <span className="text-[9px] italic text-ink-muted">
+                · shared between MGT &amp; Peter
+              </span>
+            </div>
+          )}
+        </Fragment>
+      ))}
+    </div>
   );
 }
 
