@@ -5724,6 +5724,21 @@ const REVIEWABLE_TITLES = new Set([
   "Exchange List",
 ]);
 
+// PIC role chip colour by role: Sales PIC = green, Driver = blue,
+// Purchaser = orange; everything else (BD, etc.) stays neutral.
+function roleChipClass(role: string | null | undefined): string {
+  switch ((role || "").toUpperCase()) {
+    case "SALES PIC":
+      return "border-green-300 bg-green-100 text-green-700";
+    case "DRIVER":
+      return "border-blue-300 bg-blue-100 text-blue-700";
+    case "PURCHASER":
+      return "border-orange-300 bg-orange-100 text-orange-700";
+    default:
+      return "border-border bg-bg/40 text-ink-secondary";
+  }
+}
+
 // ── Document table (section display_mode = 'documents') ───────
 // Renders a section's items as a 6-column document table
 // (DOCUMENT / REMARKS / FILES / UPLOADED BY / APPROVAL / ACTIONS).
@@ -5879,7 +5894,7 @@ function DocRow({
             <FileText size={13} className="shrink-0 text-ink-muted" />
             <span className="font-medium text-ink">{item.title}</span>
             {item.role_label && (
-              <span className="rounded-full border border-border bg-bg/40 px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider text-ink-secondary">
+              <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
                 {item.role_label}
               </span>
             )}
@@ -6397,7 +6412,7 @@ function ChecklistRow({
           <Circle size={16} className="shrink-0 text-ink-muted" />
           <span className="text-[12px] font-medium">{item.title}</span>
           {item.role_label && (
-            <span className="rounded-full border border-border bg-bg/40 px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider text-ink-secondary">
+            <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
               {item.role_label}
             </span>
           )}
@@ -6498,7 +6513,7 @@ function ChecklistRow({
             </span>
             {item.role_label && (
               <span
-                className="rounded-full border border-border bg-bg/40 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-secondary"
+                className={cn("rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}
                 title="Owner role"
               >
                 {item.role_label}
