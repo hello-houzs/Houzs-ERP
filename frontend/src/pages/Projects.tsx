@@ -5717,34 +5717,6 @@ function TasklistSections({
                     No tasks in this section yet.
                   </div>
                 )}
-                {canManage && (
-                  <button
-                    onClick={() => {
-                      setAddInSectionId(sectionId);
-                      setAddItemOpen(true);
-                    }}
-                    className="mt-1 inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-[10.5px] text-ink-muted hover:border-accent/40 hover:text-accent"
-                  >
-                    <Plus size={10} /> Add task
-                  </button>
-                )}
-                {canManage && addItemOpen && addInSectionId === sectionId && (
-                  <AddChecklistItem
-                    projectId={projectId}
-                    users={users}
-                    sectionId={sectionId}
-                    onAdded={() => {
-                      setAddItemOpen(false);
-                      setAddInSectionId(null);
-                      onReload();
-                    }}
-                    onCancel={() => {
-                      setAddItemOpen(false);
-                      setAddInSectionId(null);
-                    }}
-                    toast={toast}
-                  />
-                )}
               </div>
               )}
             </div>
@@ -7420,6 +7392,7 @@ function PhaseCrewEditor({
   value,
   drivers,
   helpers,
+  lorryOptions,
   patch,
   emptyHint,
 }: {
@@ -7428,6 +7401,7 @@ function PhaseCrewEditor({
   value: string | null | undefined;
   drivers: CrewMember[];
   helpers: CrewMember[];
+  lorryOptions: string[];
   patch: (body: Record<string, any>) => Promise<void>;
   emptyHint?: string;
 }) {
@@ -7469,7 +7443,20 @@ function PhaseCrewEditor({
         </div>
       )}
       <div className="flex gap-2">
-        <input value={newPlate} onChange={(e) => setNewPlate(e.target.value)} placeholder="Plate e.g. NCN 6553…" className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
+        <select
+          value={newPlate}
+          onChange={(e) => setNewPlate(e.target.value)}
+          className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
+        >
+          <option value="">Select lorry plate…</option>
+          {lorryOptions
+            .filter((pl) => !pc.lorries.includes(pl))
+            .map((pl) => (
+              <option key={pl} value={pl}>
+                {pl}
+              </option>
+            ))}
+        </select>
         <button
           onClick={() => {
             const p = newPlate.trim();
@@ -7490,9 +7477,25 @@ function PhaseCrewEditor({
         />
         Outsourced
       </label>
-      {pc.outsourced.enabled && (
-        <OutsourcedBox value={pc.outsourced} onSave={(o) => save({ ...pc, outsourced: { ...o, enabled: true } })} />
-      )}
+      {pc.outsourced.enabled &&
+        (pc.outsourced.name.trim() ? (
+          <div className="flex flex-wrap gap-1.5">
+            <span className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
+              <Truck size={11} />
+              {pc.outsourced.name}
+              {pc.outsourced.phone ? ` · ${pc.outsourced.phone}` : ""}
+              {pc.outsourced.plate ? ` · ${pc.outsourced.plate}` : ""}
+              <button
+                onClick={() => save({ ...pc, outsourced: { enabled: true, name: "", phone: "", plate: "" } })}
+                className="text-ink-muted hover:text-err"
+              >
+                <X size={11} />
+              </button>
+            </span>
+          </div>
+        ) : (
+          <OutsourcedBox value={pc.outsourced} onSave={(o) => save({ ...pc, outsourced: { ...o, enabled: true } })} />
+        ))}
     </div>
   );
 }
@@ -7505,8 +7508,13 @@ function LogisticsCrewSection({
   patch: (body: Record<string, any>) => Promise<void>;
 }) {
   const [crew, setCrew] = useState<CrewMember[]>([]);
+  const [lorryOptions, setLorryOptions] = useState<string[]>([]);
   useEffect(() => {
     api.get<{ data: CrewMember[] }>("/api/fleet/staff").then((r) => setCrew(r.data ?? [])).catch(() => {});
+    api
+      .get<{ data: { plate: string }[] }>("/api/lorries")
+      .then((r) => setLorryOptions((r.data ?? []).map((l) => l.plate).filter(Boolean)))
+      .catch(() => {});
   }, []);
   const isType = (u: CrewMember, kind: string) =>
     (u.role_name || "").toLowerCase() === kind || (u.user_type || "").toLowerCase() === kind;
@@ -7518,9 +7526,9 @@ function LogisticsCrewSection({
         <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} />
         <DateTimeField label="Dismantle Time" value={project.dismantle_start_at} onSave={(v) => patch({ dismantle_start_at: v })} />
       </div>
-      <PhaseCrewEditor title="Setup" field="setup_crew" value={project.setup_crew} drivers={drivers} helpers={helpers} patch={patch} />
+      <PhaseCrewEditor title="Setup" field="setup_crew" value={project.setup_crew} drivers={drivers} helpers={helpers} lorryOptions={lorryOptions} patch={patch} />
       <div className="my-3 border-t border-dashed border-border" />
-      <PhaseCrewEditor title="Dismantle" field="dismantle_crew" value={project.dismantle_crew} drivers={drivers} helpers={helpers} patch={patch} emptyHint="Leave empty if same as setup" />
+      <PhaseCrewEditor title="Dismantle" field="dismantle_crew" value={project.dismantle_crew} drivers={drivers} helpers={helpers} lorryOptions={lorryOptions} patch={patch} emptyHint="Leave empty if same as setup" />
     </PanelSection>
   );
 }
