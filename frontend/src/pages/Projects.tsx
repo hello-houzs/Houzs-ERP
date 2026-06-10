@@ -4005,16 +4005,15 @@ function ProjectDetailContent({
           {/* ── Stage progress (directly under page title) ──────────
              Per-section pills with completion tick + lead time chip.
              Print button lives in the title actions now. */}
-          <div className="mb-4 flex flex-wrap items-center gap-2.5 border-b border-border-subtle pb-3">
+          <div className="mb-4 border-b border-border-subtle pb-3">
             <StatusDot variant={stageVariant(p.stage)} label={STAGE_LABEL[p.stage]} />
-            {(detail.data?.section_progress ?? []).length > 0 ? (
-              <StageProgressRow
-                sections={detail.data!.section_progress!}
-                checklist={checklist}
-              />
-            ) : (
-              <ProgressBar pct={p.progress_pct ?? 0} />
-            )}
+            <div className="mt-3">
+              {(detail.data?.section_progress ?? []).length > 0 ? (
+                <ProjectStageStepper checklist={checklist} startDate={p.start_date} />
+              ) : (
+                <ProgressBar pct={p.progress_pct ?? 0} />
+              )}
+            </div>
           </div>
 
           {/* ── Project spec strip ──────────────────────────────────
@@ -4901,6 +4900,103 @@ function TaskAttachmentRow({
 // in the section is done; partial gradient based on done/total when
 // in-progress; muted outline when nothing's started. Replaces the
 // percentage progress bar (mig 050).
+// ── Project Stage stepper ─────────────────────────────────────
+// Auto-detected 9-step timeline (Floorplan → Done) with T-offset
+// deadlines from the project's start date. A step is "done" when its
+// mapped checklist item(s) are done; steps whose items don't exist
+// (e.g. removed from the template) are treated as pass-through so they
+// never block. The current step is the first not-done one — shown red
+// when today is past its deadline.
+const PROJECT_STAGES: { label: string; offset: number; titles: string[] }[] = [
+  { label: "Floorplan", offset: -21, titles: ["Blank Floorplan"] },
+  { label: "3D", offset: -14, titles: ["3D Design"] },
+  { label: "Stocks Request", offset: -10, titles: ["Stocks Request Listing"] },
+  { label: "Stocks Transfer", offset: -7, titles: ["Stock Out Transfer Record"] },
+  { label: "Driver Info", offset: -3, titles: ["Stock In Transfer Record"] },
+  { label: "Setup Image", offset: 0, titles: ["Setup Image (Driver)", "Setup Image (Sales PIC)"] },
+  { label: "Filled Floorplan", offset: 3, titles: ["Filled Floorplan"] },
+  { label: "Event Complete", offset: 7, titles: ["Event Complete Image"] },
+  { label: "Done", offset: 7, titles: [] },
+];
+
+function ProjectStageStepper({
+  checklist,
+  startDate,
+}: {
+  checklist?: ChecklistItem[];
+  startDate?: string | null;
+}) {
+  const items = checklist ?? [];
+  const byTitle = (t: string) => items.find((i) => i.title === t);
+  const stepDone = (idx: number): boolean => {
+    const st = PROJECT_STAGES[idx];
+    if (st.titles.length === 0) return false; // final "Done" handled below
+    const present = st.titles.map(byTitle).filter(Boolean) as ChecklistItem[];
+    if (present.length === 0) return true; // no signal → pass-through
+    return present.every((i) => i.status === "done");
+  };
+  const lastIdx = PROJECT_STAGES.length - 1;
+  let currentIdx = PROJECT_STAGES.findIndex((_, i) => i < lastIdx && !stepDone(i));
+  const allDone = currentIdx === -1;
+  if (allDone) currentIdx = lastIdx;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayMs = today.getTime();
+  const startMs = startDate ? new Date(`${startDate}T00:00:00`).getTime() : null;
+  const deadlineMs = (offset: number) => (startMs != null ? startMs + offset * 86400000 : null);
+
+  return (
+    <div className="w-full overflow-x-auto">
+      <div className="mb-2 flex items-center gap-3 text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
+        <span>Auto-detected</span>
+        <span className="text-synced">● Done</span>
+        <span className="text-warning-text">● Pending</span>
+        <span className="text-err">● Overdue</span>
+      </div>
+      <div className="flex min-w-fit items-start">
+        {PROJECT_STAGES.map((st, i) => {
+          const dl = deadlineMs(st.offset);
+          const isDone = allDone ? true : i < currentIdx;
+          const isCurrent = !allDone && i === currentIdx;
+          const overdue = isCurrent && dl != null && todayMs > dl && i !== lastIdx;
+          const lateDays = overdue && dl != null ? Math.round((todayMs - dl) / 86400000) : 0;
+          const circle = isDone
+            ? "bg-synced text-white border-synced"
+            : overdue
+              ? "bg-err text-white border-err"
+              : isCurrent
+                ? "bg-warning-text text-white border-warning-text"
+                : "bg-surface text-ink-muted border-border";
+          const txt = isDone
+            ? "text-synced"
+            : overdue
+              ? "text-err"
+              : isCurrent
+                ? "text-warning-text"
+                : "text-ink-muted";
+          return (
+            <div key={st.label} className="flex min-w-[72px] flex-1 flex-col items-center text-center">
+              <div className="flex w-full items-center">
+                <div className={cn("h-0.5 flex-1", i === 0 ? "opacity-0" : i <= currentIdx ? "bg-synced/50" : "bg-border")} />
+                <div className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 text-[10px] font-bold", circle)}>
+                  {isDone ? <Check size={12} strokeWidth={3} /> : i + 1}
+                </div>
+                <div className={cn("h-0.5 flex-1", i === lastIdx ? "opacity-0" : i < currentIdx ? "bg-synced/50" : "bg-border")} />
+              </div>
+              <div className={cn("mt-1.5 text-[9px] font-semibold uppercase tracking-wider", txt)}>{st.label}</div>
+              <div className="text-[8px] tabular-nums text-ink-muted">
+                {st.offset >= 0 ? `T+${st.offset}` : `T${st.offset}`}d
+              </div>
+              {overdue && <div className="text-[8px] font-semibold text-err">{lateDays}d late</div>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function StageProgressRow({
   sections,
   checklist,
