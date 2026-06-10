@@ -4044,6 +4044,12 @@ function ProjectDetailContent({
               bottom; Logistics directly above it per the team's request). */}
           <DetailGrid>
             <DetailMain>
+              {fullAccess && (
+                <QuickTotalSalesBox
+                  value={detail.data?.finance?.total_sales}
+                  onSave={(v) => patchFinance({ total_sales: v })}
+                />
+              )}
               <ProjectSalesEntriesSection
                 projectId={id}
                 projectCode={p.code}
@@ -4366,6 +4372,46 @@ function ProjectTeamSection({
 // dropdowns + text inputs + date inputs visually identical.
 const SPEC_INPUT_CLASS =
   "w-full appearance-none rounded border border-border bg-surface px-2 py-1 text-[12.5px] font-medium text-ink outline-none transition-colors focus:border-accent focus:ring-1 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60";
+
+// Quick Total Sales box — sets the project's finance total directly,
+// without creating a sales order. Shown above the Sales section.
+function QuickTotalSalesBox({
+  value,
+  onSave,
+}: {
+  value: number | null | undefined;
+  onSave: (v: number | null) => void;
+}) {
+  const [draft, setDraft] = useState(value == null ? "" : String(value));
+  useEffect(() => {
+    setDraft(value == null ? "" : String(value));
+  }, [value]);
+  function commit() {
+    const orig = value == null ? "" : String(value);
+    if (draft === orig) return;
+    onSave(draft.trim() === "" ? null : Number(draft));
+  }
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg/40 px-3 py-2">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        Total Sales (RM)
+      </span>
+      <input
+        type="number"
+        step="0.01"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
+        placeholder="0.00"
+        className="w-40 rounded-md border border-border bg-surface px-2 py-1.5 text-[13px]"
+      />
+      <span className="text-[10px] text-ink-muted">Quick entry — no sales order needed.</span>
+    </div>
+  );
+}
 
 function ProjectSpecStrip({
   project: p,
@@ -5504,8 +5550,15 @@ function TasklistSections({
                   </>
                 ) : (
                   <>
-                    <span className="flex-1 text-[11.5px] font-semibold uppercase tracking-wider text-ink-secondary">
-                      {headerName}
+                    <span className="flex flex-1 items-center gap-2">
+                      <span className="text-[11.5px] font-semibold uppercase tracking-wider text-ink-secondary">
+                        {headerName}
+                      </span>
+                      {(section?.name || "").toUpperCase().startsWith("SETUP & DISMANTLE") && (
+                        <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass("LOGISTIC"))}>
+                          LOGISTIC
+                        </span>
+                      )}
                     </span>
                     {sectionLeadTime && (
                       <span
@@ -5932,51 +5985,47 @@ function DocRow({
         <td className="px-3 py-2">
           {!reviewable ? (
             <span className="text-ink-muted">—</span>
-          ) : rs === "approved" ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-synced/15 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-synced">
-              <Check size={10} /> Approved
-            </span>
-          ) : rs === "rejected" ? (
-            <div>
-              <span className="inline-flex items-center gap-1 rounded-full bg-err/10 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-err">
-                <X size={10} /> Rejected
-              </span>
-              {item.rejection_reason && (
-                <div className="mt-0.5 text-[9.5px] italic text-ink-muted">
-                  note: {item.rejection_reason}
+          ) : (
+            <div className="space-y-1">
+              {rs === "approved" && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-synced/15 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-synced">
+                  <Check size={10} /> Approved
+                </span>
+              )}
+              {rs === "rejected" && (
+                <div>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-err/10 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-err">
+                    <X size={10} /> Rejected
+                  </span>
+                  {item.rejection_reason && (
+                    <div className="mt-0.5 text-[9.5px] italic text-ink-muted">
+                      note: {item.rejection_reason}
+                    </div>
+                  )}
                 </div>
               )}
+              {/* Approve/Reject appear whenever a file is present (so they
+                  reappear on every re-upload); the badge above keeps the
+                  last decision as the record. */}
+              {attachments.length > 0 && canApprove ? (
+                <div className="flex flex-wrap items-center gap-1">
+                  <button
+                    onClick={() => onReview(item, "approve", {})}
+                    className="rounded-md bg-synced/90 px-2 py-0.5 text-[9.5px] font-semibold text-white hover:bg-synced"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    onClick={() => setRejectOpen((x) => !x)}
+                    className="rounded-md border border-err/40 bg-surface px-2 py-0.5 text-[9.5px] font-semibold text-err hover:bg-err/5"
+                  >
+                    Reject…
+                  </button>
+                </div>
+              ) : (
+                !rs && <span className="text-ink-muted">—</span>
+              )}
             </div>
-          ) : awaiting ? (
-            canApprove ? (
-              <div className="flex flex-wrap items-center gap-1">
-                <button
-                  onClick={() => onReview(item, "approve", {})}
-                  className="rounded-md bg-synced/90 px-2 py-0.5 text-[9.5px] font-semibold text-white hover:bg-synced"
-                >
-                  Approve
-                </button>
-                <button
-                  onClick={() => setRejectOpen((x) => !x)}
-                  className="rounded-md border border-err/40 bg-surface px-2 py-0.5 text-[9.5px] font-semibold text-err hover:bg-err/5"
-                >
-                  Reject…
-                </button>
-              </div>
-            ) : (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-amber-800">
-                In Review
-              </span>
-            )
-          ) : attachments.length > 0 ? (
-            <button
-              onClick={() => onReview(item, "submit", {})}
-              className="rounded-md border border-border bg-surface px-2 py-0.5 text-[9.5px] font-semibold hover:border-accent/40 hover:text-accent"
-            >
-              Submit
-            </button>
-          ) : (
-            <span className="text-ink-muted">—</span>
           )}
         </td>
         <td className="px-3 py-2">
@@ -6659,7 +6708,6 @@ function ChecklistRow({
       {reviewable &&
         attachments &&
         attachments.length > 0 &&
-        item.review_status !== "approved" &&
         canApprove && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
             <input
