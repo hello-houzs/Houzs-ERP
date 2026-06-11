@@ -3216,7 +3216,13 @@ function ProjectsCalendarView() {
                       onClick={() => navigate(`/projects/${seg.project.id}`)}
                       title={
                         (seg.project.event_type_name || "").toLowerCase() === "solo"
-                          ? `${seg.project.code} — Solo`
+                          ? `${seg.project.code} — ${composeDefaultProjectName({
+                              state: seg.project.state,
+                              brand: seg.project.brand,
+                              organizer: seg.project.organizer,
+                              venue: seg.project.venue,
+                              event_type_slug: "solo",
+                            })}`
                           : `${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`
                       }
                       style={{
@@ -3235,7 +3241,13 @@ function ProjectsCalendarView() {
                     >
                       {seg.clipLeft && "‹ "}
                       {(seg.project.event_type_name || "").toLowerCase() === "solo"
-                        ? "Solo"
+                        ? composeDefaultProjectName({
+                            state: seg.project.state,
+                            brand: seg.project.brand,
+                            organizer: seg.project.organizer,
+                            venue: seg.project.venue,
+                            event_type_slug: "solo",
+                          })
                         : seg.project.name}
                       {seg.clipRight && " ›"}
                     </button>
@@ -5969,14 +5981,16 @@ function DocRow({
     <Fragment>
       <tr className={cn("align-top", naActive && "opacity-60")}>
         <td className="px-3 py-2">
-          <div className="flex items-center gap-1.5">
-            <FileText size={13} className="shrink-0 text-ink-muted" />
-            <span className="font-medium text-ink">{item.title}</span>
-            {item.role_label && (
-              <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
-                {item.role_label}
-              </span>
-            )}
+          <div className="flex items-start gap-1.5">
+            <FileText size={13} className="mt-0.5 shrink-0 text-ink-muted" />
+            <span className="font-medium text-ink">
+              {item.title}
+              {item.role_label && (
+                <span className={cn("ml-1.5 inline-block whitespace-nowrap rounded-full border px-1.5 py-0.5 align-middle text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
+                  {item.role_label}
+                </span>
+              )}
+            </span>
           </div>
         </td>
         <td className="px-3 py-2 text-ink-secondary">
