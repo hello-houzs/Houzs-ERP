@@ -54,7 +54,10 @@ export async function listDriversAndHelpers(env: Env) {
        FROM users u
        JOIN roles r ON r.id = u.role_id
       WHERE r.name IN ('Driver','Helper')
-        AND u.status = 'active'
+        -- Include 'invited' (not-yet-logged-in) crew so they can be
+        -- assigned to project setup/dismantle before their first login.
+        -- 'disabled' (soft-deleted) accounts stay excluded.
+        AND u.status IN ('active','invited')
       ORDER BY r.name, u.name`
   ).all();
   return rows.results ?? [];
