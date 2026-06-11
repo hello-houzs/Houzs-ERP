@@ -57,7 +57,7 @@ export function Layout({ children }: Props) {
             pages with unsaved Panel state can call
             `usePullToRefreshBlock(true)` to block accidental F5. */}
         <PullToRefreshGuardProvider>
-          <PullToRefresh className="w-full px-4 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 lg:px-6 lg:py-10 xl:px-6 2xl:px-8 animate-rise">
+          <PullToRefresh className="w-full px-4 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 lg:px-10 lg:py-10 xl:px-12 2xl:px-16 animate-rise">
             {children}
           </PullToRefresh>
         </PullToRefreshGuardProvider>
@@ -103,7 +103,7 @@ function MobileTopBar() {
 function ReadOnlyBanner() {
   return (
     <div className="sticky top-14 z-10 border-b border-warning-text/30 bg-warning-bg/95 backdrop-blur-sm lg:top-0">
-      <div className="flex w-full items-start gap-3 px-4 py-2.5 sm:px-6 lg:px-6 xl:px-6 2xl:px-8">
+      <div className="flex w-full items-start gap-3 px-4 py-2.5 sm:px-6 lg:px-10 xl:px-12 2xl:px-16">
         <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-warning-text/15 text-warning-text">
           <ShieldAlert size={13} strokeWidth={2.4} />
         </span>

@@ -25,6 +25,9 @@ interface Props {
   /** Body content. Use DetailLayout.Main + DetailLayout.Aside as children
    *  for a 2-column layout, or pass plain JSX for full-width content. */
   children: ReactNode;
+  /** When true, the body pulls toward the screen edges on large screens
+   *  (less side padding) so the page uses more width. Opt-in per page. */
+  wide?: boolean;
 }
 
 /**
@@ -51,6 +54,7 @@ export function DetailLayout({
   loading,
   error,
   children,
+  wide,
 }: Props) {
   const navigate = useNavigate();
   // Push the breadcrumb stack into the top-navbar context. On mount
@@ -75,8 +79,8 @@ export function DetailLayout({
           (Archive / Stage transition / etc.). Mobile still sees the
           breadcrumb inline so nothing gets lost below lg.
       */}
-      <div className="sticky top-14 z-20 -mx-4 -mt-6 mb-4 border-b border-border bg-bg/85 backdrop-blur-md sm:-mx-6 sm:-mt-8 lg:top-12 lg:-mx-6 lg:-mt-10 xl:-mx-6 2xl:-mx-8">
-        <div className="flex h-10 w-full items-center gap-3 px-4 sm:px-6 lg:px-6 xl:px-6 2xl:px-8">
+      <div className="sticky top-14 z-20 -mx-4 -mt-6 mb-4 border-b border-border bg-bg/85 backdrop-blur-md sm:-mx-6 sm:-mt-8 lg:top-12 lg:-mx-10 lg:-mt-10 xl:-mx-12 2xl:-mx-16">
+        <div className="flex h-10 w-full items-center gap-3 px-4 sm:px-6 lg:px-10 xl:px-12 2xl:px-16">
           <button
             onClick={goBack}
             className="group flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-ink-muted transition-all hover:-translate-x-0.5 hover:border-accent/50 hover:text-accent"
@@ -150,7 +154,11 @@ export function DetailLayout({
       )}
 
       {/* ── Body grid — Main + Aside split ───────────────────────────── */}
-      {children}
+      {wide ? (
+        <div className="lg:-mx-4 xl:-mx-6 2xl:-mx-8">{children}</div>
+      ) : (
+        children
+      )}
     </div>
   );
 }

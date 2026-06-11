@@ -3919,6 +3919,7 @@ function ProjectDetailContent({
 
   return (
     <DetailLayout
+      wide
       breadcrumbs={[
         { label: "Projects", to: "/projects" },
         { label: p?.name || "Loading…" },
