@@ -3,7 +3,7 @@ import type { Env } from "../types";
 // ── Driver / Helper profiles ─────────────────────────────────────
 
 const PROFILE_FIELDS = [
-  "name", "phone", "ic_number", "license_no", "license_expiry",
+  "name", "phone", "company_phone", "ic_number", "license_no", "license_expiry",
   "emergency_contact_name", "emergency_contact_phone",
   "base_salary", "trip_allowance_rate", "ot_rate", "max_continuous_hours",
   "user_type",
@@ -11,7 +11,7 @@ const PROFILE_FIELDS = [
 
 export async function getDriverProfile(env: Env, userId: number) {
   return env.DB.prepare(
-    `SELECT u.id, u.email, u.name, u.phone, u.status, u.user_type,
+    `SELECT u.id, u.email, u.name, u.phone, u.company_phone, u.status, u.user_type,
             u.ic_number, u.license_no, u.license_expiry,
             u.emergency_contact_name, u.emergency_contact_phone,
             u.base_salary, u.trip_allowance_rate, u.ot_rate, u.max_continuous_hours,
@@ -46,7 +46,7 @@ export async function patchProfile(env: Env, userId: number, body: Record<string
 
 export async function listDriversAndHelpers(env: Env) {
   const rows = await env.DB.prepare(
-    `SELECT u.id, u.email, u.name, u.phone, u.status, u.user_type,
+    `SELECT u.id, u.email, u.name, u.phone, u.company_phone, u.status, u.user_type,
             u.ic_number, u.license_no, u.license_expiry,
             u.base_salary, u.trip_allowance_rate, u.ot_rate,
             u.role_id, r.name as role_name,
