@@ -2492,6 +2492,7 @@ function daysBetween(fromIso: string, toIso: string): number {
 const PROJECTS_CALENDAR_FILTER_KEYS = [
   "brand",
   "stage",
+  "status",
   "organizer",
   "month",
   // 2026-05-08 — week view toggle. `mode=week` swaps the 6×7 month
@@ -2514,6 +2515,7 @@ function ProjectsCalendarView() {
   const brand = params.get("brand") || "";
   const section = params.get("section") || "";
   const organizer = params.get("organizer") || "";
+  const status = params.get("status") || "";
   // anchor lives in URL as `month=YYYY-MM` so a refresh / shared link
   // lands on the same month.
   function patchParams(patch: Record<string, string>) {
@@ -2527,6 +2529,7 @@ function ProjectsCalendarView() {
   const setBrand = (v: string) => patchParams({ brand: v });
   const setSection = (v: string) => patchParams({ section: v });
   const setOrganizer = (v: string) => patchParams({ organizer: v });
+  const setStatus = (v: string) => patchParams({ status: v });
 
   // showTasks / showHolidays are personal display prefs (checkbox toggles
   // on the legend, not data filters), so they stay in localStorage per
@@ -2676,12 +2679,14 @@ function ProjectsCalendarView() {
     if (brand && p.brand !== brand) return false;
     if (!matchesSection(p)) return false;
     if (organizer && (p.organizer || "") !== organizer) return false;
+    if (status && (p.status || "") !== status) return false;
     return true;
   });
   const tasks = showTasks
     ? allTasks.filter((t) => {
         if (brand && t.brand !== brand) return false;
         if (organizer && (t.organizer || "") !== organizer) return false;
+        if (status && (t.project_status || "") !== status) return false;
         // Tasks don't carry section info on the wire — match via the
         // filtered project set so section filtering composes correctly.
         if (section) {
@@ -2921,8 +2926,21 @@ function ProjectsCalendarView() {
               </option>
             ))}
           </select>
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            title="Filter by status"
+          >
+            <option value="">All statuses</option>
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
           <ResetFiltersButton
-            active={!!(brand || section || organizer || params.get("stage"))}
+            active={!!(brand || section || organizer || status || params.get("stage"))}
             onReset={() => {
               // Functional form so the latest URL state is read at call
               // time rather than the closure-captured `params` snapshot
@@ -2933,7 +2951,7 @@ function ProjectsCalendarView() {
               setParams(
                 (prev) => {
                   const next = new URLSearchParams(prev);
-                  ["brand", "section", "organizer", "stage"].forEach((k) =>
+                  ["brand", "section", "organizer", "status", "stage"].forEach((k) =>
                     next.delete(k)
                   );
                   return next;
@@ -2978,12 +2996,13 @@ function ProjectsCalendarView() {
           >
             {expandAll ? "✓" : "○"} Expand all
           </button>
-          {(brand || section || organizer) && (
+          {(brand || section || organizer || status) && (
             <button
               onClick={() => {
                 setBrand("");
                 setSection("");
                 setOrganizer("");
+                setStatus("");
               }}
               className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
             >
