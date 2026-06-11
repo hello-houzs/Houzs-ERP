@@ -7615,11 +7615,13 @@ function LogisticsCrewSection({
   const helpers = useMemo(() => crew.filter((u) => isType(u, "helper")), [crew]);
   return (
     <PanelSection
-      title="Setup & Dismantle"
       muted
-      action={
-        <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass("LOGISTIC"))}>
-          LOGISTIC
+      title={
+        <span className="inline-flex items-center gap-2">
+          {"Setup & Dismantle"}
+          <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass("LOGISTIC"))}>
+            LOGISTIC
+          </span>
         </span>
       }
     >
