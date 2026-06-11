@@ -5670,6 +5670,7 @@ function TasklistSections({
               {section?.display_mode === "documents" ? (
                 <DocumentTable
                   items={items}
+                  comments={comments}
                   canManage={!!canManage}
                   canApproveFor={(it) => !it.required_perm || can(it.required_perm)}
                   attachmentsByItem={attachmentsByItem}
@@ -5819,6 +5820,7 @@ function roleChipClass(role: string | null | undefined): string {
 // reviewable items (e.g. Stock Out Transfer Record).
 function DocumentTable({
   items,
+  comments,
   canManage,
   canApproveFor,
   attachmentsByItem,
@@ -5828,6 +5830,7 @@ function DocumentTable({
   toast,
 }: {
   items: ChecklistItem[];
+  comments: ChecklistComment[];
   canManage: boolean;
   canApproveFor: (it: ChecklistItem) => boolean;
   attachmentsByItem: Map<number, TaskAttachment[]>;
@@ -5858,6 +5861,7 @@ function DocumentTable({
             <DocRow
               key={it.id}
               item={it}
+              comments={comments.filter((c) => c.item_id === it.id)}
               attachments={attachmentsByItem.get(it.id) ?? []}
               canManage={canManage}
               canApprove={canApproveFor(it)}
@@ -5882,6 +5886,7 @@ function DocumentTable({
 
 function DocRow({
   item,
+  comments,
   attachments,
   canManage,
   canApprove,
@@ -5891,6 +5896,7 @@ function DocRow({
   toast,
 }: {
   item: ChecklistItem;
+  comments: ChecklistComment[];
   attachments: TaskAttachment[];
   canManage: boolean;
   canApprove: boolean;
@@ -6003,26 +6009,27 @@ function DocRow({
             <span className="text-ink-muted">—</span>
           ) : (
             <div className="space-y-1">
-              {rs === "approved" && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-synced/15 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-synced">
-                  <Check size={10} /> Approved
-                </span>
-              )}
-              {rs === "rejected" && (
-                <div>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-err/10 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-err">
-                    <X size={10} /> Rejected
-                  </span>
-                  {item.rejection_reason && (
-                    <div className="mt-0.5 text-[9.5px] italic text-ink-muted">
-                      note: {item.rejection_reason}
-                    </div>
-                  )}
+              {/* Chronological history (oldest → newest): the approve/reject
+                  record. 'submit' entries are hidden as noise. */}
+              {comments.filter((c) => c.kind !== "submit").length > 0 && (
+                <div className="space-y-0.5">
+                  {comments
+                    .filter((c) => c.kind !== "submit")
+                    .slice()
+                    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1))
+                    .map((c) => (
+                      <div key={c.id} className="text-[9px] leading-snug text-ink-muted">
+                        <span className={cn("font-semibold", commentKindColor(c.kind))}>
+                          {commentKindLabel(c.kind)}
+                        </span>{" "}
+                        · {c.user_name || "—"} · {formatDate(c.created_at)}
+                        {c.body ? ` — ${c.body}` : ""}
+                      </div>
+                    ))}
                 </div>
               )}
-              {/* Approve/Reject show only while awaiting a decision; once
-                  approved/rejected they disappear (badge keeps the record).
-                  Re-uploading auto-submits, so they reappear. */}
+              {/* Approve/Reject only while awaiting; hidden once decided,
+                  reappear on re-upload (upload auto-submits). */}
               {awaiting && canApprove ? (
                 <div className="flex flex-wrap items-center gap-1">
                   <button
@@ -6039,7 +6046,9 @@ function DocRow({
                   </button>
                 </div>
               ) : (
-                !rs && <span className="text-ink-muted">—</span>
+                comments.filter((c) => c.kind !== "submit").length === 0 && (
+                  <span className="text-ink-muted">—</span>
+                )
               )}
             </div>
           )}
