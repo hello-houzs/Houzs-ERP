@@ -971,7 +971,7 @@ function ProjectsListView() {
         if (allDone) {
           return (
             <span
-              className="inline-flex items-center gap-1 rounded-full border border-synced bg-synced/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-synced"
+              className="inline-flex items-center gap-1 rounded-full border border-synced bg-synced/15 px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-synced"
               title={`${total}/${total} sections complete`}
             >
               <CheckCircle2 size={10} /> Complete
@@ -981,7 +981,7 @@ function ProjectsListView() {
         if (active) {
           return (
             <span
-              className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-accent"
+              className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-accent"
               title={`Current stage · ${r.sections_complete ?? 0}/${total} sections complete`}
             >
               <Circle size={9} /> {active}
@@ -993,7 +993,7 @@ function ProjectsListView() {
         }
         return (
           <span
-            className="inline-flex items-center rounded-full border border-dashed border-border bg-bg/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted"
+            className="inline-flex items-center rounded-full border border-dashed border-border bg-bg/40 px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-ink-muted"
             title="This project has no tasklist sections yet"
           >
             No sections
@@ -5165,7 +5165,7 @@ function StageProgressRow({
                 : "")
             }
             className={cn(
-              "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors",
+              "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider transition-colors",
               complete
                 ? "border-synced bg-synced/15 text-synced"
                 : pct > 0
@@ -6069,7 +6069,7 @@ function DocRow({
             {attachments.length > 0 && (
               <button
                 onClick={() => setOpen((x) => !x)}
-                className="rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold text-ink hover:border-accent/40 hover:text-accent"
+                className="rounded-md border border-border bg-surface px-2 py-0.5 text-[8.5px] font-semibold text-ink hover:border-accent/40 hover:text-accent"
               >
                 View
               </button>
@@ -6078,7 +6078,7 @@ function DocRow({
               <button
                 onClick={() => fileRef.current?.click()}
                 disabled={uploading}
-                className="rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                className="rounded-md border border-border bg-surface px-2 py-0.5 text-[8.5px] font-semibold text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
               >
                 {uploading ? "…" : "+ Add"}
               </button>
@@ -6087,7 +6087,7 @@ function DocRow({
               <button
                 onClick={() => onStatus(item, naActive ? "pending" : "na")}
                 className={cn(
-                  "rounded-md border px-2 py-0.5 text-[10px] font-semibold",
+                  "rounded-md border px-2 py-0.5 text-[8.5px] font-semibold",
                   naActive
                     ? "border-accent bg-accent/10 text-accent"
                     : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent"
@@ -10371,7 +10371,7 @@ function AttachmentsSection({
           <button
             onClick={() => setFilterRole("")}
             className={cn(
-              "rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+              "rounded-full border px-2 py-0.5 text-[8.5px] font-semibold",
               filterRole === ""
                 ? "border-accent bg-accent text-white"
                 : "border-border bg-surface text-ink-muted hover:border-accent/40"
@@ -10389,7 +10389,7 @@ function AttachmentsSection({
                 key={r.value}
                 onClick={() => setFilterRole(active ? "" : r.value)}
                 className={cn(
-                  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[8.5px] font-semibold",
                   active
                     ? "border-accent bg-accent text-white"
                     : "border-border bg-surface text-ink-muted hover:border-accent/40"
