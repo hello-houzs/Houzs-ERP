@@ -971,7 +971,7 @@ function ProjectsListView() {
         if (allDone) {
           return (
             <span
-              className="inline-flex items-center gap-1 rounded-full border border-synced bg-synced/15 whitespace-nowrap px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-synced"
+              className="inline-flex items-center gap-1 rounded-full border border-synced bg-synced/15 inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold uppercase tracking-wider text-synced"
               title={`${total}/${total} sections complete`}
             >
               <CheckCircle2 size={10} /> Complete
@@ -981,7 +981,7 @@ function ProjectsListView() {
         if (active) {
           return (
             <span
-              className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 whitespace-nowrap px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-accent"
+              className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/10 inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold uppercase tracking-wider text-accent"
               title={`Current stage · ${r.sections_complete ?? 0}/${total} sections complete`}
             >
               <Circle size={9} /> {active}
@@ -993,7 +993,7 @@ function ProjectsListView() {
         }
         return (
           <span
-            className="inline-flex items-center rounded-full border border-dashed border-border bg-bg/40 whitespace-nowrap px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-ink-muted"
+            className="inline-flex items-center rounded-full border border-dashed border-border bg-bg/40 inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold uppercase tracking-wider text-ink-muted"
             title="This project has no tasklist sections yet"
           >
             No sections
@@ -5177,7 +5177,7 @@ function StageProgressRow({
                 : "")
             }
             className={cn(
-              "inline-flex items-center gap-1 rounded-full border whitespace-nowrap px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider transition-colors",
+              "inline-flex items-center gap-1 rounded-full border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold uppercase tracking-wider transition-colors",
               complete
                 ? "border-synced bg-synced/15 text-synced"
                 : pct > 0
@@ -6083,7 +6083,7 @@ function DocRow({
             {attachments.length > 0 && (
               <button
                 onClick={() => setOpen((x) => !x)}
-                className="rounded-md border border-border bg-surface whitespace-nowrap px-2 py-0.5 text-[8.5px] font-semibold text-ink hover:border-accent/40 hover:text-accent"
+                className="rounded-md border border-border bg-surface inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold text-ink hover:border-accent/40 hover:text-accent"
               >
                 View
               </button>
@@ -6092,7 +6092,7 @@ function DocRow({
               <button
                 onClick={() => fileRef.current?.click()}
                 disabled={uploading}
-                className="rounded-md border border-border bg-surface whitespace-nowrap px-2 py-0.5 text-[8.5px] font-semibold text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                className="rounded-md border border-border bg-surface inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
               >
                 {uploading ? "…" : "+ Add"}
               </button>
@@ -6101,7 +6101,7 @@ function DocRow({
               <button
                 onClick={() => onStatus(item, naActive ? "pending" : "na")}
                 className={cn(
-                  "rounded-md border whitespace-nowrap px-2 py-0.5 text-[8.5px] font-semibold",
+                  "rounded-md border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold",
                   naActive
                     ? "border-accent bg-accent/10 text-accent"
                     : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent"
@@ -6531,7 +6531,7 @@ function ChecklistRow({
               onClick={() => setPill(v)}
               disabled={!canTick}
               className={cn(
-                "rounded-md border whitespace-nowrap px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide",
+                "rounded-md border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold uppercase tracking-wide",
                 v === cur
                   ? selTone(v)
                   : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent",
@@ -7357,14 +7357,14 @@ interface PhaseCrew {
   drivers: CrewSlot[];
   helpers: CrewSlot[];
   lorries: string[];
-  outsourced: { enabled: boolean; name: string; phone: string; plate: string };
+  outsourced: { enabled: boolean; entries: { name: string; phone: string; plate: string }[] };
 }
 function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
   const empty: PhaseCrew = {
     drivers: [],
     helpers: [],
     lorries: [],
-    outsourced: { enabled: false, name: "", phone: "", plate: "" },
+    outsourced: { enabled: false, entries: [] },
   };
   if (!s) return empty;
   try {
@@ -7375,9 +7375,11 @@ function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
       lorries: Array.isArray(p.lorries) ? p.lorries : [],
       outsourced: {
         enabled: !!(p.outsourced && p.outsourced.enabled),
-        name: p.outsourced?.name ?? "",
-        phone: p.outsourced?.phone ?? "",
-        plate: p.outsourced?.plate ?? "",
+        entries: Array.isArray(p.outsourced?.entries)
+          ? p.outsourced.entries
+          : p.outsourced?.name
+            ? [{ name: p.outsourced.name, phone: p.outsourced.phone ?? "", plate: p.outsourced.plate ?? "" }]
+            : [],
       },
     };
   } catch {
@@ -7437,23 +7439,25 @@ function CrewSlotRow({
 }
 
 function OutsourcedBox({
-  value,
-  onSave,
+  onAdd,
 }: {
-  value: { name: string; phone: string; plate: string };
-  onSave: (o: { name: string; phone: string; plate: string }) => void;
+  onAdd: (o: { name: string; phone: string; plate: string }) => void;
 }) {
-  const [d, setD] = useState({ name: value.name, phone: value.phone, plate: value.plate });
-  useEffect(() => {
-    setD({ name: value.name, phone: value.phone, plate: value.plate });
-  }, [value.name, value.phone, value.plate]);
+  const [d, setD] = useState({ name: "", phone: "", plate: "" });
   return (
     <div className="space-y-2 rounded-md border border-dashed border-border bg-bg/40 p-2">
       <input value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} placeholder="Name…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
       <input value={d.phone} onChange={(e) => setD({ ...d, phone: e.target.value })} placeholder="Phone number…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
       <input value={d.plate} onChange={(e) => setD({ ...d, plate: e.target.value })} placeholder="Lorry plate…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
-      <button onClick={() => onSave(d)} className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced">
-        Save
+      <button
+        onClick={() => {
+          if (!d.name.trim() && !d.plate.trim()) return;
+          onAdd(d);
+          setD({ name: "", phone: "", plate: "" });
+        }}
+        className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
+      >
+        + Add
       </button>
     </div>
   );
@@ -7550,25 +7554,41 @@ function PhaseCrewEditor({
         />
         Outsourced
       </label>
-      {pc.outsourced.enabled &&
-        (pc.outsourced.name.trim() ? (
-          <div className="flex flex-wrap gap-1.5">
-            <span className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
-              <Truck size={11} />
-              {pc.outsourced.name}
-              {pc.outsourced.phone ? ` · ${pc.outsourced.phone}` : ""}
-              {pc.outsourced.plate ? ` · ${pc.outsourced.plate}` : ""}
-              <button
-                onClick={() => save({ ...pc, outsourced: { enabled: true, name: "", phone: "", plate: "" } })}
-                className="text-ink-muted hover:text-err"
-              >
-                <X size={11} />
-              </button>
-            </span>
-          </div>
-        ) : (
-          <OutsourcedBox value={pc.outsourced} onSave={(o) => save({ ...pc, outsourced: { ...o, enabled: true } })} />
-        ))}
+      {pc.outsourced.enabled && (
+        <div className="space-y-1.5">
+          {pc.outsourced.entries.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {pc.outsourced.entries.map((o, i) => (
+                <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
+                  <Truck size={11} />
+                  {o.name}
+                  {o.phone ? ` · ${o.phone}` : ""}
+                  {o.plate ? ` · ${o.plate}` : ""}
+                  <button
+                    onClick={() =>
+                      save({
+                        ...pc,
+                        outsourced: {
+                          ...pc.outsourced,
+                          entries: pc.outsourced.entries.filter((_, j) => j !== i),
+                        },
+                      })
+                    }
+                    className="text-ink-muted hover:text-err"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <OutsourcedBox
+            onAdd={(o) =>
+              save({ ...pc, outsourced: { enabled: true, entries: [...pc.outsourced.entries, o] } })
+            }
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -10385,7 +10405,7 @@ function AttachmentsSection({
           <button
             onClick={() => setFilterRole("")}
             className={cn(
-              "rounded-full border whitespace-nowrap px-2 py-0.5 text-[8.5px] font-semibold",
+              "rounded-full border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold",
               filterRole === ""
                 ? "border-accent bg-accent text-white"
                 : "border-border bg-surface text-ink-muted hover:border-accent/40"
@@ -10403,7 +10423,7 @@ function AttachmentsSection({
                 key={r.value}
                 onClick={() => setFilterRole(active ? "" : r.value)}
                 className={cn(
-                  "inline-flex items-center gap-1 rounded-full border whitespace-nowrap px-2 py-0.5 text-[8.5px] font-semibold",
+                  "inline-flex items-center gap-1 rounded-full border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold",
                   active
                     ? "border-accent bg-accent text-white"
                     : "border-border bg-surface text-ink-muted hover:border-accent/40"
