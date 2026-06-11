@@ -5601,15 +5601,8 @@ function TasklistSections({
                   </>
                 ) : (
                   <>
-                    <span className="flex flex-1 items-center gap-2">
-                      <span className="text-[11.5px] font-semibold uppercase tracking-wider text-ink-secondary">
-                        {headerName}
-                      </span>
-                      {(section?.name || "").toUpperCase().startsWith("SETUP & DISMANTLE") && (
-                        <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass("LOGISTIC"))}>
-                          LOGISTIC
-                        </span>
-                      )}
+                    <span className="flex-1 text-[11.5px] font-semibold uppercase tracking-wider text-ink-secondary">
+                      {headerName}
                     </span>
                     {sectionLeadTime && (
                       <span
@@ -6027,10 +6020,10 @@ function DocRow({
                   )}
                 </div>
               )}
-              {/* Approve/Reject appear whenever a file is present (so they
-                  reappear on every re-upload); the badge above keeps the
-                  last decision as the record. */}
-              {attachments.length > 0 && canApprove ? (
+              {/* Approve/Reject show only while awaiting a decision; once
+                  approved/rejected they disappear (badge keeps the record).
+                  Re-uploading auto-submits, so they reappear. */}
+              {awaiting && canApprove ? (
                 <div className="flex flex-wrap items-center gap-1">
                   <button
                     onClick={() => onReview(item, "approve", {})}
@@ -6061,6 +6054,7 @@ function DocRow({
               onChange={async (e) => {
                 const files = Array.from(e.target.files || []);
                 for (const f of files) await upload(f);
+                if (files.length && reviewable) await onReview(item, "submit", {});
               }}
             />
             {attachments.length > 0 && (
@@ -6420,6 +6414,11 @@ function ChecklistRow({
       )}&name=${encodeURIComponent(file.name)}`;
       await api.putBinary(url, buf, file.type || "application/octet-stream");
       toast?.success("Uploaded");
+      // Reviewable items auto-submit on upload so the approver's
+      // Approve/Reject reappear (and a prior decision is superseded).
+      if (REVIEWABLE_TITLES.has(item.title)) {
+        await onReview("submit", {});
+      }
       onAttachmentsChanged?.();
     } catch (e: any) {
       toast?.error(e?.message || "Upload failed");
@@ -6509,7 +6508,7 @@ function ChecklistRow({
               onClick={() => setPill(v)}
               disabled={!canTick}
               className={cn(
-                "rounded-md border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                "rounded-md border px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide",
                 v === cur
                   ? selTone(v)
                   : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent",
@@ -6726,11 +6725,11 @@ function ChecklistRow({
         </div>
       </div>
 
-      {/* Management approve/reject — shows inline as soon as a file is
-          attached (no need to open the review panel). Approver only. */}
+      {/* Management approve/reject — shown while awaiting a decision;
+          they disappear once approved/rejected and reappear on re-upload
+          (upload auto-submits). Approver only. */}
       {reviewable &&
-        attachments &&
-        attachments.length > 0 &&
+        awaitingReview &&
         canApprove && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
             <input
@@ -7572,7 +7571,15 @@ function LogisticsCrewSection({
   const drivers = useMemo(() => crew.filter((u) => isType(u, "driver")), [crew]);
   const helpers = useMemo(() => crew.filter((u) => isType(u, "helper")), [crew]);
   return (
-    <PanelSection title="Setup & Dismantle" muted>
+    <PanelSection
+      title="Setup & Dismantle"
+      muted
+      action={
+        <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass("LOGISTIC"))}>
+          LOGISTIC
+        </span>
+      }
+    >
       <div className="grid grid-cols-2 gap-3">
         <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} />
         <DateTimeField label="Dismantle Time" value={project.dismantle_start_at} onSave={(v) => patch({ dismantle_start_at: v })} />
