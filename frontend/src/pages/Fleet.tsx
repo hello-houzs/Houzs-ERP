@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Shield, Plus } from "lucide-react";
+import { Shield, Plus, Trash2 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Panel } from "../components/Panel";
 import { TabStrip, type TabOption } from "../components/TabStrip";
@@ -242,10 +242,28 @@ function LorriesTab({
   onSelect: (id: number) => void;
 }) {
   const { can } = useAuth();
+  const toast = useToast();
   const list = useQuery<{ data: LorryRow[] }>(() => api.get("/api/lorries"));
   const today = new Date().toISOString().slice(0, 10);
   const [showAdd, setShowAdd] = useState(false);
   const canManage = can("fleet.manage");
+
+  async function handleDelete(r: LorryRow, e: React.MouseEvent) {
+    e.stopPropagation();
+    if (
+      !window.confirm(
+        `Delete lorry "${r.plate}"? It will be removed from the fleet list and the project crew dropdown.`
+      )
+    )
+      return;
+    try {
+      await api.del(`/api/lorries/${r.id}`);
+      toast.success(`Deleted ${r.plate}`);
+      list.reload();
+    } catch (err: any) {
+      toast.error(err?.message || "Delete failed");
+    }
+  }
 
   return (
     <div>
@@ -331,6 +349,24 @@ function LorriesTab({
             );
           },
         },
+        ...(canManage
+          ? [
+              {
+                key: "actions",
+                label: "",
+                render: (r: LorryRow) => (
+                  <button
+                    type="button"
+                    onClick={(e) => handleDelete(r, e)}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
+                    title={`Delete ${r.plate}`}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                ),
+              },
+            ]
+          : []),
       ]}
       rows={list.data?.data ?? null}
       loading={list.loading}

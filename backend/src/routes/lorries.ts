@@ -49,18 +49,33 @@ app.post("/", requirePermission("fleet.manage"), async (c) => {
     .first();
   if (!wh) return c.json({ error: "Unknown warehouse" }, 400);
 
-  // Friendly duplicate-plate check (UNIQUE constraint also enforces it).
-  const dup = await c.env.DB.prepare(
-    `SELECT id FROM lorries WHERE plate = ?`
-  )
-    .bind(plate)
-    .first();
-  if (dup) return c.json({ error: "A lorry with this plate already exists" }, 409);
-
   const isInternal = body.is_internal === false || body.is_internal === 0 ? 0 : 1;
   const status = (body.status ?? "active").trim() || "active";
   const size = (body.size ?? "").trim() || null;
   const model = (body.model ?? "").trim() || null;
+
+  // Duplicate-plate handling (plate is UNIQUE). An ACTIVE duplicate is a
+  // real conflict. A soft-deleted (is_active=0) row with the same plate is
+  // reactivated + overwritten with the new details, so delete-then-re-add
+  // of the same plate works seamlessly.
+  const dup = await c.env.DB.prepare(
+    `SELECT id, is_active FROM lorries WHERE plate = ?`
+  )
+    .bind(plate)
+    .first<{ id: number; is_active: number }>();
+  if (dup && dup.is_active) {
+    return c.json({ error: "A lorry with this plate already exists" }, 409);
+  }
+  if (dup && !dup.is_active) {
+    await c.env.DB.prepare(
+      `UPDATE lorries
+          SET size=?, model=?, warehouse=?, is_internal=?, status=?, is_active=1
+        WHERE id=?`
+    )
+      .bind(size, model, warehouse, isInternal, status, dup.id)
+      .run();
+    return c.json({ ok: true, id: dup.id, reactivated: true });
+  }
 
   const res = await c.env.DB.prepare(
     `INSERT INTO lorries (plate, size, model, warehouse, is_internal, status, is_active)
@@ -70,6 +85,22 @@ app.post("/", requirePermission("fleet.manage"), async (c) => {
     .run();
 
   return c.json({ ok: true, id: res.meta.last_row_id });
+});
+
+// Delete a lorry. Fleet admins only. Soft-delete (is_active=0) so any
+// trip/history that references the lorry stays intact — it just stops
+// appearing in the roster and the project crew dropdown. The plate can
+// be re-added later (POST reactivates the soft-deleted row).
+app.delete("/:id", requirePermission("fleet.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (Number.isNaN(id)) return c.json({ error: "Bad id" }, 400);
+  const res = await c.env.DB.prepare(
+    `UPDATE lorries SET is_active = 0 WHERE id = ?`
+  )
+    .bind(id)
+    .run();
+  if (!res.meta.changes) return c.json({ error: "Lorry not found" }, 404);
+  return c.json({ ok: true });
 });
 
 export default app;
