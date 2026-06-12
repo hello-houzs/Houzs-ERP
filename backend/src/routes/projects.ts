@@ -2176,10 +2176,10 @@ app.post("/checklist/:itemId/status", requireAnyPermission(["projects.write", "p
     return c.json({ error: "invalid status" }, 400);
   }
   const item = await c.env.DB.prepare(
-    `SELECT required_perm, project_id, title FROM project_checklist WHERE id = ?`
+    `SELECT required_perm FROM project_checklist WHERE id = ?`
   )
     .bind(itemId)
-    .first<{ required_perm: string | null; project_id: number; title: string }>();
+    .first<{ required_perm: string | null }>();
   if (!item) return c.json({ error: "Not found" }, 404);
   if (item.required_perm) {
     const has =
@@ -2190,8 +2190,6 @@ app.post("/checklist/:itemId/status", requireAnyPermission(["projects.write", "p
   }
   const ok = await setChecklistStatus(c.env, itemId, status, user?.id ?? 0);
   if (!ok) return c.json({ error: "Not found" }, 404);
-  // Audit trail (shown in the project activity feed): who set what, when.
-  await logProjectActivity(c.env, item.project_id, "checklist_status", null, status, item.title, user?.id);
   return c.json({ ok: true });
 });
 
