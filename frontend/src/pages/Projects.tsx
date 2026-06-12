@@ -7631,8 +7631,8 @@ function LogisticsCrewSection({
   }, []);
   const isType = (u: CrewMember, kind: string) =>
     (u.role_name || "").toLowerCase() === kind || (u.user_type || "").toLowerCase() === kind;
-  const drivers = useMemo(() => crew.filter((u) => isType(u, "driver")), [crew]);
-  const helpers = useMemo(() => crew.filter((u) => isType(u, "helper")), [crew]);
+  const drivers = useMemo(() => crew.filter((u) => isType(u, "driver") && (u.name || "").trim() !== ""), [crew]);
+  const helpers = useMemo(() => crew.filter((u) => isType(u, "helper") && (u.name || "").trim() !== ""), [crew]);
   return (
     <PanelSection
       muted
@@ -7678,8 +7678,8 @@ function LogisticsScheduleSection({
   const isType = (u: { user_type: string | null; role_name: string | null }, kind: string) =>
     (u.role_name || "").toLowerCase() === kind ||
     (u.user_type || "").toLowerCase() === kind;
-  const drivers = useMemo(() => crew.filter((u) => isType(u, "driver")), [crew]);
-  const helpers = useMemo(() => crew.filter((u) => isType(u, "helper")), [crew]);
+  const drivers = useMemo(() => crew.filter((u) => isType(u, "driver") && (u.name || "").trim() !== ""), [crew]);
+  const helpers = useMemo(() => crew.filter((u) => isType(u, "helper") && (u.name || "").trim() !== ""), [crew]);
 
   useEffect(() => {
     api
