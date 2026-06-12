@@ -93,10 +93,14 @@ export function getSql(databaseUrl: string): Sql {
       });
 }
 
-/** Resolve the live connection string from the Worker env, prod or local. */
+/** Resolve the live connection string from the Worker env, prod or local.
+ *  DATABASE_URL wins when present — an explicit empty string means "no
+ *  Postgres" (vitest pins it to keep the suite on its isolated D1 even
+ *  though the wrangler.toml hyperdrive binding exists). Prod sets neither
+ *  var and falls through to the Hyperdrive binding. */
 export function resolveDatabaseUrl(env: {
   HYPERDRIVE?: { connectionString: string };
   DATABASE_URL?: string;
 }): string {
-  return env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? "";
+  return env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? "";
 }

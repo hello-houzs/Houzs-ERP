@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toPgPlaceholders } from "./d1-compat";
+import { toPgPlaceholders, rewriteDialect } from "./d1-compat";
 
 describe("toPgPlaceholders", () => {
   it("rewrites sequential ? to $1,$2,...", () => {
@@ -34,5 +34,29 @@ describe("toPgPlaceholders", () => {
 
   it("is a no-op when there are no placeholders", () => {
     expect(toPgPlaceholders("SELECT 1")).toBe("SELECT 1");
+  });
+});
+
+describe("rewriteDialect LIKE handling", () => {
+  it("rewrites LIKE to ILIKE", () => {
+    expect(rewriteDialect("WHERE doc_no LIKE ?1 OR ref like ?1")).toBe(
+      "WHERE doc_no ILIKE ?1 OR ref ILIKE ?1",
+    );
+  });
+
+  it("keeps NOT LIKE working as NOT ILIKE", () => {
+    expect(rewriteDialect("WHERE a NOT LIKE ?")).toBe("WHERE a NOT ILIKE ?");
+  });
+
+  it("leaves LIKE inside string literals alone", () => {
+    expect(rewriteDialect("WHERE note = 'I LIKE THIS' AND b LIKE ?")).toBe(
+      "WHERE note = 'I LIKE THIS' AND b ILIKE ?",
+    );
+  });
+
+  it("does not double-rewrite ILIKE or touch identifiers containing like", () => {
+    expect(rewriteDialect("WHERE a ILIKE ? AND liked_by = ?")).toBe(
+      "WHERE a ILIKE ? AND liked_by = ?",
+    );
   });
 });

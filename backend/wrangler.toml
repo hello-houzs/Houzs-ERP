@@ -37,9 +37,9 @@ database_id = "d0401549-c099-407b-ae95-57a5f85e5ad5"
 #     --connection-string="postgresql://postgres.ctbaifabbzghtsrmpirm:<pw>@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
 # then uncomment and paste the printed id. Local dev/scripts read DATABASE_URL
 # from .dev.vars instead of this binding.
-# [[hyperdrive]]
-# binding = "HYPERDRIVE"
-# id = "<hyperdrive-id-from-wrangler>"
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "4e820fcfa4f945929ab77e164060e694"
 
 # R2 bucket for proof-of-delivery photos and signatures.
 [[r2_buckets]]

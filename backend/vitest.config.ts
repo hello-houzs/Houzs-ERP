@@ -10,6 +10,13 @@ import {
 // (schema.sql baseline + migrations under src/db/migrations applied at
 // suite setup time).
 export default defineWorkersConfig(async () => {
+  // wrangler.toml now carries the [[hyperdrive]] binding (Supabase cutover).
+  // Parsing it locally demands an emulation connection string — provide a
+  // dummy so config parse succeeds. Tests never connect through it:
+  // resolveDatabaseUrl prefers the DATABASE_URL="" pinned below, which keeps
+  // the whole suite on the isolated D1.
+  process.env.WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE ??=
+    "postgresql://test:test@127.0.0.1:5432/test";
   const migrationsPath = path.join(__dirname, "src/db/migrations");
   const migrations = await readD1Migrations(migrationsPath);
   // schema.sql is the legacy baseline (sales_orders, order_details,
@@ -37,6 +44,10 @@ export default defineWorkersConfig(async () => {
               TEST_BASELINE_SQL: baselineSql,
               TEST_MIGRATIONS: migrations,
               DASHBOARD_API_KEY: "test-dashboard-key",
+              // Pin empty so the suite can never pick up a real Supabase URL
+              // from .dev.vars and run tests against the live database. The
+              // dbInject middleware falls back to the isolated D1 above.
+              DATABASE_URL: "",
             },
           },
         },

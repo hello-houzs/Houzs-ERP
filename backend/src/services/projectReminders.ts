@@ -33,7 +33,7 @@ export async function runProjectDueReminders(env: Env): Promise<{
       WHERE p.archived_at IS NULL
         AND c.status = 'pending'
         AND c.due_date IS NOT NULL
-        AND date(c.due_date) <= date('now', '+3 days')`
+        AND substr(c.due_date, 1, 10) <= date('now', '+3 days')`
   ).all<{
     id: number;
     project_id: number;

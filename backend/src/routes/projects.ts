@@ -50,7 +50,6 @@ import {
   project_brands,
   project_finance_lines,
   projects as projectsTable,
-  user_brands,
 } from "../db/schema";
 import { and, eq, sql } from "drizzle-orm";
 
@@ -443,8 +442,8 @@ app.get("/summary", requirePageAccess("projects.list"), async (c) => {
       WHERE archived_at IS NULL
         AND stage NOT IN ('closed','cancelled')
         AND start_date IS NOT NULL
-        AND date(start_date) >= date('now')
-        AND date(start_date) <= date('now', '+30 days')`
+        AND substr(start_date, 1, 10) >= date('now')
+        AND substr(start_date, 1, 10) <= date('now', '+30 days')`
   ).first<{ count: number }>();
 
   const live = await c.env.DB.prepare(
@@ -460,7 +459,7 @@ app.get("/summary", requirePageAccess("projects.list"), async (c) => {
       WHERE p.archived_at IS NULL
         AND c.status = 'pending'
         AND c.due_date IS NOT NULL
-        AND date(c.due_date) < date('now')`
+        AND substr(c.due_date, 1, 10) < date('now')`
   ).first<{ count: number }>();
 
   return c.json({
@@ -902,11 +901,14 @@ app.get("/analytics/profitability", requirePageAccess("projects.finances"), asyn
   // Date filter applies to start_date — overlapping window is harder
   // to reason about across by-month grouping, so keep it strict.
   if (dateFrom) {
-    where.push("date(p.start_date) >= date(?)");
+    // substr, not date(): on Postgres date(text_col) casts to the date type
+    // and "date >= text" has no operator. substr keeps it text-vs-text on
+    // both dialects with the same truncate-to-day semantics.
+    where.push("substr(p.start_date, 1, 10) >= substr(?, 1, 10)");
     binds.push(dateFrom);
   }
   if (dateTo) {
-    where.push("date(p.start_date) <= date(?)");
+    where.push("substr(p.start_date, 1, 10) <= substr(?, 1, 10)");
     binds.push(dateTo);
   }
   if (brand) {
@@ -1091,13 +1093,14 @@ async function canPicProjectBrand(
   brand: string | null | undefined
 ): Promise<boolean> {
   if (!brand) return false;
-  const db = getDb(env);
-  const rows = await db
-    .select({ one: user_brands.user_id })
-    .from(user_brands)
-    .where(and(eq(user_brands.user_id, picUserId), eq(user_brands.brand, brand)))
-    .limit(1);
-  return rows.length > 0;
+  // env.DB (not getDb): this gate must also work on the D1 fallback used by
+  // the test suite and the rollback path, where no DATABASE_URL is bound.
+  const row = await env.DB.prepare(
+    `SELECT 1 AS one FROM user_brands WHERE user_id = ? AND brand = ? LIMIT 1`
+  )
+    .bind(picUserId, brand)
+    .first();
+  return row !== null;
 }
 
 // ── Create ────────────────────────────────────────────────────
@@ -3126,8 +3129,8 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
        FROM projects p
       WHERE p.archived_at IS NULL
         AND p.start_date IS NOT NULL
-        AND date(p.start_date) <= date(?)
-        AND date(COALESCE(p.end_date, p.start_date)) >= date(?)${scopeWhere}`
+        AND substr(p.start_date, 1, 10) <= substr(?, 1, 10)
+        AND substr(COALESCE(p.end_date, p.start_date), 1, 10) >= substr(?, 1, 10)${scopeWhere}`
   )
     .bind(to, from, ...scopeBinds)
     .all();
@@ -3138,7 +3141,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
             p.code as project_code, p.brand, p.organizer, p.status as project_status,
             p.name as project_name,
             u.name as owner_name,
-            CASE WHEN date(c.due_date) < date('now') THEN 1 ELSE 0 END as is_overdue
+            CASE WHEN substr(c.due_date, 1, 10) < date('now') THEN 1 ELSE 0 END as is_overdue
        FROM project_checklist c
        JOIN projects p ON p.id = c.project_id
        LEFT JOIN users u ON u.id = c.owner_user_id
@@ -3146,7 +3149,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
         AND c.status != 'done'
         AND c.status != 'na'
         AND c.due_date IS NOT NULL
-        AND date(c.due_date) BETWEEN date(?) AND date(?)${scopeWhere}
+        AND substr(c.due_date, 1, 10) BETWEEN substr(?, 1, 10) AND substr(?, 1, 10)${scopeWhere}
       ORDER BY c.due_date, p.brand, c.id`
   )
     .bind(from, to, ...scopeBinds)
