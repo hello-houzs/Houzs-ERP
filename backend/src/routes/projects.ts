@@ -483,11 +483,12 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
   // they own. Owner / IT Admin / unmapped roles → no filter (full list).
   let pendingLabel: string | undefined;
   let pendingTitle: string | undefined;
+  let pendingLogistic = false;
   if (c.req.query("my_pending") === "1" && user) {
     const r = (user.role_name || "").toLowerCase();
     if (r === "manager") pendingTitle = "Agreement / Quotation";
     else if (r === "purchaser") pendingLabel = "PURCHASER";
-    else if (r === "logistic") pendingLabel = "LOGISTIC";
+    else if (r === "logistic") pendingLogistic = true; // setup not arranged
     else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";
     else if (r.includes("bd")) pendingLabel = "BD";
     else if (r.includes("sales")) pendingLabel = "SALES PIC";
@@ -496,6 +497,7 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
   const result = await listProjects(c.env, {
     pending_label: pendingLabel,
     pending_title: pendingTitle,
+    pending_logistic: pendingLogistic,
     stage: c.req.query("stage"),
     brand: c.req.query("brand"),
     state: c.req.query("state") || undefined,

@@ -966,6 +966,10 @@ export interface ListProjectsFilters {
    *  of the role chip — used for roles tied to a specific document
    *  (e.g. Management → "Agreement / Quotation"). */
   pending_title?: string;
+  /** Logistic "pending" = the Setup & Dismantle section hasn't been
+   *  arranged yet (no setup time scheduled). LOGISTIC isn't a checklist
+   *  item, so it gets its own predicate. */
+  pending_logistic?: boolean;
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -1045,6 +1049,12 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                   AND pc.title = ?)`
     );
     binds.push(f.pending_title);
+  }
+  if (f.pending_logistic) {
+    // Setup not yet arranged: no setup time AND no setup crew assigned.
+    where.push(
+      `(p.setup_start_at IS NULL AND COALESCE(p.setup_crew, '') IN ('', '{}'))`
+    );
   }
   // "Completed project" predicate — reused by both the positive
   // (section=__done) filter and the negative (exclude_done) toggle.
