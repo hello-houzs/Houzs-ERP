@@ -148,13 +148,24 @@ fresh `wrangler d1 export` as a snapshot before cutover.
   wide diff does not collide with in-flight work.
 
 ## Status (this branch)
+- [x] Phase 0 Supabase project — `houzs-erp`, ap-southeast-1 (Singapore), Pro org.
+      Project ref `xxoszhxglfgkqkokvofa`. DATABASE_URL in gitignored `.dev.vars`.
 - [x] Phase 1 connection layer (`pg.ts`, `postgres` dep)
-- [x] Phase 3 keystone: D1-compat shim (`d1-compat.ts` + tests, `toPgPlaceholders` 6/6)
-- [x] Phase 2 DRAFT: `schema.pg.ts` (57/57 tables, pg-core, UNTESTED — validate with
-      `drizzle-kit` against Supabase, then review the int4-vs-bigint money columns)
-- [ ] Phase 0 Supabase project (USER, tonight) — blocks everything below
-- [ ] Phase 2 finish: replay 93 `.sql` migrations as a Postgres baseline; point
-      `client.ts` at `drizzle-orm/postgres-js` + `schema.pg.ts`; `drizzle.config` -> postgresql
-- [ ] Phase 3 raw SQL: wire `env.DB` to the shim, fix ~131 dialect sites
-- [ ] Phase 4 data export/import + row-count verify
+- [x] Phase 2 + 4 DONE — full DB migrated from the authoritative D1 export
+      (`scripts/load-d1-dump-to-pg.mjs`): **110 tables + 51,413 rows in Supabase**,
+      verified per-table vs the dump (`scripts/verify-load.mjs`) — 0 mismatches.
+      Tables are rebuilt from D1 column metadata (bigint, identity PKs); FK/CHECK/
+      defaults/indexes intentionally omitted for the load and can be re-added.
+- [x] Phase 3 keystone: D1-compat shim (`d1-compat.ts` + tests)
+- [~] `schema.pg.ts` (Drizzle, 57 tables) — superseded as the migration source by the
+      D1 export, kept as the Drizzle-side reference for Phase 3 app-code reconciliation.
+- [ ] Phase 3 app code: point `client.ts` at `drizzle-orm/postgres-js`, wire `env.DB`
+      to the shim, fix the ~131 raw-SQL dialect sites, run vitest/Playwright. Coordinate
+      the wide diff. Re-add indexes (193 in the dump) + FKs as a follow-up.
 - [ ] Phase 5 Hyperdrive bind + cutover + remove D1
+
+## Tooling note
+`better-sqlite3` + `sql.js` are devDependencies used only by the migration scripts.
+Keep them OUT of `dependencies` — `better-sqlite3` is native and would break the Worker build.
+The 61 MB `houzs-d1-full.sql` export is gitignored (live data). Delete the Cloudflare
+API token used for the export once you're done.
