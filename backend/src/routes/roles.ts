@@ -10,7 +10,7 @@ import {
 } from "../services/pageAccess";
 import { requirePermission } from "../middleware/auth";
 import { getDb } from "../db/client";
-import { roles, role_page_access, users } from "../db/schema";
+import { roles, role_page_access, users, invitations } from "../db/schema";
 import { eq, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -309,6 +309,11 @@ app.delete("/:id", requirePermission("roles.manage"), async (c) => {
     );
   }
 
+  // Clean up dependent rows first — role_page_access and invitations
+  // both FK to roles.id, and the constraint blocks the delete otherwise.
+  // (Users are confirmed zero above.)
+  await db.delete(role_page_access).where(eq(role_page_access.role_id, id));
+  await db.delete(invitations).where(eq(invitations.role_id, id));
   await db.delete(roles).where(eq(roles.id, id));
   return c.json({ ok: true });
 });
