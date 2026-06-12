@@ -18,8 +18,16 @@ export const dbInject = createMiddleware<{ Bindings: Env }>(async (c, next) => {
   // app keeps serving instead of 500ing on getSql("")), and lets vitest run
   // against its isolated migrated D1 instead of a live Postgres.
   const url = resolveDatabaseUrl(c.env);
-  if (url) c.env.DB = d1Compat(getSql(url)) as unknown as D1Database;
-  await next();
+  if (!url) return next();
+  const sqlClient = getSql(url);
+  c.env.DB = d1Compat(sqlClient) as unknown as D1Database;
+  try {
+    await next();
+  } finally {
+    // Close the per-request socket gracefully after the response — left open,
+    // workerd severs it and logs "Network connection lost" against the request.
+    c.executionCtx.waitUntil(sqlClient.end({ timeout: 5 }).catch(() => {}));
+  }
 });
 
 /**
