@@ -13,11 +13,12 @@ import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
 
-type FleetTab = "drivers" | "helpers" | "lorries" | "compliance";
+type FleetTab = "drivers" | "helpers" | "storekeepers" | "lorries" | "compliance";
 
 const FLEET_TABS: readonly FleetTab[] = [
   "drivers",
   "helpers",
+  "storekeepers",
   "lorries",
   "compliance",
 ];
@@ -91,6 +92,7 @@ export function Fleet() {
   const tabs: TabOption<FleetTab>[] = [
     { value: "drivers", label: "Drivers" },
     { value: "helpers", label: "Helpers" },
+    { value: "storekeepers", label: "Storekeepers" },
     { value: "lorries", label: "Lorries" },
     { value: "compliance", label: "Compliance" },
   ];
@@ -103,6 +105,10 @@ export function Fleet() {
     helpers: {
       title: "Helpers",
       description: "Helper roster — contact info, salaries, assignments.",
+    },
+    storekeepers: {
+      title: "Storekeepers",
+      description: "Storekeeper roster — contact info, salaries, assignments.",
     },
     lorries: {
       title: "Lorries",
@@ -125,9 +131,9 @@ export function Fleet() {
       />
 
 
-      {(tab === "drivers" || tab === "helpers") && (
+      {(tab === "drivers" || tab === "helpers" || tab === "storekeepers") && (
         <StaffTab
-          type={tab === "drivers" ? "driver" : "helper"}
+          type={tab === "drivers" ? "driver" : tab === "helpers" ? "helper" : "storekeeper"}
           onSelect={(s) => navigate(`/staff/${s.id}`)}
         />
       )}
@@ -147,11 +153,12 @@ function StaffTab({
   type,
   onSelect,
 }: {
-  type: "driver" | "helper";
+  type: "driver" | "helper" | "storekeeper";
   onSelect: (s: StaffMember) => void;
 }) {
   const list = useQuery<{ data: StaffMember[] }>(() => api.get("/api/fleet/staff"));
-  const roleName = type === "driver" ? "Driver" : "Helper";
+  const roleName =
+    type === "driver" ? "Driver" : type === "helper" ? "Helper" : "Storekeeper";
   const filtered = (list.data?.data ?? []).filter((s) => s.role_name === roleName);
 
   return (

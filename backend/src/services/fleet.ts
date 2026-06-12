@@ -53,7 +53,7 @@ export async function listDriversAndHelpers(env: Env) {
             u.created_at
        FROM users u
        JOIN roles r ON r.id = u.role_id
-      WHERE r.name IN ('Driver','Helper')
+      WHERE r.name IN ('Driver','Helper','Storekeeper')
         -- Include 'invited' (not-yet-logged-in) crew so they can be
         -- assigned to project setup/dismantle before their first login.
         -- 'disabled' (soft-deleted) accounts stay excluded.
