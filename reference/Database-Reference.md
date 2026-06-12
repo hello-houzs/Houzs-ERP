@@ -167,7 +167,7 @@ biggest module — a full case lifecycle with SLA stage targets and lead times.
 
 | Table | Purpose |
 |---|---|
-| `assr_cases_new` | ASSR cases (the live case table; widened stage CHECK + new columns). |
+| `assr_cases` | ASSR cases — the live case table (renamed from `assr_cases_new` in mig 074). |
 | `assr_items` | Items selected for service from the SO. |
 | `assr_activity` | Audit trail: stage transitions, notes, assignments. |
 | `assr_attachments` | Photos, videos, completion evidence. |
@@ -244,8 +244,8 @@ tables.
 - **Ledgers** (`point_transactions`, `project_finance_lines`) are append-only;
   any cached balance is derived from them.
 - **Transitional / dead:** `projects_new`, `projects_rebuild`, `assr_cases_new`
-  came from table-rebuild migrations. `assr_cases_new` is the live ASSR table;
-  the `projects_*` copies are inert.
+  came from table-rebuild migrations. The live ASSR table is **`assr_cases`**
+  (`assr_cases_new` was renamed to it in mig 074); the `projects_*` copies are inert.
 
 ## Migration status (D1 -> Supabase)
 
