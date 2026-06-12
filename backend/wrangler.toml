@@ -8,9 +8,10 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 AUTOCOUNT_API_URL = "https://it-houzs.dev/"
-# Public origin used to build email links (survey, portal, supplier invite).
-# Must match the Pages deployment or the email links will 404.
-PUBLIC_APP_URL = "https://houzs-erp.pages.dev"
+# Public origin used to build email links (survey, portal, supplier invite,
+# member invitations, password resets). The canonical user-facing domain —
+# pages.dev still serves, but every link we hand out reads this.
+PUBLIC_APP_URL = "https://erp.houzscentury.com"
 # From address shown on outbound transactional emails. Leave the domain
 # aligned with what you verify in Resend.
 EMAIL_FROM = "Houzs ERP <no-reply@mail.it-houzs.dev>"

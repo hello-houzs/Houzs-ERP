@@ -2,6 +2,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
+import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
+import { validatePasswordStrength } from "../lib/passwordStrength";
 
 /**
  * Public reset-password screen — lives at /reset/:token. Bypasses the
@@ -82,8 +84,12 @@ export function ResetPassword() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitError(null);
-    if (password.length < 8) {
-      setSubmitError("Password must be at least 8 characters.");
+    const strength = validatePasswordStrength(
+      password,
+      state.kind === "ready" ? state.email : undefined
+    );
+    if (!strength.ok) {
+      setSubmitError(strength.error || "Password is too weak.");
       return;
     }
     if (password !== confirmPwd) {
@@ -151,7 +157,7 @@ export function ResetPassword() {
     <AuthShell
       eyebrow="Password Reset"
       title={state.name ? `Hi ${state.name.split(" ")[0]},` : "Set a new password"}
-      subtitle={`Choose a new password for ${state.email}. Minimum 8 characters.`}
+      subtitle={`Choose a new password for ${state.email}. Minimum 12 characters.`}
     >
       <form onSubmit={submit} className="space-y-4">
         <div>
@@ -168,6 +174,7 @@ export function ResetPassword() {
               "h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
             )}
           />
+          <PasswordStrengthMeter password={password} email={state.email} />
         </div>
         <div>
           <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">

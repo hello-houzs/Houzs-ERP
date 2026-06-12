@@ -2,7 +2,12 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { generateToken, isoIn } from "../services/auth";
 import { requirePermission } from "../middleware/auth";
-import { sendEmail, publicUrl } from "../services/email";
+import {
+  sendEmail,
+  publicUrl,
+  inviteEmailHtml,
+  resetEmailHtml,
+} from "../services/email";
 import { syncSalesRepFromUser } from "../services/salesTeam";
 import { getDb } from "../db/client";
 import {
@@ -252,7 +257,7 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
   const db = getDb(c.env);
 
   const role = await db
-    .select({ id: roles.id })
+    .select({ id: roles.id, name: roles.name })
     .from(roles)
     .where(eq(roles.id, body.role_id))
     .limit(1);
@@ -296,16 +301,111 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
   // Issue a fresh invitation token.
   const token = generateToken();
   const expires = isoIn(INVITE_TTL_SECONDS);
-  await db.insert(invitations).values({
-    email,
-    role_id: body.role_id,
-    token,
-    invited_by: me.id || 0,
-    expires_at: expires,
+  const inserted = await db
+    .insert(invitations)
+    .values({
+      email,
+      role_id: body.role_id,
+      token,
+      invited_by: me.id || 0,
+      expires_at: expires,
+    })
+    .returning({ id: invitations.id });
+  const invitationId = inserted[0]?.id ?? null;
+
+  // Email the invitation. The link is built server-side from
+  // PUBLIC_APP_URL so it always carries the canonical domain no matter
+  // which origin the admin's browser is on. sendEmail() never throws —
+  // when the channel/key is off we still hand back the link for
+  // copy-paste, and the UI shows the delivery status.
+  const invite_url = publicUrl(c.env, `/#invite=${token}`);
+  const sendResult = await sendEmail(c.env, {
+    to: email,
+    subject: "You're invited to Houzs ERP",
+    html: inviteEmailHtml({
+      link: invite_url,
+      roleName: role[0].name,
+      inviterName: me?.name || me?.email || "Your admin",
+      expiresIn: "14 days",
+    }),
+    purpose: "member_invite",
+    refType: "invitation",
+    refId: invitationId,
   });
 
-  return c.json({ token, expires_at: expires, email });
+  return c.json({
+    token,
+    expires_at: expires,
+    email,
+    invite_url,
+    email_sent: sendResult.status === "sent",
+    email_status: sendResult.status,
+  });
 });
+
+/**
+ * POST /api/users/invitations/:id/resend
+ * Re-send the invitation email for a still-pending invite. Keeps the
+ * same token (the link already shared stays valid); only the email is
+ * fired again.
+ */
+app.post(
+  "/invitations/:id/resend",
+  requirePermission("users.manage"),
+  async (c) => {
+    const id = parseInt(c.req.param("id"), 10);
+    if (!id) return c.json({ error: "Bad id" }, 400);
+    const me = c.get("user");
+
+    const db = getDb(c.env);
+    const rows = await db
+      .select({
+        id: invitations.id,
+        email: invitations.email,
+        token: invitations.token,
+        expires_at: invitations.expires_at,
+        accepted_at: invitations.accepted_at,
+        role_name: roles.name,
+      })
+      .from(invitations)
+      .innerJoin(roles, eq(roles.id, invitations.role_id))
+      .where(eq(invitations.id, id))
+      .limit(1);
+    if (rows.length === 0) return c.json({ error: "Invitation not found" }, 404);
+    const inv = rows[0];
+    if (inv.accepted_at) {
+      return c.json({ error: "Invitation was already accepted" }, 409);
+    }
+    if (inv.expires_at < new Date().toISOString()) {
+      return c.json(
+        { error: "Invitation has expired — issue a new one instead" },
+        410
+      );
+    }
+
+    const invite_url = publicUrl(c.env, `/#invite=${inv.token}`);
+    const sendResult = await sendEmail(c.env, {
+      to: inv.email,
+      subject: "You're invited to Houzs ERP",
+      html: inviteEmailHtml({
+        link: invite_url,
+        roleName: inv.role_name,
+        inviterName: me?.name || me?.email || "Your admin",
+        expiresIn: "14 days",
+      }),
+      purpose: "member_invite",
+      refType: "invitation",
+      refId: inv.id,
+    });
+
+    return c.json({
+      ok: true,
+      invite_url,
+      email_sent: sendResult.status === "sent",
+      email_status: sendResult.status,
+    });
+  }
+);
 
 /**
  * PATCH /api/users/:id
@@ -546,13 +646,31 @@ app.get("/invitations", requirePermission("users.read"), async (c) => {
       created_at: invitations.created_at,
       accepted_at: invitations.accepted_at,
       invited_by_email: inviter.email,
+      // Latest delivery outcome from email_log so the UI can show
+      // "emailed" vs an amber "not sent" without a schema change.
+      email_status: sql<string | null>`(
+        SELECT el.status FROM email_log el
+         WHERE el.ref_type = 'invitation' AND el.ref_id = ${invitations.id}
+         ORDER BY el.id DESC LIMIT 1
+      )`,
+      emailed_at: sql<string | null>`(
+        SELECT el.created_at FROM email_log el
+         WHERE el.ref_type = 'invitation' AND el.ref_id = ${invitations.id}
+           AND el.status = 'sent'
+         ORDER BY el.id DESC LIMIT 1
+      )`,
     })
     .from(invitations)
     .innerJoin(roles, eq(roles.id, invitations.role_id))
     .leftJoin(inviter, eq(inviter.id, invitations.invited_by))
     .where(isNull(invitations.accepted_at))
     .orderBy(desc(invitations.created_at));
-  return c.json({ invitations: rows });
+  return c.json({
+    invitations: rows.map((r) => ({
+      ...r,
+      invite_url: publicUrl(c.env, `/#invite=${r.token}`),
+    })),
+  });
 });
 
 /**
@@ -636,17 +754,19 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
   await db.delete(sessions).where(eq(sessions.user_id, id));
 
   // Fire the email. sendEmail() already handles "channel disabled" and
-  // "recipient missing" — we still return the token so copy-paste works.
+  // "recipient missing" — we still return the token so copy-paste works,
+  // and surface the delivery status so the UI can stop claiming "sent"
+  // when the channel/key is off.
   const link = publicUrl(c.env, `/reset/${token}`);
   const name = (target.name || target.email.split("@")[0]).split(" ")[0];
-  await sendEmail(c.env, {
+  const sendResult = await sendEmail(c.env, {
     to: target.email,
     subject: "Reset your Houzs ERP password",
     html: resetEmailHtml({
       name,
       link,
       expiresIn: "1 hour",
-      adminName: me?.name || me?.email || "Admin",
+      requestedBy: me?.name || me?.email || "Your admin",
     }),
     purpose: "password_reset",
     refType: "user",
@@ -659,31 +779,9 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
     reset_path: `/reset/${token}`,
     expires_at: expiresAt,
     email: target.email,
+    email_sent: sendResult.status === "sent",
+    email_status: sendResult.status,
   });
 });
-
-function resetEmailHtml(p: {
-  name: string;
-  link: string;
-  expiresIn: string;
-  adminName: string;
-}): string {
-  return `
-    <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222">
-      <h2 style="margin:0 0 10px">Hi ${p.name},</h2>
-      <p>${p.adminName} has initiated a password reset for your Houzs ERP account.</p>
-      <p style="margin:24px 0">
-        <a href="${p.link}"
-           style="display:inline-block;padding:12px 22px;background:#a16a2e;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">
-          Set new password
-        </a>
-      </p>
-      <p style="color:#777;font-size:12px">
-        This link expires in ${p.expiresIn}. If you didn't expect this email,
-        you can ignore it — but if you notice repeated resets on your
-        account, flag it with your admin.
-      </p>
-    </div>`;
-}
 
 export default app;

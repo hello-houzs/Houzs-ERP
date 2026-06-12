@@ -25,6 +25,7 @@ export type EmailPurpose =
   | "assr_alert_breach"
   | "assr_daily_digest"
   | "supplier_invite"
+  | "member_invite"
   | "project_due_reminder"
   | "password_reset"
   | "generic";
@@ -55,6 +56,7 @@ const PURPOSE_TOGGLE_KEYS: Record<EmailPurpose, string> = {
   assr_alert_breach: "email.assr_alert_breach",
   assr_daily_digest: "email.assr_daily_digest",
   supplier_invite: "email.supplier_invite",
+  member_invite: "email.member_invite",
   project_due_reminder: "email.project_due_reminder",
   password_reset: "email.password_reset",
   // No toggle for 'generic' — caller opted in explicitly.
@@ -188,13 +190,72 @@ export async function sendEmail(env: Env, opts: SendOptions): Promise<SendResult
 }
 
 // ── Convenience: build a public URL for email links ──────────
-// Used by callers to build survey / portal / supplier invite URLs.
-// Falls back to the canonical Pages domain if PUBLIC_APP_URL is unset.
+// Used by callers to build survey / portal / invite / reset URLs.
+// Falls back to the canonical user-facing domain if PUBLIC_APP_URL is unset.
 
 export function publicUrl(env: Env, path: string): string {
-  const base = (env.PUBLIC_APP_URL || "https://houzs-erp.pages.dev").replace(/\/+$/, "");
+  const base = (env.PUBLIC_APP_URL || "https://erp.houzscentury.com").replace(/\/+$/, "");
   const p = path.startsWith("/") ? path : `/${path}`;
   return `${base}${p}`;
+}
+
+// ── Shared transactional templates ───────────────────────────
+// Kept here (not in route files) so invite + reset mail share one
+// look and both invite paths (issue + resend) render identically.
+
+export function inviteEmailHtml(p: {
+  link: string;
+  roleName: string;
+  inviterName: string;
+  expiresIn: string;
+}): string {
+  return `
+    <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222">
+      <h2 style="margin:0 0 10px">You're invited to Houzs ERP</h2>
+      <p>${p.inviterName} has invited you to join the Houzs ERP workspace as <strong>${p.roleName}</strong>.</p>
+      <p style="margin:24px 0">
+        <a href="${p.link}"
+           style="display:inline-block;padding:12px 22px;background:#a16a2e;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">
+          Accept invitation
+        </a>
+      </p>
+      <p style="color:#777;font-size:12px">
+        You'll be asked to set your own password. If the button doesn't work,
+        paste this link into your browser:
+      </p>
+      <p style="color:#555;font-size:11px;word-break:break-all">${p.link}</p>
+      <p style="color:#777;font-size:12px">
+        This invitation expires in ${p.expiresIn}. If you weren't expecting it,
+        you can ignore this email.
+      </p>
+    </div>`;
+}
+
+export function resetEmailHtml(p: {
+  name: string;
+  link: string;
+  expiresIn: string;
+  requestedBy: string | null;
+}): string {
+  const intro = p.requestedBy
+    ? `${p.requestedBy} has initiated a password reset for your Houzs ERP account.`
+    : `We received a request to reset the password for your Houzs ERP account. If this was you, set a new password below.`;
+  return `
+    <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222">
+      <h2 style="margin:0 0 10px">Hi ${p.name},</h2>
+      <p>${intro}</p>
+      <p style="margin:24px 0">
+        <a href="${p.link}"
+           style="display:inline-block;padding:12px 22px;background:#a16a2e;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">
+          Set new password
+        </a>
+      </p>
+      <p style="color:#777;font-size:12px">
+        This link expires in ${p.expiresIn}. If you didn't expect this email,
+        you can ignore it — but if you notice repeated resets on your
+        account, flag it with your admin.
+      </p>
+    </div>`;
 }
 
 // ── Settings helpers exposed to routes ────────────────────────

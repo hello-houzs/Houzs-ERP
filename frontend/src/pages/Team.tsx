@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -193,6 +193,8 @@ function MembersTab({
 
   // Per-user brand picker — opens a small modal scoped to one member.
   const [brandsFor, setBrandsFor] = useState<TeamMember | null>(null);
+  // Invitation row whose resend is in flight (spinner + disable).
+  const [resendingId, setResendingId] = useState<number | null>(null);
 
   const canManage = can("users.manage");
 
@@ -254,13 +256,28 @@ function MembersTab({
         reset_path: string;
         expires_at: string;
         email: string;
+        email_sent?: boolean;
+        email_status?: string;
       }>(`/api/users/${u.id}/reset-password`);
       const link = `${window.location.origin}${res.reset_path}`;
-      try {
-        await navigator.clipboard.writeText(link);
-        toast.success(`Reset link sent to ${u.email} and copied to clipboard`);
-      } catch {
-        toast.success(`Reset link sent to ${u.email}`);
+      const copied = await navigator.clipboard
+        .writeText(link)
+        .then(() => true)
+        .catch(() => false);
+      if (res.email_sent) {
+        toast.success(
+          copied
+            ? `Reset link emailed to ${u.email} and copied to clipboard`
+            : `Reset link emailed to ${u.email}`
+        );
+      } else if (copied) {
+        toast.success(
+          `Email not sent (${res.email_status || "check Settings, Email"}) — reset link copied to clipboard instead`
+        );
+      } else {
+        toast.error(
+          `Email not sent (${res.email_status || "check Settings, Email"}) and clipboard unavailable`
+        );
       }
     } catch (e: any) {
       toast.error(e?.message || "Failed to send reset");
@@ -309,12 +326,38 @@ function MembersTab({
     }
   }
 
-  function copyInviteLink(token: string) {
-    const link = `${window.location.origin}/#invite=${token}`;
+  function copyInviteLink(inv: Invitation) {
+    // Prefer the server-built canonical link (PUBLIC_APP_URL) so copied
+    // links always carry erp.houzscentury.com regardless of which origin
+    // the admin's browser is on.
+    const link = inv.invite_url || `${window.location.origin}/#invite=${inv.token}`;
     navigator.clipboard.writeText(link).then(
       () => toast.success("Invite link copied to clipboard"),
       () => toast.error("Could not access clipboard")
     );
+  }
+
+  async function resendInvite(inv: Invitation) {
+    setResendingId(inv.id);
+    try {
+      const res = await api.post<{
+        ok: boolean;
+        email_sent: boolean;
+        email_status?: string;
+      }>(`/api/users/invitations/${inv.id}/resend`);
+      if (res.email_sent) {
+        toast.success(`Invitation emailed to ${inv.email}`);
+      } else {
+        toast.error(
+          `Email not sent (${res.email_status || "check Settings, Email"}) — use Copy Link instead`
+        );
+      }
+      invites.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to resend invitation");
+    } finally {
+      setResendingId(null);
+    }
   }
 
   return (
@@ -552,12 +595,32 @@ function MembersTab({
                 <div className="mt-0.5 text-[11px] text-ink-muted">
                   Invited {relativeTime(inv.created_at)} · expires{" "}
                   {relativeTime(inv.expires_at)}
+                  {inv.email_status === "sent" ? (
+                    <>
+                      {" "}· emailed
+                      {inv.emailed_at ? ` ${relativeTime(inv.emailed_at)}` : ""}
+                    </>
+                  ) : inv.email_status ? (
+                    <span style={{ color: "#b45309" }}> · email not sent</span>
+                  ) : null}
                 </div>
               </div>
               {canManage && (
                 <div className="flex items-center gap-1">
                   <button
-                    onClick={() => copyInviteLink(inv.token)}
+                    onClick={() => resendInvite(inv)}
+                    disabled={resendingId === inv.id}
+                    className="rounded p-1.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent disabled:opacity-50"
+                    aria-label="Resend invitation email"
+                    title="Resend invitation email"
+                  >
+                    <RefreshCw
+                      size={14}
+                      className={resendingId === inv.id ? "animate-spin" : undefined}
+                    />
+                  </button>
+                  <button
+                    onClick={() => copyInviteLink(inv)}
                     className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
                   >
                     <Copy size={12} />
@@ -1585,7 +1648,12 @@ function InvitePanel({
   const [email, setEmail] = useState("");
   const [roleId, setRoleId] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
-  const [issued, setIssued] = useState<{ token: string; email: string } | null>(null);
+  const [issued, setIssued] = useState<{
+    token: string;
+    email: string;
+    invite_url?: string;
+    email_sent?: boolean;
+  } | null>(null);
 
   if (roleId === "" && roles.length > 0) {
     const defaultRole = roles.find((r) => !r.is_system) || roles[0];
@@ -1599,12 +1667,21 @@ function InvitePanel({
     }
     setBusy(true);
     try {
-      const res = await api.post<{ token: string; email: string }>(
-        "/api/users/invite",
-        { email: email.toLowerCase().trim(), role_id: roleId }
-      );
+      const res = await api.post<{
+        token: string;
+        email: string;
+        invite_url?: string;
+        email_sent?: boolean;
+      }>("/api/users/invite", {
+        email: email.toLowerCase().trim(),
+        role_id: roleId,
+      });
       setIssued(res);
-      toast.success(`Invitation issued for ${res.email}`);
+      toast.success(
+        res.email_sent
+          ? `Invitation emailed to ${res.email}`
+          : `Invitation issued for ${res.email}`
+      );
       onInvited();
     } catch (e: any) {
       toast.error(e?.message || "Failed to invite");
@@ -1621,7 +1698,8 @@ function InvitePanel({
 
   function copyLink() {
     if (!issued) return;
-    const link = `${window.location.origin}/#invite=${issued.token}`;
+    const link =
+      issued.invite_url || `${window.location.origin}/#invite=${issued.token}`;
     navigator.clipboard.writeText(link).then(
       () => toast.success("Invite link copied"),
       () => toast.error("Could not access clipboard")
@@ -1676,15 +1754,28 @@ function InvitePanel({
       ) : (
         <PanelSection title="Invitation Issued">
           <p className="text-[12.5px] text-ink-secondary">
-            Send this link to <span className="font-semibold text-ink">{issued.email}</span>.
-            They'll be prompted to set a password and join the workspace.
+            {issued.email_sent ? (
+              <>
+                We emailed the invitation to{" "}
+                <span className="font-semibold text-ink">{issued.email}</span>.
+                The same link is below if you want to share it directly.
+              </>
+            ) : (
+              <>
+                The invitation email could not be sent — copy this link and
+                share it with{" "}
+                <span className="font-semibold text-ink">{issued.email}</span>{" "}
+                yourself.
+              </>
+            )}
           </p>
           <div className="rounded-md border border-border bg-bg p-3">
             <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
               Invite Link
             </div>
             <div className="break-all font-mono text-[11px] text-ink">
-              {`${window.location.origin}/#invite=${issued.token}`}
+              {issued.invite_url ||
+                `${window.location.origin}/#invite=${issued.token}`}
             </div>
           </div>
           <Button variant="brass" className="w-full" icon={<Copy size={14} />} onClick={copyLink}>

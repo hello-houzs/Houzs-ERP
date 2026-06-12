@@ -2,6 +2,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "./AuthContext";
 import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
+import { api } from "../api/client";
+import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
+import { validatePasswordStrength } from "../lib/passwordStrength";
 
 /**
  * Shared shell for the unauthenticated screens — centered card on the
@@ -113,11 +116,95 @@ export function LoginScreen() {
             placeholder="••••••••"
             required
           />
+          <div className="mt-1.5 text-right">
+            <a
+              href="#forgot"
+              className="text-[11px] text-ink-muted underline-offset-2 transition-colors hover:text-accent hover:underline"
+            >
+              Forgot password?
+            </a>
+          </div>
         </div>
         {err && <div className="text-[11px] text-err">{err}</div>}
         <Button variant="brass" className="w-full" disabled={busy}>
           {busy ? "Signing in…" : "Sign In"}
         </Button>
+      </form>
+    </AuthShell>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Forgot password (self-service)
+// ──────────────────────────────────────────────────────────
+export function ForgotPasswordScreen() {
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api.post("/api/auth/forgot-password", {
+        email: email.toLowerCase().trim(),
+      });
+    } catch {
+      // Deliberately swallowed — the endpoint always answers ok and the
+      // confirmation below stays generic (anti-enumeration).
+    } finally {
+      setBusy(false);
+      setSent(true);
+    }
+  }
+
+  if (sent) {
+    return (
+      <AuthShell
+        eyebrow="Password Reset"
+        title="Check your email"
+        subtitle={`If an account exists for ${email || "that address"}, we've sent a reset link. It expires in 1 hour.`}
+      >
+        <a
+          href="#"
+          className="text-[12px] font-semibold text-accent underline-offset-2 hover:underline"
+        >
+          Back to sign in
+        </a>
+      </AuthShell>
+    );
+  }
+
+  return (
+    <AuthShell
+      eyebrow="Password Reset"
+      title="Forgot your password?"
+      subtitle="Enter your account email and we'll send you a link to set a new one."
+    >
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <FieldLabel>Email</FieldLabel>
+          <TextInput
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@houzscentury.com"
+            required
+            autoFocus
+          />
+        </div>
+        <Button variant="brass" className="w-full" disabled={busy}>
+          {busy ? "Sending…" : "Send reset link"}
+        </Button>
+        <div className="text-center">
+          <a
+            href="#"
+            className="text-[11px] text-ink-muted underline-offset-2 hover:text-accent hover:underline"
+          >
+            Back to sign in
+          </a>
+        </div>
       </form>
     </AuthShell>
   );
@@ -137,8 +224,9 @@ export function BootstrapScreen() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
-    if (password.length < 8) {
-      setErr("Password must be at least 8 characters");
+    const strength = validatePasswordStrength(password, email);
+    if (!strength.ok) {
+      setErr(strength.error || "Password is too weak");
       return;
     }
     setBusy(true);
@@ -180,7 +268,7 @@ export function BootstrapScreen() {
           />
         </div>
         <div>
-          <FieldLabel>Password (min 8 chars)</FieldLabel>
+          <FieldLabel>Password (min 12 chars)</FieldLabel>
           <TextInput
             type="password"
             autoComplete="new-password"
@@ -189,6 +277,7 @@ export function BootstrapScreen() {
             placeholder="Choose a strong password"
             required
           />
+          <PasswordStrengthMeter password={password} email={email} />
         </div>
         {err && <div className="text-[11px] text-err">{err}</div>}
         <Button variant="brass" className="w-full" disabled={busy}>
@@ -221,8 +310,9 @@ export function AcceptInviteScreen() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
-    if (password.length < 8) {
-      setErr("Password must be at least 8 characters");
+    const strength = validatePasswordStrength(password);
+    if (!strength.ok) {
+      setErr(strength.error || "Password is too weak");
       return;
     }
     setBusy(true);
@@ -263,7 +353,7 @@ export function AcceptInviteScreen() {
           />
         </div>
         <div>
-          <FieldLabel>Choose a password (min 8 chars)</FieldLabel>
+          <FieldLabel>Choose a password (min 12 chars)</FieldLabel>
           <TextInput
             type="password"
             autoComplete="new-password"
@@ -272,6 +362,7 @@ export function AcceptInviteScreen() {
             placeholder="••••••••"
             required
           />
+          <PasswordStrengthMeter password={password} />
         </div>
         {err && <div className="text-[11px] text-err">{err}</div>}
         <Button variant="brass" className="w-full" disabled={busy}>
@@ -287,6 +378,16 @@ export function AcceptInviteScreen() {
 // ──────────────────────────────────────────────────────────
 export function AuthGate({ children }: { children: ReactNode }) {
   const { user, loading, hasUsers } = useAuth();
+
+  // Track the hash so in-page links (#forgot, back-to-login) re-render
+  // the gate without a full navigation. #invite= arrives as a fresh
+  // page load, but gets the same reactivity for free.
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   // Initial loading state — neutral splash
   if (loading) {
@@ -304,10 +405,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return <BootstrapScreen />;
   }
 
-  // Not signed in → login (or invite acceptance via URL hash)
+  // Not signed in → login (or invite acceptance / forgot password via
+  // URL hash)
   if (!user) {
-    if (window.location.hash.startsWith("#invite=")) {
+    if (hash.startsWith("#invite=")) {
       return <AcceptInviteScreen />;
+    }
+    if (hash === "#forgot") {
+      return <ForgotPasswordScreen />;
     }
     return <LoginScreen />;
   }

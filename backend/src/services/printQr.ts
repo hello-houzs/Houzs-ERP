@@ -76,6 +76,6 @@ export async function getOrIssueCustomerPortalToken(
  * preview environment.
  */
 export function customerPortalUrlFor(env: Env, token: string): string {
-  const origin = (env as any).PUBLIC_APP_URL || "https://houzs-erp.pages.dev";
+  const origin = (env as any).PUBLIC_APP_URL || "https://erp.houzscentury.com";
   return `${String(origin).replace(/\/$/, "")}/portal/case/${token}`;
 }

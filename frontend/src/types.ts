@@ -673,6 +673,11 @@ export interface Invitation {
   created_at: string;
   accepted_at: string | null;
   invited_by_email: string | null;
+  /** Canonical link built server-side from PUBLIC_APP_URL. */
+  invite_url?: string;
+  /** Latest email_log outcome: 'sent' | 'skipped' | 'error' | null. */
+  email_status?: string | null;
+  emailed_at?: string | null;
 }
 
 export interface Role {

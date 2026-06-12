@@ -12,6 +12,8 @@ import {
   isBrowserPushEnabled,
   setBrowserPushEnabled,
 } from "../components/BrowserPushSink";
+import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
+import { validatePasswordStrength } from "../lib/passwordStrength";
 
 /**
  * Self-service profile page for every authenticated staff user.
@@ -385,6 +387,7 @@ void isBrowserPushEnabled;
 
 function PasswordSection() {
   const toast = useToast();
+  const { user } = useAuth();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -394,8 +397,9 @@ function PasswordSection() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (next.length < 8) {
-      setError("New password must be at least 8 characters.");
+    const strength = validatePasswordStrength(next, user?.email);
+    if (!strength.ok) {
+      setError(strength.error || "Password is too weak.");
       return;
     }
     if (next !== confirm) {
@@ -458,6 +462,7 @@ function PasswordSection() {
               autoComplete="new-password"
               className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
             />
+            <PasswordStrengthMeter password={next} email={user?.email} />
           </div>
           <div>
             <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
