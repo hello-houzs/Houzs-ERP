@@ -175,7 +175,7 @@ function StaffTab({
         { key: "phone", label: "Phone", render: (r: StaffMember) => r.phone || "—" },
         {
           key: "license_no",
-          label: type === "driver" ? "License" : "IC",
+          label: type === "driver" ? "License" : "IC / Passport",
           render: (r: StaffMember) => (
             <span className="font-mono text-[11px]">
               {(type === "driver" ? r.license_no : r.ic_number) || "—"}
