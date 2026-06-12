@@ -5007,7 +5007,7 @@ function TaskAttachmentRow({
         {attachment.uploader_name || "—"}
       </span>
       <span className="font-mono text-[10px] text-ink-muted">
-        {formatDate(attachment.uploaded_at)}
+        {formatDateTime(attachment.uploaded_at)}
       </span>
       {canManage ? (
         <button
@@ -6014,7 +6014,31 @@ function DocRow({
           </div>
         </td>
         <td className="px-3 py-2 text-ink-secondary">
-          {item.notes ? item.notes : <span className="text-ink-muted">—</span>}
+          {(() => {
+            // Remarks = the document's own notes PLUS any reason text
+            // entered during review (e.g. a rejection reason). The
+            // approve/reject *decision trail* stays in the Approval
+            // column; the remark text itself belongs here.
+            const remarkComments = comments
+              .filter((c) => c.kind !== "submit" && c.body)
+              .slice()
+              .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+            if (!item.notes && remarkComments.length === 0)
+              return <span className="text-ink-muted">—</span>;
+            return (
+              <div className="space-y-0.5">
+                {item.notes && <div>{item.notes}</div>}
+                {remarkComments.map((c) => (
+                  <div key={c.id} className="text-[9px] leading-snug text-ink-muted">
+                    <span className={cn("font-semibold", commentKindColor(c.kind))}>
+                      {commentKindLabel(c.kind)}:
+                    </span>{" "}
+                    {c.body}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </td>
         <td className="px-3 py-2">
           {attachments.length > 0 ? (
@@ -6032,7 +6056,7 @@ function DocRow({
           {latest ? (
             <div>
               <div className="text-ink">{latest.uploader_name || "Unknown"}</div>
-              <div className="text-[9.5px] text-ink-muted">{formatDate(latest.uploaded_at)}</div>
+              <div className="text-[9.5px] text-ink-muted">{formatDateTime(latest.uploaded_at)}</div>
             </div>
           ) : (
             <span className="text-ink-muted">—</span>
@@ -6056,8 +6080,7 @@ function DocRow({
                         <span className={cn("font-semibold", commentKindColor(c.kind))}>
                           {commentKindLabel(c.kind)}
                         </span>{" "}
-                        · {c.user_name || "—"} · {formatDate(c.created_at)}
-                        {c.body ? ` — ${c.body}` : ""}
+                        · {c.user_name || "—"} · {formatDateTime(c.created_at)}
                       </div>
                     ))}
                 </div>
@@ -6674,7 +6697,7 @@ function ChecklistRow({
             {attachments && attachments.length > 0 && (
               <span className="basis-full text-ink-muted">
                 {attachments[0].uploader_name || "Unknown"} ·{" "}
-                {formatDate(attachments[0].uploaded_at)}
+                {formatDateTime(attachments[0].uploaded_at)}
                 {attachments.length > 1 && ` · +${attachments.length - 1} more`}
               </span>
             )}
