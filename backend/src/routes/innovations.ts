@@ -108,7 +108,7 @@ app.post("/", async (c) => {
       tags: body.tags ?? null,
     })
     .returning()
-    .get();
+    .then((r) => r[0]);
   return c.json({ row: inserted });
 });
 
@@ -164,7 +164,7 @@ app.patch("/:id", async (c) => {
     .select()
     .from(innovations)
     .where(eq(innovations.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!row || row.archived_at) return c.json({ error: "Not found" }, 404);
 
   if (row.user_id !== user.id) {
@@ -202,7 +202,7 @@ app.patch("/:id", async (c) => {
     .set(patch)
     .where(eq(innovations.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
   return c.json({ row: updated });
 });
 
@@ -218,7 +218,7 @@ app.post("/:id/vote", async (c) => {
     .select({ user_id: innovations.user_id })
     .from(innovations)
     .where(eq(innovations.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!target) return c.json({ error: "Not found" }, 404);
   if (target.user_id === user.id) {
     return c.json({ error: "You cannot vote on your own post" }, 400);
@@ -347,7 +347,7 @@ app.post("/:id/decision", async (c) => {
     .select()
     .from(innovations)
     .where(eq(innovations.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!target) return c.json({ error: "Not found" }, 404);
 
   const updated = await db
@@ -355,13 +355,13 @@ app.post("/:id/decision", async (c) => {
     .set({
       status: body.status,
       decided_by: user!.id,
-      decided_at: sql`datetime('now')`,
+      decided_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')`,
       decline_reason:
         body.status === "declined" ? body.decline_reason ?? null : null,
     })
     .where(eq(innovations.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
 
   // Award points once when reaching 'shipped' (idempotent on awarded_at).
   if (body.status === "shipped" && !target.awarded_at) {
@@ -377,7 +377,7 @@ app.post("/:id/decision", async (c) => {
     });
     await db
       .update(innovations)
-      .set({ awarded_at: sql`datetime('now')` })
+      .set({ awarded_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` })
       .where(eq(innovations.id, id));
   }
 
@@ -398,7 +398,7 @@ app.delete("/:id", async (c) => {
     .select()
     .from(innovations)
     .where(eq(innovations.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!row || row.archived_at) return c.json({ error: "Not found" }, 404);
 
   if (row.user_id !== user.id && !isAdmin(user)) {
@@ -407,7 +407,7 @@ app.delete("/:id", async (c) => {
 
   await db
     .update(innovations)
-    .set({ archived_at: sql`datetime('now')` })
+    .set({ archived_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` })
     .where(eq(innovations.id, id));
   return c.json({ ok: true });
 });

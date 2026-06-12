@@ -16,7 +16,7 @@ import {
   user_brands,
   users,
 } from "../db/schema";
-import { alias } from "drizzle-orm/sqlite-core";
+import { alias } from "drizzle-orm/pg-core";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -70,7 +70,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
       // Unit-separator (US, 0x1f) keeps multi-word brands ("MY SOFA
       // FACTORY") splittable client-side without ambiguity.
       brands_concat: sql<string | null>`(
-        SELECT GROUP_CONCAT(ub.brand, X'1f')
+        SELECT string_agg(ub.brand, chr(31))
           FROM ${user_brands} ub
          WHERE ub.user_id = ${users.id}
       )`,
@@ -275,7 +275,7 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
       role_id: body.role_id,
       status: "invited",
       invited_by: me.id || null,
-      invited_at: sql`datetime('now')` as unknown as string,
+      invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
     });
   } else {
     // Re-invite — bump role and reset invited_at, drop any old token.
@@ -285,7 +285,7 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
         role_id: body.role_id,
         status: "invited",
         invited_by: me.id || null,
-        invited_at: sql`datetime('now')` as unknown as string,
+        invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
       })
       .where(eq(users.email, email));
     await db
@@ -403,7 +403,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   }
 
   const result = await db.update(users).set(set).where(eq(users.id, id));
-  if (!(result.meta?.changes)) return c.json({ error: "User not found" }, 404);
+  if (!(result.count)) return c.json({ error: "User not found" }, 404);
 
   // If we disabled a user, revoke their sessions.
   if (body.status === "disabled") {
@@ -617,7 +617,7 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
   // Invalidate any prior unconsumed reset tokens for this user.
   await db
     .update(password_resets)
-    .set({ consumed_at: sql`datetime('now')` as unknown as string })
+    .set({ consumed_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string })
     .where(
       and(eq(password_resets.user_id, id), isNull(password_resets.consumed_at))
     );

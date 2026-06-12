@@ -53,7 +53,7 @@ app.get("/me", async (c) => {
     })
     .from(users)
     .where(eq(users.id, user.id))
-    .get();
+    .then((r) => r[0]);
 
   if (!me) return c.json({ error: "User not found" }, 404);
 

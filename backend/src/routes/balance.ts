@@ -150,7 +150,7 @@ app.get("/", async (c) => {
 
   // Wide SELECT — pass every AutoCount column through; the frontend
   // expects the full row shape from /api/balance.
-  const rows = await db.all<any>(sql`
+  const rows = await db.execute<any>(sql`
     SELECT * FROM ${sales_orders}
     WHERE ${where}
     ${orderByClause}

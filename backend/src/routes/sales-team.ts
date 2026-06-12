@@ -109,7 +109,7 @@ async function setBrands(
     const trimmed = (b ?? "").trim();
     if (!trimmed) continue;
     await env.DB.prepare(
-      `INSERT OR IGNORE INTO sales_rep_brands (rep_id, brand) VALUES (?, ?)`,
+      `INSERT INTO sales_rep_brands (rep_id, brand) VALUES (?, ?) ON CONFLICT DO NOTHING`,
     )
       .bind(repId, trimmed)
       .run();
@@ -177,7 +177,7 @@ app.get("/reps", requirePermission("sales_team.read"), async (c) => {
            u.email AS user_email,
            u.name  AS user_name,
            (SELECT COUNT(*) - 1 FROM downline d WHERE d.root_id = r.id) AS team_size,
-           (SELECT GROUP_CONCAT(brand, ',') FROM sales_rep_brands WHERE rep_id = r.id) AS brands_csv
+           (SELECT string_agg(brand, ',') FROM sales_rep_brands WHERE rep_id = r.id) AS brands_csv
       FROM sales_reps r
       LEFT JOIN sales_positions p ON p.id = r.position_id
       LEFT JOIN sales_reps up      ON up.id = r.upline_id
@@ -519,14 +519,14 @@ app.post("/lookups/:kind", requirePermission("sales_team.manage"), async (c) => 
   if (kind === "positions") {
     const level = Number.isFinite(body.level) ? Number(body.level) : 20;
     await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO sales_positions (slug, name, level, sort_order) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO sales_positions (slug, name, level, sort_order) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`,
     )
       .bind(slug, name, level, sortOrder)
       .run();
   } else {
     const rate = Number.isFinite(body.rate) ? Number(body.rate) : 0;
     await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO sales_commission_tiers (slug, name, rate, active) VALUES (?, ?, ?, 1)`,
+      `INSERT INTO sales_commission_tiers (slug, name, rate, active) VALUES (?, ?, ?, 1) ON CONFLICT DO NOTHING`,
     )
       .bind(slug, name, rate)
       .run();

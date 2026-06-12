@@ -133,14 +133,14 @@ app.post("/lookups/:kind", async (c) => {
   if (kind === "priorities") {
     const sla = Number.isFinite(body.sla_hours) ? Number(body.sla_hours) : null;
     await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO assr_priorities (slug, name, sort_order, sla_hours)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT INTO assr_priorities (slug, name, sort_order, sla_hours)
+       VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`,
     )
       .bind(slug, name, sortOrder, sla)
       .run();
   } else {
     await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO ${table} (slug, name, sort_order) VALUES (?, ?, ?)`,
+      `INSERT INTO ${table} (slug, name, sort_order) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
     )
       .bind(slug, name, sortOrder)
       .run();

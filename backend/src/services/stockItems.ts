@@ -122,7 +122,7 @@ export async function getStockItemCached(
   const cached = await env.DB.prepare(
     `SELECT * FROM stock_items
       WHERE item_code = ?
-        AND fetched_at > datetime('now', '-' || ? || ' hours')
+        AND fetched_at > to_char(timezone('UTC', now()) - (?::text || ' hours')::interval, 'YYYY-MM-DD HH24:MI:SS')
       LIMIT 1`
   )
     .bind(itemCode, maxAgeHours)

@@ -131,7 +131,7 @@ app.get("/", async (c) => {
     ? sql`ORDER BY ${sql.raw(`${sortExpr} ${sortDir}`)}, so.doc_no DESC`
     : sql`ORDER BY so.updated_at DESC, so.doc_no DESC`;
 
-  const rows = await db.all<any>(sql`
+  const rows = await db.execute<any>(sql`
     SELECT so.*, od.delivery_date, od.time_range, od.lorry_plate, od.driver_name,
            od.driver_contact, od.property_type, od.consignment_no, od.eta_port,
            od.estimate_delivery, od.shipout_date,
@@ -203,14 +203,14 @@ app.get("/summary", async (c) => {
       ${whereClause}
     `);
 
-    const byRegion = await db.all<{ region: string; count: number }>(sql`
+    const byRegion = await db.execute<{ region: string; count: number }>(sql`
       SELECT region, COUNT(*) as count
         FROM ${sales_orders} so
         ${whereClause}
        GROUP BY region
     `);
 
-    const byStatus = await db.all<{ status: string; count: number }>(sql`
+    const byStatus = await db.execute<{ status: string; count: number }>(sql`
       SELECT COALESCE(NULLIF(TRIM(so.remark4), ''), '(none)') as status, COUNT(*) as count
         FROM ${sales_orders} so
         ${whereClause}
@@ -309,7 +309,7 @@ app.get("/items", async (c) => {
     ? sql`ORDER BY ${sql.raw(`${sortExpr} ${sortDir}`)}, so.doc_no DESC`
     : sql`ORDER BY so.updated_at DESC, so.doc_no DESC`;
 
-  const orders = await db.all<any>(sql`
+  const orders = await db.execute<any>(sql`
     SELECT so.*, od.delivery_date, od.time_range, od.lorry_plate, od.driver_name,
            od.driver_contact, od.property_type, od.consignment_no, od.eta_port,
            od.estimate_delivery, od.shipout_date,
@@ -424,7 +424,7 @@ app.patch("/:docNo", async (c) => {
   if (Object.keys(set).length === 0) {
     return c.json({ error: "No fields to update" }, 400);
   }
-  set.updated_at = sql`datetime('now')`;
+  set.updated_at = sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')`;
 
   const db = getDb(c.env);
   const result = await db
@@ -432,7 +432,7 @@ app.patch("/:docNo", async (c) => {
     .set(set)
     .where(eq(sales_orders.doc_no, docNo));
 
-  if (!result.meta?.changes) return c.json({ error: "Order not found" }, 404);
+  if (!result.count) return c.json({ error: "Order not found" }, 404);
 
   // Real-time push
   const pushResult = await pushSalesOrder(c.env, docNo);
@@ -467,10 +467,10 @@ app.patch("/:docNo/details", async (c) => {
   // .onConflictDoUpdate accepts a `set` map and a target column.
   await db
     .insert(order_details)
-    .values({ doc_no: docNo, ...updates, updated_at: sql`datetime('now')` as unknown as string })
+    .values({ doc_no: docNo, ...updates, updated_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string })
     .onConflictDoUpdate({
       target: order_details.doc_no,
-      set: { ...updates, updated_at: sql`datetime('now')` as unknown as string },
+      set: { ...updates, updated_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string },
     });
 
   return c.json({ ok: true });

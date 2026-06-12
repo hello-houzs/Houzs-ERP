@@ -128,7 +128,7 @@ app.put("/:target/:id", async (c) => {
       uploaded_by: user.id,
     })
     .returning()
-    .get();
+    .then((r) => r[0]);
   return c.json({ row: inserted });
 });
 
@@ -142,7 +142,7 @@ app.get("/:id/blob", async (c) => {
     .select({ r2_key: idea_attachments.r2_key, content_type: idea_attachments.content_type })
     .from(idea_attachments)
     .where(eq(idea_attachments.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!row) return c.json({ error: "Not found" }, 404);
   const obj = await c.env.POD_BUCKET.get(row.r2_key);
   if (!obj) return c.json({ error: "Object missing" }, 404);
@@ -172,7 +172,7 @@ app.delete("/:id", async (c) => {
     })
     .from(idea_attachments)
     .where(eq(idea_attachments.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!row) return c.json({ error: "Not found" }, 404);
 
   const owns =
@@ -184,7 +184,7 @@ app.delete("/:id", async (c) => {
 
   await db
     .update(idea_attachments)
-    .set({ archived_at: sql`datetime('now')` })
+    .set({ archived_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` })
     .where(eq(idea_attachments.id, id));
   return c.json({ ok: true });
 });

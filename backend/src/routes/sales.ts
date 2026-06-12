@@ -4,7 +4,7 @@ import { requirePageAccess } from "../middleware/auth";
 import { getDb } from "../db/client";
 import { sales_entries, users, projects } from "../db/schema";
 import { and, desc, eq, gte, isNull, lte, like, or, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/sqlite-core";
+import { alias } from "drizzle-orm/pg-core";
 import { syncFinanceRollup } from "../services/projects";
 import {
   nextSalesEntryDocNo,

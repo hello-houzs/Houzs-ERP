@@ -73,7 +73,7 @@ app.get("/", async (c) => {
   // Wide SELECT — c.* + the joined PO aggregate. Keeps the broad shape
   // via `sql<any>` since downstream consumers expect every AutoCount
   // column.
-  const rows = await db.all<any>(sql`
+  const rows = await db.execute<any>(sql`
     SELECT c.*,
            COALESCE(po.po_count, 0)            AS po_count,
            COALESCE(po.open_count, 0)          AS open_po_count,
@@ -115,7 +115,7 @@ app.get("/summary", async (c) => {
 
   // Top 5 by spend — joins the PO aggregate again, but per-creditor
   // (no GROUP BY on creditors needed because of the JOIN shape).
-  const top = await db.all<any>(sql`
+  const top = await db.execute<any>(sql`
     SELECT c.creditor_code, c.company_name AS creditor_name,
            COUNT(d.doc_no) AS po_count,
            COALESCE(SUM(CASE WHEN COALESCE(d.cancelled, 0) = 0

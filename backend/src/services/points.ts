@@ -72,7 +72,7 @@ export async function getSettingNumber(
     .select({ value: gamify_settings.value })
     .from(gamify_settings)
     .where(eq(gamify_settings.key, key))
-    .get();
+    .then((r) => r[0]);
   if (!row) return fallback;
   const n = parseInt(row.value, 10);
   return Number.isFinite(n) ? n : fallback;
@@ -172,7 +172,7 @@ export async function transfer(
     })
     .from(users)
     .where(eq(users.id, from_user_id))
-    .get();
+    .then((r) => r[0]);
   if (!sender) return { ok: false, error: "Sender not found" };
   if ((sender.gifting ?? 0) < amount) {
     return { ok: false, error: "Not enough gifting points left this month" };
@@ -182,7 +182,7 @@ export async function transfer(
     .select({ id: users.id, status: users.status })
     .from(users)
     .where(eq(users.id, to_user_id))
-    .get();
+    .then((r) => r[0]);
   if (!recipient) return { ok: false, error: "Recipient not found" };
   if (recipient.status !== "active") {
     return { ok: false, error: "Recipient is inactive" };
@@ -230,7 +230,7 @@ export async function spend(
     .select({ id: users.id, balance: users.points_balance })
     .from(users)
     .where(eq(users.id, user_id))
-    .get();
+    .then((r) => r[0]);
   if (!u) return { ok: false, error: "User not found" };
   if ((u.balance ?? 0) < amount) {
     return { ok: false, error: "Not enough points" };
@@ -530,7 +530,7 @@ export async function getLeaderboardCached(
         eq(leaderboard_cache.period, period),
       ),
     )
-    .get();
+    .then((r) => r[0]);
   if (cached) {
     const age = Date.now() - new Date(cached.computed_at).getTime();
     if (age >= 0 && age < maxAgeMs) {

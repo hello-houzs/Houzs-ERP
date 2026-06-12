@@ -262,14 +262,14 @@ app.patch("/:id/page-access", requirePermission("roles.manage"), async (c) => {
     .limit(1);
   if (roleRow.length === 0) return c.json({ error: "Role not found" }, 404);
 
-  // INSERT OR REPLACE — Drizzle's onConflictDoUpdate keeps the diff
-  // small. Done in a loop because Drizzle doesn't bulk multi-row
-  // upsert on D1 yet without raw SQL; the matrix payload is at most
-  // 13 rows so this is fine.
+  // Upsert on the (role_id, page_key) PK. Done in a loop because the
+  // matrix payload is at most 13 rows so this is fine.
   for (const e of cleaned) {
     await c.env.DB.prepare(
-      `INSERT OR REPLACE INTO role_page_access (role_id, page_key, level, updated_at)
-       VALUES (?, ?, ?, datetime('now'))`,
+      `INSERT INTO role_page_access (role_id, page_key, level, updated_at)
+       VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(role_id, page_key) DO UPDATE SET
+         level = excluded.level, updated_at = excluded.updated_at`,
     )
       .bind(id, e.page_key, e.level)
       .run();

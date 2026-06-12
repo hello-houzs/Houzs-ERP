@@ -50,14 +50,127 @@ export function toPgPlaceholders(sql: string): string {
   return out;
 }
 
-// Rewrite the handful of SQLite-isms that appear in raw query TEXT so the
-// ~685 call sites keep working unchanged. Quote-aware: never touches data
-// inside string literals.
-//   datetime('now')  -> to_char(timezone('UTC',now()),'YYYY-MM-DD HH24:MI:SS')
-//                       (TEXT columns; same 'YYYY-MM-DD HH:MM:SS' shape)
-//   char(            -> chr(   (Postgres spells the codepoint fn chr())
-// NOT handled (must be fixed per query — few sites): INSERT OR REPLACE
-// (needs an ON CONFLICT target) and reads of meta.last_row_id (need RETURNING).
+// ---- SQLite -> Postgres dialect rewriting for raw query TEXT --------------
+// Applies to every string flowing through env.DB.prepare(). Quote-aware: never
+// touches data inside string literals. Drizzle sql`` fragments bypass this and
+// are fixed at the source.
+//
+//   datetime('now'[, mod...])  -> to_char(UTC now() ±interval, 'YYYY-MM-DD HH24:MI:SS')
+//   date('now'[, mod...])      -> to_char(UTC now() ±interval, 'YYYY-MM-DD')
+//   julianday(x)               -> (extract(epoch from (x)::timestamptz)/86400.0)
+//   strftime(fmt, x)           -> to_char((x)::timestamptz, 'fmt')
+//   instr(a, b)                -> strpos(a, b)   (same arg order)
+//   char(n)                    -> chr(n)
+//
+// julianday is only ever used in DIFFERENCES here (julianday(a)-julianday(b)),
+// so the constant Julian-day epoch offset cancels and the result is exact.
+// Single-arg date(x)/single-arg casts are left alone — Postgres accepts
+// date(expr) as a cast. NOT handled (fixed per query): INSERT OR REPLACE.
+
+// UTC "now" wall-clock, matching SQLite's datetime('now'); intervals append to it.
+const UTC_NOW = "timezone('UTC', now())";
+
+// Balanced (...) group starting at index `open` (sql[open] must be '('). Returns
+// the inner text and the index of the matching ')'. Quote-aware.
+function matchParen(
+  sql: string,
+  open: number,
+): { inner: string; end: number } | null {
+  let depth = 0;
+  let inStr = false;
+  for (let i = open; i < sql.length; i++) {
+    const c = sql[i];
+    if (c === "'") {
+      if (inStr && sql[i + 1] === "'") {
+        i++;
+        continue;
+      }
+      inStr = !inStr;
+    } else if (!inStr) {
+      if (c === "(") depth++;
+      else if (c === ")") {
+        depth--;
+        if (depth === 0) return { inner: sql.slice(open + 1, i), end: i };
+      }
+    }
+  }
+  return null;
+}
+
+// Split an arg list on top-level commas (ignores commas in nested parens/strings).
+function splitArgs(s: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let inStr = false;
+  let cur = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "'") {
+      if (inStr && s[i + 1] === "'") {
+        cur += "''";
+        i++;
+        continue;
+      }
+      inStr = !inStr;
+      cur += c;
+      continue;
+    }
+    if (!inStr) {
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "," && depth === 0) {
+        out.push(cur);
+        cur = "";
+        continue;
+      }
+    }
+    cur += c;
+  }
+  if (cur.trim() !== "") out.push(cur);
+  return out;
+}
+
+// SQLite date/time modifiers after the leading 'now' -> Postgres interval tail,
+// e.g. ['-30 days'] -> " - interval '30 days'".
+function modifiersToInterval(args: string[]): string {
+  let tail = "";
+  for (const raw of args) {
+    const mod = raw.trim().replace(/^'/, "").replace(/'$/, "").trim();
+    const m = mod.match(
+      /^([+-])\s*(\d+)\s+(days?|hours?|months?|years?|minutes?|seconds?|weeks?)$/i,
+    );
+    if (m) {
+      tail += ` ${m[1] === "-" ? "-" : "+"} interval '${m[2]} ${m[3].toLowerCase()}'`;
+    }
+  }
+  return tail;
+}
+
+// SQLite strftime format -> Postgres to_char template. Unmapped letters become
+// quoted literals so to_char treats them verbatim rather than as field codes.
+function strftimeToPg(fmt: string): string {
+  const map: Record<string, string> = {
+    Y: "YYYY",
+    m: "MM",
+    d: "DD",
+    H: "HH24",
+    M: "MI",
+    S: "SS",
+    W: "IW",
+    j: "DDD",
+  };
+  let out = "";
+  for (let i = 0; i < fmt.length; i++) {
+    if (fmt[i] === "%" && i + 1 < fmt.length) {
+      out += map[fmt[i + 1]] ?? fmt[i + 1];
+      i++;
+    } else {
+      out += /[A-Za-z]/.test(fmt[i]) ? `"${fmt[i]}"` : fmt[i];
+    }
+  }
+  return out;
+}
+
 export function rewriteDialect(sql: string): string {
   let out = "";
   let inStr = false;
@@ -73,14 +186,71 @@ export function rewriteDialect(sql: string): string {
       out += c;
       continue;
     }
-    if (!inStr) {
-      const rest = sql.slice(i);
-      const dt = rest.match(/^datetime\(\s*'now'\s*\)/i);
-      if (dt) {
-        out += "to_char(timezone('UTC',now()),'YYYY-MM-DD HH24:MI:SS')";
-        i += dt[0].length - 1;
+    if (inStr) {
+      out += c;
+      continue;
+    }
+
+    const rest = sql.slice(i);
+    // Only start a keyword match on an identifier boundary, so longer names
+    // (varchar(, mydate(, ...) are never mistaken for char(/date(.
+    const atBoundary = i === 0 || !/[A-Za-z0-9_]/.test(sql[i - 1]);
+
+    if (atBoundary) {
+      // date('now' ...) / datetime('now' ...) — only the 'now' form; a plain
+      // date(col) cast is valid Postgres and left untouched.
+      let m = rest.match(/^(datetime|date)\s*\(\s*'now'/i);
+      if (m) {
+        const open = i + m[0].indexOf("(");
+        const grp = matchParen(sql, open);
+        if (grp) {
+          const args = splitArgs(grp.inner);
+          const expr = UTC_NOW + modifiersToInterval(args.slice(1));
+          const fmt =
+            m[1].toLowerCase() === "date"
+              ? "YYYY-MM-DD"
+              : "YYYY-MM-DD HH24:MI:SS";
+          out += `to_char(${expr}, '${fmt}')`;
+          i = grp.end;
+          continue;
+        }
+      }
+
+      // julianday(x) -> fractional epoch-days (offset cancels in differences).
+      m = rest.match(/^julianday\s*\(/i);
+      if (m) {
+        const open = i + m[0].length - 1;
+        const grp = matchParen(sql, open);
+        if (grp) {
+          out += `(extract(epoch from (${rewriteDialect(grp.inner)})::timestamptz)/86400.0)`;
+          i = grp.end;
+          continue;
+        }
+      }
+
+      // strftime(fmt, x) -> to_char((x)::timestamptz, 'fmt')
+      m = rest.match(/^strftime\s*\(/i);
+      if (m) {
+        const open = i + m[0].length - 1;
+        const grp = matchParen(sql, open);
+        if (grp) {
+          const args = splitArgs(grp.inner);
+          const fmt = strftimeToPg(args[0].trim().replace(/^'/, "").replace(/'$/, ""));
+          out += `to_char((${rewriteDialect(args.slice(1).join(","))})::timestamptz, '${fmt}')`;
+          i = grp.end;
+          continue;
+        }
+      }
+
+      // instr(a, b) -> strpos(a, b) — identical argument order.
+      m = rest.match(/^instr\s*\(/i);
+      if (m) {
+        out += "strpos(";
+        i += m[0].length - 1;
         continue;
       }
+
+      // char(n) -> chr(n)
       if (rest.slice(0, 5).toLowerCase() === "char(") {
         out += "chr(";
         i += 4;
@@ -114,21 +284,30 @@ class PreparedStatement {
     return this;
   }
 
-  private exec<T = Record<string, unknown>>(): Promise<T[]> {
+  // Run the (placeholder- and dialect-rewritten) statement. Returns the raw
+  // postgres.js RowList — an array of rows that also carries `.count` (rows
+  // affected for writes, rows returned for reads) and `.command`.
+  private exec<T = Record<string, unknown>>(
+    textOverride?: string,
+  ): Promise<T[]> {
     // postgres.js `unsafe` runs a dynamic string with positional params.
     // prepare:false is already set on the client (transaction pooler).
     return this.sql.unsafe(
-      toPgPlaceholders(rewriteDialect(this.query)),
+      textOverride ?? toPgPlaceholders(rewriteDialect(this.query)),
       this.args as never[],
     ) as unknown as Promise<T[]>;
   }
 
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    const rows = await this.exec<T>();
+    const res = (await this.exec<T>()) as T[] & { count?: number };
     return {
-      results: rows,
+      results: res as T[],
       success: true,
-      meta: { changes: rows.length, last_row_id: null },
+      meta: {
+        changes: res.count ?? res.length,
+        last_row_id: null,
+        rows_read: res.length,
+      },
     };
   }
 
@@ -141,14 +320,31 @@ class PreparedStatement {
     return (column ? (row[column] as T) : (row as T));
   }
 
+  // D1 parity for writes. Two fixes over the naive version:
+  //   * changes  — postgres.js returns an EMPTY array for a non-RETURNING
+  //     UPDATE/DELETE, so the old `rows.length` was always 0 and broke every
+  //     `if (!meta.changes)` guard. The real affected-row count is `.count`.
+  //   * last_row_id — synthesised by appending `RETURNING *` to INSERTs. This
+  //     is safe for any table (returns the inserted row); `.id` is present on
+  //     every identity-PK table the loader created and harmlessly undefined
+  //     otherwise. Removes the ~37 manual `RETURNING id` rewrites.
   async run(): Promise<{ success: true; meta: D1Meta }> {
-    // NOTE: last_row_id is always null here — Postgres has no implicit rowid.
-    // Any call site that read meta.last_row_id MUST be converted to append
-    // `RETURNING id` and read it via .first("id"). See header (37 sites).
-    const rows = await this.exec();
+    let text = toPgPlaceholders(rewriteDialect(this.query));
+    const isInsert = /^\s*insert\s/i.test(text);
+    if (isInsert && !/\breturning\b/i.test(text)) {
+      text = text.replace(/[\s;]*$/, "") + " RETURNING *";
+    }
+    const res = (await this.exec(text)) as Array<Record<string, unknown>> & {
+      count?: number;
+    };
+    const changes = res.count ?? res.length;
     return {
       success: true,
-      meta: { changes: rows.length, last_row_id: null },
+      meta: {
+        changes,
+        last_row_id: isInsert ? ((res[0]?.id as number) ?? null) : null,
+        rows_written: changes,
+      },
     };
   }
 }

@@ -679,7 +679,7 @@ app.get("/checklist-templates", requirePageAccess("projects.list"), async (c) =>
   const templates = await c.env.DB.prepare(
     `SELECT t.id, t.name, t.description,
             (SELECT COUNT(*) FROM project_checklist_template_items WHERE template_id = t.id) AS item_count,
-            (SELECT GROUP_CONCAT(et.name, ', ')
+            (SELECT string_agg(et.name, ', ')
                FROM project_event_types et
               WHERE et.default_template_id = t.id) AS used_by
        FROM project_checklist_templates t
@@ -1519,8 +1519,8 @@ app.get("/finance/by-project", requirePageAccess("projects.finances"), async (c)
            END AS gp_pct,
            CASE WHEN start_date IS NOT NULL
                   AND end_date   IS NOT NULL
-                  AND julianday(end_date) >= julianday(start_date)
-                THEN sales / (julianday(end_date) - julianday(start_date) + 1)
+                  AND end_date::timestamptz >= start_date::timestamptz
+                THEN sales / (extract(epoch from (end_date::timestamptz - start_date::timestamptz)) / 86400.0 + 1)
                 ELSE NULL
            END AS sales_per_day,
            CASE WHEN size_sqm IS NOT NULL AND size_sqm > 0
@@ -1534,7 +1534,7 @@ app.get("/finance/by-project", requirePageAccess("projects.finances"), async (c)
     sql`SELECT COUNT(*) AS count FROM (${wrapped}) outerSub`
   );
 
-  const rows = await db.all<any>(
+  const rows = await db.execute<any>(
     sql`${wrapped} ${orderByClause} LIMIT ${perPage} OFFSET ${offset}`
   );
 
@@ -1645,7 +1645,7 @@ app.get("/finance/lines", requirePageAccess("projects.finances"), async (c) => {
     sql`SELECT COUNT(*) as count ${baseFrom}`
   );
 
-  const rows = await db.all<any>(sql`
+  const rows = await db.execute<any>(sql`
     SELECT l.id,
            l.project_id,
            l.kind,

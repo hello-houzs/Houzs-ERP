@@ -151,7 +151,7 @@ app.post("/", async (c) => {
       posted_by: user.id,
     })
     .returning()
-    .get();
+    .then((r) => r[0]);
   return c.json({ row: inserted });
 });
 
@@ -171,7 +171,7 @@ app.patch("/:id", async (c) => {
     })
     .from(petty_cash_entries)
     .where(eq(petty_cash_entries.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!existing) return c.json({ error: "Not found" }, 404);
 
   // Posters can fix typos on their own entries within 24 h; otherwise
@@ -184,7 +184,7 @@ app.patch("/:id", async (c) => {
     return c.json({ error: "Forbidden" }, 403);
   }
 
-  const patch: Record<string, any> = { updated_at: sql`datetime('now')` };
+  const patch: Record<string, any> = { updated_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` };
   if (body.direction === "in" || body.direction === "out") patch.direction = body.direction;
   if (typeof body.amount_cents === "number" && body.amount_cents > 0) {
     patch.amount_cents = body.amount_cents;
@@ -203,7 +203,7 @@ app.patch("/:id", async (c) => {
     .set(patch)
     .where(eq(petty_cash_entries.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
   return c.json({ row: updated });
 });
 
@@ -217,7 +217,7 @@ app.delete("/:id", async (c) => {
   const db = getDb(c.env);
   await db
     .update(petty_cash_entries)
-    .set({ archived_at: sql`datetime('now')` })
+    .set({ archived_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` })
     .where(eq(petty_cash_entries.id, id));
   return c.json({ ok: true });
 });
@@ -249,10 +249,10 @@ app.put("/:id/receipt", async (c) => {
   const db = getDb(c.env);
   const updated = await db
     .update(petty_cash_entries)
-    .set({ receipt_r2_key: key, updated_at: sql`datetime('now')` })
+    .set({ receipt_r2_key: key, updated_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` })
     .where(eq(petty_cash_entries.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
   if (!updated) return c.json({ error: "Not found" }, 404);
   return c.json({ row: updated });
 });
@@ -270,7 +270,7 @@ app.get("/:id/receipt", async (c) => {
     .select({ key: petty_cash_entries.receipt_r2_key })
     .from(petty_cash_entries)
     .where(eq(petty_cash_entries.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!row?.key) return c.json({ error: "No receipt" }, 404);
   const obj = await c.env.POD_BUCKET.get(row.key);
   if (!obj) return c.json({ error: "Object missing" }, 404);
