@@ -4065,7 +4065,7 @@ function ProjectDetailContent({
             <StatusDot variant={stageVariant(p.stage)} label={STAGE_LABEL[p.stage]} />
             <div className="mt-3">
               {(detail.data?.section_progress ?? []).length > 0 ? (
-                <ProjectStageStepper checklist={checklist} startDate={p.start_date} />
+                <ProjectStageStepper checklist={checklist} startDate={p.start_date} setupCrew={p.setup_crew} setupStartAt={p.setup_start_at} />
               ) : (
                 <ProgressBar pct={p.progress_pct ?? 0} />
               )}
@@ -5060,13 +5060,16 @@ function TaskAttachmentRow({
 // (e.g. removed from the template) are treated as pass-through so they
 // never block. The current step is the first not-done one — shown red
 // when today is past its deadline.
-const PROJECT_STAGES: { label: string; offset: number; titles: string[] }[] = [
+const PROJECT_STAGES: { label: string; offset: number; titles: string[]; kind?: "crew" }[] = [
   { label: "Floorplan", offset: -21, titles: ["Blank Floorplan"] },
   { label: "3D", offset: -14, titles: ["3D Design"] },
   // "Stocks Request" retired — the "Stocks Request Listing" item was
   // removed, so the step is dropped from the tracker.
   { label: "Stocks Transfer", offset: -7, titles: ["Stock Out Transfer Record"] },
   { label: "Driver Info", offset: -3, titles: ["Stock In Transfer Record"] },
+  // Setup/Dismantle crew arrangement — not a checklist item; goes green
+  // when the Setup & Dismantle section is filled (kind: "crew").
+  { label: "Setup/Dismantle", offset: -2, titles: [], kind: "crew" },
   { label: "Setup Image", offset: 0, titles: ["Setup Image"] },
   { label: "Filled Floorplan", offset: 3, titles: ["Filled Floorplan"] },
   { label: "Event Complete", offset: 7, titles: ["Event Complete Image"] },
@@ -5076,14 +5079,24 @@ const PROJECT_STAGES: { label: string; offset: number; titles: string[] }[] = [
 function ProjectStageStepper({
   checklist,
   startDate,
+  setupCrew,
+  setupStartAt,
 }: {
   checklist?: ChecklistItem[];
   startDate?: string | null;
+  /** Setup & Dismantle crew JSON — drives the "Setup/Dismantle" step. */
+  setupCrew?: string | null;
+  setupStartAt?: string | null;
 }) {
   const items = checklist ?? [];
-  const byTitle = (t: string) => items.find((i) => i.title === t);
+  // Setup is considered "arranged" when a setup time is set OR the setup
+  // crew JSON holds anything (dismantle may be left empty = same as setup).
+  const setupArranged =
+    !!setupStartAt ||
+    (!!setupCrew && !["", "{}"].includes(setupCrew.trim()));
   const stepDone = (idx: number): boolean => {
     const st = PROJECT_STAGES[idx];
+    if (st.kind === "crew") return setupArranged;
     if (st.titles.length === 0) return false; // final "Done" handled below
     const present = items.filter((i) => st.titles.includes(i.title));
     if (present.length === 0) return true; // no signal → pass-through
