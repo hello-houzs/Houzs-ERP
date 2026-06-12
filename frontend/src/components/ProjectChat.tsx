@@ -439,6 +439,8 @@ function actionLabel(action: string): string {
       return "Stage changed";
     case "checklist_status":
       return "Checklist updated";
+    case "document_upload":
+      return "Document uploaded";
     case "checklist_add":
       return "Checklist item added";
     case "checklist_remove":
