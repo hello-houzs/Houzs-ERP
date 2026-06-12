@@ -869,6 +869,10 @@ function ProjectsListView() {
   // automatically when the user picks the Completed pill so the
   // controls don't fight each other.
   const [hideCompleted, setHideCompleted] = useLocalStorage<boolean>("projects:hideCompleted", false);
+  // "My pending tasks" — when on, the list shows only projects that have
+  // a pending checklist item belonging to the caller's role (mapped to a
+  // chip label / document title server-side). Export is unaffected.
+  const [myPending, setMyPending] = useLocalStorage<boolean>("projects:myPending", false);
 
   // ?focus=ID — Overview inbox deep-links straight to the detail page.
   useFocusFromUrl((id) => navigate(`/projects/${id}`, { replace: true }));
@@ -889,6 +893,7 @@ function ProjectsListView() {
           month: month || undefined,
           section: section || undefined,
           exclude_done: excludeDoneParam,
+          my_pending: myPending ? 1 : undefined,
           search,
           page,
           per_page: perPage,
@@ -896,7 +901,7 @@ function ProjectsListView() {
           ...sortParams,
         })}`
       ),
-    [brand, year, month, section, excludeDoneParam, search, page, perPage, showArchived, sort?.key, sort?.dir]
+    [brand, year, month, section, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir]
   );
 
   const summary = useQuery<{
@@ -1194,7 +1199,22 @@ function ProjectsListView() {
             </option>
           ))}
         </select>
-        <label className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-ink-secondary">
+        <label
+          className="ml-auto inline-flex items-center gap-1.5 text-[11px] font-semibold text-ink-secondary"
+          title="Show only projects with a task pending on your side (your role)"
+        >
+          <input
+            type="checkbox"
+            checked={myPending}
+            onChange={(e) => {
+              setPage(1);
+              setMyPending(e.target.checked);
+            }}
+            className="accent-accent"
+          />
+          My pending tasks
+        </label>
+        <label className="inline-flex items-center gap-1.5 text-[11px] text-ink-secondary">
           <input
             type="checkbox"
             checked={!!hideCompleted}

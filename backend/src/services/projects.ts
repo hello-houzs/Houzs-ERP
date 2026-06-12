@@ -957,6 +957,15 @@ export interface ListProjectsFilters {
    *  (migration 048). Empty array means the scoped user has no brand
    *  coverage → zero results. Undefined means no brand ACL applies. */
   brand_scope?: string[];
+  /** "My pending tasks" filter (role-based). When set, only return
+   *  projects that have at least one PENDING checklist item with this
+   *  role_label (e.g. "BD", "PURCHASER", "DRIVER", "SALES PIC",
+   *  "LOGISTIC"). */
+  pending_label?: string;
+  /** Same as pending_label but matches the checklist item TITLE instead
+   *  of the role chip — used for roles tied to a specific document
+   *  (e.g. Management → "Agreement / Quotation"). */
+  pending_title?: string;
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -1015,6 +1024,27 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   if (f.state) {
     where.push("p.state = ?");
     binds.push(f.state);
+  }
+  // "My pending tasks" — project has ≥1 pending checklist item that
+  // belongs to the caller's role (matched by chip label or, for
+  // document-specific roles, by item title).
+  if (f.pending_label) {
+    where.push(
+      `EXISTS (SELECT 1 FROM project_checklist pc
+                WHERE pc.project_id = p.id
+                  AND pc.status = 'pending'
+                  AND pc.role_label = ?)`
+    );
+    binds.push(f.pending_label);
+  }
+  if (f.pending_title) {
+    where.push(
+      `EXISTS (SELECT 1 FROM project_checklist pc
+                WHERE pc.project_id = p.id
+                  AND pc.status = 'pending'
+                  AND pc.title = ?)`
+    );
+    binds.push(f.pending_title);
   }
   // "Completed project" predicate — reused by both the positive
   // (section=__done) filter and the negative (exclude_done) toggle.
