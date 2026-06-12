@@ -427,7 +427,7 @@ const TYPE_META: Record<SearchHitType, { label: string; icon: ReactNode }> = {
   assr_case: { label: "Service Cases", icon: <Wrench size={13} /> },
   creditor: { label: "Creditors", icon: <Building2 size={13} /> },
   trip: { label: "Trips", icon: <Truck size={13} /> },
-  user: { label: "Team", icon: <Users size={13} /> },
+  user: { label: "Users", icon: <Users size={13} /> },
 };
 
 // ── Trigger button ─────────────────────────────────────────

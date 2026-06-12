@@ -1646,6 +1646,7 @@ function InvitePanel({
 }) {
   const toast = useToast();
   const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
   const [roleId, setRoleId] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<{
@@ -1674,6 +1675,7 @@ function InvitePanel({
         email_sent?: boolean;
       }>("/api/users/invite", {
         email: email.toLowerCase().trim(),
+        name: name.trim() || undefined,
         role_id: roleId,
       });
       setIssued(res);
@@ -1692,6 +1694,7 @@ function InvitePanel({
 
   function reset() {
     setEmail("");
+    setName("");
     setIssued(null);
     onClose();
   }
@@ -1718,20 +1721,32 @@ function InvitePanel({
         <PanelSection title="Details">
           <div>
             <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-              Email
+              Name
             </label>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="member@example.com"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Full name"
               className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
               autoFocus
             />
           </div>
           <div>
             <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-              Role
+              Email
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="member@houzscentury.com"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              Role / Position
             </label>
             <select
               value={roleId}
@@ -1744,6 +1759,10 @@ function InvitePanel({
                 </option>
               ))}
             </select>
+            <div className="mt-1 text-[10px] text-ink-muted">
+              The role is the member's position — it decides what they can
+              access. A Sales role also lists them on the Sales Team.
+            </div>
           </div>
           <div className="pt-2">
             <Button variant="brass" className="w-full" onClick={submit} disabled={busy}>

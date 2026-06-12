@@ -248,11 +248,16 @@ app.get("/:id/profile-pic", async (c) => {
  */
 app.post("/invite", requirePermission("users.manage"), async (c) => {
   const me = c.get("user");
-  const body = await c.req.json<{ email: string; role_id: number }>();
+  const body = await c.req.json<{
+    email: string;
+    role_id: number;
+    name?: string;
+  }>();
   if (!body.email || !body.role_id) {
     return c.json({ error: "email and role_id are required" }, 400);
   }
   const email = body.email.toLowerCase().trim();
+  const name = body.name?.trim() || null;
 
   const db = getDb(c.env);
 
@@ -273,10 +278,13 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     return c.json({ error: "A user with that email already exists" }, 409);
   }
 
-  // Create or refresh the placeholder user.
+  // Create or refresh the placeholder user. Name is preset here ("the
+  // Position concept") so the invitee lands with their identity already
+  // set; they can still adjust it when accepting.
   if (existing.length === 0) {
     await db.insert(users).values({
       email,
+      name,
       role_id: body.role_id,
       status: "invited",
       invited_by: me.id || null,
@@ -284,9 +292,11 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     });
   } else {
     // Re-invite — bump role and reset invited_at, drop any old token.
+    // Only overwrite the name when a new one was supplied.
     await db
       .update(users)
       .set({
+        ...(name ? { name } : {}),
         role_id: body.role_id,
         status: "invited",
         invited_by: me.id || null,

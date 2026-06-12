@@ -238,7 +238,7 @@ export const NAV_TABS: NavTab[] = [
     groupId: "people",
     anyPerm: ["users.read", "roles.read", "sales_team.read"],
     children: [
-      { to: "/team", label: "Team", icon: Users, anyPerm: ["users.read", "roles.read"] },
+      { to: "/team", label: "User Management", icon: Users, anyPerm: ["users.read", "roles.read"] },
       // Sales Team is the retail-rep org chart, separate from /team
       // (workspace logins). Most reps don't have a workspace login.
       { to: "/sales-team", label: "Sales Team", icon: Briefcase, anyPerm: ["sales_team.read"] },

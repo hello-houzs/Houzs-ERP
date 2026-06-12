@@ -182,6 +182,41 @@ app.post("/forgot-password", async (c) => {
 });
 
 /**
+ * GET /api/auth/invite/:token
+ * Public preflight — lets the accept screen show "You're invited as
+ * <role>" and pre-fill the email + any name preset at invite time.
+ */
+app.get("/invite/:token", async (c) => {
+  const token = c.req.param("token");
+  if (!token) return c.json({ error: "Bad token" }, 400);
+  const row = await c.env.DB.prepare(
+    `SELECT i.email, i.expires_at, i.accepted_at,
+            r.name AS role_name,
+            u.name AS name
+       FROM invitations i
+       JOIN roles r ON r.id = i.role_id
+       LEFT JOIN users u ON u.email = i.email
+      WHERE i.token = ?`
+  )
+    .bind(token)
+    .first<{
+      email: string;
+      expires_at: string;
+      accepted_at: string | null;
+      role_name: string;
+      name: string | null;
+    }>();
+  if (!row) return c.json({ error: "Invalid or expired invitation" }, 404);
+  if (row.accepted_at) {
+    return c.json({ error: "This invitation has already been used" }, 409);
+  }
+  if (row.expires_at < new Date().toISOString()) {
+    return c.json({ error: "Invitation has expired" }, 410);
+  }
+  return c.json({ email: row.email, name: row.name, role_name: row.role_name });
+});
+
+/**
  * POST /api/auth/accept-invite
  * Public — exchanges an invitation token + name + password for a new
  * active user + session.

@@ -12,9 +12,13 @@ AUTOCOUNT_API_URL = "https://it-houzs.dev/"
 # member invitations, password resets). The canonical user-facing domain —
 # pages.dev still serves, but every link we hand out reads this.
 PUBLIC_APP_URL = "https://erp.houzscentury.com"
-# From address shown on outbound transactional emails. Leave the domain
-# aligned with what you verify in Resend.
-EMAIL_FROM = "Houzs ERP <no-reply@mail.it-houzs.dev>"
+# From address shown on outbound transactional emails (invites, password
+# resets, ASSR, etc.). houzscentury.com is verified in Resend (send. SPF +
+# resend._domainkey DKIM present in DNS as of 2026-06-13), so we send from
+# the company domain rather than the departed dev's it-houzs.dev.
+EMAIL_FROM = "Houzs ERP <no-reply@houzscentury.com>"
+# Rollback options if houzscentury.com sending ever breaks:
+#EMAIL_FROM = "Houzs ERP <no-reply@mail.it-houzs.dev>"
 #EMAIL_FROM = "Houzs ERP <onboarding@resend.dev>"
 
 # D1 — legacy. Kept bound through the Supabase cutover so a rollback is a
@@ -24,9 +28,13 @@ binding = "DB"
 database_name = "autocount-sync"
 database_id = "d0401549-c099-407b-ae95-57a5f85e5ad5"
 
-# Supabase Postgres via Hyperdrive (the cutover target). Create it once:
+# Supabase Postgres via Hyperdrive (the cutover target). Project
+# ctbaifabbzghtsrmpirm under the COMPANY Supabase account
+# (hello@houzscentury.com). The earlier load target xxoszhxglfgkqkokvofa
+# was abandoned 2026-06-13 pre-go-live: it lived under the departed
+# developer's own account and its password no longer works. Create once:
 #   wrangler hyperdrive create houzs-erp-pg \
-#     --connection-string="postgresql://postgres.xxoszhxglfgkqkokvofa:<pw>@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
+#     --connection-string="postgresql://postgres.ctbaifabbzghtsrmpirm:<pw>@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
 # then uncomment and paste the printed id. Local dev/scripts read DATABASE_URL
 # from .dev.vars instead of this binding.
 # [[hyperdrive]]

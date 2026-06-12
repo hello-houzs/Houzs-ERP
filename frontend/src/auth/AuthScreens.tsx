@@ -293,19 +293,41 @@ export function BootstrapScreen() {
 // ──────────────────────────────────────────────────────────
 export function AcceptInviteScreen() {
   const { acceptInvite } = useAuth();
+  const baseUrl = (import.meta.env.VITE_API_URL as string) || "";
   const [token, setToken] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Invitation metadata (email + role/position + preset name) fetched
+  // from the preflight endpoint so the invitee sees who they're joining
+  // as instead of pasting an opaque token.
+  const [meta, setMeta] = useState<{ email: string; role_name: string } | null>(
+    null
+  );
 
-  // Pull the token out of the URL hash (#invite=…) so an invite link
-  // like https://app.example.com/#invite=ABC123 auto-fills it.
+  // Pull the token out of the URL hash (#invite=…), then preflight it so
+  // we can pre-fill the name/email and show the role they're invited as.
   useEffect(() => {
-    const hash = window.location.hash;
-    const m = hash.match(/invite=([^&]+)/);
-    if (m) setToken(decodeURIComponent(m[1]));
-  }, []);
+    const m = window.location.hash.match(/invite=([^&]+)/);
+    if (!m) return;
+    const t = decodeURIComponent(m[1]);
+    setToken(t);
+    fetch(`${baseUrl}/api/auth/invite/${encodeURIComponent(t)}`)
+      .then(async (r) => {
+        if (!r.ok) return;
+        const d = (await r.json()) as {
+          email: string;
+          name: string | null;
+          role_name: string;
+        };
+        setMeta({ email: d.email, role_name: d.role_name });
+        if (d.name) setName(d.name);
+      })
+      .catch(() => {
+        /* fall back to the manual token form below */
+      });
+  }, [baseUrl]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -329,20 +351,38 @@ export function AcceptInviteScreen() {
     <AuthShell
       eyebrow="Join Workspace"
       title="Accept your invitation"
-      subtitle="Paste the invitation token you were given and set your password."
+      subtitle={
+        meta
+          ? `You've been invited to join as ${meta.role_name}. Set your name and password to continue.`
+          : "Paste the invitation token you were given and set your password."
+      }
     >
       <form onSubmit={submit} className="space-y-4">
-        <div>
-          <FieldLabel>Invitation Token</FieldLabel>
-          <TextInput
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="paste your token"
-            className="font-mono text-[11px]"
-            required
-            autoFocus
-          />
-        </div>
+        {meta ? (
+          <div className="rounded-md border border-border bg-bg/60 px-3 py-2.5">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              Email
+            </div>
+            <div className="text-[13px] font-semibold text-ink">
+              {meta.email}
+            </div>
+            <div className="mt-1.5 inline-flex items-center gap-1.5 rounded bg-accent-soft px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent-ink">
+              {meta.role_name}
+            </div>
+          </div>
+        ) : (
+          <div>
+            <FieldLabel>Invitation Token</FieldLabel>
+            <TextInput
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="paste your token"
+              className="font-mono text-[11px]"
+              required
+              autoFocus
+            />
+          </div>
+        )}
         <div>
           <FieldLabel>Your name</FieldLabel>
           <TextInput
@@ -350,6 +390,7 @@ export function AcceptInviteScreen() {
             onChange={(e) => setName(e.target.value)}
             placeholder="Jane Doe"
             required
+            autoFocus={!!meta}
           />
         </div>
         <div>

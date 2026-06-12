@@ -147,7 +147,7 @@ export async function sendEmail(env: Env, opts: SendOptions): Promise<SendResult
     return result;
   }
 
-  const from = env.EMAIL_FROM || "Houzs ERP <no-reply@houzs-erp.pages.dev>";
+  const from = env.EMAIL_FROM || "Houzs ERP <no-reply@houzscentury.com>";
   const replyTo = opts.replyTo ?? env.EMAIL_REPLY_TO ?? null;
 
   try {
