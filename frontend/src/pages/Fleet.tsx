@@ -312,11 +312,6 @@ function LorriesTab({
           ),
         },
         {
-          key: "default_driver_name",
-          label: "Default Driver",
-          render: (r: LorryRow) => r.default_driver_name || "—",
-        },
-        {
           key: "status",
           label: "Status",
           render: (r: LorryRow) => (
