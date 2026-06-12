@@ -149,8 +149,12 @@ fresh `wrangler d1 export` as a snapshot before cutover.
 
 ## Status (this branch)
 - [x] Phase 1 connection layer (`pg.ts`, `postgres` dep)
-- [ ] Phase 0 Supabase project (user, tonight)
-- [ ] Phase 2 schema + migrations
-- [ ] Phase 3 raw SQL (685)
-- [ ] Phase 4 data
-- [ ] Phase 5 cutover
+- [x] Phase 3 keystone: D1-compat shim (`d1-compat.ts` + tests, `toPgPlaceholders` 6/6)
+- [x] Phase 2 DRAFT: `schema.pg.ts` (57/57 tables, pg-core, UNTESTED — validate with
+      `drizzle-kit` against Supabase, then review the int4-vs-bigint money columns)
+- [ ] Phase 0 Supabase project (USER, tonight) — blocks everything below
+- [ ] Phase 2 finish: replay 93 `.sql` migrations as a Postgres baseline; point
+      `client.ts` at `drizzle-orm/postgres-js` + `schema.pg.ts`; `drizzle.config` -> postgresql
+- [ ] Phase 3 raw SQL: wire `env.DB` to the shim, fix ~131 dialect sites
+- [ ] Phase 4 data export/import + row-count verify
+- [ ] Phase 5 Hyperdrive bind + cutover + remove D1
