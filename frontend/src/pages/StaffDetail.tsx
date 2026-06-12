@@ -127,7 +127,7 @@ export function StaffDetail() {
                             value: d.company_phone,
                             mono: true,
                           },
-                          { label: "IC", value: d.ic_number, mono: true },
+                          { label: "IC / Passport", value: d.ic_number, mono: true },
                           ...(d.user_type === "driver"
                             ? [
                                 {
@@ -224,7 +224,7 @@ export function StaffDetail() {
                         }
                       />
                       <EditField
-                        label="IC Number"
+                        label="IC Number / Passport Number"
                         value={form.ic_number}
                         onChange={(v) => setForm({ ...form, ic_number: v })}
                       />
