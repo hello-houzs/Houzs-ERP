@@ -1051,10 +1051,27 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     binds.push(f.pending_title);
   }
   if (f.pending_logistic) {
-    // Setup not yet arranged: no setup time AND no setup crew assigned.
-    where.push(
-      `(p.setup_start_at IS NULL AND COALESCE(p.setup_crew, '') IN ('', '{}'))`
-    );
+    // Logistic work is staged:
+    //   • SETUP is due once "Stock Out Transfer Record" is completed
+    //     (done/approved) but the setup time+crew aren't filled yet.
+    //   • DISMANTLE is due once setup is arranged but the dismantle
+    //     time+crew aren't filled yet.
+    where.push(`(
+      (
+        EXISTS (SELECT 1 FROM project_checklist pc
+                 WHERE pc.project_id = p.id
+                   AND pc.title = 'Stock Out Transfer Record'
+                   AND (pc.status = 'done' OR pc.review_status = 'approved'))
+        AND p.setup_start_at IS NULL
+        AND COALESCE(p.setup_crew, '') IN ('', '{}')
+      )
+      OR
+      (
+        (p.setup_start_at IS NOT NULL OR COALESCE(p.setup_crew, '') NOT IN ('', '{}'))
+        AND p.dismantle_start_at IS NULL
+        AND COALESCE(p.dismantle_crew, '') IN ('', '{}')
+      )
+    )`);
   }
   // "Completed project" predicate — reused by both the positive
   // (section=__done) filter and the negative (exclude_done) toggle.
