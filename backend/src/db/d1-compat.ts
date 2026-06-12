@@ -50,6 +50,48 @@ export function toPgPlaceholders(sql: string): string {
   return out;
 }
 
+// Rewrite the handful of SQLite-isms that appear in raw query TEXT so the
+// ~685 call sites keep working unchanged. Quote-aware: never touches data
+// inside string literals.
+//   datetime('now')  -> to_char(timezone('UTC',now()),'YYYY-MM-DD HH24:MI:SS')
+//                       (TEXT columns; same 'YYYY-MM-DD HH:MM:SS' shape)
+//   char(            -> chr(   (Postgres spells the codepoint fn chr())
+// NOT handled (must be fixed per query — few sites): INSERT OR REPLACE
+// (needs an ON CONFLICT target) and reads of meta.last_row_id (need RETURNING).
+export function rewriteDialect(sql: string): string {
+  let out = "";
+  let inStr = false;
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+    if (c === "'") {
+      if (inStr && sql[i + 1] === "'") {
+        out += "''";
+        i++;
+        continue;
+      }
+      inStr = !inStr;
+      out += c;
+      continue;
+    }
+    if (!inStr) {
+      const rest = sql.slice(i);
+      const dt = rest.match(/^datetime\(\s*'now'\s*\)/i);
+      if (dt) {
+        out += "to_char(timezone('UTC',now()),'YYYY-MM-DD HH24:MI:SS')";
+        i += dt[0].length - 1;
+        continue;
+      }
+      if (rest.slice(0, 5).toLowerCase() === "char(") {
+        out += "chr(";
+        i += 4;
+        continue;
+      }
+    }
+    out += c;
+  }
+  return out;
+}
+
 // D1 row shapes the call sites expect back.
 type D1Meta = {
   changes: number;
@@ -76,7 +118,7 @@ class PreparedStatement {
     // postgres.js `unsafe` runs a dynamic string with positional params.
     // prepare:false is already set on the client (transaction pooler).
     return this.sql.unsafe(
-      toPgPlaceholders(this.query),
+      toPgPlaceholders(rewriteDialect(this.query)),
       this.args as never[],
     ) as unknown as Promise<T[]>;
   }

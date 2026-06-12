@@ -50,6 +50,7 @@ import innovations from "./routes/innovations";
 import suggestions from "./routes/suggestions";
 import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
+import { dbInject, withPgDb } from "./middleware/db";
 import { runPull } from "./services/pull";
 import { runPOPull, runPODocsPull } from "./services/po";
 import { runOverdue } from "./services/overdue";
@@ -68,6 +69,10 @@ import {
 const app = new Hono<{ Bindings: Env }>();
 
 app.use("*", cors());
+
+// D1 -> Supabase cutover: swap env.DB for the Postgres-backed shim on every
+// request, before auth + routes. Remove once all paths use Drizzle/postgres.js.
+app.use("*", dbInject);
 
 app.get("/", (c) => c.json({ ok: true, service: "autocount-sync-api" }));
 app.get("/health", (c) => c.json({ ok: true }));
@@ -151,6 +156,8 @@ app.onError((err, c) => {
 export default {
   fetch: app.fetch,
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    // Cutover: cron services write via env.DB too — point it at Postgres.
+    env = withPgDb(env);
     if (event.cron === "*/5 * * * *") {
       // Tight loop: incremental SO pull. Everything else waits for slower slots.
       ctx.waitUntil(runPull(env, "SCHEDULED").catch((e) => console.error("[cron pull]", e)));

@@ -1,5 +1,12 @@
 export type Env = {
+  // During the D1 -> Supabase cutover, `DB` is injected per request/cron with
+  // a D1-compatible shim over Postgres (see middleware/db.ts). The legacy D1
+  // binding may stay in wrangler.toml until the cutover is verified.
   DB: D1Database;
+  // Cloudflare Hyperdrive over the Supabase pooler (prod). Local dev / scripts
+  // read DATABASE_URL from .dev.vars instead.
+  HYPERDRIVE?: { connectionString: string };
+  DATABASE_URL?: string;
   POD_BUCKET: R2Bucket;
   AUTOCOUNT_API_URL: string;
   AUTOCOUNT_API_KEY: string;

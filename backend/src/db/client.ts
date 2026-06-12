@@ -1,19 +1,19 @@
-import { drizzle } from "drizzle-orm/d1";
+import { drizzle } from "drizzle-orm/postgres-js";
 import type { Env } from "../types";
-import * as schema from "./schema";
+import { getSql, resolveDatabaseUrl } from "./pg";
+import * as schema from "./schema.pg";
 
 /**
- * Drizzle client bound to the request-scoped D1 binding. Workers spin
- * up a fresh isolate per request, so we build the client per call —
- * no module-level cache. Drizzle itself is stateless; `env.DB` is the
- * actual D1 connection.
+ * Drizzle client over Supabase Postgres (postgres.js). Built per request —
+ * postgres.js sockets can't cross the Worker request boundary, and Hyperdrive
+ * pools the connection, so a fresh client per call is cheap.
  *
- * Coexists with raw SQL (`env.DB.prepare(...)`) — same binding under
- * the hood. New code uses `getDb(env)`; existing routes stay on raw
- * SQL until they're converted in subsequent passes.
+ * Coexists with raw SQL during the cutover: `env.DB` is injected with a
+ * D1-compatible shim over the SAME Postgres (see middleware/db.ts), so the
+ * legacy `env.DB.prepare(...)` paths and Drizzle paths hit one database.
  */
 export function getDb(env: Env) {
-  return drizzle(env.DB, { schema });
+  return drizzle(getSql(resolveDatabaseUrl(env)), { schema });
 }
 
 export type DB = ReturnType<typeof getDb>;
