@@ -5063,7 +5063,8 @@ function TaskAttachmentRow({
 const PROJECT_STAGES: { label: string; offset: number; titles: string[] }[] = [
   { label: "Floorplan", offset: -21, titles: ["Blank Floorplan"] },
   { label: "3D", offset: -14, titles: ["3D Design"] },
-  { label: "Stocks Request", offset: -10, titles: ["Stocks Request Listing"] },
+  // "Stocks Request" retired — the "Stocks Request Listing" item was
+  // removed, so the step is dropped from the tracker.
   { label: "Stocks Transfer", offset: -7, titles: ["Stock Out Transfer Record"] },
   { label: "Driver Info", offset: -3, titles: ["Stock In Transfer Record"] },
   { label: "Setup Image", offset: 0, titles: ["Setup Image"] },
