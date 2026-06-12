@@ -1,9 +1,6 @@
 import type { Env } from "../types";
 import { parsePermissions } from "./permissions";
 import { loadPageAccessForRole, type AccessLevel } from "./pageAccess";
-import { getDb } from "../db/client";
-import { user_brands } from "../db/schema";
-import { inArray } from "drizzle-orm";
 
 // ── Crypto helpers ────────────────────────────────────────
 // PBKDF2 via Web Crypto — built into Workers, no WASM needed.
@@ -156,14 +153,16 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
   let brandScope: string[] | null = null;
   if (scoped) {
     const ids = managerId ? [row.id, managerId] : [row.id];
-    const db = getDb(env);
-    const rows = await db
-      .select({ brand: user_brands.brand })
-      .from(user_brands)
-      .where(inArray(user_brands.user_id, ids));
-    // Dedup since the same brand can be listed on both the rep and
-    // the manager.
-    brandScope = Array.from(new Set(rows.map((r) => r.brand)));
+    // env.DB (not getDb): auth must keep working on the D1 fallback used by
+    // the test suite and the rollback path, where no DATABASE_URL is bound.
+    // DISTINCT dedups brands listed on both the rep and the manager.
+    const placeholders = ids.map(() => "?").join(", ");
+    const res = await env.DB.prepare(
+      `SELECT DISTINCT brand FROM user_brands WHERE user_id IN (${placeholders})`
+    )
+      .bind(...ids)
+      .all<{ brand: string }>();
+    brandScope = (res.results ?? []).map((r) => r.brand);
   }
   const permissions = parsePermissions(row.role_permissions);
   const permissionsSet = new Set(permissions);

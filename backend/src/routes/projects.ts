@@ -50,7 +50,6 @@ import {
   project_brands,
   project_finance_lines,
   projects as projectsTable,
-  user_brands,
 } from "../db/schema";
 import { and, eq, sql } from "drizzle-orm";
 
@@ -1091,13 +1090,14 @@ async function canPicProjectBrand(
   brand: string | null | undefined
 ): Promise<boolean> {
   if (!brand) return false;
-  const db = getDb(env);
-  const rows = await db
-    .select({ one: user_brands.user_id })
-    .from(user_brands)
-    .where(and(eq(user_brands.user_id, picUserId), eq(user_brands.brand, brand)))
-    .limit(1);
-  return rows.length > 0;
+  // env.DB (not getDb): this gate must also work on the D1 fallback used by
+  // the test suite and the rollback path, where no DATABASE_URL is bound.
+  const row = await env.DB.prepare(
+    `SELECT 1 AS one FROM user_brands WHERE user_id = ? AND brand = ? LIMIT 1`
+  )
+    .bind(picUserId, brand)
+    .first();
+  return row !== null;
 }
 
 // ── Create ────────────────────────────────────────────────────

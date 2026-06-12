@@ -37,6 +37,10 @@ export default defineWorkersConfig(async () => {
               TEST_BASELINE_SQL: baselineSql,
               TEST_MIGRATIONS: migrations,
               DASHBOARD_API_KEY: "test-dashboard-key",
+              // Pin empty so the suite can never pick up a real Supabase URL
+              // from .dev.vars and run tests against the live database. The
+              // dbInject middleware falls back to the isolated D1 above.
+              DATABASE_URL: "",
             },
           },
         },

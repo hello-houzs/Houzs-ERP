@@ -13,7 +13,12 @@ import { d1Compat } from "../db/d1-compat";
  * unauthenticated /api/auth, /api/survey, /api/track routes — gets Postgres.
  */
 export const dbInject = createMiddleware<{ Bindings: Env }>(async (c, next) => {
-  c.env.DB = d1Compat(getSql(resolveDatabaseUrl(c.env))) as unknown as D1Database;
+  // No HYPERDRIVE binding and no DATABASE_URL → leave the bound D1 in place.
+  // This keeps the rollback path alive (drop [[hyperdrive]], D1 still bound →
+  // app keeps serving instead of 500ing on getSql("")), and lets vitest run
+  // against its isolated migrated D1 instead of a live Postgres.
+  const url = resolveDatabaseUrl(c.env);
+  if (url) c.env.DB = d1Compat(getSql(url)) as unknown as D1Database;
   await next();
 });
 
@@ -22,5 +27,7 @@ export const dbInject = createMiddleware<{ Bindings: Env }>(async (c, next) => {
  * (no Hono context). Wrap once at the top of `scheduled`, pass the result down.
  */
 export function withPgDb(env: Env): Env {
-  return { ...env, DB: d1Compat(getSql(resolveDatabaseUrl(env))) as unknown as D1Database };
+  const url = resolveDatabaseUrl(env);
+  if (!url) return env; // same fallback as dbInject: cron stays on bound D1
+  return { ...env, DB: d1Compat(getSql(url)) as unknown as D1Database };
 }
