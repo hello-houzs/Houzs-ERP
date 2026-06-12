@@ -296,7 +296,6 @@ function LorriesTab({
           render: (r: LorryRow) => <span className="font-mono font-bold">{r.plate}</span>,
         },
         { key: "size", label: "Size", render: (r: LorryRow) => r.size || "—" },
-        { key: "model", label: "Model", render: (r: LorryRow) => r.model || "—" },
         { key: "warehouse", label: "Warehouse", render: (r: LorryRow) => r.warehouse },
         {
           key: "is_internal",
@@ -394,7 +393,6 @@ function AddLorryPanel({
   );
   const [plate, setPlate] = useState("");
   const [size, setSize] = useState("");
-  const [model, setModel] = useState("");
   const [warehouse, setWarehouse] = useState("");
   const [isInternal, setIsInternal] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -415,7 +413,6 @@ function AddLorryPanel({
       await api.post("/api/lorries", {
         plate: plate.trim(),
         size: size.trim() || undefined,
-        model: model.trim() || undefined,
         warehouse,
         is_internal: isInternal,
       });
@@ -477,15 +474,6 @@ function AddLorryPanel({
             value={size}
             onChange={(e) => setSize(e.target.value)}
             placeholder="e.g. 17ft"
-          />
-        </div>
-        <div>
-          <label className={labelClass}>Model</label>
-          <input
-            className={fieldClass}
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="Optional"
           />
         </div>
         <div>
