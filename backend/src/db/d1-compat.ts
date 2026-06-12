@@ -242,6 +242,18 @@ export function rewriteDialect(sql: string): string {
         }
       }
 
+      // LIKE -> ILIKE: SQLite LIKE is case-insensitive for ASCII; Postgres
+      // LIKE is case-sensitive, which silently broke search after the
+      // cutover. ILIKE restores the behaviour the call sites were written
+      // against. "NOT LIKE" passes through as "NOT ILIKE"; ILIKE itself
+      // can't re-match (the boundary check fails after the leading I).
+      m = rest.match(/^like\b/i);
+      if (m) {
+        out += "ILIKE";
+        i += m[0].length - 1;
+        continue;
+      }
+
       // instr(a, b) -> strpos(a, b) — identical argument order.
       m = rest.match(/^instr\s*\(/i);
       if (m) {
