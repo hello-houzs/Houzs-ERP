@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { useAuth } from "./AuthContext";
 import { Forbidden } from "../pages/Forbidden";
-import type { AccessLevel } from "../types";
+import { ACCESS_RANK, type AccessLevel } from "../types";
 
 /**
  * Read the current user's access level for a page (mig 073).
@@ -41,8 +41,7 @@ export function PageGuard({
   children: ReactNode;
 }) {
   const level = usePageAccess(page);
-  const rank: Record<AccessLevel, number> = { none: 0, partial: 1, full: 2 };
-  if (rank[level] < rank[minLevel]) {
+  if (ACCESS_RANK[level] < ACCESS_RANK[minLevel]) {
     return <Forbidden page={page} />;
   }
   return <>{children}</>;

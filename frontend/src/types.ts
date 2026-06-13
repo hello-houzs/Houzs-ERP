@@ -573,10 +573,20 @@ export interface OverdueSummary {
 // ──────────────────────────────────────────────────────────
 /**
  * Per-page access level. Mirrors backend's `AccessLevel`.
- * `none` = the page is hidden / 403; `partial` = page-specific
- * read-only or scoped view; `full` = unrestricted within the page.
+ * Role matrix is 3-level (none/partial/full); the position matrix is 4-level
+ * (none/view/edit/full). `partial` is treated as rank-equal to `view`, so both
+ * coexist. `none` = hidden / 403.
  */
-export type AccessLevel = "none" | "partial" | "full";
+export type AccessLevel = "none" | "partial" | "view" | "edit" | "full";
+
+/** Numeric ordering — higher = more access. partial == view (rank 1). */
+export const ACCESS_RANK: Record<AccessLevel, number> = {
+  none: 0,
+  view: 1,
+  partial: 1,
+  edit: 2,
+  full: 3,
+};
 
 /** Page catalogue entry. Returned by GET /api/roles/pages. */
 export interface PageDef {

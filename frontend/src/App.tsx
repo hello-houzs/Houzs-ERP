@@ -163,73 +163,73 @@ export default function App() {
         <Route
           path="/orders"
           element={
-            <Guard perm="sales_orders.read">
+            <PageGuard page="orders">
               <Orders />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/orders/items"
           element={
-            <Guard perm="sales_orders.read">
+            <PageGuard page="orders">
               <SalesOrderItems />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/orders/:docNo"
           element={
-            <Guard perm="sales_orders.read">
+            <PageGuard page="orders">
               <OrderDetail />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/delivery-orders"
           element={
-            <Guard perm="delivery_orders.read">
+            <PageGuard page="delivery_orders">
               <DeliveryOrders />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/logistics"
           element={
-            <Guard anyPerm={["trips.read.all", "fleet.read"]}>
+            <PageGuard page="logistics">
               <Logistics />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/trips/:id"
           element={
-            <Guard anyPerm={["trips.read.all", "trips.read.own"]}>
+            <PageGuard page="logistics">
               <TripDetail />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/staff/:id"
           element={
-            <Guard perm="fleet.read">
+            <PageGuard page="logistics.fleet">
               <StaffDetail />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/lorries/:id"
           element={
-            <Guard perm="fleet.read">
+            <PageGuard page="logistics.fleet">
               <LorryDetail />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/delivery/:docNo"
           element={
-            <Guard perm="delivery_orders.read">
+            <PageGuard page="delivery_orders">
               <DeliveryDetail />
-            </Guard>
+            </PageGuard>
           }
         />
         {/* Legacy deep-links — preserve query string (?focus=…) */}
@@ -244,17 +244,17 @@ export default function App() {
         <Route
           path="/po"
           element={
-            <Guard perm="purchase_orders.read">
+            <PageGuard page="purchase_orders">
               <PurchaseOrders />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/po/:docNo"
           element={
-            <Guard perm="purchase_orders.read">
+            <PageGuard page="purchase_orders">
               <PurchaseOrderDetail />
-            </Guard>
+            </PageGuard>
           }
         />
         {/* Legacy /creditors → Purchase Orders' Creditors tab */}
@@ -265,25 +265,25 @@ export default function App() {
         <Route
           path="/creditors/:code"
           element={
-            <Guard perm="purchase_orders.read">
+            <PageGuard page="purchase_orders">
               <CreditorDetail />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/assr"
           element={
-            <Guard perm="service_cases.read">
+            <PageGuard page="service_cases">
               <ServiceCases />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/assr/:id"
           element={
-            <Guard perm="service_cases.read">
+            <PageGuard page="service_cases">
               <ServiceCaseDetail />
-            </Guard>
+            </PageGuard>
           }
         />
         {/* Legacy /suppliers → Creditors tab under Purchase Orders.
@@ -320,41 +320,41 @@ export default function App() {
         <Route
           path="/settings"
           element={
-            <Guard perm="settings.manage">
+            <PageGuard page="settings" minLevel="full">
               <Settings />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/team"
           element={
-            <Guard anyPerm={["users.read", "roles.read"]}>
+            <PageGuard page="team">
               <Team />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/sales-team"
           element={
-            <Guard perm="sales_team.read">
+            <PageGuard page="sales_team">
               <SalesTeam />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/sales-team/:id"
           element={
-            <Guard perm="sales_team.read">
+            <PageGuard page="sales_team">
               <SalesTeamDetail />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route
           path="/sales-team-maintenance"
           element={
-            <Guard perm="sales_team.manage">
+            <PageGuard page="sales_team_maintenance" minLevel="full">
               <SalesTeamMaintenance />
-            </Guard>
+            </PageGuard>
           }
         />
         {/* Legacy /roles → Team page's Roles tab */}
