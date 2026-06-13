@@ -26,6 +26,7 @@ app.patch("/email", requirePermission("settings.manage"), async (c) => {
     "email.enabled",
     "email.assr_survey",
     "email.assr_sla_escalation",
+    "email.member_invite",
     "email.supplier_invite",
     "email.project_due_reminder",
     "email.password_reset",

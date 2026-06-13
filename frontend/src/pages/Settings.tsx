@@ -261,6 +261,7 @@ const EMAIL_TOGGLES: { key: string; label: string; description: string }[] = [
   { key: "email.enabled", label: "Master switch", description: "When off, every channel is muted regardless of individual toggles." },
   { key: "email.assr_survey", label: "ASSR satisfaction survey", description: "Auto-send the tokenized survey link to the customer when a case closes (requires customer_email)." },
   { key: "email.assr_sla_escalation", label: "ASSR SLA breach alerts", description: "Email the assignee + managers when a case is escalated for missing its deadline >24h." },
+  { key: "email.member_invite", label: "Team member invitations", description: "Email the invite / accept link when you add a staff account in User Management." },
   { key: "email.supplier_invite", label: "Supplier portal invites", description: "Email the invite / password-reset link to a supplier account." },
   { key: "email.project_due_reminder", label: "Project due reminders", description: "Daily cron emails checklist items due within 3 days or overdue." },
   { key: "email.password_reset", label: "Password reset emails", description: "Send a reset link when an admin clicks 'Send reset' on a team member." },
