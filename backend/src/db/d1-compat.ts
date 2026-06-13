@@ -171,6 +171,9 @@ function strftimeToPg(fmt: string): string {
   return out;
 }
 
+// Queries slower than this are logged to wrangler tail with their SQL.
+const SLOW_QUERY_MS = 100;
+
 export function rewriteDialect(sql: string): string {
   let out = "";
   let inStr = false;
@@ -299,15 +302,26 @@ class PreparedStatement {
   // Run the (placeholder- and dialect-rewritten) statement. Returns the raw
   // postgres.js RowList — an array of rows that also carries `.count` (rows
   // affected for writes, rows returned for reads) and `.command`.
-  private exec<T = Record<string, unknown>>(
+  private async exec<T = Record<string, unknown>>(
     textOverride?: string,
   ): Promise<T[]> {
     // postgres.js `unsafe` runs a dynamic string with positional params.
     // prepare:false is already set on the client (transaction pooler).
-    return this.sql.unsafe(
-      textOverride ?? toPgPlaceholders(rewriteDialect(this.query)),
+    const text = textOverride ?? toPgPlaceholders(rewriteDialect(this.query));
+    const t0 = Date.now();
+    const res = (await this.sql.unsafe(
+      text,
       this.args as never[],
-    ) as unknown as Promise<T[]>;
+    )) as unknown as T[] & { count?: number };
+    // Every query in the app funnels through here — a single threshold log
+    // turns `wrangler tail` into a slow-query dashboard (Hookka pattern).
+    const ms = Date.now() - t0;
+    if (ms > SLOW_QUERY_MS) {
+      console.warn(
+        `[slow-query] ${ms}ms rows=${res.count ?? res.length} :: ${text.replace(/\s+/g, " ").slice(0, 180)}`,
+      );
+    }
+    return res;
   }
 
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {

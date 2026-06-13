@@ -1,40 +1,7 @@
+import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate, useLocation, type To } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { DriverLayout } from "./components/DriverLayout";
-import { Overview } from "./pages/Overview";
-import { Orders } from "./pages/Orders";
-import { OrderDetail } from "./pages/OrderDetail";
-import { SalesOrderItems } from "./pages/SalesOrderItems";
-import { DeliveryOrders } from "./pages/DeliveryOrders";
-import { PurchaseOrders, PurchaseOrderDetail } from "./pages/PurchaseOrders";
-import { CreditorDetail } from "./pages/CreditorDetail";
-import { ServiceCases, ServiceCaseDetail } from "./pages/ServiceCases";
-import { Projects, ProjectDetail } from "./pages/Projects";
-import { Sales } from "./pages/Sales";
-import { Notifications } from "./pages/Notifications";
-import { Profile } from "./pages/Profile";
-import { Settings } from "./pages/Settings";
-import { Team } from "./pages/Team";
-import { SalesTeam } from "./pages/SalesTeam";
-import { SalesTeamDetail } from "./pages/SalesTeamDetail";
-import { SalesTeamMaintenance } from "./pages/SalesTeamMaintenance";
-import { Gamification } from "./pages/Gamification";
-import { GamificationAdmin } from "./pages/GamificationAdmin";
-import { Shop } from "./pages/Shop";
-import { Innovations } from "./pages/Innovations";
-import { Suggestions } from "./pages/Suggestions";
-import { IdeaDetail } from "./pages/IdeaDetail";
-import { PettyCash } from "./pages/PettyCash";
-import { Logistics } from "./pages/Logistics";
-import { TripDetail } from "./pages/TripDetail";
-import { StaffDetail } from "./pages/StaffDetail";
-import { LorryDetail } from "./pages/LorryDetail";
-import { DeliveryDetail } from "./pages/DeliveryTracking";
-import { DriverHome } from "./pages/DriverHome";
-import { DriverTrip } from "./pages/DriverTrip";
-import { DriverProfile } from "./pages/DriverProfile";
-import { DriverProjects } from "./pages/DriverProjects";
-import { DriverProjectDetail } from "./pages/DriverProjectDetail";
 import { useAuth } from "./auth/AuthContext";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
@@ -43,6 +10,50 @@ import { NotificationsProvider } from "./hooks/useNotifications";
 import { BrowserPushSink } from "./components/BrowserPushSink";
 import { QuickActionsFAB } from "./components/QuickActionsFAB";
 import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
+import { PageSkeleton, ChunkReloadBoundary } from "./components/RouteFallback";
+
+// Route-level code splitting: every page becomes its own chunk, fetched on
+// first visit, so the initial bundle carries only the shell. The .then()
+// indirection adapts our named exports to React.lazy's default-export shape
+// without touching the page files. Multi-page modules (PurchaseOrders,
+// ServiceCases, Projects) share one chunk.
+const Overview = lazy(() => import("./pages/Overview").then((m) => ({ default: m.Overview })));
+const Orders = lazy(() => import("./pages/Orders").then((m) => ({ default: m.Orders })));
+const OrderDetail = lazy(() => import("./pages/OrderDetail").then((m) => ({ default: m.OrderDetail })));
+const SalesOrderItems = lazy(() => import("./pages/SalesOrderItems").then((m) => ({ default: m.SalesOrderItems })));
+const DeliveryOrders = lazy(() => import("./pages/DeliveryOrders").then((m) => ({ default: m.DeliveryOrders })));
+const PurchaseOrders = lazy(() => import("./pages/PurchaseOrders").then((m) => ({ default: m.PurchaseOrders })));
+const PurchaseOrderDetail = lazy(() => import("./pages/PurchaseOrders").then((m) => ({ default: m.PurchaseOrderDetail })));
+const CreditorDetail = lazy(() => import("./pages/CreditorDetail").then((m) => ({ default: m.CreditorDetail })));
+const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
+const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
+const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
+const ProjectDetail = lazy(() => import("./pages/Projects").then((m) => ({ default: m.ProjectDetail })));
+const Sales = lazy(() => import("./pages/Sales").then((m) => ({ default: m.Sales })));
+const Notifications = lazy(() => import("./pages/Notifications").then((m) => ({ default: m.Notifications })));
+const Profile = lazy(() => import("./pages/Profile").then((m) => ({ default: m.Profile })));
+const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
+const Team = lazy(() => import("./pages/Team").then((m) => ({ default: m.Team })));
+const SalesTeam = lazy(() => import("./pages/SalesTeam").then((m) => ({ default: m.SalesTeam })));
+const SalesTeamDetail = lazy(() => import("./pages/SalesTeamDetail").then((m) => ({ default: m.SalesTeamDetail })));
+const SalesTeamMaintenance = lazy(() => import("./pages/SalesTeamMaintenance").then((m) => ({ default: m.SalesTeamMaintenance })));
+const Gamification = lazy(() => import("./pages/Gamification").then((m) => ({ default: m.Gamification })));
+const GamificationAdmin = lazy(() => import("./pages/GamificationAdmin").then((m) => ({ default: m.GamificationAdmin })));
+const Shop = lazy(() => import("./pages/Shop").then((m) => ({ default: m.Shop })));
+const Innovations = lazy(() => import("./pages/Innovations").then((m) => ({ default: m.Innovations })));
+const Suggestions = lazy(() => import("./pages/Suggestions").then((m) => ({ default: m.Suggestions })));
+const IdeaDetail = lazy(() => import("./pages/IdeaDetail").then((m) => ({ default: m.IdeaDetail })));
+const PettyCash = lazy(() => import("./pages/PettyCash").then((m) => ({ default: m.PettyCash })));
+const Logistics = lazy(() => import("./pages/Logistics").then((m) => ({ default: m.Logistics })));
+const TripDetail = lazy(() => import("./pages/TripDetail").then((m) => ({ default: m.TripDetail })));
+const StaffDetail = lazy(() => import("./pages/StaffDetail").then((m) => ({ default: m.StaffDetail })));
+const LorryDetail = lazy(() => import("./pages/LorryDetail").then((m) => ({ default: m.LorryDetail })));
+const DeliveryDetail = lazy(() => import("./pages/DeliveryTracking").then((m) => ({ default: m.DeliveryDetail })));
+const DriverHome = lazy(() => import("./pages/DriverHome").then((m) => ({ default: m.DriverHome })));
+const DriverTrip = lazy(() => import("./pages/DriverTrip").then((m) => ({ default: m.DriverTrip })));
+const DriverProfile = lazy(() => import("./pages/DriverProfile").then((m) => ({ default: m.DriverProfile })));
+const DriverProjects = lazy(() => import("./pages/DriverProjects").then((m) => ({ default: m.DriverProjects })));
+const DriverProjectDetail = lazy(() => import("./pages/DriverProjectDetail").then((m) => ({ default: m.DriverProjectDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -122,6 +133,8 @@ export default function App() {
   if (location.pathname.startsWith("/driver")) {
     return (
       <DriverLayout>
+        <ChunkReloadBoundary>
+        <Suspense fallback={<PageSkeleton />}>
         <Routes>
           <Route path="/driver" element={<DriverHome />} />
           <Route path="/driver/me" element={<DriverProfile />} />
@@ -130,6 +143,8 @@ export default function App() {
           <Route path="/driver/projects/:id" element={<DriverProjectDetail />} />
           <Route path="*" element={<Navigate to="/driver" replace />} />
         </Routes>
+        </Suspense>
+        </ChunkReloadBoundary>
       </DriverLayout>
     );
   }
@@ -141,6 +156,8 @@ export default function App() {
       <BrowserPushSink />
       <QuickActionsFAB />
       <Layout>
+        <ChunkReloadBoundary>
+        <Suspense fallback={<PageSkeleton />}>
         <Routes>
         <Route path="/" element={<Overview />} />
         <Route
@@ -364,6 +381,8 @@ export default function App() {
         <Route path="/profile" element={<Profile />} />
         <Route path="*" element={<Forbidden kind="not-found" />} />
         </Routes>
+        </Suspense>
+        </ChunkReloadBoundary>
       </Layout>
       </BreadcrumbsProvider>
       </NotificationsProvider>
