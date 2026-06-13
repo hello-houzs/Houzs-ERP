@@ -1,5 +1,10 @@
 name = "autocount-sync-api"
 main = "src/index.ts"
+# Pin the production account so `wrangler deploy` / `secret put` can never target
+# the wrong account (a stray `wrangler login` once cached a different account id,
+# which made `secret put` create an empty look-alike worker elsewhere). The
+# account id is not a secret. Account: hello@houzscentury.com.
+account_id = "816e457307d7fa0491c2a08a72ad5dcd"
 compatibility_date = "2024-12-01"
 # Required by @cloudflare/vitest-pool-workers; also enables Node-style
 # APIs (Buffer, process.env shims) in production. Purely additive —
