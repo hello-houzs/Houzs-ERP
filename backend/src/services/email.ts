@@ -127,6 +127,41 @@ function stripHtml(html: string): string {
     .trim();
 }
 
+// Low-level Resend POST. No logging / no outbox — shared by sendEmail and the
+// outbox drain. Returns 'sent' | 'error' (caller pre-checks channel + key).
+async function deliverViaResend(
+  env: Env,
+  m: { to: string; subject: string; html: string; text?: string | null; replyTo?: string | null },
+): Promise<SendResult> {
+  const from = env.EMAIL_FROM || "Houzs ERP <no-reply@houzscentury.com>";
+  const replyTo = m.replyTo ?? env.EMAIL_REPLY_TO ?? null;
+  try {
+    const resp = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to: m.to,
+        subject: m.subject,
+        html: m.html,
+        text: m.text || stripHtml(m.html),
+        ...(replyTo ? { reply_to: replyTo } : {}),
+      }),
+    });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      return { status: "error", reason: `resend ${resp.status}: ${body.slice(0, 300)}` };
+    }
+    const data = (await resp.json().catch(() => ({}))) as { id?: string };
+    return { status: "sent", providerId: data.id };
+  } catch (e: any) {
+    return { status: "error", reason: e?.message || String(e) };
+  }
+}
+
 export async function sendEmail(env: Env, opts: SendOptions): Promise<SendResult> {
   const to = (opts.to || "").trim();
   if (!to || !to.includes("@")) {
@@ -147,46 +182,102 @@ export async function sendEmail(env: Env, opts: SendOptions): Promise<SendResult
     return result;
   }
 
-  const from = env.EMAIL_FROM || "Houzs ERP <no-reply@houzscentury.com>";
-  const replyTo = opts.replyTo ?? env.EMAIL_REPLY_TO ?? null;
-
+  // Durable: enqueue first (so a failed send is never silently lost), then try
+  // to deliver immediately. On failure the row stays 'pending' for the */5 cron
+  // drain (drainEmailOutbox) to retry. email_log remains the per-attempt audit.
+  const id = crypto.randomUUID();
   try {
-    const resp = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from,
-        to,
-        subject: opts.subject,
-        html: opts.html,
-        text: opts.text || stripHtml(opts.html),
-        ...(replyTo ? { reply_to: replyTo } : {}),
-      }),
-    });
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      const result: SendResult = {
-        status: "error",
-        reason: `resend ${resp.status}: ${body.slice(0, 300)}`,
-      };
-      await logEmail(env, opts, result);
-      return result;
-    }
-    const data = (await resp.json().catch(() => ({}))) as { id?: string };
-    const result: SendResult = { status: "sent", providerId: data.id };
-    await logEmail(env, opts, result);
-    return result;
-  } catch (e: any) {
-    const result: SendResult = {
-      status: "error",
-      reason: e?.message || String(e),
-    };
-    await logEmail(env, opts, result);
-    return result;
+    await env.DB.prepare(
+      `INSERT INTO email_outbox
+         (id, to_address, subject, body_html, body_text, purpose, ref_type, ref_id, reply_to, status, attempts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1)`,
+    )
+      .bind(id, to, opts.subject, opts.html, opts.text ?? null, opts.purpose, opts.refType ?? null, opts.refId ?? null, opts.replyTo ?? null)
+      .run();
+  } catch (e) {
+    console.warn("[email] outbox enqueue failed; sending inline only:", e);
   }
+
+  const result = await deliverViaResend(env, {
+    to,
+    subject: opts.subject,
+    html: opts.html,
+    text: opts.text,
+    replyTo: opts.replyTo,
+  });
+  try {
+    if (result.status === "sent") {
+      await env.DB.prepare(`UPDATE email_outbox SET status='sent', sent_at=datetime('now') WHERE id=?`).bind(id).run();
+    } else {
+      await env.DB.prepare(`UPDATE email_outbox SET last_error=? WHERE id=?`).bind(result.reason ?? null, id).run();
+    }
+  } catch {
+    /* outbox bookkeeping is best-effort */
+  }
+  await logEmail(env, opts, result);
+  return result;
+}
+
+// Cron drain (called from the every-5-min scheduled handler): retry pending
+// outbox rows — the immediate-send failures. Up to 3 attempts total, then
+// 'failed'. No-op when RESEND_API_KEY is unset. Each attempt mirrors to email_log.
+export async function drainEmailOutbox(
+  env: Env,
+  limit = 25,
+): Promise<{ processed: number; sent: number; failed: number }> {
+  if (!env.RESEND_API_KEY) return { processed: 0, sent: 0, failed: 0 };
+  const rows = await env.DB.prepare(
+    `SELECT id, to_address, subject, body_html, body_text, purpose, ref_type, ref_id, reply_to, attempts
+       FROM email_outbox WHERE status = 'pending' ORDER BY created_at LIMIT ?`,
+  )
+    .bind(limit)
+    .all<{
+      id: string;
+      to_address: string;
+      subject: string;
+      body_html: string | null;
+      body_text: string | null;
+      purpose: EmailPurpose;
+      ref_type: string | null;
+      ref_id: number | null;
+      reply_to: string | null;
+      attempts: number;
+    }>();
+
+  let sent = 0;
+  let failed = 0;
+  const list = rows.results ?? [];
+  for (const r of list) {
+    const result = await deliverViaResend(env, {
+      to: r.to_address,
+      subject: r.subject,
+      html: r.body_html ?? "",
+      text: r.body_text,
+      replyTo: r.reply_to,
+    });
+    const attempts = (r.attempts ?? 0) + 1;
+    if (result.status === "sent") {
+      await env.DB.prepare(`UPDATE email_outbox SET status='sent', sent_at=datetime('now'), attempts=? WHERE id=?`).bind(attempts, r.id).run();
+      sent++;
+    } else {
+      const status = attempts >= 3 ? "failed" : "pending";
+      await env.DB.prepare(`UPDATE email_outbox SET status=?, attempts=?, last_error=? WHERE id=?`).bind(status, attempts, result.reason ?? null, r.id).run();
+      if (status === "failed") failed++;
+    }
+    await logEmail(
+      env,
+      {
+        to: r.to_address,
+        subject: r.subject,
+        html: r.body_html ?? "",
+        purpose: r.purpose,
+        refType: r.ref_type ?? undefined,
+        refId: r.ref_id ?? undefined,
+      },
+      result,
+    );
+  }
+  return { processed: list.length, sent, failed };
 }
 
 // ── Convenience: build a public URL for email links ──────────

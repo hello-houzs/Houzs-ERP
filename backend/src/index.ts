@@ -55,6 +55,7 @@ import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
 import { runPull } from "./services/pull";
+import { drainEmailOutbox } from "./services/email";
 import { isAutoCountSyncDisabled } from "./services/autocount";
 import { runPOPull, runPODocsPull } from "./services/po";
 import { runOverdue } from "./services/overdue";
@@ -201,6 +202,16 @@ export default {
       // (which removed the SO pull that used to warm it). Cheap — SELECT 1.
       ctx.waitUntil(
         env.DB.prepare("SELECT 1 AS ok").first().catch((e) => console.error("[cron keepwarm]", e))
+      );
+      // Durable email: retry outbox rows whose immediate send failed. No-op
+      // without RESEND_API_KEY; bounded to 25 rows / 3 attempts so a bad batch
+      // can't stall the slot. Runs even when AutoCount sync is off.
+      ctx.waitUntil(
+        drainEmailOutbox(env)
+          .then((r) => {
+            if (r.processed) console.log(`[cron email-outbox] processed=${r.processed} sent=${r.sent} failed=${r.failed}`);
+          })
+          .catch((e) => console.error("[cron email-outbox]", e))
       );
       // Tight loop: incremental SO pull. Everything else waits for slower slots.
       if (!syncOff)
