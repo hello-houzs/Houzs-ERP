@@ -29,9 +29,9 @@ PUBLIC_APP_URL = "https://erp.houzscentury.com"
 # mail.it-houzs.dev (worked through 06-12) to restore email NOW. TO switch back
 # to the company domain: verify houzscentury.com in Resend (Domains -> add the
 # records Resend shows -> click Verify), then swap these two lines + redeploy.
-#EMAIL_FROM = "Houzs ERP <no-reply@houzscentury.com>"  # re-enable once verified
-EMAIL_FROM = "Houzs ERP <no-reply@mail.it-houzs.dev>"
-#EMAIL_FROM = "Houzs ERP <onboarding@resend.dev>"
+EMAIL_FROM = "Houzs ERP <no-reply@houzscentury.com>"
+#EMAIL_FROM = "Houzs ERP <no-reply@mail.it-houzs.dev>"  # departed dev's domain — do not use
+#EMAIL_FROM = "Houzs ERP <onboarding@resend.dev>"        # fallback: works with any key, no domain verify
 
 # D1 — REMOVED 2026-06-13 (write lockout). Prod is fully on Supabase/Postgres:
 # every request (dbInject) and every cron (withPgDb) runs through the d1-compat
