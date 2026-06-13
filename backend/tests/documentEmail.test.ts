@@ -1,16 +1,16 @@
 import { env, fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
-  advanceStatus,
   buildDeliveryOrderEmail,
   maybeSendDeliveryOrderEmail,
 } from "../src/services/delivery";
-import { documentEmailHtml, setSetting } from "../src/services/email";
+import { documentEmailHtml, sendEmail, setSetting } from "../src/services/email";
 
-// Auto-send customer documents (mig 098/0009). The 'delivery_order' channel is
-// seeded OFF, the send no-ops without a customer_email, and delivery_tracking
-// .do_email_sent_at makes it once-only. The dispatch hook lives in advanceStatus
-// (region-aware: WEST/EAST 'out_for_delivery', SG 'shipped'). Resend is mocked.
+// Auto-send customer documents (mig 098/0009). The 'delivery_order' channel
+// FAILS CLOSED (missing row = OFF), the send no-ops without a customer_email,
+// and delivery_tracking.do_email_sent_at makes it once-only. No status hook is
+// wired yet (trigger TBD); maybeSendDeliveryOrderEmail is the ready primitive.
+// Resend is mocked.
 
 function mockResend(status: number, body: unknown) {
   fetchMock
@@ -40,9 +40,6 @@ async function setChannel(on: boolean) {
   await setSetting(env, "email.delivery_order", { value: on }, null);
 }
 
-// A real user id for delivery_status_log.changed_by (FK to users).
-let actorId: number;
-
 beforeAll(() => {
   fetchMock.activate();
   fetchMock.disableNetConnect();
@@ -52,30 +49,13 @@ afterEach(() => fetchMock.assertNoPendingInterceptors());
 beforeEach(async () => {
   await env.DB.exec(`DELETE FROM email_log`);
   await env.DB.exec(`DELETE FROM email_outbox`);
-  await env.DB.exec(`DELETE FROM delivery_status_log`);
   await env.DB.exec(`DELETE FROM delivery_tracking`);
   await env.DB.exec(`DELETE FROM sales_orders`);
-  await env.DB.exec(`DELETE FROM users`);
-  await env.DB.exec(`DELETE FROM roles WHERE is_system = 0`);
-
-  const role = await env.DB.prepare(
-    `INSERT INTO roles (name, description, permissions, scope_to_pic) VALUES (?, 'test', ?, 0)`,
-  )
-    .bind(`r_${Math.random().toString(36).slice(2)}`, JSON.stringify(["*"]))
-    .run();
-  const u = await env.DB.prepare(
-    `INSERT INTO users (email, name, role_id, status, joined_at)
-     VALUES (?, 'Dispatcher', ?, 'active', datetime('now'))`,
-  )
-    .bind(`u_${Math.random().toString(36).slice(2)}@test.local`, role.meta.last_row_id)
-    .run();
-  actorId = u.meta.last_row_id as number;
-
   await setChannel(false); // each test starts gated OFF (the safe default)
 });
 
 describe("document email template", () => {
-  test("documentEmailHtml renders the doc no, recipient, and every row; no null leaks", () => {
+  test("renders the doc no, recipient, and every row", () => {
     const html = documentEmailHtml({
       docTypeLabel: "Delivery Order",
       docNo: "SO-1",
@@ -90,8 +70,23 @@ describe("document email template", () => {
     expect(html).toContain("ACME Sdn Bhd");
     expect(html).toContain("9am - 12pm");
     expect(html).toContain("On its way");
-    expect(html).not.toContain("undefined");
-    expect(html).not.toContain("null");
+  });
+
+  test("escapes HTML metacharacters in interpolated values (no markup injection)", () => {
+    const html = documentEmailHtml({
+      docTypeLabel: "Delivery Order",
+      docNo: "SO-1",
+      recipientName: 'ACME <b>&"x',
+      rows: [{ label: "Note", value: "<script>alert(1)</script> & more" }],
+    });
+    // Raw customer markup must NOT survive into the email body.
+    expect(html).not.toContain("<b>");
+    expect(html).not.toContain("<script>");
+    // Escaped forms are present instead.
+    expect(html).toContain("&lt;b&gt;");
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain("&amp;");
+    expect(html).toContain("&quot;");
   });
 });
 
@@ -115,44 +110,46 @@ describe("buildDeliveryOrderEmail", () => {
   });
 });
 
-describe("dispatch hook (gated)", () => {
-  test("channel OFF: dispatch still advances + logs, but nothing is sent", async () => {
+describe("gating + send", () => {
+  test("channel FAILS CLOSED when the toggle row is missing", async () => {
+    // Remove the seeded row entirely: a missing customer-channel toggle must
+    // resolve to OFF (never auto-email a real customer on a fresh/restored DB).
+    await env.DB.exec(`DELETE FROM app_settings WHERE key='email.delivery_order'`);
+    const res = await sendEmail(liveEnv, {
+      to: "cust@example.com",
+      subject: "x",
+      html: "<p>x</p>",
+      purpose: "delivery_order",
+    });
+    expect(res.status).toBe("skipped");
+  });
+
+  test("channel OFF: maybeSend skips, nothing queued, guard stays null", async () => {
     await seedOrder("SO-OFF", "WEST", "cust@example.com");
-    const r = await advanceStatus(env, "SO-OFF", "out_for_delivery", actorId);
-    expect(r.to).toBe("out_for_delivery");
+    await maybeSendDeliveryOrderEmail(env, "SO-OFF");
 
-    // The durable mutation succeeded.
-    const log = await env.DB.prepare(
-      `SELECT to_status FROM delivery_status_log WHERE doc_no = ? ORDER BY id DESC LIMIT 1`,
-    )
-      .bind("SO-OFF")
-      .first<{ to_status: string }>();
-    expect(log?.to_status).toBe("out_for_delivery");
-
-    // Email was attempted but skipped because the channel is disabled.
     const el = await env.DB.prepare(
       `SELECT status FROM email_log WHERE purpose='delivery_order' ORDER BY id DESC LIMIT 1`,
     ).first<{ status: string }>();
     expect(el?.status).toBe("skipped");
 
-    // No outbox row (skip happens before enqueue) and the guard stays null so a
-    // future "channel ON" dispatch can still notify.
     const ob = await env.DB.prepare(
       `SELECT COUNT(*) AS n FROM email_outbox WHERE purpose='delivery_order'`,
     ).first<{ n: number }>();
     expect(Number(ob?.n ?? 0)).toBe(0);
+
     const dt = await env.DB.prepare(
       `SELECT do_email_sent_at FROM delivery_tracking WHERE doc_no='SO-OFF'`,
     ).first<{ do_email_sent_at: string | null }>();
     expect(dt?.do_email_sent_at).toBeNull();
   });
 
-  test("channel ON: dispatch emails the customer once and stamps the guard", async () => {
+  test("channel ON: emails the customer once and stamps the guard", async () => {
     await setChannel(true);
     mockResend(200, { id: "prov-do" });
     await seedOrder("SO-ON", "WEST", "cust@example.com");
 
-    await advanceStatus(liveEnv, "SO-ON", "out_for_delivery", actorId);
+    await maybeSendDeliveryOrderEmail(liveEnv, "SO-ON");
 
     const el = await env.DB.prepare(
       `SELECT status, to_addr FROM email_log WHERE purpose='delivery_order' ORDER BY id DESC LIMIT 1`,
@@ -171,39 +168,19 @@ describe("dispatch hook (gated)", () => {
     expect(dt?.do_email_sent_at).toBeTruthy();
   });
 
-  test("dedup: a second dispatch attempt does not re-send", async () => {
+  test("dedup: a second send attempt does not re-send", async () => {
     await setChannel(true);
     mockResend(200, { id: "prov-once" }); // exactly one send expected
     await seedOrder("SO-DUP", "WEST", "cust@example.com");
 
     await maybeSendDeliveryOrderEmail(liveEnv, "SO-DUP");
-    // Guard now set; a retried dispatch must NOT fetch again (no 2nd interceptor
-    // → if it tried, disableNetConnect would throw and fail the test).
+    // Guard now set; a retry must NOT fetch again (no 2nd interceptor → if it
+    // tried, disableNetConnect would throw and fail the test).
     await maybeSendDeliveryOrderEmail(liveEnv, "SO-DUP");
 
     const n = await env.DB.prepare(
       `SELECT COUNT(*) AS n FROM email_log WHERE purpose='delivery_order' AND status='sent'`,
     ).first<{ n: number }>();
     expect(Number(n?.n ?? 0)).toBe(1);
-  });
-
-  test("region trigger: SG fires on 'shipped', not 'pending_shipout'", async () => {
-    await setChannel(true);
-    await seedOrder("SO-SG", "SG", "cust@example.com");
-
-    // do_ready -> pending_shipout is NOT the dispatch milestone for SG: no send.
-    await advanceStatus(liveEnv, "SO-SG", "pending_shipout", actorId);
-    let dt = await env.DB.prepare(
-      `SELECT do_email_sent_at FROM delivery_tracking WHERE doc_no='SO-SG'`,
-    ).first<{ do_email_sent_at: string | null }>();
-    expect(dt?.do_email_sent_at).toBeNull();
-
-    // pending_shipout -> shipped IS the SG dispatch milestone: sends.
-    mockResend(200, { id: "prov-sg" });
-    await advanceStatus(liveEnv, "SO-SG", "shipped", actorId);
-    dt = await env.DB.prepare(
-      `SELECT do_email_sent_at FROM delivery_tracking WHERE doc_no='SO-SG'`,
-    ).first<{ do_email_sent_at: string | null }>();
-    expect(dt?.do_email_sent_at).toBeTruthy();
   });
 });

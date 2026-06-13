@@ -71,6 +71,15 @@ const PURPOSE_TOGGLE_KEYS: Record<EmailPurpose, string> = {
   generic: "email.enabled",
 };
 
+// Customer-facing channels FAIL CLOSED: a missing toggle row (fresh/restored
+// DB, dropped seed) must never auto-email a real customer. Legacy internal
+// channels keep their historical default-ON (their rows were never all seeded).
+const FAIL_CLOSED_PURPOSES: ReadonlySet<EmailPurpose> = new Set([
+  "delivery_order",
+  "invoice",
+  "document_report",
+]);
+
 async function isChannelEnabled(env: Env, purpose: EmailPurpose): Promise<boolean> {
   // Master kill-switch first.
   const master = await readSetting<{ value: boolean }>(env, "email.enabled");
@@ -79,7 +88,9 @@ async function isChannelEnabled(env: Env, purpose: EmailPurpose): Promise<boolea
   const k = PURPOSE_TOGGLE_KEYS[purpose];
   if (k === "email.enabled") return true;
   const s = await readSetting<{ value: boolean }>(env, k);
-  // Default to ON if the row is missing (row wasn't seeded for some reason).
+  // Customer-facing: ON only when explicitly true (missing row = OFF).
+  if (FAIL_CLOSED_PURPOSES.has(purpose)) return s?.value === true;
+  // Internal channels: default ON if the row is missing.
   return s?.value !== false;
 }
 
@@ -256,6 +267,29 @@ export async function drainEmailOutbox(
   let failed = 0;
   const list = rows.results ?? [];
   for (const r of list) {
+    // Respect the LIVE channel toggle at retry time: an admin may have turned
+    // the channel (or master switch) OFF after this row was enqueued. Don't
+    // deliver it then — mark it terminal so the drain stops re-trying.
+    if (!(await isChannelEnabled(env, r.purpose))) {
+      await env.DB.prepare(
+        `UPDATE email_outbox SET status='failed', last_error='channel disabled at drain' WHERE id=?`,
+      )
+        .bind(r.id)
+        .run();
+      await logEmail(
+        env,
+        {
+          to: r.to_address,
+          subject: r.subject,
+          html: r.body_html ?? "",
+          purpose: r.purpose,
+          refType: r.ref_type ?? undefined,
+          refId: r.ref_id ?? undefined,
+        },
+        { status: "skipped", reason: "channel disabled at drain" },
+      );
+      continue;
+    }
     const result = await deliverViaResend(env, {
       to: r.to_address,
       subject: r.subject,
@@ -330,12 +364,24 @@ export function inviteEmailHtml(p: {
     </div>`;
 }
 
+// HTML-escape interpolated values. Document emails embed customer-controlled
+// free text (names, addresses, driver/lorry fields); without escaping a value
+// containing < > & " would corrupt or inject markup into the outbound email.
+function escapeHtml(s: string): string {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 // Shared customer-facing document email (Delivery Order, Invoice, Report all
 // reuse this — only the label + summary rows differ). HTML-only: it inlines the
 // document summary and optionally links to a view/print page, rather than
 // attaching a PDF. WHY: Cloudflare Workers has no headless-browser PDF path and
 // deliverViaResend has no attachment param; the repo's existing "documents"
 // (assr_print/projects_print) are server-rendered HTML for browser print too.
+// Every interpolated value is escaped (escapeHtml) since it can be customer text.
 export function documentEmailHtml(p: {
   docTypeLabel: string; // "Delivery Order" | "Invoice" | "Report"
   docNo: string;
@@ -344,25 +390,26 @@ export function documentEmailHtml(p: {
   viewLink?: string | null; // tokenized public view/print URL, optional
   note?: string | null;
 }): string {
+  const label = escapeHtml(p.docTypeLabel);
   const summary = p.rows
     .map(
       (r) =>
-        `<tr><td style="padding:4px 14px 4px 0;color:#777;white-space:nowrap">${r.label}</td>` +
-        `<td style="padding:4px 0;color:#222;font-weight:600">${r.value}</td></tr>`,
+        `<tr><td style="padding:4px 14px 4px 0;color:#777;white-space:nowrap">${escapeHtml(r.label)}</td>` +
+        `<td style="padding:4px 0;color:#222;font-weight:600">${escapeHtml(r.value)}</td></tr>`,
     )
     .join("");
   const button = p.viewLink
-    ? `<p style="margin:24px 0"><a href="${p.viewLink}"
-         style="display:inline-block;padding:12px 22px;background:#a16a2e;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">View ${p.docTypeLabel}</a></p>`
+    ? `<p style="margin:24px 0"><a href="${escapeHtml(p.viewLink)}"
+         style="display:inline-block;padding:12px 22px;background:#a16a2e;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">View ${label}</a></p>`
     : "";
   return `
     <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222">
       <h2 style="margin:0 0 4px">Houzs Century</h2>
-      <p style="margin:0 0 16px;color:#777">${p.docTypeLabel} ${p.docNo}</p>
-      <p>Dear ${p.recipientName},</p>
-      <p>Please find your ${p.docTypeLabel.toLowerCase()} details below.</p>
+      <p style="margin:0 0 16px;color:#777">${label} ${escapeHtml(p.docNo)}</p>
+      <p>Dear ${escapeHtml(p.recipientName)},</p>
+      <p>Please find your ${escapeHtml(p.docTypeLabel.toLowerCase())} details below.</p>
       <table style="border-collapse:collapse;margin:12px 0">${summary}</table>
-      ${p.note ? `<p style="color:#555">${p.note}</p>` : ""}
+      ${p.note ? `<p style="color:#555">${escapeHtml(p.note)}</p>` : ""}
       ${button}
       <p style="color:#777;font-size:12px;margin-top:24px">
         This is an automated message from Houzs Century. Reply to this email if

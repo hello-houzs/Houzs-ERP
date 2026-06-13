@@ -189,29 +189,17 @@ export async function advanceStatus(
     .bind(docNo, rec.status, newStatus, changedBy, updates?.notes ?? null)
     .run();
 
-  // Dispatch = the customer-notification moment (goods have left for the
-  // customer). Region-aware "left for customer" milestone: WEST/EAST
-  // 'out_for_delivery', SG 'shipped'. Fires AFTER the durable status update +
-  // log above; best-effort (never blocks the transition); gated OFF by the
-  // 'delivery_order' channel and a no-op when the order has no customer_email.
-  const DISPATCH_STATUS: Record<string, string> = {
-    WEST: "out_for_delivery",
-    EAST: "out_for_delivery",
-    SG: "shipped",
-  };
-  if (newStatus === DISPATCH_STATUS[rec.region]) {
-    await maybeSendDeliveryOrderEmail(env, docNo).catch(() => {});
-  }
-
   return { doc_no: docNo, from: rec.status, to: newStatus };
 }
 
-// ── Customer notification on dispatch (auto-send D.O.) ────────────
-// Pre-built + GATED OFF. Sends the customer their Delivery Order when goods are
-// dispatched, off the existing Resend + email_outbox stack. Three safety layers:
-// the 'delivery_order' channel is seeded OFF (mig 098), it no-ops without a
-// customer_email, and do_email_sent_at makes it once-only (a retried dispatch
-// can't re-notify). Invoice/report will mirror this shape.
+// ── Customer notification: auto-send D.O. (READY, not yet triggered) ──────────
+// Pre-built foundation. NOT wired to any status transition yet — the owner will
+// specify the trigger (dispatch / ready / delivered / ...) later, at which point
+// this helper gets called from that exact point (ideally via ctx.waitUntil so
+// the Resend POST stays off the request's hot path). Safety layers already in
+// place: the 'delivery_order' channel fails CLOSED unless explicitly ON, it
+// no-ops without a customer_email, and do_email_sent_at makes it once-only.
+// Invoice/report will mirror this shape.
 
 // Build the DO email from real delivery + order data. Returns null when the
 // order has no customer_email (caller treats null as "nothing to send").
