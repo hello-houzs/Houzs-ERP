@@ -28,6 +28,9 @@ app.patch("/email", requirePermission("settings.manage"), async (c) => {
     "email.supplier_invite",
     "email.project_due_reminder",
     "email.password_reset",
+    "email.delivery_order",
+    "email.invoice",
+    "email.document_report",
   ]);
   for (const [k, v] of Object.entries(body)) {
     if (!ALLOWED.has(k)) continue;

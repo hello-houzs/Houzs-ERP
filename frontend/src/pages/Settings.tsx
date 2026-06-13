@@ -264,6 +264,9 @@ const EMAIL_TOGGLES: { key: string; label: string; description: string }[] = [
   { key: "email.supplier_invite", label: "Supplier portal invites", description: "Email the invite / password-reset link to a supplier account." },
   { key: "email.project_due_reminder", label: "Project due reminders", description: "Daily cron emails checklist items due within 3 days or overdue." },
   { key: "email.password_reset", label: "Password reset emails", description: "Send a reset link when an admin clicks 'Send reset' on a team member." },
+  { key: "email.delivery_order", label: "Delivery Order (to customer)", description: "Auto-email the customer their D.O. when an order is dispatched. Sends to real customers — keep OFF until verified and customer emails are set on orders." },
+  { key: "email.invoice", label: "Invoice (to customer)", description: "Auto-email invoices to customers (trigger not built yet — leave OFF)." },
+  { key: "email.document_report", label: "Report (to customer)", description: "Auto-email reports to customers (trigger not built yet — leave OFF)." },
 ];
 
 function EmailTab() {

@@ -343,6 +343,9 @@ export const sales_orders = pgTable("sales_orders", {
   last_modified: text("last_modified"),
   sync_status: text("sync_status"),
   updated_at: text("updated_at"),
+  // Houzs-side recipient for auto-sent DO/invoice email; AutoCount debtor sync
+  // carries no email, so this is maintained manually (mig 098/0009).
+  customer_email: text("customer_email"),
 });
 
 // ── order_details ──────────────────────────────────────────

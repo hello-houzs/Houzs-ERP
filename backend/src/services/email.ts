@@ -28,6 +28,11 @@ export type EmailPurpose =
   | "member_invite"
   | "project_due_reminder"
   | "password_reset"
+  // Customer-facing document emails (auto-send foundation). All OFF by default
+  // (seeded false in mig 098) — high-stakes outbound, flip per-channel when ready.
+  | "delivery_order"
+  | "invoice"
+  | "document_report"
   | "generic";
 
 export interface SendOptions {
@@ -59,6 +64,9 @@ const PURPOSE_TOGGLE_KEYS: Record<EmailPurpose, string> = {
   member_invite: "email.member_invite",
   project_due_reminder: "email.project_due_reminder",
   password_reset: "email.password_reset",
+  delivery_order: "email.delivery_order",
+  invoice: "email.invoice",
+  document_report: "email.document_report",
   // No toggle for 'generic' — caller opted in explicitly.
   generic: "email.enabled",
 };
@@ -318,6 +326,47 @@ export function inviteEmailHtml(p: {
       <p style="color:#777;font-size:12px">
         This invitation expires in ${p.expiresIn}. If you weren't expecting it,
         you can ignore this email.
+      </p>
+    </div>`;
+}
+
+// Shared customer-facing document email (Delivery Order, Invoice, Report all
+// reuse this — only the label + summary rows differ). HTML-only: it inlines the
+// document summary and optionally links to a view/print page, rather than
+// attaching a PDF. WHY: Cloudflare Workers has no headless-browser PDF path and
+// deliverViaResend has no attachment param; the repo's existing "documents"
+// (assr_print/projects_print) are server-rendered HTML for browser print too.
+export function documentEmailHtml(p: {
+  docTypeLabel: string; // "Delivery Order" | "Invoice" | "Report"
+  docNo: string;
+  recipientName: string;
+  rows: Array<{ label: string; value: string }>; // summary key/values
+  viewLink?: string | null; // tokenized public view/print URL, optional
+  note?: string | null;
+}): string {
+  const summary = p.rows
+    .map(
+      (r) =>
+        `<tr><td style="padding:4px 14px 4px 0;color:#777;white-space:nowrap">${r.label}</td>` +
+        `<td style="padding:4px 0;color:#222;font-weight:600">${r.value}</td></tr>`,
+    )
+    .join("");
+  const button = p.viewLink
+    ? `<p style="margin:24px 0"><a href="${p.viewLink}"
+         style="display:inline-block;padding:12px 22px;background:#a16a2e;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">View ${p.docTypeLabel}</a></p>`
+    : "";
+  return `
+    <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222">
+      <h2 style="margin:0 0 4px">Houzs Century</h2>
+      <p style="margin:0 0 16px;color:#777">${p.docTypeLabel} ${p.docNo}</p>
+      <p>Dear ${p.recipientName},</p>
+      <p>Please find your ${p.docTypeLabel.toLowerCase()} details below.</p>
+      <table style="border-collapse:collapse;margin:12px 0">${summary}</table>
+      ${p.note ? `<p style="color:#555">${p.note}</p>` : ""}
+      ${button}
+      <p style="color:#777;font-size:12px;margin-top:24px">
+        This is an automated message from Houzs Century. Reply to this email if
+        you have any questions about your order.
       </p>
     </div>`;
 }
