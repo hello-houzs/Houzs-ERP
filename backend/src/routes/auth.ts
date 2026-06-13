@@ -12,6 +12,7 @@ import {
 } from "../services/auth";
 import { sendEmail, publicUrl, resetEmailHtml } from "../services/email";
 import { validatePasswordStrength } from "../services/passwordStrength";
+import { checkRateLimit, clearRateLimit, clientIp } from "../middleware/rateLimit";
 
 /**
  * Auth routes — UNAUTHENTICATED entry points.
@@ -84,11 +85,17 @@ app.post("/login", async (c) => {
   if (!body.email || !body.password) {
     return c.json({ error: "email and password are required" }, 400);
   }
+  const email = body.email.toLowerCase().trim();
+
+  // Brute-force speed bump: 10 attempts / 15 min per email+IP. Fail-open.
+  const rlKey = `${email}:${clientIp(c)}`;
+  const limited = await checkRateLimit(c, "login", rlKey);
+  if (limited) return limited;
 
   const user = await c.env.DB.prepare(
     `SELECT id, password_hash, status FROM users WHERE email = ?`
   )
-    .bind(body.email.toLowerCase().trim())
+    .bind(email)
     .first<{ id: number; password_hash: string; status: string }>();
 
   if (!user || !user.password_hash) {
@@ -105,6 +112,8 @@ app.post("/login", async (c) => {
     .bind(user.id)
     .run();
 
+  // Clear the counter on success so a user doesn't carry failed attempts.
+  await clearRateLimit(c, "login", rlKey);
   const token = await createSession(c.env, user.id);
   return c.json({ token, user_id: user.id });
 });
@@ -125,6 +134,11 @@ app.post("/forgot-password", async (c) => {
   const email = String(body.email || "").toLowerCase().trim();
   const done = () => c.json({ ok: true });
   if (!email || !email.includes("@")) return done();
+
+  // Per-email rate limit (5 / 15 min). Anti-enumeration: when over the cap we
+  // return the same {ok} instead of a 429, so it never reveals which emails
+  // exist. Stacks with the 5-min per-user cooldown below.
+  if (await checkRateLimit(c, "forgot", email, 5, 900)) return done();
 
   const user = await c.env.DB.prepare(
     `SELECT id, email, name FROM users WHERE email = ? AND status = 'active'`

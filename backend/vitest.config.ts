@@ -39,6 +39,9 @@ export default defineWorkersConfig(async () => {
             // wrangler.toml) so the prod [[d1_databases]] binding can be removed
             // for the D1 write-lockout without breaking the suite.
             d1Databases: ["DB"],
+            // Isolated KV for SESSION_CACHE so rate-limit + session-cache tests
+            // exercise the real KV path instead of the fail-open fallback.
+            kvNamespaces: ["SESSION_CACHE"],
             // Bindings exposed inside tests via `cloudflare:test` `env`.
             // TEST_MIGRATIONS is consumed by setup.ts → applyD1Migrations.
             // DASHBOARD_API_KEY mirrors the auth middleware's

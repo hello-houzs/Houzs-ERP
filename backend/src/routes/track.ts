@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { verifyAndIssueCustomerToken } from "../services/caseTracking";
+import { checkRateLimit, clientIp } from "../middleware/rateLimit";
 
 // Public tracking form endpoint. Unauthenticated — mounted before the
 // /api/* auth gate. Validates (case number, phone) against assr_cases
@@ -16,6 +17,11 @@ async function bruteGuard() {
 }
 
 app.post("/", async (c) => {
+  // Per-IP brute-force cap on the (case-no + phone) lookup — the ASSR-number
+  // space is predictable, so this backs up the 500ms bruteGuard() below.
+  const limited = await checkRateLimit(c, "track", clientIp(c), 20, 900);
+  if (limited) return limited;
+
   const body = await c.req
     .json<{ assr_no?: string; phone?: string }>()
     .catch(() => ({} as { assr_no?: string; phone?: string }));
