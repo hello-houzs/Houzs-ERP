@@ -74,7 +74,13 @@ export function getSql(databaseUrl: string): Sql {
 
   return isHyperdrive
     ? postgres(databaseUrl, {
-        max: 1, // one socket per request; Hyperdrive pools origin-side
+        // max:1 — one socket per request; Hyperdrive pools origin-side.
+        // Higher values risk "Cannot perform I/O on behalf of a different
+        // request" when postgres.js keeps pool sockets past the request
+        // boundary. This matches Hookka's months-proven prod config — do
+        // NOT add max>1, .end()-per-request, or query retries: each caused
+        // connection churn/exhaustion when tried 2026-06-13.
+        max: 1,
         prepare: false, // transaction pooler: no prepared statements
         fetch_types: false,
         idle_timeout: 0,
