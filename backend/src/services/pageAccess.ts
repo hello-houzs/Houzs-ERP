@@ -565,12 +565,14 @@ export async function loadPageAccessForRole(
 
 /**
  * Hydrate a POSITION's full page-access map from `position_page_access`
- * (4-level none/view/edit/full). Same shape + cascade rules as
- * `loadPageAccessForRole`, but positions have NO permission-set backfill —
- * pages without an explicit matrix row default to "none" (the seed writes the
- * full grid; anything unseeded is intentionally hidden). Same parent→child
- * cascade: parent full → children full, parent none → children none, parent
- * view/edit → child's own row stands.
+ * (4-level none/view/edit/full). Positions have NO permission-set backfill.
+ *
+ * INHERIT model (simpler than the role matrix's partial-parent rule): a child
+ * sub-page inherits its parent's level unless it has its own explicit row. So
+ * the seed can grant a whole area with one parent row (projects:view) and
+ * override individual sub-tabs (projects.finances:none to hide finances), or
+ * grant just one tab (projects:none + projects.calendar:view). A standalone
+ * page with no row is "none".
  *
  * Returned record is attached to `AuthUser.page_access` exactly like the role
  * loader's output, so `requirePageAccess` / `usePageAccess` need no changes.
@@ -596,13 +598,12 @@ export async function loadPageAccessForPosition(
   const raw: Record<string, AccessLevel> = {};
   for (const p of PAGES) raw[p.key] = explicit[p.key] ?? "none";
 
-  // Pass 2: cascade parent full/none into children.
+  // Pass 2: children inherit the parent's level unless they have an explicit
+  // row of their own (inherit model — see docstring).
   const out: Record<string, AccessLevel> = { ...raw };
   for (const p of PAGES) {
     if (!p.parent) continue;
-    const parentLevel = raw[p.parent];
-    if (parentLevel === "full") out[p.key] = "full";
-    else if (parentLevel === "none") out[p.key] = "none";
+    out[p.key] = explicit[p.key] ?? raw[p.parent];
   }
 
   return out;
