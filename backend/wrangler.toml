@@ -28,12 +28,14 @@ PUBLIC_APP_URL = "https://erp.houzscentury.com"
 EMAIL_FROM = "Houzs ERP <no-reply@mail.it-houzs.dev>"
 #EMAIL_FROM = "Houzs ERP <onboarding@resend.dev>"
 
-# D1 — legacy. Kept bound through the Supabase cutover so a rollback is a
-# one-line revert. Remove once the Postgres cutover is verified in prod.
-[[d1_databases]]
-binding = "DB"
-database_name = "autocount-sync"
-database_id = "d0401549-c099-407b-ae95-57a5f85e5ad5"
+# D1 — REMOVED 2026-06-13 (write lockout). Prod is fully on Supabase/Postgres:
+# every request (dbInject) and every cron (withPgDb) runs through the d1-compat
+# shim over Hyperdrive, so the bound D1 was never written post-cutover — only
+# the vitest fallback used it, and that now declares its own D1 in
+# vitest.config.ts (miniflare d1Databases). The D1 `autocount-sync`
+# (d0401549-c099-407b-ae95-57a5f85e5ad5) still exists in the CF account as a
+# cold backup; to roll back, re-add this binding. There is no env.DB binding in
+# prod anymore.
 
 # Supabase Postgres via Hyperdrive (the cutover target). Project
 # ctbaifabbzghtsrmpirm under the COMPANY Supabase account
