@@ -1,0 +1,10 @@
+﻿import { readFileSync } from "node:fs";
+import postgres from "postgres";
+const url = readFileSync(".dev.vars","utf8").match(/DATABASE_URL="([^"]+)"/)[1];
+const pg = postgres(url,{ssl:"require",prepare:false,max:1});
+const cols = await pg`SELECT column_name FROM information_schema.columns WHERE table_name='email_log' ORDER BY ordinal_position`;
+console.log("email_log columns:", cols.map(c=>c.column_name).join(", "));
+const log = await pg`SELECT purpose, status, error, provider_id, created_at FROM email_log ORDER BY id DESC LIMIT 6`;
+console.log("recent email_log:");
+for (const r of log) console.log("  ", r.purpose, "|", r.status, "| err:", (r.error||"-").slice(0,100), "| pid:", r.provider_id||"-", "|", r.created_at);
+await pg.end();

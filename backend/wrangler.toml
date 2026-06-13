@@ -17,13 +17,15 @@ AUTOCOUNT_SYNC_DISABLED = "true"
 # member invitations, password resets). The canonical user-facing domain —
 # pages.dev still serves, but every link we hand out reads this.
 PUBLIC_APP_URL = "https://erp.houzscentury.com"
-# From address shown on outbound transactional emails (invites, password
-# resets, ASSR, etc.). houzscentury.com is verified in Resend (send. SPF +
-# resend._domainkey DKIM present in DNS as of 2026-06-13), so we send from
-# the company domain rather than the departed dev's it-houzs.dev.
-EMAIL_FROM = "Houzs ERP <no-reply@houzscentury.com>"
-# Rollback options if houzscentury.com sending ever breaks:
-#EMAIL_FROM = "Houzs ERP <no-reply@mail.it-houzs.dev>"
+# From address for outbound transactional email. 2026-06-13: houzscentury.com
+# was set here but Resend returns 403 "domain is not verified" (DNS records were
+# added but the domain was never VERIFIED in the Resend dashboard) — every email
+# (invites, resets) silently failed. Temporarily reverted to the proven-verified
+# mail.it-houzs.dev (worked through 06-12) to restore email NOW. TO switch back
+# to the company domain: verify houzscentury.com in Resend (Domains -> add the
+# records Resend shows -> click Verify), then swap these two lines + redeploy.
+#EMAIL_FROM = "Houzs ERP <no-reply@houzscentury.com>"  # re-enable once verified
+EMAIL_FROM = "Houzs ERP <no-reply@mail.it-houzs.dev>"
 #EMAIL_FROM = "Houzs ERP <onboarding@resend.dev>"
 
 # D1 — legacy. Kept bound through the Supabase cutover so a rollback is a
