@@ -44,11 +44,14 @@ database_id = "d0401549-c099-407b-ae95-57a5f85e5ad5"
 # from .dev.vars instead of this binding.
 [[hyperdrive]]
 binding = "HYPERDRIVE"
-id = "4e820fcfa4f945929ab77e164060e694"
-# Spare fresh config f0f9bd0d6b924496981b97b9ebcfe898 (houzs-erp-pg-v2) also
-# exists, same SG target — only useful if 4e820fcf is permanently stuck (it is
-# NOT: both point at the same anogrigy tenant, so a Supavisor tenant throttle
-# affects both equally — the 2026-06-13 outage cure is STOP churning + wait).
+# 2026-06-13: the original 4e820fcf went into a persistently-stuck pool state
+# (Hyperdrive hangs reaching origin; DB itself healthy via direct connect;
+# 15min quiet + pool-rebuild did NOT clear it). f0f9bd0d is a FRESH config over
+# the same SG company project (anogrigyjbduyzclzjgn:6543) — deploying with it
+# is the most likely revive. A Worker deploy is required to switch the binding;
+# the in-session deploy was gate-blocked, so this ships via CI on merge to main.
+# Fallback if this also hangs: 4e820fcfa4f945929ab77e164060e694 (the old one).
+id = "f0f9bd0d6b924496981b97b9ebcfe898"
 
 # R2 bucket for proof-of-delivery photos and signatures.
 [[r2_buckets]]
