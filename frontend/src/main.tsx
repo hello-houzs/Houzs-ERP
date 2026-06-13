@@ -8,6 +8,7 @@ import { DialogProvider } from "./hooks/useDialog";
 import { AuthProvider } from "./auth/AuthContext";
 import { AuthGate } from "./auth/AuthScreens";
 import { PwaBanners } from "./components/PwaBanners";
+import { ChunkReloadBoundary } from "./components/RouteFallback";
 import { registerPwa } from "./pwa";
 
 // The public surfaces (survey, customer/supplier portal, password reset)
@@ -39,6 +40,10 @@ const isReset = path.startsWith("/reset/");
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
+    {/* Top-level boundary: any render error (in Layout, Sidebar, a provider, or
+        a route) shows a friendly reload panel instead of a white screen, and
+        auto-reloads once on a stale-chunk error after a deploy. */}
+    <ChunkReloadBoundary>
     <BrowserRouter>
       <ToastProvider>
        <DialogProvider>
@@ -68,5 +73,6 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
        </DialogProvider>
       </ToastProvider>
     </BrowserRouter>
+    </ChunkReloadBoundary>
   </React.StrictMode>
 );
