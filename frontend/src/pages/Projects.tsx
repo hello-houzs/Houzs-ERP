@@ -758,7 +758,10 @@ export function Projects() {
   // gates on its own `projects.<view>` access level. The PageGuard at
   // the route already filtered users with `projects = none`; this
   // narrower check decides which views are reachable.
-  const access: Record<ProjectsView, "none" | "partial" | "full"> = {
+  // Levels are AccessLevel (none/view/edit/full or legacy partial) — let TS
+  // infer so position-matrix values (view/edit) are accepted, not just the old
+  // role-matrix trio.
+  const access = {
     list: usePageAccess("projects.list"),
     calendar: usePageAccess("projects.calendar"),
     finances: usePageAccess("projects.finances"),

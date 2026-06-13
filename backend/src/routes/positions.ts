@@ -4,6 +4,7 @@ import {
   PAGES,
   isValidPageKey,
   isValidPositionLevel,
+  loadPageAccessForPosition,
   type AccessLevel,
 } from "../services/pageAccess";
 import { requirePermission } from "../middleware/auth";
@@ -199,23 +200,22 @@ app.get("/:id/page-access", requirePermission("users.read"), async (c) => {
     .limit(1);
   if (posRow.length === 0) return c.json({ error: "Position not found" }, 404);
 
+  // Effective level = what the position actually resolves to at login (inherit
+  // model: children inherit the parent unless they have an explicit row). The
+  // `explicit` flag marks rows the admin set directly vs inherited — so the
+  // editor shows the true effective access and only sends overrides on save.
+  const effective = await loadPageAccessForPosition(c.env, id);
   const rows = await db
     .select({ page_key: position_page_access.page_key, level: position_page_access.level })
     .from(position_page_access)
     .where(eq(position_page_access.position_id, id));
-
-  const explicit: Record<string, AccessLevel> = {};
-  for (const r of rows) {
-    if (isValidPageKey(r.page_key) && isValidPositionLevel(r.level)) {
-      explicit[r.page_key] = r.level as AccessLevel;
-    }
-  }
+  const explicitKeys = new Set(
+    rows.filter((r) => isValidPageKey(r.page_key) && isValidPositionLevel(r.level)).map((r) => r.page_key),
+  );
 
   const out: Record<string, { level: AccessLevel; explicit: boolean }> = {};
   for (const p of PAGES) {
-    out[p.key] = explicit[p.key]
-      ? { level: explicit[p.key], explicit: true }
-      : { level: "none", explicit: false };
+    out[p.key] = { level: effective[p.key] ?? "none", explicit: explicitKeys.has(p.key) };
   }
 
   return c.json({ position_id: id, page_access: out });

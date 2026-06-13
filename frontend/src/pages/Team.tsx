@@ -19,8 +19,9 @@ import { useAuth } from "../auth/AuthContext";
 import { relativeTime, cn } from "../lib/utils";
 import type { TeamMember, Invitation, Role, Department, Position } from "../types";
 import { RolesTab } from "./Roles";
+import { PositionsTab } from "./Positions";
 
-type TeamTabValue = "members" | "roles" | "orgchart" | "departments";
+type TeamTabValue = "members" | "positions" | "roles" | "orgchart" | "departments";
 
 const TEAM_KEYS = ["tab"] as const;
 
@@ -45,7 +46,7 @@ export function Team() {
 
   const raw = params.get("tab") as TeamTabValue | null;
   const active: TeamTabValue =
-    raw && ["members", "roles", "orgchart", "departments"].includes(raw)
+    raw && ["members", "positions", "roles", "orgchart", "departments"].includes(raw)
       ? raw
       : canUsers
       ? "members"
@@ -63,6 +64,7 @@ export function Team() {
 
   const tabs: TabOption<TeamTabValue>[] = [
     { value: "members", label: "Members", show: canUsers },
+    { value: "positions", label: "Positions", show: canManageUsers },
     { value: "orgchart", label: "Org Chart", show: canUsers },
     { value: "departments", label: "Departments", show: canUsers },
     { value: "roles", label: "Roles", show: canRoles },
@@ -76,6 +78,12 @@ export function Team() {
       eyebrow: "Workspace · Members",
       title: "Members",
       description: "Manage who can access this workspace and what they can do.",
+    },
+    positions: {
+      eyebrow: "Workspace · Access by Position",
+      title: "Positions",
+      description:
+        "Set which pages each position can see (none / view / edit / full). This drives the menu and blocks direct-URL access — a member only ever sees their position's pages.",
     },
     orgchart: {
       eyebrow: "Workspace · Hierarchy",
@@ -151,6 +159,7 @@ export function Team() {
           onCloseInvite={() => setInviteOpen(false)}
         />
       )}
+      {active === "positions" && canManageUsers && <PositionsTab />}
       {active === "orgchart" && canUsers && <OrgChartTab />}
       {active === "departments" && canUsers && (
         <DepartmentsTab
