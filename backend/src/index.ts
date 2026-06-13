@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./types";
 import { auth } from "./middleware/auth";
+import { idempotency } from "./middleware/idempotency";
 import orders from "./routes/orders";
 import sync from "./routes/sync";
 import balance from "./routes/balance";
@@ -104,6 +105,11 @@ app.route("/api/supplier-portal", supplierPortal);
 // Auth gate for everything else under /api/*. Mounted AFTER the
 // public API routes above so they stay unauthenticated.
 app.use("/api/*", auth);
+
+// Opt-in request idempotency (no-op unless the client sends an
+// `Idempotency-Key` header). Mounted after auth so `userId` is set, and
+// before the routes so it can replay a stored response. Fail-open.
+app.use("/api/*", idempotency);
 
 app.route("/api/orders", orders);
 app.route("/api/sync", sync);
@@ -308,6 +314,19 @@ export default {
             ),
           )
           .catch((e) => console.error("[cron gifting-reset]", e)),
+      );
+      // Idempotency-key TTL sweep. Keys only need to outlive a client's
+      // retry window; 24h is generous. Cheap (indexed on created_at).
+      ctx.waitUntil(
+        env.DB.prepare(
+          `DELETE FROM idempotency_keys WHERE created_at < datetime('now','-24 hours')`,
+        )
+          .run()
+          .then((r) => {
+            const n = r?.meta?.changes ?? 0;
+            if (n) console.log(`[cron idempotency-sweep] purged ${n} expired key(s)`);
+          })
+          .catch((e) => console.error("[cron idempotency-sweep]", e)),
       );
     }
   },
