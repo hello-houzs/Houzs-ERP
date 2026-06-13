@@ -138,15 +138,18 @@ const sql = postgres(url, { ssl: "require", prepare: false, max: 1, idle_timeout
 async function upsertDepartment(name) {
   const existing = await sql`SELECT id FROM departments WHERE name = ${name}`;
   if (existing.length) return existing[0].id;
-  const ins = await sql`INSERT INTO departments (name) VALUES (${name}) RETURNING id`;
+  // color + sort_order are NOT NULL with no DB default (the D1->PG load dropped
+  // Drizzle's ORM-level defaults), so set them explicitly.
+  const ins = await sql`INSERT INTO departments (name, color, sort_order)
+    VALUES (${name}, ${"64748b"}, 0) RETURNING id`;
   return ins[0].id;
 }
 
 async function upsertRole(name, perms) {
   const existing = await sql`SELECT id FROM roles WHERE name = ${name}`;
   if (existing.length) return existing[0].id;
-  const ins = await sql`INSERT INTO roles (name, description, permissions, is_system)
-    VALUES (${name}, ${"Read-only preview role for position test accounts"}, ${JSON.stringify(perms)}, 0) RETURNING id`;
+  const ins = await sql`INSERT INTO roles (name, description, permissions, is_system, scope_to_pic)
+    VALUES (${name}, ${"Read-only preview role for position test accounts"}, ${JSON.stringify(perms)}, 0, 0) RETURNING id`;
   return ins[0].id;
 }
 
@@ -207,9 +210,9 @@ for (const p of POSITIONS) {
       department_id=${deptId[p.dept]}, status='active', password_hash=${hash} WHERE id=${existing[0].id}`;
     userId[p.slug] = existing[0].id;
   } else {
-    const ins = await sql`INSERT INTO users (email, name, role_id, position_id, department_id, status, password_hash, joined_at)
+    const ins = await sql`INSERT INTO users (email, name, role_id, position_id, department_id, status, password_hash, joined_at, points_balance, gifting_balance, current_streak)
       VALUES (${email}, ${p.name + " (test)"}, ${roleId}, ${posId[p.slug]}, ${deptId[p.dept]}, 'active', ${hash},
-        to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')) RETURNING id`;
+        to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS'), 0, 0, 0) RETURNING id`;
     userId[p.slug] = ins[0].id;
   }
 }
