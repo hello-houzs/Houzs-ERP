@@ -44,6 +44,7 @@ import {
   canSeeProject,
 } from "../services/projectAcl";
 import { getPmsAccess } from "../services/pmsAccess";
+import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
 import { recomputeAutoCostLines } from "../services/projectCostRates";
 import { getDb } from "../db/client";
@@ -1367,6 +1368,13 @@ app.patch("/:id/finance", requirePermission("projects.write"), async (c) => {
   const body = await c.req.json<Record<string, any>>();
   const ok = await patchFinance(c.env, id, body, user?.id ?? 0);
   if (!ok) return c.json({ error: "No changes" }, 400);
+  await audit(c, {
+    action: "finance.update",
+    entityType: "project_finance",
+    entityId: id,
+    summary: `Edited finance for project #${id}`,
+    meta: { fields: Object.keys(body) },
+  });
   return c.json({ ok: true });
 });
 

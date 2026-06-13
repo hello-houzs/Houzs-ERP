@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { pushSalesOrder } from "../services/push";
+import { audit } from "../services/audit";
 import { DELIVERY_WHERE } from "../services/deliveryFilter";
 import { AutoCountClient } from "../services/autocount";
 import { getDb } from "../db/client";
@@ -433,6 +434,14 @@ app.patch("/:docNo", async (c) => {
     .where(eq(sales_orders.doc_no, docNo));
 
   if (!result.count) return c.json({ error: "Order not found" }, 404);
+
+  await audit(c, {
+    action: "order.update",
+    entityType: "order",
+    entityId: docNo,
+    summary: `Edited order ${docNo}`,
+    meta: { changed: Object.keys(set).filter((k) => k !== "updated_at") },
+  });
 
   // Real-time push
   const pushResult = await pushSalesOrder(c.env, docNo);

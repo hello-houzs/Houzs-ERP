@@ -8,6 +8,7 @@ import {
   type AccessLevel,
 } from "../services/pageAccess";
 import { requirePermission } from "../middleware/auth";
+import { audit } from "../services/audit";
 import { getDb } from "../db/client";
 import { positions, position_page_access, users, departments } from "../db/schema";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -116,6 +117,14 @@ app.post("/", requirePermission("users.manage"), async (c) => {
     })
     .returning({ id: positions.id });
 
+  await audit(c, {
+    action: "position.create",
+    entityType: "position",
+    entityId: inserted[0]?.id,
+    summary: `Created position "${name}"`,
+    meta: { name, slug, department_id: body.department_id ?? null },
+  });
+
   return c.json({ id: inserted[0]?.id, slug, name });
 });
 
@@ -151,6 +160,13 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   }
 
   await db.update(positions).set(set).where(eq(positions.id, id));
+  await audit(c, {
+    action: "position.update",
+    entityType: "position",
+    entityId: id,
+    summary: `Updated position #${id}`,
+    meta: { changed: Object.keys(set) },
+  });
   return c.json({ ok: true });
 });
 
@@ -180,6 +196,12 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
   }
 
   await db.delete(positions).where(eq(positions.id, id));
+  await audit(c, {
+    action: "position.delete",
+    entityType: "position",
+    entityId: id,
+    summary: `Deleted position #${id}`,
+  });
   return c.json({ ok: true });
 });
 
@@ -264,6 +286,14 @@ app.patch("/:id/page-access", requirePermission("users.manage"), async (c) => {
       .bind(id, e.page_key, e.level)
       .run();
   }
+
+  await audit(c, {
+    action: "position.page_access.update",
+    entityType: "position",
+    entityId: id,
+    summary: `Updated page access for position #${id} (${cleaned.length} page(s))`,
+    meta: { entries: cleaned },
+  });
 
   return c.json({ ok: true, written: cleaned.length });
 });

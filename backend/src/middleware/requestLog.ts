@@ -19,6 +19,7 @@ function requestId(): string {
 export const requestLog: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   const id = c.req.header("X-Request-Id") || requestId();
   c.header("X-Request-Id", id);
+  c.set("requestId", id);
   const t0 = Date.now();
   await next();
   const ms = Date.now() - t0;

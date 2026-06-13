@@ -9,6 +9,7 @@ import {
   type AccessLevel,
 } from "../services/pageAccess";
 import { requirePermission } from "../middleware/auth";
+import { audit } from "../services/audit";
 import { getDb } from "../db/client";
 import { roles, role_page_access, users } from "../db/schema";
 import { eq, sql } from "drizzle-orm";
@@ -97,6 +98,14 @@ app.post("/", requirePermission("roles.manage"), async (c) => {
     })
     .returning({ id: roles.id });
 
+  await audit(c, {
+    action: "role.create",
+    entityType: "role",
+    entityId: inserted[0]?.id,
+    summary: `Created role "${name}"`,
+    meta: { name, permissions: perms, scope_to_pic: !!body.scope_to_pic },
+  });
+
   return c.json({
     id: inserted[0]?.id,
     name,
@@ -158,6 +167,13 @@ app.patch("/:id", requirePermission("roles.manage"), async (c) => {
   }
 
   await db.update(roles).set(set).where(eq(roles.id, id));
+  await audit(c, {
+    action: "role.update",
+    entityType: "role",
+    entityId: id,
+    summary: `Updated role #${id}`,
+    meta: { changed: Object.keys(set), permissions: body.permissions },
+  });
   return c.json({ ok: true });
 });
 
@@ -275,6 +291,14 @@ app.patch("/:id/page-access", requirePermission("roles.manage"), async (c) => {
       .run();
   }
 
+  await audit(c, {
+    action: "role.page_access.update",
+    entityType: "role",
+    entityId: id,
+    summary: `Updated page access for role #${id} (${cleaned.length} page(s))`,
+    meta: { entries: cleaned },
+  });
+
   return c.json({ ok: true, written: cleaned.length });
 });
 
@@ -310,6 +334,12 @@ app.delete("/:id", requirePermission("roles.manage"), async (c) => {
   }
 
   await db.delete(roles).where(eq(roles.id, id));
+  await audit(c, {
+    action: "role.delete",
+    entityType: "role",
+    entityId: id,
+    summary: `Deleted role #${id}`,
+  });
   return c.json({ ok: true });
 });
 

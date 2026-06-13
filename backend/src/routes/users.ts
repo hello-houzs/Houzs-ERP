@@ -9,6 +9,7 @@ import {
   resetEmailHtml,
 } from "../services/email";
 import { syncSalesRepFromUser } from "../services/salesTeam";
+import { audit } from "../services/audit";
 import { getDb } from "../db/client";
 import {
   departments,
@@ -380,6 +381,21 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     refId: invitationId,
   });
 
+  await audit(c, {
+    action: "user.invite",
+    entityType: "user",
+    entityId: email,
+    summary: `Invited ${email} as ${role[0].name}`,
+    meta: {
+      email,
+      role_id: body.role_id,
+      department_id: departmentId,
+      position_id: positionId,
+      manager_id: managerId,
+      email_status: sendResult.status,
+    },
+  });
+
   return c.json({
     token,
     expires_at: expires,
@@ -587,6 +603,14 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     await syncSalesRepFromUser(c.env, id, me.id);
   }
 
+  await audit(c, {
+    action: "user.update",
+    entityType: "user",
+    entityId: id,
+    summary: `Updated user #${id} (${Object.keys(set).join(", ")})`,
+    meta: { changed: set },
+  });
+
   return c.json({ ok: true });
 });
 
@@ -682,6 +706,13 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
       }
       throw e;
     }
+    await audit(c, {
+      action: "user.delete",
+      entityType: "user",
+      entityId: id,
+      summary: `Hard-deleted user ${target.email} (#${id})`,
+      meta: { email: target.email, role: target.role_name, hard: true },
+    });
     return c.json({ ok: true, action: "deleted" });
   }
 
@@ -693,6 +724,14 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
     .update(lorries)
     .set({ default_driver_user_id: null })
     .where(eq(lorries.default_driver_user_id, id));
+
+  await audit(c, {
+    action: "user.disable",
+    entityType: "user",
+    entityId: id,
+    summary: `Disabled user ${target.email} (#${id})`,
+    meta: { email: target.email, role: target.role_name },
+  });
 
   return c.json({ ok: true, action: "disabled" });
 });
@@ -840,6 +879,14 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
     purpose: "password_reset",
     refType: "user",
     refId: id,
+  });
+
+  await audit(c, {
+    action: "user.reset_password",
+    entityType: "user",
+    entityId: id,
+    summary: `Issued password reset for ${target.email} (#${id})`,
+    meta: { email: target.email, email_status: sendResult.status },
   });
 
   return c.json({
