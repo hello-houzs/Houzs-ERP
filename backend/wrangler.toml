@@ -44,13 +44,17 @@ database_id = "d0401549-c099-407b-ae95-57a5f85e5ad5"
 # from .dev.vars instead of this binding.
 [[hyperdrive]]
 binding = "HYPERDRIVE"
-# 2026-06-13: the original 4e820fcf went into a persistently-stuck pool state
-# (Hyperdrive hangs reaching origin; DB itself healthy via direct connect;
-# 15min quiet + pool-rebuild did NOT clear it). f0f9bd0d is a FRESH config over
-# the same SG company project (anogrigyjbduyzclzjgn:6543) — deploying with it
-# is the most likely revive. A Worker deploy is required to switch the binding;
-# the in-session deploy was gate-blocked, so this ships via CI on merge to main.
-# Fallback if this also hangs: 4e820fcfa4f945929ab77e164060e694 (the old one).
+# Config f0f9bd0d (houzs-erp-pg-v2) -> SG company project anogrigyjbduyzclzjgn.
+# 2026-06-13 OUTAGE + FIX: the transaction pooler (port 6543) got stuck/
+# exhausted after heavy deploy+load churn (Hyperdrive hung reaching origin for
+# ~hours; DB itself stayed healthy via direct connect). Switching this config to
+# the SESSION pooler (port 5432) restored prod immediately (login 5/5, ~0.1s).
+# The connection string (incl. the 5432 port) lives in the Hyperdrive config on
+# Cloudflare, NOT here — so this survives redeploys. Tradeoff: session pooler
+# holds a dedicated backend per connection; the SG micro caps at 60 conns —
+# fine for current low traffic, monitor under load. Can move back to 6543 once
+# that pooler's throttle clears, or upsize off micro. Old config:
+# 4e820fcfa4f945929ab77e164060e694 (left stuck on 6543; spare).
 id = "f0f9bd0d6b924496981b97b9ebcfe898"
 
 # R2 bucket for proof-of-delivery photos and signatures.
