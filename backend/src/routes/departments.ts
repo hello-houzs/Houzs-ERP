@@ -152,6 +152,17 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
     .limit(1);
   if (existing.length === 0) return c.json({ error: "Not found" }, 404);
 
+  // Un-assign members + positions first. positions.department_id is a NO-ACTION
+  // FK, so a bare delete throws (500 "Something went wrong") whenever a
+  // department still has positions. Null both so deletion always succeeds —
+  // departments are "grouping only", so members/positions just become
+  // unassigned (they survive; reassign as needed) rather than blocking.
+  await c.env.DB.prepare(`UPDATE positions SET department_id = NULL WHERE department_id = ?`)
+    .bind(id)
+    .run();
+  await c.env.DB.prepare(`UPDATE users SET department_id = NULL WHERE department_id = ?`)
+    .bind(id)
+    .run();
   await db.delete(departments).where(eq(departments.id, id));
   return c.json({ ok: true });
 });
