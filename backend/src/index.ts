@@ -149,9 +149,27 @@ app.route("/api/idea-attachments", ideaAttachments);
 app.route("/api/idea-comments", ideaComments);
 app.route("/api/petty-cash", pettyCash);
 
+// Map raw infrastructure errors to operator-friendly messages so staff never
+// see a Postgres/driver string (e.g. the "operator does not exist: date < text"
+// or "CONNECTION_CLOSED" leaks seen during the cutover). Full error still goes
+// to wrangler tail for us. HTTPException (thrown with an intended status) passes
+// through untouched.
+function humanizeError(err: Error): { status: 500 | 503; message: string } {
+  const m = String(err?.message ?? err);
+  if (/CONNECTION_CLOSED|Network connection lost|ECONNREFUSED|ECONNRESET|terminating connection|Timed out .*pool|server closed the connection/i.test(m))
+    return { status: 503, message: "The database is briefly unavailable. Please try again in a moment." };
+  if (/operator does not exist|column .* does not exist|relation .* does not exist|syntax error|invalid input syntax|violates .* constraint|duplicate key/i.test(m))
+    return { status: 500, message: "Something went wrong processing that request. Our team has been notified." };
+  return { status: 500, message: "Something went wrong. Please try again." };
+}
+
 app.onError((err, c) => {
   console.error("[onError]", err);
-  return c.json({ error: err.message || "Internal error" }, 500);
+  // Preserve Hono HTTPException status/body (intentional 4xx from handlers).
+  const anyErr = err as Error & { getResponse?: () => Response; status?: number };
+  if (typeof anyErr.getResponse === "function") return anyErr.getResponse();
+  const { status, message } = humanizeError(err);
+  return c.json({ error: message }, status);
 });
 
 export default {
