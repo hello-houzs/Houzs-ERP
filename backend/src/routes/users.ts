@@ -15,6 +15,7 @@ import {
   invitations,
   lorries,
   password_resets,
+  positions,
   project_brands,
   roles,
   sessions,
@@ -66,6 +67,8 @@ app.get("/", requirePermission("users.read"), async (c) => {
       department_id: users.department_id,
       department_name: departments.name,
       department_color: departments.color,
+      position_id: users.position_id,
+      position_name: positions.name,
       invited_at: users.invited_at,
       joined_at: users.joined_at,
       last_login_at: users.last_login_at,
@@ -84,6 +87,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
     .innerJoin(roles, eq(roles.id, users.role_id))
     .leftJoin(manager, eq(manager.id, users.manager_id))
     .leftJoin(departments, eq(departments.id, users.department_id))
+    .leftJoin(positions, eq(positions.id, users.position_id))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(users.created_at));
 
@@ -252,6 +256,9 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     email: string;
     role_id: number;
     name?: string;
+    department_id?: number | null;
+    position_id?: number | null;
+    manager_id?: number | null;
   }>();
   if (!body.email || !body.role_id) {
     return c.json({ error: "email and role_id are required" }, 400);
@@ -267,6 +274,27 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     .where(eq(roles.id, body.role_id))
     .limit(1);
   if (role.length === 0) return c.json({ error: "Role not found" }, 404);
+
+  // Org dimensions (mig 094). If a position is given, validate it and default
+  // the department from it when the department wasn't passed explicitly.
+  let departmentId = body.department_id ?? null;
+  const positionId = body.position_id ?? null;
+  const managerId = body.manager_id ?? null;
+  if (positionId) {
+    const pos = await db
+      .select({ id: positions.id, department_id: positions.department_id })
+      .from(positions)
+      .where(eq(positions.id, positionId))
+      .limit(1);
+    if (pos.length === 0) return c.json({ error: "Position not found" }, 404);
+    if (departmentId && pos[0].department_id && pos[0].department_id !== departmentId) {
+      return c.json(
+        { error: "Position does not belong to the selected department" },
+        400,
+      );
+    }
+    if (!departmentId && pos[0].department_id) departmentId = pos[0].department_id;
+  }
 
   const existing = await db
     .select({ id: users.id, status: users.status })
@@ -286,6 +314,9 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
       email,
       name,
       role_id: body.role_id,
+      department_id: departmentId,
+      position_id: positionId,
+      manager_id: managerId,
       status: "invited",
       invited_by: me.id || null,
       invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
@@ -298,6 +329,9 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
       .set({
         ...(name ? { name } : {}),
         role_id: body.role_id,
+        department_id: departmentId,
+        position_id: positionId,
+        manager_id: managerId,
         status: "invited",
         invited_by: me.id || null,
         invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
@@ -319,6 +353,9 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
       token,
       invited_by: me.id || 0,
       expires_at: expires,
+      department_id: departmentId,
+      position_id: positionId,
+      manager_id: managerId,
     })
     .returning({ id: invitations.id });
   const invitationId = inserted[0]?.id ?? null;
@@ -438,6 +475,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     status?: string;
     manager_id?: number | null;
     department_id?: number | null;
+    position_id?: number | null;
   }>();
 
   const db = getDb(c.env);
@@ -508,6 +546,27 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     }
   }
 
+  if (body.position_id !== undefined) {
+    if (body.position_id === null) {
+      set.position_id = null;
+    } else {
+      const posId = parseInt(String(body.position_id), 10);
+      if (!posId) return c.json({ error: "Invalid position_id" }, 400);
+      const pos = await db
+        .select({ id: positions.id, department_id: positions.department_id })
+        .from(positions)
+        .where(eq(positions.id, posId))
+        .limit(1);
+      if (pos.length === 0) return c.json({ error: "Position not found" }, 404);
+      set.position_id = posId;
+      // Keep department in lockstep with the position when the patch didn't
+      // set one explicitly.
+      if (body.department_id === undefined && pos[0].department_id) {
+        set.department_id = pos[0].department_id;
+      }
+    }
+  }
+
   if (Object.keys(set).length === 0) {
     return c.json({ error: "No fields to update" }, 400);
   }
@@ -524,7 +583,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   // Department change → create / unarchive / archive the linked
   // sales_reps row. No-op for non-Sales departments and users that
   // already have the expected sales_reps state.
-  if (body.department_id !== undefined) {
+  if (body.department_id !== undefined || set.department_id !== undefined) {
     await syncSalesRepFromUser(c.env, id, me.id);
   }
 

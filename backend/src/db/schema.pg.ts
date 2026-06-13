@@ -54,6 +54,7 @@ export const users = pgTable("users", {
   created_at: text("created_at").default(nowText),
   manager_id: integer("manager_id"),
   department_id: integer("department_id"),
+  position_id: integer("position_id"),
   points_balance: integer("points_balance").notNull().default(0),
   gifting_balance: integer("gifting_balance").notNull().default(0),
   gifting_reset_at: text("gifting_reset_at"),
@@ -203,7 +204,36 @@ export const invitations = pgTable("invitations", {
   expires_at: text("expires_at").notNull(),
   accepted_at: text("accepted_at"),
   created_at: text("created_at").default(nowText),
+  // Org dimensions carried by the invite + applied on accept (mig 094).
+  position_id: integer("position_id"),
+  department_id: integer("department_id"),
+  manager_id: integer("manager_id"),
 });
+
+// ── positions (mig 094) — staff org unit (department × position) ──
+export const positions = pgTable("positions", {
+  id: serial("id").primaryKey(),
+  department_id: integer("department_id"),
+  slug: text("slug").notNull().unique(),
+  name: text("name").notNull(),
+  level: integer("level").notNull().default(100),
+  sort_order: integer("sort_order").notNull().default(100),
+  active: integer("active").notNull().default(1),
+  created_at: text("created_at").default(nowText),
+});
+
+// ── position_page_access (mig 094) — 4-level matrix (none/view/edit/full) ──
+export const position_page_access = pgTable(
+  "position_page_access",
+  {
+    position_id: integer("position_id").notNull(),
+    page_key: text("page_key").notNull(),
+    level: text("level").notNull(),
+    created_at: text("created_at").default(nowText),
+    updated_at: text("updated_at").default(nowText),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.position_id, t.page_key] }) }),
+);
 
 // ── password_resets (mig 027) ──────────────────────────────
 export const password_resets = pgTable("password_resets", {

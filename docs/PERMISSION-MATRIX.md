@@ -1,73 +1,72 @@
 # Permission Matrix — User Management build spec (LIVING DOC)
 
-Source of truth for the User Management uplift. Ported from the owner's
-reference repo **`weisiang329-eng/houzs-erp`** (`src/lib/permissions-defaults.ts`,
-`modules.ts`, `pms-access.ts`) and refined by the owner in chat. Owner edits
-land here first, then get built.
+Source of truth for the User-Management uplift. Design ported from the owner's
+reference repo `weisiang329-eng/houzs-erp` and refined with the owner in chat,
+then **mapped onto the production page catalogue** (`backend/src/services/pageAccess.ts`
+`PAGES[]`) and tightened to least-privilege. The seed script transcribes this
+verbatim into `position_page_access`.
 
-Levels: **-** = NONE, **V** = VIEW, **E** = EDIT, **F** = FULL.
+Levels: **-** = none, **V** = view, **E** = edit, **F** = full.
 
-## Owner corrections applied (2026-06-13)
-- **SALES — Calendar = VIEW for ALL sales positions** (was Director/Manager FULL,
-  Exec EDIT). Owner: "calendar 应该全部 sales 只可以看到而已".
-- **Storekeeper — being defined incrementally.** Owner removed SKU Costing + SO
-  Details ("sku costing 和 so details 不需要给 storekeeper"). Current: **Calendar
-  (V) + Operation (E) only.** More edits may follow.
+## Cascade convention (important for the seed)
+Pages with sub-tabs are a parent + children. Parent **F** → all children F;
+parent **-** → all children -; parent **V/E** → children use their own row.
+So to grant *some* children, set the parent to **V** (cascade-neutral) and list
+each child. Any page not listed for a position = **none**.
 
-## Open decisions
-1. Operation positions: adopt reference set incl. **Ops Director / Ops Manager /
-   Ops Executive** (3 mgmt tiers) + **Storekeeper** (rename of "Warehouse")? Or the
-   owner's earlier 6 (purchasing/logistic/service_team/driver/helper/storekeeper)?
-   — current assumption: reference set, Warehouse→Storekeeper, no separate
-   "service_team" (after-sales = QMS module).
-2. Storekeeper's actual access (row marked TBD).
-3. PIC visibility expiry when a project is over: reference has NO auto-expiry
-   (assignment-only). Add it? (owner: pending)
+## Red lines (owner-confirmed 2026-06-13 — hide from everyone except where noted)
+- **Project profit / finances** (`projects.finances`, PMS FINANCIAL+RENTAL): Finance + Sales Director (summary) only.
+- **Cost / margin**: lives in `purchase_orders` + project cost. Only **Purchasing + Finance** see cost. (No standalone SKU-costing page in prod.)
+- **Commission** (`sales_team` tiers): Sales mgmt + Finance only — NOT HR (HR gets org chart, not sales_team).
+- **Money pages** (`orders.balance`, `orders.overdue`, `orders.pnl`, `petty_cash`): Finance (+ Sales Director for sales P&L).
+- **Other people's orders/customers**: scoped to self/PIC — never the whole list for line staff.
+- **Admin** (`team.roles`, `team.departments`, `settings`): admins only.
 
-## Module-level matrix
+## Per-position access (production page keys)
 
-Modules: dash=Dashboard, cal=Calendar, fin=Finance Report, pms=Project Details,
-mdata=Master Data, steam=Sales Team, sod=SO Details, so=Sales Order,
-sonew=Create SO, sku=SKU Costing, qms=After-Sales(QMS), bd=PM Dept,
-oper=Operation, drv=Driver&Helper, field=Field Portal, usr=Admin Users,
-audit=Audit Log, perm=Permissions.
+### HQ
+- **Super Admin** — handled by the `*` wildcard role (short-circuits to full); no matrix rows needed. = everything F.
+- **HR Manager**: overview V · projects(parent) V, projects.calendar V · team(parent) V, team.members E, team.org_chart V.  🚫 finances, orders, cost, sales_team(commission), settings.
+- **Finance Manager**: overview F · projects V, projects.list V, projects.calendar V, projects.finances F · orders V, orders.sales_orders F, orders.balance F, orders.overdue F, orders.pnl F · delivery_orders V · purchase_orders V · petty_cash F · sales V.  🚫 team admin, settings.
+- **Admin Assistant**: overview V · projects V, projects.calendar E · team V, team.members V.  🚫 finances, cost, admin.
 
-| Dept | Position | dash | cal | fin | pms | mdata | steam | sod | so | sonew | sku | qms | bd | oper | drv | field | usr | audit | perm |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| HQ | Super Admin | F | F | F | F | F | F | F | F | F | F | F | F | F | F | F | F | F | F |
-| HQ | HR Manager | V | V | - | V | - | V | - | - | - | - | - | - | - | - | - | E | V | - |
-| HQ | Finance Manager | V | V | F | V | - | - | V | V | E | V | - | - | - | - | - | - | V | - |
-| HQ | Admin Assistant | V | E | - | V | - | - | - | - | - | - | - | - | - | - | - | V | - | - |
-| SALES | Sales Director | F | **V** | V | F | V | F | V | V | F | V | F | - | - | - | - | V | V | - |
-| SALES | Sales Manager | - | **V** | - | F | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
-| SALES | Sales Executive | - | **V** | - | V | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
-| SALES | Sales Trainee | - | V | - | V | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
-| OPERATION | Ops Director | V | F | - | V | - | - | V | V | - | V | F | F | F | F | - | - | - | - |
-| OPERATION | Ops Manager | - | E | - | V | - | - | V | V | - | - | E | E | F | E | - | - | - | - |
-| OPERATION | Ops Executive | - | V | - | V | - | - | V | V | - | - | - | - | E | V | - | - | - | - |
-| OPERATION | Purchasing | - | V | - | V | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
-| OPERATION | Logistic | - | V | - | V | - | - | - | - | - | - | - | - | - | V | - | - | - | - |
-| OPERATION | Storekeeper | - | V | - | - | - | - | - | - | - | - | - | - | E | - | - | - | - | - |
-| OPERATION | Driver | - | V | - | - | - | - | - | - | - | - | - | - | - | - | E | - | - | - |
-| OPERATION | Helper | - | V | - | - | - | - | - | - | - | - | - | - | - | - | E | - | - | - |
+### SALES  (rule: only own/assigned projects+customers; never cost/profit-per-item/others' data)
+- **Sales Director**: overview F · projects F · projects.finances V (profit summary) · orders F · sales F · sales_team F · service_cases V · team V, team.members V.  🚫 SKU/per-item cost, settings.
+- **Sales Manager**: overview V · projects V, projects.list E, projects.calendar V (own team via upline scope) · orders V, orders.sales_orders V · sales_team V (org, no tiers edit).  🚫 finances, cost, other teams.
+- **Sales Executive**: overview V · projects V, projects.list V, projects.calendar V (only assigned) · orders V, orders.sales_orders V (own, scoped).  🚫 finances, cost, sales_team, others' orders.
+- **Sales Person**: same as Sales Executive.
+- **Sales Trainee**: overview V · projects V, projects.list V, projects.calendar V (read-only).  🚫 orders, finances, cost.
 
-## Project-detail (PMS) section-level visibility
+### OPERATION
+- **Ops Director**: overview V · projects V, projects.list V, projects.calendar V (no finances) · service_cases F · delivery_orders F · purchase_orders F · logistics F.  🚫 projects.finances, sales orders' money, settings.
+- **Ops Manager**: overview V · projects V, projects.calendar V · service_cases E · delivery_orders E · purchase_orders V · logistics E.  🚫 finances.
+- **Ops Executive**: projects V, projects.calendar V · service_cases V · delivery_orders V · logistics V.  🚫 finances, purchase manage.
+- **Purchasing**: projects V, projects.list V, projects.calendar V (booth/setup needs) · purchase_orders F (the cost/supplier-facing role).  🚫 customer price/profit, delivery, sales, finances.
+- **Logistic**: projects V, projects.list V, projects.calendar V (setup/dismantle schedule) · delivery_orders F · logistics F (trips/fleet).  🚫 finances, cost, purchase, sales.
+- **Storekeeper**: projects V, projects.calendar V · delivery_orders V (out) · purchase_orders V (incoming/GR).  🚫 price, profit, cost-margin, sales, customers. (Dedicated stock page = future.)
+- **Driver / Helper**: NO staff pages (all none). They use the separate **Driver portal** (DriverHome/DriverTrip), gated by role verbs `trips.read.own` etc. — only their own assigned jobs + POD upload.
 
-Inside a single project, sections shown depend on PMS role (pms-access.ts):
+## Project-detail (PMS) section-level visibility  (layered on top of the page matrix)
 
-| PMS role | Sections visible | Financial snapshot | Rental |
+| PMS role | Sections | Financial | Rental |
 |---|---|---|---|
 | Director (Super Admin / Sales Director) | everything + delete | YES | YES |
-| Sales **PIC** (assigned PIC of THIS project) | edit, stage, workflow, booth, setup/dismantle, expo map, event chat, integrations | **NO** | **NO** |
+| Sales **PIC** (assigned PIC of THIS project) | edit, stage, workflow, booth, setup/dismantle, expo map, event chat, integrations | NO | NO |
 | Sales (assigned, not PIC) | setup/dismantle, expo map, event chat | NO | NO |
-| Logistic | = Sales PIC **minus** event chat | NO | NO |
+| Logistic | = Sales PIC minus event chat | NO | NO |
 | Purchasing | booth layout + setup only | NO | NO |
-| Driver / Helper | field portal only (not this page) | NO | NO |
+| Driver / Helper | driver portal only (not this page) | NO | NO |
 | Ops / HQ (non-admin) | stage, workflow, booth, setup, expo, chat, integrations (view-only) | NO | NO |
 
-**PIC = per-project assignment** (name match on the project's PIC column), NOT a
-job title. A sales person is PIC only on the projects they're assigned to.
+**PIC = per-project assignment** (project's PIC column), NOT a job title.
 
 ## Calendar visibility
 - Sales / Driver / Helper → only events they're PIC of / assigned to / crew on.
 - Everyone else → all events.
+
+## "Go into each position and see it" — Impersonation (owner-requested)
+Owner ("我要每个position进去看要怎么样") wants to preview each position's view.
+Build **Login As** (admin-only): from the Members list, an admin clicks a user →
+impersonates them → sees the app exactly as that position does → a banner shows
+"X impersonating Y (position)" with a Return button. Audit-logged. Plus one
+**test account per position** (seed) so there's someone to enter for each.

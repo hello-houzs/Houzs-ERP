@@ -43,6 +43,7 @@ import {
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
+import { getPmsAccess } from "../services/pmsAccess";
 import { hasPermission } from "../services/permissions";
 import { recomputeAutoCostLines } from "../services/projectCostRates";
 import { getDb } from "../db/client";
@@ -1069,13 +1070,21 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
   // row-level decision — PIC vs non-PIC for this specific project.
   // Phase 2 (Projects migration) drops the legacy `level` field.
   const rowLevel = projectAccessLevel(user, detail.project);
+  // Section-level (PMS) access for this user × project. Drives which detail
+  // panels render AND lets us strip the financial snapshot server-side so it
+  // never leaves the Worker for a role that shouldn't see money.
+  const pms = getPmsAccess(user, detail.project);
   const access = {
     level: rowLevel,
     level_v2: rowLevel === "limited" ? "partial" : rowLevel,
     is_pic: detail.project.pic_id === user.id,
     scoped: !!user.scope_to_pic,
+    pms,
   };
-  return c.json({ ...detail, _access: access });
+  // Defense in depth: hide finance (rental / cost / profit) from anyone whose
+  // PMS role doesn't include FINANCIAL — not just in the UI, but on the wire.
+  const payload = pms.canFinancial ? detail : { ...detail, finance: null };
+  return c.json({ ...payload, _access: access });
 });
 
 /**
