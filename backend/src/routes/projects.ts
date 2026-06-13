@@ -1081,9 +1081,13 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
     scoped: !!user.scope_to_pic,
     pms,
   };
-  // Defense in depth: hide finance (rental / cost / profit) from anyone whose
-  // PMS role doesn't include FINANCIAL — not just in the UI, but on the wire.
-  const payload = pms.canFinancial ? detail : { ...detail, finance: null };
+  // Defense in depth: hide finance (rental / cost / profit) from a position
+  // whose PMS role doesn't include FINANCIAL — on the wire, not just the UI.
+  // GATED on position_id: un-migrated users (no position assigned yet) keep
+  // legacy access, so the rollout doesn't suddenly hide finances from current
+  // finance/director users before positions are seeded + assigned.
+  const stripFinance = user.position_id != null && !pms.canFinancial;
+  const payload = stripFinance ? { ...detail, finance: null } : detail;
   return c.json({ ...payload, _access: access });
 });
 
