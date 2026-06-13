@@ -17,6 +17,8 @@ const SERVICE_USER: AuthUser = {
   name: "Service",
   role_id: 0,
   role_name: "Service",
+  position_id: null,
+  position_name: null,
   status: "active",
   permissions: ["*"],
   permissions_set: new Set(["*"]),

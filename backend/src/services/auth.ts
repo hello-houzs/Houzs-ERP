@@ -1,6 +1,11 @@
 import type { Env } from "../types";
 import { parsePermissions } from "./permissions";
-import { loadPageAccessForRole, type AccessLevel } from "./pageAccess";
+import {
+  loadPageAccessForRole,
+  loadPageAccessForPosition,
+  fullAccessMap,
+  type AccessLevel,
+} from "./pageAccess";
 import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
 
 // ── Crypto helpers ────────────────────────────────────────
@@ -87,6 +92,11 @@ export interface AuthUser {
   name: string | null;
   role_id: number;
   role_name: string;
+  /** Position = department×position org unit (mig 094). When set, page_access
+   *  is hydrated from the 4-level position_page_access matrix; when null, the
+   *  user falls back to the legacy role matrix during the transition. */
+  position_id: number | null;
+  position_name: string | null;
   status: string;
   permissions: string[];
   /** O(1) lookup mirror of `permissions`. Hydrated once at session
@@ -170,13 +180,22 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
   }
   const permissions = parsePermissions(row.role_permissions);
   const permissionsSet = new Set(permissions);
-  const pageAccess = await loadPageAccessForRole(env, row.role_id, permissionsSet);
+  // Wildcard role → full everything. Else the 4-level position matrix when the
+  // user has a position; else the legacy role matrix (fallback for users not
+  // yet assigned a position during the rollout).
+  const pageAccess = permissionsSet.has("*")
+    ? fullAccessMap()
+    : row.position_id != null
+      ? await loadPageAccessForPosition(env, row.position_id)
+      : await loadPageAccessForRole(env, row.role_id, permissionsSet);
   return {
     id: row.id,
     email: row.email,
     name: row.name,
     role_id: row.role_id,
     role_name: row.role_name,
+    position_id: row.position_id ?? null,
+    position_name: row.position_name ?? null,
     status: row.status,
     permissions,
     permissions_set: permissionsSet,
@@ -202,15 +221,17 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
 
   const row = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.role_id, u.status,
-            u.manager_id, u.department_id, u.joined_at, u.last_login_at,
+            u.manager_id, u.department_id, u.position_id, u.joined_at, u.last_login_at,
             u.points_balance, u.gifting_balance, u.current_streak,
             u.profile_pic_r2_key,
             r.name as role_name, r.permissions as role_permissions,
             r.scope_to_pic,
+            p.name as position_name,
             s.expires_at
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      JOIN roles r ON r.id = u.role_id
+     LEFT JOIN positions p ON p.id = u.position_id
      WHERE s.token = ?`
   )
     .bind(token)
@@ -232,13 +253,15 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
 export async function getUserById(env: Env, id: number): Promise<AuthUser | null> {
   const row = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.role_id, u.status, u.manager_id,
-            u.department_id,
+            u.department_id, u.position_id,
             u.points_balance, u.gifting_balance, u.current_streak,
             u.profile_pic_r2_key,
             r.name as role_name, r.permissions as role_permissions,
-            r.scope_to_pic
+            r.scope_to_pic,
+            p.name as position_name
      FROM users u
      JOIN roles r ON r.id = u.role_id
+     LEFT JOIN positions p ON p.id = u.position_id
      WHERE u.id = ?`
   )
     .bind(id)
