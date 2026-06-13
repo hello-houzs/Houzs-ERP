@@ -494,18 +494,10 @@ function MembersTab({
               </div>
               {canManage && u.id !== me?.id ? (
                 <>
-                  <select
-                    value={u.role_id}
-                    onChange={(e) => changeRole(u, Number(e.target.value))}
-                    title="Role"
-                    className="h-8 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] font-semibold text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
-                  >
-                    {roles.data?.roles.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
+                  {/* Role dropdown removed — Position now governs page access
+                      (the position matrix). Role still drives API permissions
+                      behind the scenes (set at invite); manage role definitions
+                      in the Roles tab. Members view kept to Department + Position. */}
                   <select
                     value={u.department_id ?? ""}
                     onChange={(e) =>
@@ -556,33 +548,10 @@ function MembersTab({
                         </option>
                       ))}
                   </select>
-                  <select
-                    value={u.manager_id ?? ""}
-                    onChange={(e) =>
-                      changeManager(
-                        u,
-                        e.target.value ? Number(e.target.value) : null
-                      )
-                    }
-                    title="Reports to"
-                    className="h-8 max-w-[180px] cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
-                  >
-                    <option value="">— No manager —</option>
-                    {(members.data?.users ?? [])
-                      .filter(
-                        (m) =>
-                          m.id !== u.id &&
-                          m.status === "active" &&
-                          // Hide this user's descendants to pre-empt cycles.
-                          // Backend does the authoritative check; this is UX.
-                          !isDescendantOf(m.id, u.id, members.data?.users ?? [])
-                      )
-                      .map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name || m.email}
-                        </option>
-                      ))}
-                  </select>
+                  {/* Manager / reporting-line dropdown removed — Members view kept
+                      to Department + Position per owner request. manager_id is
+                      preserved in the data; if the Org Chart needs hierarchy it
+                      can be driven from Position levels instead. */}
                 </>
               ) : (
                 <>
