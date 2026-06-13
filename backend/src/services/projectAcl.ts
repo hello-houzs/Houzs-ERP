@@ -47,6 +47,26 @@ function effectivePicId(project: { pic_id: number | null; created_by?: number | 
   return project.created_by ?? null;
 }
 
+/** PIC visibility expiry: a scoped PIC keeps a project until this many days
+ *  AFTER it ends (owner: "完了的四天之后"). After that the project drops out of
+ *  their list + detail. Unscoped roles (admins/finance/ops) are unaffected. */
+export const PIC_GRACE_DAYS = 4;
+
+/** SQL predicate (D1/PG via the shim) for "still visible to a scoped PIC":
+ *  no end date, or it ended within the last PIC_GRACE_DAYS. Used in the list
+ *  query for scoped users. */
+export const scopeNotExpiredSql = `(p.end_date IS NULL OR substr(p.end_date,1,10) >= date('now','-${PIC_GRACE_DAYS} days'))`;
+
+/** Is a project still within a scoped PIC's visibility window? True when there
+ *  is no end date or it ended ≤ PIC_GRACE_DAYS ago (or is upcoming). */
+export function withinPicGrace(project: { end_date?: string | null }): boolean {
+  if (!project.end_date) return true;
+  const end = new Date(project.end_date);
+  if (isNaN(end.getTime())) return true;
+  const cutoff = Date.now() - PIC_GRACE_DAYS * 86_400_000;
+  return end.getTime() >= cutoff;
+}
+
 /**
  * Per-project access tier for rendering decisions. "full" = PIC or
  * unscoped role — can see finances, logistics, POs. "limited" =
@@ -72,9 +92,12 @@ export function canSeeProject(
     pic_id: number | null;
     created_by?: number | null;
     brand?: string | null;
+    end_date?: string | null;
   }
 ): boolean {
   if (!user.scope_to_pic) return true;
+  // PIC visibility expires PIC_GRACE_DAYS after the project ends.
+  if (!withinPicGrace(project)) return false;
   const pic = effectivePicId(project);
   if (pic == null) return false;
   const inPicLine = pic === user.id || (user.manager_id != null && pic === user.manager_id);

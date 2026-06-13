@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { recomputeAutoCostLines } from "./projectCostRates";
+import { scopeNotExpiredSql } from "./projectAcl";
 
 // ── Codes ─────────────────────────────────────────────────────
 // Format: `YYYY-MM-{ORGANIZER}-{STATE}-{VENUE}-{BRAND}` — built from
@@ -1074,6 +1075,9 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
         `COALESCE(p.pic_id, p.created_by) IN (${f.pic_scope.map(() => "?").join(",")})`
       );
       binds.push(...f.pic_scope);
+      // PIC visibility expires PIC_GRACE_DAYS after the project ends (owner:
+      // "完了的四天之后"). Only scoped users (pic_scope set) get this filter.
+      where.push(scopeNotExpiredSql);
     }
   }
   if (f.brand_scope) {
