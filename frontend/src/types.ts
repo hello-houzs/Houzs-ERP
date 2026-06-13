@@ -637,6 +637,9 @@ export interface TeamMember {
   department_name: string | null;
   /** 6-char hex without the leading '#'. */
   department_color: string | null;
+  /** Position = department×position org unit (mig 094). Drives the page matrix. */
+  position_id: number | null;
+  position_name: string | null;
   /**
    * Per-user brand allow-list (mig 049). Drives sales-dept project
    * visibility for users in scope_to_pic roles. Empty array when no
@@ -661,6 +664,18 @@ export interface Department {
   sort_order: number;
   member_count: number;
   created_at?: string;
+}
+
+export interface Position {
+  id: number;
+  department_id: number | null;
+  department_name: string | null;
+  slug: string;
+  name: string;
+  level: number;
+  sort_order: number;
+  active: boolean;
+  member_count: number;
 }
 
 export interface Invitation {

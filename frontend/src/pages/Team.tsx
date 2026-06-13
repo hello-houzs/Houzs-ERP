@@ -17,7 +17,7 @@ import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { relativeTime, cn } from "../lib/utils";
-import type { TeamMember, Invitation, Role, Department } from "../types";
+import type { TeamMember, Invitation, Role, Department, Position } from "../types";
 import { RolesTab } from "./Roles";
 
 type TeamTabValue = "members" | "roles" | "orgchart" | "departments";
@@ -190,6 +190,13 @@ function MembersTab({
   const depts = useQuery<{ departments: Department[] }>(() =>
     api.get("/api/departments")
   );
+  const positions = useQuery<{ positions: Position[] }>(() =>
+    api.get("/api/positions")
+  );
+
+  // Members-list filters (owner ask: filter/sort by department and/or position).
+  const [filterDept, setFilterDept] = useState<number | "">("");
+  const [filterPos, setFilterPos] = useState<number | "">("");
 
   // Per-user brand picker — opens a small modal scoped to one member.
   const [brandsFor, setBrandsFor] = useState<TeamMember | null>(null);
@@ -236,6 +243,20 @@ function MembersTab({
       toast.success(
         name ? `${u.email} → ${name}` : `${u.email} removed from department`
       );
+      members.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
+  async function changePosition(u: TeamMember, position_id: number | null) {
+    try {
+      await api.patch(`/api/users/${u.id}`, { position_id });
+      const name = position_id
+        ? positions.data?.positions.find((p) => p.id === position_id)?.name
+        : null;
+      // Position can auto-set the department server-side — reload both.
+      toast.success(name ? `${u.email} → ${name}` : `${u.email} position cleared`);
       members.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
@@ -360,15 +381,56 @@ function MembersTab({
     }
   }
 
+  const filteredMembers = (members.data?.users ?? []).filter(
+    (u) =>
+      (filterDept === "" || u.department_id === filterDept) &&
+      (filterPos === "" || u.position_id === filterPos)
+  );
+
   return (
     <div>
       {/* Active members */}
       <div className="mb-6">
-        <div className="mb-3 flex items-center gap-2">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <span className="h-px w-5 bg-accent" />
           <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
-            Members ({members.data?.users.length ?? 0})
+            Members ({filteredMembers.length}/{members.data?.users.length ?? 0})
           </h2>
+          <div className="ml-auto flex items-center gap-2">
+            <select
+              value={filterDept}
+              onChange={(e) => {
+                setFilterDept(e.target.value ? Number(e.target.value) : "");
+                setFilterPos("");
+              }}
+              title="Filter by department"
+              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+            >
+              <option value="">All departments</option>
+              {depts.data?.departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={filterPos}
+              onChange={(e) => setFilterPos(e.target.value ? Number(e.target.value) : "")}
+              title="Filter by position"
+              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+            >
+              <option value="">All positions</option>
+              {(positions.data?.positions ?? [])
+                .filter(
+                  (p) => filterDept === "" || !p.department_id || p.department_id === filterDept
+                )
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+          </div>
         </div>
         <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
           {members.loading && (
@@ -379,7 +441,7 @@ function MembersTab({
           {members.error && (
             <div className="px-5 py-4 text-sm text-err">{members.error}</div>
           )}
-          {members.data?.users.map((u) => (
+          {filteredMembers.map((u) => (
             <div
               key={u.id}
               className="flex flex-wrap items-center gap-3 border-b border-border-subtle px-4 py-4 last:border-b-0 sm:flex-nowrap sm:gap-4 sm:px-5"
@@ -459,6 +521,31 @@ function MembersTab({
                         {d.name}
                       </option>
                     ))}
+                  </select>
+                  <select
+                    value={u.position_id ?? ""}
+                    onChange={(e) =>
+                      changePosition(
+                        u,
+                        e.target.value ? Number(e.target.value) : null
+                      )
+                    }
+                    title="Position"
+                    className="h-8 max-w-[160px] cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  >
+                    <option value="">— No position —</option>
+                    {(positions.data?.positions ?? [])
+                      .filter(
+                        (p) =>
+                          !u.department_id ||
+                          !p.department_id ||
+                          p.department_id === u.department_id
+                      )
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
                   </select>
                   <select
                     value={u.manager_id ?? ""}
@@ -644,6 +731,9 @@ function MembersTab({
         open={inviteOpen}
         onClose={onCloseInvite}
         roles={roles.data?.roles ?? []}
+        departments={depts.data?.departments ?? []}
+        positions={positions.data?.positions ?? []}
+        members={members.data?.users ?? []}
         onInvited={() => {
           onCloseInvite();
           reload();
@@ -1637,17 +1727,26 @@ function InvitePanel({
   open,
   onClose,
   roles,
+  departments,
+  positions,
+  members,
   onInvited,
 }: {
   open: boolean;
   onClose: () => void;
   roles: Role[];
+  departments: Department[];
+  positions: Position[];
+  members: TeamMember[];
   onInvited: () => void;
 }) {
   const toast = useToast();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [roleId, setRoleId] = useState<number | "">("");
+  const [deptId, setDeptId] = useState<number | "">("");
+  const [positionId, setPositionId] = useState<number | "">("");
+  const [managerId, setManagerId] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<{
     token: string;
@@ -1677,6 +1776,9 @@ function InvitePanel({
         email: email.toLowerCase().trim(),
         name: name.trim() || undefined,
         role_id: roleId,
+        department_id: deptId || undefined,
+        position_id: positionId || undefined,
+        manager_id: managerId || undefined,
       });
       setIssued(res);
       toast.success(
@@ -1695,6 +1797,9 @@ function InvitePanel({
   function reset() {
     setEmail("");
     setName("");
+    setDeptId("");
+    setPositionId("");
+    setManagerId("");
     setIssued(null);
     onClose();
   }
@@ -1760,9 +1865,70 @@ function InvitePanel({
               ))}
             </select>
             <div className="mt-1 text-[10px] text-ink-muted">
-              The role is the member's position — it decides what they can
-              access. A Sales role also lists them on the Sales Team.
+              The role decides what actions a member can perform. The Position
+              below decides which pages they see.
             </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              Department
+            </label>
+            <select
+              value={deptId}
+              onChange={(e) => {
+                setDeptId(e.target.value ? Number(e.target.value) : "");
+                setPositionId(""); // positions are department-scoped — reset
+              }}
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            >
+              <option value="">— Select department —</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              Position
+            </label>
+            <select
+              value={positionId}
+              onChange={(e) => setPositionId(e.target.value ? Number(e.target.value) : "")}
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            >
+              <option value="">— Select position —</option>
+              {positions
+                .filter((p) => deptId === "" || !p.department_id || p.department_id === deptId)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+            <div className="mt-1 text-[10px] text-ink-muted">
+              Controls which pages this member can see (least-privilege per position).
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              Reports to
+            </label>
+            <select
+              value={managerId}
+              onChange={(e) => setManagerId(e.target.value ? Number(e.target.value) : "")}
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            >
+              <option value="">— No manager —</option>
+              {members
+                .filter((m) => m.status === "active")
+                .map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.email}
+                  </option>
+                ))}
+            </select>
           </div>
           <div className="pt-2">
             <Button variant="brass" className="w-full" onClick={submit} disabled={busy}>
