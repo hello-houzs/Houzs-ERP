@@ -174,6 +174,21 @@ function strftimeToPg(fmt: string): string {
 // Queries slower than this are logged to wrangler tail with their SQL.
 const SLOW_QUERY_MS = 100;
 
+// Hyperdrive pools connections to Supabase's pooler origin-side. In quiet
+// periods the pooler reaps those idle connections; Hyperdrive then serves a
+// dead one and the first write fails with "CONNECTION_CLOSED" / "Network
+// connection lost". postgres.js opens a fresh connection on the very next
+// call, so a single retry clears it. We retry ONLY on connection-class
+// failures (the query never reached the server, so it is safe to re-run —
+// no double-write risk), never on real query errors like constraint
+// violations.
+function isDeadConnectionError(e: unknown): boolean {
+  const msg = String((e as Error)?.message ?? e ?? "");
+  return /CONNECTION_CLOSED|Network connection lost|ECONNRESET|ECONNREFUSED|connection closed|terminating connection|server closed the connection|write EPIPE/i.test(
+    msg,
+  );
+}
+
 export function rewriteDialect(sql: string): string {
   let out = "";
   let inStr = false;
@@ -309,10 +324,19 @@ class PreparedStatement {
     // prepare:false is already set on the client (transaction pooler).
     const text = textOverride ?? toPgPlaceholders(rewriteDialect(this.query));
     const t0 = Date.now();
-    const res = (await this.sql.unsafe(
-      text,
-      this.args as never[],
-    )) as unknown as T[] & { count?: number };
+    let res: T[] & { count?: number };
+    try {
+      res = (await this.sql.unsafe(text, this.args as never[])) as unknown as T[] & {
+        count?: number;
+      };
+    } catch (e) {
+      if (!isDeadConnectionError(e)) throw e;
+      // Dead pooled connection — postgres.js reconnects on this next call.
+      console.warn(`[db-retry] dead connection, retrying once :: ${String((e as Error).message).slice(0, 80)}`);
+      res = (await this.sql.unsafe(text, this.args as never[])) as unknown as T[] & {
+        count?: number;
+      };
+    }
     // Every query in the app funnels through here — a single threshold log
     // turns `wrangler tail` into a slow-query dashboard (Hookka pattern).
     const ms = Date.now() - t0;
