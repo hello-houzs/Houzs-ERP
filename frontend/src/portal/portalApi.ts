@@ -7,7 +7,9 @@
 // `baseUrl` resolves to the Worker at build time via VITE_API_URL
 // (see frontend/.env.production). On dev it's empty so the Vite
 // proxy handles forwarding.
-const baseUrl = (import.meta.env.VITE_API_URL as string) || "";
+const baseUrl =
+  (import.meta.env.VITE_API_URL as string) ||
+  "https://autocount-sync-api.houzs-erp.workers.dev";
 
 function url(path: string): string {
   return path.startsWith("http") ? path : `${baseUrl}${path}`;

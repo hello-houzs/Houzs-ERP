@@ -12,7 +12,9 @@ import { validatePasswordStrength } from "../lib/passwordStrength";
  * then submits a new password. On success, bounces back to /login.
  */
 
-const baseUrl = (import.meta.env.VITE_API_URL as string) || "";
+const baseUrl =
+  (import.meta.env.VITE_API_URL as string) ||
+  "https://autocount-sync-api.houzs-erp.workers.dev";
 
 function AuthShell({
   eyebrow,

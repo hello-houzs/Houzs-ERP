@@ -356,7 +356,9 @@ export function BootstrapScreen() {
 // ──────────────────────────────────────────────────────────
 export function AcceptInviteScreen() {
   const { acceptInvite } = useAuth();
-  const baseUrl = (import.meta.env.VITE_API_URL as string) || "";
+  const baseUrl =
+    (import.meta.env.VITE_API_URL as string) ||
+    "https://autocount-sync-api.houzs-erp.workers.dev";
   const [token, setToken] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");

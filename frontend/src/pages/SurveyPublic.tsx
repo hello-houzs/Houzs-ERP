@@ -30,7 +30,9 @@ export function SurveyPublic() {
   useEffect(() => {
     (async () => {
       try {
-        const base = (import.meta.env.VITE_API_URL as string) || "";
+        const base =
+          (import.meta.env.VITE_API_URL as string) ||
+          "https://autocount-sync-api.houzs-erp.workers.dev";
         const res = await fetch(`${base}/api/survey/${encodeURIComponent(token)}`);
         if (!res.ok) {
           throw new Error((await res.text()) || `HTTP ${res.status}`);
