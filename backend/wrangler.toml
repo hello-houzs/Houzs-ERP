@@ -22,16 +22,16 @@ AUTOCOUNT_SYNC_DISABLED = "true"
 # member invitations, password resets). The canonical user-facing domain —
 # pages.dev still serves, but every link we hand out reads this.
 PUBLIC_APP_URL = "https://erp.houzscentury.com"
-# From address for outbound transactional email. 2026-06-13: houzscentury.com
-# was set here but Resend returns 403 "domain is not verified" (DNS records were
-# added but the domain was never VERIFIED in the Resend dashboard) — every email
-# (invites, resets) silently failed. Temporarily reverted to the proven-verified
-# mail.it-houzs.dev (worked through 06-12) to restore email NOW. TO switch back
-# to the company domain: verify houzscentury.com in Resend (Domains -> add the
-# records Resend shows -> click Verify), then swap these two lines + redeploy.
+# From address for outbound transactional + document email. 2026-06-13:
+# houzscentury.com is VERIFIED in Resend and live — a real send returns Resend
+# status=sent from this domain (confirmed end-to-end). Off the departed dev's
+# mail.it-houzs.dev for good.
 EMAIL_FROM = "Houzs ERP <no-reply@houzscentury.com>"
 #EMAIL_FROM = "Houzs ERP <no-reply@mail.it-houzs.dev>"  # departed dev's domain — do not use
 #EMAIL_FROM = "Houzs ERP <onboarding@resend.dev>"        # fallback: works with any key, no domain verify
+# Reply-to: no-reply@ can't receive, so point customer replies at the real
+# company mailbox (Google Workspace). Applied to every email via deliverViaResend.
+EMAIL_REPLY_TO = "Houzs Century <hello@houzscentury.com>"
 
 # D1 — REMOVED 2026-06-13 (write lockout). Prod is fully on Supabase/Postgres:
 # every request (dbInject) and every cron (withPgDb) runs through the d1-compat
