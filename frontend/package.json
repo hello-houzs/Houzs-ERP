@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "check:bundle": "node scripts/check-bundle-size.mjs",
     "deploy": "npm run build && wrangler pages deploy --commit-dirty=true"
   },
   "dependencies": {
