@@ -68,23 +68,86 @@ function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
 // Login
 // ──────────────────────────────────────────────────────────
 export function LoginScreen() {
-  const { login } = useAuth();
+  const { login, verifyTotpLogin } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Set once a password login returns a 2FA challenge — switches to the code step.
+  const [challenge, setChallenge] = useState<string | null>(null);
+  const [code, setCode] = useState("");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
     setBusy(true);
     try {
-      await login(email, password);
+      const res = await login(email, password);
+      if (res.kind === "totp") setChallenge(res.challenge);
     } catch (e: any) {
       setErr(e?.message?.includes("401") ? "Invalid email or password" : e?.message || "Login failed");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submitCode(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null);
+    setBusy(true);
+    try {
+      await verifyTotpLogin(challenge!, code.trim());
+    } catch (e: any) {
+      setErr(
+        e?.message?.includes("401")
+          ? "That code didn't work — try the current code or a backup code."
+          : e?.message || "Verification failed",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (challenge) {
+    return (
+      <AuthShell
+        eyebrow="Two-Factor"
+        title="Enter your code"
+        subtitle="Open your authenticator app and enter the 6-digit code. You can also use a backup code."
+      >
+        <form onSubmit={submitCode} className="space-y-4">
+          <div>
+            <FieldLabel>Authentication code</FieldLabel>
+            <TextInput
+              inputMode="text"
+              autoComplete="one-time-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="123456"
+              required
+              autoFocus
+            />
+          </div>
+          {err && <div className="text-[11px] text-err">{err}</div>}
+          <Button variant="brass" className="w-full" disabled={busy}>
+            {busy ? "Verifying…" : "Verify"}
+          </Button>
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => {
+                setChallenge(null);
+                setCode("");
+                setErr(null);
+              }}
+              className="text-[11px] text-ink-muted underline-offset-2 hover:text-accent hover:underline"
+            >
+              Back to sign in
+            </button>
+          </div>
+        </form>
+      </AuthShell>
+    );
   }
 
   return (

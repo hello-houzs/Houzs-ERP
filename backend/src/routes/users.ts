@@ -900,4 +900,42 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
   });
 });
 
+/**
+ * POST /api/users/:id/totp/disable
+ * Admin recovery path for a user who lost their authenticator (and their
+ * backup codes). Clears their 2FA so they can sign in with password alone and
+ * re-enroll. The self-service disable (with a code) lives in routes/totp.ts.
+ */
+app.post("/:id/totp/disable", requirePermission("users.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+
+  const db = getDb(c.env);
+  const row = await db
+    .select({ id: users.id, email: users.email })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (row.length === 0) return c.json({ error: "User not found" }, 404);
+
+  await c.env.DB.prepare(
+    `UPDATE users
+        SET totp_enabled = 0, totp_secret = NULL,
+            totp_enrolled_at = NULL, totp_backup_codes = NULL
+      WHERE id = ?`,
+  )
+    .bind(id)
+    .run();
+
+  await audit(c, {
+    action: "user.totp.admin_disable",
+    entityType: "user",
+    entityId: id,
+    summary: `Admin cleared 2FA for ${row[0].email} (#${id})`,
+    meta: { email: row[0].email },
+  });
+
+  return c.json({ ok: true });
+});
+
 export default app;

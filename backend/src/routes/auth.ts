@@ -12,6 +12,7 @@ import {
 } from "../services/auth";
 import { sendEmail, publicUrl, resetEmailHtml } from "../services/email";
 import { validatePasswordStrength } from "../services/passwordStrength";
+import { verifyTotp, consumeBackupCode } from "../services/totp";
 import { checkRateLimit, clearRateLimit, clientIp } from "../middleware/rateLimit";
 
 /**
@@ -24,6 +25,7 @@ import { checkRateLimit, clearRateLimit, clientIp } from "../middleware/rateLimi
 const app = new Hono<{ Bindings: Env }>();
 
 const RESET_TTL_SECONDS = 60 * 60; // matches the admin-initiated reset
+const TOTP_CHALLENGE_TTL_SECONDS = 5 * 60; // window to enter the 2FA code
 
 /**
  * GET /api/auth/status
@@ -93,10 +95,10 @@ app.post("/login", async (c) => {
   if (limited) return limited;
 
   const user = await c.env.DB.prepare(
-    `SELECT id, password_hash, status FROM users WHERE email = ?`
+    `SELECT id, password_hash, status, totp_enabled FROM users WHERE email = ?`
   )
     .bind(email)
-    .first<{ id: number; password_hash: string; status: string }>();
+    .first<{ id: number; password_hash: string; status: string; totp_enabled: number }>();
 
   if (!user || !user.password_hash) {
     return c.json({ error: "Invalid credentials" }, 401);
@@ -108,14 +110,106 @@ app.post("/login", async (c) => {
   const ok = await verifyPassword(body.password, user.password_hash);
   if (!ok) return c.json({ error: "Invalid credentials" }, 401);
 
+  // Clear the counter — the password was correct, so this isn't a brute force.
+  await clearRateLimit(c, "login", rlKey);
+
+  // Second factor: when 2FA is on we do NOT mint a session here. Instead we
+  // stash a short-lived challenge in KV and ask the client for a code; the real
+  // session is issued by /totp/login. Fail CLOSED — if the challenge can't be
+  // stored we refuse rather than fall through to a 2FA-less session.
+  if (user.totp_enabled) {
+    const kv = c.env.SESSION_CACHE;
+    if (!kv) {
+      console.error("[2fa] SESSION_CACHE unbound — cannot issue challenge");
+      return c.json({ error: "Two-factor is temporarily unavailable. Try again shortly." }, 503);
+    }
+    const challenge = generateToken();
+    try {
+      await kv.put(`2fa:${challenge}`, String(user.id), {
+        expirationTtl: TOTP_CHALLENGE_TTL_SECONDS,
+      });
+    } catch (e) {
+      console.error("[2fa] challenge store failed", e);
+      return c.json({ error: "Two-factor is temporarily unavailable. Try again shortly." }, 503);
+    }
+    return c.json({ totp_required: true, challenge });
+  }
+
   await c.env.DB.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`)
     .bind(user.id)
     .run();
-
-  // Clear the counter on success so a user doesn't carry failed attempts.
-  await clearRateLimit(c, "login", rlKey);
   const token = await createSession(c.env, user.id);
   return c.json({ token, user_id: user.id });
+});
+
+/**
+ * POST /api/auth/totp/login
+ * Second step of a 2FA login. Body: { challenge, code }. `code` is a 6-digit
+ * TOTP or a backup code. On success the challenge is consumed and a session is
+ * issued. Rate-limited per challenge to bound code-guessing.
+ */
+app.post("/totp/login", async (c) => {
+  const body = await c.req.json<{ challenge?: string; code?: string }>();
+  const challenge = (body.challenge || "").trim();
+  const code = (body.code || "").trim();
+  if (!challenge || !code) {
+    return c.json({ error: "challenge and code are required" }, 400);
+  }
+
+  const kv = c.env.SESSION_CACHE;
+  if (!kv) {
+    return c.json({ error: "Two-factor is temporarily unavailable. Try again shortly." }, 503);
+  }
+
+  // 5 guesses / 5 min per challenge.
+  const limited = await checkRateLimit(c, "totp", challenge, 5, 300);
+  if (limited) return limited;
+
+  const userIdRaw = await kv.get(`2fa:${challenge}`).catch(() => null);
+  if (!userIdRaw) {
+    return c.json({ error: "This sign-in attempt expired — start again." }, 401);
+  }
+  const userId = parseInt(userIdRaw, 10);
+
+  const row = await c.env.DB.prepare(
+    `SELECT totp_secret, totp_enabled, totp_backup_codes, status FROM users WHERE id = ?`,
+  )
+    .bind(userId)
+    .first<{
+      totp_secret: string | null;
+      totp_enabled: number;
+      totp_backup_codes: string | null;
+      status: string;
+    }>();
+  if (!row || !row.totp_enabled || !row.totp_secret || row.status !== "active") {
+    return c.json({ error: "Two-factor is not available for this account." }, 401);
+  }
+
+  let ok = await verifyTotp(row.totp_secret, code);
+  if (!ok && row.totp_backup_codes) {
+    try {
+      const remaining = await consumeBackupCode(code, JSON.parse(row.totp_backup_codes));
+      if (remaining !== null) {
+        ok = true;
+        await c.env.DB.prepare(`UPDATE users SET totp_backup_codes = ? WHERE id = ?`)
+          .bind(JSON.stringify(remaining), userId)
+          .run();
+      }
+    } catch {
+      /* malformed JSON → treat as no backup codes */
+    }
+  }
+  if (!ok) return c.json({ error: "Invalid code" }, 401);
+
+  // Consume the challenge (single-use) and clear the guess counter.
+  await kv.delete(`2fa:${challenge}`).catch(() => {});
+  await clearRateLimit(c, "totp", challenge);
+
+  await c.env.DB.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`)
+    .bind(userId)
+    .run();
+  const token = await createSession(c.env, userId);
+  return c.json({ token, user_id: userId });
 });
 
 /**
