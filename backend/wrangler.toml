@@ -51,6 +51,12 @@ id = "4e820fcfa4f945929ab77e164060e694"
 binding = "POD_BUCKET"
 bucket_name = "houzs-erp"
 
+# KV cache for the hydrated session user (services/sessionCache.ts). 60s TTL,
+# busted on logout. Pure optimization — auth falls back to the DB if absent.
+[[kv_namespaces]]
+binding = "SESSION_CACHE"
+id = "c25f593faf5a46a2b94155eba91083e1"
+
 # Required secrets (set with `wrangler secret put`):
 #   AUTOCOUNT_API_KEY
 #   DASHBOARD_API_KEY

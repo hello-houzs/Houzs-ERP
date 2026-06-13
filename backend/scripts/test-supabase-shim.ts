@@ -14,7 +14,7 @@ if (!url) throw new Error("DATABASE_URL not found in .dev.vars");
 // can't verify the pooler chain, and prod uses Hyperdrive (no driver TLS), so
 // chain validation is irrelevant to what we're testing (SQL dialect).
 const sql = postgres(url, { ssl: "require", prepare: false, max: 1 });
-const DB = d1Compat(sql);
+const DB = d1Compat(() => sql);
 
 let pass = 0;
 let fail = 0;

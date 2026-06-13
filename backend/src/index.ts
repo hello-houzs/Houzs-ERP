@@ -183,6 +183,13 @@ export default {
     const syncOff = isAutoCountSyncDisabled(env);
     if (syncOff) console.log("[cron] AutoCount sync disabled — skipping inbound pulls");
     if (event.cron === "*/5 * * * *") {
+      // Keep-warm: a trivial DB ping every 5 min keeps the Hyperdrive pool
+      // alive through quiet periods so the first real request never hits a
+      // reaped/cold connection. Runs even when AutoCount sync is disabled
+      // (which removed the SO pull that used to warm it). Cheap — SELECT 1.
+      ctx.waitUntil(
+        env.DB.prepare("SELECT 1 AS ok").first().catch((e) => console.error("[cron keepwarm]", e))
+      );
       // Tight loop: incremental SO pull. Everything else waits for slower slots.
       if (!syncOff)
         ctx.waitUntil(runPull(env, "SCHEDULED").catch((e) => console.error("[cron pull]", e)));

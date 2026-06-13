@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import { parsePermissions } from "./permissions";
 import { loadPageAccessForRole, type AccessLevel } from "./pageAccess";
+import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
 
 // ── Crypto helpers ────────────────────────────────────────
 // PBKDF2 via Web Crypto — built into Workers, no WASM needed.
@@ -136,6 +137,9 @@ export async function createSession(env: Env, userId: number): Promise<string> {
 
 export async function deleteSession(env: Env, token: string): Promise<void> {
   await env.DB.prepare(`DELETE FROM sessions WHERE token = ?`).bind(token).run();
+  // Bust the cached user immediately so logout / forced-expiry takes effect now
+  // rather than waiting out the 60s TTL.
+  await bustCachedUser(env, token);
 }
 
 // Builds the AuthUser shape from the row returned by the SELECT below
@@ -191,6 +195,11 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
 }
 
 export async function getUserBySession(env: Env, token: string): Promise<AuthUser | null> {
+  // Fast path: KV-cached hydrated user (60s). Falls through to the DB on any
+  // miss/error — see sessionCache.ts. No-op when SESSION_CACHE is unbound.
+  const cached = await getCachedUser(env, token);
+  if (cached) return cached;
+
   const row = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.role_id, u.status,
             u.manager_id, u.department_id, u.joined_at, u.last_login_at,
@@ -215,7 +224,9 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
     return null;
   }
 
-  return hydrateAuthUser(env, row);
+  const user = await hydrateAuthUser(env, row);
+  await setCachedUser(env, token, user);
+  return user;
 }
 
 export async function getUserById(env: Env, id: number): Promise<AuthUser | null> {

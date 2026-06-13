@@ -174,18 +174,18 @@ function strftimeToPg(fmt: string): string {
 // Queries slower than this are logged to wrangler tail with their SQL.
 const SLOW_QUERY_MS = 100;
 
-// Hyperdrive pools connections to Supabase's pooler origin-side. In quiet
-// periods the pooler reaps those idle connections; Hyperdrive then serves a
-// dead one and the first write fails with "CONNECTION_CLOSED" / "Network
-// connection lost". postgres.js opens a fresh connection on the very next
-// call, so a single retry clears it. We retry ONLY on connection-class
-// failures (the query never reached the server, so it is safe to re-run —
-// no double-write risk), never on real query errors like constraint
-// violations.
-function isDeadConnectionError(e: unknown): boolean {
-  const msg = String((e as Error)?.message ?? e ?? "");
-  return /CONNECTION_CLOSED|Network connection lost|ECONNRESET|ECONNREFUSED|connection closed|terminating connection|server closed the connection|write EPIPE/i.test(
-    msg,
+// Hyperdrive pools connections to the Supabase pooler origin-side. After a
+// deploy (fresh pool) or a quiet period (pooler reaps idle conns) the first
+// query can hit a dead/cold connection and fail with one of these. We retry
+// ONCE on a FRESH client (a new postgres.js instance with its own slot — never
+// the stuck one, which is what caused the old "waiting for an open slot" hang).
+// A connection error means the query never reached the server, so re-running is
+// safe (no double-write). Real query errors (constraints, syntax) don't match
+// and propagate unchanged.
+function isDeadConnError(e: unknown): boolean {
+  const m = String((e as Error)?.message ?? e ?? "");
+  return /CONNECTION_CLOSED|Network connection lost|ECONNRESET|ECONNREFUSED|connection closed|terminating connection|server closed the connection|write EPIPE|Timed out .*pool/i.test(
+    m,
   );
 }
 
@@ -306,6 +306,7 @@ class PreparedStatement {
   private args: unknown[] = [];
   constructor(
     private readonly sql: Sql,
+    private readonly makeSql: () => Sql,
     private readonly query: string,
   ) {}
 
@@ -330,10 +331,11 @@ class PreparedStatement {
         count?: number;
       };
     } catch (e) {
-      if (!isDeadConnectionError(e)) throw e;
-      // Dead pooled connection — postgres.js reconnects on this next call.
-      console.warn(`[db-retry] dead connection, retrying once :: ${String((e as Error).message).slice(0, 80)}`);
-      res = (await this.sql.unsafe(text, this.args as never[])) as unknown as T[] & {
+      if (!isDeadConnError(e)) throw e;
+      // Cold/dead Hyperdrive connection — retry once on a fresh client (its own
+      // slot opens a new origin connection, so cold-pool windows self-heal).
+      console.warn(`[db-retry] ${String((e as Error).message).slice(0, 70)}`);
+      res = (await this.makeSql().unsafe(text, this.args as never[])) as unknown as T[] & {
         count?: number;
       };
     }
@@ -404,10 +406,15 @@ export interface D1Like {
   batch(statements: PreparedStatement[]): Promise<unknown[]>;
 }
 
-/** Wrap a postgres.js client in the D1 surface the routes already use. */
-export function d1Compat(sql: Sql): D1Like {
+/** Wrap a postgres.js client in the D1 surface the routes already use.
+ *  Takes a FACTORY (not a client) so exec() can retry a dead connection on a
+ *  fresh client (cold-pool self-heal). postgres.js Sql is itself callable, so a
+ *  factory is the only unambiguous shape. Callers with a fixed client pass
+ *  `() => sql`. */
+export function d1Compat(makeSql: () => Sql): D1Like {
+  const sql = makeSql();
   return {
-    prepare: (query: string) => new PreparedStatement(sql, query),
+    prepare: (query: string) => new PreparedStatement(sql, makeSql, query),
     batch: (statements: PreparedStatement[]) =>
       sql.begin((tx) =>
         Promise.all(

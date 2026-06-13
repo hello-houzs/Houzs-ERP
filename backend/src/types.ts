@@ -8,6 +8,9 @@ export type Env = {
   HYPERDRIVE?: { connectionString: string };
   DATABASE_URL?: string;
   POD_BUCKET: R2Bucket;
+  // Optional KV cache for the hydrated session user (see services/sessionCache.ts).
+  // Absent in tests/local — auth falls back to the DB path unchanged.
+  SESSION_CACHE?: KVNamespace;
   AUTOCOUNT_API_URL: string;
   AUTOCOUNT_API_KEY: string;
   // Inbound-sync kill switch. "true" = skip every AutoCount pull (cron + manual).

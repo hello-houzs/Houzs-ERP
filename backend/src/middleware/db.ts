@@ -19,15 +19,11 @@ export const dbInject = createMiddleware<{ Bindings: Env }>(async (c, next) => {
   // against its isolated migrated D1 instead of a live Postgres.
   const url = resolveDatabaseUrl(c.env);
   if (!url) return next();
-  const sqlClient = getSql(url);
-  c.env.DB = d1Compat(sqlClient) as unknown as D1Database;
-  try {
-    await next();
-  } finally {
-    // Close the per-request socket gracefully after the response — left open,
-    // workerd severs it and logs "Network connection lost" against the request.
-    c.executionCtx.waitUntil(sqlClient.end({ timeout: 5 }).catch(() => {}));
-  }
+  // Build per request, do NOT .end() it: the socket is to Hyperdrive's local
+  // proxy (cheap) and Hyperdrive owns origin-side pooling. Closing per request
+  // caused connection churn/exhaustion on 2026-06-13. Matches Hookka's config.
+  c.env.DB = d1Compat(() => getSql(url)) as unknown as D1Database;
+  await next();
 });
 
 /**
@@ -37,5 +33,5 @@ export const dbInject = createMiddleware<{ Bindings: Env }>(async (c, next) => {
 export function withPgDb(env: Env): Env {
   const url = resolveDatabaseUrl(env);
   if (!url) return env; // same fallback as dbInject: cron stays on bound D1
-  return { ...env, DB: d1Compat(getSql(url)) as unknown as D1Database };
+  return { ...env, DB: d1Compat(() => getSql(url)) as unknown as D1Database };
 }
