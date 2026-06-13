@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import type { Env } from "./types";
 import { auth } from "./middleware/auth";
 import { idempotency } from "./middleware/idempotency";
+import { requestLog } from "./middleware/requestLog";
 import orders from "./routes/orders";
 import sync from "./routes/sync";
 import balance from "./routes/balance";
@@ -70,6 +71,9 @@ import {
 } from "./services/points";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Outermost: one structured access-log line + X-Request-Id per request.
+app.use("*", requestLog);
 
 app.use("*", cors());
 
