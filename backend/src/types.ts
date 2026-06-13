@@ -10,6 +10,8 @@ export type Env = {
   POD_BUCKET: R2Bucket;
   AUTOCOUNT_API_URL: string;
   AUTOCOUNT_API_KEY: string;
+  // Inbound-sync kill switch. "true" = skip every AutoCount pull (cron + manual).
+  AUTOCOUNT_SYNC_DISABLED?: string;
   DASHBOARD_API_KEY: string;
   GOOGLE_MAPS_API_KEY?: string;
   // Email (Resend). Leave RESEND_API_KEY unset to run in no-op mode —

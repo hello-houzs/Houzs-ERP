@@ -2,11 +2,15 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { runPull } from "../services/pull";
 import { retryErrors } from "../services/push";
-import { isAutoCountWritesDisabled } from "../services/autocount";
+import { isAutoCountWritesDisabled, isAutoCountSyncDisabled } from "../services/autocount";
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.post("/pull", async (c) => {
+  // Inbound sync kill switch — no AutoCount data is pulled while disabled.
+  if (isAutoCountSyncDisabled(c.env)) {
+    return c.json({ ok: false, skipped: true, message: "AutoCount sync is disabled" });
+  }
   const mode = c.req.query("mode") === "all" ? "all" : "filtered";
   const result = await runPull(c.env, "MANUAL", mode);
   return c.json(result);
@@ -45,6 +49,7 @@ app.get("/status", async (c) => {
     last_pull_all: lastPullAll,
     error_count: errorCount?.count || 0,
     autocount_writes_disabled: isAutoCountWritesDisabled(),
+    autocount_sync_disabled: isAutoCountSyncDisabled(c.env),
   });
 });
 

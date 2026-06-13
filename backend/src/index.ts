@@ -52,6 +52,7 @@ import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
 import { runPull } from "./services/pull";
+import { isAutoCountSyncDisabled } from "./services/autocount";
 import { runPOPull, runPODocsPull } from "./services/po";
 import { runOverdue } from "./services/overdue";
 import { runSlaEscalation } from "./services/assrEscalation";
@@ -158,12 +159,19 @@ export default {
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
     // Cutover: cron services write via env.DB too — point it at Postgres.
     env = withPgDb(env);
+    // Inbound AutoCount sync kill switch. When set, skip every job that PULLS
+    // from AutoCount (SO/PO/overdue/creditors/stock). Non-AutoCount jobs (ASSR
+    // alerts, SLA, reminders, points) still run. Set 2026-06-13 at owner request.
+    const syncOff = isAutoCountSyncDisabled(env);
+    if (syncOff) console.log("[cron] AutoCount sync disabled — skipping inbound pulls");
     if (event.cron === "*/5 * * * *") {
       // Tight loop: incremental SO pull. Everything else waits for slower slots.
-      ctx.waitUntil(runPull(env, "SCHEDULED").catch((e) => console.error("[cron pull]", e)));
+      if (!syncOff)
+        ctx.waitUntil(runPull(env, "SCHEDULED").catch((e) => console.error("[cron pull]", e)));
     } else if (event.cron === "*/30 * * * *") {
       // Procurement data: PO docs (/getAll) + outstanding lines (/getOutstanding).
       // Each wrapped independently so one failure doesn't hide the other.
+      if (!syncOff) {
       ctx.waitUntil(
         runPODocsPull(env, "SCHEDULED")
           .then((r) => console.log(`[cron po-docs] ${r.message}`))
@@ -174,6 +182,7 @@ export default {
           .then((r) => console.log(`[cron po-lines] ${r.message}`))
           .catch((e) => console.error("[cron po-lines]", e))
       );
+      }
       // ASSR/QMS v3.1 — per-stage alert scanner (half / approaching /
       // breach). Cheap: one query over open stage_history rows,
       // idempotent via the alerts_fired bit-mask, so safe to share
@@ -199,7 +208,8 @@ export default {
           .catch((e) => console.error("[cron lead-time-schedule]", e))
       );
     } else if (event.cron === "0 2 * * *") {
-      ctx.waitUntil(runOverdue(env, "SCHEDULED").catch((e) => console.error("[cron overdue]", e)));
+      if (!syncOff)
+        ctx.waitUntil(runOverdue(env, "SCHEDULED").catch((e) => console.error("[cron overdue]", e)));
       // Piggyback the daily 02:00 slot: run SLA escalation right after
       // overdue. Cheap (single query + ≤ N updates) so no separate cron.
       ctx.waitUntil(
@@ -228,6 +238,7 @@ export default {
       );
       // Creditors change rarely — daily resync is plenty to keep the
       // mirror + any new supplier onboarded in AutoCount visible.
+      if (!syncOff)
       ctx.waitUntil(
         runCreditorsPull(env, "SCHEDULED")
           .then((r) => console.log(`[cron creditors] ${r.message}`))
@@ -236,6 +247,7 @@ export default {
       // Refresh the stock-items cache (item → MainSupplier) and
       // re-resolve creditor_code on any ASSR case whose item's
       // supplier changed upstream.
+      if (!syncOff)
       ctx.waitUntil(
         runStockItemsRefresh(env, {})
           .then((r) => console.log(`[cron stockitems] ${r.message}`))

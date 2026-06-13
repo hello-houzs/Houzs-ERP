@@ -245,6 +245,20 @@ export function isAutoCountWritesDisabled(): boolean {
   return AUTOCOUNT_WRITES_DISABLED;
 }
 
+/**
+ * Inbound-sync kill switch. When AUTOCOUNT_SYNC_DISABLED="true" (wrangler.toml
+ * [vars]), every AutoCount PULL is skipped — the cron handler and the manual
+ * /api/sync routes check this so no data is fetched from AutoCount. Non-AutoCount
+ * cron work (ASSR alerts, SLA, reminders, points) keeps running. Env-driven so
+ * it flips with a one-line var change + deploy, no code edit. Set 2026-06-13 at
+ * the owner's request ("暂时关闭, 不需要数据进来"); flip the var to re-enable.
+ */
+export function isAutoCountSyncDisabled(env: {
+  AUTOCOUNT_SYNC_DISABLED?: string;
+}): boolean {
+  return env.AUTOCOUNT_SYNC_DISABLED === "true";
+}
+
 function normalizeDate(d: string | null | undefined): string | null {
   if (!d) return null;
   return d.replace(/\//g, "-");

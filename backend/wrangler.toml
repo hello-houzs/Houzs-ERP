@@ -8,6 +8,11 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 AUTOCOUNT_API_URL = "https://it-houzs.dev/"
+# Inbound AutoCount sync kill switch. "true" = skip every AutoCount pull
+# (cron SO/PO/overdue/creditors/stock + manual /api/sync/pull). Non-AutoCount
+# cron jobs keep running. Set "true" 2026-06-13 at owner request ("暂时关闭,
+# 不需要数据进来"). Flip to "false" + redeploy to resume inbound sync.
+AUTOCOUNT_SYNC_DISABLED = "true"
 # Public origin used to build email links (survey, portal, supplier invite,
 # member invitations, password resets). The canonical user-facing domain —
 # pages.dev still serves, but every link we hand out reads this.
