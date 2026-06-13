@@ -45,6 +45,10 @@ database_id = "d0401549-c099-407b-ae95-57a5f85e5ad5"
 [[hyperdrive]]
 binding = "HYPERDRIVE"
 id = "4e820fcfa4f945929ab77e164060e694"
+# Spare fresh config f0f9bd0d6b924496981b97b9ebcfe898 (houzs-erp-pg-v2) also
+# exists, same SG target — only useful if 4e820fcf is permanently stuck (it is
+# NOT: both point at the same anogrigy tenant, so a Supavisor tenant throttle
+# affects both equally — the 2026-06-13 outage cure is STOP churning + wait).
 
 # R2 bucket for proof-of-delivery photos and signatures.
 [[r2_buckets]]
