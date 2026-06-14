@@ -138,7 +138,7 @@ export function UdfManager({ open, onClose, udf, tableLabel }: Props) {
       width={460}
     >
       {udf.loading && (
-        <div className="py-6 text-center text-sm text-ink-muted">Loading…</div>
+        <div className="py-6 text-center text-[11px] text-ink-muted">Loading…</div>
       )}
       {udf.error && (
         <div className="rounded border border-err/30 bg-err/5 px-3 py-2 text-xs text-err">
@@ -274,7 +274,7 @@ export function UdfManager({ open, onClose, udf, tableLabel }: Props) {
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
-    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
       {children}
     </label>
   );

@@ -57,7 +57,7 @@ export function EventsTab() {
       {!list.loading && dates.length === 0 && (
         <div className="rounded-lg border border-dashed border-border bg-surface p-10 text-center">
           <Calendar size={28} className="mx-auto mb-3 text-ink-secondary" />
-          <div className="text-[14px] font-bold text-ink">No events yet</div>
+          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">No events yet</div>
           <div className="mt-1 text-[12px] text-ink-secondary">
             Click <span className="font-semibold">Add Event</span> to create a setup or dismantle entry.
           </div>
@@ -162,7 +162,7 @@ function EventCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-ink-secondary">
+            <span className="text-[10px] font-bold uppercase tracking-brand text-ink-secondary">
               {event.type}
             </span>
             {event.status && (
@@ -181,7 +181,7 @@ function EventCard({
               </span>
             )}
           </div>
-          <div className="mt-0.5 text-[14px] font-bold text-ink">{event.title}</div>
+          <div className="mt-0.5 font-display text-[15px] font-bold leading-tight tracking-tight text-ink">{event.title}</div>
           {event.address && (
             <div className="mt-1 flex items-start gap-1.5 text-[11px] text-ink-secondary">
               <MapPin size={11} className="mt-0.5 shrink-0" />
@@ -280,7 +280,7 @@ function EventDialog({
             <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
               {event ? "Edit event" : "New event"}
             </div>
-            <h2 className="font-display text-[16px] font-extrabold tracking-tight text-ink">
+            <h2 className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
               Setup / Dismantle
             </h2>
           </div>

@@ -76,10 +76,10 @@ export function DriverProjects() {
         <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
           Crew
         </div>
-        <h1 className="font-display text-[22px] font-extrabold leading-tight tracking-tight text-ink">
+        <h1 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink sm:text-[26px] lg:text-[28px]">
           My Projects
         </h1>
-        <p className="mt-1 text-[12.5px] text-ink-secondary">
+        <p className="mt-1 text-[12px] leading-relaxed text-ink-secondary sm:text-sm">
           Projects you're crewed on for setup or dismantle.
         </p>
       </div>
@@ -109,9 +109,9 @@ export function DriverProjects() {
         </div>
       </div>
 
-      {list.loading && <div className="text-sm text-ink-secondary">Loading…</div>}
+      {list.loading && <div className="text-[12px] text-ink-secondary">Loading…</div>}
       {list.error && (
-        <div className="rounded-md border border-err/40 bg-err/5 p-3 text-sm text-err">
+        <div className="rounded-md border border-err/40 bg-err/5 p-3 text-[13px] text-err">
           {list.error}
         </div>
       )}
@@ -119,8 +119,8 @@ export function DriverProjects() {
       {list.data && all.length === 0 && (
         <div className="rounded-lg border border-dashed border-border bg-surface p-8 text-center">
           <FolderKanban size={28} className="mx-auto mb-3 text-ink-secondary" />
-          <div className="text-sm font-semibold text-ink">No projects assigned</div>
-          <div className="mt-1 text-xs text-ink-secondary">
+          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">No projects assigned</div>
+          <div className="mt-1 text-[12px] text-ink-secondary">
             New projects appear here once ops adds you to a setup or dismantle crew.
           </div>
         </div>
@@ -290,7 +290,7 @@ function DriverCalendar({ projects }: { projects: DriverProjectListItem[] }) {
           {WEEKDAYS.map((d) => (
             <div
               key={d}
-              className="py-1 text-center text-[10px] font-semibold uppercase tracking-wide text-ink-muted"
+              className="py-1 text-center text-[10px] font-semibold uppercase tracking-brand text-ink-muted"
             >
               {d}
             </div>
@@ -350,7 +350,7 @@ function DriverCalendar({ projects }: { projects: DriverProjectListItem[] }) {
 
       {/* Selected-day agenda */}
       <div className="mt-4">
-        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-brand text-ink-muted">
           {formatDate(selected)}
         </div>
         {selectedEvents.length === 0 ? (

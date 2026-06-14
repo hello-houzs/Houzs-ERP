@@ -145,7 +145,7 @@ export function Profile() {
             <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
               Identity
             </h2>
-            <div className="truncate font-display text-[18px] font-extrabold text-ink">
+            <div className="truncate font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
               {user.name || user.email}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
@@ -178,7 +178,7 @@ export function Profile() {
 
         <div className="space-y-4">
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Display Name
             </label>
             <div className="flex items-center gap-2">
@@ -259,7 +259,7 @@ export function Profile() {
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+      <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
       </div>
       <div className="text-[13px]">{children}</div>
@@ -442,7 +442,7 @@ function PasswordSection() {
 
       <form onSubmit={submit} className="space-y-3">
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Current Password
           </label>
           <input
@@ -455,7 +455,7 @@ function PasswordSection() {
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               New Password
             </label>
             <input
@@ -468,7 +468,7 @@ function PasswordSection() {
             <PasswordStrengthMeter password={next} email={user?.email} />
           </div>
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Confirm New Password
             </label>
             <input
@@ -653,7 +653,7 @@ function TwoFactorSection() {
           </div>
           <div className="space-y-2">
             <div>
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
                 Setup key
               </div>
               <code className="block break-all rounded bg-canvas px-2 py-1 font-mono text-[13px] tracking-wider">
@@ -668,7 +668,7 @@ function TwoFactorSection() {
             </a>
           </div>
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Enter the 6-digit code to confirm
             </label>
             <input

@@ -182,7 +182,7 @@ export function PnlCalendar({
           <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
             P&L · Gross Profit · {scope === "all" ? "All sources" : labelForScope(scope)}
           </div>
-          <h3 className="font-display text-[16px] font-extrabold text-ink">
+          <h3 className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
             {title ?? "Profit & Loss"}
           </h3>
           {subtitle && (
@@ -352,7 +352,7 @@ function TotalCell({
 }) {
   return (
     <div>
-      <div className="text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+      <div className="text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
       </div>
       <div
@@ -415,7 +415,7 @@ function BucketCard({
       )}
     >
       <div className="flex items-center justify-between">
-        <div className="text-[10px] font-bold uppercase tracking-wider text-ink-muted">
+        <div className="text-[10px] font-bold uppercase tracking-brand text-ink-muted">
           {bucket.label}
         </div>
         {hasAny && (
@@ -534,7 +534,7 @@ function BucketDetailPanel({
               ) : (
                 <div className="max-h-[280px] overflow-y-auto">
                   <table className="w-full text-[11px]">
-                    <thead className="bg-bg/40 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+                    <thead className="bg-bg/40 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
                       <tr>
                         <th className="px-2 py-1 text-left">Doc No</th>
                         <th className="px-2 py-1 text-left">Customer</th>

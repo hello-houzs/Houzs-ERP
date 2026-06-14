@@ -285,7 +285,7 @@ export function DefinitionList({ items }: { items: DefnItem[] }) {
             item.full && "sm:col-span-2"
           )}
         >
-          <dt className="min-w-[100px] shrink-0 font-mono text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
+          <dt className="min-w-[100px] shrink-0 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
             {item.label}
           </dt>
           <dd

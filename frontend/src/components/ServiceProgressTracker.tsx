@@ -281,7 +281,7 @@ function Node({
       >
         {inner}
       </div>
-      <span className="mt-1 line-clamp-2 text-[9px] font-semibold uppercase tracking-wide text-ink-muted">
+      <span className="mt-1 line-clamp-2 text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
       </span>
     </div>

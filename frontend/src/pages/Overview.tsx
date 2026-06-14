@@ -146,7 +146,7 @@ export function Overview() {
         </div>
         <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
           <div className="min-w-0">
-            <h1 className="font-display text-[32px] font-extrabold leading-[1.05] tracking-tight text-ink sm:text-[40px] lg:text-[48px]">
+            <h1 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink sm:text-[26px] lg:text-[28px]">
               {name ? (
                 <>
                   {greeting},{" "}
@@ -156,7 +156,7 @@ export function Overview() {
                 "Overview"
               )}
             </h1>
-            <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-ink-secondary">
+            <p className="mt-2 max-w-xl text-[12px] leading-relaxed text-ink-secondary sm:text-sm">
               Tasks, reviews, and blockers across every module — the day's open
               loops in one place.
             </p>
@@ -363,12 +363,12 @@ function SectionHeader({
           <span className="h-px w-4 bg-accent" />
           <span>{eyebrow}</span>
         </div>
-        <h2 className="font-display text-[18px] font-extrabold tracking-tight text-ink">
+        <h2 className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
           {title}
         </h2>
       </div>
       {hint && (
-        <div className="hidden text-[10.5px] uppercase tracking-wider text-ink-muted sm:block">
+        <div className="hidden text-[10.5px] uppercase tracking-brand text-ink-muted sm:block">
           {hint}
         </div>
       )}
@@ -422,11 +422,11 @@ function HeroKpiCard({ icon, label, value, sub, tone }: HeroKpi) {
         className={cn("absolute left-0 top-0 h-full w-[3px]", accentBar)}
         aria-hidden
       />
-      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         <span className={iconClass}>{icon}</span>
         <span>{label}</span>
       </div>
-      <div className={cn("mt-1.5 font-display text-[26px] font-extrabold leading-none tracking-tight", valueClass)}>
+      <div className={cn("mt-1.5 font-display text-[22px] font-extrabold leading-none tracking-tight", valueClass)}>
         {display}
       </div>
       {sub && <div className="mt-1 text-[10.5px] text-ink-muted">{sub}</div>}
@@ -457,7 +457,7 @@ function PipelineTile({
       to={to}
       className="group flex flex-col gap-1.5 rounded-lg border border-border bg-surface px-4 py-3 shadow-stone transition-colors hover:border-accent/40 hover:bg-accent-soft/15"
     >
-      <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+      <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         <span className="flex items-center gap-1.5">
           <span className="text-accent/80 group-hover:text-accent">{icon}</span>
           {label}
@@ -520,7 +520,7 @@ function InboxColumn({
         </span>
         <div className="flex-1">
           <div className="flex items-center gap-2">
-            <h3 className="font-display text-[13px] font-extrabold text-ink">{title}</h3>
+            <h3 className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">{title}</h3>
             <span
               className={cn(
                 "inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 font-mono text-[10px] font-bold",

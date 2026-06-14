@@ -465,7 +465,7 @@ function ChecklistManager() {
       </p>
 
       <div className="mb-4 rounded-md border border-border bg-bg/40 p-3">
-        <div className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        <div className="mb-2 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Default template per event type
         </div>
         {eventTypesQ.loading ? (
@@ -506,7 +506,7 @@ function ChecklistManager() {
       </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Editing
         </span>
         <select
@@ -1000,7 +1000,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                   >
                     {/* Block header */}
                     <div className="flex items-center gap-2 border-b border-border-subtle bg-bg/60 px-3 py-1.5">
-                      <span className="flex-1 text-[10.5px] font-semibold uppercase tracking-brand text-ink-secondary">
+                      <span className="flex-1 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
                         {block.name}
                       </span>
                       <span className="font-mono text-[10px] text-ink-muted">
@@ -1879,7 +1879,7 @@ function RateField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
+      <span className="text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
         {optional && <span className="ml-1 normal-case text-ink-muted/70">(optional)</span>}
       </span>

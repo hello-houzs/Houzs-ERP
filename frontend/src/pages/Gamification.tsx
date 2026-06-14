@@ -308,7 +308,7 @@ function LeaderboardTab({
       {/* ── Filter row ───────────────────────────────────── */}
       <div className="mb-5 flex flex-wrap items-end gap-3">
         <label className="flex w-full flex-col gap-0.5 sm:w-auto">
-          <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-secondary">
+          <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Scope
           </span>
           <select

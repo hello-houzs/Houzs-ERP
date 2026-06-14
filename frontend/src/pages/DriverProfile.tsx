@@ -33,7 +33,7 @@ export function DriverProfile() {
       {/* Header */}
       <div className="mb-5">
         <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">Profile</div>
-        <h1 className="font-display text-[22px] font-extrabold leading-tight tracking-tight text-ink">
+        <h1 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink sm:text-[26px] lg:text-[28px]">
           {user.name || user.email}
         </h1>
         <p className="mt-0.5 text-[12px] text-ink-secondary">{user.role_name}</p>
@@ -224,7 +224,7 @@ function ProfileTab({ profile, onUpdated }: { profile: any; onUpdated: () => voi
     }
   }
 
-  if (!profile) return <div className="text-sm text-ink-secondary">Loading…</div>;
+  if (!profile) return <div className="text-[12px] text-ink-secondary">Loading…</div>;
 
   return (
     <div>
@@ -341,7 +341,7 @@ function SalaryTab() {
         />
       </div>
 
-      {salary.loading && <div className="text-sm text-ink-secondary">Loading…</div>}
+      {salary.loading && <div className="text-[12px] text-ink-secondary">Loading…</div>}
 
       {s && (
         <>
@@ -429,7 +429,7 @@ function ClockHistoryTab() {
         />
       </div>
 
-      {records.loading && <div className="text-sm text-ink-secondary">Loading…</div>}
+      {records.loading && <div className="text-[12px] text-ink-secondary">Loading…</div>}
 
       <div className="rounded-xl border border-border bg-surface divide-y divide-border">
         {(records.data?.data ?? []).map((r: any) => (
@@ -463,7 +463,7 @@ function ClockHistoryTab() {
 function Field({ label, value }: { label: string; value: string | null | undefined }) {
   return (
     <div className="flex items-center justify-between px-4 py-2.5">
-      <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
+      <span className="text-[11px] font-semibold uppercase tracking-brand text-ink-secondary">
         {label}
       </span>
       <span className="text-[13px] font-medium text-ink">{value || "—"}</span>

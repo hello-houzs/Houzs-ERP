@@ -163,7 +163,7 @@ export function ResetPassword() {
     >
       <form onSubmit={submit} className="space-y-4">
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             New password
           </label>
           <input
@@ -179,7 +179,7 @@ export function ResetPassword() {
           <PasswordStrengthMeter password={password} email={state.email} />
         </div>
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Confirm password
           </label>
           <input

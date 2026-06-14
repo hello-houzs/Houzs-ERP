@@ -133,7 +133,7 @@ export function CreditorDetail() {
                   ) : (
                     <div className="overflow-x-auto">
                       <table className="w-full text-[11.5px]">
-                        <thead className="bg-bg/50 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+                        <thead className="bg-bg/50 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
                           <tr>
                             <th className="px-4 py-2.5 text-left">PO No</th>
                             <th className="px-3 py-2.5 text-left">Date</th>

@@ -158,7 +158,7 @@ export function PettyCash() {
       {/* Filters */}
       <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2 shadow-stone">
         <Filter size={13} className="text-ink-muted" />
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+        <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Filter
         </span>
         <input
@@ -424,10 +424,10 @@ function AddEntryModal({
       >
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div>
-            <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-accent">
+            <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
               Petty cash
             </div>
-            <div className="font-display text-[16px] font-extrabold text-ink">
+            <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
               New entry
             </div>
           </div>

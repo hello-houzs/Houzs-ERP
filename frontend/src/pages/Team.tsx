@@ -1387,7 +1387,7 @@ function OrgCard({
 
       {editing && (
         <div className="border-t border-border-subtle bg-bg/60 px-3 py-2">
-          <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
             Reports to
           </label>
           <select
@@ -1641,7 +1641,7 @@ function DepartmentEditor({
     >
       <PanelSection title="Details">
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Name
           </label>
           <input
@@ -1653,7 +1653,7 @@ function DepartmentEditor({
           />
         </div>
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Description
           </label>
           <textarea
@@ -1664,7 +1664,7 @@ function DepartmentEditor({
           />
         </div>
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Colour
           </label>
           <div className="flex items-center gap-3">
@@ -1680,7 +1680,7 @@ function DepartmentEditor({
           </div>
         </div>
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Sort order
           </label>
           <input
@@ -1803,7 +1803,7 @@ function InvitePanel({
       {!issued ? (
         <PanelSection title="Details">
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Name
             </label>
             <input
@@ -1816,7 +1816,7 @@ function InvitePanel({
             />
           </div>
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Email
             </label>
             <input
@@ -1828,7 +1828,7 @@ function InvitePanel({
             />
           </div>
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Role / Position
             </label>
             <select
@@ -1848,7 +1848,7 @@ function InvitePanel({
             </div>
           </div>
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Department
             </label>
             <select
@@ -1868,7 +1868,7 @@ function InvitePanel({
             </select>
           </div>
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Position
             </label>
             <select
@@ -1890,7 +1890,7 @@ function InvitePanel({
             </div>
           </div>
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Reports to
             </label>
             <select
@@ -1933,7 +1933,7 @@ function InvitePanel({
             )}
           </p>
           <div className="rounded-md border border-border bg-bg p-3">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Invite Link
             </div>
             <div className="break-all font-mono text-[11px] text-ink">

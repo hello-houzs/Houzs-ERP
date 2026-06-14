@@ -206,7 +206,7 @@ export function ProjectGantt({
             {formatDate(isoOnly(range.end))}
           </span>
         </span>
-        <span className="font-mono text-[10px] uppercase tracking-wider">
+        <span className="font-mono text-[10px] uppercase tracking-brand">
           {tasks.length} task{tasks.length === 1 ? "" : "s"} · {lanes.length} lane{lanes.length === 1 ? "" : "s"}
         </span>
       </div>
@@ -228,7 +228,7 @@ export function ProjectGantt({
             {weeks.map((w, i) => (
               <div
                 key={i}
-                className="absolute top-0 bottom-0 flex items-center border-l border-border-subtle pl-1.5 font-mono text-[9.5px] uppercase tracking-wider text-ink-muted"
+                className="absolute top-0 bottom-0 flex items-center border-l border-border-subtle pl-1.5 font-mono text-[9.5px] uppercase tracking-brand text-ink-muted"
                 style={{ left: w.offsetDays * dayWidth, width: dayWidth * 7 }}
               >
                 {w.label}
@@ -365,7 +365,7 @@ export function ProjectGantt({
                         type="button"
                         onClick={() => onTaskClick?.(task.id)}
                         title={`${task.title} — no due date set`}
-                        className="absolute top-1/2 -translate-y-1/2 rounded-full border border-dashed border-border bg-surface px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-ink-muted hover:border-accent/40 hover:text-accent"
+                        className="absolute top-1/2 -translate-y-1/2 rounded-full border border-dashed border-border bg-surface px-2 py-0.5 font-mono text-[9px] uppercase tracking-brand text-ink-muted hover:border-accent/40 hover:text-accent"
                         style={{ left: 4 }}
                       >
                         ?
@@ -457,7 +457,7 @@ export function ProjectGantt({
           <Lock size={8} className="text-accent" />
           Gated
         </span>
-        <span className="ml-auto inline-flex items-center gap-1 font-mono uppercase tracking-wider">
+        <span className="ml-auto inline-flex items-center gap-1 font-mono uppercase tracking-brand">
           <span className="inline-block h-3 w-px border-l border-dashed border-accent" />
           Today
         </span>

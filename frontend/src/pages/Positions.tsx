@@ -126,7 +126,7 @@ function PositionMatrixEditor({ position, pages }: { position: Position; pages: 
     <div>
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[13px] font-semibold text-ink">{position.name}</div>
+          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">{position.name}</div>
           <div className="truncate text-[10px] text-ink-muted">
             {position.department_name ?? "—"} · controls which pages this position can see
           </div>

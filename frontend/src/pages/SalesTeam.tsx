@@ -3,10 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   Plus,
   Settings as SettingsIcon,
-  ShieldCheck,
   Search,
-  List as ListIcon,
-  GitBranch,
   ChevronsDownUp,
   ChevronsUpDown,
 } from "lucide-react";
@@ -16,7 +13,6 @@ import { StatCard } from "../components/StatCard";
 import { DashboardGrid } from "../components/Dashboard";
 import { Avatar } from "../components/Avatar";
 import { HierarchyTree, expandAllIds, collapseAllIds } from "../components/HierarchyTree";
-import { OrgChartView } from "../components/OrgChartView";
 import { SalesRepEditPanel } from "../components/SalesRepEditPanel";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
@@ -54,7 +50,6 @@ export function SalesTeam() {
   const position = params.get("position") || "";
   const brand = params.get("brand") || "";
   const q = params.get("q") || "";
-  const view = params.get("view") === "tree" ? "tree" : "list";
   const [editingRep, setEditingRep] = useState<SalesRep | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [expandTouched, setExpandTouched] = useState(false);
@@ -110,7 +105,6 @@ export function SalesTeam() {
 
   const totals = useMemo(() => {
     const directors = all.filter((r) => r.position_level === 10).length;
-    const admins = all.filter((r) => r.is_admin === 1).length;
     const active = all.filter((r) => r.status === "active").length;
     const brandSet = new Set<string>();
     for (const r of all) for (const b of r.brands) brandSet.add(b);
@@ -118,7 +112,6 @@ export function SalesTeam() {
       total: all.length,
       active,
       directors,
-      admins,
       managers: all.filter((r) => r.position_level === 15).length,
       executives: all.filter((r) => r.position_level === 20).length,
       salesPersons: all.filter((r) => r.position_level === 25).length,
@@ -126,27 +119,6 @@ export function SalesTeam() {
       brandsAssigned: brandSet.size,
     };
   }, [all]);
-
-  async function toggleAdmin(rep: SalesRep) {
-    const wantAdmin = rep.is_admin !== 1;
-    if (
-      !(await dialog.confirm({
-        title: wantAdmin ? "Make admin?" : "Remove admin?",
-        message: wantAdmin
-          ? `${rep.name} will be able to edit any rep in their hierarchy. Continue?`
-          : `${rep.name} will lose admin permissions and only see their own subtree. Continue?`,
-        danger: !wantAdmin,
-      }))
-    )
-      return;
-    try {
-      await api.put(`/api/sales-team/reps/${rep.id}/admin`, { is_admin: wantAdmin });
-      toast.success(wantAdmin ? "Admin granted" : "Admin removed");
-      reps.reload();
-    } catch (e: any) {
-      toast.error(e?.message || "Failed");
-    }
-  }
 
   function expandAll() {
     setExpandTouched(true);
@@ -215,11 +187,6 @@ export function SalesTeam() {
             })}
           </div>
         )}
-        {r.is_admin === 1 && (
-          <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-800">
-            Admin
-          </span>
-        )}
         <span
           className={cn(
             "shrink-0 rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
@@ -240,23 +207,6 @@ export function SalesTeam() {
           >
             {r.team_size}
           </span>
-        )}
-        {canManage && !opts.compact && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleAdmin(r);
-            }}
-            className={cn(
-              "shrink-0 rounded-md border px-2 py-1 text-[10px] font-semibold uppercase tracking-wider transition-colors",
-              r.is_admin
-                ? "border-err/40 text-err hover:bg-err/10"
-                : "border-border text-ink-secondary hover:border-accent/40 hover:text-accent",
-            )}
-          >
-            <ShieldCheck size={10} className="inline" />{" "}
-            {r.is_admin ? "Remove" : "Make"} admin
-          </button>
         )}
       </div>
     );
@@ -304,35 +254,21 @@ export function SalesTeam() {
             Team → Members
           </button>
           . Anyone whose department is set to <span className="font-semibold">Sales</span>{" "}
-          appears here automatically — edit their position, upline, brands and commission below.
+          appears here automatically — edit their position, report-to, brands and commission below.
         </div>
       )}
 
-      {/* Roles & Permissions panel */}
+      {/* Position filters */}
       <div className="mb-4 rounded-md border border-border bg-surface p-4 shadow-stone">
-        <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <button
-            onClick={() => patchParams({ position: "" })}
-            className="rounded-md border border-border px-3 py-2 text-left transition-colors hover:border-accent/40"
-          >
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-              Administrators
-            </div>
-            <div className="font-display text-[18px] font-extrabold text-ink">
-              {totals.admins}
-            </div>
-            <div className="text-[10px] text-ink-muted">
-              Full access to events, finance, settings
-            </div>
-          </button>
+        <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
             onClick={() => patchParams({ position: "manager" })}
             className="rounded-md border border-border px-3 py-2 text-left transition-colors hover:border-accent/40"
           >
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Managers
             </div>
-            <div className="font-display text-[18px] font-extrabold text-ink">
+            <div className="font-display text-[22px] font-extrabold tracking-tight text-ink">
               {totals.managers}
             </div>
             <div className="text-[10px] text-ink-muted">
@@ -343,10 +279,10 @@ export function SalesTeam() {
             onClick={() => patchParams({ position: "executive" })}
             className="rounded-md border border-border px-3 py-2 text-left transition-colors hover:border-accent/40"
           >
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Executives
             </div>
-            <div className="font-display text-[18px] font-extrabold text-ink">
+            <div className="font-display text-[22px] font-extrabold tracking-tight text-ink">
               {totals.executives}
             </div>
             <div className="text-[10px] text-ink-muted">
@@ -355,9 +291,8 @@ export function SalesTeam() {
           </button>
         </div>
         <p className="text-[10.5px] text-ink-muted">
-          Change someone's role by clicking{" "}
-          <span className="font-semibold">Edit</span> on their row and selecting a different Position. Toggle{" "}
-          <span className="font-semibold">Admin</span> from the row's right edge — admins get full module access.
+          Change someone's position by clicking{" "}
+          <span className="font-semibold">Edit</span> on their row and selecting a different Position.
         </p>
       </div>
 
@@ -435,54 +370,28 @@ export function SalesTeam() {
       <div className="rounded-md border border-border bg-surface shadow-stone">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0">
-            <h2 className="text-[11px] font-bold uppercase tracking-brand text-ink">
+            <h2 className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Organisation Chart
             </h2>
-            <p className="mt-0.5 text-[10.5px] text-ink-muted">
+            <p className="mt-0.5 text-[11px] text-ink-muted">
               Click to edit · Director → Manager → Executive → Sales Person
             </p>
           </div>
           <div className="flex items-center gap-1">
             <button
-              onClick={() => patchParams({ view: "" })}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-semibold transition-colors",
-                view === "list"
-                  ? "border-accent bg-accent text-white"
-                  : "border-border bg-surface text-ink-secondary hover:border-accent/40",
-              )}
+              onClick={expandAll}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+              title="Expand all"
             >
-              <ListIcon size={12} /> List
+              <ChevronsUpDown size={12} /> Expand
             </button>
             <button
-              onClick={() => patchParams({ view: "tree" })}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-semibold transition-colors",
-                view === "tree"
-                  ? "border-accent bg-accent text-white"
-                  : "border-border bg-surface text-ink-secondary hover:border-accent/40",
-              )}
+              onClick={collapseAll}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+              title="Collapse all"
             >
-              <GitBranch size={12} /> Org Chart
+              <ChevronsDownUp size={12} /> Collapse
             </button>
-            {view === "list" && (
-              <>
-                <button
-                  onClick={expandAll}
-                  className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
-                  title="Expand all"
-                >
-                  <ChevronsUpDown size={12} /> Expand
-                </button>
-                <button
-                  onClick={collapseAll}
-                  className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
-                  title="Collapse all"
-                >
-                  <ChevronsDownUp size={12} /> Collapse
-                </button>
-              </>
-            )}
           </div>
         </div>
 
@@ -500,7 +409,7 @@ export function SalesTeam() {
           </div>
         )}
 
-        {filtered.length > 0 && view === "list" && (
+        {filtered.length > 0 && (
           <HierarchyTree<SalesRep>
             items={filtered}
             getParentId={(r) => r.upline_id}
@@ -512,18 +421,6 @@ export function SalesTeam() {
               setExpandTouched(true);
               setExpanded(s);
             }}
-          />
-        )}
-
-        {filtered.length > 0 && view === "tree" && (
-          <OrgChartView<SalesRep>
-            items={filtered}
-            getParentId={(r) => r.upline_id}
-            sortChildren={sortChildren}
-            renderNode={(r) => (
-              <div className="min-w-[200px]">{renderRepRow(r, { compact: true })}</div>
-            )}
-            onNodeClick={(r) => setEditingRep(r)}
           />
         )}
       </div>

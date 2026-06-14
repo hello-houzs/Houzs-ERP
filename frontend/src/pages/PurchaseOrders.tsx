@@ -911,7 +911,7 @@ function PoLinesContent({
           <>
             <div className="overflow-x-auto">
               <table className="w-full text-[11px]">
-                <thead className="bg-bg/50 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+                <thead className="bg-bg/50 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
                   <tr>
                     <th className="px-2 py-2 text-left">#</th>
                     <th className="px-2 py-2 text-left">Item</th>
@@ -984,7 +984,7 @@ function PoLinesContent({
                     key={`raw-${d.DtlKey ?? i}`}
                     className="rounded-md border border-border bg-surface p-3"
                   >
-                    <div className="mb-2 font-mono text-[10px] font-bold uppercase tracking-wider text-accent">
+                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
                       Line {d.Seq ?? i + 1} · {d.ItemCode || "—"}
                     </div>
                     <FieldGrid fields={d} />
@@ -1007,7 +1007,7 @@ function PoLinesContent({
         {lines && lines.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-[12px]">
-              <thead className="bg-bg/50 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              <thead className="bg-bg/50 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
                 <tr>
                   <th className="px-2 py-2 text-left">Item</th>
                   <th className="px-2 py-2 text-right">Qty Rem</th>
@@ -1235,7 +1235,7 @@ function FieldGrid({
     <div className="space-y-3">
       {sections.map((s) => (
         <div key={s.title}>
-          <div className="mb-1 text-[9px] font-bold uppercase tracking-wider text-accent">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-accent">
             {s.title}
           </div>
           <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">

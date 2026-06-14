@@ -216,7 +216,7 @@ function SyncTab({
       </section>
 
       <section className="relative overflow-hidden rounded-md border border-border bg-surface p-6 shadow-stone">
-        <h2 className="mb-1 text-sm font-semibold">Full Refresh</h2>
+        <h2 className="mb-1 font-display text-[15px] font-bold leading-tight tracking-tight text-ink">Full Refresh</h2>
         <p className="mb-4 text-xs text-ink-muted">
           Calls <span className="font-mono">/SalesOrder/getAll</span> and upserts
           everything — ignores server-side Remark2/Attention/Remark4/

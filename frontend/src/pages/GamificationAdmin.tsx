@@ -360,7 +360,7 @@ function CatalogRow({
 
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         <label className="block sm:col-span-2">
-          <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+          <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Name
           </span>
           <input
@@ -370,7 +370,7 @@ function CatalogRow({
           />
         </label>
         <label className="block sm:col-span-2">
-          <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+          <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Description
           </span>
           <textarea
@@ -381,7 +381,7 @@ function CatalogRow({
           />
         </label>
         <label className="block">
-          <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+          <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Cost (points)
           </span>
           <input
@@ -393,7 +393,7 @@ function CatalogRow({
           />
         </label>
         <label className="block">
-          <span className="text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+          <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Stock (blank = unlimited)
           </span>
           <input
@@ -992,7 +992,7 @@ function IdeaAdminRow<T extends InnovationAdminRow | SuggestionAdminRow>({
         {/* Body */}
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
-            <h3 className="font-display text-[15px] font-extrabold leading-tight tracking-tight text-ink">
+            <h3 className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
               {row.title}
             </h3>
             <IdeaStatusBadge status={row.status} />

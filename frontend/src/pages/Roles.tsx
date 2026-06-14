@@ -89,7 +89,7 @@ export function RolesTab({
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <Shield size={14} className="text-accent" />
-                  <h3 className="font-display text-[16px] font-extrabold tracking-tight text-ink">
+                  <h3 className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
                     {r.name}
                   </h3>
                   {r.is_system && (
@@ -312,7 +312,7 @@ function RoleEditorPanel({
     >
       <PanelSection title="Identity">
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Name
           </label>
           <input
@@ -324,7 +324,7 @@ function RoleEditorPanel({
           />
         </div>
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Description
           </label>
           <textarea
@@ -387,7 +387,7 @@ function RoleEditorPanel({
                     disabled={readOnly}
                     className="flex w-full items-center justify-between border-b border-border-subtle px-3 py-2 text-left transition-colors enabled:hover:bg-surface-dim"
                   >
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-ink">
+                    <span className="text-[11px] font-semibold uppercase tracking-brand text-ink">
                       {resource}
                     </span>
                     <span
