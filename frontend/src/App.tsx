@@ -35,6 +35,7 @@ const Profile = lazy(() => import("./pages/Profile").then((m) => ({ default: m.P
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 const Team = lazy(() => import("./pages/Team").then((m) => ({ default: m.Team })));
 const SystemDashboard = lazy(() => import("./pages/SystemDashboard").then((m) => ({ default: m.SystemDashboard })));
+const SystemHealth = lazy(() => import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealth })));
 const SalesTeam = lazy(() => import("./pages/SalesTeam").then((m) => ({ default: m.SalesTeam })));
 const SalesTeamDetail = lazy(() => import("./pages/SalesTeamDetail").then((m) => ({ default: m.SalesTeamDetail })));
 const SalesTeamMaintenance = lazy(() => import("./pages/SalesTeamMaintenance").then((m) => ({ default: m.SalesTeamMaintenance })));
@@ -332,6 +333,14 @@ export default function App() {
             <PageGuard page="team">
               <SystemDashboard />
             </PageGuard>
+          }
+        />
+        <Route
+          path="/system-health"
+          element={
+            <Guard perm="*">
+              <SystemHealth />
+            </Guard>
           }
         />
         <Route
