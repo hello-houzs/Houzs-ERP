@@ -185,6 +185,35 @@ select.appearance-none:focus {
   background: #a16a2e;
 }
 
+/* ──────────────────────────────────────────────────────────
+   Org Chart export — print only the reporting tree. The "Export"
+   button calls window.print(); these rules hide the rest of the
+   app so the browser's "Save as PDF" / paper print captures just
+   the chart. visibility (not display) keeps the tree's own layout
+   intact; the on-screen zoom transform is reset so the export is
+   always 1:1, and the scroll container is unclipped so a wide tree
+   prints in full.
+   ────────────────────────────────────────────────────────── */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .org-print-area,
+  .org-print-area * {
+    visibility: visible;
+  }
+  .org-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: auto;
+    overflow: visible !important;
+  }
+  .org-print-area .org-print-scale {
+    transform: none !important;
+  }
+}
+
 /* Selection — brass tint */
 ::selection {
   background: rgba(161, 106, 46, 0.22);

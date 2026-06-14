@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -1034,6 +1034,7 @@ function OrgChartTab() {
 
   const [draggingId, setDraggingId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [zoom, setZoom] = useState(1);
 
   async function reassign(userId: number, managerId: number | null) {
     if (userId === managerId) return;
@@ -1147,25 +1148,68 @@ function OrgChartTab() {
             : "No active members yet."}
         </div>
       ) : (
-        <div className="thin-scroll overflow-x-auto pb-6">
-          <div className="mx-auto flex min-w-fit items-start justify-center gap-10 px-4 pt-2">
-            {roots.map((r) => (
-              <OrgTreeNode
-                key={r.id}
-                user={r}
-                childrenOf={childrenOf}
-                canManage={canManage}
-                users={users}
-                draggingId={draggingId}
-                setDraggingId={setDraggingId}
-                onDrop={reassign}
-                editingId={editingId}
-                setEditingId={setEditingId}
-                onPickManager={reassign}
-              />
-            ))}
+        <>
+          {/* Zoom + export controls */}
+          <div className="flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="mr-1 inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+              title="Export the chart as PDF or print (opens your browser's print dialog)"
+            >
+              <Printer size={13} strokeWidth={2} />
+              Export
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface text-[15px] leading-none text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+              title="Zoom out"
+              aria-label="Zoom out"
+            >
+              −
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(1)}
+              className="inline-flex h-7 min-w-[3.25rem] items-center justify-center rounded-md border border-border bg-surface text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+              title="Reset zoom to 100%"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom((z) => Math.min(1.6, +(z + 0.1).toFixed(2)))}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface text-[15px] leading-none text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+              title="Zoom in"
+              aria-label="Zoom in"
+            >
+              +
+            </button>
           </div>
-        </div>
+          <div className="org-print-area thin-scroll overflow-auto pb-6">
+            <div
+              className="org-print-scale mx-auto flex min-w-fit items-start justify-center gap-10 px-4 pt-2"
+              style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}
+            >
+              {roots.map((r) => (
+                <OrgTreeNode
+                  key={r.id}
+                  user={r}
+                  childrenOf={childrenOf}
+                  canManage={canManage}
+                  users={users}
+                  draggingId={draggingId}
+                  setDraggingId={setDraggingId}
+                  onDrop={reassign}
+                  editingId={editingId}
+                  setEditingId={setEditingId}
+                  onPickManager={reassign}
+                />
+              ))}
+            </div>
+          </div>
+        </>
       )}
 
       <div className="text-[10.5px] text-ink-muted">
@@ -1767,7 +1811,7 @@ function DepartmentEditor({
 // ──────────────────────────────────────────────────────────
 // Invite panel
 // ──────────────────────────────────────────────────────────
-function InvitePanel({
+export function InvitePanel({
   open,
   onClose,
   roles,
