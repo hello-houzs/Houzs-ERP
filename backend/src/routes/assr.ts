@@ -434,7 +434,7 @@ app.get("/summary", async (c) => {
     breach_count: breach?.count || 0,
     // v3.1 enrichments
     pending_review_count: pendingReview?.count || 0,
-    avg_e2e_days: avgE2E?.avg_days != null ? Number(avgE2E.avg_days.toFixed(1)) : null,
+    avg_e2e_days: avgE2E?.avg_days != null ? Number(Number(avgE2E.avg_days).toFixed(1)) : null,
     stage_funnel: funnel.results ?? [],
     csat_trend: csatTrend.results ?? [],
   });
