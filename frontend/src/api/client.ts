@@ -5,6 +5,8 @@ import {
   getInflight,
   setInflight,
   invalidateForMutation,
+  currentEpoch,
+  invalidatedSince,
 } from "./cache";
 
 // Cloudflare Pages does NOT proxy /api/* (see public/_redirects) — a relative
@@ -122,8 +124,12 @@ function cachedGet<T>(path: string): Promise<T> {
   if (hit !== undefined) return Promise.resolve(hit);
   const joined = getInflight<T>(path);
   if (joined) return joined;
+  // Capture the invalidation clock at request start. If a mutation invalidates
+  // this resource family while the request is in flight, we must NOT cache the
+  // (now-stale) response when it resolves.
+  const startedEpoch = currentEpoch();
   const p = request<T>(path).then((data) => {
-    if (data !== undefined) setCached(path, data);
+    if (data !== undefined && !invalidatedSince(path, startedEpoch)) setCached(path, data);
     return data;
   });
   setInflight(path, p);

@@ -20,6 +20,28 @@ type Entry = { at: number; data: unknown };
 const store = new Map<string, Entry>();
 const inflight = new Map<string, Promise<unknown>>();
 
+// Monotonic invalidation clock. Each invalidate() bumps it and records the
+// value per resource prefix. A GET captures the clock when it STARTS; if a
+// covering mutation lands before that request resolves, the late response must
+// NOT re-populate the cache with now-stale data (read-after-write safety —
+// otherwise "save then the list shows the old value" can still happen even
+// though the cache was cleared, because an already-in-flight read repopulates it).
+let invalEpoch = 0;
+const invalidatedAt = new Map<string, number>();
+
+export function currentEpoch(): number {
+  return invalEpoch;
+}
+
+/** True if a mutation invalidated a family covering `path` at/after `epoch`
+ *  (the clock value captured when the request started). */
+export function invalidatedSince(path: string, epoch: number): boolean {
+  for (const [prefix, seq] of invalidatedAt) {
+    if (seq > epoch && path.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
 let bc: BroadcastChannel | null = null;
 try {
   bc = new BroadcastChannel("houzs-api-cache");
@@ -58,7 +80,12 @@ export function setInflight(path: string, p: Promise<unknown>): void {
 }
 
 function invalidateLocal(prefix: string): void {
+  invalEpoch += 1;
+  invalidatedAt.set(prefix, invalEpoch);
   for (const k of store.keys()) if (k.startsWith(prefix)) store.delete(k);
+  // Drop in-flight reads for this family too: a GET that began before the
+  // mutation must not be joined by a later read and then cache stale data.
+  for (const k of inflight.keys()) if (k.startsWith(prefix)) inflight.delete(k);
 }
 
 /** Drop every cached GET whose path starts with `prefix`, in all tabs. */
