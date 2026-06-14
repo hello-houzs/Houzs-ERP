@@ -67,7 +67,8 @@ export function Team() {
     { value: "positions", label: "Positions", show: canManageUsers },
     { value: "orgchart", label: "Org Chart", show: canUsers },
     { value: "departments", label: "Departments", show: canUsers },
-    { value: "roles", label: "Roles", show: canRoles },
+    // Roles tab removed (owner: "删了role") — Position governs page access; a
+    // baseline role is auto-assigned on invite. Re-add this line to restore.
   ];
 
   const TAB_HEADER: Record<

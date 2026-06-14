@@ -21,8 +21,10 @@ export default {
         // Nature Black is the brand anchor (#111810).
         ink: {
           DEFAULT: "#111810", // brand: Nature Black
-          secondary: "#4a534a",
-          muted: "#8a8e85",
+          // Darkened 2026-06-14 for readability — owner reported low contrast
+          // (faint grays) causing eye strain. Old: secondary #4a534a, muted #8a8e85.
+          secondary: "#3b423a",
+          muted: "#6c7167",
         },
 
         // ── Brass accent ───────────────────────────────────
