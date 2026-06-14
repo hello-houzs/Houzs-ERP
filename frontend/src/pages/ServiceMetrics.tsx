@@ -166,7 +166,7 @@ export function ServiceMetrics() {
       <div className="mb-6 rounded-lg border border-border bg-surface p-5">
         <div className="mb-3 flex items-center gap-2">
           <Activity size={14} className="text-accent" />
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Stage Funnel
           </div>
         </div>
@@ -181,7 +181,7 @@ export function ServiceMetrics() {
       <div className="mb-6 rounded-lg border border-border bg-surface p-5">
         <div className="mb-3 flex items-center gap-2">
           <Smile size={14} className="text-accent" />
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             CSAT — 13-week rolling
           </div>
         </div>
@@ -253,7 +253,7 @@ export function ServiceMetrics() {
       <div className="mb-6 rounded-lg border border-border bg-surface p-5">
         <div className="mb-3 flex items-center gap-2">
           <Hourglass size={14} className="text-accent" />
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Case Duration
           </div>
         </div>
@@ -332,7 +332,7 @@ export function ServiceMetrics() {
       <div className="mb-6 rounded-lg border border-border bg-surface p-5">
         <div className="mb-3 flex items-center gap-2">
           <TrendingUp size={14} className="text-accent" />
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Monthly Trend
           </div>
         </div>
@@ -347,7 +347,7 @@ export function ServiceMetrics() {
       <div className="mb-6 rounded-lg border border-border bg-surface">
         <div className="flex items-center gap-2 border-b border-border px-5 py-3">
           <CheckCircle2 size={14} className="text-accent" />
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Creditor Performance
           </div>
         </div>
@@ -406,7 +406,7 @@ export function ServiceMetrics() {
         <div className="rounded-lg border border-border bg-surface">
           <div className="flex items-center gap-2 border-b border-border px-5 py-3">
             <AlertTriangle size={14} className="text-err" />
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Repeat-Issue Items (≥ 2 cases)
             </div>
           </div>
@@ -443,7 +443,7 @@ export function ServiceMetrics() {
         <div className="rounded-lg border border-border bg-surface">
           <div className="flex items-center gap-2 border-b border-border px-5 py-3">
             <Clock size={14} className="text-err" />
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Repeat Customers (≥ 2 cases)
             </div>
           </div>

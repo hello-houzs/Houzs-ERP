@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { recomputeAutoCostLines } from "./projectCostRates";
+import { scopeNotExpiredSql } from "./projectAcl";
 
 // ── Codes ─────────────────────────────────────────────────────
 // Format: `YYYY-MM-{ORGANIZER}-{STATE}-{VENUE}-{BRAND}` — built from
@@ -1074,6 +1075,9 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
         `COALESCE(p.pic_id, p.created_by) IN (${f.pic_scope.map(() => "?").join(",")})`
       );
       binds.push(...f.pic_scope);
+      // PIC visibility expires PIC_GRACE_DAYS after the project ends (owner:
+      // "完了的四天之后"). Only scoped users (pic_scope set) get this filter.
+      where.push(scopeNotExpiredSql);
     }
   }
   if (f.brand_scope) {
@@ -2187,6 +2191,11 @@ export async function deleteChecklistItem(env: Env, itemId: number, userId: numb
     .bind(itemId)
     .first<{ project_id: number; title: string }>();
   if (!item) return false;
+  // Child FKs (project_checklist_attachments.item_id, project_checklist_comments.item_id)
+  // were ON DELETE CASCADE but the D1->PG load dropped them to NO ACTION, so a bare
+  // delete throws once a task has any attachment or comment. Clear children first.
+  await env.DB.prepare(`DELETE FROM project_checklist_attachments WHERE item_id = ?`).bind(itemId).run();
+  await env.DB.prepare(`DELETE FROM project_checklist_comments WHERE item_id = ?`).bind(itemId).run();
   await env.DB.prepare(`DELETE FROM project_checklist WHERE id = ?`).bind(itemId).run();
   await logProjectActivity(env, item.project_id, "checklist_remove", item.title, null, null, userId);
   return true;

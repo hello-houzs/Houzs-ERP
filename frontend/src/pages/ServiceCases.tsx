@@ -1040,7 +1040,7 @@ function CreatePanel({
           className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
         />
         <div className="mt-3">
-          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Issue Category
           </div>
           <select
@@ -1072,7 +1072,7 @@ function CreatePanel({
         {/* Mig 082 — picking the priority here drives both the e2e SLA
             window AND the per-stage target snapshot at create time. */}
         <div className="mt-3">
-          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Priority
           </div>
           <select
@@ -1594,7 +1594,7 @@ function DetailContent({
               const canAdd = pickedCodes.size > 0 || manualCode.trim().length > 0;
               return (
                 <div className="mt-2 space-y-2 rounded border border-border bg-bg/60 p-3">
-                  <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                  <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
                     <span>
                       Items from SO{" "}
                       <span className="font-mono normal-case text-ink">
@@ -1663,7 +1663,7 @@ function DetailContent({
                   )}
                   {/* Manual fallback for items not on the SO. */}
                   <div className="rounded border border-dashed border-border bg-surface/40 p-2">
-                    <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                    <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
                       Or add manually (not on SO)
                     </div>
                     <div className="space-y-1.5">
@@ -1828,7 +1828,7 @@ function DetailContent({
                 item_code changes. Deep-links into the creditors tab
                 in Purchase Orders. */}
             <div>
-              <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
                 Creditor
                 {c.creditor_code && (
                   <Link
@@ -2373,7 +2373,7 @@ function DetailContent({
           {/* Assigned To */}
           <PanelSection title="Assignment">
             <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
                 Assigned To
               </div>
               <select
@@ -2869,7 +2869,7 @@ function VerificationCard({
   return (
     <PanelSection title="Verification">
       <div>
-        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Outcome
         </div>
         <div className="flex flex-wrap gap-1.5">
@@ -2907,7 +2907,7 @@ function VerificationCard({
 
       {outcome && (
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Root cause
           </label>
           <input
@@ -3024,7 +3024,7 @@ function MilestoneAttachmentSlot({
   return (
     <div>
       {!compact && (
-        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           {label}
         </div>
       )}
@@ -3160,7 +3160,7 @@ function LogisticsRow({
         </div>
         <div className="grid grid-cols-2 gap-2">
           <label className="block">
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Date</span>
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">Date</span>
             <input
               type="date"
               value={draft.scheduled_date}
@@ -3169,7 +3169,7 @@ function LogisticsRow({
             />
           </label>
           <label className="block">
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Time</span>
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">Time</span>
             <input
               type="text"
               placeholder="9:00 – 11:00"
@@ -3179,7 +3179,7 @@ function LogisticsRow({
             />
           </label>
           <label className="block">
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Assigned</span>
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">Assigned</span>
             <select
               value={draft.assigned_to}
               onChange={(e) => setDraft((d) => ({ ...d, assigned_to: e.target.value }))}
@@ -3192,7 +3192,7 @@ function LogisticsRow({
             </select>
           </label>
           <label className="block">
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Status</span>
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">Status</span>
             <select
               value={draft.status}
               onChange={(e) => setDraft((d) => ({ ...d, status: e.target.value }))}
@@ -3206,7 +3206,7 @@ function LogisticsRow({
           </label>
         </div>
         <label className="mt-2 block">
-          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Remark</span>
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">Remark</span>
           <textarea
             value={draft.notes}
             onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
@@ -3510,7 +3510,7 @@ function IssueCategoryField({
 
   return (
     <div>
-      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         Issue Category
       </div>
       <select
@@ -3709,7 +3709,7 @@ function CostTrackingPanel({
             )}
             <button
               onClick={() => setSuggestion(null)}
-              className="ml-auto inline-flex items-center rounded-md px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted hover:text-ink"
+              className="ml-auto inline-flex items-center rounded-md px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted hover:text-ink"
             >
               Dismiss
             </button>
@@ -3851,7 +3851,7 @@ function PortalLinkRow({
 
   return (
     <div className="mt-2 rounded-md border border-border bg-bg/40 p-3">
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         Customer Portal Link
       </div>
       {link ? (
@@ -3929,7 +3929,7 @@ function SupplierPortalLinkRow({
 
   return (
     <div className="mt-2 rounded-md border border-border bg-bg/40 p-3">
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         Supplier Portal Link
       </div>
       {link ? (
@@ -3999,7 +3999,7 @@ function SurveyLinkButton({ id, toast }: { id: number; toast: ReturnType<typeof 
     <div className="mt-3">
       {link ? (
         <div className="rounded-md border border-border bg-bg/60 p-2">
-          <div className="mb-1 text-[10px] uppercase tracking-wider text-ink-muted">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Share this link with the customer
           </div>
           <div className="flex items-center gap-2">
@@ -4073,7 +4073,7 @@ function ClosePrompt({
 
   return (
     <div className="border-b border-border bg-amber-50/40 px-5 py-4">
-      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         Close Case — Customer Satisfaction
       </div>
       <Stars value={rating} onChange={setRating} />

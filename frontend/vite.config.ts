@@ -37,6 +37,20 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    build: {
+      rollupOptions: {
+        output: {
+          // Stable vendor chunks so app-code changes don't bust the
+          // cached framework bytes, and heavyweights (leaflet maps,
+          // lucide icon set) live outside the entry bundle.
+          manualChunks: {
+            "react-vendor": ["react", "react-dom", "react-router-dom"],
+            leaflet: ["leaflet"],
+            lucide: ["lucide-react"],
+          },
+        },
+      },
+    },
     server: {
       proxy: {
         // Only /api/* gets forwarded. SPA routes (/track,

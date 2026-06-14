@@ -150,7 +150,7 @@ function DefaultAssigneeSection() {
       {settings.data && (
         <div className="flex flex-wrap items-center gap-3">
           <label className="block flex-1 min-w-[260px]">
-            <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Assigned to
             </span>
             <select

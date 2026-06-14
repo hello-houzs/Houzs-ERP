@@ -7,7 +7,13 @@ import {
   deleteSession,
   pruneExpiredSessions,
   getUserBySession,
+  generateToken,
+  isoIn,
 } from "../services/auth";
+import { sendEmail, publicUrl, resetEmailHtml } from "../services/email";
+import { validatePasswordStrength } from "../services/passwordStrength";
+import { verifyTotp, consumeBackupCode } from "../services/totp";
+import { checkRateLimit, clearRateLimit, clientIp } from "../middleware/rateLimit";
 
 /**
  * Auth routes — UNAUTHENTICATED entry points.
@@ -17,6 +23,9 @@ import {
  * require a valid bearer token.
  */
 const app = new Hono<{ Bindings: Env }>();
+
+const RESET_TTL_SECONDS = 60 * 60; // matches the admin-initiated reset
+const TOTP_CHALLENGE_TTL_SECONDS = 5 * 60; // window to enter the 2FA code
 
 /**
  * GET /api/auth/status
@@ -48,9 +57,8 @@ app.post("/bootstrap", async (c) => {
   if (!body.email || !body.password) {
     return c.json({ error: "email and password are required" }, 400);
   }
-  if (body.password.length < 8) {
-    return c.json({ error: "password must be at least 8 characters" }, 400);
-  }
+  const strength = validatePasswordStrength(body.password, body.email);
+  if (!strength.ok) return c.json({ error: strength.error }, 400);
 
   const ownerRole = await c.env.DB.prepare(
     `SELECT id FROM roles WHERE name = 'Owner'`
@@ -79,12 +87,18 @@ app.post("/login", async (c) => {
   if (!body.email || !body.password) {
     return c.json({ error: "email and password are required" }, 400);
   }
+  const email = body.email.toLowerCase().trim();
+
+  // Brute-force speed bump: 10 attempts / 15 min per email+IP. Fail-open.
+  const rlKey = `${email}:${clientIp(c)}`;
+  const limited = await checkRateLimit(c, "login", rlKey);
+  if (limited) return limited;
 
   const user = await c.env.DB.prepare(
-    `SELECT id, password_hash, status FROM users WHERE email = ?`
+    `SELECT id, password_hash, status, totp_enabled FROM users WHERE email = ?`
   )
-    .bind(body.email.toLowerCase().trim())
-    .first<{ id: number; password_hash: string; status: string }>();
+    .bind(email)
+    .first<{ id: number; password_hash: string; status: string; totp_enabled: number }>();
 
   if (!user || !user.password_hash) {
     return c.json({ error: "Invalid credentials" }, 401);
@@ -96,12 +110,218 @@ app.post("/login", async (c) => {
   const ok = await verifyPassword(body.password, user.password_hash);
   if (!ok) return c.json({ error: "Invalid credentials" }, 401);
 
+  // Clear the counter — the password was correct, so this isn't a brute force.
+  await clearRateLimit(c, "login", rlKey);
+
+  // Second factor: when 2FA is on we do NOT mint a session here. Instead we
+  // stash a short-lived challenge in KV and ask the client for a code; the real
+  // session is issued by /totp/login. Fail CLOSED — if the challenge can't be
+  // stored we refuse rather than fall through to a 2FA-less session.
+  if (user.totp_enabled) {
+    const kv = c.env.SESSION_CACHE;
+    if (!kv) {
+      console.error("[2fa] SESSION_CACHE unbound — cannot issue challenge");
+      return c.json({ error: "Two-factor is temporarily unavailable. Try again shortly." }, 503);
+    }
+    const challenge = generateToken();
+    try {
+      await kv.put(`2fa:${challenge}`, String(user.id), {
+        expirationTtl: TOTP_CHALLENGE_TTL_SECONDS,
+      });
+    } catch (e) {
+      console.error("[2fa] challenge store failed", e);
+      return c.json({ error: "Two-factor is temporarily unavailable. Try again shortly." }, 503);
+    }
+    return c.json({ totp_required: true, challenge });
+  }
+
   await c.env.DB.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`)
     .bind(user.id)
     .run();
-
   const token = await createSession(c.env, user.id);
   return c.json({ token, user_id: user.id });
+});
+
+/**
+ * POST /api/auth/totp/login
+ * Second step of a 2FA login. Body: { challenge, code }. `code` is a 6-digit
+ * TOTP or a backup code. On success the challenge is consumed and a session is
+ * issued. Rate-limited per challenge to bound code-guessing.
+ */
+app.post("/totp/login", async (c) => {
+  const body = await c.req.json<{ challenge?: string; code?: string }>();
+  const challenge = (body.challenge || "").trim();
+  const code = (body.code || "").trim();
+  if (!challenge || !code) {
+    return c.json({ error: "challenge and code are required" }, 400);
+  }
+
+  const kv = c.env.SESSION_CACHE;
+  if (!kv) {
+    return c.json({ error: "Two-factor is temporarily unavailable. Try again shortly." }, 503);
+  }
+
+  // 5 guesses / 5 min per challenge.
+  const limited = await checkRateLimit(c, "totp", challenge, 5, 300);
+  if (limited) return limited;
+
+  const userIdRaw = await kv.get(`2fa:${challenge}`).catch(() => null);
+  if (!userIdRaw) {
+    return c.json({ error: "This sign-in attempt expired — start again." }, 401);
+  }
+  const userId = parseInt(userIdRaw, 10);
+
+  const row = await c.env.DB.prepare(
+    `SELECT totp_secret, totp_enabled, totp_backup_codes, status FROM users WHERE id = ?`,
+  )
+    .bind(userId)
+    .first<{
+      totp_secret: string | null;
+      totp_enabled: number;
+      totp_backup_codes: string | null;
+      status: string;
+    }>();
+  if (!row || !row.totp_enabled || !row.totp_secret || row.status !== "active") {
+    return c.json({ error: "Two-factor is not available for this account." }, 401);
+  }
+
+  let ok = await verifyTotp(row.totp_secret, code);
+  if (!ok && row.totp_backup_codes) {
+    try {
+      const remaining = await consumeBackupCode(code, JSON.parse(row.totp_backup_codes));
+      if (remaining !== null) {
+        ok = true;
+        await c.env.DB.prepare(`UPDATE users SET totp_backup_codes = ? WHERE id = ?`)
+          .bind(JSON.stringify(remaining), userId)
+          .run();
+      }
+    } catch {
+      /* malformed JSON → treat as no backup codes */
+    }
+  }
+  if (!ok) return c.json({ error: "Invalid code" }, 401);
+
+  // Consume the challenge (single-use) and clear the guess counter.
+  await kv.delete(`2fa:${challenge}`).catch(() => {});
+  await clearRateLimit(c, "totp", challenge);
+
+  await c.env.DB.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`)
+    .bind(userId)
+    .run();
+  const token = await createSession(c.env, userId);
+  return c.json({ token, user_id: userId });
+});
+
+/**
+ * POST /api/auth/forgot-password
+ * Public — the self-service half of the reset flow (mig 027 reserved
+ * `requested_by = NULL` for exactly this). Anti-enumeration: always
+ * answers 200 {ok} whether or not the email maps to an account, and a
+ * per-user cooldown (1 request / 5 min) bounds outbound email volume.
+ * Sessions are NOT revoked here — only the consume endpoint below does
+ * that, once the requester has proven control of the mailbox.
+ */
+app.post("/forgot-password", async (c) => {
+  const body = await c.req
+    .json<{ email?: string }>()
+    .catch(() => ({} as { email?: string }));
+  const email = String(body.email || "").toLowerCase().trim();
+  const done = () => c.json({ ok: true });
+  if (!email || !email.includes("@")) return done();
+
+  // Per-email rate limit (5 / 15 min). Anti-enumeration: when over the cap we
+  // return the same {ok} instead of a 429, so it never reveals which emails
+  // exist. Stacks with the 5-min per-user cooldown below.
+  if (await checkRateLimit(c, "forgot", email, 5, 900)) return done();
+
+  const user = await c.env.DB.prepare(
+    `SELECT id, email, name FROM users WHERE email = ? AND status = 'active'`
+  )
+    .bind(email)
+    .first<{ id: number; email: string; name: string | null }>();
+  if (!user) return done();
+
+  // Cooldown — skip silently if a reset was issued in the last 5 min.
+  const last = await c.env.DB.prepare(
+    `SELECT created_at FROM password_resets
+      WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`
+  )
+    .bind(user.id)
+    .first<{ created_at: string | null }>();
+  if (last?.created_at) {
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000)
+      .toISOString()
+      .slice(0, 19)
+      .replace("T", " ");
+    if (String(last.created_at).replace("T", " ") > cutoff) return done();
+  }
+
+  await c.env.DB.prepare(
+    `UPDATE password_resets SET consumed_at = datetime('now')
+      WHERE user_id = ? AND consumed_at IS NULL`
+  )
+    .bind(user.id)
+    .run();
+
+  const token = generateToken();
+  const expiresAt = isoIn(RESET_TTL_SECONDS);
+  await c.env.DB.prepare(
+    `INSERT INTO password_resets (user_id, token, requested_by, expires_at)
+     VALUES (?, ?, NULL, ?)`
+  )
+    .bind(user.id, token, expiresAt)
+    .run();
+
+  const name = (user.name || user.email.split("@")[0]).split(" ")[0];
+  await sendEmail(c.env, {
+    to: user.email,
+    subject: "Reset your Houzs ERP password",
+    html: resetEmailHtml({
+      name,
+      link: publicUrl(c.env, `/reset/${token}`),
+      expiresIn: "1 hour",
+      requestedBy: null,
+    }),
+    purpose: "password_reset",
+    refType: "user",
+    refId: user.id,
+  });
+  return done();
+});
+
+/**
+ * GET /api/auth/invite/:token
+ * Public preflight — lets the accept screen show "You're invited as
+ * <role>" and pre-fill the email + any name preset at invite time.
+ */
+app.get("/invite/:token", async (c) => {
+  const token = c.req.param("token");
+  if (!token) return c.json({ error: "Bad token" }, 400);
+  const row = await c.env.DB.prepare(
+    `SELECT i.email, i.expires_at, i.accepted_at,
+            r.name AS role_name,
+            u.name AS name
+       FROM invitations i
+       JOIN roles r ON r.id = i.role_id
+       LEFT JOIN users u ON u.email = i.email
+      WHERE i.token = ?`
+  )
+    .bind(token)
+    .first<{
+      email: string;
+      expires_at: string;
+      accepted_at: string | null;
+      role_name: string;
+      name: string | null;
+    }>();
+  if (!row) return c.json({ error: "Invalid or expired invitation" }, 404);
+  if (row.accepted_at) {
+    return c.json({ error: "This invitation has already been used" }, 409);
+  }
+  if (row.expires_at < new Date().toISOString()) {
+    return c.json({ error: "Invitation has expired" }, 410);
+  }
+  return c.json({ email: row.email, name: row.name, role_name: row.role_name });
 });
 
 /**
@@ -117,9 +337,6 @@ app.post("/accept-invite", async (c) => {
   }>();
   if (!body.token || !body.password) {
     return c.json({ error: "token and password are required" }, 400);
-  }
-  if (body.password.length < 8) {
-    return c.json({ error: "password must be at least 8 characters" }, 400);
   }
 
   const inv = await c.env.DB.prepare(
@@ -141,6 +358,11 @@ app.post("/accept-invite", async (c) => {
   if (inv.expires_at < new Date().toISOString()) {
     return c.json({ error: "Invitation has expired" }, 410);
   }
+
+  // Strength gate runs after the invite lookup so the email local-part
+  // rule can apply ("password can't contain your email name").
+  const strength = validatePasswordStrength(body.password, inv.email);
+  if (!strength.ok) return c.json({ error: strength.error }, 400);
 
   const hash = await hashPassword(body.password);
 
@@ -264,20 +486,30 @@ app.post("/reset/:token", async (c) => {
   const token = c.req.param("token");
   const body = await c.req.json<{ password: string }>();
   if (!token) return c.json({ error: "Bad token" }, 400);
-  if (!body.password || body.password.length < 8) {
-    return c.json({ error: "password must be at least 8 characters" }, 400);
+  if (!body.password) {
+    return c.json({ error: "password is required" }, 400);
   }
   const row = await c.env.DB.prepare(
-    `SELECT id, user_id, expires_at, consumed_at
-       FROM password_resets WHERE token = ?`
+    `SELECT pr.id, pr.user_id, pr.expires_at, pr.consumed_at, u.email
+       FROM password_resets pr
+       JOIN users u ON u.id = pr.user_id
+      WHERE pr.token = ?`
   )
     .bind(token)
-    .first<{ id: number; user_id: number; expires_at: string; consumed_at: string | null }>();
+    .first<{
+      id: number;
+      user_id: number;
+      expires_at: string;
+      consumed_at: string | null;
+      email: string;
+    }>();
   if (!row) return c.json({ error: "Invalid or expired link" }, 404);
   if (row.consumed_at) return c.json({ error: "This link has already been used" }, 410);
   if (row.expires_at < new Date().toISOString()) {
     return c.json({ error: "This link has expired" }, 410);
   }
+  const strength = validatePasswordStrength(body.password, row.email);
+  if (!strength.ok) return c.json({ error: strength.error }, 400);
   const hash = await hashPassword(body.password);
   await c.env.DB.prepare(
     `UPDATE users SET password_hash = ? WHERE id = ?`
@@ -344,9 +576,8 @@ app.post("/me/password", async (c) => {
   if (!body.current || !body.next) {
     return c.json({ error: "current and next are required" }, 400);
   }
-  if (body.next.length < 8) {
-    return c.json({ error: "new password must be at least 8 characters" }, 400);
-  }
+  const strength = validatePasswordStrength(body.next, auth.user.email);
+  if (!strength.ok) return c.json({ error: strength.error }, 400);
   const row = await c.env.DB.prepare(
     `SELECT password_hash FROM users WHERE id = ?`
   )

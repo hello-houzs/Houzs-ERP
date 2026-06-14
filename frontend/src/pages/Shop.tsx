@@ -281,7 +281,7 @@ function RedeemModal({
             <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Confirm redemption
             </div>
-            <h2 className="mt-1 font-display text-[20px] font-extrabold leading-tight tracking-tight text-ink">
+            <h2 className="mt-1 font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
               {award.name}
             </h2>
             {award.description && (

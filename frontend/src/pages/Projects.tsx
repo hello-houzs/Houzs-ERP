@@ -758,7 +758,10 @@ export function Projects() {
   // gates on its own `projects.<view>` access level. The PageGuard at
   // the route already filtered users with `projects = none`; this
   // narrower check decides which views are reachable.
-  const access: Record<ProjectsView, "none" | "partial" | "full"> = {
+  // Levels are AccessLevel (none/view/edit/full or legacy partial) — let TS
+  // infer so position-matrix values (view/edit) are accepted, not just the old
+  // role-matrix trio.
+  const access = {
     list: usePageAccess("projects.list"),
     calendar: usePageAccess("projects.calendar"),
     finances: usePageAccess("projects.finances"),
@@ -2853,7 +2856,7 @@ function ProjectsCalendarView() {
         >
           →
         </button>
-        <span className="ml-2 font-display text-lg font-bold">{periodLabel}</span>
+        <span className="ml-2 font-display text-[15px] font-bold leading-tight tracking-tight text-ink">{periodLabel}</span>
 
         {/* Month / Week toggle */}
         <div className="ml-3 inline-flex overflow-hidden rounded-md border border-border">
@@ -4384,7 +4387,7 @@ function ProjectSpecStrip({
     <section className="mb-6">
       <header className="mb-2 flex items-center justify-between border-b border-border-strong pb-2">
         <div className="flex items-baseline gap-3">
-          <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[0.22em] text-ink-muted">
+          <h2 className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Project Detail
           </h2>
         </div>

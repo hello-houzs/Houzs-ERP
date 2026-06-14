@@ -129,7 +129,7 @@ app.get("/", async (c) => {
   // SELECT * — pass through every column to the frontend; the AutoCount
   // shape is wide and adding columns to schema.ts every time AutoCount
   // changes its export isn't worth it.
-  const rows = await db.all<any>(sql`
+  const rows = await db.execute<any>(sql`
     SELECT * FROM ${purchase_orders}
     ${where ? sql`WHERE ${where}` : sql``}
     ORDER BY doc_no ASC
@@ -235,7 +235,7 @@ app.get("/docs", async (c) => {
     sql`SELECT COUNT(*) AS count ${fromJoin} ${whereClause}`
   );
 
-  const rows = await db.all<any>(sql`
+  const rows = await db.execute<any>(sql`
     SELECT d.*,
            COALESCE(po.line_count, 0) AS outstanding_line_count,
            po.next_delivery,
@@ -283,7 +283,7 @@ app.get("/docs/:docNo", async (c) => {
 app.get("/lines/:docNo", async (c) => {
   const docNo = c.req.param("docNo");
   const db = getDb(c.env);
-  const rows = await db.all<any>(sql`
+  const rows = await db.execute<any>(sql`
     SELECT * FROM ${purchase_orders}
      WHERE doc_no = ${docNo}
      ORDER BY item_code ASC
@@ -368,7 +368,7 @@ app.patch("/:docNo/:itemCode", async (c) => {
       )
     );
 
-  if (!result.meta?.changes) return c.json({ error: "PO line not found" }, 404);
+  if (!result.count) return c.json({ error: "PO line not found" }, 404);
   return c.json({ ok: true });
 });
 

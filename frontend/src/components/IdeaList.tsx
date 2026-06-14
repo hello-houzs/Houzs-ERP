@@ -348,7 +348,7 @@ function IdeaRow<T extends BaseRow>({
         </div>
 
         {/* Title (bold headline) */}
-        <h3 className="px-4 pt-2 font-display text-[16.5px] font-extrabold leading-snug tracking-tight text-ink">
+        <h3 className="px-4 pt-2 font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
           {row.title}
         </h3>
 

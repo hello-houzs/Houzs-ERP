@@ -210,7 +210,7 @@ app.post("/:id/reorder", requirePermission("trips.manage"), async (c) => {
       .update(trip_stops)
       .set({
         sequence: i + 1,
-        updated_at: sql`datetime('now')` as unknown as string,
+        updated_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
       })
       .where(and(eq(trip_stops.id, order[i]), eq(trip_stops.trip_id, tripId)));
   }
@@ -408,7 +408,7 @@ app.put("/:id/stops/:stopId/pod", async (c) => {
   // Auto-record on the stop
   const db = getDb(c.env);
   const set: Record<string, any> = {
-    updated_at: sql`datetime('now')`,
+    updated_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')`,
   };
   if (kind === "photo") set.pod_photo_r2_key = key;
   else set.signature_r2_key = key;

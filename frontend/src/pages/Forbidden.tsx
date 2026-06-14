@@ -44,7 +44,7 @@ export function Forbidden({
         <div className="mx-auto mb-5 inline-flex h-14 w-14 items-center justify-center rounded-full border border-border bg-surface text-ink-muted">
           <ShieldOff size={26} strokeWidth={1.5} />
         </div>
-        <div className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-ink-muted">
+        <div className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Error {code}
         </div>
         <h1 className="font-display text-[24px] font-extrabold tracking-tight text-ink">

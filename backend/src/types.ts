@@ -1,8 +1,20 @@
 export type Env = {
+  // During the D1 -> Supabase cutover, `DB` is injected per request/cron with
+  // a D1-compatible shim over Postgres (see middleware/db.ts). The legacy D1
+  // binding may stay in wrangler.toml until the cutover is verified.
   DB: D1Database;
+  // Cloudflare Hyperdrive over the Supabase pooler (prod). Local dev / scripts
+  // read DATABASE_URL from .dev.vars instead.
+  HYPERDRIVE?: { connectionString: string };
+  DATABASE_URL?: string;
   POD_BUCKET: R2Bucket;
+  // Optional KV cache for the hydrated session user (see services/sessionCache.ts).
+  // Absent in tests/local — auth falls back to the DB path unchanged.
+  SESSION_CACHE?: KVNamespace;
   AUTOCOUNT_API_URL: string;
   AUTOCOUNT_API_KEY: string;
+  // Inbound-sync kill switch. "true" = skip every AutoCount pull (cron + manual).
+  AUTOCOUNT_SYNC_DISABLED?: string;
   DASHBOARD_API_KEY: string;
   GOOGLE_MAPS_API_KEY?: string;
   // Email (Resend). Leave RESEND_API_KEY unset to run in no-op mode —

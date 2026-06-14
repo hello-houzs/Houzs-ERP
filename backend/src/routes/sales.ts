@@ -4,7 +4,7 @@ import { requirePageAccess } from "../middleware/auth";
 import { getDb } from "../db/client";
 import { sales_entries, users, projects } from "../db/schema";
 import { and, desc, eq, gte, isNull, lte, like, or, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/sqlite-core";
+import { alias } from "drizzle-orm/pg-core";
 import { syncFinanceRollup } from "../services/projects";
 import {
   nextSalesEntryDocNo,
@@ -114,11 +114,12 @@ app.get("/entries", requirePageAccess("sales"), async (c) => {
     binds.push(projectId);
   }
   if (dateFrom) {
-    where.push("date(s.occurred_at) >= date(?)");
+    // substr, not date(): keeps the comparison text-vs-text on Postgres.
+    where.push("substr(s.occurred_at, 1, 10) >= substr(?, 1, 10)");
     binds.push(dateFrom);
   }
   if (dateTo) {
-    where.push("date(s.occurred_at) <= date(?)");
+    where.push("substr(s.occurred_at, 1, 10) <= substr(?, 1, 10)");
     binds.push(dateTo);
   }
   if (search) {

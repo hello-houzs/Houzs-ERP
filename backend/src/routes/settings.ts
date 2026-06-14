@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
 import { getAllEmailSettings, setSetting } from "../services/email";
+import { audit } from "../services/audit";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -25,14 +26,26 @@ app.patch("/email", requirePermission("settings.manage"), async (c) => {
     "email.enabled",
     "email.assr_survey",
     "email.assr_sla_escalation",
+    "email.member_invite",
     "email.supplier_invite",
     "email.project_due_reminder",
     "email.password_reset",
+    "email.delivery_order",
+    "email.invoice",
+    "email.document_report",
   ]);
   for (const [k, v] of Object.entries(body)) {
     if (!ALLOWED.has(k)) continue;
     if (typeof v !== "boolean") continue;
     await setSetting(c.env, k, { value: v }, user?.id ?? null);
+    // Audit channel flips (esp. customer-facing) — tamper-evident WHO/WHAT/WHEN.
+    await audit(c, {
+      action: "settings.email_channel",
+      entityType: "app_setting",
+      entityId: k,
+      summary: `${k} set to ${v ? "on" : "off"}`,
+      meta: { key: k, value: v },
+    });
   }
   const settings = await getAllEmailSettings(c.env);
   return c.json({ settings });

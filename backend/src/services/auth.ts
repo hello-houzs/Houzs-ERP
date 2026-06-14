@@ -1,9 +1,12 @@
 import type { Env } from "../types";
 import { parsePermissions } from "./permissions";
-import { loadPageAccessForRole, type AccessLevel } from "./pageAccess";
-import { getDb } from "../db/client";
-import { user_brands } from "../db/schema";
-import { inArray } from "drizzle-orm";
+import {
+  loadPageAccessForRole,
+  loadPageAccessForPosition,
+  fullAccessMap,
+  type AccessLevel,
+} from "./pageAccess";
+import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
 
 // ── Crypto helpers ────────────────────────────────────────
 // PBKDF2 via Web Crypto — built into Workers, no WASM needed.
@@ -89,6 +92,11 @@ export interface AuthUser {
   name: string | null;
   role_id: number;
   role_name: string;
+  /** Position = department×position org unit (mig 094). When set, page_access
+   *  is hydrated from the 4-level position_page_access matrix; when null, the
+   *  user falls back to the legacy role matrix during the transition. */
+  position_id: number | null;
+  position_name: string | null;
   status: string;
   permissions: string[];
   /** O(1) lookup mirror of `permissions`. Hydrated once at session
@@ -139,6 +147,9 @@ export async function createSession(env: Env, userId: number): Promise<string> {
 
 export async function deleteSession(env: Env, token: string): Promise<void> {
   await env.DB.prepare(`DELETE FROM sessions WHERE token = ?`).bind(token).run();
+  // Bust the cached user immediately so logout / forced-expiry takes effect now
+  // rather than waiting out the 60s TTL.
+  await bustCachedUser(env, token);
 }
 
 // Builds the AuthUser shape from the row returned by the SELECT below
@@ -156,24 +167,35 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
   let brandScope: string[] | null = null;
   if (scoped) {
     const ids = managerId ? [row.id, managerId] : [row.id];
-    const db = getDb(env);
-    const rows = await db
-      .select({ brand: user_brands.brand })
-      .from(user_brands)
-      .where(inArray(user_brands.user_id, ids));
-    // Dedup since the same brand can be listed on both the rep and
-    // the manager.
-    brandScope = Array.from(new Set(rows.map((r) => r.brand)));
+    // env.DB (not getDb): auth must keep working on the D1 fallback used by
+    // the test suite and the rollback path, where no DATABASE_URL is bound.
+    // DISTINCT dedups brands listed on both the rep and the manager.
+    const placeholders = ids.map(() => "?").join(", ");
+    const res = await env.DB.prepare(
+      `SELECT DISTINCT brand FROM user_brands WHERE user_id IN (${placeholders})`
+    )
+      .bind(...ids)
+      .all<{ brand: string }>();
+    brandScope = (res.results ?? []).map((r) => r.brand);
   }
   const permissions = parsePermissions(row.role_permissions);
   const permissionsSet = new Set(permissions);
-  const pageAccess = await loadPageAccessForRole(env, row.role_id, permissionsSet);
+  // Wildcard role → full everything. Else the 4-level position matrix when the
+  // user has a position; else the legacy role matrix (fallback for users not
+  // yet assigned a position during the rollout).
+  const pageAccess = permissionsSet.has("*")
+    ? fullAccessMap()
+    : row.position_id != null
+      ? await loadPageAccessForPosition(env, row.position_id)
+      : await loadPageAccessForRole(env, row.role_id, permissionsSet);
   return {
     id: row.id,
     email: row.email,
     name: row.name,
     role_id: row.role_id,
     role_name: row.role_name,
+    position_id: row.position_id ?? null,
+    position_name: row.position_name ?? null,
     status: row.status,
     permissions,
     permissions_set: permissionsSet,
@@ -192,17 +214,24 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
 }
 
 export async function getUserBySession(env: Env, token: string): Promise<AuthUser | null> {
+  // Fast path: KV-cached hydrated user (60s). Falls through to the DB on any
+  // miss/error — see sessionCache.ts. No-op when SESSION_CACHE is unbound.
+  const cached = await getCachedUser(env, token);
+  if (cached) return cached;
+
   const row = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.role_id, u.status,
-            u.manager_id, u.department_id, u.joined_at, u.last_login_at,
+            u.manager_id, u.department_id, u.position_id, u.joined_at, u.last_login_at,
             u.points_balance, u.gifting_balance, u.current_streak,
             u.profile_pic_r2_key,
             r.name as role_name, r.permissions as role_permissions,
             r.scope_to_pic,
+            p.name as position_name,
             s.expires_at
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      JOIN roles r ON r.id = u.role_id
+     LEFT JOIN positions p ON p.id = u.position_id
      WHERE s.token = ?`
   )
     .bind(token)
@@ -216,19 +245,23 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
     return null;
   }
 
-  return hydrateAuthUser(env, row);
+  const user = await hydrateAuthUser(env, row);
+  await setCachedUser(env, token, user);
+  return user;
 }
 
 export async function getUserById(env: Env, id: number): Promise<AuthUser | null> {
   const row = await env.DB.prepare(
     `SELECT u.id, u.email, u.name, u.role_id, u.status, u.manager_id,
-            u.department_id,
+            u.department_id, u.position_id,
             u.points_balance, u.gifting_balance, u.current_streak,
             u.profile_pic_r2_key,
             r.name as role_name, r.permissions as role_permissions,
-            r.scope_to_pic
+            r.scope_to_pic,
+            p.name as position_name
      FROM users u
      JOIN roles r ON r.id = u.role_id
+     LEFT JOIN positions p ON p.id = u.position_id
      WHERE u.id = ?`
   )
     .bind(id)

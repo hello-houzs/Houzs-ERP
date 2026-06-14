@@ -2,21 +2,28 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { generateToken, isoIn } from "../services/auth";
 import { requirePermission } from "../middleware/auth";
-import { sendEmail, publicUrl } from "../services/email";
+import {
+  sendEmail,
+  publicUrl,
+  inviteEmailHtml,
+  resetEmailHtml,
+} from "../services/email";
 import { syncSalesRepFromUser } from "../services/salesTeam";
+import { audit } from "../services/audit";
 import { getDb } from "../db/client";
 import {
   departments,
   invitations,
   lorries,
   password_resets,
+  positions,
   project_brands,
   roles,
   sessions,
   user_brands,
   users,
 } from "../db/schema";
-import { alias } from "drizzle-orm/sqlite-core";
+import { alias } from "drizzle-orm/pg-core";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -61,6 +68,8 @@ app.get("/", requirePermission("users.read"), async (c) => {
       department_id: users.department_id,
       department_name: departments.name,
       department_color: departments.color,
+      position_id: users.position_id,
+      position_name: positions.name,
       invited_at: users.invited_at,
       joined_at: users.joined_at,
       last_login_at: users.last_login_at,
@@ -70,7 +79,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
       // Unit-separator (US, 0x1f) keeps multi-word brands ("MY SOFA
       // FACTORY") splittable client-side without ambiguity.
       brands_concat: sql<string | null>`(
-        SELECT GROUP_CONCAT(ub.brand, X'1f')
+        SELECT string_agg(ub.brand, chr(31))
           FROM ${user_brands} ub
          WHERE ub.user_id = ${users.id}
       )`,
@@ -79,6 +88,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
     .innerJoin(roles, eq(roles.id, users.role_id))
     .leftJoin(manager, eq(manager.id, users.manager_id))
     .leftJoin(departments, eq(departments.id, users.department_id))
+    .leftJoin(positions, eq(positions.id, users.position_id))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(users.created_at));
 
@@ -243,20 +253,49 @@ app.get("/:id/profile-pic", async (c) => {
  */
 app.post("/invite", requirePermission("users.manage"), async (c) => {
   const me = c.get("user");
-  const body = await c.req.json<{ email: string; role_id: number }>();
+  const body = await c.req.json<{
+    email: string;
+    role_id: number;
+    name?: string;
+    department_id?: number | null;
+    position_id?: number | null;
+    manager_id?: number | null;
+  }>();
   if (!body.email || !body.role_id) {
     return c.json({ error: "email and role_id are required" }, 400);
   }
   const email = body.email.toLowerCase().trim();
+  const name = body.name?.trim() || null;
 
   const db = getDb(c.env);
 
   const role = await db
-    .select({ id: roles.id })
+    .select({ id: roles.id, name: roles.name })
     .from(roles)
     .where(eq(roles.id, body.role_id))
     .limit(1);
   if (role.length === 0) return c.json({ error: "Role not found" }, 404);
+
+  // Org dimensions (mig 094). If a position is given, validate it and default
+  // the department from it when the department wasn't passed explicitly.
+  let departmentId = body.department_id ?? null;
+  const positionId = body.position_id ?? null;
+  const managerId = body.manager_id ?? null;
+  if (positionId) {
+    const pos = await db
+      .select({ id: positions.id, department_id: positions.department_id })
+      .from(positions)
+      .where(eq(positions.id, positionId))
+      .limit(1);
+    if (pos.length === 0) return c.json({ error: "Position not found" }, 404);
+    if (departmentId && pos[0].department_id && pos[0].department_id !== departmentId) {
+      return c.json(
+        { error: "Position does not belong to the selected department" },
+        400,
+      );
+    }
+    if (!departmentId && pos[0].department_id) departmentId = pos[0].department_id;
+  }
 
   const existing = await db
     .select({ id: users.id, status: users.status })
@@ -268,24 +307,35 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     return c.json({ error: "A user with that email already exists" }, 409);
   }
 
-  // Create or refresh the placeholder user.
+  // Create or refresh the placeholder user. Name is preset here ("the
+  // Position concept") so the invitee lands with their identity already
+  // set; they can still adjust it when accepting.
   if (existing.length === 0) {
     await db.insert(users).values({
       email,
+      name,
       role_id: body.role_id,
+      department_id: departmentId,
+      position_id: positionId,
+      manager_id: managerId,
       status: "invited",
       invited_by: me.id || null,
-      invited_at: sql`datetime('now')` as unknown as string,
+      invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
     });
   } else {
     // Re-invite — bump role and reset invited_at, drop any old token.
+    // Only overwrite the name when a new one was supplied.
     await db
       .update(users)
       .set({
+        ...(name ? { name } : {}),
         role_id: body.role_id,
+        department_id: departmentId,
+        position_id: positionId,
+        manager_id: managerId,
         status: "invited",
         invited_by: me.id || null,
-        invited_at: sql`datetime('now')` as unknown as string,
+        invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
       })
       .where(eq(users.email, email));
     await db
@@ -296,16 +346,129 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
   // Issue a fresh invitation token.
   const token = generateToken();
   const expires = isoIn(INVITE_TTL_SECONDS);
-  await db.insert(invitations).values({
-    email,
-    role_id: body.role_id,
-    token,
-    invited_by: me.id || 0,
-    expires_at: expires,
+  const inserted = await db
+    .insert(invitations)
+    .values({
+      email,
+      role_id: body.role_id,
+      token,
+      invited_by: me.id || 0,
+      expires_at: expires,
+      department_id: departmentId,
+      position_id: positionId,
+      manager_id: managerId,
+    })
+    .returning({ id: invitations.id });
+  const invitationId = inserted[0]?.id ?? null;
+
+  // Email the invitation. The link is built server-side from
+  // PUBLIC_APP_URL so it always carries the canonical domain no matter
+  // which origin the admin's browser is on. sendEmail() never throws —
+  // when the channel/key is off we still hand back the link for
+  // copy-paste, and the UI shows the delivery status.
+  const invite_url = publicUrl(c.env, `/#invite=${token}`);
+  const sendResult = await sendEmail(c.env, {
+    to: email,
+    subject: "You're invited to Houzs ERP",
+    html: inviteEmailHtml({
+      link: invite_url,
+      roleName: role[0].name,
+      inviterName: me?.name || me?.email || "Your admin",
+      expiresIn: "14 days",
+    }),
+    purpose: "member_invite",
+    refType: "invitation",
+    refId: invitationId,
   });
 
-  return c.json({ token, expires_at: expires, email });
+  await audit(c, {
+    action: "user.invite",
+    entityType: "user",
+    entityId: email,
+    summary: `Invited ${email} as ${role[0].name}`,
+    meta: {
+      email,
+      role_id: body.role_id,
+      department_id: departmentId,
+      position_id: positionId,
+      manager_id: managerId,
+      email_status: sendResult.status,
+    },
+  });
+
+  return c.json({
+    token,
+    expires_at: expires,
+    email,
+    invite_url,
+    email_sent: sendResult.status === "sent",
+    email_status: sendResult.status,
+  });
 });
+
+/**
+ * POST /api/users/invitations/:id/resend
+ * Re-send the invitation email for a still-pending invite. Keeps the
+ * same token (the link already shared stays valid); only the email is
+ * fired again.
+ */
+app.post(
+  "/invitations/:id/resend",
+  requirePermission("users.manage"),
+  async (c) => {
+    const id = parseInt(c.req.param("id"), 10);
+    if (!id) return c.json({ error: "Bad id" }, 400);
+    const me = c.get("user");
+
+    const db = getDb(c.env);
+    const rows = await db
+      .select({
+        id: invitations.id,
+        email: invitations.email,
+        token: invitations.token,
+        expires_at: invitations.expires_at,
+        accepted_at: invitations.accepted_at,
+        role_name: roles.name,
+      })
+      .from(invitations)
+      .innerJoin(roles, eq(roles.id, invitations.role_id))
+      .where(eq(invitations.id, id))
+      .limit(1);
+    if (rows.length === 0) return c.json({ error: "Invitation not found" }, 404);
+    const inv = rows[0];
+    if (inv.accepted_at) {
+      return c.json({ error: "Invitation was already accepted" }, 409);
+    }
+    if (inv.expires_at < new Date().toISOString()) {
+      return c.json(
+        { error: "Invitation has expired — issue a new one instead" },
+        410
+      );
+    }
+
+    const invite_url = publicUrl(c.env, `/#invite=${inv.token}`);
+    const sendResult = await sendEmail(c.env, {
+      to: inv.email,
+      subject: "You're invited to Houzs ERP",
+      html: inviteEmailHtml({
+        link: invite_url,
+        roleName: inv.role_name,
+        inviterName: me?.name || me?.email || "Your admin",
+        expiresIn: "14 days",
+      }),
+      purpose: "member_invite",
+      refType: "invitation",
+      refId: inv.id,
+    });
+
+    return c.json({
+      ok: true,
+      invite_url,
+      email_sent: sendResult.status === "sent",
+      email_status: sendResult.status,
+    });
+  }
+);
 
 /**
  * PATCH /api/users/:id
@@ -328,6 +491,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     status?: string;
     manager_id?: number | null;
     department_id?: number | null;
+    position_id?: number | null;
   }>();
 
   const db = getDb(c.env);
@@ -398,12 +562,33 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     }
   }
 
+  if (body.position_id !== undefined) {
+    if (body.position_id === null) {
+      set.position_id = null;
+    } else {
+      const posId = parseInt(String(body.position_id), 10);
+      if (!posId) return c.json({ error: "Invalid position_id" }, 400);
+      const pos = await db
+        .select({ id: positions.id, department_id: positions.department_id })
+        .from(positions)
+        .where(eq(positions.id, posId))
+        .limit(1);
+      if (pos.length === 0) return c.json({ error: "Position not found" }, 404);
+      set.position_id = posId;
+      // Keep department in lockstep with the position when the patch didn't
+      // set one explicitly.
+      if (body.department_id === undefined && pos[0].department_id) {
+        set.department_id = pos[0].department_id;
+      }
+    }
+  }
+
   if (Object.keys(set).length === 0) {
     return c.json({ error: "No fields to update" }, 400);
   }
 
   const result = await db.update(users).set(set).where(eq(users.id, id));
-  if (!(result.meta?.changes)) return c.json({ error: "User not found" }, 404);
+  if (!(result.count)) return c.json({ error: "User not found" }, 404);
 
   // If we disabled a user, revoke their sessions.
   if (body.status === "disabled") {
@@ -414,9 +599,17 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   // Department change → create / unarchive / archive the linked
   // sales_reps row. No-op for non-Sales departments and users that
   // already have the expected sales_reps state.
-  if (body.department_id !== undefined) {
+  if (body.department_id !== undefined || set.department_id !== undefined) {
     await syncSalesRepFromUser(c.env, id, me.id);
   }
+
+  await audit(c, {
+    action: "user.update",
+    entityType: "user",
+    entityId: id,
+    summary: `Updated user #${id} (${Object.keys(set).join(", ")})`,
+    meta: { changed: set },
+  });
 
   return c.json({ ok: true });
 });
@@ -513,6 +706,13 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
       }
       throw e;
     }
+    await audit(c, {
+      action: "user.delete",
+      entityType: "user",
+      entityId: id,
+      summary: `Hard-deleted user ${target.email} (#${id})`,
+      meta: { email: target.email, role: target.role_name, hard: true },
+    });
     return c.json({ ok: true, action: "deleted" });
   }
 
@@ -524,6 +724,14 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
     .update(lorries)
     .set({ default_driver_user_id: null })
     .where(eq(lorries.default_driver_user_id, id));
+
+  await audit(c, {
+    action: "user.disable",
+    entityType: "user",
+    entityId: id,
+    summary: `Disabled user ${target.email} (#${id})`,
+    meta: { email: target.email, role: target.role_name },
+  });
 
   return c.json({ ok: true, action: "disabled" });
 });
@@ -546,13 +754,31 @@ app.get("/invitations", requirePermission("users.read"), async (c) => {
       created_at: invitations.created_at,
       accepted_at: invitations.accepted_at,
       invited_by_email: inviter.email,
+      // Latest delivery outcome from email_log so the UI can show
+      // "emailed" vs an amber "not sent" without a schema change.
+      email_status: sql<string | null>`(
+        SELECT el.status FROM email_log el
+         WHERE el.ref_type = 'invitation' AND el.ref_id = ${invitations.id}
+         ORDER BY el.id DESC LIMIT 1
+      )`,
+      emailed_at: sql<string | null>`(
+        SELECT el.created_at FROM email_log el
+         WHERE el.ref_type = 'invitation' AND el.ref_id = ${invitations.id}
+           AND el.status = 'sent'
+         ORDER BY el.id DESC LIMIT 1
+      )`,
     })
     .from(invitations)
     .innerJoin(roles, eq(roles.id, invitations.role_id))
     .leftJoin(inviter, eq(inviter.id, invitations.invited_by))
     .where(isNull(invitations.accepted_at))
     .orderBy(desc(invitations.created_at));
-  return c.json({ invitations: rows });
+  return c.json({
+    invitations: rows.map((r) => ({
+      ...r,
+      invite_url: publicUrl(c.env, `/#invite=${r.token}`),
+    })),
+  });
 });
 
 /**
@@ -617,7 +843,7 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
   // Invalidate any prior unconsumed reset tokens for this user.
   await db
     .update(password_resets)
-    .set({ consumed_at: sql`datetime('now')` as unknown as string })
+    .set({ consumed_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string })
     .where(
       and(eq(password_resets.user_id, id), isNull(password_resets.consumed_at))
     );
@@ -636,21 +862,31 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
   await db.delete(sessions).where(eq(sessions.user_id, id));
 
   // Fire the email. sendEmail() already handles "channel disabled" and
-  // "recipient missing" — we still return the token so copy-paste works.
+  // "recipient missing" — we still return the token so copy-paste works,
+  // and surface the delivery status so the UI can stop claiming "sent"
+  // when the channel/key is off.
   const link = publicUrl(c.env, `/reset/${token}`);
   const name = (target.name || target.email.split("@")[0]).split(" ")[0];
-  await sendEmail(c.env, {
+  const sendResult = await sendEmail(c.env, {
     to: target.email,
     subject: "Reset your Houzs ERP password",
     html: resetEmailHtml({
       name,
       link,
       expiresIn: "1 hour",
-      adminName: me?.name || me?.email || "Admin",
+      requestedBy: me?.name || me?.email || "Your admin",
     }),
     purpose: "password_reset",
     refType: "user",
     refId: id,
+  });
+
+  await audit(c, {
+    action: "user.reset_password",
+    entityType: "user",
+    entityId: id,
+    summary: `Issued password reset for ${target.email} (#${id})`,
+    meta: { email: target.email, email_status: sendResult.status },
   });
 
   return c.json({
@@ -659,31 +895,47 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
     reset_path: `/reset/${token}`,
     expires_at: expiresAt,
     email: target.email,
+    email_sent: sendResult.status === "sent",
+    email_status: sendResult.status,
   });
 });
 
-function resetEmailHtml(p: {
-  name: string;
-  link: string;
-  expiresIn: string;
-  adminName: string;
-}): string {
-  return `
-    <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222">
-      <h2 style="margin:0 0 10px">Hi ${p.name},</h2>
-      <p>${p.adminName} has initiated a password reset for your Houzs ERP account.</p>
-      <p style="margin:24px 0">
-        <a href="${p.link}"
-           style="display:inline-block;padding:12px 22px;background:#a16a2e;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">
-          Set new password
-        </a>
-      </p>
-      <p style="color:#777;font-size:12px">
-        This link expires in ${p.expiresIn}. If you didn't expect this email,
-        you can ignore it — but if you notice repeated resets on your
-        account, flag it with your admin.
-      </p>
-    </div>`;
-}
+/**
+ * POST /api/users/:id/totp/disable
+ * Admin recovery path for a user who lost their authenticator (and their
+ * backup codes). Clears their 2FA so they can sign in with password alone and
+ * re-enroll. The self-service disable (with a code) lives in routes/totp.ts.
+ */
+app.post("/:id/totp/disable", requirePermission("users.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+
+  const db = getDb(c.env);
+  const row = await db
+    .select({ id: users.id, email: users.email })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (row.length === 0) return c.json({ error: "User not found" }, 404);
+
+  await c.env.DB.prepare(
+    `UPDATE users
+        SET totp_enabled = 0, totp_secret = NULL,
+            totp_enrolled_at = NULL, totp_backup_codes = NULL
+      WHERE id = ?`,
+  )
+    .bind(id)
+    .run();
+
+  await audit(c, {
+    action: "user.totp.admin_disable",
+    entityType: "user",
+    entityId: id,
+    summary: `Admin cleared 2FA for ${row[0].email} (#${id})`,
+    meta: { email: row[0].email },
+  });
+
+  return c.json({ ok: true });
+});
 
 export default app;

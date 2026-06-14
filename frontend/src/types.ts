@@ -573,10 +573,20 @@ export interface OverdueSummary {
 // ──────────────────────────────────────────────────────────
 /**
  * Per-page access level. Mirrors backend's `AccessLevel`.
- * `none` = the page is hidden / 403; `partial` = page-specific
- * read-only or scoped view; `full` = unrestricted within the page.
+ * Role matrix is 3-level (none/partial/full); the position matrix is 4-level
+ * (none/view/edit/full). `partial` is treated as rank-equal to `view`, so both
+ * coexist. `none` = hidden / 403.
  */
-export type AccessLevel = "none" | "partial" | "full";
+export type AccessLevel = "none" | "partial" | "view" | "edit" | "full";
+
+/** Numeric ordering — higher = more access. partial == view (rank 1). */
+export const ACCESS_RANK: Record<AccessLevel, number> = {
+  none: 0,
+  view: 1,
+  partial: 1,
+  edit: 2,
+  full: 3,
+};
 
 /** Page catalogue entry. Returned by GET /api/roles/pages. */
 export interface PageDef {
@@ -637,6 +647,9 @@ export interface TeamMember {
   department_name: string | null;
   /** 6-char hex without the leading '#'. */
   department_color: string | null;
+  /** Position = department×position org unit (mig 094). Drives the page matrix. */
+  position_id: number | null;
+  position_name: string | null;
   /**
    * Per-user brand allow-list (mig 049). Drives sales-dept project
    * visibility for users in scope_to_pic roles. Empty array when no
@@ -663,6 +676,18 @@ export interface Department {
   created_at?: string;
 }
 
+export interface Position {
+  id: number;
+  department_id: number | null;
+  department_name: string | null;
+  slug: string;
+  name: string;
+  level: number;
+  sort_order: number;
+  active: boolean;
+  member_count: number;
+}
+
 export interface Invitation {
   id: number;
   email: string;
@@ -673,6 +698,11 @@ export interface Invitation {
   created_at: string;
   accepted_at: string | null;
   invited_by_email: string | null;
+  /** Canonical link built server-side from PUBLIC_APP_URL. */
+  invite_url?: string;
+  /** Latest email_log outcome: 'sent' | 'skipped' | 'error' | null. */
+  email_status?: string | null;
+  emailed_at?: string | null;
 }
 
 export interface Role {

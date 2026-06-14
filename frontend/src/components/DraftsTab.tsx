@@ -206,7 +206,7 @@ export function DraftsTab({ onConfirmed }: { onConfirmed?: () => void }) {
       {!current.loading && !proposal && (
         <div className="rounded-lg border border-dashed border-border bg-surface p-10 text-center">
           <Sparkles size={28} className="mx-auto mb-3 text-accent" />
-          <div className="text-[14px] font-bold text-ink">No draft proposal</div>
+          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">No draft proposal</div>
           <div className="mt-1 text-[12px] text-ink-secondary">
             Click <span className="font-semibold">Generate</span> to plan trips for the
             next {horizon} days.
@@ -270,7 +270,7 @@ export function DraftsTab({ onConfirmed }: { onConfirmed?: () => void }) {
             <div className="mt-8 rounded-lg border border-warning-text/30 bg-warning-bg/30 p-4">
               <div className="mb-2 flex items-center gap-2">
                 <AlertTriangle size={16} className="text-warning-text" />
-                <div className="text-[12px] font-bold text-warning-text">
+                <div className="font-display text-[12px] font-bold text-warning-text">
                   Blocked orders ({blocked[0].payload.stops.length})
                 </div>
               </div>
@@ -974,7 +974,7 @@ function AddStopModal({
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-ink/40 backdrop-blur-sm">
       <div className="thin-scroll max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-xl bg-surface p-5 shadow-xl">
         <div className="mb-3 flex items-center justify-between">
-          <div className="text-[14px] font-bold text-ink">Add stops</div>
+          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">Add stops</div>
           <button onClick={onClose}>
             <X size={18} className="text-ink-secondary" />
           </button>

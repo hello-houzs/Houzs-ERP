@@ -16,8 +16,13 @@ interface AuthState {
   hasUsers: boolean | null;
 }
 
+/** Login either completes, or stops at a 2FA challenge that needs a code. */
+export type LoginResult = { kind: "ok" } | { kind: "totp"; challenge: string };
+
 interface AuthContextValue extends AuthState {
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  /** Second step of a 2FA login — exchange the challenge + code for a session. */
+  verifyTotpLogin: (challenge: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
   bootstrap: (email: string, name: string, password: string) => Promise<void>;
   acceptInvite: (token: string, name: string, password: string) => Promise<void>;
@@ -93,10 +98,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(
-    async (email: string, password: string) => {
-      const res = await api.post<{ token: string }>("/api/auth/login", {
-        email,
-        password,
+    async (email: string, password: string): Promise<LoginResult> => {
+      const res = await api.post<{ token?: string; totp_required?: boolean; challenge?: string }>(
+        "/api/auth/login",
+        { email, password },
+      );
+      // 2FA accounts get a challenge instead of a token — the caller collects a
+      // code and calls verifyTotpLogin. No token is stored yet.
+      if (res.totp_required && res.challenge) {
+        return { kind: "totp", challenge: res.challenge };
+      }
+      tokenStore.set(res.token!);
+      await fetchMe();
+      await fetchStatus();
+      return { kind: "ok" };
+    },
+    [fetchMe, fetchStatus]
+  );
+
+  const verifyTotpLogin = useCallback(
+    async (challenge: string, code: string) => {
+      const res = await api.post<{ token: string }>("/api/auth/totp/login", {
+        challenge,
+        code,
       });
       tokenStore.set(res.token);
       await fetchMe();
@@ -190,6 +214,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       ...state,
       login,
+      verifyTotpLogin,
       logout,
       bootstrap,
       acceptInvite,
@@ -202,6 +227,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [
       state,
       login,
+      verifyTotpLogin,
       logout,
       bootstrap,
       acceptInvite,

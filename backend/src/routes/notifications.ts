@@ -195,7 +195,7 @@ app.get("/", requirePermission("projects.read"), async (c) => {
     })
     .from(users)
     .where(eq(users.id, user.id))
-    .get();
+    .then((r) => r[0]);
 
   return c.json({
     feed: trimmedRows,

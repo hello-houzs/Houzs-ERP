@@ -43,6 +43,8 @@ import {
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
+import { getPmsAccess } from "../services/pmsAccess";
+import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
 import { recomputeAutoCostLines } from "../services/projectCostRates";
 import { getDb } from "../db/client";
@@ -50,7 +52,6 @@ import {
   project_brands,
   project_finance_lines,
   projects as projectsTable,
-  user_brands,
 } from "../db/schema";
 import { and, eq, sql } from "drizzle-orm";
 
@@ -443,8 +444,8 @@ app.get("/summary", requirePageAccess("projects.list"), async (c) => {
       WHERE archived_at IS NULL
         AND stage NOT IN ('closed','cancelled')
         AND start_date IS NOT NULL
-        AND date(start_date) >= date('now')
-        AND date(start_date) <= date('now', '+30 days')`
+        AND substr(start_date, 1, 10) >= date('now')
+        AND substr(start_date, 1, 10) <= date('now', '+30 days')`
   ).first<{ count: number }>();
 
   const live = await c.env.DB.prepare(
@@ -460,7 +461,7 @@ app.get("/summary", requirePageAccess("projects.list"), async (c) => {
       WHERE p.archived_at IS NULL
         AND c.status = 'pending'
         AND c.due_date IS NOT NULL
-        AND date(c.due_date) < date('now')`
+        AND substr(c.due_date, 1, 10) < date('now')`
   ).first<{ count: number }>();
 
   return c.json({
@@ -679,7 +680,7 @@ app.get("/checklist-templates", requirePageAccess("projects.list"), async (c) =>
   const templates = await c.env.DB.prepare(
     `SELECT t.id, t.name, t.description,
             (SELECT COUNT(*) FROM project_checklist_template_items WHERE template_id = t.id) AS item_count,
-            (SELECT GROUP_CONCAT(et.name, ', ')
+            (SELECT string_agg(et.name, ', ')
                FROM project_event_types et
               WHERE et.default_template_id = t.id) AS used_by
        FROM project_checklist_templates t
@@ -902,11 +903,14 @@ app.get("/analytics/profitability", requirePageAccess("projects.finances"), asyn
   // Date filter applies to start_date — overlapping window is harder
   // to reason about across by-month grouping, so keep it strict.
   if (dateFrom) {
-    where.push("date(p.start_date) >= date(?)");
+    // substr, not date(): on Postgres date(text_col) casts to the date type
+    // and "date >= text" has no operator. substr keeps it text-vs-text on
+    // both dialects with the same truncate-to-day semantics.
+    where.push("substr(p.start_date, 1, 10) >= substr(?, 1, 10)");
     binds.push(dateFrom);
   }
   if (dateTo) {
-    where.push("date(p.start_date) <= date(?)");
+    where.push("substr(p.start_date, 1, 10) <= substr(?, 1, 10)");
     binds.push(dateTo);
   }
   if (brand) {
@@ -1067,13 +1071,25 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
   // row-level decision — PIC vs non-PIC for this specific project.
   // Phase 2 (Projects migration) drops the legacy `level` field.
   const rowLevel = projectAccessLevel(user, detail.project);
+  // Section-level (PMS) access for this user × project. Drives which detail
+  // panels render AND lets us strip the financial snapshot server-side so it
+  // never leaves the Worker for a role that shouldn't see money.
+  const pms = getPmsAccess(user, detail.project);
   const access = {
     level: rowLevel,
     level_v2: rowLevel === "limited" ? "partial" : rowLevel,
     is_pic: detail.project.pic_id === user.id,
     scoped: !!user.scope_to_pic,
+    pms,
   };
-  return c.json({ ...detail, _access: access });
+  // Defense in depth: hide finance (rental / cost / profit) from a position
+  // whose PMS role doesn't include FINANCIAL — on the wire, not just the UI.
+  // GATED on position_id: un-migrated users (no position assigned yet) keep
+  // legacy access, so the rollout doesn't suddenly hide finances from current
+  // finance/director users before positions are seeded + assigned.
+  const stripFinance = user.position_id != null && !pms.canFinancial;
+  const payload = stripFinance ? { ...detail, finance: null } : detail;
+  return c.json({ ...payload, _access: access });
 });
 
 /**
@@ -1091,13 +1107,14 @@ async function canPicProjectBrand(
   brand: string | null | undefined
 ): Promise<boolean> {
   if (!brand) return false;
-  const db = getDb(env);
-  const rows = await db
-    .select({ one: user_brands.user_id })
-    .from(user_brands)
-    .where(and(eq(user_brands.user_id, picUserId), eq(user_brands.brand, brand)))
-    .limit(1);
-  return rows.length > 0;
+  // env.DB (not getDb): this gate must also work on the D1 fallback used by
+  // the test suite and the rollback path, where no DATABASE_URL is bound.
+  const row = await env.DB.prepare(
+    `SELECT 1 AS one FROM user_brands WHERE user_id = ? AND brand = ? LIMIT 1`
+  )
+    .bind(picUserId, brand)
+    .first();
+  return row !== null;
 }
 
 // ── Create ────────────────────────────────────────────────────
@@ -1351,6 +1368,13 @@ app.patch("/:id/finance", requirePermission("projects.write"), async (c) => {
   const body = await c.req.json<Record<string, any>>();
   const ok = await patchFinance(c.env, id, body, user?.id ?? 0);
   if (!ok) return c.json({ error: "No changes" }, 400);
+  await audit(c, {
+    action: "finance.update",
+    entityType: "project_finance",
+    entityId: id,
+    summary: `Edited finance for project #${id}`,
+    meta: { fields: Object.keys(body) },
+  });
   return c.json({ ok: true });
 });
 
@@ -1519,8 +1543,8 @@ app.get("/finance/by-project", requirePageAccess("projects.finances"), async (c)
            END AS gp_pct,
            CASE WHEN start_date IS NOT NULL
                   AND end_date   IS NOT NULL
-                  AND julianday(end_date) >= julianday(start_date)
-                THEN sales / (julianday(end_date) - julianday(start_date) + 1)
+                  AND end_date::timestamptz >= start_date::timestamptz
+                THEN sales / (extract(epoch from (end_date::timestamptz - start_date::timestamptz)) / 86400.0 + 1)
                 ELSE NULL
            END AS sales_per_day,
            CASE WHEN size_sqm IS NOT NULL AND size_sqm > 0
@@ -1534,7 +1558,7 @@ app.get("/finance/by-project", requirePageAccess("projects.finances"), async (c)
     sql`SELECT COUNT(*) AS count FROM (${wrapped}) outerSub`
   );
 
-  const rows = await db.all<any>(
+  const rows = await db.execute<any>(
     sql`${wrapped} ${orderByClause} LIMIT ${perPage} OFFSET ${offset}`
   );
 
@@ -1645,7 +1669,7 @@ app.get("/finance/lines", requirePageAccess("projects.finances"), async (c) => {
     sql`SELECT COUNT(*) as count ${baseFrom}`
   );
 
-  const rows = await db.all<any>(sql`
+  const rows = await db.execute<any>(sql`
     SELECT l.id,
            l.project_id,
            l.kind,
@@ -2297,8 +2321,12 @@ app.patch("/sections/:sectionId", requirePermission("projects.write"), async (c)
 app.delete("/sections/:sectionId", requirePermission("projects.write"), async (c) => {
   const sectionId = parseInt(c.req.param("sectionId"), 10);
   if (isNaN(sectionId)) return c.json({ error: "Invalid ID" }, 400);
-  // ON DELETE SET NULL on project_checklist.section_id ⇒ tasks
-  // automatically fall back to "Uncategorised".
+  // project_checklist.section_id was ON DELETE SET NULL, but the D1->PG load
+  // dropped it to NO ACTION — so a bare delete throws once the section still has
+  // tasks. Null them first so tasks fall back to "Uncategorised".
+  await c.env.DB.prepare(`UPDATE project_checklist SET section_id = NULL WHERE section_id = ?`)
+    .bind(sectionId)
+    .run();
   await c.env.DB.prepare(`DELETE FROM project_checklist_sections WHERE id = ?`)
     .bind(sectionId)
     .run();
@@ -3126,8 +3154,8 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
        FROM projects p
       WHERE p.archived_at IS NULL
         AND p.start_date IS NOT NULL
-        AND date(p.start_date) <= date(?)
-        AND date(COALESCE(p.end_date, p.start_date)) >= date(?)${scopeWhere}`
+        AND substr(p.start_date, 1, 10) <= substr(?, 1, 10)
+        AND substr(COALESCE(p.end_date, p.start_date), 1, 10) >= substr(?, 1, 10)${scopeWhere}`
   )
     .bind(to, from, ...scopeBinds)
     .all();
@@ -3138,7 +3166,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
             p.code as project_code, p.brand, p.organizer, p.status as project_status,
             p.name as project_name,
             u.name as owner_name,
-            CASE WHEN date(c.due_date) < date('now') THEN 1 ELSE 0 END as is_overdue
+            CASE WHEN substr(c.due_date, 1, 10) < date('now') THEN 1 ELSE 0 END as is_overdue
        FROM project_checklist c
        JOIN projects p ON p.id = c.project_id
        LEFT JOIN users u ON u.id = c.owner_user_id
@@ -3146,7 +3174,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
         AND c.status != 'done'
         AND c.status != 'na'
         AND c.due_date IS NOT NULL
-        AND date(c.due_date) BETWEEN date(?) AND date(?)${scopeWhere}
+        AND substr(c.due_date, 1, 10) BETWEEN substr(?, 1, 10) AND substr(?, 1, 10)${scopeWhere}
       ORDER BY c.due_date, p.brand, c.id`
   )
     .bind(from, to, ...scopeBinds)

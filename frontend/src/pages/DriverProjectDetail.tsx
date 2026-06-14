@@ -118,7 +118,7 @@ export function DriverProjectDetail() {
   }, [detail.data, activeTab]);
 
   if (detail.loading) {
-    return <div className="px-4 py-5 text-sm text-ink-secondary">Loading…</div>;
+    return <div className="px-4 py-5 text-[12px] text-ink-secondary">Loading…</div>;
   }
   if (detail.error || !detail.data) {
     return (
@@ -126,7 +126,7 @@ export function DriverProjectDetail() {
         <Link to="/driver/projects" className="mb-3 inline-flex items-center gap-1 text-[12px] text-ink-secondary">
           <ArrowLeft size={14} /> Back
         </Link>
-        <div className="rounded-md border border-err/40 bg-err/5 p-3 text-sm text-err">
+        <div className="rounded-md border border-err/40 bg-err/5 p-3 text-[13px] text-err">
           {detail.error || "Project not found"}
         </div>
       </div>
@@ -146,7 +146,7 @@ export function DriverProjectDetail() {
       </Link>
 
       <div className="mb-4">
-        <h1 className="font-display text-[20px] font-extrabold leading-tight tracking-tight text-ink">
+        <h1 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink sm:text-[26px] lg:text-[28px]">
           {project.name}
         </h1>
         {project.brand && (
@@ -190,7 +190,7 @@ export function DriverProjectDetail() {
             <Phone size={15} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+            <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               PIC
             </div>
             <div className="truncate text-[13px] font-semibold text-ink">
@@ -303,7 +303,7 @@ function PhasePanel({
       )}
 
       <div className="rounded-lg border border-border bg-surface p-3">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+        <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Phase window
         </div>
         <div className="mt-1 text-[13px] font-semibold text-ink">
@@ -323,7 +323,7 @@ function PhasePanel({
       </div>
 
       <div className="rounded-lg border border-border bg-surface p-3">
-        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+        <div className="mb-2 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Crew
         </div>
         <div className="space-y-1.5">
@@ -449,7 +449,7 @@ function PhotoUploader({
 
   return (
     <div className="rounded-lg border border-border bg-surface p-3">
-      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         Add {phase} evidence
       </div>
       <input
@@ -666,7 +666,7 @@ function PhotoThumb({
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-1 p-2 text-center">
               <FileText size={28} className="text-ink-secondary" />
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+              <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
                 {extFromKey(photo.r2_key) || "File"}
               </div>
             </div>
@@ -758,14 +758,14 @@ function DocumentsCard({ documents }: { documents: DriverDocument[] }) {
     <div className="mb-3 rounded-lg border border-border bg-surface p-3">
       <div className="mb-2 flex items-center gap-2">
         <FileText size={14} className="text-ink-secondary" />
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+        <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Documents
         </div>
       </div>
       <div className="space-y-3">
         {groups.map(([sectionName, docs]) => (
           <div key={sectionName}>
-            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               {sectionName}
             </div>
             <div className="space-y-1.5">

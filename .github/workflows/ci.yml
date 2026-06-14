@@ -1,10 +1,13 @@
 name: CI
 
+# Run on every branch push and every PR, not just main. The old config
+# only fired on main, so a broken typecheck/test could sit on a feature
+# branch undetected until it was merged. Branch CI catches it at push.
 on:
   pull_request:
-    branches: [main]
   push:
-    branches: [main]
+    branches-ignore:
+      - main # main is covered by deploy.yml (which also typechecks + tests)
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -13,7 +16,6 @@ concurrency:
 jobs:
   backend:
     runs-on: ubuntu-latest
-    environment: Production 
     defaults:
       run:
         working-directory: backend
@@ -30,7 +32,6 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
-    environment: Production 
     defaults:
       run:
         working-directory: frontend
@@ -44,3 +45,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      # Fail the build if the bundle blew past budget (see the script for
+      # the budgets + rationale). Cheap, and the thing that actually keeps
+      # first paint fast.
+      - run: npm run check:bundle

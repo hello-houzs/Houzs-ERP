@@ -20,10 +20,10 @@ export function DriverHome() {
         <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
           Today
         </div>
-        <h1 className="font-display text-[22px] font-extrabold leading-tight tracking-tight text-ink">
+        <h1 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink sm:text-[26px] lg:text-[28px]">
           Your Trips
         </h1>
-        <p className="mt-1 text-[12.5px] text-ink-secondary">
+        <p className="mt-1 text-[12px] leading-relaxed text-ink-secondary sm:text-sm">
           Tap a trip to start delivering.
         </p>
       </div>

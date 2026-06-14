@@ -31,6 +31,13 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: backend
           command: deploy
+      # Post-deploy smoke check: confirm the new Worker is serving AND its
+      # DB path (Hyperdrive -> Supabase) is alive before calling the deploy
+      # good. Detects the 2026-06-13 failure mode (Worker up, DB hung). Set
+      # repo var SMOKE_URL to override the default workers.dev origin. This
+      # DETECTS a bad deploy (red job + notification); rollback is manual
+      # (`wrangler rollback`).
+      - run: node scripts/smoke-check.mjs "${{ vars.SMOKE_URL || 'https://autocount-sync-api.houzs-erp.workers.dev' }}"
       # D1 migrations are NOT auto-applied. Run
       # `npm --prefix backend run db:migrate` locally before merging
       # the migration's PR.

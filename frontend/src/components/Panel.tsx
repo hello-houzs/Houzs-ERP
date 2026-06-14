@@ -143,13 +143,13 @@ export function Panel({
         <span className="pointer-events-none absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-accent/0 via-accent/60 to-accent/0" />
         <div className="flex items-start justify-between border-b border-border px-4 py-4 sm:px-6 sm:py-5">
           <div>
-            <div className="text-[9px] font-semibold uppercase tracking-brand text-accent">
+            <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
               Document
             </div>
-            <h2 className="mt-1 font-display text-[18px] font-extrabold tracking-tight text-ink">
+            <h2 className="mt-1 font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
               {title}
             </h2>
-            {subtitle && <p className="mt-0.5 text-xs text-ink-secondary">{subtitle}</p>}
+            {subtitle && <p className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">{subtitle}</p>}
           </div>
           <button
             onClick={attemptClose}
@@ -192,7 +192,7 @@ export function PanelSection({ title, children, muted, action }: SectionProps) {
     >
       <div className="mb-2 flex items-center gap-2">
         <span className="h-px w-3 bg-accent/60" />
-        <div className="flex-1 text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+        <div className="flex-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           {title}
         </div>
         {action && <div className="shrink-0">{action}</div>}

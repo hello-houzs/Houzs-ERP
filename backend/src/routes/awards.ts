@@ -78,7 +78,7 @@ app.post("/", async (c) => {
       active: 1,
     })
     .returning()
-    .get();
+    .then((r) => r[0]);
   return c.json({ row: inserted });
 });
 
@@ -96,7 +96,7 @@ app.patch("/:id", async (c) => {
     active: 0 | 1;
     sort_order: number;
   }>>();
-  const patch: Record<string, any> = { updated_at: sql`datetime('now')` };
+  const patch: Record<string, any> = { updated_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` };
   if (typeof body.name === "string") patch.name = body.name.trim();
   if ("description" in body) patch.description = body.description;
   if (typeof body.cost_points === "number") patch.cost_points = body.cost_points;
@@ -110,7 +110,7 @@ app.patch("/:id", async (c) => {
     .set(patch)
     .where(eq(awards.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
   if (!updated) return c.json({ error: "Award not found" }, 404);
   return c.json({ row: updated });
 });
@@ -125,7 +125,7 @@ app.delete("/:id", async (c) => {
   const db = getDb(c.env);
   await db
     .update(awards)
-    .set({ active: 0, updated_at: sql`datetime('now')` })
+    .set({ active: 0, updated_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` })
     .where(eq(awards.id, id));
   return c.json({ ok: true });
 });
@@ -152,10 +152,10 @@ app.put("/:id/image", async (c) => {
   const db = getDb(c.env);
   const updated = await db
     .update(awards)
-    .set({ image_r2_key: key, updated_at: sql`datetime('now')` })
+    .set({ image_r2_key: key, updated_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` })
     .where(eq(awards.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
   if (!updated) return c.json({ error: "Award not found" }, 404);
   return c.json({ row: updated });
 });
@@ -170,7 +170,7 @@ app.get("/:id/image", async (c) => {
     .select({ key: awards.image_r2_key })
     .from(awards)
     .where(eq(awards.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!a?.key) return c.json({ error: "No image" }, 404);
   const obj = await c.env.POD_BUCKET.get(a.key);
   if (!obj) return c.json({ error: "Image missing" }, 404);
@@ -192,7 +192,7 @@ app.post("/:id/redeem", async (c) => {
     .catch(() => ({} as { shipping_addr?: string }));
 
   const db = getDb(c.env);
-  const a = await db.select().from(awards).where(eq(awards.id, id)).get();
+  const a = await db.select().from(awards).where(eq(awards.id, id)).then((r) => r[0]);
   if (!a) return c.json({ error: "Award not found" }, 404);
   if (!a.active) return c.json({ error: "This award is no longer available" }, 400);
   if (a.stock !== null && a.stock !== undefined && a.stock <= 0) {
@@ -249,7 +249,7 @@ app.post("/:id/redeem", async (c) => {
       ledger_tx_id: lastTx?.id ?? null,
     })
     .returning()
-    .get();
+    .then((r) => r[0]);
 
   return c.json({
     ok: true,
@@ -337,12 +337,12 @@ app.post("/redemptions/:id/ship", async (c) => {
     .update(award_redemptions)
     .set({
       status: "shipped",
-      shipped_at: sql`datetime('now')`,
+      shipped_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')`,
       admin_note: body.admin_note ?? null,
     })
     .where(eq(award_redemptions.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
   if (!updated) return c.json({ error: "Not found" }, 404);
   return c.json({ row: updated });
 });
@@ -358,11 +358,11 @@ app.post("/redemptions/:id/deliver", async (c) => {
     .update(award_redemptions)
     .set({
       status: "delivered",
-      delivered_at: sql`datetime('now')`,
+      delivered_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')`,
     })
     .where(eq(award_redemptions.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
   if (!updated) return c.json({ error: "Not found" }, 404);
   return c.json({ row: updated });
 });
@@ -383,7 +383,7 @@ app.post("/redemptions/:id/cancel", async (c) => {
     .select()
     .from(award_redemptions)
     .where(eq(award_redemptions.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!r) return c.json({ error: "Not found" }, 404);
   if (r.status === "delivered") {
     return c.json({ error: "Cannot cancel a delivered redemption" }, 400);
@@ -410,13 +410,13 @@ app.post("/redemptions/:id/cancel", async (c) => {
     .update(award_redemptions)
     .set({
       status: "cancelled",
-      cancelled_at: sql`datetime('now')`,
+      cancelled_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')`,
       cancelled_by: user!.id,
       admin_note: body.admin_note ?? null,
     })
     .where(eq(award_redemptions.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
 
   return c.json({ row: updated });
 });

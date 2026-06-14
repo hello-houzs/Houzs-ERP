@@ -30,7 +30,9 @@ export function SurveyPublic() {
   useEffect(() => {
     (async () => {
       try {
-        const base = (import.meta.env.VITE_API_URL as string) || "";
+        const base =
+          (import.meta.env.VITE_API_URL as string) ||
+          "https://autocount-sync-api.houzs-erp.workers.dev";
         const res = await fetch(`${base}/api/survey/${encodeURIComponent(token)}`);
         if (!res.ok) {
           throw new Error((await res.text()) || `HTTP ${res.status}`);
@@ -84,8 +86,8 @@ export function SurveyPublic() {
     return (
       <Frame>
         <div className="py-8 text-center">
-          <div className="mb-2 text-lg font-semibold text-err">Survey Unavailable</div>
-          <div className="text-sm text-ink-secondary">{error}</div>
+          <div className="mb-2 font-display text-[15px] font-bold leading-tight tracking-tight text-err">Survey Unavailable</div>
+          <div className="text-[12px] leading-relaxed text-ink-secondary">{error}</div>
           <div className="mt-6 text-[12px] text-ink-muted">
             If you believe this is a mistake, please contact our service team.
           </div>
@@ -99,8 +101,8 @@ export function SurveyPublic() {
       <Frame>
         <div className="flex flex-col items-center gap-3 py-10 text-center">
           <CheckCircle2 size={44} className="text-synced" />
-          <div className="text-lg font-semibold">Thank you for your feedback!</div>
-          <div className="text-sm text-ink-secondary">
+          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">Thank you for your feedback!</div>
+          <div className="text-[12px] leading-relaxed text-ink-secondary">
             Your response for case{" "}
             <span className="font-mono font-semibold">{data?.assr_no}</span> has been recorded.
           </div>
@@ -123,18 +125,18 @@ export function SurveyPublic() {
   return (
     <Frame>
       <div className="mb-5">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Service Case
         </div>
-        <div className="mt-1 font-mono text-lg font-semibold">{data!.assr_no}</div>
-        <div className="mt-1 text-sm text-ink-secondary">
+        <div className="mt-1 font-mono text-[15px] font-bold leading-tight tracking-tight text-ink">{data!.assr_no}</div>
+        <div className="mt-1 text-[12px] leading-relaxed text-ink-secondary">
           {data!.customer_name || "Valued customer"} · SO {data!.doc_no}
           {data!.complained_date && ` · ${formatDate(data!.complained_date)}`}
         </div>
       </div>
 
       <div className="border-t border-border pt-5">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
+        <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           How satisfied were you with our service?
         </div>
         <div className="mt-3 flex justify-center gap-2">
@@ -166,7 +168,7 @@ export function SurveyPublic() {
       </div>
 
       <div className="mt-5">
-        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Additional comments (optional)
         </div>
         <textarea
@@ -179,7 +181,7 @@ export function SurveyPublic() {
         />
       </div>
 
-      {error && <div className="mt-3 text-sm text-err">{error}</div>}
+      {error && <div className="mt-3 text-[12px] text-err">{error}</div>}
 
       <button
         onClick={submit}
@@ -201,10 +203,10 @@ function Frame({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-bg py-10">
       <div className="mx-auto max-w-md rounded-lg border border-border bg-surface p-6 shadow-sm">
         <div className="mb-5 text-center">
-          <div className="font-display text-xl font-extrabold tracking-tight text-ink">
+          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
             Houzs Century
           </div>
-          <div className="text-[10px] uppercase tracking-[3pt] text-accent">
+          <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
             Customer Feedback
           </div>
         </div>

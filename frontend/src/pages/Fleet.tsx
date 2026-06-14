@@ -330,11 +330,11 @@ function ComplianceTab() {
       <div className="mb-3 text-[11px] text-ink-secondary">
         Lorries with compliance documents expiring within 60 days.
       </div>
-      {data.loading && <div className="text-sm text-ink-secondary">Loading…</div>}
+      {data.loading && <div className="text-[12px] text-ink-secondary">Loading…</div>}
       {!data.loading && !expiries.length && (
         <div className="rounded-lg border border-dashed border-border bg-surface p-8 text-center">
           <Shield size={28} className="mx-auto mb-3 text-ok" />
-          <div className="text-[14px] font-bold text-ink">All clear</div>
+          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">All clear</div>
           <div className="mt-1 text-[12px] text-ink-secondary">No compliance items expiring soon.</div>
         </div>
       )}

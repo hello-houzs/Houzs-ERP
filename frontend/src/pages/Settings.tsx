@@ -216,7 +216,7 @@ function SyncTab({
       </section>
 
       <section className="relative overflow-hidden rounded-md border border-border bg-surface p-6 shadow-stone">
-        <h2 className="mb-1 text-sm font-semibold">Full Refresh</h2>
+        <h2 className="mb-1 font-display text-[15px] font-bold leading-tight tracking-tight text-ink">Full Refresh</h2>
         <p className="mb-4 text-xs text-ink-muted">
           Calls <span className="font-mono">/SalesOrder/getAll</span> and upserts
           everything — ignores server-side Remark2/Attention/Remark4/
@@ -261,9 +261,13 @@ const EMAIL_TOGGLES: { key: string; label: string; description: string }[] = [
   { key: "email.enabled", label: "Master switch", description: "When off, every channel is muted regardless of individual toggles." },
   { key: "email.assr_survey", label: "ASSR satisfaction survey", description: "Auto-send the tokenized survey link to the customer when a case closes (requires customer_email)." },
   { key: "email.assr_sla_escalation", label: "ASSR SLA breach alerts", description: "Email the assignee + managers when a case is escalated for missing its deadline >24h." },
+  { key: "email.member_invite", label: "Team member invitations", description: "Email the invite / accept link when you add a staff account in User Management." },
   { key: "email.supplier_invite", label: "Supplier portal invites", description: "Email the invite / password-reset link to a supplier account." },
   { key: "email.project_due_reminder", label: "Project due reminders", description: "Daily cron emails checklist items due within 3 days or overdue." },
   { key: "email.password_reset", label: "Password reset emails", description: "Send a reset link when an admin clicks 'Send reset' on a team member." },
+  { key: "email.delivery_order", label: "Delivery Order (to customer)", description: "Auto-email the customer their D.O. when an order is dispatched. Sends to real customers — keep OFF until verified and customer emails are set on orders." },
+  { key: "email.invoice", label: "Invoice (to customer)", description: "Auto-email invoices to customers (trigger not built yet — leave OFF)." },
+  { key: "email.document_report", label: "Report (to customer)", description: "Auto-email reports to customers (trigger not built yet — leave OFF)." },
 ];
 
 function EmailTab() {

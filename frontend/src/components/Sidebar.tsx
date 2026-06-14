@@ -92,50 +92,51 @@ export const NAV_TABS: NavTab[] = [
   // ── Workspace — universal landing ────────────────────────────
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
 
-  // ── Sales — order flow + delivery for reps and account owners ─
+  // ── Sales — order flow REMOVED from the sidebar per owner request
+  //    (2026-06-14). The routes (/sales, /orders, /orders/items, /po),
+  //    their backend, and the AutoCount sync are all untouched — only
+  //    the nav entries are hidden. To restore, un-comment this group.
+  //    Delivery was moved into Operations below so the delivery business
+  //    keeps it front-and-centre.
+  // {
+  //   label: "Sales",
+  //   icon: Briefcase,
+  //   groupId: "sales",
+  //   anyPerm: ["sales.read", "sales_orders.read", "delivery_orders.read", "purchase_orders.read"],
+  //   children: [
+  //     { to: "/sales", label: "Sales Entries", icon: Receipt, perm: "sales.read", pageAccess: "sales" },
+  //     { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read", pageAccess: "orders" },
+  //     { to: "/orders/items", label: "Sales Order Detail", icon: ListTree, perm: "sales_orders.read", pageAccess: "orders" },
+  //     { to: "/delivery-orders", label: "Delivery", icon: Truck, perm: "delivery_orders.read", pageAccess: "delivery_orders", hidePerm: "trips.read.all" },
+  //     { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read", pageAccess: "purchase_orders" },
+  //   ],
+  // },
+
+  // ── Operations — fleet, trips, dispatch, delivery ────────────
   {
-    label: "Sales",
-    icon: Briefcase,
-    groupId: "sales",
-    anyPerm: [
-      "sales.read",
-      "sales_orders.read",
-      "delivery_orders.read",
-      "purchase_orders.read",
-    ],
+    label: "Operations",
+    icon: Route,
+    groupId: "operations",
+    anyPerm: ["trips.read.all", "fleet.read", "delivery_orders.read"],
     children: [
-      // Rep-entered customer sales (sales_entries) — the home for the
-      // quick-log → complete workflow. Listed first because reps live
-      // here daily, while the AutoCount-synced views below are reads.
-      { to: "/sales", label: "Sales Entries", icon: Receipt, perm: "sales.read" },
-      { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read" },
-      { to: "/orders/items", label: "Sales Order Detail", icon: ListTree, perm: "sales_orders.read" },
-      // Members with delivery_orders.read but no trips.read.all still see
-      // the flat Delivery list. Dispatchers with trips.read.all get the
-      // richer Queue tab inside Logistics, so this entry hides for them.
+      // Delivery relocated here from the (now-hidden) Sales group. Members
+      // with delivery_orders.read but no trips.read.all see this flat list;
+      // dispatchers with trips.read.all get the richer Queue tab in
+      // Logistics, so this entry hides for them.
       {
         to: "/delivery-orders",
         label: "Delivery",
         icon: Truck,
         perm: "delivery_orders.read",
+        pageAccess: "delivery_orders",
         hidePerm: "trips.read.all",
       },
-      { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read" },
-    ],
-  },
-
-  // ── Operations — fleet, trips, dispatch ──────────────────────
-  {
-    label: "Operations",
-    icon: Route,
-    groupId: "operations",
-    anyPerm: ["trips.read.all", "fleet.read"],
-    children: [
       {
         to: "/logistics",
         label: "Logistics",
         icon: Route,
         anyPerm: ["trips.read.all", "fleet.read"],
+        pageAccess: "logistics",
       },
     ],
   },
@@ -152,24 +153,28 @@ export const NAV_TABS: NavTab[] = [
         label: "Service Cases",
         icon: ClipboardList,
         perm: "service_cases.read",
+        pageAccess: "service_cases.cases",
       },
       {
         to: "/assr?view=by_creditor",
         label: "By Creditor",
         icon: Package,
         perm: "service_cases.read",
+        pageAccess: "service_cases.by_creditor",
       },
       {
         to: "/assr?view=metrics",
         label: "Quality Metrics",
         icon: ShieldCheck,
         perm: "service_cases.read",
+        pageAccess: "service_cases.metrics",
       },
       {
         to: "/assr?view=pnl",
         label: "Finances",
         icon: DollarSign,
         perm: "service_cases.read",
+        pageAccess: "service_cases.pnl",
       },
       {
         // Lead Time Portal merged into Service Maintenance as a tab.
@@ -227,7 +232,7 @@ export const NAV_TABS: NavTab[] = [
     groupId: "finance",
     anyPerm: ["petty_cash.read"],
     children: [
-      { to: "/petty-cash", label: "Petty Cash", icon: Wallet, perm: "petty_cash.read" },
+      { to: "/petty-cash", label: "Petty Cash", icon: Wallet, perm: "petty_cash.read", pageAccess: "petty_cash" },
     ],
   },
 
@@ -238,10 +243,10 @@ export const NAV_TABS: NavTab[] = [
     groupId: "people",
     anyPerm: ["users.read", "roles.read", "sales_team.read"],
     children: [
-      { to: "/team", label: "Team", icon: Users, anyPerm: ["users.read", "roles.read"] },
+      { to: "/team", label: "User Management", icon: Users, anyPerm: ["users.read", "roles.read"], pageAccess: "team" },
       // Sales Team is the retail-rep org chart, separate from /team
       // (workspace logins). Most reps don't have a workspace login.
-      { to: "/sales-team", label: "Sales Team", icon: Briefcase, anyPerm: ["sales_team.read"] },
+      { to: "/sales-team", label: "Sales Team", icon: Briefcase, anyPerm: ["sales_team.read"], pageAccess: "sales_team" },
     ],
   },
 

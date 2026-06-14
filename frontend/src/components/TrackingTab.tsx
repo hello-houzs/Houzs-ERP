@@ -498,13 +498,13 @@ function TableView({
       <table className="w-full text-[12px]">
         <thead>
           <tr className="border-b border-border bg-bg/60 text-left">
-            <th className="px-3 py-2 font-semibold text-ink-secondary">Doc No</th>
-            <th className="px-3 py-2 font-semibold text-ink-secondary">Customer</th>
-            <th className="px-3 py-2 font-semibold text-ink-secondary">Region</th>
-            <th className="px-3 py-2 font-semibold text-ink-secondary">Status</th>
-            <th className="px-3 py-2 text-right font-semibold text-ink-secondary">Revenue</th>
-            <th className="px-3 py-2 text-right font-semibold text-ink-secondary">Cost</th>
-            <th className="px-3 py-2 font-semibold text-ink-secondary">Est. Delivery</th>
+            <th className="px-3 py-2 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">Doc No</th>
+            <th className="px-3 py-2 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">Customer</th>
+            <th className="px-3 py-2 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">Region</th>
+            <th className="px-3 py-2 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">Status</th>
+            <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">Revenue</th>
+            <th className="px-3 py-2 text-right text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">Cost</th>
+            <th className="px-3 py-2 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">Est. Delivery</th>
           </tr>
         </thead>
         <tbody>

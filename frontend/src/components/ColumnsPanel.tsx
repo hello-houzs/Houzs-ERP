@@ -257,7 +257,7 @@ function CustomFieldsSection({ udf, label }: { udf: UseUdfResult; label: string 
         {!creating && (
           <button
             onClick={() => setCreating(true)}
-            className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-accent hover:underline"
+            className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-brand text-accent hover:underline"
           >
             <Plus size={11} /> Add field
           </button>

@@ -96,7 +96,7 @@ app.post("/", async (c) => {
       body: body.body?.trim() || null,
     })
     .returning()
-    .get();
+    .then((r) => r[0]);
   return c.json({ row: inserted });
 });
 
@@ -150,7 +150,7 @@ app.patch("/:id", async (c) => {
     .select()
     .from(suggestions)
     .where(eq(suggestions.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!row) return c.json({ error: "Not found" }, 404);
 
   if (row.archived_at) return c.json({ error: "Not found" }, 404);
@@ -178,7 +178,7 @@ app.patch("/:id", async (c) => {
     .set(patch)
     .where(eq(suggestions.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
   return c.json({ row: updated });
 });
 
@@ -194,7 +194,7 @@ app.post("/:id/vote", async (c) => {
     .select({ user_id: suggestions.user_id })
     .from(suggestions)
     .where(eq(suggestions.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!target) return c.json({ error: "Not found" }, 404);
   if (target.user_id === user.id) {
     return c.json({ error: "You cannot vote on your own post" }, 400);
@@ -308,7 +308,7 @@ app.post("/:id/decision", async (c) => {
     .select()
     .from(suggestions)
     .where(eq(suggestions.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!target) return c.json({ error: "Not found" }, 404);
 
   const updated = await db
@@ -316,13 +316,13 @@ app.post("/:id/decision", async (c) => {
     .set({
       status: body.status,
       decided_by: user!.id,
-      decided_at: sql`datetime('now')`,
+      decided_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')`,
       decline_reason:
         body.status === "declined" ? body.decline_reason ?? null : null,
     })
     .where(eq(suggestions.id, id))
     .returning()
-    .get();
+    .then((r) => r[0]);
 
   if (body.status === "approved" && !target.awarded_at) {
     const amount = await getSettingNumber(
@@ -337,7 +337,7 @@ app.post("/:id/decision", async (c) => {
     });
     await db
       .update(suggestions)
-      .set({ awarded_at: sql`datetime('now')` })
+      .set({ awarded_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` })
       .where(eq(suggestions.id, id));
   }
 
@@ -357,7 +357,7 @@ app.delete("/:id", async (c) => {
     .select()
     .from(suggestions)
     .where(eq(suggestions.id, id))
-    .get();
+    .then((r) => r[0]);
   if (!row || row.archived_at) return c.json({ error: "Not found" }, 404);
 
   if (row.user_id !== user.id && !isAdmin(user)) {
@@ -366,7 +366,7 @@ app.delete("/:id", async (c) => {
 
   await db
     .update(suggestions)
-    .set({ archived_at: sql`datetime('now')` })
+    .set({ archived_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` })
     .where(eq(suggestions.id, id));
   return c.json({ ok: true });
 });

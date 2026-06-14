@@ -9,6 +9,7 @@ import {
   type AccessLevel,
 } from "../services/pageAccess";
 import { requirePermission } from "../middleware/auth";
+import { audit } from "../services/audit";
 import { getDb } from "../db/client";
 import { roles, role_page_access, users } from "../db/schema";
 import { eq, sql } from "drizzle-orm";
@@ -97,6 +98,14 @@ app.post("/", requirePermission("roles.manage"), async (c) => {
     })
     .returning({ id: roles.id });
 
+  await audit(c, {
+    action: "role.create",
+    entityType: "role",
+    entityId: inserted[0]?.id,
+    summary: `Created role "${name}"`,
+    meta: { name, permissions: perms, scope_to_pic: !!body.scope_to_pic },
+  });
+
   return c.json({
     id: inserted[0]?.id,
     name,
@@ -158,6 +167,13 @@ app.patch("/:id", requirePermission("roles.manage"), async (c) => {
   }
 
   await db.update(roles).set(set).where(eq(roles.id, id));
+  await audit(c, {
+    action: "role.update",
+    entityType: "role",
+    entityId: id,
+    summary: `Updated role #${id}`,
+    meta: { changed: Object.keys(set), permissions: body.permissions },
+  });
   return c.json({ ok: true });
 });
 
@@ -262,18 +278,26 @@ app.patch("/:id/page-access", requirePermission("roles.manage"), async (c) => {
     .limit(1);
   if (roleRow.length === 0) return c.json({ error: "Role not found" }, 404);
 
-  // INSERT OR REPLACE — Drizzle's onConflictDoUpdate keeps the diff
-  // small. Done in a loop because Drizzle doesn't bulk multi-row
-  // upsert on D1 yet without raw SQL; the matrix payload is at most
-  // 13 rows so this is fine.
+  // Upsert on the (role_id, page_key) PK. Done in a loop because the
+  // matrix payload is at most 13 rows so this is fine.
   for (const e of cleaned) {
     await c.env.DB.prepare(
-      `INSERT OR REPLACE INTO role_page_access (role_id, page_key, level, updated_at)
-       VALUES (?, ?, ?, datetime('now'))`,
+      `INSERT INTO role_page_access (role_id, page_key, level, updated_at)
+       VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(role_id, page_key) DO UPDATE SET
+         level = excluded.level, updated_at = excluded.updated_at`,
     )
       .bind(id, e.page_key, e.level)
       .run();
   }
+
+  await audit(c, {
+    action: "role.page_access.update",
+    entityType: "role",
+    entityId: id,
+    summary: `Updated page access for role #${id} (${cleaned.length} page(s))`,
+    meta: { entries: cleaned },
+  });
 
   return c.json({ ok: true, written: cleaned.length });
 });
@@ -309,7 +333,21 @@ app.delete("/:id", requirePermission("roles.manage"), async (c) => {
     );
   }
 
+  // The page-access matrix FK (role_page_access.role_id) was ON DELETE CASCADE
+  // in the schema, but the D1->PG load dropped it to NO ACTION — so a bare
+  // delete throws once a role has any saved matrix row. Clear children first
+  // (same cutover fix as departments/positions).
+  await c.env.DB.prepare(`DELETE FROM role_page_access WHERE role_id = ?`)
+    .bind(id)
+    .run();
+
   await db.delete(roles).where(eq(roles.id, id));
+  await audit(c, {
+    action: "role.delete",
+    entityType: "role",
+    entityId: id,
+    summary: `Deleted role #${id}`,
+  });
   return c.json({ ok: true });
 });
 

@@ -349,7 +349,7 @@ function ComplianceRow({
   if (!date) {
     return (
       <div className="flex items-baseline justify-between border-b border-border-subtle/60 py-1.5">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           {label}
         </span>
         <span className="text-[12px] text-ink-muted">—</span>
@@ -364,7 +364,7 @@ function ComplianceRow({
   const warn = !expired && date <= inThirty;
   return (
     <div className="flex items-baseline justify-between border-b border-border-subtle/60 py-1.5">
-      <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+      <span className="font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
       </span>
       <span

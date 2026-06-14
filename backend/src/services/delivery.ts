@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { sendEmail, documentEmailHtml } from "./email";
 
 /**
  * Delivery tracking service — unified per-order lifecycle.
@@ -189,6 +190,100 @@ export async function advanceStatus(
     .run();
 
   return { doc_no: docNo, from: rec.status, to: newStatus };
+}
+
+// ── Customer notification: auto-send D.O. (READY, not yet triggered) ──────────
+// Pre-built foundation. NOT wired to any status transition yet — the owner will
+// specify the trigger (dispatch / ready / delivered / ...) later, at which point
+// this helper gets called from that exact point (ideally via ctx.waitUntil so
+// the Resend POST stays off the request's hot path). Safety layers already in
+// place: the 'delivery_order' channel fails CLOSED unless explicitly ON, it
+// no-ops without a customer_email, and do_email_sent_at makes it once-only.
+// Invoice/report will mirror this shape.
+
+// Build the DO email from real delivery + order data. Returns null when the
+// order has no customer_email (caller treats null as "nothing to send").
+export async function buildDeliveryOrderEmail(
+  env: Env,
+  docNo: string,
+): Promise<{ to: string; subject: string; html: string } | null> {
+  const row = await env.DB.prepare(
+    `SELECT dt.doc_no, dt.est_delivery_date,
+            so.debtor_name, so.customer_email,
+            so.inv_addr1, so.inv_addr2, so.inv_addr3, so.inv_addr4,
+            od.delivery_date, od.time_range, od.driver_name, od.driver_contact, od.lorry_plate
+       FROM delivery_tracking dt
+       LEFT JOIN sales_orders so ON so.doc_no = dt.doc_no
+       LEFT JOIN order_details od ON od.doc_no = dt.doc_no
+      WHERE dt.doc_no = ?`,
+  )
+    .bind(docNo)
+    .first<any>();
+  if (!row || !row.customer_email) return null;
+
+  const addr = [row.inv_addr1, row.inv_addr2, row.inv_addr3, row.inv_addr4]
+    .filter(Boolean)
+    .join(", ");
+  const rows: Array<{ label: string; value: string }> = [
+    { label: "Order No", value: row.doc_no },
+    { label: "Delivery To", value: addr || row.debtor_name || "" },
+    { label: "Scheduled", value: row.delivery_date || row.est_delivery_date || "To be confirmed" },
+  ];
+  if (row.time_range) rows.push({ label: "Time", value: row.time_range });
+  if (row.driver_name)
+    rows.push({
+      label: "Driver",
+      value: row.driver_name + (row.driver_contact ? ` (${row.driver_contact})` : ""),
+    });
+  if (row.lorry_plate) rows.push({ label: "Lorry", value: row.lorry_plate });
+
+  return {
+    to: row.customer_email,
+    subject: `Houzs Century — Delivery Order ${row.doc_no}`,
+    html: documentEmailHtml({
+      docTypeLabel: "Delivery Order",
+      docNo: row.doc_no,
+      recipientName: row.debtor_name || "Customer",
+      rows,
+      note: "Your order is on its way and will arrive as scheduled above.",
+    }),
+  };
+}
+
+export async function maybeSendDeliveryOrderEmail(env: Env, docNo: string): Promise<void> {
+  try {
+    // Once-only guard: skip if this order was already notified.
+    const guard = await env.DB.prepare(
+      `SELECT do_email_sent_at FROM delivery_tracking WHERE doc_no = ?`,
+    )
+      .bind(docNo)
+      .first<{ do_email_sent_at: string | null }>();
+    if (guard?.do_email_sent_at) return;
+
+    const msg = await buildDeliveryOrderEmail(env, docNo);
+    if (!msg) return; // no customer_email → nothing to send
+
+    const result = await sendEmail(env, {
+      to: msg.to,
+      subject: msg.subject,
+      html: msg.html,
+      purpose: "delivery_order",
+      refType: "delivery",
+      refId: null,
+    });
+    // Only stamp the guard on a real send — if the channel is OFF (gated) the
+    // result is 'skipped', leaving do_email_sent_at null so flipping the channel
+    // on later still lets future dispatches notify.
+    if (result.status === "sent") {
+      await env.DB.prepare(
+        `UPDATE delivery_tracking SET do_email_sent_at = datetime('now') WHERE doc_no = ?`,
+      )
+        .bind(docNo)
+        .run();
+    }
+  } catch (e) {
+    console.warn("[delivery] DO email best-effort failed", e);
+  }
 }
 
 // ── Patch fields (without changing status) ────────────────────────

@@ -2,6 +2,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "./AuthContext";
 import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
+import { api } from "../api/client";
+import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
+import { validatePasswordStrength } from "../lib/passwordStrength";
 
 /**
  * Shared shell for the unauthenticated screens — centered card on the
@@ -65,23 +68,86 @@ function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
 // Login
 // ──────────────────────────────────────────────────────────
 export function LoginScreen() {
-  const { login } = useAuth();
+  const { login, verifyTotpLogin } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Set once a password login returns a 2FA challenge — switches to the code step.
+  const [challenge, setChallenge] = useState<string | null>(null);
+  const [code, setCode] = useState("");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
     setBusy(true);
     try {
-      await login(email, password);
+      const res = await login(email, password);
+      if (res.kind === "totp") setChallenge(res.challenge);
     } catch (e: any) {
       setErr(e?.message?.includes("401") ? "Invalid email or password" : e?.message || "Login failed");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submitCode(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null);
+    setBusy(true);
+    try {
+      await verifyTotpLogin(challenge!, code.trim());
+    } catch (e: any) {
+      setErr(
+        e?.message?.includes("401")
+          ? "That code didn't work — try the current code or a backup code."
+          : e?.message || "Verification failed",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (challenge) {
+    return (
+      <AuthShell
+        eyebrow="Two-Factor"
+        title="Enter your code"
+        subtitle="Open your authenticator app and enter the 6-digit code. You can also use a backup code."
+      >
+        <form onSubmit={submitCode} className="space-y-4">
+          <div>
+            <FieldLabel>Authentication code</FieldLabel>
+            <TextInput
+              inputMode="text"
+              autoComplete="one-time-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="123456"
+              required
+              autoFocus
+            />
+          </div>
+          {err && <div className="text-[11px] text-err">{err}</div>}
+          <Button variant="brass" className="w-full" disabled={busy}>
+            {busy ? "Verifying…" : "Verify"}
+          </Button>
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => {
+                setChallenge(null);
+                setCode("");
+                setErr(null);
+              }}
+              className="text-[11px] text-ink-muted underline-offset-2 hover:text-accent hover:underline"
+            >
+              Back to sign in
+            </button>
+          </div>
+        </form>
+      </AuthShell>
+    );
   }
 
   return (
@@ -113,11 +179,95 @@ export function LoginScreen() {
             placeholder="••••••••"
             required
           />
+          <div className="mt-1.5 text-right">
+            <a
+              href="#forgot"
+              className="text-[11px] text-ink-muted underline-offset-2 transition-colors hover:text-accent hover:underline"
+            >
+              Forgot password?
+            </a>
+          </div>
         </div>
         {err && <div className="text-[11px] text-err">{err}</div>}
         <Button variant="brass" className="w-full" disabled={busy}>
           {busy ? "Signing in…" : "Sign In"}
         </Button>
+      </form>
+    </AuthShell>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Forgot password (self-service)
+// ──────────────────────────────────────────────────────────
+export function ForgotPasswordScreen() {
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api.post("/api/auth/forgot-password", {
+        email: email.toLowerCase().trim(),
+      });
+    } catch {
+      // Deliberately swallowed — the endpoint always answers ok and the
+      // confirmation below stays generic (anti-enumeration).
+    } finally {
+      setBusy(false);
+      setSent(true);
+    }
+  }
+
+  if (sent) {
+    return (
+      <AuthShell
+        eyebrow="Password Reset"
+        title="Check your email"
+        subtitle={`If an account exists for ${email || "that address"}, we've sent a reset link. It expires in 1 hour.`}
+      >
+        <a
+          href="#"
+          className="text-[12px] font-semibold text-accent underline-offset-2 hover:underline"
+        >
+          Back to sign in
+        </a>
+      </AuthShell>
+    );
+  }
+
+  return (
+    <AuthShell
+      eyebrow="Password Reset"
+      title="Forgot your password?"
+      subtitle="Enter your account email and we'll send you a link to set a new one."
+    >
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <FieldLabel>Email</FieldLabel>
+          <TextInput
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@houzscentury.com"
+            required
+            autoFocus
+          />
+        </div>
+        <Button variant="brass" className="w-full" disabled={busy}>
+          {busy ? "Sending…" : "Send reset link"}
+        </Button>
+        <div className="text-center">
+          <a
+            href="#"
+            className="text-[11px] text-ink-muted underline-offset-2 hover:text-accent hover:underline"
+          >
+            Back to sign in
+          </a>
+        </div>
       </form>
     </AuthShell>
   );
@@ -137,8 +287,9 @@ export function BootstrapScreen() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
-    if (password.length < 8) {
-      setErr("Password must be at least 8 characters");
+    const strength = validatePasswordStrength(password, email);
+    if (!strength.ok) {
+      setErr(strength.error || "Password is too weak");
       return;
     }
     setBusy(true);
@@ -180,7 +331,7 @@ export function BootstrapScreen() {
           />
         </div>
         <div>
-          <FieldLabel>Password (min 8 chars)</FieldLabel>
+          <FieldLabel>Password (min 12 chars)</FieldLabel>
           <TextInput
             type="password"
             autoComplete="new-password"
@@ -189,6 +340,7 @@ export function BootstrapScreen() {
             placeholder="Choose a strong password"
             required
           />
+          <PasswordStrengthMeter password={password} email={email} />
         </div>
         {err && <div className="text-[11px] text-err">{err}</div>}
         <Button variant="brass" className="w-full" disabled={busy}>
@@ -204,25 +356,50 @@ export function BootstrapScreen() {
 // ──────────────────────────────────────────────────────────
 export function AcceptInviteScreen() {
   const { acceptInvite } = useAuth();
+  const baseUrl =
+    (import.meta.env.VITE_API_URL as string) ||
+    "https://autocount-sync-api.houzs-erp.workers.dev";
   const [token, setToken] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Invitation metadata (email + role/position + preset name) fetched
+  // from the preflight endpoint so the invitee sees who they're joining
+  // as instead of pasting an opaque token.
+  const [meta, setMeta] = useState<{ email: string; role_name: string } | null>(
+    null
+  );
 
-  // Pull the token out of the URL hash (#invite=…) so an invite link
-  // like https://app.example.com/#invite=ABC123 auto-fills it.
+  // Pull the token out of the URL hash (#invite=…), then preflight it so
+  // we can pre-fill the name/email and show the role they're invited as.
   useEffect(() => {
-    const hash = window.location.hash;
-    const m = hash.match(/invite=([^&]+)/);
-    if (m) setToken(decodeURIComponent(m[1]));
-  }, []);
+    const m = window.location.hash.match(/invite=([^&]+)/);
+    if (!m) return;
+    const t = decodeURIComponent(m[1]);
+    setToken(t);
+    fetch(`${baseUrl}/api/auth/invite/${encodeURIComponent(t)}`)
+      .then(async (r) => {
+        if (!r.ok) return;
+        const d = (await r.json()) as {
+          email: string;
+          name: string | null;
+          role_name: string;
+        };
+        setMeta({ email: d.email, role_name: d.role_name });
+        if (d.name) setName(d.name);
+      })
+      .catch(() => {
+        /* fall back to the manual token form below */
+      });
+  }, [baseUrl]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
-    if (password.length < 8) {
-      setErr("Password must be at least 8 characters");
+    const strength = validatePasswordStrength(password);
+    if (!strength.ok) {
+      setErr(strength.error || "Password is too weak");
       return;
     }
     setBusy(true);
@@ -239,20 +416,38 @@ export function AcceptInviteScreen() {
     <AuthShell
       eyebrow="Join Workspace"
       title="Accept your invitation"
-      subtitle="Paste the invitation token you were given and set your password."
+      subtitle={
+        meta
+          ? `You've been invited to join as ${meta.role_name}. Set your name and password to continue.`
+          : "Paste the invitation token you were given and set your password."
+      }
     >
       <form onSubmit={submit} className="space-y-4">
-        <div>
-          <FieldLabel>Invitation Token</FieldLabel>
-          <TextInput
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="paste your token"
-            className="font-mono text-[11px]"
-            required
-            autoFocus
-          />
-        </div>
+        {meta ? (
+          <div className="rounded-md border border-border bg-bg/60 px-3 py-2.5">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              Email
+            </div>
+            <div className="text-[13px] font-semibold text-ink">
+              {meta.email}
+            </div>
+            <div className="mt-1.5 inline-flex items-center gap-1.5 rounded bg-accent-soft px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent-ink">
+              {meta.role_name}
+            </div>
+          </div>
+        ) : (
+          <div>
+            <FieldLabel>Invitation Token</FieldLabel>
+            <TextInput
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="paste your token"
+              className="font-mono text-[11px]"
+              required
+              autoFocus
+            />
+          </div>
+        )}
         <div>
           <FieldLabel>Your name</FieldLabel>
           <TextInput
@@ -260,10 +455,11 @@ export function AcceptInviteScreen() {
             onChange={(e) => setName(e.target.value)}
             placeholder="Jane Doe"
             required
+            autoFocus={!!meta}
           />
         </div>
         <div>
-          <FieldLabel>Choose a password (min 8 chars)</FieldLabel>
+          <FieldLabel>Choose a password (min 12 chars)</FieldLabel>
           <TextInput
             type="password"
             autoComplete="new-password"
@@ -272,6 +468,7 @@ export function AcceptInviteScreen() {
             placeholder="••••••••"
             required
           />
+          <PasswordStrengthMeter password={password} />
         </div>
         {err && <div className="text-[11px] text-err">{err}</div>}
         <Button variant="brass" className="w-full" disabled={busy}>
@@ -287,6 +484,16 @@ export function AcceptInviteScreen() {
 // ──────────────────────────────────────────────────────────
 export function AuthGate({ children }: { children: ReactNode }) {
   const { user, loading, hasUsers } = useAuth();
+
+  // Track the hash so in-page links (#forgot, back-to-login) re-render
+  // the gate without a full navigation. #invite= arrives as a fresh
+  // page load, but gets the same reactivity for free.
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   // Initial loading state — neutral splash
   if (loading) {
@@ -304,10 +511,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return <BootstrapScreen />;
   }
 
-  // Not signed in → login (or invite acceptance via URL hash)
+  // Not signed in → login (or invite acceptance / forgot password via
+  // URL hash)
   if (!user) {
-    if (window.location.hash.startsWith("#invite=")) {
+    if (hash.startsWith("#invite=")) {
       return <AcceptInviteScreen />;
+    }
+    if (hash === "#forgot") {
+      return <ForgotPasswordScreen />;
     }
     return <LoginScreen />;
   }

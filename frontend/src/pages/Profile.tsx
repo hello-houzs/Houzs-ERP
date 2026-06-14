@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { User as UserIcon, KeyRound, LogOut, Bell, Camera, Trash2 } from "lucide-react";
+import { User as UserIcon, KeyRound, LogOut, Bell, Camera, Trash2, ShieldCheck } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { StatusDot } from "../components/StatusDot";
@@ -12,6 +12,8 @@ import {
   isBrowserPushEnabled,
   setBrowserPushEnabled,
 } from "../components/BrowserPushSink";
+import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
+import { validatePasswordStrength } from "../lib/passwordStrength";
 
 /**
  * Self-service profile page for every authenticated staff user.
@@ -143,7 +145,7 @@ export function Profile() {
             <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
               Identity
             </h2>
-            <div className="truncate font-display text-[18px] font-extrabold text-ink">
+            <div className="truncate font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
               {user.name || user.email}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
@@ -176,7 +178,7 @@ export function Profile() {
 
         <div className="space-y-4">
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Display Name
             </label>
             <div className="flex items-center gap-2">
@@ -227,6 +229,9 @@ export function Profile() {
       {/* ── Change password ──────────────────────── */}
       <PasswordSection />
 
+      {/* ── Two-factor authentication ────────────── */}
+      <TwoFactorSection />
+
       {/* ── Footer — sign out ────────────────────── */}
       <section className="rounded-md border border-border bg-surface p-6 shadow-stone">
         <div className="flex items-center justify-between gap-3">
@@ -254,7 +259,7 @@ export function Profile() {
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+      <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
       </div>
       <div className="text-[13px]">{children}</div>
@@ -385,6 +390,7 @@ void isBrowserPushEnabled;
 
 function PasswordSection() {
   const toast = useToast();
+  const { user } = useAuth();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -394,8 +400,9 @@ function PasswordSection() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (next.length < 8) {
-      setError("New password must be at least 8 characters.");
+    const strength = validatePasswordStrength(next, user?.email);
+    if (!strength.ok) {
+      setError(strength.error || "Password is too weak.");
       return;
     }
     if (next !== confirm) {
@@ -435,7 +442,7 @@ function PasswordSection() {
 
       <form onSubmit={submit} className="space-y-3">
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Current Password
           </label>
           <input
@@ -448,7 +455,7 @@ function PasswordSection() {
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               New Password
             </label>
             <input
@@ -458,9 +465,10 @@ function PasswordSection() {
               autoComplete="new-password"
               className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
             />
+            <PasswordStrengthMeter password={next} email={user?.email} />
           </div>
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Confirm New Password
             </label>
             <input
@@ -487,6 +495,225 @@ function PasswordSection() {
           </Button>
         </div>
       </form>
+    </section>
+  );
+}
+
+// ── Two-factor authentication (TOTP) ──────────────────────────
+// Self-service enroll / disable. Three states: off (Enable button), enrolling
+// (QR + code + show backup codes), on (Disable). The secret/otpauth_uri come
+// from /api/totp/setup; we render the otpauth URI as a QR via an inline SVG-free
+// fallback (the secret is also shown for manual entry).
+function TwoFactorSection() {
+  const toast = useToast();
+  const [status, setStatus] = useState<{
+    enabled: boolean;
+    backup_codes_remaining: number;
+  } | null>(null);
+  const [phase, setPhase] = useState<"idle" | "enrolling">("idle");
+  const [setup, setSetup] = useState<{ secret: string; otpauth_uri: string } | null>(null);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [backupCodes, setBackupCodes] = useState<string[] | null>(null);
+
+  async function load() {
+    try {
+      const s = await api.get<{ enabled: boolean; backup_codes_remaining: number }>(
+        "/api/totp/status",
+      );
+      setStatus(s);
+    } catch {
+      setStatus({ enabled: false, backup_codes_remaining: 0 });
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function beginSetup() {
+    setError(null);
+    setBusy(true);
+    try {
+      const s = await api.post<{ secret: string; otpauth_uri: string }>("/api/totp/setup", {});
+      setSetup(s);
+      setPhase("enrolling");
+    } catch (e: any) {
+      setError(e?.message || "Failed to start setup");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmEnable(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await api.post<{ backup_codes: string[] }>("/api/totp/enable", {
+        code: code.trim(),
+      });
+      setBackupCodes(res.backup_codes);
+      setPhase("idle");
+      setSetup(null);
+      setCode("");
+      await load();
+      toast.success("Two-factor authentication enabled");
+    } catch (e: any) {
+      setError(e?.message?.includes("400") ? "That code didn't match — try again." : e?.message || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disable() {
+    const entered = window.prompt(
+      "Enter a current 6-digit code (or a backup code) to turn off two-factor:",
+    );
+    if (!entered) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await api.post("/api/totp/disable", { code: entered.trim() });
+      setBackupCodes(null);
+      await load();
+      toast.success("Two-factor authentication disabled");
+    } catch (e: any) {
+      setError(e?.message || "Failed to disable — check the code.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="mb-6 rounded-md border border-border bg-surface p-6 shadow-stone">
+      <div className="mb-5 flex items-center gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-full bg-accent-soft text-accent">
+          <ShieldCheck size={18} />
+        </div>
+        <div>
+          <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
+            Two-Factor Authentication
+          </h2>
+          <div className="text-[12px] text-ink-secondary">
+            Protect your account with an authenticator app (Google Authenticator,
+            Authy, 1Password). Recommended for Owner and Director accounts.
+          </div>
+        </div>
+      </div>
+
+      {/* One-time backup codes — shown once, right after enabling. */}
+      {backupCodes && (
+        <div className="mb-4 rounded-md border border-accent/40 bg-accent-soft/40 p-4">
+          <div className="mb-2 text-[12px] font-semibold text-accent-ink">
+            Save your backup codes
+          </div>
+          <div className="mb-3 text-[11px] text-ink-secondary">
+            Each code works once if you lose your authenticator. Store them
+            somewhere safe — they won't be shown again.
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 font-mono text-[13px] sm:grid-cols-3">
+            {backupCodes.map((c) => (
+              <span key={c} className="rounded bg-surface px-2 py-1 text-center">
+                {c}
+              </span>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setBackupCodes(null)}
+            className="mt-3 text-[11px] font-semibold text-accent underline-offset-2 hover:underline"
+          >
+            I've saved them
+          </button>
+        </div>
+      )}
+
+      {status?.enabled ? (
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-[13px]">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-ok/10 px-2.5 py-1 text-[11px] font-semibold text-ok">
+              <ShieldCheck size={13} /> Enabled
+            </span>
+            <span className="text-ink-muted">
+              {status.backup_codes_remaining} backup code
+              {status.backup_codes_remaining === 1 ? "" : "s"} left
+            </span>
+          </div>
+          <Button variant="secondary" onClick={disable} disabled={busy}>
+            {busy ? "Working…" : "Disable"}
+          </Button>
+        </div>
+      ) : phase === "enrolling" && setup ? (
+        <form onSubmit={confirmEnable} className="space-y-3">
+          <div className="text-[12px] text-ink-secondary">
+            In your authenticator app choose "Add account" → "Enter a setup key"
+            and type the key below (account: your email, type: time-based). On a
+            phone you can tap the link to open your app directly.
+          </div>
+          <div className="space-y-2">
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                Setup key
+              </div>
+              <code className="block break-all rounded bg-canvas px-2 py-1 font-mono text-[13px] tracking-wider">
+                {setup.secret}
+              </code>
+            </div>
+            <a
+              href={setup.otpauth_uri}
+              className="inline-block text-[11px] font-semibold text-accent underline-offset-2 hover:underline"
+            >
+              Open in authenticator app
+            </a>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Enter the 6-digit code to confirm
+            </label>
+            <input
+              inputMode="numeric"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="123456"
+              autoComplete="one-time-code"
+              className="h-9 w-40 rounded-md border border-border bg-surface px-3 font-mono text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            />
+          </div>
+          {error && (
+            <div className="rounded-md border border-err/40 bg-err/5 px-3 py-2 text-[12px] text-err">
+              {error}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Button type="submit" variant="primary" disabled={busy || code.trim().length < 6}>
+              {busy ? "Verifying…" : "Enable"}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setPhase("idle");
+                setSetup(null);
+                setCode("");
+                setError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className="flex items-center justify-between gap-3">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-ink-muted/10 px-2.5 py-1 text-[11px] font-semibold text-ink-muted">
+            Not enabled
+          </span>
+          {error && <span className="text-[12px] text-err">{error}</span>}
+          <Button variant="primary" onClick={beginSetup} disabled={busy}>
+            {busy ? "Working…" : "Enable 2FA"}
+          </Button>
+        </div>
+      )}
     </section>
   );
 }

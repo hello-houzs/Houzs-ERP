@@ -20,7 +20,7 @@ app.get("/summary", async (c) => {
   const recent = await db
     .select({ count: sql<number>`COUNT(*)` })
     .from(overdue_history)
-    .where(gte(overdue_history.pull_date, sql`date('now', '-30 days')`));
+    .where(gte(overdue_history.pull_date, sql`to_char(timezone('UTC', now()) - interval '30 days', 'YYYY-MM-DD')`));
 
   const byLocation = await db
     .select({
@@ -85,7 +85,7 @@ app.get("/history", async (c) => {
   // SELECT * for the audit-log shape. Schema only knows the core
   // columns; downstream consumers may expect more if migration adds
   // fields later.
-  const rows = await db.all<any>(sql`
+  const rows = await db.execute<any>(sql`
     SELECT * FROM ${overdue_history}
     ${orderByClause}
     LIMIT ${perPage} OFFSET ${offset}
@@ -152,7 +152,7 @@ app.get("/orders", async (c) => {
      WHERE 1=1 ${searchCond}
   `);
 
-  const rows = await db.all<any>(sql`
+  const rows = await db.execute<any>(sql`
     SELECT so.*,
            COUNT(oh.id) AS extension_count,
            MAX(oh.pull_date) AS last_extended_at,

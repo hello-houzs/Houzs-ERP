@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -17,10 +17,11 @@ import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { relativeTime, cn } from "../lib/utils";
-import type { TeamMember, Invitation, Role, Department } from "../types";
+import type { TeamMember, Invitation, Role, Department, Position } from "../types";
 import { RolesTab } from "./Roles";
+import { PositionsTab } from "./Positions";
 
-type TeamTabValue = "members" | "roles" | "orgchart" | "departments";
+type TeamTabValue = "members" | "positions" | "roles" | "orgchart" | "departments";
 
 const TEAM_KEYS = ["tab"] as const;
 
@@ -45,7 +46,7 @@ export function Team() {
 
   const raw = params.get("tab") as TeamTabValue | null;
   const active: TeamTabValue =
-    raw && ["members", "roles", "orgchart", "departments"].includes(raw)
+    raw && ["members", "positions", "roles", "orgchart", "departments"].includes(raw)
       ? raw
       : canUsers
       ? "members"
@@ -63,6 +64,7 @@ export function Team() {
 
   const tabs: TabOption<TeamTabValue>[] = [
     { value: "members", label: "Members", show: canUsers },
+    { value: "positions", label: "Positions", show: canManageUsers },
     { value: "orgchart", label: "Org Chart", show: canUsers },
     { value: "departments", label: "Departments", show: canUsers },
     { value: "roles", label: "Roles", show: canRoles },
@@ -76,6 +78,12 @@ export function Team() {
       eyebrow: "Workspace · Members",
       title: "Members",
       description: "Manage who can access this workspace and what they can do.",
+    },
+    positions: {
+      eyebrow: "Workspace · Access by Position",
+      title: "Positions",
+      description:
+        "Set which pages each position can see (none / view / edit / full). This drives the menu and blocks direct-URL access — a member only ever sees their position's pages.",
     },
     orgchart: {
       eyebrow: "Workspace · Hierarchy",
@@ -151,6 +159,7 @@ export function Team() {
           onCloseInvite={() => setInviteOpen(false)}
         />
       )}
+      {active === "positions" && canManageUsers && <PositionsTab />}
       {active === "orgchart" && canUsers && <OrgChartTab />}
       {active === "departments" && canUsers && (
         <DepartmentsTab
@@ -190,9 +199,18 @@ function MembersTab({
   const depts = useQuery<{ departments: Department[] }>(() =>
     api.get("/api/departments")
   );
+  const positions = useQuery<{ positions: Position[] }>(() =>
+    api.get("/api/positions")
+  );
+
+  // Members-list filters (owner ask: filter/sort by department and/or position).
+  const [filterDept, setFilterDept] = useState<number | "">("");
+  const [filterPos, setFilterPos] = useState<number | "">("");
 
   // Per-user brand picker — opens a small modal scoped to one member.
   const [brandsFor, setBrandsFor] = useState<TeamMember | null>(null);
+  // Invitation row whose resend is in flight (spinner + disable).
+  const [resendingId, setResendingId] = useState<number | null>(null);
 
   const canManage = can("users.manage");
 
@@ -240,6 +258,20 @@ function MembersTab({
     }
   }
 
+  async function changePosition(u: TeamMember, position_id: number | null) {
+    try {
+      await api.patch(`/api/users/${u.id}`, { position_id });
+      const name = position_id
+        ? positions.data?.positions.find((p) => p.id === position_id)?.name
+        : null;
+      // Position can auto-set the department server-side — reload both.
+      toast.success(name ? `${u.email} → ${name}` : `${u.email} position cleared`);
+      members.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    }
+  }
+
   async function sendReset(u: TeamMember) {
     if (
       !(await dialog.confirm(
@@ -254,13 +286,28 @@ function MembersTab({
         reset_path: string;
         expires_at: string;
         email: string;
+        email_sent?: boolean;
+        email_status?: string;
       }>(`/api/users/${u.id}/reset-password`);
       const link = `${window.location.origin}${res.reset_path}`;
-      try {
-        await navigator.clipboard.writeText(link);
-        toast.success(`Reset link sent to ${u.email} and copied to clipboard`);
-      } catch {
-        toast.success(`Reset link sent to ${u.email}`);
+      const copied = await navigator.clipboard
+        .writeText(link)
+        .then(() => true)
+        .catch(() => false);
+      if (res.email_sent) {
+        toast.success(
+          copied
+            ? `Reset link emailed to ${u.email} and copied to clipboard`
+            : `Reset link emailed to ${u.email}`
+        );
+      } else if (copied) {
+        toast.success(
+          `Email not sent (${res.email_status || "check Settings, Email"}) — reset link copied to clipboard instead`
+        );
+      } else {
+        toast.error(
+          `Email not sent (${res.email_status || "check Settings, Email"}) and clipboard unavailable`
+        );
       }
     } catch (e: any) {
       toast.error(e?.message || "Failed to send reset");
@@ -309,23 +356,90 @@ function MembersTab({
     }
   }
 
-  function copyInviteLink(token: string) {
-    const link = `${window.location.origin}/#invite=${token}`;
+  function copyInviteLink(inv: Invitation) {
+    // Prefer the server-built canonical link (PUBLIC_APP_URL) so copied
+    // links always carry erp.houzscentury.com regardless of which origin
+    // the admin's browser is on.
+    const link = inv.invite_url || `${window.location.origin}/#invite=${inv.token}`;
     navigator.clipboard.writeText(link).then(
       () => toast.success("Invite link copied to clipboard"),
       () => toast.error("Could not access clipboard")
     );
   }
 
+  async function resendInvite(inv: Invitation) {
+    setResendingId(inv.id);
+    try {
+      const res = await api.post<{
+        ok: boolean;
+        email_sent: boolean;
+        email_status?: string;
+      }>(`/api/users/invitations/${inv.id}/resend`);
+      if (res.email_sent) {
+        toast.success(`Invitation emailed to ${inv.email}`);
+      } else {
+        toast.error(
+          `Email not sent (${res.email_status || "check Settings, Email"}) — use Copy Link instead`
+        );
+      }
+      invites.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to resend invitation");
+    } finally {
+      setResendingId(null);
+    }
+  }
+
+  const filteredMembers = (members.data?.users ?? []).filter(
+    (u) =>
+      (filterDept === "" || u.department_id === filterDept) &&
+      (filterPos === "" || u.position_id === filterPos)
+  );
+
   return (
     <div>
       {/* Active members */}
       <div className="mb-6">
-        <div className="mb-3 flex items-center gap-2">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <span className="h-px w-5 bg-accent" />
           <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
-            Members ({members.data?.users.length ?? 0})
+            Members ({filteredMembers.length}/{members.data?.users.length ?? 0})
           </h2>
+          <div className="ml-auto flex items-center gap-2">
+            <select
+              value={filterDept}
+              onChange={(e) => {
+                setFilterDept(e.target.value ? Number(e.target.value) : "");
+                setFilterPos("");
+              }}
+              title="Filter by department"
+              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+            >
+              <option value="">All departments</option>
+              {depts.data?.departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={filterPos}
+              onChange={(e) => setFilterPos(e.target.value ? Number(e.target.value) : "")}
+              title="Filter by position"
+              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+            >
+              <option value="">All positions</option>
+              {(positions.data?.positions ?? [])
+                .filter(
+                  (p) => filterDept === "" || !p.department_id || p.department_id === filterDept
+                )
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+          </div>
         </div>
         <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
           {members.loading && (
@@ -336,7 +450,7 @@ function MembersTab({
           {members.error && (
             <div className="px-5 py-4 text-sm text-err">{members.error}</div>
           )}
-          {members.data?.users.map((u) => (
+          {filteredMembers.map((u) => (
             <div
               key={u.id}
               className="flex flex-wrap items-center gap-3 border-b border-border-subtle px-4 py-4 last:border-b-0 sm:flex-nowrap sm:gap-4 sm:px-5"
@@ -380,18 +494,10 @@ function MembersTab({
               </div>
               {canManage && u.id !== me?.id ? (
                 <>
-                  <select
-                    value={u.role_id}
-                    onChange={(e) => changeRole(u, Number(e.target.value))}
-                    title="Role"
-                    className="h-8 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] font-semibold text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
-                  >
-                    {roles.data?.roles.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
+                  {/* Role dropdown removed — Position now governs page access
+                      (the position matrix). Role still drives API permissions
+                      behind the scenes (set at invite); manage role definitions
+                      in the Roles tab. Members view kept to Department + Position. */}
                   <select
                     value={u.department_id ?? ""}
                     onChange={(e) =>
@@ -408,7 +514,7 @@ function MembersTab({
                           }
                         : undefined
                     }
-                    className="h-8 max-w-[160px] cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                    className="h-8 w-40 shrink-0 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
                   >
                     <option value="">— No department —</option>
                     {depts.data?.departments.map((d) => (
@@ -418,32 +524,34 @@ function MembersTab({
                     ))}
                   </select>
                   <select
-                    value={u.manager_id ?? ""}
+                    value={u.position_id ?? ""}
                     onChange={(e) =>
-                      changeManager(
+                      changePosition(
                         u,
                         e.target.value ? Number(e.target.value) : null
                       )
                     }
-                    title="Reports to"
-                    className="h-8 max-w-[180px] cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                    title="Position"
+                    className="h-8 w-40 shrink-0 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
                   >
-                    <option value="">— No manager —</option>
-                    {(members.data?.users ?? [])
+                    <option value="">— No position —</option>
+                    {(positions.data?.positions ?? [])
                       .filter(
-                        (m) =>
-                          m.id !== u.id &&
-                          m.status === "active" &&
-                          // Hide this user's descendants to pre-empt cycles.
-                          // Backend does the authoritative check; this is UX.
-                          !isDescendantOf(m.id, u.id, members.data?.users ?? [])
+                        (p) =>
+                          !u.department_id ||
+                          !p.department_id ||
+                          p.department_id === u.department_id
                       )
-                      .map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name || m.email}
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
                         </option>
                       ))}
                   </select>
+                  {/* Manager / reporting-line dropdown removed — Members view kept
+                      to Department + Position per owner request. manager_id is
+                      preserved in the data; if the Org Chart needs hierarchy it
+                      can be driven from Position levels instead. */}
                 </>
               ) : (
                 <>
@@ -480,7 +588,7 @@ function MembersTab({
                 </>
               )}
               {canManage && u.id !== me?.id && (
-                <div className="flex items-center gap-1">
+                <div className="flex w-[124px] shrink-0 items-center justify-end gap-1">
                   <button
                     onClick={() => setBrandsFor(u)}
                     className="rounded p-1.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
@@ -552,12 +660,32 @@ function MembersTab({
                 <div className="mt-0.5 text-[11px] text-ink-muted">
                   Invited {relativeTime(inv.created_at)} · expires{" "}
                   {relativeTime(inv.expires_at)}
+                  {inv.email_status === "sent" ? (
+                    <>
+                      {" "}· emailed
+                      {inv.emailed_at ? ` ${relativeTime(inv.emailed_at)}` : ""}
+                    </>
+                  ) : inv.email_status ? (
+                    <span style={{ color: "#b45309" }}> · email not sent</span>
+                  ) : null}
                 </div>
               </div>
               {canManage && (
                 <div className="flex items-center gap-1">
                   <button
-                    onClick={() => copyInviteLink(inv.token)}
+                    onClick={() => resendInvite(inv)}
+                    disabled={resendingId === inv.id}
+                    className="rounded p-1.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent disabled:opacity-50"
+                    aria-label="Resend invitation email"
+                    title="Resend invitation email"
+                  >
+                    <RefreshCw
+                      size={14}
+                      className={resendingId === inv.id ? "animate-spin" : undefined}
+                    />
+                  </button>
+                  <button
+                    onClick={() => copyInviteLink(inv)}
                     className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
                   >
                     <Copy size={12} />
@@ -581,6 +709,9 @@ function MembersTab({
         open={inviteOpen}
         onClose={onCloseInvite}
         roles={roles.data?.roles ?? []}
+        departments={depts.data?.departments ?? []}
+        positions={positions.data?.positions ?? []}
+        members={members.data?.users ?? []}
         onInvited={() => {
           onCloseInvite();
           reload();
@@ -1256,7 +1387,7 @@ function OrgCard({
 
       {editing && (
         <div className="border-t border-border-subtle bg-bg/60 px-3 py-2">
-          <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
             Reports to
           </label>
           <select
@@ -1393,9 +1524,6 @@ function DepartmentsTab({
                   <span className="truncate text-[13px] font-semibold text-ink">
                     {d.name}
                   </span>
-                  <span className="font-mono text-[10px] text-ink-muted">
-                    #{d.color}
-                  </span>
                 </div>
                 {d.description && (
                   <div className="mt-0.5 truncate text-[11px] text-ink-muted">
@@ -1510,7 +1638,7 @@ function DepartmentEditor({
     >
       <PanelSection title="Details">
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Name
           </label>
           <input
@@ -1522,7 +1650,7 @@ function DepartmentEditor({
           />
         </div>
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Description
           </label>
           <textarea
@@ -1533,7 +1661,7 @@ function DepartmentEditor({
           />
         </div>
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Colour
           </label>
           <div className="flex items-center gap-3">
@@ -1543,13 +1671,10 @@ function DepartmentEditor({
               presets={DEPT_PALETTE.map((p) => p.hex)}
               size={36}
             />
-            <span className="font-mono text-[11px] uppercase tracking-wider text-ink-muted">
-              #{color}
-            </span>
           </div>
         </div>
         <div>
-          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
             Sort order
           </label>
           <input
@@ -1574,18 +1699,33 @@ function InvitePanel({
   open,
   onClose,
   roles,
+  departments,
+  positions,
+  members,
   onInvited,
 }: {
   open: boolean;
   onClose: () => void;
   roles: Role[];
+  departments: Department[];
+  positions: Position[];
+  members: TeamMember[];
   onInvited: () => void;
 }) {
   const toast = useToast();
   const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
   const [roleId, setRoleId] = useState<number | "">("");
+  const [deptId, setDeptId] = useState<number | "">("");
+  const [positionId, setPositionId] = useState<number | "">("");
+  const [managerId, setManagerId] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
-  const [issued, setIssued] = useState<{ token: string; email: string } | null>(null);
+  const [issued, setIssued] = useState<{
+    token: string;
+    email: string;
+    invite_url?: string;
+    email_sent?: boolean;
+  } | null>(null);
 
   if (roleId === "" && roles.length > 0) {
     const defaultRole = roles.find((r) => !r.is_system) || roles[0];
@@ -1599,12 +1739,25 @@ function InvitePanel({
     }
     setBusy(true);
     try {
-      const res = await api.post<{ token: string; email: string }>(
-        "/api/users/invite",
-        { email: email.toLowerCase().trim(), role_id: roleId }
-      );
+      const res = await api.post<{
+        token: string;
+        email: string;
+        invite_url?: string;
+        email_sent?: boolean;
+      }>("/api/users/invite", {
+        email: email.toLowerCase().trim(),
+        name: name.trim() || undefined,
+        role_id: roleId,
+        department_id: deptId || undefined,
+        position_id: positionId || undefined,
+        manager_id: managerId || undefined,
+      });
       setIssued(res);
-      toast.success(`Invitation issued for ${res.email}`);
+      toast.success(
+        res.email_sent
+          ? `Invitation emailed to ${res.email}`
+          : `Invitation issued for ${res.email}`
+      );
       onInvited();
     } catch (e: any) {
       toast.error(e?.message || "Failed to invite");
@@ -1615,13 +1768,18 @@ function InvitePanel({
 
   function reset() {
     setEmail("");
+    setName("");
+    setDeptId("");
+    setPositionId("");
+    setManagerId("");
     setIssued(null);
     onClose();
   }
 
   function copyLink() {
     if (!issued) return;
-    const link = `${window.location.origin}/#invite=${issued.token}`;
+    const link =
+      issued.invite_url || `${window.location.origin}/#invite=${issued.token}`;
     navigator.clipboard.writeText(link).then(
       () => toast.success("Invite link copied"),
       () => toast.error("Could not access clipboard")
@@ -1639,21 +1797,33 @@ function InvitePanel({
       {!issued ? (
         <PanelSection title="Details">
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Name
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Full name"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Email
             </label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="member@example.com"
+              placeholder="member@houzscentury.com"
               className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-              autoFocus
             />
           </div>
           <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-              Role
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Role / Position
             </label>
             <select
               value={roleId}
@@ -1666,6 +1836,71 @@ function InvitePanel({
                 </option>
               ))}
             </select>
+            <div className="mt-1 text-[10px] text-ink-muted">
+              The role decides what actions a member can perform. The Position
+              below decides which pages they see.
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Department
+            </label>
+            <select
+              value={deptId}
+              onChange={(e) => {
+                setDeptId(e.target.value ? Number(e.target.value) : "");
+                setPositionId(""); // positions are department-scoped — reset
+              }}
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            >
+              <option value="">— Select department —</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Position
+            </label>
+            <select
+              value={positionId}
+              onChange={(e) => setPositionId(e.target.value ? Number(e.target.value) : "")}
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            >
+              <option value="">— Select position —</option>
+              {positions
+                .filter((p) => deptId === "" || !p.department_id || p.department_id === deptId)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+            <div className="mt-1 text-[10px] text-ink-muted">
+              Controls which pages this member can see (least-privilege per position).
+            </div>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Reports to
+            </label>
+            <select
+              value={managerId}
+              onChange={(e) => setManagerId(e.target.value ? Number(e.target.value) : "")}
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            >
+              <option value="">— No manager —</option>
+              {members
+                .filter((m) => m.status === "active")
+                .map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.email}
+                  </option>
+                ))}
+            </select>
           </div>
           <div className="pt-2">
             <Button variant="brass" className="w-full" onClick={submit} disabled={busy}>
@@ -1676,15 +1911,28 @@ function InvitePanel({
       ) : (
         <PanelSection title="Invitation Issued">
           <p className="text-[12.5px] text-ink-secondary">
-            Send this link to <span className="font-semibold text-ink">{issued.email}</span>.
-            They'll be prompted to set a password and join the workspace.
+            {issued.email_sent ? (
+              <>
+                We emailed the invitation to{" "}
+                <span className="font-semibold text-ink">{issued.email}</span>.
+                The same link is below if you want to share it directly.
+              </>
+            ) : (
+              <>
+                The invitation email could not be sent — copy this link and
+                share it with{" "}
+                <span className="font-semibold text-ink">{issued.email}</span>{" "}
+                yourself.
+              </>
+            )}
           </p>
           <div className="rounded-md border border-border bg-bg p-3">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Invite Link
             </div>
             <div className="break-all font-mono text-[11px] text-ink">
-              {`${window.location.origin}/#invite=${issued.token}`}
+              {issued.invite_url ||
+                `${window.location.origin}/#invite=${issued.token}`}
             </div>
           </div>
           <Button variant="brass" className="w-full" icon={<Copy size={14} />} onClick={copyLink}>

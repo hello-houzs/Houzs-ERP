@@ -4,7 +4,7 @@ import { requirePermission } from "../middleware/auth";
 import { hasPermission } from "../services/permissions";
 import { getDb } from "../db/client";
 import { events, lorries, projects, users } from "../db/schema";
-import { alias } from "drizzle-orm/sqlite-core";
+import { alias } from "drizzle-orm/pg-core";
 import { and, asc, desc, eq, gte, isNull, lte, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -280,11 +280,11 @@ app.patch("/:id", requirePermission("trips.manage"), async (c) => {
     if (k in body) set[k] = body[k] ?? null;
   }
   if (Object.keys(set).length === 0) return c.json({ error: "No fields" }, 400);
-  set.updated_at = sql`datetime('now')`;
+  set.updated_at = sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')`;
 
   const db = getDb(c.env);
   const result = await db.update(events).set(set).where(eq(events.id, id));
-  return c.json({ ok: (result.meta?.changes ?? 0) > 0 });
+  return c.json({ ok: (result.count ?? 0) > 0 });
 });
 
 app.delete("/:id", requirePermission("trips.manage"), async (c) => {

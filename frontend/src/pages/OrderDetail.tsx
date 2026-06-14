@@ -192,7 +192,7 @@ export function OrderDetail() {
                   {!lines.loading && (lines.data?.lines?.length ?? 0) > 0 && (
                     <div className="overflow-x-auto">
                       <table className="w-full text-[12px]">
-                        <thead className="bg-bg/50 text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
+                        <thead className="bg-bg/50 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
                           <tr>
                             <th className="px-4 py-2.5 text-left">Item</th>
                             <th className="px-3 py-2.5 text-left">Description</th>

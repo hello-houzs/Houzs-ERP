@@ -1,4 +1,21 @@
-const baseUrl = (import.meta.env.VITE_API_URL as string) || "";
+import {
+  cacheable,
+  getCached,
+  setCached,
+  getInflight,
+  setInflight,
+  invalidateForMutation,
+  currentEpoch,
+  invalidatedSince,
+} from "./cache";
+
+// Cloudflare Pages does NOT proxy /api/* (see public/_redirects) — a relative
+// base returns SPA HTML to JSON fetches ("Unexpected token '<'"). Default to the
+// Worker's absolute URL so the app works even if VITE_API_URL is unset at build
+// (the gitignored .env.production went missing, which broke every API call).
+const baseUrl =
+  (import.meta.env.VITE_API_URL as string) ||
+  "https://autocount-sync-api.houzs-erp.workers.dev";
 
 // Token storage — single source of truth for the bearer token. The
 // AuthContext writes here on login/logout; everything else reads.
@@ -95,16 +112,47 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * GET with the SWR cache: serve fresh-enough cached payloads instantly,
+ * join an identical in-flight request instead of duplicating it, and
+ * fall through to the network otherwise. Mutations below invalidate the
+ * touched resource family so the next read is fresh.
+ */
+function cachedGet<T>(path: string): Promise<T> {
+  if (!cacheable(path)) return request<T>(path);
+  const hit = getCached<T>(path);
+  if (hit !== undefined) return Promise.resolve(hit);
+  const joined = getInflight<T>(path);
+  if (joined) return joined;
+  // Capture the invalidation clock at request start. If a mutation invalidates
+  // this resource family while the request is in flight, we must NOT cache the
+  // (now-stale) response when it resolves.
+  const startedEpoch = currentEpoch();
+  const p = request<T>(path).then((data) => {
+    if (data !== undefined && !invalidatedSince(path, startedEpoch)) setCached(path, data);
+    return data;
+  });
+  setInflight(path, p);
+  return p;
+}
+
+function mutate<T>(path: string, opts: RequestInit): Promise<T> {
+  return request<T>(path, opts).then((r) => {
+    invalidateForMutation(path);
+    return r;
+  });
+}
+
 export const api = {
   baseUrl,
-  get: <T>(p: string) => request<T>(p),
+  get: <T>(p: string) => cachedGet<T>(p),
   post: <T>(p: string, b?: any) =>
-    request<T>(p, { method: "POST", body: b ? JSON.stringify(b) : undefined }),
+    mutate<T>(p, { method: "POST", body: b ? JSON.stringify(b) : undefined }),
   patch: <T>(p: string, b: any) =>
-    request<T>(p, { method: "PATCH", body: JSON.stringify(b) }),
+    mutate<T>(p, { method: "PATCH", body: JSON.stringify(b) }),
   put: <T>(p: string, b: any) =>
-    request<T>(p, { method: "PUT", body: JSON.stringify(b) }),
-  del: <T>(p: string) => request<T>(p, { method: "DELETE" }),
+    mutate<T>(p, { method: "PUT", body: JSON.stringify(b) }),
+  del: <T>(p: string) => mutate<T>(p, { method: "DELETE" }),
 
   /**
    * Raw binary upload — used for POD photos and signatures. Skips the

@@ -357,7 +357,7 @@ export function SalesRepEditPanel({
                   ))}
                 </select>
               </Field>
-              <Field label="Upline (Primary)">
+              <Field label="Report to (Primary)">
                 <select
                   value={uplineId ?? ""}
                   onChange={(e) =>
@@ -375,7 +375,7 @@ export function SalesRepEditPanel({
                   ))}
                 </select>
               </Field>
-              <Field label="Upline (Secondary, optional)">
+              <Field label="Report to (Secondary, optional)">
                 <select
                   value={uplineSecondaryId ?? ""}
                   onChange={(e) =>
@@ -456,7 +456,7 @@ export function SalesRepEditPanel({
 
           <PanelSection title="Tiers">
             <div className="overflow-hidden rounded-md border border-border">
-              <div className="grid grid-cols-[1fr_120px_36px] gap-2 border-b border-border bg-bg/60 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              <div className="grid grid-cols-[1fr_120px_36px] gap-2 border-b border-border bg-bg/60 px-3 py-2 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
                 <div>Sales threshold (RM)</div>
                 <div>Rate %</div>
                 <div />
@@ -546,7 +546,7 @@ function Field({
 }) {
   return (
     <div>
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
         {required && <span className="ml-0.5 text-err">*</span>}
       </div>
@@ -633,7 +633,7 @@ function CalcField({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
+      <span className="mb-1 block text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
       </span>
       <input

@@ -649,7 +649,7 @@ function NewTripDialog({
             <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
               Schedule
             </div>
-            <h2 className="font-display text-[18px] font-extrabold tracking-tight text-ink">
+            <h2 className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
               New Trip
             </h2>
           </div>

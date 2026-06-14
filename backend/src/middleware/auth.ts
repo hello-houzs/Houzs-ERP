@@ -17,6 +17,8 @@ const SERVICE_USER: AuthUser = {
   name: "Service",
   role_id: 0,
   role_name: "Service",
+  position_id: null,
+  position_name: null,
   status: "active",
   permissions: ["*"],
   permissions_set: new Set(["*"]),
@@ -38,6 +40,10 @@ declare module "hono" {
      *  `requirePageAccess`. Routes that need partial/full branching
      *  read this instead of recomputing. */
     access_level: AccessLevel;
+    /** Per-request id (set by requestLog, echoed as X-Request-Id).
+     *  The audit trail stamps it on each event so a logged action can
+     *  be correlated back to its access-log line. */
+    requestId: string;
   }
 }
 

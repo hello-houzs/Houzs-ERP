@@ -132,7 +132,7 @@ async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: bo
         WHERE p.archived_at IS NULL
           AND cl.owner_user_id = ?
           AND cl.status = 'pending'
-          AND (cl.due_date IS NULL OR date(cl.due_date) <= date('now', '+7 days'))
+          AND (cl.due_date IS NULL OR substr(cl.due_date, 1, 10) <= date('now', '+7 days'))
         ORDER BY
           CASE WHEN cl.due_date IS NULL THEN 1 ELSE 0 END,
           cl.due_date ASC
@@ -437,7 +437,7 @@ async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: b
         WHERE p.archived_at IS NULL
           AND p.stage NOT IN ('closed','cancelled')
           AND p.start_date IS NOT NULL
-          AND date(p.start_date) BETWEEN date('now') AND date('now','+7 days')
+          AND substr(p.start_date, 1, 10) BETWEEN date('now') AND date('now','+7 days')
         ORDER BY p.start_date ASC
         LIMIT 10`
     )

@@ -111,10 +111,10 @@ export function DriverTrip() {
   );
 
   if (detail.loading)
-    return <div className="px-4 py-6 text-sm text-ink-secondary">Loading…</div>;
+    return <div className="px-4 py-6 text-[12px] text-ink-secondary">Loading…</div>;
   if (detail.error || !detail.data)
     return (
-      <div className="px-4 py-6 text-sm text-err">
+      <div className="px-4 py-6 text-[13px] text-err">
         {detail.error || "Trip not found"}
       </div>
     );
@@ -795,7 +795,7 @@ function PodSheet({
     <div className="fixed inset-0 z-40 flex items-end justify-center bg-ink/50 backdrop-blur-sm">
       <div className="thin-scroll max-h-[92vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-surface p-5 shadow-xl">
         <div className="mb-3 flex items-center justify-between">
-          <div className="text-[14px] font-bold text-ink">Proof of Delivery</div>
+          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">Proof of Delivery</div>
           <button
             onClick={onClose}
             className="rounded-md px-2 py-1 text-[12px] font-semibold text-ink-secondary"
@@ -808,7 +808,7 @@ function PodSheet({
         </div>
 
         <label className="mb-3 block">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
+          <span className="text-[11px] font-semibold uppercase tracking-brand text-ink-secondary">
             Received by
           </span>
           <input
@@ -821,7 +821,7 @@ function PodSheet({
 
         <div className="mb-3">
           <div className="mb-1 flex items-center justify-between">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
+            <span className="text-[11px] font-semibold uppercase tracking-brand text-ink-secondary">
               Signature
             </span>
             <button
@@ -835,7 +835,7 @@ function PodSheet({
         </div>
 
         <div className="mb-3">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
+          <span className="text-[11px] font-semibold uppercase tracking-brand text-ink-secondary">
             Photo
           </span>
           <input
@@ -867,7 +867,7 @@ function PodSheet({
         </div>
 
         <label className="mb-4 block">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-secondary">
+          <span className="text-[11px] font-semibold uppercase tracking-brand text-ink-secondary">
             Notes (optional)
           </span>
           <textarea

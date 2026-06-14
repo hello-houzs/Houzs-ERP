@@ -95,10 +95,10 @@ function PriorityTargetsSection({
   return (
     <section className="rounded-lg border border-border bg-surface">
       <header className="border-b border-border px-4 py-3">
-        <h2 className="text-[12px] font-semibold uppercase tracking-wider text-ink">
+        <h2 className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
           Lead Time — By Priority
         </h2>
-        <p className="mt-0.5 text-[11px] text-ink-muted">
+        <p className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
           Per-priority stage targets in days. The priority a case is created with
           drives its per-stage SLA snapshot. Edit a cell to flex how aggressive
           that priority is — changes affect new cases and future stages of
@@ -108,7 +108,7 @@ function PriorityTargetsSection({
       <div className="overflow-x-auto">
         <table className="w-full text-[12px]">
           <thead>
-            <tr className="bg-bg text-[10px] uppercase tracking-wider text-ink-muted">
+            <tr className="bg-bg text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
               <th className="sticky left-0 z-10 bg-bg px-4 py-2 text-left font-semibold">
                 Priority
               </th>

@@ -74,7 +74,7 @@ export function SalesTeamDetail() {
       title={rep?.name ?? "Loading…"}
       description={
         rep
-          ? `${rep.position_name ?? "—"}${rep.is_admin ? " · Admin" : ""}${rep.upline_name ? ` · reports to ${rep.upline_name}` : ""}`
+          ? `${rep.position_name ?? "—"}${rep.upline_name ? ` · reports to ${rep.upline_name}` : ""}`
           : undefined
       }
       backTo="/sales-team"
@@ -180,7 +180,7 @@ export function SalesTeamDetail() {
       {/* Danger zone */}
       {rep && canManage && tab === "overview" && (
         <div className="mt-6 rounded-md border border-err/40 bg-err/5 p-4">
-          <h3 className="mb-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-brand text-err">
+          <h3 className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-err">
             <ShieldCheck size={12} /> Danger Zone
           </h3>
           <p className="mb-3 text-[11.5px] text-ink-secondary">
@@ -231,7 +231,7 @@ function OverviewTab({
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
       <section className="rounded-md border border-border bg-surface p-5 shadow-stone">
-        <h3 className="mb-3 text-[10px] font-bold uppercase tracking-brand text-accent">
+        <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-brand text-accent">
           Profile
         </h3>
         <div className="space-y-3 text-[12.5px]">
@@ -262,7 +262,7 @@ function OverviewTab({
       </section>
 
       <section className="rounded-md border border-border bg-surface p-5 shadow-stone">
-        <h3 className="mb-3 text-[10px] font-bold uppercase tracking-brand text-accent">
+        <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-brand text-accent">
           Position & hierarchy
         </h3>
         <div className="space-y-3 text-[12.5px]">
@@ -274,7 +274,7 @@ function OverviewTab({
             onChange={(v) => onPatch({ position_id: v })}
           />
           <Field
-            label="Upline"
+            label="Report to"
             value={rep.upline_name ?? "(none)"}
             help="Change via the org chart drag handle (slice 3)"
           />
@@ -316,7 +316,7 @@ function OverviewTab({
       </section>
 
       <section className="rounded-md border border-border bg-surface p-5 shadow-stone xl:col-span-2">
-        <h3 className="mb-3 text-[10px] font-bold uppercase tracking-brand text-accent">
+        <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-brand text-accent">
           Brands
         </h3>
         <div className="flex flex-wrap gap-2">
@@ -341,7 +341,7 @@ function OverviewTab({
 
       {rep.user_id != null && (
         <section className="rounded-md border border-accent/30 bg-accent-soft/30 p-5 xl:col-span-2">
-          <h3 className="mb-1 text-[10px] font-bold uppercase tracking-brand text-accent">
+          <h3 className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-accent">
             Workspace user link
           </h3>
           <p className="text-[12px] text-ink-secondary">
@@ -456,7 +456,7 @@ function SelectField({
 
 function Label({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+    <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
       {children}
     </div>
   );

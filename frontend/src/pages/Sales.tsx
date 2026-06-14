@@ -382,7 +382,7 @@ export function Sales() {
         <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
           <table className="w-full">
             <thead className="bg-bg/60">
-              <tr className="text-left font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              <tr className="text-left text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
                 <th className="px-3 py-2">Date</th>
                 <th className="px-3 py-2">Customer</th>
                 <th className="px-3 py-2 text-right">Amount</th>
@@ -578,7 +578,7 @@ function Tile({
 }) {
   return (
     <div className="px-3 py-2.5">
-      <div className="font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+      <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
       </div>
       <div
@@ -940,7 +940,7 @@ export function EntryPanel({
       onClose={onClose}
       title={
         <div className="flex items-baseline gap-2">
-          <span className="font-display text-[16px] font-extrabold uppercase text-ink">
+          <span className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
             {mode === "create" ? "New Customer" : (entry?.customer_name || "Edit Customer")}
           </span>
           <span className="text-[11px] text-ink-secondary">Sales Order</span>
@@ -1140,7 +1140,7 @@ export function EntryPanel({
       {/* Items section */}
       <div className="mt-6 rounded-md border border-border bg-surface">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
-          <h3 className="text-[11px] font-bold uppercase tracking-wider text-ink">Items</h3>
+          <h3 className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">Items</h3>
           <button
             type="button"
             onClick={addItem}
@@ -1151,7 +1151,7 @@ export function EntryPanel({
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-[11.5px]">
-            <thead className="text-[10px] uppercase text-ink-muted">
+            <thead className="text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
               <tr>
                 <th className="px-2 py-1.5 text-left font-semibold">No</th>
                 <th className="px-2 py-1.5 text-left font-semibold">Item</th>
@@ -1264,7 +1264,7 @@ export function EntryPanel({
       {/* Payments section */}
       <div className="mt-6 rounded-md border border-border bg-surface">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
-          <h3 className="text-[11px] font-bold uppercase tracking-wider text-ink">Payments</h3>
+          <h3 className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">Payments</h3>
           <button
             type="button"
             onClick={addPayment}
@@ -1275,7 +1275,7 @@ export function EntryPanel({
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-[11.5px]">
-            <thead className="text-[10px] uppercase text-ink-muted">
+            <thead className="text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
               <tr>
                 <th className="px-2 py-1.5 text-left font-semibold">Date</th>
                 <th className="px-2 py-1.5 text-left font-semibold">Payment Method</th>
@@ -1443,7 +1443,7 @@ const PAYMENT_STATUS_OPTIONS = ["Unchecked", "Partial", "Paid", "Refunded"];
 
 function Label({ children }: { children: React.ReactNode }) {
   return (
-    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+    <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
       {children}
     </label>
   );

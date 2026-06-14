@@ -46,7 +46,7 @@ export function Logs() {
       label: "Time",
       alwaysVisible: true,
       render: (r) => (
-        <span title={r.started_at} className="font-mono text-xs text-ink-secondary">
+        <span title={r.started_at} className="font-mono text-[12px] text-ink-secondary">
           {relativeTime(r.started_at)}
         </span>
       ),

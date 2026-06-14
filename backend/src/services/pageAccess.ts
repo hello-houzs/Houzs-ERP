@@ -24,9 +24,17 @@
 
 import type { Env } from "../types";
 
-export type AccessLevel = "none" | "partial" | "full";
+// Two vocabularies share one union. The legacy ROLE matrix (role_page_access)
+// is 3-level: none/partial/full. The POSITION matrix (position_page_access) is
+// 4-level: none/view/edit/full. 'partial' is kept and ranked equal to 'view'
+// (rank 1) so both coexist in one page_access map + one meetsLevel comparator
+// with NO migration of existing role rows.
+export type AccessLevel = "none" | "partial" | "view" | "edit" | "full";
 
+// Writable level set for the ROLE editor (unchanged — 3-level).
 export const ACCESS_LEVELS: readonly AccessLevel[] = ["none", "partial", "full"] as const;
+// Writable level set for the POSITION editor (4-level).
+export const POSITION_ACCESS_LEVELS: readonly AccessLevel[] = ["none", "view", "edit", "full"] as const;
 
 export interface PageDef {
   /** Stable identifier stored in `role_page_access.page_key`.
@@ -432,7 +440,18 @@ export function getChildrenOf(parentKey: string): PageDef[] {
 }
 
 export function isValidAccessLevel(level: string): level is AccessLevel {
-  return level === "none" || level === "partial" || level === "full";
+  return (
+    level === "none" ||
+    level === "partial" ||
+    level === "view" ||
+    level === "edit" ||
+    level === "full"
+  );
+}
+
+/** Validator for POSITION matrix writes (4-level; rejects legacy 'partial'). */
+export function isValidPositionLevel(level: string): boolean {
+  return level === "none" || level === "view" || level === "edit" || level === "full";
 }
 
 /**
@@ -441,7 +460,18 @@ export function isValidAccessLevel(level: string): level is AccessLevel {
  * if a user's level satisfies a route's minimum.
  */
 export function levelRank(level: AccessLevel): number {
-  return level === "full" ? 2 : level === "partial" ? 1 : 0;
+  switch (level) {
+    case "full":
+      return 3;
+    case "edit":
+      return 2;
+    case "view":
+      return 1;
+    case "partial":
+      return 1; // legacy alias of view (role matrix)
+    default:
+      return 0; // none
+  }
 }
 
 export function meetsLevel(actual: AccessLevel, required: AccessLevel): boolean {
@@ -528,6 +558,52 @@ export async function loadPageAccessForRole(
     if (parentLevel === "full") out[p.key] = "full";
     else if (parentLevel === "none") out[p.key] = "none";
     // parentLevel === "partial" → keep the child's resolved level.
+  }
+
+  return out;
+}
+
+/**
+ * Hydrate a POSITION's full page-access map from `position_page_access`
+ * (4-level none/view/edit/full). Positions have NO permission-set backfill.
+ *
+ * INHERIT model (simpler than the role matrix's partial-parent rule): a child
+ * sub-page inherits its parent's level unless it has its own explicit row. So
+ * the seed can grant a whole area with one parent row (projects:view) and
+ * override individual sub-tabs (projects.finances:none to hide finances), or
+ * grant just one tab (projects:none + projects.calendar:view). A standalone
+ * page with no row is "none".
+ *
+ * Returned record is attached to `AuthUser.page_access` exactly like the role
+ * loader's output, so `requirePageAccess` / `usePageAccess` need no changes.
+ */
+export async function loadPageAccessForPosition(
+  env: Env,
+  positionId: number,
+): Promise<Record<string, AccessLevel>> {
+  const rows = await env.DB.prepare(
+    `SELECT page_key, level FROM position_page_access WHERE position_id = ?`,
+  )
+    .bind(positionId)
+    .all<{ page_key: string; level: string }>();
+
+  const explicit: Record<string, AccessLevel> = {};
+  for (const r of rows.results ?? []) {
+    if (isValidPageKey(r.page_key) && isValidAccessLevel(r.level)) {
+      explicit[r.page_key] = r.level;
+    }
+  }
+
+  // Pass 1: every page resolves to its explicit row or "none".
+  const raw: Record<string, AccessLevel> = {};
+  for (const p of PAGES) raw[p.key] = explicit[p.key] ?? "none";
+
+  // Pass 2: children inherit the parent's level unless they have an explicit
+  // row of their own (inherit model — see docstring).
+  const out: Record<string, AccessLevel> = { ...raw };
+  for (const p of PAGES) {
+    if (!p.parent) continue;
+    out[p.key] = explicit[p.key] ?? raw[p.parent];
   }
 
   return out;
