@@ -1458,7 +1458,7 @@ function OrgCard({
         if (!isNaN(id) && id !== user.id) onDrop(id, user.id);
       }}
       className={cn(
-        "relative w-[240px] shrink-0 overflow-hidden rounded-md border bg-surface shadow-stone transition-all",
+        "relative min-h-[96px] w-[240px] shrink-0 overflow-hidden rounded-md border bg-surface shadow-stone transition-all",
         isDragSource && "opacity-50",
         dropHover && isValidDropTarget && "border-accent bg-accent-soft/40 ring-2 ring-accent/30",
         !dropHover && "border-border",
@@ -1483,8 +1483,11 @@ function OrgCard({
           size={36}
         />
         <div className="min-w-0 flex-1">
-          <div className="flex items-start gap-1.5">
-            <span className="min-w-0 flex-1 break-words text-[12.5px] font-semibold leading-snug text-ink">
+          <div className="flex min-h-[34px] items-start gap-1.5">
+            <span
+              title={user.name || user.email}
+              className="line-clamp-2 min-w-0 flex-1 break-words text-[12.5px] font-semibold leading-snug text-ink"
+            >
               {user.name || user.email}
             </span>
             {user.status !== "active" && (
