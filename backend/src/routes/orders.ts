@@ -188,6 +188,16 @@ app.get("/stats", async (c) => {
  */
 app.get("/summary", async (c) => {
   const db = getDb(c.env);
+  // Date bounds computed in JS and passed as params: this query runs through
+  // Drizzle/postgres.js directly (not the env.DB shim), so a SQLite-style
+  // date('now', '+7 days') would reach Postgres raw and 500. expiry_date is
+  // TEXT, so we compare against 'YYYY-MM-DD' strings.
+  const today = new Date().toISOString().slice(0, 10);
+  const in7 = (() => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + 7);
+    return d.toISOString().slice(0, 10);
+  })();
 
   async function bucket(extraWhere: string) {
     const whereClause = extraWhere ? sql`WHERE ${sql.raw(extraWhere)}` : sql``;
@@ -198,8 +208,8 @@ app.get("/summary", async (c) => {
         COALESCE(SUM(so.balance), 0) as total_balance,
         SUM(CASE WHEN so.balance > 0 THEN 1 ELSE 0 END) as outstanding_count,
         SUM(CASE WHEN so.expiry_date IS NULL OR so.expiry_date = '' THEN 1 ELSE 0 END) as no_expiry,
-        SUM(CASE WHEN so.expiry_date IS NOT NULL AND so.expiry_date <> '' AND so.expiry_date < date('now') THEN 1 ELSE 0 END) as expired,
-        SUM(CASE WHEN so.expiry_date IS NOT NULL AND so.expiry_date <> '' AND so.expiry_date >= date('now') AND so.expiry_date <= date('now', '+7 days') THEN 1 ELSE 0 END) as expiring_7d
+        SUM(CASE WHEN so.expiry_date IS NOT NULL AND so.expiry_date <> '' AND so.expiry_date < ${today} THEN 1 ELSE 0 END) as expired,
+        SUM(CASE WHEN so.expiry_date IS NOT NULL AND so.expiry_date <> '' AND so.expiry_date >= ${today} AND so.expiry_date <= ${in7} THEN 1 ELSE 0 END) as expiring_7d
       FROM ${sales_orders} so
       ${whereClause}
     `);
