@@ -333,6 +333,14 @@ app.delete("/:id", requirePermission("roles.manage"), async (c) => {
     );
   }
 
+  // The page-access matrix FK (role_page_access.role_id) was ON DELETE CASCADE
+  // in the schema, but the D1->PG load dropped it to NO ACTION — so a bare
+  // delete throws once a role has any saved matrix row. Clear children first
+  // (same cutover fix as departments/positions).
+  await c.env.DB.prepare(`DELETE FROM role_page_access WHERE role_id = ?`)
+    .bind(id)
+    .run();
+
   await db.delete(roles).where(eq(roles.id, id));
   await audit(c, {
     action: "role.delete",

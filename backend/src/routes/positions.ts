@@ -195,6 +195,14 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
     );
   }
 
+  // The page-access matrix FK (position_page_access.position_id) was ON DELETE
+  // CASCADE in the schema, but the D1->PG load dropped it to NO ACTION — so a
+  // bare delete throws once a position has any saved matrix row (virtually all
+  // real positions do). Clear children first (same cutover fix as departments).
+  await c.env.DB.prepare(`DELETE FROM position_page_access WHERE position_id = ?`)
+    .bind(id)
+    .run();
+
   await db.delete(positions).where(eq(positions.id, id));
   await audit(c, {
     action: "position.delete",

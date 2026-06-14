@@ -593,6 +593,10 @@ app.put("/lookups/:kind/reorder", requirePermission("sales_team.manage"), async 
 // the maintenance UI.
 
 app.post("/reset-positions", requirePermission("sales_team.manage"), async (c) => {
+  // sales_reps.position_id was ON DELETE SET NULL, but the D1->PG load dropped
+  // it to NO ACTION — so wiping sales_positions throws if any rep still points
+  // at one. Null them first.
+  await c.env.DB.prepare(`UPDATE sales_reps SET position_id = NULL WHERE position_id IS NOT NULL`).run();
   await c.env.DB.prepare(`DELETE FROM sales_positions`).run();
   await c.env.DB.prepare(
     `INSERT INTO sales_positions (slug, name, level, sort_order) VALUES

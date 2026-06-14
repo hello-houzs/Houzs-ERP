@@ -2321,8 +2321,12 @@ app.patch("/sections/:sectionId", requirePermission("projects.write"), async (c)
 app.delete("/sections/:sectionId", requirePermission("projects.write"), async (c) => {
   const sectionId = parseInt(c.req.param("sectionId"), 10);
   if (isNaN(sectionId)) return c.json({ error: "Invalid ID" }, 400);
-  // ON DELETE SET NULL on project_checklist.section_id ⇒ tasks
-  // automatically fall back to "Uncategorised".
+  // project_checklist.section_id was ON DELETE SET NULL, but the D1->PG load
+  // dropped it to NO ACTION — so a bare delete throws once the section still has
+  // tasks. Null them first so tasks fall back to "Uncategorised".
+  await c.env.DB.prepare(`UPDATE project_checklist SET section_id = NULL WHERE section_id = ?`)
+    .bind(sectionId)
+    .run();
   await c.env.DB.prepare(`DELETE FROM project_checklist_sections WHERE id = ?`)
     .bind(sectionId)
     .run();

@@ -2191,6 +2191,11 @@ export async function deleteChecklistItem(env: Env, itemId: number, userId: numb
     .bind(itemId)
     .first<{ project_id: number; title: string }>();
   if (!item) return false;
+  // Child FKs (project_checklist_attachments.item_id, project_checklist_comments.item_id)
+  // were ON DELETE CASCADE but the D1->PG load dropped them to NO ACTION, so a bare
+  // delete throws once a task has any attachment or comment. Clear children first.
+  await env.DB.prepare(`DELETE FROM project_checklist_attachments WHERE item_id = ?`).bind(itemId).run();
+  await env.DB.prepare(`DELETE FROM project_checklist_comments WHERE item_id = ?`).bind(itemId).run();
   await env.DB.prepare(`DELETE FROM project_checklist WHERE id = ?`).bind(itemId).run();
   await logProjectActivity(env, item.project_id, "checklist_remove", item.title, null, null, userId);
   return true;
