@@ -1524,9 +1524,6 @@ function DepartmentsTab({
                   <span className="truncate text-[13px] font-semibold text-ink">
                     {d.name}
                   </span>
-                  <span className="font-mono text-[10px] text-ink-muted">
-                    #{d.color}
-                  </span>
                 </div>
                 {d.description && (
                   <div className="mt-0.5 truncate text-[11px] text-ink-muted">
@@ -1674,9 +1671,6 @@ function DepartmentEditor({
               presets={DEPT_PALETTE.map((p) => p.hex)}
               size={36}
             />
-            <span className="font-mono text-[11px] uppercase tracking-wider text-ink-muted">
-              #{color}
-            </span>
           </div>
         </div>
         <div>
