@@ -514,7 +514,7 @@ function MembersTab({
                           }
                         : undefined
                     }
-                    className="h-8 max-w-[160px] cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                    className="h-8 w-40 shrink-0 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
                   >
                     <option value="">— No department —</option>
                     {depts.data?.departments.map((d) => (
@@ -532,7 +532,7 @@ function MembersTab({
                       )
                     }
                     title="Position"
-                    className="h-8 max-w-[160px] cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                    className="h-8 w-40 shrink-0 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
                   >
                     <option value="">— No position —</option>
                     {(positions.data?.positions ?? [])
@@ -588,7 +588,7 @@ function MembersTab({
                 </>
               )}
               {canManage && u.id !== me?.id && (
-                <div className="flex items-center gap-1">
+                <div className="flex w-[124px] shrink-0 items-center justify-end gap-1">
                   <button
                     onClick={() => setBrandsFor(u)}
                     className="rounded p-1.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
