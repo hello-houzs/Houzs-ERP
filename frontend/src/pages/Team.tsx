@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -206,6 +206,11 @@ function MembersTab({
   // Members-list filters (owner ask: filter/sort by department and/or position).
   const [filterDept, setFilterDept] = useState<number | "">("");
   const [filterPos, setFilterPos] = useState<number | "">("");
+  const [searchQ, setSearchQ] = useState("");
+  const [sortKey, setSortKey] = useState<
+    "name" | "department" | "position" | "last_seen"
+  >("name");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   // Per-user brand picker — opens a small modal scoped to one member.
   const [brandsFor, setBrandsFor] = useState<TeamMember | null>(null);
@@ -390,11 +395,55 @@ function MembersTab({
     }
   }
 
-  const filteredMembers = (members.data?.users ?? []).filter(
-    (u) =>
-      (filterDept === "" || u.department_id === filterDept) &&
-      (filterPos === "" || u.position_id === filterPos)
-  );
+  function toggleSort(key: typeof sortKey) {
+    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  }
+  const posNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const p of positions.data?.positions ?? []) m.set(p.id, p.name);
+    return m;
+  }, [positions.data]);
+  const memberHeaders: { key: typeof sortKey; label: string }[] = [
+    { key: "name", label: "Member" },
+    { key: "department", label: "Department" },
+    { key: "position", label: "Position" },
+    { key: "last_seen", label: "Last Seen" },
+  ];
+  const filteredMembers = useMemo(() => {
+    const q = searchQ.trim().toLowerCase();
+    const rows = (members.data?.users ?? []).filter(
+      (u) =>
+        (filterDept === "" || u.department_id === filterDept) &&
+        (filterPos === "" || u.position_id === filterPos) &&
+        (q === "" ||
+          (u.name || "").toLowerCase().includes(q) ||
+          (u.email || "").toLowerCase().includes(q)),
+    );
+    const dir = sortDir === "asc" ? 1 : -1;
+    const keyVal = (u: TeamMember): string => {
+      switch (sortKey) {
+        case "department":
+          return (u.department_name || "").toLowerCase();
+        case "position":
+          return (u.position_id != null ? posNameById.get(u.position_id) || "" : "").toLowerCase();
+        case "last_seen":
+          return u.last_login_at || "";
+        default:
+          return (u.name || u.email || "").toLowerCase();
+      }
+    };
+    return [...rows].sort((a, b) => {
+      const av = keyVal(a);
+      const bv = keyVal(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+  }, [members.data, filterDept, filterPos, searchQ, sortKey, sortDir, posNameById]);
 
   return (
     <div>
@@ -405,7 +454,19 @@ function MembersTab({
           <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
             Members ({filteredMembers.length}/{members.data?.users.length ?? 0})
           </h2>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search
+                size={12}
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-muted"
+              />
+              <input
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+                placeholder="Search name or email…"
+                className="h-7 w-44 rounded-md border border-border bg-surface pl-7 pr-2 text-[11px] text-ink outline-none placeholder:text-ink-muted hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+              />
+            </div>
             <select
               value={filterDept}
               onChange={(e) => {
@@ -441,192 +502,199 @@ function MembersTab({
             </select>
           </div>
         </div>
-        <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
-          {members.loading && (
-            <div className="space-y-2 px-5 py-4">
-              <ListSkeleton rows={5} />
-            </div>
-          )}
-          {members.error && (
-            <div className="px-5 py-4 text-sm text-err">{members.error}</div>
-          )}
-          {filteredMembers.map((u) => (
-            <div
-              key={u.id}
-              className="flex flex-wrap items-center gap-3 border-b border-border-subtle px-4 py-4 last:border-b-0 sm:flex-nowrap sm:gap-4 sm:px-5"
-            >
-              <Avatar
-                userId={u.id}
-                hasImage={u.profile_pic_r2_key}
-                name={u.name}
-                email={u.email}
-                size={36}
-              />
-              <StatusDot
-                variant={
-                  u.status === "active"
-                    ? "synced"
-                    : u.status === "disabled"
-                    ? "error"
-                    : "neutral"
-                }
-              />
-              <div className="min-w-0 flex-1 basis-[calc(100%-40px)] sm:basis-auto">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-[13px] font-semibold text-ink">
-                    {u.name || u.email}
-                  </span>
-                  {u.id === me?.id && (
-                    <span className="rounded bg-accent-soft px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wider text-accent-ink">
-                      You
+        <div className="thin-scroll overflow-x-auto rounded-md border border-border bg-surface shadow-stone">
+          <div className="min-w-[860px]">
+            {/* Column headers — click to sort */}
+            <div className="grid grid-cols-[minmax(170px,1fr)_148px_148px_96px_232px] items-center gap-3 border-b-2 border-border bg-surface-dim px-5 py-2">
+              {memberHeaders.map((h) => {
+                const active = sortKey === h.key;
+                return (
+                  <button
+                    key={h.key}
+                    onClick={() => toggleSort(h.key)}
+                    className={cn(
+                      "flex items-center gap-1 text-left text-[10px] font-semibold uppercase tracking-brand transition-colors hover:text-accent",
+                      active ? "text-accent" : "text-ink-secondary",
+                    )}
+                  >
+                    {h.label}
+                    <span className={active ? "opacity-100" : "opacity-30"}>
+                      {active ? (
+                        sortDir === "asc" ? <ArrowUp size={10} /> : <ArrowDown size={10} />
+                      ) : (
+                        <ChevronsUpDown size={10} />
+                      )}
                     </span>
-                  )}
-                  {u.status !== "active" && (
-                    <span className="rounded bg-bg px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-                      {u.status}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-0.5 truncate text-[11px] text-ink-muted">
-                  {u.email} · last seen{" "}
-                  {u.last_login_at ? relativeTime(u.last_login_at) : "never"}
-                </div>
+                  </button>
+                );
+              })}
+              <div className="text-right text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+                Actions
               </div>
-              {canManage && u.id !== me?.id ? (
-                <>
-                  {/* Role dropdown removed — Position now governs page access
-                      (the position matrix). Role still drives API permissions
-                      behind the scenes (set at invite); manage role definitions
-                      in the Roles tab. Members view kept to Department + Position. */}
-                  <select
-                    value={u.department_id ?? ""}
-                    onChange={(e) =>
-                      changeDepartment(
-                        u,
-                        e.target.value ? Number(e.target.value) : null
-                      )
-                    }
-                    title="Department"
-                    style={
-                      u.department_color
-                        ? {
-                            borderLeft: `3px solid #${u.department_color}`,
-                          }
-                        : undefined
-                    }
-                    className="h-8 w-40 shrink-0 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
-                  >
-                    <option value="">— No department —</option>
-                    {depts.data?.departments.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={u.position_id ?? ""}
-                    onChange={(e) =>
-                      changePosition(
-                        u,
-                        e.target.value ? Number(e.target.value) : null
-                      )
-                    }
-                    title="Position"
-                    className="h-8 w-40 shrink-0 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
-                  >
-                    <option value="">— No position —</option>
-                    {(positions.data?.positions ?? [])
-                      .filter(
-                        (p) =>
-                          !u.department_id ||
-                          !p.department_id ||
-                          p.department_id === u.department_id
-                      )
-                      .map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                  </select>
-                  {/* Manager / reporting-line dropdown removed — Members view kept
-                      to Department + Position per owner request. manager_id is
-                      preserved in the data; if the Org Chart needs hierarchy it
-                      can be driven from Position levels instead. */}
-                </>
-              ) : (
-                <>
-                  <span className="rounded bg-accent-soft px-2 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-accent-ink">
-                    {u.role_name}
-                  </span>
-                  {u.department_name && (
-                    <span
-                      className="inline-flex items-center gap-1 rounded px-2 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-wider text-ink"
+            </div>
+
+            {members.loading && (
+              <div className="space-y-2 px-5 py-4">
+                <ListSkeleton rows={5} />
+              </div>
+            )}
+            {members.error && (
+              <div className="px-5 py-4 text-[13px] text-err">{members.error}</div>
+            )}
+            {!members.loading && !members.error && filteredMembers.length === 0 && (
+              <div className="px-5 py-10 text-center text-[12px] text-ink-muted">
+                No members match these filters.
+              </div>
+            )}
+
+            {filteredMembers.map((u) => {
+              const manageable = canManage && u.id !== me?.id;
+              return (
+                <div
+                  key={u.id}
+                  className="grid grid-cols-[minmax(170px,1fr)_148px_148px_96px_232px] items-center gap-3 border-b border-border-subtle px-5 py-2.5 transition-colors last:border-b-0 hover:bg-accent-soft/30"
+                >
+                  {/* Member */}
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <Avatar
+                      userId={u.id}
+                      hasImage={u.profile_pic_r2_key}
+                      name={u.name}
+                      email={u.email}
+                      size={32}
+                    />
+                    <StatusDot
+                      variant={
+                        u.status === "active"
+                          ? "synced"
+                          : u.status === "disabled"
+                          ? "error"
+                          : "neutral"
+                      }
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-[13px] font-semibold text-ink">
+                          {u.name || u.email}
+                        </span>
+                        {u.id === me?.id && (
+                          <span className="shrink-0 rounded bg-accent-soft px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wider text-accent-ink">
+                            You
+                          </span>
+                        )}
+                      </div>
+                      <div className="truncate text-[11px] text-ink-muted">{u.email}</div>
+                    </div>
+                  </div>
+
+                  {/* Department */}
+                  {manageable ? (
+                    <select
+                      value={u.department_id ?? ""}
+                      onChange={(e) =>
+                        changeDepartment(u, e.target.value ? Number(e.target.value) : null)
+                      }
+                      title="Department"
                       style={
                         u.department_color
-                          ? {
-                              backgroundColor: `#${u.department_color}20`,
-                              color: `#${u.department_color}`,
-                            }
+                          ? { borderLeft: `3px solid #${u.department_color}` }
                           : undefined
                       }
+                      className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
                     >
-                      <span
-                        className="h-1.5 w-1.5 rounded-full"
-                        style={{ backgroundColor: `#${u.department_color || "64748b"}` }}
-                      />
-                      {u.department_name}
+                      <option value="">— None —</option>
+                      {depts.data?.departments.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="truncate text-[12px] text-ink-secondary">
+                      {u.department_name || "—"}
                     </span>
                   )}
-                  {u.manager_name && (
-                    <span
-                      className="truncate text-[10.5px] text-ink-muted"
-                      title={`Reports to ${u.manager_name}`}
+
+                  {/* Position */}
+                  {manageable ? (
+                    <select
+                      value={u.position_id ?? ""}
+                      onChange={(e) =>
+                        changePosition(u, e.target.value ? Number(e.target.value) : null)
+                      }
+                      title="Position"
+                      className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
                     >
-                      → {u.manager_name}
+                      <option value="">— None —</option>
+                      {(positions.data?.positions ?? [])
+                        .filter(
+                          (p) =>
+                            !u.department_id ||
+                            !p.department_id ||
+                            p.department_id === u.department_id,
+                        )
+                        .map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                    </select>
+                  ) : (
+                    <span className="truncate text-[12px] text-ink-secondary">
+                      {u.position_id != null ? posNameById.get(u.position_id) || "—" : "—"}
                     </span>
                   )}
-                </>
-              )}
-              {canManage && u.id !== me?.id && (
-                <div className="flex w-[124px] shrink-0 items-center justify-end gap-1">
-                  <button
-                    onClick={() => setBrandsFor(u)}
-                    className="rounded p-1.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
-                    aria-label="Edit brand allow-list"
-                    title="Edit brand allow-list"
-                  >
-                    <Tag size={14} />
-                  </button>
-                  {u.status !== "invited" && (
-                    <button
-                      onClick={() => sendReset(u)}
-                      className="rounded p-1.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
-                      aria-label="Send password reset"
-                      title="Send password reset link"
-                    >
-                      <KeyRound size={14} />
-                    </button>
-                  )}
-                  <button
-                    onClick={() => toggleStatus(u)}
-                    className="rounded p-1.5 text-ink-muted transition-colors hover:bg-surface-dim hover:text-ink"
-                    aria-label={u.status === "active" ? "Disable" : "Enable"}
-                    title={u.status === "active" ? "Disable user" : "Enable user"}
-                  >
-                    {u.status === "active" ? <UserX size={14} /> : <UserCheck size={14} />}
-                  </button>
-                  <button
-                    onClick={() => removeUser(u)}
-                    className="rounded p-1.5 text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
-                    aria-label="Delete permanently"
-                    title="Delete permanently (irreversible)"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+
+                  {/* Last seen */}
+                  <div className="truncate text-[11px] text-ink-muted">
+                    {u.last_login_at ? relativeTime(u.last_login_at) : "never"}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-end gap-1">
+                    {manageable ? (
+                      <>
+                        <button
+                          onClick={() => setBrandsFor(u)}
+                          title="Edit brand allow-list"
+                          className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-1 text-[10px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+                        >
+                          <Tag size={11} /> Brands
+                        </button>
+                        {u.status !== "invited" && (
+                          <button
+                            onClick={() => sendReset(u)}
+                            title="Send password reset link"
+                            className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-1 text-[10px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+                          >
+                            <KeyRound size={11} /> Reset
+                          </button>
+                        )}
+                        <button
+                          onClick={() => toggleStatus(u)}
+                          title={u.status === "active" ? "Disable user" : "Enable user"}
+                          className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-1 text-[10px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+                        >
+                          {u.status === "active" ? <UserX size={11} /> : <UserCheck size={11} />}
+                          {u.status === "active" ? "Disable" : "Enable"}
+                        </button>
+                        <button
+                          onClick={() => removeUser(u)}
+                          aria-label="Delete permanently"
+                          title="Delete permanently (irreversible)"
+                          className="rounded p-1.5 text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </>
+                    ) : (
+                      <span className="text-[11px] text-ink-muted">—</span>
+                    )}
+                  </div>
                 </div>
-              )}
-            </div>
-          ))}
+              );
+            })}
+          </div>
         </div>
       </div>
 
