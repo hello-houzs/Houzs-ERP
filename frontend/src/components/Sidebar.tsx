@@ -26,6 +26,7 @@ import {
   Briefcase,
   Receipt,
   ListTree,
+  Gauge,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -243,6 +244,7 @@ export const NAV_TABS: NavTab[] = [
     groupId: "people",
     anyPerm: ["users.read", "roles.read", "sales_team.read"],
     children: [
+      { to: "/system", label: "System Dashboard", icon: Gauge, anyPerm: ["users.read"], pageAccess: "team" },
       { to: "/team", label: "User Management", icon: Users, anyPerm: ["users.read", "roles.read"], pageAccess: "team" },
       // Sales Team is the retail-rep org chart, separate from /team
       // (workspace logins). Most reps don't have a workspace login.
