@@ -74,16 +74,32 @@ function extractErrorMessage(body: string): string {
   return "";
 }
 
-async function request<T>(path: string, opts?: RequestInit): Promise<T> {
-  const token = tokenStore.get();
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...opts,
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      "Content-Type": "application/json",
-      ...(opts?.headers || {}),
-    },
-  });
+/** Thrown when the server returns a non-OK HTTP status. Distinct from a
+ *  network/timeout failure so request() knows NOT to retry it — a 403/404/500
+ *  is a real answer, not a transient hang. Message keeps the historic
+ *  `"<status>: <body>"` shape that callers and toasts parse. */
+class HttpError extends Error {
+  readonly isHttp = true;
+  constructor(public readonly status: number, body: string) {
+    super(`${status}: ${body}`);
+  }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// GET resilience for the Hyperdrive cold-start stall. When the pooled DB
+// connection is cold the Worker can hang until the runtime kills it (~30s),
+// which the browser surfaces as an opaque "Failed to fetch". GETs are
+// idempotent, so each attempt is capped with an AbortController and retried:
+// the cap sits ABOVE the ~20s cold-start but BELOW the 30s hang-kill, so a
+// slow-but-working query still completes (we never fast-fail it — see
+// backend db/pg.ts "fix slow queries, not by capping") and only a true hang
+// is aborted, then retried once the connection has had a moment to warm.
+// Mutations are NOT retried (not idempotent) and are left uncapped.
+const GET_TIMEOUT_MS = 27_000;
+const GET_RETRIES = 2;
+
+async function handleResponse<T>(res: Response, path: string): Promise<T> {
   if (res.status === 401) {
     // Don't fire on the auth probe endpoints themselves — they're allowed
     // to return 401 without booting the user.
@@ -106,10 +122,48 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       const msg = extractErrorMessage(body) || "You don't have permission to do that";
       for (const fn of forbiddenListeners) fn(msg);
     }
-    throw new Error(`${res.status}: ${body || res.statusText}`);
+    throw new HttpError(res.status, body || res.statusText);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+async function request<T>(path: string, opts?: RequestInit): Promise<T> {
+  const token = tokenStore.get();
+  const method = (opts?.method || "GET").toUpperCase();
+  const retries = method === "GET" ? GET_RETRIES : 0;
+
+  for (let attempt = 0; ; attempt++) {
+    const ctrl = new AbortController();
+    const timer =
+      method === "GET" ? setTimeout(() => ctrl.abort(), GET_TIMEOUT_MS) : null;
+    try {
+      const res = await fetch(`${baseUrl}${path}`, {
+        ...opts,
+        signal: ctrl.signal,
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          "Content-Type": "application/json",
+          ...(opts?.headers || {}),
+        },
+      });
+      return await handleResponse<T>(res, path);
+    } catch (e) {
+      // A real HTTP answer (4xx/5xx) is never retried — surface it as-is.
+      if (e instanceof HttpError) throw e;
+      // Network drop or our abort-timeout: retry idempotent GETs, since a
+      // cold Hyperdrive connection has usually warmed by the next attempt.
+      if (attempt < retries) {
+        await sleep(600 + attempt * 1200);
+        continue;
+      }
+      throw new Error(
+        "Network error — the server took too long to respond. Please try again."
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 }
 
 /**
