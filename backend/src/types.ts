@@ -25,6 +25,15 @@ export type Env = {
   // Public origin for building email links (portal survey URLs etc.).
   // Falls back to the worker URL if unset.
   PUBLIC_APP_URL?: string;
+  // System Health observability (phase 2, ported from Hookka). Writes via the
+  // binding; reads via the AE SQL API using the two secrets. All optional —
+  // absent => health endpoints serve deterministic mock data.
+  ERP_METRICS?: AnalyticsEngineDataset;
+  CF_ACCOUNT_ID?: string;
+  AE_QUERY_TOKEN?: string;
+  // GitHub Actions health panel (optional). Unset => panel shows a connect hint.
+  GITHUB_TOKEN?: string;
+  GITHUB_REPO?: string;
 };
 
 export type Region = "WEST" | "EAST" | "SG";
