@@ -25,6 +25,15 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      # Apply any pending Postgres migrations BEFORE deploying the new Worker so
+      # the schema is ready when the new code goes live. Migrations are additive
+      # + idempotent by convention, so running on every deploy is safe and a
+      # no-op when there's nothing pending. DATABASE_URL is a repo secret (prod
+      # Supabase direct connection string). This removes the old manual
+      # `node scripts/pg-migrate.mjs` step — migrations now ship with the deploy.
+      - run: node scripts/pg-migrate.mjs
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}

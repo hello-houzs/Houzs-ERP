@@ -16,7 +16,22 @@ import postgres from "postgres";
 
 const DRY = process.argv.includes("--dry-run");
 const DIR = "src/db/migrations-pg";
-const url = readFileSync(".dev.vars", "utf8").match(/DATABASE_URL="([^"]+)"/)[1];
+// CI/deploy passes DATABASE_URL as an env var (GitHub secret); locally we read
+// it from .dev.vars. Env wins so the deploy pipeline can apply migrations with
+// no .dev.vars present.
+function resolveUrl() {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  try {
+    return readFileSync(".dev.vars", "utf8").match(/DATABASE_URL="([^"]+)"/)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+const url = resolveUrl();
+if (!url) {
+  console.error("DATABASE_URL not set (env var or .dev.vars). Aborting.");
+  process.exit(1);
+}
 const pg = postgres(url, { ssl: "require", prepare: false, max: 1 });
 
 await pg`CREATE TABLE IF NOT EXISTS _pg_migrations (

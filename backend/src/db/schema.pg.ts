@@ -60,6 +60,7 @@ export const users = pgTable("users", {
   gifting_reset_at: text("gifting_reset_at"),
   current_streak: integer("current_streak").notNull().default(0),
   profile_pic_r2_key: text("profile_pic_r2_key"),
+  phone: text("phone"),
 });
 
 // ── roles ──────────────────────────────────────────────────

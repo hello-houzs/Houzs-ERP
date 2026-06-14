@@ -663,6 +663,8 @@ export interface TeamMember {
   created_at: string;
   /** R2 key for the user's profile picture (mig 058). */
   profile_pic_r2_key: string | null;
+  /** Contact phone (mig 0013). Captured at invite. */
+  phone: string | null;
 }
 
 export interface Department {
