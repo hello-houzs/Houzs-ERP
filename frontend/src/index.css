@@ -211,6 +211,12 @@ select.appearance-none:focus {
   }
   .org-print-area .org-print-scale {
     transform: none !important;
+    /* The Export button sets --print-zoom (= page-width / tree-width) so a
+       wide reporting tree shrinks to fit one page instead of being clipped.
+       `zoom` (not transform) is used because it shrinks the layout box too,
+       so the page no longer overflows. Defaults to 1 (no shrink). */
+    zoom: var(--print-zoom, 1);
+    transform-origin: top left !important;
   }
 }
 

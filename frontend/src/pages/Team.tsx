@@ -236,6 +236,13 @@ function MembersTab({
   }
 
   async function changeManager(u: TeamMember, manager_id: number | null) {
+    if (
+      manager_id != null &&
+      isDescendantOf(manager_id, u.id, members.data?.users ?? [])
+    ) {
+      toast.error("That person reports up to this one — would create a loop");
+      return;
+    }
     try {
       await api.patch(`/api/users/${u.id}`, { manager_id });
       toast.success(
@@ -504,9 +511,9 @@ function MembersTab({
           </div>
         </div>
         <div className="thin-scroll overflow-x-auto rounded-md border border-border bg-surface shadow-stone">
-          <div className="min-w-[860px]">
+          <div className="min-w-[1040px]">
             {/* Column headers — click to sort */}
-            <div className="grid grid-cols-[minmax(170px,1fr)_148px_148px_96px_232px] items-center gap-3 border-b-2 border-border bg-surface-dim px-5 py-2">
+            <div className="grid grid-cols-[minmax(170px,1fr)_148px_148px_96px_180px_232px] items-center gap-3 border-b-2 border-border bg-surface-dim px-5 py-2">
               {memberHeaders.map((h) => {
                 const active = sortKey === h.key;
                 return (
@@ -529,6 +536,9 @@ function MembersTab({
                   </button>
                 );
               })}
+              <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+                Reports to
+              </div>
               <div className="text-right text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
                 Actions
               </div>
@@ -553,7 +563,7 @@ function MembersTab({
               return (
                 <div
                   key={u.id}
-                  className="grid grid-cols-[minmax(170px,1fr)_148px_148px_96px_232px] items-center gap-3 border-b border-border-subtle px-5 py-2.5 transition-colors last:border-b-0 hover:bg-accent-soft/30"
+                  className="grid grid-cols-[minmax(170px,1fr)_148px_148px_96px_180px_232px] items-center gap-3 border-b border-border-subtle px-5 py-2.5 transition-colors last:border-b-0 hover:bg-accent-soft/30"
                 >
                   {/* Member */}
                   <div className="flex min-w-0 items-center gap-2.5">
@@ -653,6 +663,35 @@ function MembersTab({
                   <div className="truncate text-[11px] text-ink-muted">
                     {u.last_login_at ? relativeTime(u.last_login_at) : "never"}
                   </div>
+
+                  {/* Reports to (manager) */}
+                  {manageable ? (
+                    <select
+                      value={u.manager_id ?? ""}
+                      onChange={(e) =>
+                        changeManager(u, e.target.value ? Number(e.target.value) : null)
+                      }
+                      title="Reports to"
+                      className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                    >
+                      <option value="">— None —</option>
+                      {(members.data?.users ?? [])
+                        .filter((m) => m.id !== u.id && m.status !== "disabled")
+                        .slice()
+                        .sort((a, b) =>
+                          (a.name || a.email).localeCompare(b.name || b.email),
+                        )
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name || m.email}
+                          </option>
+                        ))}
+                    </select>
+                  ) : (
+                    <span className="truncate text-[12px] text-ink-secondary">
+                      {u.manager_name || u.manager_email || "—"}
+                    </span>
+                  )}
 
                   {/* Actions */}
                   <div className="flex items-center justify-end gap-1">
@@ -1153,7 +1192,19 @@ function OrgChartTab() {
           <div className="flex items-center justify-end gap-1.5">
             <button
               type="button"
-              onClick={() => window.print()}
+              onClick={() => {
+                // Shrink the tree to fit one landscape page so a wide chart
+                // isn't clipped (see the @media print rule in index.css).
+                const el = document.querySelector(
+                  ".org-print-scale"
+                ) as HTMLElement | null;
+                if (el)
+                  el.style.setProperty(
+                    "--print-zoom",
+                    String(Math.min(1, 1000 / (el.scrollWidth || 1)))
+                  );
+                window.print();
+              }}
               className="mr-1 inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
               title="Export the chart as PDF or print (opens your browser's print dialog)"
             >
@@ -1407,7 +1458,7 @@ function OrgCard({
         if (!isNaN(id) && id !== user.id) onDrop(id, user.id);
       }}
       className={cn(
-        "relative w-[220px] shrink-0 overflow-hidden rounded-md border bg-surface shadow-stone transition-all",
+        "relative w-[240px] shrink-0 overflow-hidden rounded-md border bg-surface shadow-stone transition-all",
         isDragSource && "opacity-50",
         dropHover && isValidDropTarget && "border-accent bg-accent-soft/40 ring-2 ring-accent/30",
         !dropHover && "border-border",
@@ -1432,12 +1483,12 @@ function OrgCard({
           size={36}
         />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-[12.5px] font-semibold text-ink">
+          <div className="flex items-start gap-1.5">
+            <span className="min-w-0 flex-1 break-words text-[12.5px] font-semibold leading-snug text-ink">
               {user.name || user.email}
             </span>
             {user.status !== "active" && (
-              <span className="rounded bg-bg px-1 py-px font-mono text-[9px] font-semibold uppercase text-ink-muted">
+              <span className="shrink-0 rounded bg-bg px-1 py-px font-mono text-[9px] font-semibold uppercase text-ink-muted">
                 {user.status}
               </span>
             )}
