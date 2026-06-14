@@ -30,6 +30,13 @@ export default defineWorkersConfig(async () => {
     test: {
       globals: true,
       setupFiles: ["./tests/setup.ts"],
+      // Each suite's setup hook applies the full D1 migration stack; under CI
+      // runner contention that occasionally exceeds vitest's 10s default and
+      // flakes EVERY suite with "Hook timed out in 10000ms" (deploy.yml also
+      // gates on this, so a flake can block a prod deploy). 30s gives ample
+      // headroom — local suites run ~7s — and also covers slow tests.
+      testTimeout: 30000,
+      hookTimeout: 30000,
       poolOptions: {
         workers: {
           // Reuse production wrangler.toml so bindings line up.
