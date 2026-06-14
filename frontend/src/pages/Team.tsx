@@ -583,7 +583,10 @@ function MembersTab({
                           </span>
                         )}
                       </div>
-                      <div className="truncate text-[11px] text-ink-muted">{u.email}</div>
+                      <div className="truncate text-[11px] text-ink-muted">
+                        {u.email}
+                        {u.phone ? ` · ${u.phone}` : ""}
+                      </div>
                     </div>
                   </div>
 
@@ -1783,6 +1786,7 @@ function InvitePanel({
   const toast = useToast();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
   const [roleId, setRoleId] = useState<number | "">("");
   const [deptId, setDeptId] = useState<number | "">("");
   const [positionId, setPositionId] = useState<number | "">("");
@@ -1820,6 +1824,7 @@ function InvitePanel({
         department_id: deptId || undefined,
         position_id: positionId || undefined,
         manager_id: managerId || undefined,
+        phone: phone.trim() || undefined,
       });
       setIssued(res);
       toast.success(
@@ -1838,6 +1843,7 @@ function InvitePanel({
   function reset() {
     setEmail("");
     setName("");
+    setPhone("");
     setDeptId("");
     setPositionId("");
     setManagerId("");
@@ -1888,6 +1894,18 @@ function InvitePanel({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="member@houzscentury.com"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Phone
+            </label>
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="e.g. 012-345 6789 (optional)"
               className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
             />
           </div>

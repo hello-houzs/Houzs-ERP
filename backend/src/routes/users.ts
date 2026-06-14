@@ -75,6 +75,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
       last_login_at: users.last_login_at,
       created_at: users.created_at,
       profile_pic_r2_key: users.profile_pic_r2_key,
+      phone: users.phone,
       // GROUP_CONCAT joins the user's brand allow-list in one round-trip.
       // Unit-separator (US, 0x1f) keeps multi-word brands ("MY SOFA
       // FACTORY") splittable client-side without ambiguity.
@@ -260,6 +261,7 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     department_id?: number | null;
     position_id?: number | null;
     manager_id?: number | null;
+    phone?: string | null;
   }>();
   if (!body.email || !body.role_id) {
     return c.json({ error: "email and role_id are required" }, 400);
@@ -318,6 +320,7 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
       department_id: departmentId,
       position_id: positionId,
       manager_id: managerId,
+      phone: body.phone?.trim() || null,
       status: "invited",
       invited_by: me.id || null,
       invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
@@ -333,6 +336,7 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
         department_id: departmentId,
         position_id: positionId,
         manager_id: managerId,
+        ...(body.phone !== undefined ? { phone: body.phone?.trim() || null } : {}),
         status: "invited",
         invited_by: me.id || null,
         invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
