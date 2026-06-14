@@ -78,18 +78,18 @@ binding = "SESSION_CACHE"
 id = "c25f593faf5a46a2b94155eba91083e1"
 
 # Analytics Engine — System Health observability (phase 2, ported from Hookka).
-# Every request writes a timing data point here (middleware/requestLog.ts);
-# the /api/admin/health/* endpoints read it back via the AE SQL API. The
-# dataset is created on first write. Reads need two secrets: CF_ACCOUNT_ID +
-# AE_QUERY_TOKEN (a CF API token with Account Analytics:Read). Until those are
-# set the health endpoints fall back to deterministic mock data.
-[[analytics_engine_datasets]]
-binding = "ERP_METRICS"
-dataset = "houzs_erp_metrics"
-
-# Required secrets (set with `wrangler secret put`):
-#   AE_QUERY_TOKEN       — Cloudflare API token, Account Analytics:Read (System Health)
-#   CF_ACCOUNT_ID        — Cloudflare account id (System Health AE reads)
+# DEFERRED: Analytics Engine must be ENABLED on the account first (one click:
+# Cloudflare Dashboard -> Workers & Pages -> Analytics Engine -> Enable;
+# else deploy fails with "code: 10089 You need to enable Analytics Engine").
+# Once enabled, re-add the binding below and redeploy — the request-timing
+# write path (middleware/requestLog.ts, guarded) and Env type are already in
+# place, so it starts collecting immediately.
+#   [[analytics_engine_datasets]]
+#   binding = "ERP_METRICS"
+#   dataset = "houzs_erp_metrics"
+# Reads also need two secrets (set with `wrangler secret put`):
+#   AE_QUERY_TOKEN       — Cloudflare API token, Account Analytics:Read
+#   CF_ACCOUNT_ID        — Cloudflare account id
 #   AUTOCOUNT_API_KEY
 #   DASHBOARD_API_KEY
 #   GOOGLE_MAPS_API_KEY  — used by the planner geocoder (Phase 2)
