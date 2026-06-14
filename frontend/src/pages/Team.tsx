@@ -1787,6 +1787,7 @@ function InvitePanel({
   const [deptId, setDeptId] = useState<number | "">("");
   const [positionId, setPositionId] = useState<number | "">("");
   const [managerId, setManagerId] = useState<number | "">("");
+  const [managerQuery, setManagerQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<{
     token: string;
@@ -1801,8 +1802,8 @@ function InvitePanel({
   }
 
   async function submit() {
-    if (!email || !roleId) {
-      toast.error("Email and role are required");
+    if (!email) {
+      toast.error("Email is required");
       return;
     }
     setBusy(true);
@@ -1840,6 +1841,7 @@ function InvitePanel({
     setDeptId("");
     setPositionId("");
     setManagerId("");
+    setManagerQuery("");
     setIssued(null);
     onClose();
   }
@@ -1891,26 +1893,6 @@ function InvitePanel({
           </div>
           <div>
             <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-              Role / Position
-            </label>
-            <select
-              value={roleId}
-              onChange={(e) => setRoleId(Number(e.target.value))}
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-            >
-              {roles.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-            <div className="mt-1 text-[10px] text-ink-muted">
-              The role decides what actions a member can perform. The Position
-              below decides which pages they see.
-            </div>
-          </div>
-          <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Department
             </label>
             <select
@@ -1955,20 +1937,59 @@ function InvitePanel({
             <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Reports to
             </label>
-            <select
-              value={managerId}
-              onChange={(e) => setManagerId(e.target.value ? Number(e.target.value) : "")}
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-            >
-              <option value="">— No manager —</option>
-              {members
-                .filter((m) => m.status === "active")
-                .map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name || m.email}
-                  </option>
-                ))}
-            </select>
+            <div className="relative">
+              <input
+                type="text"
+                value={managerQuery}
+                onChange={(e) => {
+                  setManagerQuery(e.target.value);
+                  setManagerId("");
+                }}
+                placeholder="Search a member… (optional)"
+                className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              />
+              {managerQuery.trim() !== "" && !managerId && (
+                <div className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-md border border-border bg-surface shadow-slab">
+                  {(() => {
+                    const q = managerQuery.trim().toLowerCase();
+                    const matches = members.filter(
+                      (m) =>
+                        m.status === "active" &&
+                        ((m.name || "").toLowerCase().includes(q) ||
+                          (m.email || "").toLowerCase().includes(q)),
+                    );
+                    if (matches.length === 0)
+                      return <div className="px-3 py-2 text-[11px] text-ink-muted">No match.</div>;
+                    return matches.slice(0, 8).map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => {
+                          setManagerId(m.id);
+                          setManagerQuery(m.name || m.email);
+                        }}
+                        className="flex w-full flex-col items-start px-3 py-1.5 text-left transition-colors hover:bg-accent-soft/50"
+                      >
+                        <span className="text-[12.5px] text-ink">{m.name || m.email}</span>
+                        {m.name && <span className="text-[10.5px] text-ink-muted">{m.email}</span>}
+                      </button>
+                    ));
+                  })()}
+                </div>
+              )}
+            </div>
+            {managerId !== "" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setManagerId("");
+                  setManagerQuery("");
+                }}
+                className="mt-1 text-[10px] text-ink-muted transition-colors hover:text-err"
+              >
+                Clear report-to
+              </button>
+            )}
           </div>
           <div className="pt-2">
             <Button variant="brass" className="w-full" onClick={submit} disabled={busy}>
