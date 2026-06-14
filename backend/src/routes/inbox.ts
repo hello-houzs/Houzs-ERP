@@ -35,6 +35,16 @@ app.get("/", async (c) => {
   const perms = user?.permissions ?? [];
   const isStar = perms.includes("*");
 
+  // Read-only "what needs me" dashboard. Serve a recent cached snapshot from KV
+  // when present — the per-request DB work can be slow on a cold pool, and ~60s
+  // staleness is fine for an inbox. Best-effort: any KV error falls through to a
+  // live build.
+  const cacheKey = `inbox:v1:${userId}`;
+  try {
+    const cached = await c.env.SESSION_CACHE?.get(cacheKey);
+    if (cached) return c.json(JSON.parse(cached));
+  } catch {}
+
   // Each loader is fenced individually — a query bug or missing
   // table in one section must not blank out the other three.
   async function safe<T>(label: string, fn: () => Promise<T[]>): Promise<T[]> {
@@ -53,7 +63,7 @@ app.get("/", async (c) => {
     safe("this_week", () => loadThisWeek(c.env, userId, perms, isStar)),
   ]);
 
-  return c.json({
+  const payload = {
     my_tasks: myTasks,
     review_queue: reviewQueue,
     blockers,
@@ -64,7 +74,14 @@ app.get("/", async (c) => {
       blockers: blockers.length,
       this_week: thisWeek.length,
     },
-  });
+  };
+  // Cache for ~60s so repeat loads/polls skip the slow path. Best-effort.
+  try {
+    await c.env.SESSION_CACHE?.put(cacheKey, JSON.stringify(payload), {
+      expirationTtl: 60,
+    });
+  } catch {}
+  return c.json(payload);
 });
 
 // ── My Tasks ──────────────────────────────────────────────────
