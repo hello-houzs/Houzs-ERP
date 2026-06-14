@@ -14,7 +14,7 @@ const TTL_MS = 15_000;
 // Never cache: auth probes (login state must always be live), the project
 // chat/activity feed (polled every 3s — staleness would delay messages),
 // and presence (who-is-online must stay live).
-const NEVER_CACHE = [/^\/api\/auth\//, /\/activity(\?|$)/, /^\/api\/presence/];
+const NEVER_CACHE = [/^\/api\/auth\//, /\/activity(\?|$)/, /^\/api\/presence/, /^\/api\/admin\/health/];
 
 type Entry = { at: number; data: unknown };
 const store = new Map<string, Entry>();
