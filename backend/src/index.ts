@@ -184,9 +184,21 @@ app.onError((err, c) => {
   console.error("[onError]", err);
   // Preserve Hono HTTPException status/body (intentional 4xx from handlers).
   const anyErr = err as Error & { getResponse?: () => Response; status?: number };
-  if (typeof anyErr.getResponse === "function") return anyErr.getResponse();
-  const { status, message } = humanizeError(err);
-  return c.json({ error: message }, status);
+  const base =
+    typeof anyErr.getResponse === "function"
+      ? anyErr.getResponse()
+      : (() => {
+          const { status, message } = humanizeError(err);
+          return c.json({ error: message }, status);
+        })();
+  // The cors() middleware sets Access-Control-Allow-Origin in its post-next()
+  // pass, which is SKIPPED when a handler throws — so error responses would
+  // otherwise reach the browser WITHOUT CORS headers and surface as an opaque
+  // "Failed to fetch" instead of the real status/message. Re-add them here so
+  // every error is readable by the SPA. (Matches cors() default origin "*".)
+  const res = new Response(base.body, base);
+  res.headers.set("Access-Control-Allow-Origin", "*");
+  return res;
 });
 
 export default {
