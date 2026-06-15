@@ -128,19 +128,23 @@ export function Overview() {
         balance.data && balance.data.expired.count > 0
           ? {
               text: `${formatCurrency(balance.data.expired.total, { compact: true })} overdue`,
-              tone: "error",
+              tone: "accent",
             }
           : undefined,
       to: "/orders",
-      tone: "neutral",
+      tone: balance.data && balance.data.expired.count > 0 ? "accent" : "neutral",
     },
     {
       icon: <Clock size={14} />,
       label: "Ready for Delivery",
       value: orders.data?.delivery.total ?? null,
       sub: orders.data ? `${orders.data.delivery.expiring_7d} expiring in 7 days` : undefined,
+      alert:
+        orders.data && orders.data.delivery.expired > 0
+          ? { text: `${orders.data.delivery.expired} expired`, tone: "accent" }
+          : undefined,
       to: "/orders",
-      tone: orders.data && orders.data.delivery.expired > 0 ? "error" : "neutral",
+      tone: orders.data && orders.data.delivery.expired > 0 ? "accent" : "neutral",
     },
     {
       icon: <TrendingUp size={14} />,
@@ -151,17 +155,23 @@ export function Overview() {
         </>
       ),
       value: po.data ? (po.data.totals.outstanding_count ?? 0) : null,
-      sub: po.data ? `${po.data.overdue} overdue` : undefined,
+      sub: po.data ? `${(po.data.totals.po_count ?? 0).toLocaleString()} total` : undefined,
+      alert:
+        po.data && po.data.overdue > 0
+          ? { text: `${po.data.overdue} overdue`, tone: "accent" }
+          : undefined,
       to: "/po",
-      tone: po.data && po.data.overdue > 0 ? "error" : "neutral",
+      tone: po.data && po.data.overdue > 0 ? "accent" : "neutral",
     },
     {
       icon: <MessageSquare size={14} />,
       label: "Service Cases",
       value: activeAssr,
-      sub: assr.data
-        ? `${assr.data.aging_count} aging · ${assr.data.total.toLocaleString()} total`
-        : undefined,
+      sub: assr.data ? `${assr.data.total.toLocaleString()} total` : undefined,
+      alert:
+        assr.data && assr.data.aging_count > 0
+          ? { text: `${assr.data.aging_count} aging`, tone: "warning" }
+          : undefined,
       to: "/assr",
       tone: assr.data && assr.data.aging_count > 0 ? "warning" : "neutral",
     },
@@ -366,7 +376,7 @@ interface HeroKpi {
   sub?: string;
   /** Optional second sub-line, coloured by its own tone — used to surface
    *  a secondary alarm (e.g. overdue balance under a Sales Orders tile). */
-  alert?: { text: string; tone: "error" | "warning" };
+  alert?: { text: string; tone: "accent" | "warning" | "error" };
   to?: string;
   tone: "neutral" | "accent" | "positive" | "warning" | "error";
 }
@@ -399,7 +409,7 @@ function HeroKpiCard({ icon, label, value, sub, alert, to, tone }: HeroKpi) {
   // stay on the plain surface so the eye lands on what needs attention.
   const container = {
     neutral: "border-border bg-surface",
-    accent: "border-border bg-surface",
+    accent: "border-accent/35 bg-accent-soft/50",
     positive: "border-border bg-surface",
     warning: "border-amber-500/35 bg-amber-50/70",
     error: "border-err/40 bg-err/[0.06]",
@@ -438,7 +448,11 @@ function HeroKpiCard({ icon, label, value, sub, alert, to, tone }: HeroKpi) {
         <div
           className={cn(
             "mt-0.5 text-[10.5px] font-semibold",
-            alert.tone === "error" ? "text-err" : "text-amber-700"
+            alert.tone === "accent"
+              ? "text-accent"
+              : alert.tone === "error"
+              ? "text-err"
+              : "text-amber-700"
           )}
         >
           {alert.text}
