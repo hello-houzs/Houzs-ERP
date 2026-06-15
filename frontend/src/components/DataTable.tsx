@@ -2,8 +2,6 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import {
   Download,
   Upload,
-  Rows3,
-  Rows4,
   Search,
   ArrowUp,
   ArrowDown,
@@ -122,7 +120,6 @@ interface Props<T> {
   };
 }
 
-type Density = "comfy" | "compact";
 type SortDir = "asc" | "desc";
 interface SortState {
   key: string;
@@ -157,7 +154,6 @@ export function DataTable<T>({
   // defaultHidden column stays hidden until the user explicitly enables it.
   const [shownList, setShownList] = useLocalStorage<string[]>(`dt:shown:${idKey}`, []);
   const [order, setOrder] = useLocalStorage<string[]>(`dt:order:${idKey}`, []);
-  const [density, setDensity] = useLocalStorage<Density>(`dt:density:${idKey}`, "comfy");
   const [sort, setSort] = useLocalStorage<SortState | null>(`dt:sort:${idKey}`, null);
   // Mobile-only view preference. "cards" renders the stacked cards
   // (default for `<sm`); "table" forces the desktop table with a
@@ -355,10 +351,9 @@ export function DataTable<T>({
   // compact (py-2) both wasted vertical space; the new values
   // collapse to a single 13px line + minimal cushion on each side.
   // Headers stay one notch taller so the column boundary still reads.
-  const cellPad =
-    density === "compact" ? "px-3 py-1 leading-tight" : "px-3 py-1.5 leading-tight";
-  const headPad =
-    density === "compact" ? "px-3 py-1.5 leading-tight" : "px-3 py-2 leading-tight";
+  // Permanently comfy (density toggle removed 2026-06).
+  const cellPad = "px-3 py-1.5 leading-tight";
+  const headPad = "px-3 py-2 leading-tight";
 
   // Common toolbar button class — used by Import / Export / Density / Columns.
   // 44 px on mobile (touch-target floor), compresses to 32 px on sm+ where
@@ -441,14 +436,7 @@ export function DataTable<T>({
             <Download size={13} />
             Export
           </button>
-          <button
-            onClick={() => setDensity(density === "comfy" ? "compact" : "comfy")}
-            className={toolbarBtn}
-            title={density === "comfy" ? "Switch to compact rows" : "Switch to comfy rows"}
-          >
-            {density === "comfy" ? <Rows4 size={13} /> : <Rows3 size={13} />}
-            {density === "comfy" ? "Comfy" : "Compact"}
-          </button>
+          {/* Density toggle removed 2026-06 — layout is permanently comfy. */}
           {/* Mobile-only: flip between cards and the desktop-style table
               (horizontally scrollable). Hidden on `sm+` because the
               table is already the default there. */}
