@@ -8,9 +8,7 @@ import {
   Calendar,
   ChevronRight,
   TrendingUp,
-  ShieldAlert,
   Clock,
-  Hourglass,
 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Button } from "../components/Button";
@@ -20,7 +18,7 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useAuth } from "../auth/AuthContext";
 import { api } from "../api/client";
-import { formatCurrency, formatDate, cn, APP_TZ, todayInAppTz } from "../lib/utils";
+import { formatCurrency, formatDate, cn, APP_TZ } from "../lib/utils";
 import type {
   OrdersSummary,
   POSummary,
@@ -54,7 +52,7 @@ interface InboxResponse {
   };
 }
 
-type SummaryTab = "briefing" | "action" | "pipeline";
+type SummaryTab = "briefing" | "action";
 
 export function Overview() {
   const toast = useToast();
@@ -69,10 +67,7 @@ export function Overview() {
   // hides the tab bar and renders all three sections stacked, so the
   // value is irrelevant on desktop.
   const [params, setParams] = useSearchParams();
-  const tab: SummaryTab =
-    params.get("tab") === "action" || params.get("tab") === "pipeline"
-      ? (params.get("tab") as SummaryTab)
-      : "briefing";
+  const tab: SummaryTab = params.get("tab") === "action" ? "action" : "briefing";
   const setTab = (next: SummaryTab) => {
     const p = new URLSearchParams(params);
     if (next === "briefing") p.delete("tab");
@@ -92,7 +87,6 @@ export function Overview() {
   const data = inbox.data;
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-  const today = todayInAppTz();
   // en-GB locale puts the day before the month ("Monday, 4 May" rather
   // than en-US's "Monday, May 4"), matching the rest of the SPA's
   // DD/MM date format. Pinned to GMT+8 so the headline reads as
@@ -104,35 +98,72 @@ export function Overview() {
     month: "long",
   });
 
-  // KPI tiles in the hero — picked for "needs attention now" not vanity.
+  // Active ASSR backlog — prefer the backend's precise count; fall back
+  // to deriving it from by_stage (sum of non-completed stages) so the
+  // tile populates even against a Worker that predates active_count.
+  const activeAssr =
+    assr.data == null
+      ? null
+      : assr.data.active_count ??
+        assr.data.by_stage
+          .filter((s) => s.stage !== "completed")
+          .reduce((n, s) => n + s.count, 0);
+
+  // The hero ribbon now carries the module-level snapshot (formerly the
+  // separate "Across the modules" Pipeline section) — one row of tiles
+  // instead of two near-identical ones. Alarm sub-stats (overdue,
+  // expiring, aging) drive the tone so problems pop.
   const kpis: HeroKpi[] = [
     {
-      icon: <InboxIcon size={14} />,
-      label: "My tasks",
-      value: data?.counts.my_tasks ?? null,
-      tone: (data?.counts.my_tasks ?? 0) > 0 ? "accent" : "neutral",
-    },
-    {
-      icon: <Flag size={14} />,
-      label: "Blockers",
-      value: data?.counts.blockers ?? null,
-      tone: (data?.counts.blockers ?? 0) > 0 ? "error" : "positive",
-    },
-    {
-      icon: <ShieldAlert size={14} />,
-      label: "SLA breached",
-      value: assr.data?.breach_count ?? null,
-      tone: (assr.data?.breach_count ?? 0) > 0 ? "error" : "positive",
-    },
-    {
-      icon: <Hourglass size={14} />,
-      label: "Expired balance",
-      value: balance.data ? formatCurrency(balance.data.expired.total, { compact: true }) : null,
-      sub: balance.data ? `${balance.data.expired.count} order${balance.data.expired.count === 1 ? "" : "s"}` : undefined,
-      tone:
+      icon: <TrendingUp size={14} />,
+      label: "Sales Orders",
+      value: orders.data?.all.total ?? null,
+      sub: orders.data
+        ? `${formatCurrency(orders.data.all.total_balance, { compact: true })} outstanding`
+        : undefined,
+      // Fold the overdue (expired) balance in as a red secondary line so
+      // the money-overdue signal still has a home after the dedicated tile
+      // was merged away.
+      alert:
         balance.data && balance.data.expired.count > 0
-          ? "warning"
-          : "positive",
+          ? {
+              text: `${formatCurrency(balance.data.expired.total, { compact: true })} overdue`,
+              tone: "error",
+            }
+          : undefined,
+      to: "/orders",
+      tone: "neutral",
+    },
+    {
+      icon: <Clock size={14} />,
+      label: "Ready for Delivery",
+      value: orders.data?.delivery.total ?? null,
+      sub: orders.data ? `${orders.data.delivery.expiring_7d} expiring in 7 days` : undefined,
+      to: "/orders",
+      tone: orders.data && orders.data.delivery.expired > 0 ? "error" : "neutral",
+    },
+    {
+      icon: <TrendingUp size={14} />,
+      // Uppercase styling would render "POS"; keep the plural "s" lowercase.
+      label: (
+        <>
+          Open PO<span className="normal-case">s</span>
+        </>
+      ),
+      value: po.data ? (po.data.totals.outstanding_count ?? 0) : null,
+      sub: po.data ? `${po.data.overdue} overdue` : undefined,
+      to: "/po",
+      tone: po.data && po.data.overdue > 0 ? "error" : "neutral",
+    },
+    {
+      icon: <MessageSquare size={14} />,
+      label: "Service Cases",
+      value: activeAssr,
+      sub: assr.data
+        ? `${assr.data.aging_count} aging · ${assr.data.total.toLocaleString()} total`
+        : undefined,
+      to: "/assr",
+      tone: assr.data && assr.data.aging_count > 0 ? "warning" : "neutral",
     },
   ];
 
@@ -238,7 +269,6 @@ export function Overview() {
                   data.counts.blockers
                 : undefined,
             } as TabOption<SummaryTab>,
-            { value: "pipeline", label: "Pipeline" },
           ]}
         />
       </div>
@@ -273,60 +303,6 @@ export function Overview() {
         ) : (
           <ActionInbox columns={actionColumns} />
         )}
-      </section>
-
-      {/* ── PIPELINE ───────────────────────────────────────
-          Mobile: visible only when the Pipeline tab is active.
-          lg+: always rendered. */}
-      <section className={cn("mb-10", tab !== "pipeline" && "hidden lg:block")}>
-        <SectionHeader
-          eyebrow="Pipeline"
-          title="Across the modules"
-          hint={`Snapshot · ${formatDate(today)}`}
-        />
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <PipelineTile
-            to="/orders"
-            icon={<TrendingUp size={14} />}
-            label="Sales Orders"
-            value={orders.data ? orders.data.all.total.toLocaleString() : "—"}
-            sub={
-              orders.data
-                ? `${formatCurrency(orders.data.all.total_balance, { compact: true })} outstanding`
-                : "Loading…"
-            }
-          />
-          <PipelineTile
-            to="/orders"
-            icon={<Clock size={14} />}
-            label="Ready for Delivery"
-            value={orders.data ? orders.data.delivery.total.toLocaleString() : "—"}
-            sub={
-              orders.data ? `${orders.data.delivery.expiring_7d} expiring in 7 days` : "Loading…"
-            }
-            tone={orders.data && orders.data.delivery.expired > 0 ? "error" : undefined}
-          />
-          <PipelineTile
-            to="/po"
-            icon={<TrendingUp size={14} />}
-            label="Open Purchase Orders"
-            value={po.data ? (po.data.totals.outstanding_count ?? 0).toLocaleString() : "—"}
-            sub={po.data ? `${po.data.overdue} overdue` : "Loading…"}
-            tone={po.data && po.data.overdue > 0 ? "error" : undefined}
-          />
-          <PipelineTile
-            to="/assr"
-            icon={<MessageSquare size={14} />}
-            label="Service Cases"
-            value={assr.data ? assr.data.total.toLocaleString() : "—"}
-            sub={
-              assr.data
-                ? `${assr.data.by_status.find((s) => s.status === "Open")?.count ?? 0} open · ${assr.data.aging_count} aging`
-                : "Loading…"
-            }
-            tone={assr.data && assr.data.aging_count > 0 ? "warning" : undefined}
-          />
-        </div>
       </section>
 
       {/* ── FINANCIALS ────────────────────────────────────── */}
@@ -385,13 +361,17 @@ function SectionHeader({
 
 interface HeroKpi {
   icon: React.ReactNode;
-  label: string;
+  label: React.ReactNode;
   value: string | number | null;
   sub?: string;
+  /** Optional second sub-line, coloured by its own tone — used to surface
+   *  a secondary alarm (e.g. overdue balance under a Sales Orders tile). */
+  alert?: { text: string; tone: "error" | "warning" };
+  to?: string;
   tone: "neutral" | "accent" | "positive" | "warning" | "error";
 }
 
-function HeroKpiCard({ icon, label, value, sub, tone }: HeroKpi) {
+function HeroKpiCard({ icon, label, value, sub, alert, to, tone }: HeroKpi) {
   const accentBar = {
     neutral: "bg-border",
     accent: "bg-accent",
@@ -432,63 +412,54 @@ function HeroKpiCard({ icon, label, value, sub, tone }: HeroKpi) {
       ? value.toLocaleString()
       : value;
 
-  return (
-    <div className={cn("relative overflow-hidden rounded-lg border px-4 py-3 shadow-stone", container)}>
+  const body = (
+    <>
       <span
         className={cn("absolute left-0 top-0 h-full w-[3px]", accentBar)}
         aria-hidden
       />
-      <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-        <span className={iconClass}>{icon}</span>
-        <span>{label}</span>
+      <div className="flex items-center justify-between gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+        <span className="flex items-center gap-1.5">
+          <span className={iconClass}>{icon}</span>
+          <span>{label}</span>
+        </span>
+        {to && (
+          <ChevronRight
+            size={12}
+            className="opacity-0 transition-opacity group-hover:opacity-100 text-accent"
+          />
+        )}
       </div>
       <div className={cn("mt-1.5 font-display text-[22px] font-extrabold leading-none tracking-tight", valueClass)}>
         {display}
       </div>
       {sub && <div className="mt-1 text-[10.5px] text-ink-muted">{sub}</div>}
-    </div>
+      {alert && (
+        <div
+          className={cn(
+            "mt-0.5 text-[10.5px] font-semibold",
+            alert.tone === "error" ? "text-err" : "text-amber-700"
+          )}
+        >
+          {alert.text}
+        </div>
+      )}
+    </>
   );
-}
 
-// ── Pipeline tile — compact link card ─────────────────────────
-
-function PipelineTile({
-  to,
-  icon,
-  label,
-  value,
-  sub,
-  tone,
-}: {
-  to: string;
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  sub: string;
-  tone?: "error" | "warning";
-}) {
-  const toneCls = tone === "error" ? "text-err" : tone === "warning" ? "text-amber-700" : "text-ink";
-  return (
-    <Link
-      to={to}
-      className="group flex flex-col gap-1.5 rounded-lg border border-border bg-surface px-4 py-3 shadow-stone transition-colors hover:border-accent/40 hover:bg-accent-soft/15"
-    >
-      <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-        <span className="flex items-center gap-1.5">
-          <span className="text-accent/80 group-hover:text-accent">{icon}</span>
-          {label}
-        </span>
-        <ChevronRight
-          size={12}
-          className="opacity-0 transition-opacity group-hover:opacity-100 text-accent"
-        />
-      </div>
-      <div className={cn("font-display text-[22px] font-extrabold leading-none tracking-tight", toneCls)}>
-        {value}
-      </div>
-      <div className="text-[10.5px] text-ink-muted">{sub}</div>
-    </Link>
+  const base = cn(
+    "relative block overflow-hidden rounded-lg border px-4 py-3 shadow-stone",
+    container
   );
+
+  if (to) {
+    return (
+      <Link to={to} className={cn("group transition-colors hover:border-accent/40", base)}>
+        {body}
+      </Link>
+    );
+  }
+  return <div className={base}>{body}</div>;
 }
 
 // ── Inbox column config ──────────────────────────────────────

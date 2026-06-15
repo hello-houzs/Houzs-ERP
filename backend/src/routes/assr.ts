@@ -314,6 +314,16 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
     `SELECT COUNT(*) as total FROM assr_cases`
   ).first<{ total: number }>();
 
+  // Active backlog: cases still in progress (not completed) and not
+  // archived — "how many cases are open right now". Deliberately NOT
+  // period-filtered: the Overview KPI reflects the live workload, not a
+  // rolling window. 'completed' is the only terminal stage (same
+  // definition the breach / aging queries use).
+  const active = await c.env.DB.prepare(
+    `SELECT COUNT(*) as count FROM assr_cases
+      WHERE stage != 'completed' AND archived_at IS NULL`
+  ).first<{ count: number }>();
+
   const byStage = await c.env.DB.prepare(
     `SELECT stage, COUNT(*) as count FROM assr_cases GROUP BY stage`
   ).all();
@@ -435,6 +445,7 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
 
   return c.json({
     total: totals?.total || 0,
+    active_count: active?.count || 0,
     by_stage: byStage.results,
     by_status: byStatus.results,
     by_location: byLocation.results,
