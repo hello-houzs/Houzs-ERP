@@ -16,16 +16,17 @@
 -- Storekeeper user is granted through their POSITION (current-main model),
 -- which the owner controls.
 --
--- Idempotent: ON CONFLICT (name) DO NOTHING so re-running is safe and so a
--- Storekeeper role the owner may have already created by hand is left
+-- Idempotent via a NOT EXISTS guard (NOT ON CONFLICT): the live prod roles
+-- table was loaded from the D1-dump conversion and has no UNIQUE constraint
+-- on name, so ON CONFLICT (name) has nothing to match. NOT EXISTS re-runs
+-- safely and leaves a Storekeeper role the owner may have created by hand
 -- untouched (we never clobber the owner's roles).
 
 INSERT INTO roles (name, description, permissions, is_system, scope_to_pic)
-VALUES (
+SELECT
   'Storekeeper',
   'Warehouse stock staff — handles stock in/out and appears in the project crew picker.',
   '[]',
   0,
   0
-)
-ON CONFLICT (name) DO NOTHING;
+WHERE NOT EXISTS (SELECT 1 FROM roles WHERE name = 'Storekeeper');
