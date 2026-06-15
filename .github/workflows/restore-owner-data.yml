@@ -68,11 +68,20 @@ jobs:
       - name: Backup affected tables (pg_dump)
         run: |
           set -euo pipefail
+          # Supabase runs PG 17; Ubuntu's default pg_dump (16) refuses to dump a
+          # newer server. Install the matching client from the official PGDG repo.
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client
+          sudo apt-get install -y -qq postgresql-client-17
+          PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump
+          "$PG_DUMP" --version
           STAMP=$(date -u +%Y%m%dT%H%M%SZ)
           mkdir -p /tmp/backup
-          pg_dump "$DATABASE_URL" --data-only --no-owner --no-privileges \
+          "$PG_DUMP" "$DATABASE_URL" --data-only --no-owner --no-privileges \
             -t public.projects -t public.project_finance \
             -t public.lorries -t public.users \
             -f "/tmp/backup/houzs-pre-restore-$STAMP.sql"
