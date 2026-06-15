@@ -22,6 +22,7 @@ import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
 import { AutoCountClient } from "../services/autocount";
+import { requirePermission } from "../middleware/auth";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -31,7 +32,7 @@ const app = new Hono<{ Bindings: Env }>();
 // Read on each create_case call so changes take effect immediately
 // without a deploy.
 
-app.get("/settings", async (c) => {
+app.get("/settings", requirePermission("service_cases.read"), async (c) => {
   const row = await c.env.DB.prepare(
     `SELECT s.value AS value, u.id AS user_id, u.name AS user_name, u.email AS user_email
        FROM system_settings s
@@ -50,7 +51,7 @@ app.get("/settings", async (c) => {
   });
 });
 
-app.put("/settings", async (c) => {
+app.put("/settings", requirePermission("service_cases.manage"), async (c) => {
   const body = await c.req.json<{ default_assignee_id?: number | null }>();
   const id = body.default_assignee_id;
   if (id === null || id === undefined) {
@@ -92,7 +93,7 @@ function lookupTable(kind: string): string | null {
   return (LOOKUP_TABLES as Record<string, string>)[kind] ?? null;
 }
 
-app.get("/lookups/:kind", async (c) => {
+app.get("/lookups/:kind", requirePermission("service_cases.read"), async (c) => {
   const kind = c.req.param("kind");
   const table = lookupTable(kind);
   if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
@@ -110,7 +111,7 @@ app.get("/lookups/:kind", async (c) => {
   return c.json({ data: rows.results ?? [] });
 });
 
-app.post("/lookups/:kind", async (c) => {
+app.post("/lookups/:kind", requirePermission("service_cases.manage"), async (c) => {
   const kind = c.req.param("kind");
   const table = lookupTable(kind);
   if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
@@ -148,7 +149,7 @@ app.post("/lookups/:kind", async (c) => {
   return c.json({ ok: true, slug });
 });
 
-app.patch("/lookups/:kind/:id", async (c) => {
+app.patch("/lookups/:kind/:id", requirePermission("service_cases.manage"), async (c) => {
   const kind = c.req.param("kind");
   const table = lookupTable(kind);
   if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
@@ -177,7 +178,7 @@ app.patch("/lookups/:kind/:id", async (c) => {
 // Bulk reorder. Same shape as the project bulk-reorder endpoints:
 // `{ ids: [...] }` in the new display order; sort_order is rewritten
 // in steps of 10 so future inserts can slot between rows.
-app.put("/lookups/:kind/reorder", async (c) => {
+app.put("/lookups/:kind/reorder", requirePermission("service_cases.manage"), async (c) => {
   const kind = c.req.param("kind");
   const table = lookupTable(kind);
   if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
@@ -196,7 +197,7 @@ app.put("/lookups/:kind/reorder", async (c) => {
   return c.json({ ok: true });
 });
 
-app.delete("/lookups/:kind/:id", async (c) => {
+app.delete("/lookups/:kind/:id", requirePermission("service_cases.manage"), async (c) => {
   const kind = c.req.param("kind");
   const table = lookupTable(kind);
   if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
@@ -220,7 +221,7 @@ app.delete("/lookups/:kind/:id", async (c) => {
 // customer_amount and po_amount in one click. The user can still edit
 // after — this is a suggestion, not a write.
 
-app.get("/:id/cost-suggestion", async (c) => {
+app.get("/:id/cost-suggestion", requirePermission("service_cases.read"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
 
@@ -298,14 +299,14 @@ app.get("/:id/cost-suggestion", async (c) => {
 
 // ── Summary ───────────────────────────────────────────────────
 
-app.get("/summary", async (c) => {
+app.get("/summary", requirePermission("service_cases.read"), async (c) => {
   // Accept the same period filter the /metrics endpoint takes so the
   // ServiceMetrics dashboard can share one dropdown. The pulse row
   // (Pending Review / Aging / Breach) and Stage Funnel below now narrow
   // to cases whose complaint / creation date falls inside the window —
   // previously they were always "real-time across all data" and so
   // looked frozen as the user switched periods.
-  const sinceDays = parseInt(c.req.query("since_days") || "90", 10);
+  const sinceDays = Math.min(730, Math.max(1, parseInt(c.req.query("since_days") || "90", 10) || 90));
   const periodAnd =
     `AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`;
 
@@ -360,13 +361,22 @@ app.get("/summary", async (c) => {
             ) > 3`
   ).first<{ count: number }>();
 
-  // SLA breach: open cases past their deadline.
+  // SLA breach: open cases whose CURRENT stage has crossed 100% of its
+  // snapshotted per-stage target. Uses the SAME stage-level definition as
+  // the Stage Funnel below (assr_stage_history.target_days + entered_at)
+  // so the KPI tile and the funnel's breach totals reconcile. Previously
+  // this used case-level deadline_at, which diverged from the funnel and
+  // showed a different number on the same page.
   const breach = await c.env.DB.prepare(
-    `SELECT COUNT(*) as count FROM assr_cases c
+    `SELECT COUNT(*) as count
+       FROM assr_cases c
+       JOIN assr_stage_history h
+              ON h.assr_id = c.id AND h.exited_at IS NULL
       WHERE c.stage != 'completed'
+        AND c.archived_at IS NULL
         ${periodAnd}
-        AND c.deadline_at IS NOT NULL
-        AND datetime('now') > c.deadline_at`
+        AND h.target_days IS NOT NULL AND h.target_days > 0
+        AND (julianday('now') - julianday(h.entered_at)) / h.target_days >= 1`
   ).first<{ count: number }>();
 
   // v3.1 — Pending Review tile
@@ -442,7 +452,7 @@ app.get("/summary", async (c) => {
 
 // ── List ──────────────────────────────────────────────────────
 
-app.get("/", async (c) => {
+app.get("/", requirePermission("service_cases.read"), async (c) => {
   const assignedToParam = c.req.query("assigned_to");
   const result = await listAssrCases(c.env, {
     stage: c.req.query("stage"),
@@ -463,7 +473,7 @@ app.get("/", async (c) => {
 // Manually re-run the item → creditor lookup for a single case.
 // Useful for backfilling existing cases whose creditor_code is null
 // (e.g. cases created before the auto-resolve hook shipped).
-app.post("/:id/resolve-creditor", async (c) => {
+app.post("/:id/resolve-creditor", requirePermission("service_cases.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
 
@@ -497,7 +507,7 @@ app.post("/:id/resolve-creditor", async (c) => {
 // closed / breached counts, joined to the creditors mirror for the
 // display name. Null creditor_code (unresolved) rolls up into a
 // separate `unassigned` bucket so the caller can surface it.
-app.get("/by-creditor", async (c) => {
+app.get("/by-creditor", requirePermission("service_cases.read"), async (c) => {
   const search = (c.req.query("search") || "").trim();
   const like = search ? `%${search}%` : null;
 
@@ -565,7 +575,7 @@ async function bulkRun(
   return { ok, failed };
 }
 
-app.post("/bulk/archive", async (c) => {
+app.post("/bulk/archive", requirePermission("service_cases.manage"), async (c) => {
   const userId = (c as any).get?.("userId") ?? null;
   const body = await c.req.json<{ ids?: number[] }>();
   const ids = (body.ids || []).filter((n) => Number.isInteger(n));
@@ -582,7 +592,7 @@ app.post("/bulk/archive", async (c) => {
   return c.json(result);
 });
 
-app.post("/bulk/unarchive", async (c) => {
+app.post("/bulk/unarchive", requirePermission("service_cases.manage"), async (c) => {
   const body = await c.req.json<{ ids?: number[] }>();
   const ids = (body.ids || []).filter((n) => Number.isInteger(n));
   if (!ids.length) return c.json({ error: "ids[] required" }, 400);
@@ -598,7 +608,7 @@ app.post("/bulk/unarchive", async (c) => {
   return c.json(result);
 });
 
-app.post("/bulk/assign", async (c) => {
+app.post("/bulk/assign", requirePermission("service_cases.manage"), async (c) => {
   const userId = (c as any).get?.("userId") ?? null;
   const body = await c.req.json<{ ids?: number[]; assigned_to?: number | null }>();
   const ids = (body.ids || []).filter((n) => Number.isInteger(n));
@@ -625,7 +635,7 @@ app.post("/bulk/assign", async (c) => {
 // Honors the same filters as the list endpoint so "what you see is
 // what you export" matches the table.
 
-app.get("/export.csv", async (c) => {
+app.get("/export.csv", requirePermission("service_cases.read"), async (c) => {
   const rows = await exportAssrCases(c.env, {
     stage: c.req.query("stage"),
     status: c.req.query("status"),
@@ -674,7 +684,7 @@ app.get("/export.csv", async (c) => {
 
 // ── SO item lookup ────────────────────────────────────────────
 
-app.get("/lookup-items/:docNo", async (c) => {
+app.get("/lookup-items/:docNo", requirePermission("service_cases.read"), async (c) => {
   const docNo = c.req.param("docNo");
   const items = await lookupSOItems(c.env, docNo);
   return c.json({ items });
@@ -688,7 +698,7 @@ app.get("/lookup-items/:docNo", async (c) => {
 // "metrics" matches the param. The `{[0-9]+}` constraint scopes the
 // param to digits so /metrics + any future literal route under
 // /api/assr falls through to its dedicated handler.
-app.get("/:id{[0-9]+}", async (c) => {
+app.get("/:id{[0-9]+}", requirePermission("service_cases.read"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const detail = await getAssrDetail(c.env, id);
@@ -707,7 +717,7 @@ app.get("/:id{[0-9]+}", async (c) => {
 // present, otherwise on exact name) so staff can spot repeat
 // complaints. Excludes the current case and archived rows.
 
-app.get("/:id/customer-history", async (c) => {
+app.get("/:id/customer-history", requirePermission("service_cases.read"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   // Column is `phone`, not `customer_phone` — pre-v3.1 naming kept for
@@ -748,7 +758,7 @@ app.get("/:id/customer-history", async (c) => {
 
 // ── Create ────────────────────────────────────────────────────
 
-app.post("/", async (c) => {
+app.post("/", requirePermission("service_cases.write"), async (c) => {
   const userId = (c as any).get?.("userId") ?? 0;
   const body = await c.req.json<{
     doc_no: string;
@@ -790,7 +800,7 @@ app.post("/", async (c) => {
 // Same digit-only constraint as the GET — keeps any future literal
 // route under /api/assr (e.g. /metrics, /summary) reachable when the
 // methods overlap.
-app.patch("/:id{[0-9]+}", async (c) => {
+app.patch("/:id{[0-9]+}", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -804,7 +814,7 @@ app.patch("/:id{[0-9]+}", async (c) => {
 // Dispatcher clicks "Copy portal link" — returns a token that the
 // frontend turns into a full URL, then copied into WhatsApp. 30-day
 // TTL so the customer can reopen it over the life of the case.
-app.post("/:id/track-link", async (c) => {
+app.post("/:id/track-link", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const exists = await c.env.DB.prepare(
@@ -823,7 +833,7 @@ app.post("/:id/track-link", async (c) => {
 // token. Scoped to the case's resolved creditor_code so the supplier
 // only sees jobs assigned to them.
 
-app.post("/:id/supplier-link", async (c) => {
+app.post("/:id/supplier-link", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const row = await c.env.DB.prepare(
@@ -839,7 +849,7 @@ app.post("/:id/supplier-link", async (c) => {
 
 // ── Generate satisfaction survey token ────────────────────────
 
-app.post("/:id/survey-token", async (c) => {
+app.post("/:id/survey-token", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const token = await issueSurveyToken(c.env, id);
@@ -876,7 +886,7 @@ async function setArchived(
 }
 
 // Case — archive/unarchive. Manager-level (service_cases.manage).
-app.post("/:id/archive", async (c) => {
+app.post("/:id/archive", requirePermission("service_cases.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -886,7 +896,7 @@ app.post("/:id/archive", async (c) => {
   return c.json({ ok: true });
 });
 
-app.post("/:id/unarchive", async (c) => {
+app.post("/:id/unarchive", requirePermission("service_cases.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -897,7 +907,7 @@ app.post("/:id/unarchive", async (c) => {
 });
 
 // Logistics entry archive.
-app.post("/:id/logistics/:logId/archive", async (c) => {
+app.post("/:id/logistics/:logId/archive", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const logId = parseInt(c.req.param("logId"), 10);
   if (isNaN(id) || isNaN(logId)) return c.json({ error: "Invalid ID" }, 400);
@@ -915,7 +925,7 @@ app.post("/:id/logistics/:logId/archive", async (c) => {
 });
 
 // Attachment archive — hard replacement for the old "delete" wish.
-app.post("/attachments/:attId/archive", async (c) => {
+app.post("/attachments/:attId/archive", requirePermission("service_cases.write"), async (c) => {
   const attId = parseInt(c.req.param("attId"), 10);
   if (isNaN(attId)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -937,7 +947,7 @@ app.post("/attachments/:attId/archive", async (c) => {
 // must not be archive-able.
 const ARCHIVABLE_ACTIONS = new Set(["note", "customer_comment"]);
 
-app.post("/activity/:actId/archive", async (c) => {
+app.post("/activity/:actId/archive", requirePermission("service_cases.write"), async (c) => {
   const actId = parseInt(c.req.param("actId"), 10);
   if (isNaN(actId)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -967,7 +977,7 @@ app.post("/activity/:actId/archive", async (c) => {
 // ── Toggle an attachment's visibility to the portal customer ──
 // Lets staff hide an internal photo so it doesn't show up on the
 // customer's portal view of the case.
-app.patch("/attachments/:attId/visibility", async (c) => {
+app.patch("/attachments/:attId/visibility", requirePermission("service_cases.write"), async (c) => {
   const attId = parseInt(c.req.param("attId"), 10);
   if (isNaN(attId)) return c.json({ error: "Invalid ID" }, 400);
   const body = await c.req
@@ -987,15 +997,15 @@ app.patch("/attachments/:attId/visibility", async (c) => {
 
 // ── Manual SLA escalation sweep ───────────────────────────────
 
-app.post("/run-escalation", async (c) => {
+app.post("/run-escalation", requirePermission("service_cases.manage"), async (c) => {
   const result = await runSlaEscalation(c.env);
   return c.json(result);
 });
 
 // ── Quality metrics (for manager dashboard) ───────────────────
 
-app.get("/metrics", async (c) => {
-  const sinceDays = parseInt(c.req.query("since_days") || "90", 10);
+app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
+  const sinceDays = Math.min(730, Math.max(1, parseInt(c.req.query("since_days") || "90", 10) || 90));
   // Period filter falls back to created_at when complained_date is
   // NULL — legacy rows + manual SQL inserts often skipped the intake
   // date, so a strict `complained_date >= …` was silently excluding
@@ -1217,12 +1227,12 @@ const DRILL_METRICS = new Set([
   "item_cases",
 ] as const);
 
-app.get("/metrics/drill", async (c) => {
+app.get("/metrics/drill", requirePermission("service_cases.read"), async (c) => {
   const metric = (c.req.query("metric") || "").trim();
   if (!DRILL_METRICS.has(metric as any)) {
     return c.json({ error: `Unknown metric: ${metric}` }, 400);
   }
-  const sinceDays = parseInt(c.req.query("since_days") || "90", 10);
+  const sinceDays = Math.min(730, Math.max(1, parseInt(c.req.query("since_days") || "90", 10) || 90));
   const limit = Math.min(parseInt(c.req.query("limit") || "100", 10), 500);
 
   // Collect WHERE fragments + their bind values together so user input
@@ -1360,7 +1370,7 @@ app.get("/metrics/drill", async (c) => {
 
 // ── Auto-generate service PO number ───────────────────────────
 
-app.post("/:id/generate-po", async (c) => {
+app.post("/:id/generate-po", requirePermission("service_cases.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -1398,7 +1408,7 @@ app.post("/:id/generate-po", async (c) => {
 
 // ── Manager approval / quality sign-off ───────────────────────
 
-app.post("/:id/approve", async (c) => {
+app.post("/:id/approve", requirePermission("service_cases.approve"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -1445,7 +1455,7 @@ app.post("/:id/approve", async (c) => {
 
 // ── Stage transition ──────────────────────────────────────────
 
-app.post("/:id/transition", async (c) => {
+app.post("/:id/transition", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -1514,7 +1524,7 @@ function surveyEmailHtml(name: string, assrNo: string, link: string): string {
 
 // ── Notes ─────────────────────────────────────────────────────
 
-app.post("/:id/notes", async (c) => {
+app.post("/:id/notes", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -1541,7 +1551,7 @@ app.post("/:id/notes", async (c) => {
 // "correction" entry that references the prior one. Useful for fixing
 // a misposted note or stage_change without erasing the audit trail.
 
-app.post("/:id/notes/:noteId/correct", async (c) => {
+app.post("/:id/notes/:noteId/correct", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const noteId = parseInt(c.req.param("noteId"), 10);
   if (isNaN(id) || isNaN(noteId)) return c.json({ error: "Invalid ID" }, 400);
@@ -1571,7 +1581,7 @@ app.post("/:id/notes/:noteId/correct", async (c) => {
 // Full audit trail for one case in CSV form. Manager-only — internal
 // notes + supplier comms aren't customer-safe.
 
-app.get("/:id/timeline.csv", async (c) => {
+app.get("/:id/timeline.csv", requirePermission("service_cases.read"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
 
@@ -1650,7 +1660,7 @@ function csvField(v: any): string {
 
 // ── Items ─────────────────────────────────────────────────────
 
-app.post("/:id/items", async (c) => {
+app.post("/:id/items", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const body = await c.req.json<{
@@ -1661,7 +1671,7 @@ app.post("/:id/items", async (c) => {
   return c.json({ ok: true });
 });
 
-app.delete("/:id/items/:itemId", async (c) => {
+app.delete("/:id/items/:itemId", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const itemId = parseInt(c.req.param("itemId"), 10);
   await removeItem(c.env, id, itemId);
@@ -1673,7 +1683,7 @@ app.delete("/:id/items/:itemId", async (c) => {
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "mp4", "pdf"]);
 const MAX_SIZE = 25 * 1024 * 1024; // 25 MB
 
-app.put("/:id/attachments", async (c) => {
+app.put("/:id/attachments", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -1703,7 +1713,7 @@ app.put("/:id/attachments", async (c) => {
   return c.json({ id: attachId, key }, 201);
 });
 
-app.get("/attachments/:key{.+}", async (c) => {
+app.get("/attachments/:key{.+}", requirePermission("service_cases.read"), async (c) => {
   const key = c.req.param("key");
   const obj = await c.env.POD_BUCKET.get(key);
   if (!obj) return c.json({ error: "Not found" }, 404);
@@ -1723,7 +1733,7 @@ app.get("/attachments/:key{.+}", async (c) => {
  * Returns ASSR logistics rows joined with case context so ops can see
  * pickups/deliveries across all open cases in one list.
  */
-app.get("/logistics/all", async (c) => {
+app.get("/logistics/all", requirePermission("service_cases.read"), async (c) => {
   const page = Math.max(1, parseInt(c.req.query("page") || "1", 10));
   const perPage = Math.min(200, Math.max(10, parseInt(c.req.query("per_page") || "50", 10)));
   const status = c.req.query("status");
@@ -1771,7 +1781,7 @@ app.get("/logistics/all", async (c) => {
   });
 });
 
-app.post("/:id/logistics", async (c) => {
+app.post("/:id/logistics", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const body = await c.req.json<{
@@ -1786,7 +1796,7 @@ app.post("/:id/logistics", async (c) => {
   return c.json({ id: logId }, 201);
 });
 
-app.patch("/:id/logistics/:logId", async (c) => {
+app.patch("/:id/logistics/:logId", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const logId = parseInt(c.req.param("logId"), 10);
   const body = await c.req.json<Record<string, any>>();
