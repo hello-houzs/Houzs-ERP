@@ -480,7 +480,25 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
   const monthParam = c.req.query("month");
   const user = c.get("user");
   const scope = getProjectScope(user);
+  // "My pending tasks" filter — map the caller's role to the task scope
+  // they own. Owner / IT Admin / unmapped roles -> no filter (full list).
+  let pendingLabel: string | undefined;
+  let pendingTitle: string | undefined;
+  let pendingLogistic = false;
+  if (c.req.query("my_pending") === "1" && user) {
+    const r = (user.role_name || "").toLowerCase();
+    if (r === "manager") pendingTitle = "Agreement / Quotation";
+    else if (r === "purchaser") pendingLabel = "PURCHASER";
+    else if (r === "logistic") pendingLogistic = true; // setup not arranged
+    else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";
+    else if (r.includes("bd")) pendingLabel = "BD";
+    else if (r.includes("sales")) pendingLabel = "SALES PIC";
+    // owner / it admin / anything else -> leave undefined (see all)
+  }
   const result = await listProjects(c.env, {
+    pending_label: pendingLabel,
+    pending_title: pendingTitle,
+    pending_logistic: pendingLogistic,
     stage: c.req.query("stage"),
     brand: c.req.query("brand"),
     state: c.req.query("state") || undefined,
@@ -2409,6 +2427,23 @@ app.put(
     )
       .bind(itemId, key, fileName, contentType, body.byteLength, user?.id ?? null)
       .run();
+    // Audit trail — log the upload to the project activity feed.
+    const owner = await c.env.DB.prepare(
+      `SELECT project_id, title FROM project_checklist WHERE id = ?`
+    )
+      .bind(itemId)
+      .first<{ project_id: number; title: string }>();
+    if (owner) {
+      await logProjectActivity(
+        c.env,
+        owner.project_id,
+        "document_upload",
+        null,
+        fileName,
+        owner.title,
+        user?.id,
+      );
+    }
     return c.json(
       {
         id: r.meta.last_row_id,
@@ -3140,6 +3175,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
   const projects = await c.env.DB.prepare(
     `SELECT p.id, p.code, p.name, p.stage, p.status, p.brand, p.organizer,
             p.start_date, p.end_date, p.venue, p.state,
+            et.name AS event_type_name,
             (SELECT s.name FROM project_checklist_sections s
               WHERE s.project_id = p.id
                 AND EXISTS (
@@ -3152,6 +3188,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
             (SELECT COUNT(*) FROM project_checklist_sections s
               WHERE s.project_id = p.id) AS sections_total
        FROM projects p
+       LEFT JOIN project_event_types et ON et.id = p.event_type_id
       WHERE p.archived_at IS NULL
         AND p.start_date IS NOT NULL
         AND substr(p.start_date, 1, 10) <= substr(?, 1, 10)
