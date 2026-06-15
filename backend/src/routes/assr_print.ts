@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
+import { requirePermission } from "../middleware/auth";
 import { getAssrDetail } from "../services/assr";
 import { renderStageTrackerHtml, STAGE_TRACKER_CSS } from "../services/printTracker";
 import { qrSvg, getOrIssueCustomerPortalToken, customerPortalUrlFor } from "../services/printQr";
@@ -123,7 +124,7 @@ function supplierTargetDateIso(stageEnteredAt: string | null, stageTargetDays: n
   return new Date(t0 + stageTargetDays * 24 * 60 * 60 * 1000).toISOString();
 }
 
-app.get("/:id", async (c) => {
+app.get("/:id", requirePermission("service_cases.read"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.text("Invalid ID", 400);
 
