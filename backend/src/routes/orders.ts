@@ -104,7 +104,7 @@ app.get("/", async (c) => {
       SELECT 1 FROM trip_proposal_trips ptt
         JOIN trip_proposals tp ON tp.id = ptt.proposal_id
        WHERE tp.status = 'draft'
-         AND json_extract(ptt.payload_json, '$.stops') LIKE '%"' || so.doc_no || '"%'
+         AND CAST(ptt.payload_json AS TEXT) LIKE '%"' || so.doc_no || '"%'
     )`);
   }
   if (status) conds.push(sql`so.sync_status = ${status}`);
@@ -295,7 +295,7 @@ app.get("/items", async (c) => {
       SELECT 1 FROM trip_proposal_trips ptt
         JOIN trip_proposals tp ON tp.id = ptt.proposal_id
        WHERE tp.status = 'draft'
-         AND json_extract(ptt.payload_json, '$.stops') LIKE '%"' || so.doc_no || '"%'
+         AND CAST(ptt.payload_json AS TEXT) LIKE '%"' || so.doc_no || '"%'
     )`);
   }
   if (status) conds.push(sql`so.sync_status = ${status}`);
