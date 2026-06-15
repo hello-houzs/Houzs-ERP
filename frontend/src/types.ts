@@ -552,6 +552,10 @@ export interface AssrMetrics {
 
 export interface AssrSummary {
   total: number;
+  /** Cases still in progress (not completed, not archived). Optional —
+   *  older deployed backends omit it; the Overview KPI falls back to
+   *  deriving it from by_stage. */
+  active_count?: number;
   by_stage: Array<{ stage: string; count: number }>;
   by_status: Array<{ status: string; count: number }>;
   by_location: Array<{ location: string; count: number }>;
