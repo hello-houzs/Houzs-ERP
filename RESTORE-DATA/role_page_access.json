@@ -1,0 +1,314 @@
+﻿[
+  {
+    "results": [
+      {
+        "role_id": 3,
+        "page_key": "overview",
+        "level": "none"
+      },
+      {
+        "role_id": 3,
+        "page_key": "projects",
+        "level": "partial"
+      },
+      {
+        "role_id": 3,
+        "page_key": "projects.calendar",
+        "level": "partial"
+      },
+      {
+        "role_id": 3,
+        "page_key": "projects.list",
+        "level": "partial"
+      },
+      {
+        "role_id": 6,
+        "page_key": "overview",
+        "level": "none"
+      },
+      {
+        "role_id": 6,
+        "page_key": "projects",
+        "level": "partial"
+      },
+      {
+        "role_id": 6,
+        "page_key": "projects.calendar",
+        "level": "partial"
+      },
+      {
+        "role_id": 6,
+        "page_key": "projects.list",
+        "level": "partial"
+      },
+      {
+        "role_id": 10,
+        "page_key": "logistics",
+        "level": "none"
+      },
+      {
+        "role_id": 10,
+        "page_key": "petty_cash",
+        "level": "full"
+      },
+      {
+        "role_id": 10,
+        "page_key": "projects",
+        "level": "partial"
+      },
+      {
+        "role_id": 10,
+        "page_key": "projects.calendar",
+        "level": "full"
+      },
+      {
+        "role_id": 10,
+        "page_key": "projects.finances",
+        "level": "none"
+      },
+      {
+        "role_id": 10,
+        "page_key": "projects.list",
+        "level": "none"
+      },
+      {
+        "role_id": 247,
+        "page_key": "projects.calendar",
+        "level": "full"
+      },
+      {
+        "role_id": 247,
+        "page_key": "projects.finances",
+        "level": "full"
+      },
+      {
+        "role_id": 247,
+        "page_key": "projects.list",
+        "level": "full"
+      },
+      {
+        "role_id": 247,
+        "page_key": "service_cases",
+        "level": "none"
+      },
+      {
+        "role_id": 249,
+        "page_key": "delivery_orders",
+        "level": "none"
+      },
+      {
+        "role_id": 249,
+        "page_key": "orders",
+        "level": "none"
+      },
+      {
+        "role_id": 249,
+        "page_key": "overview",
+        "level": "none"
+      },
+      {
+        "role_id": 249,
+        "page_key": "projects",
+        "level": "partial"
+      },
+      {
+        "role_id": 249,
+        "page_key": "projects.calendar",
+        "level": "full"
+      },
+      {
+        "role_id": 249,
+        "page_key": "projects.list",
+        "level": "full"
+      },
+      {
+        "role_id": 249,
+        "page_key": "purchase_orders",
+        "level": "none"
+      },
+      {
+        "role_id": 249,
+        "page_key": "service_cases",
+        "level": "none"
+      },
+      {
+        "role_id": 322,
+        "page_key": "projects.calendar",
+        "level": "full"
+      },
+      {
+        "role_id": 322,
+        "page_key": "projects.finances",
+        "level": "none"
+      },
+      {
+        "role_id": 322,
+        "page_key": "projects.list",
+        "level": "full"
+      },
+      {
+        "role_id": 323,
+        "page_key": "delivery_orders",
+        "level": "full"
+      },
+      {
+        "role_id": 323,
+        "page_key": "logistics",
+        "level": "full"
+      },
+      {
+        "role_id": 323,
+        "page_key": "orders",
+        "level": "partial"
+      },
+      {
+        "role_id": 323,
+        "page_key": "orders.balance",
+        "level": "full"
+      },
+      {
+        "role_id": 323,
+        "page_key": "orders.overdue",
+        "level": "full"
+      },
+      {
+        "role_id": 323,
+        "page_key": "orders.sales_orders",
+        "level": "partial"
+      },
+      {
+        "role_id": 323,
+        "page_key": "overview",
+        "level": "partial"
+      },
+      {
+        "role_id": 323,
+        "page_key": "projects.calendar",
+        "level": "partial"
+      },
+      {
+        "role_id": 323,
+        "page_key": "projects.finances",
+        "level": "none"
+      },
+      {
+        "role_id": 323,
+        "page_key": "projects.list",
+        "level": "partial"
+      },
+      {
+        "role_id": 323,
+        "page_key": "purchase_orders",
+        "level": "partial"
+      },
+      {
+        "role_id": 323,
+        "page_key": "sales",
+        "level": "partial"
+      },
+      {
+        "role_id": 323,
+        "page_key": "service_cases",
+        "level": "partial"
+      },
+      {
+        "role_id": 323,
+        "page_key": "service_cases.by_creditor",
+        "level": "partial"
+      },
+      {
+        "role_id": 323,
+        "page_key": "service_cases.cases",
+        "level": "partial"
+      },
+      {
+        "role_id": 323,
+        "page_key": "service_cases.metrics",
+        "level": "partial"
+      },
+      {
+        "role_id": 324,
+        "page_key": "logistics",
+        "level": "partial"
+      },
+      {
+        "role_id": 324,
+        "page_key": "logistics.fleet",
+        "level": "partial"
+      },
+      {
+        "role_id": 324,
+        "page_key": "logistics.trips",
+        "level": "partial"
+      },
+      {
+        "role_id": 325,
+        "page_key": "orders",
+        "level": "partial"
+      },
+      {
+        "role_id": 325,
+        "page_key": "orders.balance",
+        "level": "partial"
+      },
+      {
+        "role_id": 325,
+        "page_key": "orders.overdue",
+        "level": "partial"
+      },
+      {
+        "role_id": 325,
+        "page_key": "orders.pnl",
+        "level": "full"
+      },
+      {
+        "role_id": 325,
+        "page_key": "overview",
+        "level": "full"
+      },
+      {
+        "role_id": 325,
+        "page_key": "petty_cash",
+        "level": "partial"
+      },
+      {
+        "role_id": 325,
+        "page_key": "projects",
+        "level": "partial"
+      },
+      {
+        "role_id": 325,
+        "page_key": "projects.calendar",
+        "level": "partial"
+      },
+      {
+        "role_id": 325,
+        "page_key": "projects.finances",
+        "level": "full"
+      },
+      {
+        "role_id": 325,
+        "page_key": "projects.list",
+        "level": "partial"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.5291
+      },
+      "duration": 0.5291,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 31154176,
+      "rows_read": 58,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

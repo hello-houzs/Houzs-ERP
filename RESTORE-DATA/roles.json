@@ -1,0 +1,150 @@
+﻿[
+  {
+    "results": [
+      {
+        "id": 324,
+        "name": "BD Exec",
+        "description": "projects, trigger, team, sales team, sales entries",
+        "scope_to_pic": 1,
+        "permissions": "[\"sales.read\",\"users.read\",\"roles.read\",\"sales_team.read\",\"projects.read\",\"projects.chat\",\"projects.checklist.tick\",\"projects.write\",\"projects.approve\",\"projects.manage\",\"sync.run\",\"udf.manage\"]"
+      },
+      {
+        "id": 12,
+        "name": "Customer",
+        "description": "External customer portal — view own cases, add comments and photos",
+        "scope_to_pic": 0,
+        "permissions": "[\"portal.customer\",\"service_cases.read.own\",\"service_cases.comment\"]"
+      },
+      {
+        "id": 4,
+        "name": "Dispatcher",
+        "description": "Trip planning, fleet management, and delivery tracking",
+        "scope_to_pic": 0,
+        "permissions": "[\"sales_orders.read\",\"sales_orders.write\",\"delivery_orders.read\",\"delivery_orders.write\",\"purchase_orders.read\",\"service_cases.read\",\"service_cases.write\",\"service_cases.manage\",\"balance.read\",\"overdue.read\",\"logs.read\",\"trips.read.all\",\"trips.write\",\"trips.manage\",\"planner.run\",\"fleet.read\",\"fleet.manage\",\"sync.run\"]"
+      },
+      {
+        "id": 3,
+        "name": "Driver",
+        "description": "Delivery driver. Driver-app access (clock in/out, own trips) + view event calendar & projects, download project documents, and upload setup/dismantle photos for projects they're crewed on.",
+        "scope_to_pic": 0,
+        "permissions": "[\"trips.read.own\",\"trips.write\",\"fleet.salary\"]"
+      },
+      {
+        "id": 325,
+        "name": "Finance",
+        "description": "View-only access to projects calendar, project details, and project finances.",
+        "scope_to_pic": 0,
+        "permissions": "[\"projects.read\",\"petty_cash.read\"]"
+      },
+      {
+        "id": 6,
+        "name": "Helper",
+        "description": "Setup/dismantle helper. Same as driver — view calendar & projects, download documents, upload setup/dismantle photos for assigned projects.",
+        "scope_to_pic": 0,
+        "permissions": "[\"trips.read.own\",\"fleet.salary\",\"projects.read\"]"
+      },
+      {
+        "id": 7,
+        "name": "IT Admin",
+        "description": null,
+        "scope_to_pic": 0,
+        "permissions": "[\"*\"]"
+      },
+      {
+        "id": 323,
+        "name": "Logistic",
+        "description": "Logistics — arranges setup/dismantle crew + delivery; views calendar, projects, balance & overdue.",
+        "scope_to_pic": 0,
+        "permissions": "[\"projects.read\",\"projects.checklist.tick\",\"service_cases.read\",\"balance.read\",\"overdue.read\",\"delivery_orders.read\",\"delivery_orders.write\",\"sales_orders.read\",\"sales_orders.write\",\"trips.read.own\",\"trips.read.all\",\"trips.manage\",\"planner.run\",\"fleet.read\",\"overdue.write\",\"sales.read\",\"sales.write\"]"
+      },
+      {
+        "id": 10,
+        "name": "Logistic Purchasing",
+        "description": null,
+        "scope_to_pic": 0,
+        "permissions": "[\"projects.read\"]"
+      },
+      {
+        "id": 11,
+        "name": "Manager",
+        "description": "Quality review, approvals, and reporting",
+        "scope_to_pic": 0,
+        "permissions": "[\"sales_orders.read\",\"delivery_orders.read\",\"purchase_orders.read\",\"service_cases.read\",\"service_cases.write\",\"service_cases.manage\",\"service_cases.approve\",\"balance.read\",\"overdue.read\",\"logs.read\",\"trips.read.all\",\"fleet.read\",\"reports.read\"]"
+      },
+      {
+        "id": 249,
+        "name": "Member",
+        "description": "Read-only access to calender",
+        "scope_to_pic": 0,
+        "permissions": "[]"
+      },
+      {
+        "id": 1,
+        "name": "Owner",
+        "description": "Full access to everything, including team and roles",
+        "scope_to_pic": 0,
+        "permissions": "[\"*\"]"
+      },
+      {
+        "id": 322,
+        "name": "Purchaser",
+        "description": null,
+        "scope_to_pic": 0,
+        "permissions": "[\"projects.read\",\"projects.checklist.tick\",\"projects.write\"]"
+      },
+      {
+        "id": 247,
+        "name": "Sales Director",
+        "description": "Sales PIC. Owns projects assigned to them as PIC: can chat, tick checklist items, and log sales entries. Cannot edit project configuration, finance, or archive. Their direct reports inherit visibility of any project they PIC, can view calender.",
+        "scope_to_pic": 0,
+        "permissions": "[\"projects.read\",\"projects.chat\",\"projects.checklist.tick\",\"sales.read\",\"sales.write\",\"sales_orders.read\",\"delivery_orders.read\",\"sales_team.read\"]"
+      },
+      {
+        "id": 8,
+        "name": "Sales Person",
+        "description": "Showroom / delivery staff — registers service cases and captures evidence",
+        "scope_to_pic": 1,
+        "permissions": "[\"service_cases.read\",\"service_cases.write\",\"projects.read\",\"sales.read\",\"sales.write\",\"sales.manage\",\"projects.chat\"]"
+      },
+      {
+        "id": 9,
+        "name": "Service Admin",
+        "description": "Triages, routes, and closes service cases",
+        "scope_to_pic": 0,
+        "permissions": "[\"sales_orders.read\",\"purchase_orders.read\",\"service_cases.read\",\"service_cases.write\",\"service_cases.manage\",\"fleet.read\"]"
+      },
+      {
+        "id": 326,
+        "name": "Storekeeper",
+        "description": "Store/warehouse staff. Same access as drivers & helpers — view calendar & projects, download project documents, upload setup/dismantle photos for assigned projects.",
+        "scope_to_pic": 0,
+        "permissions": "[\"projects.read\"]"
+      },
+      {
+        "id": 13,
+        "name": "Supplier",
+        "description": "External supplier portal — view assigned POs, update status, upload proof",
+        "scope_to_pic": 0,
+        "permissions": "[\"portal.supplier\",\"service_cases.read.assigned\",\"service_cases.supplier_update\"]"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 1.1359
+      },
+      "duration": 1.1359,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 31154176,
+      "rows_read": 18,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

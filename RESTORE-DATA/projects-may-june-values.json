@@ -1,0 +1,600 @@
+﻿[
+  {
+    "results": [
+      {
+        "code": "2026-05-BIGHOME-JOHOR-MVEC-SOUTHKEY-AKEMI",
+        "name": "JOHOR [AKEMI] BIGHOME @ MVEC SOUTHKEY",
+        "start_date": "2026-05-01",
+        "booth_no": "B20",
+        "size_sqm": 68,
+        "total_sales": 206014,
+        "rental": 0
+      },
+      {
+        "code": "2026-05-BIGHOME-JOHOR-MVEC-SOUTHKEY-ZANOTTI",
+        "name": "JOHOR [ZANOTTI] BIGHOME @ MVEC SOUTHKEY",
+        "start_date": "2026-05-01",
+        "booth_no": "B81-B83, B88-B90",
+        "size_sqm": 54,
+        "total_sales": 114441,
+        "rental": 0
+      },
+      {
+        "code": "2026-05-HOMELOVE-PENANG-SETIA-SPICE-CONVENTION-CENTRE-AKEMI",
+        "name": "PENANG [AKEMI] HOMELOVE @ SETIA SPICE CONVENTION CENTRE",
+        "start_date": "2026-05-01",
+        "booth_no": "1129-1132, 1139-1142 (8 BOOTH)",
+        "size_sqm": 72,
+        "total_sales": 116868,
+        "rental": 15200
+      },
+      {
+        "code": "2026-05-HOMELOVE-PENANG-SETIA-SPICE-CONVENTION-CENTRE-DUNLOPILLO",
+        "name": "PENANG [DUNLOPILLO] HOMELOVE @ SETIA SPICE CONVENTION CENTRE",
+        "start_date": "2026-05-01",
+        "booth_no": "A01-A04 (4 BOOTH)",
+        "size_sqm": 36,
+        "total_sales": 234662,
+        "rental": 15200
+      },
+      {
+        "code": "2026-05-MEGAHOME-SABAH-SICC-AKEMI",
+        "name": "SABAH [AKEMI] MEGAHOME @ SICC",
+        "start_date": "2026-05-01",
+        "booth_no": "S95-S100",
+        "size_sqm": 5409,
+        "total_sales": 180896,
+        "rental": 32000
+      },
+      {
+        "code": "2026-05-KAI-HAO-KL-CHEN-KL-AEON-BIG-PUCHONG-AKEMI",
+        "name": "KAI HAO (KL CHEN) — AEON BIG PUCHONG — AKEMI",
+        "start_date": "2026-05-05",
+        "booth_no": "1100SQFT",
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 0
+      },
+      {
+        "code": "2026-05-KAI-HAO-KL-CHEN-KL-AEON-CHERAS-SELATAN-AKEMI",
+        "name": "KL [AKEMI] KAI HAO (KL CHEN) @ AEON CHERAS SELATAN",
+        "start_date": "2026-05-05",
+        "booth_no": "1ST FLOOR 22' X 26'",
+        "size_sqm": 53.14,
+        "total_sales": 70669,
+        "rental": 0
+      },
+      {
+        "code": "2026-05-SOLO-KL-NU-EMPIRE-SUBANG-AKEMI",
+        "name": "KL [AKEMI] SOLO @ NU EMPIRE SUBANG",
+        "start_date": "2026-05-06",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-05-MALL-MGT-KUANTAN-EAST-COAST-MALL-AKEMI",
+        "name": "KUANTAN [AKEMI] MALL MGT @ EAST COAST MALL",
+        "start_date": "2026-05-07",
+        "booth_no": "Z3 1000SQFT",
+        "size_sqm": 92.9,
+        "total_sales": 108204,
+        "rental": 0
+      },
+      {
+        "code": "2026-05-MYHOME-KL-MID-VALLEY-DUNLOPILLO",
+        "name": "Kuala Lumpur [DUNLOPILLO] MYHOME @ Midvalley Mega Mall",
+        "start_date": "2026-05-07",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 0
+      },
+      {
+        "code": "2026-05-HOMELOVE-KL-MID-VALLEY-AKEMI",
+        "name": "KL [AKEMI] HOMELOVE @ MID VALLEY",
+        "start_date": "2026-05-08",
+        "booth_no": "1091-1098",
+        "size_sqm": 72,
+        "total_sales": 135282,
+        "rental": 32000
+      },
+      {
+        "code": "2026-05-MLE-SARAWAK-MCCC-KUCHING-AKEMI",
+        "name": "SARAWAK [AKEMI] MLE @ MCCC KUCHING",
+        "start_date": "2026-05-14",
+        "booth_no": "A4 & A10 (8 BOOTH)",
+        "size_sqm": 72,
+        "total_sales": 179961,
+        "rental": 37600
+      },
+      {
+        "code": "2026-05-MLE-SARAWAK-MCCC-KUCHING-ERGOTEX",
+        "name": "SARAWAK [ERGOTEX] MLE @ MCCC KUCHING",
+        "start_date": "2026-05-14",
+        "booth_no": "A26 (8 BOOTH)",
+        "size_sqm": 72,
+        "total_sales": 49078,
+        "rental": 30000
+      },
+      {
+        "code": "2026-05-REX-KL-PAVILION-BUKIT-JALIL-AKEMI",
+        "name": "KL [AKEMI] REX @ PAVILION BUKIT JALIL",
+        "start_date": "2026-05-15",
+        "booth_no": "3011 (6 BOOTH)",
+        "size_sqm": 90,
+        "total_sales": 75420,
+        "rental": 24000
+      },
+      {
+        "code": "2026-05-REX-KL-PAVILION-BUKIT-JALIL-ERGOTEX",
+        "name": "KL [ERGOTEX] REX @ PAVILION BUKIT JALIL",
+        "start_date": "2026-05-15",
+        "booth_no": "1069-1073, 1075",
+        "size_sqm": 54,
+        "total_sales": 9688,
+        "rental": 23000
+      },
+      {
+        "code": "2026-05-REX-KL-PAVILION-BUKIT-JALIL-ZANOTTI",
+        "name": "KL [ZANOTTI] REX @ PAVILION BUKIT JALIL",
+        "start_date": "2026-05-15",
+        "booth_no": "3011 (4 BOOTH)",
+        "size_sqm": 36,
+        "total_sales": 73100,
+        "rental": 17000
+      },
+      {
+        "code": "2026-05-MR-OOI-TS-MOON-KEDAH-AMAN-CENTRAL-AKEMI",
+        "name": "KEDAH [AKEMI] MR OOI (TS MOON) @ AMAN CENTRAL",
+        "start_date": "2026-05-21",
+        "booth_no": "CENTRE COURT (4000sqft)",
+        "size_sqm": 388,
+        "total_sales": 44016,
+        "rental": 0
+      },
+      {
+        "code": "2026-05-MLE-JOHOR-MVEC-SOUTHKEY-AKEMI",
+        "name": "JOHOR [AKEMI] MLE @ MVEC SOUTHKEY",
+        "start_date": "2026-05-22",
+        "booth_no": "C20 (8 BOOTH)",
+        "size_sqm": 36,
+        "total_sales": 165415,
+        "rental": 32000
+      },
+      {
+        "code": "2026-05-MLE-JOHOR-MVEC-SOUTHKEY-ZANOTTI",
+        "name": "JOHOR [ZANOTTI] MLE @ MVEC SOUTHKEY",
+        "start_date": "2026-05-22",
+        "booth_no": "B56 ( 4 BOOTH)",
+        "size_sqm": 63,
+        "total_sales": 31251,
+        "rental": 32000
+      },
+      {
+        "code": "2026-05-HOMELOVE-KL-SPCC-AKEMI-C-C",
+        "name": "KL [AKEMI C&C] HOMELOVE @ SPCC",
+        "start_date": "2026-05-22",
+        "booth_no": "2 X 6",
+        "size_sqm": 24,
+        "total_sales": 7737.8,
+        "rental": null
+      },
+      {
+        "code": "2026-05-BIGHOME-KL-SCCC-SHAH-ALAM-AKEMI",
+        "name": "KL [AKEMI] BIGHOME @ SCCC SHAH ALAM",
+        "start_date": "2026-05-22",
+        "booth_no": "A20 (6 BOOTH)",
+        "size_sqm": 54,
+        "total_sales": 35588,
+        "rental": 22800
+      },
+      {
+        "code": "2026-05-HOMELOVE-KL-SPCC-AKEMI",
+        "name": "KL [AKEMI] HOMELOVE @ SPCC",
+        "start_date": "2026-05-22",
+        "booth_no": "314-316",
+        "size_sqm": 73,
+        "total_sales": 88652,
+        "rental": 0
+      },
+      {
+        "code": "2026-05-HOMELOVE-KL-SPCC-ERGOTEX",
+        "name": "KL [ERGOTEX] HOMELOVE @ SPCC",
+        "start_date": "2026-05-22",
+        "booth_no": "A18-A22",
+        "size_sqm": 72,
+        "total_sales": 194999,
+        "rental": null
+      },
+      {
+        "code": "2026-05-BIGHOME-KL-SCCC-SHAH-ALAM-ZANOTTI",
+        "name": "KL [ZANOTTI] BIGHOME @ SCCC SHAH ALAM",
+        "start_date": "2026-05-22",
+        "booth_no": "A02 (6 BOOTH)",
+        "size_sqm": 54,
+        "total_sales": 34540,
+        "rental": 34000
+      },
+      {
+        "code": "2026-05-HOMELOVE-KL-SPCC-ZANOTTI",
+        "name": "KL [ZANOTTI] HOMELOVE @ SPCC",
+        "start_date": "2026-05-22",
+        "booth_no": "A29",
+        "size_sqm": 72,
+        "total_sales": 75136,
+        "rental": null
+      },
+      {
+        "code": "2026-05-MYHOME-KL-STADIUM-BUKIT-JALIL-AKEMI",
+        "name": "KL [AKEMI] MYHOME @ STADIUM  BUKIT JALIL",
+        "start_date": "2026-05-29",
+        "booth_no": "A866",
+        "size_sqm": 75,
+        "total_sales": 112063,
+        "rental": 28000
+      },
+      {
+        "code": "2026-05-MLE-KL-STADIUM-BUKIT-JALIL-ERGOTEX",
+        "name": "KL [ERGOTEX] MLE @ STADIUM BUKIT JALIL",
+        "start_date": "2026-05-29",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-05-MYHOME-KL-STADIUM-BUKIT-JALIL-ERGOTEX",
+        "name": "KL [ERGOTEX] MYHOME @ STADIUM  BUKIT JALIL",
+        "start_date": "2026-05-29",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 28000
+      },
+      {
+        "code": "2026-05-MYHOME-KL-STADIUM-BUKIT-JALIL-ZANOTTI",
+        "name": "KL [ZANOTTI] MYHOME @ STADIUM  BUKIT JALIL",
+        "start_date": "2026-05-29",
+        "booth_no": "B836",
+        "size_sqm": 45,
+        "total_sales": 16926,
+        "rental": 28000
+      },
+      {
+        "code": "2026-05-MLE-MELAKA-MITC-AKEMI",
+        "name": "MELAKA [AKEMI] MLE @ MITC",
+        "start_date": "2026-05-29",
+        "booth_no": "E15 & E17",
+        "size_sqm": 72,
+        "total_sales": 69098,
+        "rental": 24000
+      },
+      {
+        "code": "2026-05-MLE-MELAKA-MITC-ZANOTTI",
+        "name": "MELAKA [ZANOTTI] MLE @ MITC",
+        "start_date": "2026-05-29",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 24000
+      },
+      {
+        "code": "2026-05-MLE-PENANG-PWCC-AKEMI",
+        "name": "PENANG [AKEMI] MLE @ PWCC",
+        "start_date": "2026-05-30",
+        "booth_no": "C9",
+        "size_sqm": 54,
+        "total_sales": 175282,
+        "rental": 24000
+      },
+      {
+        "code": "2026-05-MLE-PENANG-PWCC-ERGOTEX",
+        "name": "PENANG [ERGOTEX] MLE @ PWCC",
+        "start_date": "2026-05-30",
+        "booth_no": "C22",
+        "size_sqm": 54,
+        "total_sales": 90058,
+        "rental": 24000
+      },
+      {
+        "code": "2026-05-MLE-PENANG-PWCC-ZANOTTI",
+        "name": "PENANG [ZANOTTI] MLE @ PWCC",
+        "start_date": "2026-05-30",
+        "booth_no": "C8",
+        "size_sqm": 54,
+        "total_sales": 66898,
+        "rental": 24000
+      },
+      {
+        "code": "2026-06-INHOME-JOHOR-THE-COMMUNE-KULAI-AKEMI",
+        "name": "JOHOR [AKEMI] INHOME @ THE COMMUNE KULAI",
+        "start_date": "2026-06-05",
+        "booth_no": "102-107 (6 Booth)",
+        "size_sqm": 54,
+        "total_sales": 49532,
+        "rental": null
+      },
+      {
+        "code": "2026-06-BIGHOME-KL-MID-VALLEY-AKEMI-C-C",
+        "name": "KL [AKEMI C&C] BIGHOME @ MID VALLEY",
+        "start_date": "2026-06-05",
+        "booth_no": "B49-B53, B61-B65",
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-BIGHOME-KL-MID-VALLEY-AKEMI",
+        "name": "KL [AKEMI] BIGHOME @ MID VALLEY",
+        "start_date": "2026-06-05",
+        "booth_no": "B49-B53, B61-B65 (10 Booth)",
+        "size_sqm": 92,
+        "total_sales": 515856,
+        "rental": null
+      },
+      {
+        "code": "2026-06-MEGAHOME-PENANG-SETIA-SPICE-CONVENTION-CENTRE-AKEMI",
+        "name": "PENANG [AKEMI] MEGAHOME @ SETIA SPICE CONVENTION CENTRE",
+        "start_date": "2026-06-05",
+        "booth_no": "K85-88",
+        "size_sqm": 50.75,
+        "total_sales": 164830,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-MEGAHOME-PENANG-SETIA-SPICE-CONVENTION-CENTRE-ZANOTTI",
+        "name": "PENANG [ZANOTTI] MEGAHOME @ SETIA SPICE CONVENTION CENTRE",
+        "start_date": "2026-06-05",
+        "booth_no": "K087",
+        "size_sqm": 42,
+        "total_sales": 67262,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-MLE-SEREMBAN-DATARAN-CENTRIO-AKEMI",
+        "name": "SEREMBAN [AKEMI] MLE @ DATARAN CENTRIO",
+        "start_date": "2026-06-05",
+        "booth_no": "F7 (6 BOOTH)",
+        "size_sqm": 54,
+        "total_sales": 41564,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-MLE-SEREMBAN-DATARAN-CENTRIO-ZANOTTI",
+        "name": "SEREMBAN [ZANOTTI] MLE @ DATARAN CENTRIO",
+        "start_date": "2026-06-05",
+        "booth_no": "F6 (4 BOOTH)",
+        "size_sqm": 36,
+        "total_sales": 11288,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-VINCENT-VTEAM-EVENT-KL-AEON-TAMAN-EQUINE-AKEMI",
+        "name": "KL [AKEMI] SOLO @ AEON TAMAN EQUINE",
+        "start_date": "2026-06-09",
+        "booth_no": "CENTRE COURT (2400sqft)",
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-KAI-HAO-KL-CHEN-JOHOR-SUNWAY-KLUANG-MALL-AKEMI",
+        "name": "JOHOR [AKEMI] KAI HAO (KL, CHEN) @ SUNWAY KLUANG MALL",
+        "start_date": "2026-06-12",
+        "booth_no": "Atrium 1000sqft (Diameter 32ft)",
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-MLE-KL-SCCC-SHAH-ALAM-AKEMI",
+        "name": "KL [AKEMI] MLE @ SCCC SHAH ALAM",
+        "start_date": "2026-06-12",
+        "booth_no": "C9 (6 Booth)",
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-MYHOME-KL-THE-STARLING-MALL-AKEMI",
+        "name": "KL [AKEMI] MYHOME @ THE STARLING MALL",
+        "start_date": "2026-06-12",
+        "booth_no": "BS (8 Booth)",
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-MYHOME-KL-THE-STARLING-MALL-ERGOTEX",
+        "name": "KL [ERGOTEX] MYHOME @ THE STARLING MALL",
+        "start_date": "2026-06-12",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": 16200,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-MYHOME-KL-THE-STARLING-MALL-ERGOTEX-2",
+        "name": "KL [ERGOTEX] MYHOME @ THE STARLING MALL",
+        "start_date": "2026-06-12",
+        "booth_no": "A803 (4 Booth)",
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-MYHOME-KL-THE-STARLING-MALL-ERGOTEX-3",
+        "name": "KL [ERGOTEX] MYHOME @ THE STARLING MALL",
+        "start_date": "2026-06-12",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-MYHOME-KL-THE-STARLING-MALL-ERGOTEX-4",
+        "name": "KL [ERGOTEX] MYHOME @ THE STARLING MALL",
+        "start_date": "2026-06-12",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-MYHOME-KL-THE-STARLING-MALL-ERGOTEX-5",
+        "name": "KL [ERGOTEX] MYHOME @ THE STARLING MALL",
+        "start_date": "2026-06-12",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-MLE-KL-SCCC-SHAH-ALAM-ZANOTTI",
+        "name": "KL [ZANOTTI] MLE @ SCCC SHAH ALAM",
+        "start_date": "2026-06-12",
+        "booth_no": "C26 (6 Booth)",
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-MYHOME-KL-THE-STARLING-MALL-ZANOTTI",
+        "name": "KL [ZANOTTI] MYHOME @ THE STARLING MALL",
+        "start_date": "2026-06-12",
+        "booth_no": "A605 (4 Booth)",
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-MALL-MGT-PENANG-GURNEY-PARAGON-AKEMI",
+        "name": "PENANG [AKEMI] MALL MGT @ GURNEY PARAGON",
+        "start_date": "2026-06-12",
+        "booth_no": "ATRIUM B & C LEVEL 1 (2300SQFT)",
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-MALL-MGMT-KL-MAHKOTA-PARADE-AKEMI",
+        "name": "MELAKA [AKEMI] SOLO @ MAHKOTA PARADE",
+        "start_date": "2026-06-16",
+        "booth_no": "KG1AB 20ft x 60ft (max ceiling height 8ft)",
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-BIGHOME--STADIUMBUKITJALIL-ZANOTTI",
+        "name": "KL [ZANOTTI] BIGHOME @ STADIUM BUKIT JALIL",
+        "start_date": "2026-06-18",
+        "booth_no": "2096-2105 (10 Booth)",
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-HOMELOVE-JOHOR-MVEC-SOUTHKEY-AKEMI",
+        "name": "JOHOR [AKEMI] HOMELOVE @ MVEC SOUTHKEY",
+        "start_date": "2026-06-19",
+        "booth_no": "2110-2113 (4 Booth)",
+        "size_sqm": null,
+        "total_sales": 20000,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-HOMELOVE-JOHOR-MVEC-SOUTHKEY-ZANOTTI",
+        "name": "JOHOR [ZANOTTI] HOMELOVE @ MVEC SOUTHKEY",
+        "start_date": "2026-06-19",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-MALL-MGMT-MELAKA-MAHKOTA-PARADE-ZANOTTI",
+        "name": "MELAKA [ZANOTTI] MALL MGMT @ MAHKOTA PARADE",
+        "start_date": "2026-06-19",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-BIGHOME-KL-SCCC-SHAH-ALAM-AKEMI",
+        "name": "KL [AKEMI] BIGHOME @ SCCC SHAH ALAM",
+        "start_date": "2026-06-22",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-BIGHOME-KL-SCCC-SHAH-ALAM-ZANOTTI",
+        "name": "KL [ZANOTTI] BIGHOME @ SCCC SHAH ALAM",
+        "start_date": "2026-06-22",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-HOMELOVE-SARAWAK-BCCK-KUCHING-AKEMI",
+        "name": "SARAWAK [AKEMI] HOMELOVE @ BCCK KUCHING",
+        "start_date": "2026-06-25",
+        "booth_no": "C16-C21 (6 Booth)",
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-HOMELOVE-SARAWAK-BCCK-KUCHING-AKEMI-2",
+        "name": "SARAWAK [AKEMI] HOMELOVE @ BCCK KUCHING",
+        "start_date": "2026-06-25",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": null,
+        "rental": null
+      },
+      {
+        "code": "2026-06-MYHOME-KL-MITEC-AKEMI",
+        "name": "KL [AKEMI] MYHOME @ MITEC",
+        "start_date": "2026-06-26",
+        "booth_no": null,
+        "size_sqm": null,
+        "total_sales": 0,
+        "rental": 0
+      },
+      {
+        "code": "2026-06-HOMELOVE-PUTRAJAYA-IOIGECC-AKEMI",
+        "name": "PUTRAJAYA [AKEMI] HOMELOVE @ IOIGECC",
+        "start_date": "2026-06-26",
+        "booth_no": "011-013, 018-020 (6 BOOTH)",
+        "size_sqm": 54,
+        "total_sales": 0,
+        "rental": 0
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 6.6392
+      },
+      "duration": 6.6392,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 31154176,
+      "rows_read": 197,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]

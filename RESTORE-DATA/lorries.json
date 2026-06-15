@@ -1,0 +1,51 @@
+﻿[
+  {
+    "results": [
+      {
+        "plate": "VNB 9058",
+        "size": "4 ton (21ft)",
+        "model": null,
+        "warehouse": "KL",
+        "is_internal": 1,
+        "status": "active",
+        "is_active": 1
+      },
+      {
+        "plate": "VPC 9058",
+        "size": "5 Ton (21ft)",
+        "model": null,
+        "warehouse": "KL",
+        "is_internal": 1,
+        "status": "active",
+        "is_active": 1
+      },
+      {
+        "plate": "VQE 9058",
+        "size": "3 Ton (17ft)",
+        "model": null,
+        "warehouse": "KL",
+        "is_internal": 1,
+        "status": "active",
+        "is_active": 1
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "APAC",
+      "served_by_colo": "SIN",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.5863
+      },
+      "duration": 0.5863,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 31154176,
+      "rows_read": 10,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
