@@ -68,6 +68,27 @@ async function bumpProjectFinance(env: Env, projectId: number | null | undefined
   }
 }
 
+// Append-only edit history for a sales entry (mig 0015 sales_entry_activity).
+// Best-effort — a logging failure must never break the user's save.
+async function logSalesActivity(
+  env: Env,
+  entryId: number,
+  userId: number | null | undefined,
+  action: string,
+  note: string | null = null,
+) {
+  try {
+    await env.DB.prepare(
+      `INSERT INTO sales_entry_activity (entry_id, user_id, action, note)
+       VALUES (?, ?, ?, ?)`,
+    )
+      .bind(entryId, userId ?? null, action, note)
+      .run();
+  } catch (e) {
+    console.error("[logSalesActivity]", entryId, action, e);
+  }
+}
+
 // ── Scoping helper ───────────────────────────────────────────
 // Reps (role.scope_to_pic=1) without sales.manage only see entries
 // they created. Anyone with sales.manage, or any unscoped role, sees
@@ -431,11 +452,23 @@ app.get("/entries/:id", requirePageAccess("sales"), async (c) => {
     .bind(id)
     .all();
 
+  // Full edit history — who touched the entry and when (sales_entry_activity).
+  const activityRes = await c.env.DB.prepare(
+    `SELECT a.id, a.action, a.note, a.created_at, u.name as user_name
+       FROM sales_entry_activity a
+       LEFT JOIN users u ON u.id = a.user_id
+      WHERE a.entry_id = ?
+      ORDER BY a.created_at, a.id`
+  )
+    .bind(id)
+    .all();
+
   return c.json({
     entry: row,
     custom,
     items: itemsRes.results ?? [],
     payments: paymentsRes.results ?? [],
+    activity: activityRes.results ?? [],
   });
 });
 
@@ -587,6 +620,8 @@ app.post("/entries", requirePageAccess("sales"), async (c) => {
 
   await bumpProjectFinance(c.env, body.project_id ?? null);
 
+  await logSalesActivity(c.env, id, user?.id, "created");
+
   return c.json({ id, doc_no: docNo }, 201);
 });
 
@@ -728,6 +763,8 @@ app.patch("/entries/:id", requirePageAccess("sales"), async (c) => {
     await bumpProjectFinance(c.env, current.project_id);
   }
 
+  await logSalesActivity(c.env, id, user?.id, "edited");
+
   return c.json({ ok: true });
 });
 
@@ -765,6 +802,7 @@ app.post("/entries/:id/submit", requirePageAccess("sales"), async (c) => {
   )
     .bind(id)
     .run();
+  await logSalesActivity(c.env, id, user?.id, "submitted");
   return c.json({ ok: true });
 });
 
@@ -772,12 +810,14 @@ app.post("/entries/:id/submit", requirePageAccess("sales"), async (c) => {
 app.post("/entries/:id/unsubmit", requirePageAccess("sales", "full"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
+  const user = c.get("user");
   await c.env.DB.prepare(
     `UPDATE sales_entries SET status = 'draft', updated_at = datetime('now')
       WHERE id = ? AND status = 'submitted'`
   )
     .bind(id)
     .run();
+  await logSalesActivity(c.env, id, user?.id, "unsubmitted");
   return c.json({ ok: true });
 });
 
@@ -785,6 +825,7 @@ app.post("/entries/:id/unsubmit", requirePageAccess("sales", "full"), async (c) 
 app.post("/entries/:id/void", requirePageAccess("sales", "full"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Bad id" }, 400);
+  const user = c.get("user");
   const before = await c.env.DB.prepare(
     `SELECT project_id FROM sales_entries WHERE id = ?`
   )
@@ -796,6 +837,7 @@ app.post("/entries/:id/void", requirePageAccess("sales", "full"), async (c) => {
     .bind(id)
     .run();
   await bumpProjectFinance(c.env, before?.project_id ?? null);
+  await logSalesActivity(c.env, id, user?.id, "voided");
   return c.json({ ok: true });
 });
 
