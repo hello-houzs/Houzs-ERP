@@ -175,7 +175,7 @@ export function Panel({
 }
 
 interface SectionProps {
-  title: string;
+  title: ReactNode;
   children: ReactNode;
   muted?: boolean;
   /** Optional control rendered top-right of the section header. */

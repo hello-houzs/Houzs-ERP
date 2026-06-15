@@ -181,6 +181,11 @@ interface ProjectDetail {
     dismantle_helper_2_id: number | null;
     dismantle_helper_2_name: string | null;
     dismantle_helper_outsourced: number;
+    // Phase crew editor (mig 097) -- JSON: drivers/helpers (name+phone),
+    // lorries, outsourced (name/phone/plate). Read by the stage stepper
+    // (setup_crew) and written by the Setup & Dismantle crew editor.
+    setup_crew: string | null;
+    dismantle_crew: string | null;
     banner_message: string | null;
     banner_tone: "info" | "warning" | "error" | null;
     // Payment workflow
@@ -868,6 +873,10 @@ function ProjectsListView() {
   // automatically when the user picks the Completed pill so the
   // controls don't fight each other.
   const [hideCompleted, setHideCompleted] = useLocalStorage<boolean>("projects:hideCompleted", false);
+  // "My pending tasks" -- when on, the list shows only projects that have
+  // a pending checklist item belonging to the caller's role (mapped to a
+  // chip label / document title server-side). Export is unaffected.
+  const [myPending, setMyPending] = useLocalStorage<boolean>("projects:myPending", false);
 
   // ?focus=ID — Overview inbox deep-links straight to the detail page.
   useFocusFromUrl((id) => navigate(`/projects/${id}`, { replace: true }));
@@ -888,6 +897,7 @@ function ProjectsListView() {
           month: month || undefined,
           section: section || undefined,
           exclude_done: excludeDoneParam,
+          my_pending: myPending ? 1 : undefined,
           search,
           page,
           per_page: perPage,
@@ -895,7 +905,7 @@ function ProjectsListView() {
           ...sortParams,
         })}`
       ),
-    [brand, year, month, section, excludeDoneParam, search, page, perPage, showArchived, sort?.key, sort?.dir]
+    [brand, year, month, section, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir]
   );
 
   const summary = useQuery<{
@@ -1193,7 +1203,22 @@ function ProjectsListView() {
             </option>
           ))}
         </select>
-        <label className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-ink-secondary">
+        <label
+          className="ml-auto inline-flex items-center gap-1.5 text-[11px] font-semibold text-ink-secondary"
+          title="Show only projects with a task pending on your side (your role)"
+        >
+          <input
+            type="checkbox"
+            checked={myPending}
+            onChange={(e) => {
+              setPage(1);
+              setMyPending(e.target.checked);
+            }}
+            className="accent-accent"
+          />
+          My pending tasks
+        </label>
+        <label className="inline-flex items-center gap-1.5 text-[11px] text-ink-secondary">
           <input
             type="checkbox"
             checked={!!hideCompleted}
@@ -1381,6 +1406,9 @@ interface CalendarProject {
   // active_section_name + sections_total.
   active_section_name?: string | null;
   sections_total?: number;
+  // Calendar masks the title to the composed default name for solo
+  // event types (backend returns event_type_name on the calendar feed).
+  event_type_name?: string | null;
 }
 
 interface CalendarTask {
@@ -3211,7 +3239,17 @@ function ProjectsCalendarView() {
                     <button
                       key={`${w}-${seg.project.id}-${seg.startCol}`}
                       onClick={() => navigate(`/projects/${seg.project.id}`)}
-                      title={`${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`}
+                      title={
+                        (seg.project.event_type_name || "").toLowerCase() === "solo"
+                          ? `${seg.project.code} — ${composeDefaultProjectName({
+                              state: seg.project.state,
+                              brand: seg.project.brand,
+                              organizer: seg.project.organizer,
+                              venue: seg.project.venue,
+                              event_type_slug: "solo",
+                            })}`
+                          : `${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`
+                      }
                       style={{
                         position: "absolute",
                         left: `calc(${leftPct}% + 4px)`,
@@ -3227,7 +3265,15 @@ function ProjectsCalendarView() {
                       )}
                     >
                       {seg.clipLeft && "‹ "}
-                      {seg.project.name}
+                      {(seg.project.event_type_name || "").toLowerCase() === "solo"
+                        ? composeDefaultProjectName({
+                            state: seg.project.state,
+                            brand: seg.project.brand,
+                            organizer: seg.project.organizer,
+                            venue: seg.project.venue,
+                            event_type_slug: "solo",
+                          })
+                        : seg.project.name}
                       {seg.clipRight && " ›"}
                     </button>
                   );
@@ -3994,16 +4040,15 @@ function ProjectDetailContent({
           {/* ── Stage progress (directly under page title) ──────────
              Per-section pills with completion tick + lead time chip.
              Print button lives in the title actions now. */}
-          <div className="mb-4 flex flex-wrap items-center gap-2.5 border-b border-border-subtle pb-3">
+          <div className="mb-4 border-b border-border-subtle pb-3">
             <StatusDot variant={stageVariant(p.stage)} label={STAGE_LABEL[p.stage]} />
-            {(detail.data?.section_progress ?? []).length > 0 ? (
-              <StageProgressRow
-                sections={detail.data!.section_progress!}
-                checklist={checklist}
-              />
-            ) : (
-              <ProgressBar pct={p.progress_pct ?? 0} />
-            )}
+            <div className="mt-3">
+              {(detail.data?.section_progress ?? []).length > 0 ? (
+                <ProjectStageStepper checklist={checklist} startDate={p.start_date} setupCrew={p.setup_crew} setupStartAt={p.setup_start_at} />
+              ) : (
+                <ProgressBar pct={p.progress_pct ?? 0} />
+              )}
+            </div>
           </div>
 
           {/* ── Project spec strip ──────────────────────────────────
@@ -4059,7 +4104,7 @@ function ProjectDetailContent({
 
               {fullAccess && (
                 <>
-                  <LogisticsScheduleSection project={p} trips={trips} patch={patch} />
+                  <LogisticsCrewSection project={p} patch={patch} />
                   <PhasePhotosSection projectId={id} />
                   <FinanceLedgerSection
                     projectId={id}
@@ -4836,7 +4881,7 @@ function TaskAttachmentRow({
         {attachment.uploader_name || "—"}
       </span>
       <span className="font-mono text-[10px] text-ink-muted">
-        {formatDate(attachment.uploaded_at)}
+        {formatDateTime(attachment.uploaded_at)}
       </span>
       {canManage ? (
         <button
@@ -4853,6 +4898,117 @@ function TaskAttachmentRow({
       ) : (
         <span />
       )}
+    </div>
+  );
+}
+
+// ── Project Stage stepper ─────────────────────────────────────
+// Auto-detected 9-step timeline (Floorplan → Done) with T-offset
+// deadlines from the project's start date. A step is "done" when its
+// mapped checklist item(s) are done; steps whose items don't exist
+// (e.g. removed from the template) are treated as pass-through so they
+// never block. The current step is the first not-done one — shown red
+// when today is past its deadline.
+const PROJECT_STAGES: { label: string; offset: number; titles: string[]; kind?: "crew" }[] = [
+  { label: "Floorplan", offset: -21, titles: ["Blank Floorplan"] },
+  { label: "3D", offset: -14, titles: ["3D Design"] },
+  // "Stocks Request" retired — the "Stocks Request Listing" item was
+  // removed, so the step is dropped from the tracker.
+  { label: "Stocks Transfer", offset: -7, titles: ["Stock Out Transfer Record"] },
+  { label: "Driver Info", offset: -3, titles: ["Stock In Transfer Record"] },
+  // Setup/Dismantle crew arrangement — not a checklist item; goes green
+  // when the Setup & Dismantle section is filled (kind: "crew").
+  { label: "Setup/Dismantle", offset: -2, titles: [], kind: "crew" },
+  { label: "Setup Image", offset: 0, titles: ["Setup Image"] },
+  { label: "Filled Floorplan", offset: 3, titles: ["Filled Floorplan"] },
+  { label: "Event Complete", offset: 7, titles: ["Event Complete Image"] },
+  { label: "Done", offset: 7, titles: [] },
+];
+
+function ProjectStageStepper({
+  checklist,
+  startDate,
+  setupCrew,
+  setupStartAt,
+}: {
+  checklist?: ChecklistItem[];
+  startDate?: string | null;
+  /** Setup & Dismantle crew JSON — drives the "Setup/Dismantle" step. */
+  setupCrew?: string | null;
+  setupStartAt?: string | null;
+}) {
+  const items = checklist ?? [];
+  // Setup is considered "arranged" when a setup time is set OR the setup
+  // crew JSON holds anything (dismantle may be left empty = same as setup).
+  const setupArranged =
+    !!setupStartAt ||
+    (!!setupCrew && !["", "{}"].includes(setupCrew.trim()));
+  const stepDone = (idx: number): boolean => {
+    const st = PROJECT_STAGES[idx];
+    if (st.kind === "crew") return setupArranged;
+    if (st.titles.length === 0) return false; // final "Done" handled below
+    const present = items.filter((i) => st.titles.includes(i.title));
+    if (present.length === 0) return true; // no signal → pass-through
+    return present.every((i) => i.status === "done");
+  };
+  const lastIdx = PROJECT_STAGES.length - 1;
+  let currentIdx = PROJECT_STAGES.findIndex((_, i) => i < lastIdx && !stepDone(i));
+  const allDone = currentIdx === -1;
+  if (allDone) currentIdx = lastIdx;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayMs = today.getTime();
+  const startMs = startDate ? new Date(`${startDate}T00:00:00`).getTime() : null;
+  const deadlineMs = (offset: number) => (startMs != null ? startMs + offset * 86400000 : null);
+
+  return (
+    <div className="w-full overflow-x-auto">
+      <div className="mb-2 flex items-center gap-3 text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
+        <span>Auto-detected</span>
+        <span className="text-synced">● Done</span>
+        <span className="text-warning-text">● Pending</span>
+        <span className="text-err">● Overdue</span>
+      </div>
+      <div className="flex min-w-fit items-start">
+        {PROJECT_STAGES.map((st, i) => {
+          const dl = deadlineMs(st.offset);
+          const isDone = allDone ? true : i < currentIdx;
+          const isCurrent = !allDone && i === currentIdx;
+          const overdue = isCurrent && dl != null && todayMs > dl && i !== lastIdx;
+          const lateDays = overdue && dl != null ? Math.round((todayMs - dl) / 86400000) : 0;
+          const circle = isDone
+            ? "bg-synced text-white border-synced"
+            : overdue
+              ? "bg-err text-white border-err"
+              : isCurrent
+                ? "bg-warning-text text-white border-warning-text"
+                : "bg-surface text-ink-muted border-border";
+          const txt = isDone
+            ? "text-synced"
+            : overdue
+              ? "text-err"
+              : isCurrent
+                ? "text-warning-text"
+                : "text-ink-muted";
+          return (
+            <div key={st.label} className="flex min-w-[72px] flex-1 flex-col items-center text-center">
+              <div className="flex w-full items-center">
+                <div className={cn("h-0.5 flex-1", i === 0 ? "opacity-0" : i <= currentIdx ? "bg-synced/50" : "bg-border")} />
+                <div className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 text-[10px] font-bold", circle)}>
+                  {isDone ? <Check size={12} strokeWidth={3} /> : i + 1}
+                </div>
+                <div className={cn("h-0.5 flex-1", i === lastIdx ? "opacity-0" : i < currentIdx ? "bg-synced/50" : "bg-border")} />
+              </div>
+              <div className={cn("mt-1.5 text-[9px] font-semibold uppercase tracking-wider", txt)}>{st.label}</div>
+              <div className="text-[8px] tabular-nums text-ink-muted">
+                {st.offset >= 0 ? `T+${st.offset}` : `T${st.offset}`}d
+              </div>
+              {overdue && <div className="text-[8px] font-semibold text-err">{lateDays}d late</div>}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -5426,18 +5582,44 @@ function TasklistSections({
                         >
                           <Pencil size={11} />
                         </button>
-                        <button
-                          onClick={() => deleteSection(section.id, section.name)}
-                          className="rounded p-0.5 text-ink-muted hover:bg-err/10 hover:text-err"
-                          title="Delete section"
-                        >
-                          <Trash2 size={11} />
-                        </button>
                       </>
                     )}
                   </>
                 )}
               </div>
+              {section?.display_mode === "documents" ? (
+                <DocumentTable
+                  items={items}
+                  comments={comments}
+                  canManage={!!canManage}
+                  canApproveFor={(it) => !it.required_perm || can(it.required_perm)}
+                  attachmentsByItem={attachmentsByItem}
+                  onStatus={(it, s) => onItemStatus(it, s)}
+                  onReview={async (it, action, payload) => {
+                    try {
+                      await api.post(`/api/projects/checklist/${it.id}/review`, {
+                        action,
+                        ...payload,
+                      });
+                      onReload();
+                    } catch (e: any) {
+                      toast.error(e?.message || "Failed");
+                    }
+                  }}
+                  onReload={onReload}
+                  toast={toast}
+                />
+              ) : section?.name === "3D APPROVAL" ? (
+                <ThreeDApprovalBlock
+                  items={items}
+                  attachmentsByItem={attachmentsByItem}
+                  canManage={!!canManage}
+                  canTick={canTick}
+                  onStatus={(it, s) => onItemStatus(it, s)}
+                  onReload={onReload}
+                  toast={toast}
+                />
+              ) : (
               <div className="space-y-1.5 p-2">
                 {items.map((item) => (
                   <Fragment key={item.id}>
@@ -5493,9 +5675,6 @@ function TasklistSections({
                     onAttachmentsChanged={onReload}
                     toast={toast}
                   />
-                  {item.title === "Deco / Coffee Table" && (
-                    <ChecklistRemark item={item} onSaved={onReload} toast={toast} />
-                  )}
                   </Fragment>
                 ))}
                 {items.length === 0 && (
@@ -5503,35 +5682,8 @@ function TasklistSections({
                     No tasks in this section yet.
                   </div>
                 )}
-                {canManage && (
-                  <button
-                    onClick={() => {
-                      setAddInSectionId(sectionId);
-                      setAddItemOpen(true);
-                    }}
-                    className="mt-1 inline-flex items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-[10.5px] text-ink-muted hover:border-accent/40 hover:text-accent"
-                  >
-                    <Plus size={10} /> Add task
-                  </button>
-                )}
-                {canManage && addItemOpen && addInSectionId === sectionId && (
-                  <AddChecklistItem
-                    projectId={projectId}
-                    users={users}
-                    sectionId={sectionId}
-                    onAdded={() => {
-                      setAddItemOpen(false);
-                      setAddInSectionId(null);
-                      onReload();
-                    }}
-                    onCancel={() => {
-                      setAddItemOpen(false);
-                      setAddInSectionId(null);
-                    }}
-                    toast={toast}
-                  />
-                )}
               </div>
+              )}
             </div>
           );
         })}
@@ -5554,11 +5706,543 @@ const REVIEW_BADGES: Record<string, { label: string; cls: string }> = {
 // checklist items. Every other row shows no review controls.
 const REVIEWABLE_TITLES = new Set([
   "Agreement / Quotation",
-  "3D Checked by MGT",
-  "3D Approved by Peter",
   "Stock Out Transfer Record",
   "Stock In Transfer Record",
+  "Display Floor Plan",
+  "3D Design",
+  "2D Design",
+  "Exchange List",
 ]);
+
+// ── Document table (section display_mode = 'documents') ───────
+// Renders a section's items as a 6-column document table
+// (DOCUMENT / REMARKS / FILES / UPLOADED BY / APPROVAL / ACTIONS).
+// Approve/Reject reuses the review pipeline and shows only on
+// reviewable items (e.g. Stock Out Transfer Record).
+// NOTE: roleChipClass is NOT defined here — it lives in the crew-editor
+// block (single authoritative definition shared by both features).
+function DocumentTable({
+  items,
+  comments,
+  canManage,
+  canApproveFor,
+  attachmentsByItem,
+  onStatus,
+  onReview,
+  onReload,
+  toast,
+}: {
+  items: ChecklistItem[];
+  comments: ChecklistComment[];
+  canManage: boolean;
+  canApproveFor: (it: ChecklistItem) => boolean;
+  attachmentsByItem: Map<number, TaskAttachment[]>;
+  onStatus: (it: ChecklistItem, s: ChecklistStatus) => void;
+  onReview: (
+    it: ChecklistItem,
+    action: "submit" | "reject" | "approve",
+    payload: { reason?: string }
+  ) => void | Promise<void>;
+  onReload: () => void;
+  toast?: ReturnType<typeof useToast>;
+}) {
+  return (
+    <div className="overflow-x-auto p-2">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="border-b border-border-subtle text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+            <th className="px-3 py-2 text-left">Document</th>
+            <th className="px-3 py-2 text-left">Remarks</th>
+            <th className="px-3 py-2 text-left">Files</th>
+            <th className="px-3 py-2 text-left">Uploaded By</th>
+            <th className="px-3 py-2 text-left">Approval</th>
+            <th className="px-3 py-2 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border-subtle">
+          {items.map((it) => (
+            <DocRow
+              key={it.id}
+              item={it}
+              comments={comments.filter((c) => c.item_id === it.id)}
+              attachments={attachmentsByItem.get(it.id) ?? []}
+              canManage={canManage}
+              canApprove={canApproveFor(it)}
+              onStatus={onStatus}
+              onReview={onReview}
+              onReload={onReload}
+              toast={toast}
+            />
+          ))}
+          {items.length === 0 && (
+            <tr>
+              <td colSpan={6} className="px-3 py-2 text-ink-muted">
+                No documents.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DocRow({
+  item,
+  comments,
+  attachments,
+  canManage,
+  canApprove,
+  onStatus,
+  onReview,
+  onReload,
+  toast,
+}: {
+  item: ChecklistItem;
+  comments: ChecklistComment[];
+  attachments: TaskAttachment[];
+  canManage: boolean;
+  canApprove: boolean;
+  onStatus: (it: ChecklistItem, s: ChecklistStatus) => void;
+  onReview: (
+    it: ChecklistItem,
+    action: "submit" | "reject" | "approve",
+    payload: { reason?: string }
+  ) => void | Promise<void>;
+  onReload: () => void;
+  toast?: ReturnType<typeof useToast>;
+}) {
+  const dialog = useDialog();
+  const [open, setOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const reviewable = REVIEWABLE_TITLES.has(item.title);
+  const latest = attachments[0];
+  const rs = item.review_status;
+  const awaiting = rs === "pending_review" || rs === "amended";
+  const naActive = item.status === "na";
+
+  async function upload(file: File) {
+    if (!file) return;
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      toast?.error("File needs an extension");
+      return;
+    }
+    setUploading(true);
+    try {
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/projects/checklist/${item.id}/attachments?ext=${encodeURIComponent(
+          ext
+        )}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type || "application/octet-stream"
+      );
+      toast?.success("Uploaded");
+      onReload();
+    } catch (e: any) {
+      toast?.error(e?.message || "Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function removeAtt(attId: number) {
+    if (
+      !(await dialog.confirm({
+        message: "Remove this attachment?",
+        danger: true,
+        confirmLabel: "Remove",
+      }))
+    )
+      return;
+    try {
+      await api.del(`/api/projects/checklist/attachments/${attId}`);
+      onReload();
+    } catch (e: any) {
+      toast?.error(e?.message || "Failed");
+    }
+  }
+
+  return (
+    <Fragment>
+      <tr className={cn("align-top", naActive && "opacity-60")}>
+        <td className="px-3 py-2">
+          <div className="flex items-start gap-1.5">
+            <FileText size={13} className="mt-0.5 shrink-0 text-ink-muted" />
+            <span className="font-medium text-ink">
+              {item.title}
+              {item.role_label && (
+                <span className={cn("ml-1.5 inline-block whitespace-nowrap rounded-full border px-1.5 py-0.5 align-middle text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
+                  {item.role_label}
+                </span>
+              )}
+            </span>
+          </div>
+        </td>
+        <td className="px-3 py-2 text-ink-secondary">
+          {(() => {
+            // Remarks = the document's own notes PLUS any reason text
+            // entered during review (e.g. a rejection reason). The
+            // approve/reject *decision trail* stays in the Approval
+            // column; the remark text itself belongs here.
+            const remarkComments = comments
+              .filter((c) => c.kind !== "submit" && c.body)
+              .slice()
+              .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+            if (!item.notes && remarkComments.length === 0)
+              return <span className="text-ink-muted">—</span>;
+            return (
+              <div className="space-y-0.5">
+                {item.notes && <div>{item.notes}</div>}
+                {remarkComments.map((c) => (
+                  <div key={c.id} className="text-[9px] leading-snug text-ink-muted">
+                    <span className={cn("font-semibold", commentKindColor(c.kind))}>
+                      {commentKindLabel(c.kind)}:
+                    </span>{" "}
+                    {c.body}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </td>
+        <td className="px-3 py-2">
+          {attachments.length > 0 ? (
+            <button
+              onClick={() => setOpen((x) => !x)}
+              className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-0.5 text-ink hover:border-accent/40 hover:text-accent"
+            >
+              <Paperclip size={11} /> {attachments.length}
+            </button>
+          ) : (
+            <span className="text-ink-muted">—</span>
+          )}
+        </td>
+        <td className="px-3 py-2">
+          {latest ? (
+            <div>
+              <div className="text-ink">{latest.uploader_name || "Unknown"}</div>
+              <div className="text-[9.5px] text-ink-muted">{formatDateTime(latest.uploaded_at)}</div>
+            </div>
+          ) : (
+            <span className="text-ink-muted">—</span>
+          )}
+        </td>
+        <td className="px-3 py-2">
+          {!reviewable ? (
+            <span className="text-ink-muted">—</span>
+          ) : (
+            <div className="space-y-1">
+              {/* Chronological history (oldest → newest): the approve/reject
+                  record. 'submit' entries are hidden as noise. */}
+              {comments.filter((c) => c.kind !== "submit").length > 0 && (
+                <div className="space-y-0.5">
+                  {comments
+                    .filter((c) => c.kind !== "submit")
+                    .slice()
+                    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1))
+                    .map((c) => (
+                      <div key={c.id} className="text-[9px] leading-snug text-ink-muted">
+                        <span className={cn("font-semibold", commentKindColor(c.kind))}>
+                          {commentKindLabel(c.kind)}
+                        </span>{" "}
+                        · {c.user_name || "—"} · {formatDateTime(c.created_at)}
+                      </div>
+                    ))}
+                </div>
+              )}
+              {/* Approve/Reject only while awaiting; hidden once decided,
+                  reappear on re-upload (upload auto-submits). */}
+              {awaiting && canApprove ? (
+                <div className="flex flex-wrap items-center gap-1">
+                  <button
+                    onClick={() => onReview(item, "approve", {})}
+                    className="rounded-md bg-synced/90 px-2 py-0.5 text-[9.5px] font-semibold text-white hover:bg-synced"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    onClick={() => setRejectOpen((x) => !x)}
+                    className="rounded-md border border-err/40 bg-surface px-2 py-0.5 text-[9.5px] font-semibold text-err hover:bg-err/5"
+                  >
+                    Reject…
+                  </button>
+                </div>
+              ) : (
+                comments.filter((c) => c.kind !== "submit").length === 0 && (
+                  <span className="text-ink-muted">—</span>
+                )
+              )}
+            </div>
+          )}
+        </td>
+        <td className="px-3 py-2">
+          <div className="flex items-center justify-end gap-1">
+            <input
+              ref={fileRef}
+              type="file"
+              multiple
+              hidden
+              onChange={async (e) => {
+                const files = Array.from(e.target.files || []);
+                for (const f of files) await upload(f);
+                if (files.length && reviewable) await onReview(item, "submit", {});
+              }}
+            />
+            {attachments.length > 0 && (
+              <button
+                onClick={() => setOpen((x) => !x)}
+                className="rounded-md border border-border bg-surface inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold text-ink hover:border-accent/40 hover:text-accent"
+              >
+                View
+              </button>
+            )}
+            {canManage && (
+              <button
+                onClick={() => fileRef.current?.click()}
+                disabled={uploading}
+                className="rounded-md border border-border bg-surface inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
+              >
+                {uploading ? "…" : "+ Add"}
+              </button>
+            )}
+            {canManage && (
+              <button
+                onClick={() => onStatus(item, naActive ? "pending" : "na")}
+                className={cn(
+                  "rounded-md border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold",
+                  naActive
+                    ? "border-accent bg-accent/10 text-accent"
+                    : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent"
+                )}
+              >
+                N/A
+              </button>
+            )}
+          </div>
+        </td>
+      </tr>
+      {rejectOpen && (
+        <tr>
+          <td colSpan={6} className="px-3 pb-2">
+            <div className="rounded-md border border-err/30 bg-err/5 p-2">
+              <input
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Reason for rejection…"
+                className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] outline-none focus:border-err"
+              />
+              <div className="mt-1.5 flex gap-2">
+                <button
+                  onClick={async () => {
+                    if (!reason.trim()) return;
+                    await onReview(item, "reject", { reason: reason.trim() });
+                    setRejectOpen(false);
+                    setReason("");
+                  }}
+                  className="rounded-md bg-err px-2 py-1 text-[10px] font-semibold text-white"
+                >
+                  Confirm reject
+                </button>
+                <button
+                  onClick={() => setRejectOpen(false)}
+                  className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink-muted"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+      {open && attachments.length > 0 && (
+        <tr>
+          <td colSpan={6} className="px-3 pb-2">
+            <div className="overflow-hidden rounded-md border border-border-subtle">
+              {attachments.map((a) => (
+                <TaskAttachmentRow
+                  key={a.id}
+                  attachment={a}
+                  canManage={canManage}
+                  onDelete={() => removeAtt(a.id)}
+                  toast={toast}
+                />
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
+}
+
+// ── 3D Approval block ─────────────────────────────────────────
+// Renders the 3D APPROVAL section as simple status rows
+// (PENDING / DONE / N/A) with ONE shared "Upload 3D" panel between
+// the MGT and Peter steps (the file is shared between both).
+function ThreeDApprovalBlock({
+  items,
+  attachmentsByItem,
+  canManage,
+  canTick,
+  onStatus,
+  onReload,
+  toast,
+}: {
+  items: ChecklistItem[];
+  attachmentsByItem: Map<number, TaskAttachment[]>;
+  canManage: boolean;
+  canTick: boolean;
+  onStatus: (it: ChecklistItem, s: ChecklistStatus) => void;
+  onReload: () => void;
+  toast?: ReturnType<typeof useToast>;
+}) {
+  const mgt = items.find((i) => i.title === "3D Checked by MGT");
+  const peter = items.find((i) => i.title === "3D Approved by Peter");
+  const ordered = [mgt, peter].filter(Boolean) as ChecklistItem[];
+  const list = ordered.length ? ordered : items;
+  const sharedItem = mgt ?? items[0];
+  const sharedAtt = sharedItem ? attachmentsByItem.get(sharedItem.id) ?? [] : [];
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function upload(file: File) {
+    if (!file || !sharedItem) return;
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      toast?.error("File needs an extension");
+      return;
+    }
+    setUploading(true);
+    try {
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/projects/checklist/${sharedItem.id}/attachments?ext=${encodeURIComponent(
+          ext
+        )}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type || "application/octet-stream"
+      );
+      toast?.success("Uploaded");
+      onReload();
+    } catch (e: any) {
+      toast?.error(e?.message || "Upload failed");
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  const STAT: [ChecklistStatus, string][] = [
+    ["pending", "PENDING"],
+    ["done", "DONE"],
+    ["na", "N/A"],
+  ];
+  const tone = (s: ChecklistStatus, active: boolean) =>
+    !active
+      ? "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent"
+      : s === "done"
+        ? "border-synced bg-synced/15 text-synced"
+        : s === "na"
+          ? "border-border bg-surface-dim text-ink-muted"
+          : "border-warning bg-warning-bg text-warning-text";
+
+  return (
+    <div className="p-2">
+      {list.map((it, idx) => (
+        <Fragment key={it.id}>
+          <div className="flex flex-wrap items-center gap-2 px-1 py-1.5">
+            {it.status === "done" ? (
+              <CheckCircle2 size={16} className="shrink-0 text-synced" />
+            ) : (
+              <Circle
+                size={16}
+                className={cn(
+                  "shrink-0",
+                  it.status === "na" ? "text-ink-muted" : "text-warning-text"
+                )}
+              />
+            )}
+            <span
+              className={cn(
+                "flex-1 text-[12px] font-medium",
+                it.status === "done" && "text-ink-muted"
+              )}
+            >
+              {it.title}
+            </span>
+            {it.required_perm && (
+              <span className="inline-flex items-center gap-0.5 rounded-full bg-accent-soft px-1.5 py-0.5 text-[9px] font-semibold text-accent">
+                <Lock size={8} /> gated
+              </span>
+            )}
+            <div className="flex items-center gap-1">
+              {STAT.map(([s, label]) => {
+                const active = it.status === s || (s === "pending" && it.status === "blocked");
+                return (
+                  <button
+                    key={s}
+                    onClick={() => onStatus(it, s)}
+                    disabled={!canTick}
+                    className={cn(
+                      "rounded-md border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                      tone(s, active),
+                      !canTick && "cursor-not-allowed opacity-60"
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {idx === 0 && sharedItem && (
+            <div className="my-1 ml-6 flex flex-wrap items-center justify-center gap-2 rounded-md border border-dashed border-border bg-bg/40 px-3 py-2">
+              <input
+                ref={fileRef}
+                type="file"
+                multiple
+                hidden
+                onChange={async (e) => {
+                  const fs = Array.from(e.target.files || []);
+                  for (const f of fs) await upload(f);
+                }}
+              />
+              {canManage && (
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  disabled={uploading}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent disabled:opacity-50"
+                >
+                  <Paperclip size={12} />
+                  {sharedAtt.length > 0
+                    ? `${sharedAtt.length} file${sharedAtt.length > 1 ? "s" : ""}`
+                    : uploading
+                      ? "Uploading…"
+                      : "Upload 3D"}
+                </button>
+              )}
+              {sharedAtt.length > 0 && (
+                <span className="max-w-[260px] truncate text-[11px] text-ink-secondary">
+                  {sharedAtt[0].file_name}
+                  {sharedAtt.length > 1 ? ` + ${sharedAtt.length - 1}` : ""}
+                </span>
+              )}
+              <span className="text-[9px] italic text-ink-muted">
+                · shared between MGT &amp; Peter
+              </span>
+            </div>
+          )}
+        </Fragment>
+      ))}
+    </div>
+  );
+}
 
 // Inline remark box rendered under specific checklist items (e.g.
 // "Deco / Coffee Table"). Edits the item's notes field; saves on blur.
@@ -5667,6 +6351,11 @@ function ChecklistRow({
       )}&name=${encodeURIComponent(file.name)}`;
       await api.putBinary(url, buf, file.type || "application/octet-stream");
       toast?.success("Uploaded");
+      // Reviewable items auto-submit on upload so the approver's
+      // Approve/Reject reappear (and a prior decision is superseded).
+      if (REVIEWABLE_TITLES.has(item.title)) {
+        await onReview("submit", {});
+      }
       onAttachmentsChanged?.();
     } catch (e: any) {
       toast?.error(e?.message || "Upload failed");
@@ -5708,8 +6397,8 @@ function ChecklistRow({
   if (item.pill_kind) {
     const opts: [string, string][] =
       item.pill_kind === "rental_payment"
-        ? [["none", "NONE"], ["unpaid", "UNPAID"], ["fully_paid", "FULLY PAID"]]
-        : [["none", "NONE"], ["unpaid", "UNPAID"], ["paid", "PAID"], ["refunded", "REFUNDED"]];
+        ? [["none", "N/A"], ["unpaid", "PENDING"], ["fully_paid", "FULLY PAID"]]
+        : [["none", "N/A"], ["unpaid", "PENDING"], ["refunded", "REFUNDED"]];
     const cur = item.pill_value || "unpaid";
     const selTone = (v: string) =>
       v === "unpaid"
@@ -5728,11 +6417,46 @@ function ChecklistRow({
     };
     return (
       <div
-        className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-2"
+        className="rounded-md border border-border bg-surface px-2.5 py-2"
         data-task-id={item.id}
       >
-        <Circle size={16} className="shrink-0 text-ink-muted" />
-        <span className="flex-1 text-[12px] font-medium">{item.title}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <Circle size={16} className="shrink-0 text-ink-muted" />
+          <span className="text-[12px] font-medium">{item.title}</span>
+          {item.role_label && (
+            <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
+              {item.role_label}
+            </span>
+          )}
+          <span className="flex-1" />
+          {canManage && (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="rounded-md border border-border bg-surface p-1.5 text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
+              title={attachments && attachments.length ? `${attachments.length} file(s)` : "Attach"}
+            >
+              <Paperclip size={13} />
+            </button>
+          )}
+          {opts.map(([v, label]) => (
+            <button
+              key={v}
+              onClick={() => setPill(v)}
+              disabled={!canTick}
+              className={cn(
+                "rounded-md border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold uppercase tracking-wide",
+                v === cur
+                  ? selTone(v)
+                  : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent",
+                !canTick && "cursor-not-allowed opacity-60"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {/* Attach below the row — same style as the other sections. */}
         <input
           ref={fileInputRef}
           type="file"
@@ -5742,30 +6466,16 @@ function ChecklistRow({
             if (f) uploadAttachment(f);
           }}
         />
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploading || !canManage}
-          className="rounded-md border border-border bg-surface p-1.5 text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
-          title={attachments && attachments.length ? `${attachments.length} file(s)` : "Attach"}
-        >
-          <Paperclip size={12} />
-        </button>
-        {opts.map(([v, label]) => (
-          <button
-            key={v}
-            onClick={() => setPill(v)}
-            disabled={!canTick}
-            className={cn(
-              "rounded-md border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
-              v === cur
-                ? selTone(v)
-                : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent",
-              !canTick && "cursor-not-allowed opacity-60"
-            )}
-          >
-            {label}
-          </button>
-        ))}
+        {attachments && attachments.length > 0 && (
+          <div className="mt-1.5 flex items-center gap-1 text-[10px] text-ink-muted">
+            <Paperclip size={11} className="shrink-0" />
+            <span className="truncate">
+              {attachments.length === 1
+                ? attachments[0].file_name
+                : `${attachments[0].file_name} + ${attachments.length - 1} more`}
+            </span>
+          </div>
+        )}
       </div>
     );
   }
@@ -5815,7 +6525,7 @@ function ChecklistRow({
             </span>
             {item.role_label && (
               <span
-                className="rounded-full border border-border bg-bg/40 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-secondary"
+                className={cn("rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}
                 title="Owner role"
               >
                 {item.role_label}
@@ -5858,7 +6568,7 @@ function ChecklistRow({
             {attachments && attachments.length > 0 && (
               <span className="basis-full text-ink-muted">
                 {attachments[0].uploader_name || "Unknown"} ·{" "}
-                {formatDate(attachments[0].uploaded_at)}
+                {formatDateTime(attachments[0].uploaded_at)}
                 {attachments.length > 1 && ` · +${attachments.length - 1} more`}
               </span>
             )}
@@ -5891,30 +6601,6 @@ function ChecklistRow({
                     ))}
                   </div>
                 )}
-                {canManage && !readOnlyAttach && (
-                  <div className="mt-1.5">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      hidden
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) uploadAttachment(f);
-                      }}
-                    />
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        fileInputRef.current?.click();
-                      }}
-                      disabled={uploading}
-                      className="inline-flex items-center gap-0.5 rounded-full border border-dashed border-border bg-surface px-2 py-0.5 text-[10px] text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                    >
-                      <Plus size={10} />
-                      {uploading ? "Uploading…" : "Attach"}
-                    </button>
-                  </div>
-                )}
                 {attachCaption && (
                   <div className="mt-1 text-[10px] italic text-ink-muted">
                     {attachCaption}
@@ -5925,138 +6611,98 @@ function ChecklistRow({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          <input
+            ref={fileInputRef}
+            type="file"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) uploadAttachment(f);
+            }}
+          />
+          {canManage && !readOnlyAttach && (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 text-ink-muted hover:text-accent disabled:opacity-50"
+              title="Attach file"
+            >
+              <Paperclip size={13} />
+              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">
+                {uploading ? "…" : "Attach"}
+              </span>
+            </button>
+          )}
           <button
             onClick={() => setExpanded((x) => !x)}
             className={cn(
               "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:text-accent",
               comments.length > 0 ? "text-accent" : "text-ink-muted"
             )}
-            title="Review / comments"
+            title="Remark / comments"
           >
             <MessageSquare size={13} />
             <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">
-              {comments.length > 0 ? comments.length : "Review"}
+              {comments.length > 0 ? comments.length : "Remark"}
             </span>
           </button>
-          {item.status !== "done" && (
-            <button
-              onClick={() => onStatus(item.status === "na" ? "pending" : "na")}
-              className={cn(
-                "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:bg-surface-dim",
-                item.status === "na"
-                  ? "text-accent"
-                  : "text-ink-muted hover:text-accent"
-              )}
-              title={item.status === "na" ? "Mark applicable" : "Mark N/A"}
-            >
-              <Ban size={13} />
-              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">N/A</span>
-            </button>
-          )}
-          {canManage && onCrewVisible && (
-            <button
-              onClick={() => onCrewVisible(!item.crew_visible)}
-              className={cn(
-                "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:bg-surface-dim",
-                item.crew_visible
-                  ? "text-accent hover:text-accent"
-                  : "text-ink-muted hover:text-accent"
-              )}
-              title={
-                item.crew_visible
-                  ? "Visible to crew in Driver App — click to hide"
-                  : "Show to crew (drivers + helpers) in Driver App"
-              }
-            >
-              {item.crew_visible ? <Eye size={13} /> : <EyeOff size={13} />}
-              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">Crew</span>
-            </button>
-          )}
           <button
-            onClick={onDelete}
-            className="inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 text-ink-muted hover:bg-err/10 hover:text-err"
-            title="Remove"
+            onClick={() => onStatus(item.status === "na" ? "pending" : "na")}
+            className={cn(
+              "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:bg-surface-dim",
+              item.status === "na"
+                ? "text-accent"
+                : "text-ink-muted hover:text-accent"
+            )}
+            title={item.status === "na" ? "Mark applicable" : "Mark N/A"}
           >
-            <Trash2 size={13} />
-            <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">Del</span>
+            <Ban size={13} />
+            <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">N/A</span>
           </button>
         </div>
       </div>
 
+      {/* Management approve/reject — shown while awaiting a decision;
+          they disappear once approved/rejected and reappear on re-upload
+          (upload auto-submits). Approver only. */}
+      {reviewable &&
+        awaitingReview &&
+        canApprove && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Management remark (required to reject)…"
+              className="min-w-[160px] flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-accent/40"
+            />
+            <button
+              onClick={async () => {
+                if (reason.trim()) await onReview("comment", { note: reason.trim() });
+                await onReview("approve", {});
+                setReason("");
+              }}
+              className="rounded-md bg-synced/90 px-2.5 py-1 text-[10px] font-semibold text-white hover:bg-synced"
+            >
+              Approve
+            </button>
+            <button
+              onClick={async () => {
+                if (!reason.trim()) {
+                  toast?.error("Add a remark to reject");
+                  return;
+                }
+                await onReview("reject", { reason: reason.trim() });
+                setReason("");
+              }}
+              className="rounded-md border border-err/40 bg-surface px-2.5 py-1 text-[10px] font-semibold text-err hover:bg-err/5"
+            >
+              Reject
+            </button>
+          </div>
+        )}
+
       {expanded && (
         <div className="mt-2 border-t border-border pt-2">
-          {/* Review actions row — only on reviewable items (Agreement,
-              3D MGT/Peter, Stock Out/In Transfer Record). */}
-          {reviewable && (
-          <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            {!item.review_status && (
-              <button
-                onClick={() => onReview("submit", {})}
-                className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold hover:border-accent/40 hover:text-accent"
-              >
-                Submit for review
-              </button>
-            )}
-            {item.review_status === "rejected" && (
-              <button
-                onClick={() => onReview("amend", { note: note.trim() || undefined })}
-                className="rounded-md border border-accent/40 bg-accent/5 px-2 py-1 text-[10px] font-semibold text-accent hover:bg-accent/10"
-              >
-                Mark amended
-              </button>
-            )}
-            {awaitingReview && canApprove && (
-              <>
-                <button
-                  onClick={() => onReview("approve", {})}
-                  className="rounded-md bg-synced/90 px-2 py-1 text-[10px] font-semibold text-white hover:bg-synced"
-                >
-                  Approve
-                </button>
-                <button
-                  onClick={() => setRejectOpen((x) => !x)}
-                  className="rounded-md border border-err/40 bg-surface px-2 py-1 text-[10px] font-semibold text-err hover:bg-err/5"
-                >
-                  Reject…
-                </button>
-              </>
-            )}
-          </div>
-          )}
-
-          {rejectOpen && (
-            <div className="mb-2 rounded-md border border-err/30 bg-err/5 p-2">
-              <input
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                placeholder="Reason for rejection…"
-                className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] outline-none focus:border-err"
-              />
-              <div className="mt-1.5 flex items-center gap-2">
-                <button
-                  onClick={async () => {
-                    if (!reason.trim()) return;
-                    await onReview("reject", { reason: reason.trim() });
-                    setReason("");
-                    setRejectOpen(false);
-                  }}
-                  className="rounded-md bg-err px-2.5 py-1 text-[10px] font-semibold text-white"
-                >
-                  Confirm reject
-                </button>
-                <button
-                  onClick={() => {
-                    setRejectOpen(false);
-                    setReason("");
-                  }}
-                  className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] text-ink-secondary"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Comment thread */}
           {comments.length > 0 && (
             <div className="mb-2 space-y-1">
@@ -6619,6 +7265,313 @@ function AddStockTransferForm({
   );
 }
 
+// ── PIC role chip colour by role ──────────────────────────────
+// Shared helper used by the crew section's "LOGISTIC" badge. (The
+// branch also uses this on checklist rows; that doc-mode work is out
+// of scope for this port, so the helper is introduced here standalone.)
+function roleChipClass(role: string | null | undefined): string {
+  switch ((role || "").toUpperCase()) {
+    case "SALES PIC":
+      return "border-pink-300 bg-pink-100 text-pink-700";
+    case "DRIVER":
+      return "border-blue-300 bg-blue-100 text-blue-700";
+    case "PURCHASER":
+      return "border-orange-300 bg-orange-100 text-orange-700";
+    case "LOGISTIC":
+    case "LOGISTICS":
+      return "border-green-300 bg-green-100 text-green-700";
+    case "BD":
+      return "border-purple-300 bg-purple-100 text-purple-700";
+    default:
+      return "border-border bg-bg/40 text-ink-secondary";
+  }
+}
+
+// ── Setup & Dismantle crew editor (JSON: setup_crew / dismantle_crew) ──
+type CrewSlot = { name: string; phone: string };
+interface PhaseCrew {
+  drivers: CrewSlot[];
+  helpers: CrewSlot[];
+  lorries: string[];
+  outsourced: { enabled: boolean; entries: { name: string; phone: string; plate: string }[] };
+}
+function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
+  const empty: PhaseCrew = {
+    drivers: [],
+    helpers: [],
+    lorries: [],
+    outsourced: { enabled: false, entries: [] },
+  };
+  if (!s) return empty;
+  try {
+    const p = JSON.parse(s) || {};
+    return {
+      drivers: Array.isArray(p.drivers) ? p.drivers : [],
+      helpers: Array.isArray(p.helpers) ? p.helpers : [],
+      lorries: Array.isArray(p.lorries) ? p.lorries : [],
+      outsourced: {
+        enabled: !!(p.outsourced && p.outsourced.enabled),
+        entries: Array.isArray(p.outsourced?.entries)
+          ? p.outsourced.entries
+          : p.outsourced?.name
+            ? [{ name: p.outsourced.name, phone: p.outsourced.phone ?? "", plate: p.outsourced.plate ?? "" }]
+            : [],
+      },
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function CrewSlotRow({
+  label,
+  color,
+  options,
+  slot,
+  onChange,
+}: {
+  label: string;
+  color: string;
+  options: CrewMember[];
+  slot: CrewSlot | undefined;
+  onChange: (s: CrewSlot) => void;
+}) {
+  const cur = slot ?? { name: "", phone: "" };
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <UserCircle2 size={13} className={cn("shrink-0", color)} />
+        <span className="w-14 shrink-0 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+          {label}
+        </span>
+        <select
+          className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
+          value={cur.name}
+          onChange={(e) => {
+            const u = options.find((o) => o.name === e.target.value);
+            onChange({ name: e.target.value, phone: u?.phone ?? (e.target.value ? cur.phone : "") });
+          }}
+        >
+          <option value="">Name…</option>
+          {options.map((o) => (
+            <option key={o.id} value={o.name}>
+              {o.name}
+            </option>
+          ))}
+          {cur.name && !options.some((o) => o.name === cur.name) && (
+            <option value={cur.name}>{cur.name}</option>
+          )}
+        </select>
+      </div>
+      <input
+        className="rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] disabled:bg-bg/40"
+        placeholder={cur.name ? "Phone…" : "(pick a name first)"}
+        value={cur.phone}
+        disabled={!cur.name}
+        onChange={(e) => onChange({ name: cur.name, phone: e.target.value })}
+      />
+    </div>
+  );
+}
+
+function OutsourcedBox({
+  onAdd,
+}: {
+  onAdd: (o: { name: string; phone: string; plate: string }) => void;
+}) {
+  const [d, setD] = useState({ name: "", phone: "", plate: "" });
+  return (
+    <div className="space-y-2 rounded-md border border-dashed border-border bg-bg/40 p-2">
+      <input value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} placeholder="Name…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
+      <input value={d.phone} onChange={(e) => setD({ ...d, phone: e.target.value })} placeholder="Phone number…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
+      <input value={d.plate} onChange={(e) => setD({ ...d, plate: e.target.value })} placeholder="Lorry plate…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
+      <button
+        onClick={() => {
+          if (!d.name.trim() && !d.plate.trim()) return;
+          onAdd(d);
+          setD({ name: "", phone: "", plate: "" });
+        }}
+        className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
+      >
+        + Add
+      </button>
+    </div>
+  );
+}
+
+function PhaseCrewEditor({
+  title,
+  field,
+  value,
+  drivers,
+  helpers,
+  lorryOptions,
+  patch,
+  emptyHint,
+}: {
+  title: string;
+  field: "setup_crew" | "dismantle_crew";
+  value: string | null | undefined;
+  drivers: CrewMember[];
+  helpers: CrewMember[];
+  lorryOptions: string[];
+  patch: (body: Record<string, any>) => Promise<void>;
+  emptyHint?: string;
+}) {
+  const [pc, setPc] = useState<PhaseCrew>(() => parsePhaseCrew(value));
+  useEffect(() => {
+    setPc(parsePhaseCrew(value));
+  }, [value]);
+  const [newPlate, setNewPlate] = useState("");
+  function save(next: PhaseCrew) {
+    setPc(next);
+    patch({ [field]: JSON.stringify(next) });
+  }
+  const setSlot = (kind: "drivers" | "helpers", i: number, s: CrewSlot) => {
+    const arr = [...pc[kind]];
+    while (arr.length <= i) arr.push({ name: "", phone: "" });
+    arr[i] = s;
+    save({ ...pc, [kind]: arr });
+  };
+  return (
+    <div className="mt-3 space-y-2">
+      {emptyHint && <div className="text-[9px] italic text-ink-muted">{emptyHint}</div>}
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} Drivers</div>
+      <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={pc.drivers[0]} onChange={(s) => setSlot("drivers", 0, s)} />
+      <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={pc.drivers[1]} onChange={(s) => setSlot("drivers", 1, s)} />
+      <div className="pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} Helpers</div>
+      <CrewSlotRow label="Helper 1" color="text-warning-text" options={helpers} slot={pc.helpers[0]} onChange={(s) => setSlot("helpers", 0, s)} />
+      <CrewSlotRow label="Helper 2" color="text-warning-text" options={helpers} slot={pc.helpers[1]} onChange={(s) => setSlot("helpers", 1, s)} />
+      <div className="pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} Lorry / Vehicle</div>
+      {pc.lorries.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {pc.lorries.map((pl, i) => (
+            <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
+              <Truck size={11} /> {pl}
+              <button onClick={() => save({ ...pc, lorries: pc.lorries.filter((_, j) => j !== i) })} className="text-ink-muted hover:text-err">
+                <X size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <select
+          value={newPlate}
+          onChange={(e) => setNewPlate(e.target.value)}
+          className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
+        >
+          <option value="">Select lorry plate…</option>
+          {lorryOptions
+            .filter((pl) => !pc.lorries.includes(pl))
+            .map((pl) => (
+              <option key={pl} value={pl}>
+                {pl}
+              </option>
+            ))}
+        </select>
+        <button
+          onClick={() => {
+            const p = newPlate.trim();
+            if (!p) return;
+            save({ ...pc, lorries: [...pc.lorries, p] });
+            setNewPlate("");
+          }}
+          className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
+        >
+          + Add
+        </button>
+      </div>
+      <label className="mt-1 flex items-center gap-2 text-[11px] font-semibold text-ink-secondary">
+        <input
+          type="checkbox"
+          checked={pc.outsourced.enabled}
+          onChange={(e) => save({ ...pc, outsourced: { ...pc.outsourced, enabled: e.target.checked } })}
+        />
+        Outsourced
+      </label>
+      {pc.outsourced.enabled && (
+        <div className="space-y-1.5">
+          {pc.outsourced.entries.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {pc.outsourced.entries.map((o, i) => (
+                <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
+                  <Truck size={11} />
+                  {o.name}
+                  {o.phone ? ` · ${o.phone}` : ""}
+                  {o.plate ? ` · ${o.plate}` : ""}
+                  <button
+                    onClick={() =>
+                      save({
+                        ...pc,
+                        outsourced: {
+                          ...pc.outsourced,
+                          entries: pc.outsourced.entries.filter((_, j) => j !== i),
+                        },
+                      })
+                    }
+                    className="text-ink-muted hover:text-err"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <OutsourcedBox
+            onAdd={(o) =>
+              save({ ...pc, outsourced: { enabled: true, entries: [...pc.outsourced.entries, o] } })
+            }
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LogisticsCrewSection({
+  project,
+  patch,
+}: {
+  project: ProjectDetail["project"];
+  patch: (body: Record<string, any>) => Promise<void>;
+}) {
+  const [crew, setCrew] = useState<CrewMember[]>([]);
+  const [lorryOptions, setLorryOptions] = useState<string[]>([]);
+  useEffect(() => {
+    api.get<{ data: CrewMember[] }>("/api/fleet/staff").then((r) => setCrew(r.data ?? [])).catch(() => {});
+    api
+      .get<{ data: { plate: string }[] }>("/api/lorries")
+      .then((r) => setLorryOptions((r.data ?? []).map((l) => l.plate).filter(Boolean)))
+      .catch(() => {});
+  }, []);
+  const isType = (u: CrewMember, kind: string) =>
+    (u.role_name || "").toLowerCase() === kind || (u.user_type || "").toLowerCase() === kind;
+  const drivers = useMemo(() => crew.filter((u) => isType(u, "driver") && (u.name || "").trim() !== ""), [crew]);
+  const helpers = useMemo(() => crew.filter((u) => isType(u, "helper") && (u.name || "").trim() !== ""), [crew]);
+  return (
+    <PanelSection
+      muted
+      title={
+        <span className="inline-flex items-center gap-2">
+          {"Setup & Dismantle"}
+          <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass("LOGISTIC"))}>
+            LOGISTIC
+          </span>
+        </span>
+      }
+    >
+      <div className="grid grid-cols-2 gap-3">
+        <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} />
+        <DateTimeField label="Dismantle Time" value={project.dismantle_start_at} onSave={(v) => patch({ dismantle_start_at: v })} />
+      </div>
+      <PhaseCrewEditor title="Setup" field="setup_crew" value={project.setup_crew} drivers={drivers} helpers={helpers} lorryOptions={lorryOptions} patch={patch} />
+      <div className="my-3 border-t border-dashed border-border" />
+      <PhaseCrewEditor title="Dismantle" field="dismantle_crew" value={project.dismantle_crew} drivers={drivers} helpers={helpers} lorryOptions={lorryOptions} patch={patch} emptyHint="Leave empty if same as setup" />
+    </PanelSection>
+  );
+}
+
 function LogisticsScheduleSection({
   project,
   trips,
@@ -6641,8 +7594,8 @@ function LogisticsScheduleSection({
   const isType = (u: { user_type: string | null; role_name: string | null }, kind: string) =>
     (u.role_name || "").toLowerCase() === kind ||
     (u.user_type || "").toLowerCase() === kind;
-  const drivers = useMemo(() => crew.filter((u) => isType(u, "driver")), [crew]);
-  const helpers = useMemo(() => crew.filter((u) => isType(u, "helper")), [crew]);
+  const drivers = useMemo(() => crew.filter((u) => isType(u, "driver") && (u.name || "").trim() !== ""), [crew]);
+  const helpers = useMemo(() => crew.filter((u) => isType(u, "helper") && (u.name || "").trim() !== ""), [crew]);
 
   useEffect(() => {
     api
@@ -9390,7 +10343,7 @@ function AttachmentsSection({
           <button
             onClick={() => setFilterRole("")}
             className={cn(
-              "rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+              "rounded-full border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold",
               filterRole === ""
                 ? "border-accent bg-accent text-white"
                 : "border-border bg-surface text-ink-muted hover:border-accent/40"
@@ -9408,7 +10361,7 @@ function AttachmentsSection({
                 key={r.value}
                 onClick={() => setFilterRole(active ? "" : r.value)}
                 className={cn(
-                  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                  "inline-flex items-center gap-1 rounded-full border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold",
                   active
                     ? "border-accent bg-accent text-white"
                     : "border-border bg-surface text-ink-muted hover:border-accent/40"

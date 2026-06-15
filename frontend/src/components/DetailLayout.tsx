@@ -25,6 +25,9 @@ interface Props {
   /** Body content. Use DetailLayout.Main + DetailLayout.Aside as children
    *  for a 2-column layout, or pass plain JSX for full-width content. */
   children: ReactNode;
+  /** When true, the body pulls toward the screen edges on large screens
+   *  (less side padding) so the page uses more width. Opt-in per page. */
+  wide?: boolean;
 }
 
 /**
@@ -51,6 +54,7 @@ export function DetailLayout({
   loading,
   error,
   children,
+  wide,
 }: Props) {
   const navigate = useNavigate();
   // Push the breadcrumb stack into the top-navbar context. On mount
@@ -150,7 +154,11 @@ export function DetailLayout({
       )}
 
       {/* ── Body grid — Main + Aside split ───────────────────────────── */}
-      {children}
+      {wide ? (
+        <div className="lg:-mx-4 xl:-mx-6 2xl:-mx-8">{children}</div>
+      ) : (
+        children
+      )}
     </div>
   );
 }
