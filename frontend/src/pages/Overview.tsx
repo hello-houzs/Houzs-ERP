@@ -136,6 +136,41 @@ export function Overview() {
     },
   ];
 
+  // Inbox columns as data so we can split "needs action" (rendered as
+  // cards) from "cleared" (collapsed into one slim strip) — empty cards
+  // used to stretch to row height and leave large dead whitespace.
+  const actionColumns: InboxColumnConfig[] = [
+    {
+      key: "my_tasks",
+      icon: <InboxIcon size={14} />,
+      title: "My Tasks",
+      subtitle: "Assigned to you, due soon or overdue",
+      items: data?.my_tasks ?? [],
+    },
+    {
+      key: "review_queue",
+      icon: <MessageSquare size={14} />,
+      title: "Review Queue",
+      subtitle: "Waiting on your approval or decision",
+      items: data?.review_queue ?? [],
+    },
+    {
+      key: "blockers",
+      icon: <Flag size={14} />,
+      title: "Blockers",
+      subtitle: "Stuck, overdue, or unresolved",
+      items: data?.blockers ?? [],
+      accent: "error",
+    },
+    {
+      key: "this_week",
+      icon: <Calendar size={14} />,
+      title: "This Week",
+      subtitle: "Events and trips in the next 7 days",
+      items: data?.this_week ?? [],
+    },
+  ];
+
   return (
     <div>
       {/* ── HERO ──────────────────────────────────────────── */}
@@ -229,45 +264,15 @@ export function Overview() {
           title="What needs you"
           hint={data ? `${(data.counts.my_tasks + data.counts.review_queue + data.counts.blockers).toLocaleString()} open` : undefined}
         />
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <InboxColumn
-            icon={<InboxIcon size={14} />}
-            title="My Tasks"
-            subtitle="Assigned to you, due soon or overdue"
-            emptyLabel="Inbox zero. Nothing assigned or due."
-            emptyTone="positive"
-            items={data?.my_tasks ?? []}
-            loading={inbox.loading}
-          />
-          <InboxColumn
-            icon={<MessageSquare size={14} />}
-            title="Review Queue"
-            subtitle="Waiting on your approval or decision"
-            emptyLabel="Nothing waiting on you."
-            emptyTone="positive"
-            items={data?.review_queue ?? []}
-            loading={inbox.loading}
-          />
-          <InboxColumn
-            icon={<Flag size={14} />}
-            title="Blockers"
-            subtitle="Stuck, overdue, or unresolved"
-            emptyLabel="No blockers."
-            emptyTone="positive"
-            items={data?.blockers ?? []}
-            loading={inbox.loading}
-            accent="error"
-          />
-          <InboxColumn
-            icon={<Calendar size={14} />}
-            title="This Week"
-            subtitle="Events and trips in the next 7 days"
-            emptyLabel="No events or trips scheduled."
-            emptyTone="neutral"
-            items={data?.this_week ?? []}
-            loading={inbox.loading}
-          />
-        </div>
+        {inbox.loading ? (
+          <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+            {actionColumns.map((c) => (
+              <InboxColumn key={c.key} {...c} loading />
+            ))}
+          </div>
+        ) : (
+          <ActionInbox columns={actionColumns} />
+        )}
       </section>
 
       {/* ── PIPELINE ───────────────────────────────────────
@@ -475,6 +480,74 @@ function PipelineTile({
   );
 }
 
+// ── Inbox column config ──────────────────────────────────────
+
+interface InboxColumnConfig {
+  key: string;
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  items: InboxItem[];
+  accent?: "error";
+}
+
+// ── Action inbox — smart layering ────────────────────────────
+// Columns with items render as cards; columns that are clear collapse
+// into one slim strip so inbox-zero reads as a light "all clear" line
+// instead of large empty cards stretched to the grid row height.
+
+function ActionInbox({ columns }: { columns: InboxColumnConfig[] }) {
+  const active = columns.filter((c) => c.items.length > 0);
+  const cleared = columns.filter((c) => c.items.length === 0);
+
+  if (active.length === 0) {
+    return <ClearedStrip columns={cleared} allClear />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+        {active.map((c) => (
+          <InboxColumn key={c.key} {...c} loading={false} />
+        ))}
+      </div>
+      {cleared.length > 0 && <ClearedStrip columns={cleared} />}
+    </div>
+  );
+}
+
+function ClearedStrip({
+  columns,
+  allClear,
+}: {
+  columns: InboxColumnConfig[];
+  allClear?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border px-4 py-3",
+        allClear ? "border-synced/30 bg-synced/5" : "border-border-subtle bg-bg/40"
+      )}
+    >
+      <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-synced">
+        <CheckCircle2 size={13} />
+        {allClear ? "Inbox zero — nothing needs you" : "All clear"}
+      </span>
+      <span className="h-3.5 w-px bg-border" aria-hidden />
+      {columns.map((c) => (
+        <span
+          key={c.key}
+          className="flex items-center gap-1.5 text-[11.5px] text-ink-secondary"
+        >
+          <span className="text-ink-muted">{c.icon}</span>
+          {c.title}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 // ── Inbox column ─────────────────────────────────────────────
 
 function InboxColumn({
@@ -483,19 +556,8 @@ function InboxColumn({
   subtitle,
   items,
   loading,
-  emptyLabel,
-  emptyTone,
   accent,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  subtitle: string;
-  items: InboxItem[];
-  loading: boolean;
-  emptyLabel: string;
-  emptyTone: "positive" | "neutral";
-  accent?: "error";
-}) {
+}: InboxColumnConfig & { loading: boolean }) {
   const count = items.length;
   const border = accent === "error" && count > 0 ? "border-err/40" : "border-border";
   return (
@@ -541,16 +603,6 @@ function InboxColumn({
       <div className="max-h-[420px] overflow-y-auto">
         {loading && (
           <div className="px-4 py-6 text-center text-[11px] text-ink-muted">Loading…</div>
-        )}
-        {!loading && items.length === 0 && (
-          <div className="flex flex-col items-center gap-1 px-4 py-8 text-center">
-            {emptyTone === "positive" ? (
-              <CheckCircle2 size={18} className="text-synced" />
-            ) : (
-              <InboxIcon size={18} className="text-ink-muted" />
-            )}
-            <div className="text-[11.5px] text-ink-muted">{emptyLabel}</div>
-          </div>
         )}
         {!loading &&
           items.map((item) => <InboxRow key={`${item.type}-${item.id}`} item={item} />)}
