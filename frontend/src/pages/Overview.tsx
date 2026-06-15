@@ -414,6 +414,17 @@ function HeroKpiCard({ icon, label, value, sub, tone }: HeroKpi) {
     error: "text-err",
   }[tone];
 
+  // Alert tones (error/warning) get a tinted fill + matching border so a
+  // breach or expiry visibly pops; quiet states (neutral/positive/accent)
+  // stay on the plain surface so the eye lands on what needs attention.
+  const container = {
+    neutral: "border-border bg-surface",
+    accent: "border-border bg-surface",
+    positive: "border-border bg-surface",
+    warning: "border-amber-500/35 bg-amber-50/70",
+    error: "border-err/40 bg-err/[0.06]",
+  }[tone];
+
   const display =
     value === null
       ? "—"
@@ -422,7 +433,7 @@ function HeroKpiCard({ icon, label, value, sub, tone }: HeroKpi) {
       : value;
 
   return (
-    <div className="relative overflow-hidden rounded-lg border border-border bg-surface px-4 py-3 shadow-stone">
+    <div className={cn("relative overflow-hidden rounded-lg border px-4 py-3 shadow-stone", container)}>
       <span
         className={cn("absolute left-0 top-0 h-full w-[3px]", accentBar)}
         aria-hidden
