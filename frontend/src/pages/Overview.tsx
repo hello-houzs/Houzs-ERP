@@ -182,21 +182,21 @@ export function Overview() {
   // used to stretch to row height and leave large dead whitespace.
   const actionColumns: InboxColumnConfig[] = [
     {
-      key: "my_tasks",
+      id: "my_tasks",
       icon: <InboxIcon size={14} />,
       title: "My Tasks",
       subtitle: "Assigned to you, due soon or overdue",
       items: data?.my_tasks ?? [],
     },
     {
-      key: "review_queue",
+      id: "review_queue",
       icon: <MessageSquare size={14} />,
       title: "Review Queue",
       subtitle: "Waiting on your approval or decision",
       items: data?.review_queue ?? [],
     },
     {
-      key: "blockers",
+      id: "blockers",
       icon: <Flag size={14} />,
       title: "Blockers",
       subtitle: "Stuck, overdue, or unresolved",
@@ -204,7 +204,7 @@ export function Overview() {
       accent: "error",
     },
     {
-      key: "this_week",
+      id: "this_week",
       icon: <Calendar size={14} />,
       title: "This Week",
       subtitle: "Events and trips in the next 7 days",
@@ -307,7 +307,7 @@ export function Overview() {
         {inbox.loading ? (
           <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
             {actionColumns.map((c) => (
-              <InboxColumn key={c.key} {...c} loading />
+              <InboxColumn key={c.id} {...c} loading />
             ))}
           </div>
         ) : (
@@ -479,7 +479,7 @@ function HeroKpiCard({ icon, label, value, sub, alert, to, tone }: HeroKpi) {
 // ── Inbox column config ──────────────────────────────────────
 
 interface InboxColumnConfig {
-  key: string;
+  id: string;
   icon: React.ReactNode;
   title: string;
   subtitle: string;
@@ -504,7 +504,7 @@ function ActionInbox({ columns }: { columns: InboxColumnConfig[] }) {
     <div className="space-y-4">
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
         {active.map((c) => (
-          <InboxColumn key={c.key} {...c} loading={false} />
+          <InboxColumn key={c.id} {...c} loading={false} />
         ))}
       </div>
       {cleared.length > 0 && <ClearedStrip columns={cleared} />}
@@ -533,7 +533,7 @@ function ClearedStrip({
       <span className="h-3.5 w-px bg-border" aria-hidden />
       {columns.map((c) => (
         <span
-          key={c.key}
+          key={c.id}
           className="flex items-center gap-1.5 text-[11.5px] text-ink-secondary"
         >
           <span className="text-ink-muted">{c.icon}</span>
