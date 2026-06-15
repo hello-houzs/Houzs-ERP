@@ -7,12 +7,12 @@ export default {
         // ── Canvas ─────────────────────────────────────────
         // Warm cream paper canvas — slight green-yellow undertone
         // pulled from the brand's "Nature" axis.
-        bg: "#f5f4ee",
+        bg: "#f1f1ec",
         surface: "#ffffff",
         "surface-dim": "#ecebe2",
 
         border: {
-          DEFAULT: "#e0ddd0",
+          DEFAULT: "#d2cdbf",
           subtle: "#ecebe2",
           strong: "#cdc8b8",
         },
@@ -20,7 +20,7 @@ export default {
         // ── Ink ────────────────────────────────────────────
         // Nature Black is the brand anchor (#111810).
         ink: {
-          DEFAULT: "#111810", // brand: Nature Black
+          DEFAULT: "#1f211d", // brand: Nature Black (neutralised 2026-06-15 for eye comfort)
           // Darkened 2026-06-14 for readability — owner reported low contrast
           // (faint grays) causing eye strain. Old: secondary #4a534a, muted #8a8e85.
           secondary: "#3b423a",
