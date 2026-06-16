@@ -5,6 +5,7 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
 import { formatCurrency, formatDate, cn } from "../lib/utils";
+import { TabStrip } from "../components/TabStrip";
 
 /**
  * Driver/Helper self-service profile page.
@@ -76,22 +77,15 @@ export function DriverProfile() {
       )}
 
       {/* Tab strip */}
-      <div className="mb-4 border-b border-border">
-        <div className="no-scrollbar -mx-4 flex gap-1 overflow-x-auto px-4 sm:mx-0 sm:px-0 [&>*]:shrink-0">
-          {((CLOCK_ENABLED ? ["profile", "salary", "clock"] : ["profile", "salary"]) as Array<"profile" | "salary" | "clock">).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={cn(
-                "-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-[12px] font-semibold capitalize",
-                tab === t ? "border-accent text-accent" : "border-transparent text-ink-secondary"
-              )}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-      </div>
+      <TabStrip
+        value={tab}
+        onChange={setTab}
+        options={[
+          { value: "profile", label: "Profile" },
+          { value: "salary", label: "Salary" },
+          { value: "clock", label: "Clock", show: CLOCK_ENABLED },
+        ]}
+      />
 
       {tab === "profile" && (
         <ProfileTab

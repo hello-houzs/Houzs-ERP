@@ -20,6 +20,7 @@ import {
   Hourglass,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
+import { Button } from "../components/Button";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { DataTable } from "../components/DataTable";
 import { EmptyState } from "../components/EmptyState";
@@ -181,14 +182,14 @@ function CatalogPanel() {
         <div className="text-[12px] text-ink-secondary">
           {rows.length} {rows.length === 1 ? "item" : "items"}
         </div>
-        <button
+        <Button
           type="button"
           onClick={createAward}
           disabled={creating}
-          className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm transition-all hover:bg-accent/90 active:scale-95 disabled:opacity-50"
+          icon={<Plus size={13} />}
         >
-          <Plus size={13} /> New award
-        </button>
+          New award
+        </Button>
       </div>
 
       {rows.length === 0 ? (

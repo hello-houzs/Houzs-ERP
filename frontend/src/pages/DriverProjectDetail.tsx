@@ -14,6 +14,7 @@ import {
   Truck,
 } from "lucide-react";
 import { useQuery } from "../hooks/useQuery";
+import { EmptyState } from "../components/EmptyState";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { useAuth } from "../auth/AuthContext";
@@ -567,9 +568,10 @@ function PhotoGrid({
 
   if (photos.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed border-border p-6 text-center text-[12px] text-ink-secondary">
-        No evidence yet. Capture a photo or upload a file to record what was done.
-      </div>
+      <EmptyState
+        compact
+        message="No evidence yet. Capture a photo or upload a file to record what was done."
+      />
     );
   }
   return (

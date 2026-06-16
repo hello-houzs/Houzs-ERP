@@ -220,6 +220,66 @@ select.appearance-none:focus {
   }
 }
 
+/* ──────────────────────────────────────────────────────────
+   Project-calendar bars. Soft status tint + a status-coloured left
+   rail + ink text at rest so a month full of bars stays scannable;
+   deepen to the solid status fill (white text) on hover so the bar
+   under the pointer reads boldly. `--bar` is the status hex, set
+   inline per bar via statusBarStyle().
+   ────────────────────────────────────────────────────────── */
+.cal-bar {
+  background-color: color-mix(in srgb, var(--bar) 14%, white);
+  color: #111810;
+  box-shadow: inset 3px 0 0 var(--bar), 0 1px 2px rgba(17, 24, 16, 0.07);
+  transition: background-color 130ms ease, color 130ms ease,
+    box-shadow 130ms ease, transform 130ms ease;
+}
+.cal-bar:hover {
+  background-color: var(--bar);
+  color: #ffffff;
+  box-shadow: inset 3px 0 0 var(--bar), 0 8px 18px -8px rgba(17, 24, 16, 0.4);
+}
+
+/* ──────────────────────────────────────────────────────────
+   Auth screen ambience. A large pine glow drifts slowly behind the
+   brand lockup for a living, premium feel; the wordmark floats a few
+   pixels. Both are clamped to near-instant under prefers-reduced-motion
+   by the global rule above.
+   ────────────────────────────────────────────────────────── */
+@keyframes authDrift {
+  0% { transform: translate(0, 0) scale(1); opacity: 0.55; }
+  50% { transform: translate(48px, -34px) scale(1.18); opacity: 0.85; }
+  100% { transform: translate(0, 0) scale(1); opacity: 0.55; }
+}
+.auth-drift {
+  animation: authDrift 16s ease-in-out infinite;
+}
+@keyframes authFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+.auth-float {
+  animation: authFloat 7s ease-in-out infinite;
+}
+/* Soft light sweep across the wordmark — a wide, heavily-blurred band so
+   the edges feather out instead of reading as a hard rectangle. */
+@keyframes authSheen {
+  0% { transform: translateX(-240%) skewX(-14deg); }
+  55%, 100% { transform: translateX(340%) skewX(-14deg); }
+}
+.auth-sheen {
+  animation: authSheen 6.5s ease-in-out infinite;
+}
+/* Second, counter-drifting glow for a living aurora behind the brand. */
+@keyframes authDrift2 {
+  0% { transform: translate(0, 0) scale(1.1); opacity: 0.4; }
+  50% { transform: translate(-40px, 30px) scale(1); opacity: 0.7; }
+  100% { transform: translate(0, 0) scale(1.1); opacity: 0.4; }
+}
+.auth-drift2 {
+  animation: authDrift2 19s ease-in-out infinite;
+}
+
 /* Selection — brass tint */
 ::selection {
   background: rgba(161, 106, 46, 0.22);

@@ -3,6 +3,7 @@ import { Shield } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { DataTable } from "../components/DataTable";
+import { EmptyState } from "../components/EmptyState";
 import { useQuery } from "../hooks/useQuery";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useStickyFilters } from "../hooks/useStickyFilters";
@@ -332,11 +333,11 @@ function ComplianceTab() {
       </div>
       {data.loading && <div className="text-[12px] text-ink-secondary">Loading…</div>}
       {!data.loading && !expiries.length && (
-        <div className="rounded-lg border border-dashed border-border bg-surface p-8 text-center">
-          <Shield size={28} className="mx-auto mb-3 text-ok" />
-          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">All clear</div>
-          <div className="mt-1 text-[12px] text-ink-secondary">No compliance items expiring soon.</div>
-        </div>
+        <EmptyState
+          icon={<Shield size={28} className="text-ok" />}
+          message="All clear"
+          description="No compliance items expiring soon."
+        />
       )}
       <div className="space-y-2">
         {expiries.map((l: any) => {

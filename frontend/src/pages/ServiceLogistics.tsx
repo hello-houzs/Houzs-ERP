@@ -4,6 +4,7 @@ import { Wrench, Search } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { DataTable, type Column } from "../components/DataTable";
 import { Pagination } from "../components/Pagination";
+import { EmptyState } from "../components/EmptyState";
 import { FilterPills } from "../components/FilterPills";
 import { useQuery } from "../hooks/useQuery";
 import { api, buildQuery } from "../api/client";
@@ -188,10 +189,10 @@ export function ServiceLogistics() {
           Loading…
         </div>
       ) : !list.data || list.data.rows.length === 0 ? (
-        <div className="rounded-md border border-border bg-surface p-8 text-center text-[12px] text-ink-muted">
-          <Wrench size={20} className="mx-auto mb-2 text-ink-muted" />
-          No service logistics rows for this filter.
-        </div>
+        <EmptyState
+          icon={<Wrench size={20} />}
+          message="No service logistics rows for this filter."
+        />
       ) : (
         <>
           <DataTable

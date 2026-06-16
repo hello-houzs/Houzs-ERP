@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { MessageCircle, Plus } from "lucide-react";
 import { PageHeader } from "../components/Layout";
+import { Button } from "../components/Button";
 import { IdeaList } from "../components/IdeaList";
 
 const STATUSES = [
@@ -20,14 +21,14 @@ export function Suggestions() {
         title="Suggestion box"
         description="Quick fixes, papercuts, things that annoy you. Approved suggestions earn the submitter Houzs Points."
         actions={
-          <button
+          <Button
             type="button"
             disabled={!ready}
             onClick={() => triggerRef.current?.()}
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3.5 py-2 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm transition-all hover:bg-accent/90 active:scale-95 disabled:opacity-50"
+            icon={<Plus size={14} />}
           >
-            <Plus size={14} /> Post suggestion
-          </button>
+            Post suggestion
+          </Button>
         }
       />
 

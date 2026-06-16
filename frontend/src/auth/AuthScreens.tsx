@@ -6,9 +6,19 @@ import { api } from "../api/client";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
 
+// Logo lives in /public; the wordmark is black-on-transparent so it gets
+// inverted to cream on the Nature Black canvas.
+const LOGO_WORDMARK_SRC = "/logo-wordmark.png";
+// brightness(0) flattens any anti-aliased edge to pure black, invert(1)
+// lifts it to white — turns the black PNG into a clean cream mark on dark.
+const INVERT_TO_CREAM = { filter: "brightness(0) invert(1)" } as const;
+
 /**
- * Shared shell for the unauthenticated screens — centered card on the
- * cream paper canvas, brass accent bar, brand voice.
+ * Shared shell for the unauthenticated screens. The Nature Black brand
+ * panel fills the whole viewport (cream wordmark + tagline + a faint
+ * building-mark watermark); the form rides in a frosted "liquid glass"
+ * floating card. Two columns on lg+ (brand left, card right); stacked and
+ * centred below lg.
  */
 function AuthShell({
   eyebrow,
@@ -21,23 +31,125 @@ function AuthShell({
   subtitle: string;
   children: ReactNode;
 }) {
+  const year = new Date().getFullYear();
   return (
-    <div className="paper-grain flex min-h-screen items-center justify-center px-4 py-12">
-      <div className="relative w-full max-w-[420px] overflow-hidden rounded-lg border border-border bg-surface px-8 py-10 shadow-slab animate-rise">
-        <span className="pointer-events-none absolute left-0 top-0 h-px w-full bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
-        <div className="mb-1 flex items-center gap-2">
-          <span className="h-px w-5 bg-accent" />
-          <span className="text-[10px] font-semibold uppercase tracking-brand text-accent">
-            {eyebrow}
-          </span>
+    <div
+      className="relative min-h-screen overflow-hidden text-sidebar"
+      style={{
+        background:
+          "radial-gradient(130% 115% at 26% -12%, #1d2519 0%, #141b13 46%, #0c110b 100%)",
+      }}
+    >
+      {/* Fine paper grain over the gradient for depth */}
+      <div className="slab-grain pointer-events-none absolute inset-0 opacity-70" />
+      {/* Two slow, counter-drifting pine glows = a living aurora behind the
+          brand (no yellow). Parallax wrappers shift them with the cursor. */}
+      <div className="pointer-events-none absolute left-[10%] top-[14%] h-[560px] w-[560px]">
+        <div
+          className="auth-drift absolute inset-0 rounded-full blur-[150px]"
+          style={{
+            background:
+              "radial-gradient(circle, rgba(63,107,83,0.26), rgba(63,107,83,0) 70%)",
+          }}
+        />
+      </div>
+      <div className="pointer-events-none absolute bottom-[6%] right-[8%] h-[460px] w-[460px]">
+        <div
+          className="auth-drift2 absolute inset-0 rounded-full blur-[150px]"
+          style={{
+            background:
+              "radial-gradient(circle, rgba(45,75,60,0.5), rgba(45,75,60,0) 70%)",
+          }}
+        />
+      </div>
+      {/* Faint building wordmark watermark, bottom-left */}
+      <img
+        src={LOGO_WORDMARK_SRC}
+        alt=""
+        aria-hidden
+        draggable={false}
+        style={INVERT_TO_CREAM}
+        className="pointer-events-none absolute -bottom-12 -left-10 w-[520px] max-w-[64vw] object-contain opacity-[0.045]"
+      />
+
+      <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col items-center justify-center gap-14 px-6 py-12 lg:flex-row lg:justify-between lg:gap-10 lg:px-16">
+        {/* Brand lockup — children rise in sequence */}
+        <div className="w-full max-w-2xl text-center lg:text-left">
+          <div
+            className="animate-rise mb-7 flex items-center justify-center gap-2 lg:justify-start"
+            style={{ animationDelay: "0ms" }}
+          >
+            <span className="h-px w-10 bg-accent" />
+            <span className="text-[11px] font-semibold uppercase tracking-brand text-accent">
+              Houzs Century
+            </span>
+          </div>
+          {/* wordmark: rises in (entrance) → floats gently → a metallic
+              sheen sweeps across it. Nested so the three motions don't
+              fight over the `animation` property. */}
+          <div
+            className="animate-rise mx-auto inline-block lg:mx-0"
+            style={{ animationDelay: "120ms" }}
+          >
+            <div className="auth-float relative inline-block overflow-hidden">
+              <img
+                src={LOGO_WORDMARK_SRC}
+                alt="Houzs Century"
+                draggable={false}
+                style={INVERT_TO_CREAM}
+                className="block h-24 w-auto max-w-[560px] object-contain drop-shadow-[0_10px_36px_rgba(0,0,0,0.5)] sm:h-28 xl:h-36"
+              />
+              {/* wide, blurred light band sweeping across — soft feathered
+                  edges (no hard rectangle) */}
+              <span className="auth-sheen pointer-events-none absolute -inset-y-12 left-0 w-1/3 bg-gradient-to-r from-transparent via-white/35 to-transparent blur-2xl" />
+            </div>
+          </div>
+          <p
+            className="animate-rise mx-auto mt-9 max-w-lg text-[15.5px] leading-relaxed text-sidebar-ink-soft lg:mx-0"
+            style={{ animationDelay: "240ms" }}
+          >
+            The operations workspace for the Houzs Century team — projects,
+            logistics, and people in one place.
+          </p>
         </div>
-        <h1 className="font-display text-[24px] font-extrabold leading-tight tracking-tight text-ink">
-          {title}
-        </h1>
-        <p className="mt-1.5 text-[12.5px] text-ink-secondary">{subtitle}</p>
-        <div className="mt-6">{children}</div>
-        <div className="mt-8 border-t border-border-subtle pt-4 text-[10px] uppercase tracking-brand text-ink-muted">
-          Houzs Century · Operations
+
+        {/* Liquid-glass floating card — dimmer frosted panel so it doesn't
+            glare against the dark canvas */}
+        <div
+          className="animate-rise w-full max-w-[348px]"
+          style={{ animationDelay: "360ms" }}
+        >
+          <div
+            className="relative overflow-hidden rounded-[28px] border border-white/45 bg-white/[0.62] px-7 py-8 backdrop-blur-2xl backdrop-saturate-150"
+            style={{
+              boxShadow:
+                "0 28px 70px -30px rgba(0,0,0,0.85), inset 0 1px 1px rgba(255,255,255,0.85), inset 0 -14px 30px rgba(255,255,255,0.10)",
+            }}
+          >
+            {/* specular highlight catching the glass rim (top-left) */}
+            <span className="pointer-events-none absolute -left-10 -top-14 h-40 w-48 rounded-full bg-white/45 blur-3xl" />
+            {/* faint counter-highlight, bottom-right */}
+            <span className="pointer-events-none absolute -bottom-12 -right-10 h-32 w-40 rounded-full bg-white/15 blur-3xl" />
+            {/* brass hairline along the very top edge */}
+            <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/55 to-transparent" />
+
+            <div className="relative">
+              <div className="mb-1 flex items-center gap-2">
+                <span className="h-px w-5 bg-accent" />
+                <span className="text-[10px] font-semibold uppercase tracking-brand text-accent">
+                  {eyebrow}
+                </span>
+              </div>
+              <h1 className="font-display text-[25px] font-extrabold leading-tight tracking-tight text-ink">
+                {title}
+              </h1>
+              <p className="mt-1.5 text-[12.5px] text-ink-secondary">{subtitle}</p>
+              <div className="mt-7">{children}</div>
+            </div>
+          </div>
+          <div className="mt-5 text-center text-[10px] uppercase tracking-brand text-sidebar-ink-soft lg:text-left">
+            {year} Houzs Century Sdn Bhd
+          </div>
         </div>
       </div>
     </div>

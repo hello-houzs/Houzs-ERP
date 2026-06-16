@@ -87,7 +87,7 @@ export function Shop() {
             {isAdmin && (
               <Link
                 to="/gamification/admin?tab=catalog"
-                className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm transition-all hover:bg-accent/90 active:scale-95"
+                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-accent bg-accent px-4 text-[13px] font-semibold tracking-wide text-white shadow-brass transition-all duration-150 hover:bg-accent-hover"
               >
                 <Wrench size={12} /> Manage catalog
               </Link>
@@ -329,25 +329,23 @@ function RedeemModal({
           </label>
 
           <div className="flex items-center gap-2 pt-1">
-            <button
+            <Button
               type="button"
+              variant="secondary"
               onClick={onClose}
-              className="flex-1 rounded-md border border-border bg-surface py-2 text-[12px] font-semibold text-ink-secondary transition-colors hover:border-ink-muted hover:text-ink"
+              className="flex-1"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               disabled={busy || after < 0}
               onClick={handleRedeem}
-              className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded-md bg-accent py-2 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm transition-all",
-                "hover:bg-accent/90 active:scale-95",
-                (busy || after < 0) && "cursor-not-allowed opacity-50 hover:bg-accent active:scale-100",
-              )}
+              className="flex-1"
+              icon={<ShoppingBag size={13} />}
             >
-              <ShoppingBag size={13} /> {busy ? "Redeeming…" : "Confirm"}
-            </button>
+              {busy ? "Redeeming…" : "Confirm"}
+            </Button>
           </div>
         </div>
       </div>

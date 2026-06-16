@@ -3,6 +3,7 @@ import { Truck, MapPin, ChevronRight, Package } from "lucide-react";
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
 import { formatDate, cn } from "../lib/utils";
+import { EmptyState } from "../components/EmptyState";
 import type { Trip } from "../types";
 
 /**
@@ -36,13 +37,11 @@ export function DriverHome() {
       )}
 
       {trips.data && trips.data.data.length === 0 && (
-        <div className="rounded-lg border border-dashed border-border bg-surface p-8 text-center">
-          <Truck size={28} className="mx-auto mb-3 text-ink-secondary" />
-          <div className="text-sm font-semibold text-ink">No trips assigned</div>
-          <div className="mt-1 text-xs text-ink-secondary">
-            You're all caught up. New trips will appear here once dispatch assigns them.
-          </div>
-        </div>
+        <EmptyState
+          icon={<Truck size={28} />}
+          message="No trips assigned"
+          description="You're all caught up. New trips will appear here once dispatch assigns them."
+        />
       )}
 
       <div className="space-y-3">

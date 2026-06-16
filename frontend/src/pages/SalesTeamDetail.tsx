@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ShieldCheck } from "lucide-react";
 import { DetailLayout } from "../components/DetailLayout";
+import { TabStrip } from "../components/TabStrip";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useAuth } from "../auth/AuthContext";
@@ -82,24 +83,7 @@ export function SalesTeamDetail() {
       error={detail.error}
     >
       {/* Tab strip */}
-      <div className="mb-4 border-b border-border">
-        <div className="flex items-center gap-1">
-          {TABS.map((t) => (
-            <button
-              key={t.value}
-              onClick={() => setTab(t.value)}
-              className={cn(
-                "relative -mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-4 py-2.5 text-[12px] font-semibold transition-colors",
-                tab === t.value
-                  ? "border-accent text-accent"
-                  : "border-transparent text-ink-secondary hover:text-ink",
-              )}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <TabStrip value={tab} onChange={setTab} options={TABS} />
 
       {!rep && !detail.loading && (
         <div className="rounded-md border border-border bg-surface p-6 text-[12px] text-ink-muted">
@@ -122,7 +106,7 @@ export function SalesTeamDetail() {
           Direct reports: <span className="font-bold text-ink">{detail.data?.direct_count ?? 0}</span>
           {" · "}
           Total downline (incl. indirect): <span className="font-bold text-ink">{detail.data?.subtree_count ?? 0}</span>
-          <p className="mt-2 text-ink-muted">Tree visualisation lands in slice 3.</p>
+          <p className="mt-2 text-ink-muted">A visual org tree is coming soon.</p>
         </div>
       )}
 
@@ -131,7 +115,7 @@ export function SalesTeamDetail() {
           {/* TODO: performance metrics — Orders YTD / Revenue YTD /
               Avg Order Value / Outstanding + 12-month line chart.
               Wire up when sales_entries roll-up endpoint exists. */}
-          Performance metrics — placeholder. Coming soon.
+          Performance metrics coming soon.
         </div>
       )}
 
@@ -276,7 +260,7 @@ function OverviewTab({
           <Field
             label="Report to"
             value={rep.upline_name ?? "(none)"}
-            help="Change via the org chart drag handle (slice 3)"
+            help="Change via the org chart drag handle"
           />
           <SelectField
             label="Commission tier"
