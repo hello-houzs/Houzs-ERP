@@ -6,7 +6,7 @@
   font-family: "Manrope", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-feature-settings: "ss01", "cv11";
+  font-feature-settings: normal;
   text-rendering: optimizeLegibility;
 }
 
@@ -17,9 +17,9 @@ body,
 }
 
 body {
-  background: #f5f4ee;
-  color: #111810;
-  font-feature-settings: "ss01", "cv11";
+  background: #f1f1ec;
+  color: #1f211d;
+  font-feature-settings: normal;
 }
 
 /* ──────────────────────────────────────────────────────────
@@ -28,15 +28,15 @@ body {
    without ever calling attention to itself.
    ────────────────────────────────────────────────────────── */
 .paper-grain {
-  background-color: #f5f4ee;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.067 0 0 0 0 0.094 0 0 0 0 0.063 0 0 0 0.06 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  background-color: #f1f1ec;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.067 0 0 0 0 0.094 0 0 0 0 0.063 0 0 0 0 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
   background-repeat: repeat;
 }
 
 /* The Nature Black sidebar gets its own subtle grain so it doesn't
    read as a flat black slab in screenshots. */
 .slab-grain {
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
 
 /* Skeleton — brass-tinted shimmer instead of plain gray. */
@@ -179,7 +179,7 @@ select.appearance-none:focus {
 .thin-scroll::-webkit-scrollbar-thumb {
   background: #cdc8b8;
   border-radius: 6px;
-  border: 2px solid #f5f4ee;
+  border: 2px solid #f1f1ec;
 }
 .thin-scroll::-webkit-scrollbar-thumb:hover {
   background: #a16a2e;
@@ -283,7 +283,7 @@ select.appearance-none:focus {
 /* Selection — brass tint */
 ::selection {
   background: rgba(161, 106, 46, 0.22);
-  color: #111810;
+  color: #1f211d;
 }
 
 /* Focus ring — brass at low opacity, never blue browser default */

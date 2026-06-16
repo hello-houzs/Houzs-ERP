@@ -121,8 +121,13 @@ export function StaffDetail() {
                       <DefinitionList
                         items={[
                           { label: "Email", value: d.email },
-                          { label: "Phone", value: d.phone, mono: true },
-                          { label: "IC", value: d.ic_number, mono: true },
+                          { label: "Personal Phone", value: d.phone, mono: true },
+                          {
+                            label: "Company Phone",
+                            value: d.company_phone,
+                            mono: true,
+                          },
+                          { label: "IC / Passport", value: d.ic_number, mono: true },
                           ...(d.user_type === "driver"
                             ? [
                                 {
@@ -207,12 +212,19 @@ export function StaffDetail() {
                         onChange={(v) => setForm({ ...form, name: v })}
                       />
                       <EditField
-                        label="Phone"
+                        label="Personal Phone"
                         value={form.phone}
                         onChange={(v) => setForm({ ...form, phone: v })}
                       />
                       <EditField
-                        label="IC Number"
+                        label="Company Phone"
+                        value={form.company_phone}
+                        onChange={(v) =>
+                          setForm({ ...form, company_phone: v })
+                        }
+                      />
+                      <EditField
+                        label="IC Number / Passport Number"
                         value={form.ic_number}
                         onChange={(v) => setForm({ ...form, ic_number: v })}
                       />

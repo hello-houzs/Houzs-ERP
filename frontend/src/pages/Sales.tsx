@@ -12,7 +12,7 @@ import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
-import { formatCurrency, formatDate, cn } from "../lib/utils";
+import { formatCurrency, formatDate, formatDateTime, cn } from "../lib/utils";
 import { ListSkeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 
@@ -650,6 +650,10 @@ export function EntryPanel({
       : entry?.project_id ? String(entry.project_id) : ""
   );
   const [custom, setCustom] = useState<Record<string, string>>({});
+  // Full edit history (sales_entry_activity) — who created/edited this entry, when.
+  const [activity, setActivity] = useState<
+    { id: number; action: string; user_name: string | null; created_at: string }[]
+  >([]);
   const [busy, setBusy] = useState(false);
 
   // Sales-person picker. Defaults to the logged-in user (admins keying
@@ -679,8 +683,10 @@ export function EntryPanel({
           custom: Record<string, string | null>;
           items?: any[];
           payments?: any[];
+          activity?: any[];
         }>(`/api/sales/entries/${entry.id}`);
         if (cancelled) return;
+        if (Array.isArray(r.activity)) setActivity(r.activity);
         const initial: Record<string, string> = {};
         for (const [k, v] of Object.entries(r.custom || {})) {
           if (v != null) initial[k] = v;
@@ -1370,6 +1376,35 @@ export function EntryPanel({
                 }
               />
             ))}
+        </PanelSection>
+      )}
+
+      {/* Edit history (sales_entry_activity) — who created / edited this entry, when. */}
+      {mode === "edit" && activity.length > 0 && (
+        <PanelSection title={`Edit history (${activity.length})`}>
+          <div className="space-y-1 font-mono text-[11px]">
+            {activity.map((a) => {
+              const label =
+                a.action === "created"
+                  ? "Created by"
+                  : a.action === "submitted"
+                    ? "Submitted by"
+                    : a.action === "unsubmitted"
+                      ? "Unsubmitted by"
+                      : a.action === "voided"
+                        ? "Voided by"
+                        : a.action === "pushed"
+                          ? "Pushed by"
+                          : "Edited by";
+              return (
+                <div key={a.id} className="flex items-center gap-2 text-ink-secondary">
+                  <span className="w-28 shrink-0 font-semibold text-ink">{label}</span>
+                  <span className="flex-1 truncate">{a.user_name || "Unknown"}</span>
+                  <span className="shrink-0 text-ink-muted">{formatDateTime(a.created_at)}</span>
+                </div>
+              );
+            })}
+          </div>
         </PanelSection>
       )}
     </Panel>

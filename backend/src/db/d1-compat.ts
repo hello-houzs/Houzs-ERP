@@ -174,6 +174,18 @@ function strftimeToPg(fmt: string): string {
 // Queries slower than this are logged to wrangler tail with their SQL.
 const SLOW_QUERY_MS = 100;
 
+// Cap the FIRST query attempt at ~12s so a hung Hyperdrive connection (one
+// where the socket never errors, the postgres.js promise just never settles —
+// the failure mode behind the recurring "Failed to fetch / server took too long
+// to respond" reports) gets retried on a fresh client instead of riding the
+// Workers runtime's ~30s hang-detector to a kill. The marker message is matched
+// by isDeadConnError so the existing retry path catches it. The retry attempt
+// is intentionally NOT timed — a genuinely slow-but-healthy query still
+// completes; Workers' own cap is the backstop.
+const FIRST_ATTEMPT_TIMEOUT_MS = 12_000;
+const FIRST_ATTEMPT_TIMEOUT_MARKER =
+  "d1-compat first attempt timed out — connection appears hung";
+
 // Hyperdrive pools connections to the Supabase pooler origin-side. After a
 // deploy (fresh pool) or a quiet period (pooler reaps idle conns) the first
 // query can hit a dead/cold connection and fail with one of these. We retry
@@ -184,7 +196,7 @@ const SLOW_QUERY_MS = 100;
 // and propagate unchanged.
 function isDeadConnError(e: unknown): boolean {
   const m = String((e as Error)?.message ?? e ?? "");
-  return /CONNECTION_CLOSED|Network connection lost|ECONNRESET|ECONNREFUSED|connection closed|terminating connection|server closed the connection|write EPIPE|Timed out .*pool/i.test(
+  return /CONNECTION_CLOSED|Network connection lost|ECONNRESET|ECONNREFUSED|connection closed|terminating connection|server closed the connection|write EPIPE|Timed out .*pool|d1-compat first attempt timed out/i.test(
     m,
   );
 }
@@ -327,13 +339,30 @@ class PreparedStatement {
     const t0 = Date.now();
     let res: T[] & { count?: number };
     try {
-      res = (await this.sql.unsafe(text, this.args as never[])) as unknown as T[] & {
-        count?: number;
-      };
+      // First attempt: capped at FIRST_ATTEMPT_TIMEOUT_MS so a hung connection
+      // (postgres.js promise never settles) fails fast and falls into the retry
+      // path below instead of dragging the request to a Workers hang-kill.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(FIRST_ATTEMPT_TIMEOUT_MARKER)),
+          FIRST_ATTEMPT_TIMEOUT_MS,
+        );
+      });
+      try {
+        res = (await Promise.race([
+          this.sql.unsafe(text, this.args as never[]),
+          timedOut,
+        ])) as unknown as T[] & { count?: number };
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
     } catch (e) {
       if (!isDeadConnError(e)) throw e;
-      // Cold/dead Hyperdrive connection — retry once on a fresh client (its own
-      // slot opens a new origin connection, so cold-pool windows self-heal).
+      // Cold/dead/hung Hyperdrive connection — retry once on a fresh client
+      // (its own slot opens a new origin connection, so cold-pool windows
+      // self-heal). The retry is intentionally untimed: a slow-but-healthy
+      // query still completes within Workers' own cap.
       console.warn(`[db-retry] ${String((e as Error).message).slice(0, 70)}`);
       res = (await this.makeSql().unsafe(text, this.args as never[])) as unknown as T[] & {
         count?: number;

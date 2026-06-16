@@ -402,6 +402,9 @@ const PATCH_FIELDS = [
   // trip's empty crew slots from the project's planned crew.
   "setup_helper_1_id", "setup_helper_2_id", "setup_helper_outsourced",
   "dismantle_helper_1_id", "dismantle_helper_2_id", "dismantle_helper_outsourced",
+  // Phase crew editor (mig 0015) — JSON: drivers/helpers (name+phone),
+  // lorries, outsourced (name/phone/plate).
+  "setup_crew", "dismantle_crew",
   // Banner
   "banner_message", "banner_tone",
 ] as const;
@@ -955,6 +958,19 @@ export interface ListProjectsFilters {
    *  (migration 048). Empty array means the scoped user has no brand
    *  coverage → zero results. Undefined means no brand ACL applies. */
   brand_scope?: string[];
+  /** "My pending tasks" filter (role-based). When set, only return
+   *  projects that have at least one PENDING checklist item with this
+   *  role_label (e.g. "BD", "PURCHASER", "DRIVER", "SALES PIC",
+   *  "LOGISTIC"). */
+  pending_label?: string;
+  /** Same as pending_label but matches the checklist item TITLE instead
+   *  of the role chip — used for roles tied to a specific document
+   *  (e.g. Management → "Agreement / Quotation"). */
+  pending_title?: string;
+  /** Logistic "pending" = the Setup & Dismantle section hasn't been
+   *  arranged yet (no setup time scheduled). LOGISTIC isn't a checklist
+   *  item, so it gets its own predicate. */
+  pending_logistic?: boolean;
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -1013,6 +1029,50 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   if (f.state) {
     where.push("p.state = ?");
     binds.push(f.state);
+  }
+  // "My pending tasks" — project has >=1 pending checklist item that
+  // belongs to the caller's role (matched by chip label or, for
+  // document-specific roles, by item title).
+  if (f.pending_label) {
+    where.push(
+      `EXISTS (SELECT 1 FROM project_checklist pc
+                WHERE pc.project_id = p.id
+                  AND pc.status = 'pending'
+                  AND pc.role_label = ?)`
+    );
+    binds.push(f.pending_label);
+  }
+  if (f.pending_title) {
+    where.push(
+      `EXISTS (SELECT 1 FROM project_checklist pc
+                WHERE pc.project_id = p.id
+                  AND pc.status = 'pending'
+                  AND pc.title = ?)`
+    );
+    binds.push(f.pending_title);
+  }
+  if (f.pending_logistic) {
+    // Logistic work is staged:
+    //   - SETUP is due once "Stock Out Transfer Record" is completed
+    //     (done/approved) but the setup time+crew aren't filled yet.
+    //   - DISMANTLE is due once setup is arranged but the dismantle
+    //     time+crew aren't filled yet.
+    where.push(`(
+      (
+        EXISTS (SELECT 1 FROM project_checklist pc
+                 WHERE pc.project_id = p.id
+                   AND pc.title = 'Stock Out Transfer Record'
+                   AND (pc.status = 'done' OR pc.review_status = 'approved'))
+        AND p.setup_start_at IS NULL
+        AND COALESCE(p.setup_crew, '') IN ('', '{}')
+      )
+      OR
+      (
+        (p.setup_start_at IS NOT NULL OR COALESCE(p.setup_crew, '') NOT IN ('', '{}'))
+        AND p.dismantle_start_at IS NULL
+        AND COALESCE(p.dismantle_crew, '') IN ('', '{}')
+      )
+    )`);
   }
   // "Completed project" predicate — reused by both the positive
   // (section=__done) filter and the negative (exclude_done) toggle.
