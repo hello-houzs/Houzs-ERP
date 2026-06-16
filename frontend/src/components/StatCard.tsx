@@ -42,7 +42,7 @@ export function StatCard({ label, value, subtitle, tone = "default", onClick }: 
           "mt-2 font-display text-[22px] font-extrabold leading-none tracking-tight sm:mt-3 sm:text-[26px]",
           tone === "default" && "text-ink",
           tone === "success" && "text-synced",
-          tone === "warning" && "text-amber-700",
+          tone === "warning" && "text-warning-text",
           tone === "error" && "text-err"
         )}
       >

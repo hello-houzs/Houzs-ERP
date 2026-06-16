@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Plus, X, Wand2, RefreshCw, ExternalLink, Pencil, Trash2 } from "lucide-react";
 import { MapView, type MapPin } from "../components/MapView";
 import { PageHeader } from "../components/Layout";
+import { Button } from "../components/Button";
 import { DataTable } from "../components/DataTable";
 import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
@@ -264,28 +265,29 @@ export function Trips() {
           <>
             {tab !== "events" && tab !== "tracking" && <BackfillButton />}
             {tab === "history" && canManage && (
-              <button
+              <Button
+                variant="danger"
                 onClick={clearHistory}
                 title={
                   warehouse
                     ? `Permanently delete every completed/cancelled trip in ${warehouse}`
                     : "Permanently delete every completed/cancelled trip"
                 }
-                className="flex items-center gap-1.5 rounded-md border border-err/40 bg-err/5 px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-err hover:bg-err/10"
+                icon={<Trash2 size={14} />}
               >
-                <Trash2 size={14} /> Clear History
-              </button>
+                Clear History
+              </Button>
             )}
             {tab !== "drafts" && tab !== "queue" && tab !== "events" && tab !== "tracking" && (
-              <button
+              <Button
                 onClick={() => {
                   setNewTripSeed(null);
                   setShowNew(true);
                 }}
-                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm"
+                icon={<Plus size={14} />}
               >
-                <Plus size={14} /> New Trip
-              </button>
+                New Trip
+              </Button>
             )}
           </>
         }

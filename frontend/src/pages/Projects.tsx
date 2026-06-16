@@ -5,6 +5,8 @@ import {
   Plus,
   Calendar,
   Check,
+  ChevronLeft,
+  ChevronRight,
   CheckCircle2,
   Circle,
   Ban,
@@ -682,10 +684,15 @@ function stageVariant(
 
 // Project status palette — drives the calendar tint, the spec strip
 // pill, and the header dropdown.
+// Premium earth-tone status palette — pine / brass / clay — tuned for the
+// cream canvas + Nature Black brand. Replaces the generic primary
+// blue/amber/red. `hex` drives the calendar bar tint+rail and legend dots;
+// `chip`/`ring` are the matching pill tints used by the list view + the
+// status dropdown.
 const STATUS_OPTIONS: Array<{ value: ProjectStatus; label: string; hex: string; chip: string; ring: string }> = [
-  { value: "confirmed", label: "Confirmed", hex: "#2563eb", chip: "bg-blue-100 text-blue-700", ring: "ring-blue-400/30" },
-  { value: "pending",   label: "Pending",   hex: "#f59e0b", chip: "bg-amber-100 text-amber-800", ring: "ring-amber-400/30" },
-  { value: "cancelled", label: "Cancelled", hex: "#ef4444", chip: "bg-red-100 text-red-700", ring: "ring-red-400/30" },
+  { value: "confirmed", label: "Confirmed", hex: "#3f6b53", chip: "bg-[#e8efe9] text-[#2f5341]", ring: "ring-[#3f6b53]/30" },
+  { value: "pending",   label: "Pending",   hex: "#c2740f", chip: "bg-[#f7e8d2] text-[#8a4e0e]", ring: "ring-[#c2740f]/30" },
+  { value: "cancelled", label: "Cancelled", hex: "#b23b3b", chip: "bg-[#f4dede] text-[#8a2f2f]", ring: "ring-[#b23b3b]/30" },
 ];
 
 const STATUS_BY_VALUE: Record<ProjectStatus, typeof STATUS_OPTIONS[number]> = STATUS_OPTIONS.reduce(
@@ -695,10 +702,11 @@ const STATUS_BY_VALUE: Record<ProjectStatus, typeof STATUS_OPTIONS[number]> = ST
 
 function statusBarStyle(status: ProjectStatus | null | undefined): React.CSSProperties {
   const opt = STATUS_BY_VALUE[status ?? "pending"] ?? STATUS_BY_VALUE.pending;
-  return {
-    backgroundColor: `color-mix(in srgb, ${opt.hex} 96%, transparent)`,
-    color: "white",
-  };
+  // Colour is driven by the `.cal-bar` class off this `--bar` custom
+  // property: a soft tint + status rail + ink text at rest, deepening to
+  // the solid status fill on hover. Keeps the month grid calm/scannable
+  // while preserving the bold colour on the bar you're pointing at.
+  return { ["--bar" as string]: opt.hex } as React.CSSProperties;
 }
 
 function ProjectStatusSelect({
@@ -1329,9 +1337,13 @@ function ProjectsListView() {
 function CalendarTaskChip({
   task,
   onOpen,
+  onHover,
+  onLeave,
 }: {
   task: CalendarTask;
   onOpen: () => void;
+  onHover?: (e: React.MouseEvent) => void;
+  onLeave?: () => void;
 }) {
   const overdue = task.is_overdue === 1;
   const initials = (task.owner_name || "")
@@ -1344,12 +1356,9 @@ function CalendarTaskChip({
   return (
     <button
       onClick={onOpen}
-      title={
-        `${task.project_code} · ${task.project_name}\n` +
-        `${task.title}` +
-        (task.owner_name ? `\nOwner: ${task.owner_name}` : "\nUnassigned") +
-        (overdue ? "\n⚠ Overdue" : "")
-      }
+      onMouseEnter={onHover}
+      onMouseMove={onHover}
+      onMouseLeave={onLeave}
       className={cn(
         "group flex w-full items-center gap-1 rounded border px-1 py-0.5 text-left",
         overdue
@@ -2529,6 +2538,32 @@ const PROJECTS_CALENDAR_FILTER_KEYS = [
   "section",
 ] as const;
 
+// Per-day task-count chip in calendar cells. Neutral by default; an
+// overdue day gets a small red dot rather than a fully-red pill so the
+// month grid isn't a wall of alarm-red badges.
+function DayCountBadge({
+  count,
+  overdue,
+  className,
+}: {
+  count: number;
+  overdue: boolean;
+  className?: string;
+}) {
+  return (
+    <span
+      title={`${count} task(s) due${overdue ? " — includes overdue" : ""}`}
+      className={cn(
+        "inline-flex h-4 items-center gap-1 rounded-full bg-surface-dim px-1.5 text-[9px] font-bold text-ink-secondary",
+        className
+      )}
+    >
+      {overdue && <span className="h-1.5 w-1.5 rounded-full bg-err" aria-hidden />}
+      {count}
+    </span>
+  );
+}
+
 function ProjectsCalendarView() {
   const toast = useToast();
   const navigate = useNavigate();
@@ -2630,6 +2665,42 @@ function ProjectsCalendarView() {
   // week mode. Previously these expanders called expandToWeekForCell()
   // which navigated the whole view; ops asked for a lighter overlay.
   const [dayModalIso, setDayModalIso] = useState<string | null>(null);
+  // Hover popover — replaces the native bar `title` tooltip with a
+  // styled card carrying the project's basic info (code, brand, venue,
+  // span, organizer, stage). Anchored to the cursor; cleared on leave.
+  const [barHover, setBarHover] = useState<
+    { project: CalendarProject; x: number; y: number } | null
+  >(null);
+  const [taskHover, setTaskHover] = useState<
+    { task: CalendarTask; x: number; y: number } | null
+  >(null);
+
+  // Wheel-over-grid navigates months (month mode). Refs keep the handler
+  // reading the latest anchor/setAnchor without re-binding the listener;
+  // a timestamp throttles to one month per gesture. Non-passive so we can
+  // preventDefault and stop the page scrolling under the cursor.
+  const gridRef = useRef<HTMLDivElement>(null);
+  const wheelTsRef = useRef(0);
+  const anchorRef = useRef(anchor);
+  anchorRef.current = anchor;
+  const setAnchorRef = useRef(setAnchor);
+  setAnchorRef.current = setAnchor;
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el || mode !== "month") return;
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      e.preventDefault();
+      const now = Date.now();
+      if (now - wheelTsRef.current < 380) return;
+      wheelTsRef.current = now;
+      const d = new Date(anchorRef.current);
+      d.setMonth(d.getMonth() + (e.deltaY > 0 ? 1 : -1));
+      setAnchorRef.current(d);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [mode]);
 
   const setMode = (next: "month" | "week") => {
     // When flipping to week mode for the first time, snap the week
@@ -2768,16 +2839,36 @@ function ProjectsCalendarView() {
   for (let w = 0; w < weekCount; w++) {
     const weekStart = cells[w * 7].iso;
     const weekEnd = cells[w * 7 + 6].iso;
+    // In month mode, bars are clamped to the current-month columns so they
+    // never paint over the blanked leading/trailing adjacent-month cells.
+    let monthFirstCol = 0;
+    let monthLastCol = 6;
+    if (mode === "month") {
+      monthFirstCol = -1;
+      for (let d = 0; d < 7; d++) {
+        if (cells[w * 7 + d].date.getUTCMonth() === anchor.getMonth()) {
+          if (monthFirstCol === -1) monthFirstCol = d;
+          monthLastCol = d;
+        }
+      }
+    }
     const segs: WeekSeg[] = [];
-    for (const p of projects) {
-      const s = p.start_date.slice(0, 10);
-      const e = (p.end_date || p.start_date).slice(0, 10);
-      if (e < weekStart || s > weekEnd) continue;
-      const clipLeft = s < weekStart;
-      const clipRight = e > weekEnd;
-      const startCol = clipLeft ? 0 : daysBetween(weekStart, s);
-      const endCol = clipRight ? 6 : daysBetween(weekStart, e);
-      segs.push({ project: p, startCol, endCol, clipLeft, clipRight, lane: 0 });
+    if (mode !== "month" || monthFirstCol !== -1) {
+      for (const p of projects) {
+        const s = p.start_date.slice(0, 10);
+        const e = (p.end_date || p.start_date).slice(0, 10);
+        if (e < weekStart || s > weekEnd) continue;
+        const clipLeft = s < weekStart;
+        const clipRight = e > weekEnd;
+        let startCol = clipLeft ? 0 : daysBetween(weekStart, s);
+        let endCol = clipRight ? 6 : daysBetween(weekStart, e);
+        if (mode === "month") {
+          if (endCol < monthFirstCol || startCol > monthLastCol) continue;
+          startCol = Math.max(startCol, monthFirstCol);
+          endCol = Math.min(endCol, monthLastCol);
+        }
+        segs.push({ project: p, startCol, endCol, clipLeft, clipRight, lane: 0 });
+      }
     }
     // Longer + earlier first → better greedy packing.
     segs.sort(
@@ -2850,10 +2941,10 @@ function ProjectsCalendarView() {
             else d.setMonth(d.getMonth() - 1);
             setAnchor(d);
           }}
-          className="rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] hover:border-accent/40"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
           title={mode === "week" ? "Previous week" : "Previous month"}
         >
-          ←
+          <ChevronLeft size={16} />
         </button>
         <button
           onClick={() => {
@@ -2879,10 +2970,10 @@ function ProjectsCalendarView() {
             else d.setMonth(d.getMonth() + 1);
             setAnchor(d);
           }}
-          className="rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] hover:border-accent/40"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
           title={mode === "week" ? "Next week" : "Next month"}
         >
-          →
+          <ChevronRight size={16} />
         </button>
         <span className="ml-2 font-display text-[15px] font-bold leading-tight tracking-tight text-ink">{periodLabel}</span>
 
@@ -2977,7 +3068,7 @@ function ProjectsCalendarView() {
             )}
             title="Toggle task chips"
           >
-            {showTasks ? "✓" : "○"} Tasks
+            {showTasks ? <Check size={12} /> : <Circle size={12} />} Tasks
           </button>
           <button
             onClick={() => setShowHolidays(!showHolidays)}
@@ -2989,7 +3080,7 @@ function ProjectsCalendarView() {
             )}
             title="Show Malaysian federal public holidays"
           >
-            {showHolidays ? "✓" : "○"} MY Holidays
+            {showHolidays ? <Check size={12} /> : <Circle size={12} />} MY Holidays
           </button>
           <button
             onClick={() => setExpandAll(!expandAll)}
@@ -3001,7 +3092,7 @@ function ProjectsCalendarView() {
             )}
             title="Show every project bar + task inline (no +N more)"
           >
-            {expandAll ? "✓" : "○"} Expand all
+            {expandAll ? <Check size={12} /> : <Circle size={12} />} Expand all
           </button>
           {(brand || section || organizer) && (
             <button
@@ -3041,7 +3132,7 @@ function ProjectsCalendarView() {
       {/* The grid always fits its container: the 7 day columns shrink to
           the viewport width on mobile rather than scrolling horizontally. */}
       <div>
-        <div className="rounded-md border border-border bg-surface">
+        <div ref={gridRef} className="rounded-md border border-border bg-surface">
         {/* Weekday header — month view only. In week view each cell
             renders its own "Day. DD/MM" header with a today pill, so
             this row would be redundant. */}
@@ -3061,6 +3152,16 @@ function ProjectsCalendarView() {
             overlay can paint a single continuous pill from start col to
             end col on top of the day cells. */}
         {Array.from({ length: weekCount }).map((_, w) => {
+          // Month mode shows only the current month's weeks — a week whose
+          // every cell falls in an adjacent month is dropped entirely.
+          if (
+            mode === "month" &&
+            !Array.from({ length: 7 }).some(
+              (_, d) => cells[w * 7 + d].date.getUTCMonth() === anchor.getMonth()
+            )
+          ) {
+            return null;
+          }
           const segs = weekSegs[w];
           // Week mode renders columns ~3× the height of month-mode
           // cells so each day reads as its own panel (matches the
@@ -3094,6 +3195,16 @@ function ProjectsCalendarView() {
                   mode === "week"
                     ? `${["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"][cell.date.getUTCDay()]}. ${String(cell.date.getUTCDate()).padStart(2, "0")}/${String(cell.date.getUTCMonth() + 1).padStart(2, "0")}`
                     : null;
+                // Adjacent-month cells render blank — only the current
+                // month's dates carry content.
+                if (mode === "month" && !inMonth) {
+                  return (
+                    <div
+                      key={idx}
+                      className="border-b border-r border-border bg-surface-dim/25"
+                    />
+                  );
+                }
                 return (
                   <div
                     key={idx}
@@ -3101,11 +3212,12 @@ function ProjectsCalendarView() {
                       "relative border-b border-r border-border text-[10px]",
                       mode === "week" ? "px-2 py-2" : "px-1.5 py-1",
                       !inMonth && "bg-bg/40 text-ink-muted",
-                      isHolidayCell && inMonth && "bg-err/5",
+                      isHolidayCell && inMonth && "bg-[#f1f1f9]",
                       // Today highlight only on month view; week view
                       // moves the highlight onto the header pill so
-                      // the cell body stays neutral.
-                      mode === "month" && isToday && "bg-accent-soft/30",
+                      // the cell body stays neutral. A brass inset ring +
+                      // stronger tint makes today unmistakable.
+                      mode === "month" && isToday && "bg-accent-soft/50 ring-1 ring-inset ring-accent/50",
                     )}
                   >
                     {mode === "week" ? (
@@ -3123,36 +3235,27 @@ function ProjectsCalendarView() {
                           {weekHeaderLabel}
                         </span>
                         {cellTasks.length > 0 && (
-                          <span
-                            title={`${cellTasks.length} task(s) due`}
-                            className={cn(
-                              "ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-bold",
-                              cellTasks.some((t) => t.is_overdue)
-                                ? "bg-err text-white"
-                                : "bg-amber-100 text-amber-800",
-                            )}
-                          >
-                            {cellTasks.length}
-                          </span>
+                          <DayCountBadge
+                            count={cellTasks.length}
+                            overdue={cellTasks.some((t) => t.is_overdue)}
+                            className="ml-1"
+                          />
                         )}
                       </div>
                     ) : (
                       <div className="flex items-center justify-between">
-                        <span className={cn("font-mono", isToday && "font-bold text-accent")}>
-                          {cell.date.getUTCDate()}
-                        </span>
-                        {cellTasks.length > 0 && (
-                          <span
-                            title={`${cellTasks.length} task(s) due`}
-                            className={cn(
-                              "inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-bold",
-                              cellTasks.some((t) => t.is_overdue)
-                                ? "bg-err text-white"
-                                : "bg-amber-100 text-amber-800"
-                            )}
-                          >
-                            {cellTasks.length}
+                        {isToday ? (
+                          <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 font-mono text-[10px] font-bold text-white">
+                            {cell.date.getUTCDate()}
                           </span>
+                        ) : (
+                          <span className="font-mono">{cell.date.getUTCDate()}</span>
+                        )}
+                        {cellTasks.length > 0 && (
+                          <DayCountBadge
+                            count={cellTasks.length}
+                            overdue={cellTasks.some((t) => t.is_overdue)}
+                          />
                         )}
                       </div>
                     )}
@@ -3184,7 +3287,7 @@ function ProjectsCalendarView() {
 
                     {isHolidayCell && (
                       <div
-                        className="mt-1 truncate rounded bg-err/15 px-1 py-0.5 text-[9px] font-semibold text-err"
+                        className="mt-1 truncate rounded bg-[#e6e7f3] px-1 py-0.5 text-[9px] font-semibold text-[#474d79]"
                         title={holidays.map((h) => h.name).join(", ")}
                       >
                         {holidays[0].name}
@@ -3202,6 +3305,10 @@ function ProjectsCalendarView() {
                             key={t.id}
                             task={t}
                             onOpen={() => navigate(`/projects/${t.project_id}`)}
+                            onHover={(e) =>
+                              setTaskHover({ task: t, x: e.clientX, y: e.clientY })
+                            }
+                            onLeave={() => setTaskHover(null)}
                           />
                         ))}
                         {mode === "month" && !expandAll && cellTasks.length > 2 && (
@@ -3239,17 +3346,17 @@ function ProjectsCalendarView() {
                     <button
                       key={`${w}-${seg.project.id}-${seg.startCol}`}
                       onClick={() => navigate(`/projects/${seg.project.id}`)}
-                      title={
-                        (seg.project.event_type_name || "").toLowerCase() === "solo"
-                          ? `${seg.project.code} — ${composeDefaultProjectName({
-                              state: seg.project.state,
-                              brand: seg.project.brand,
-                              organizer: seg.project.organizer,
-                              venue: seg.project.venue,
-                              event_type_slug: "solo",
-                            })}`
-                          : `${seg.project.code} — ${seg.project.name}${seg.project.venue ? ` · ${seg.project.venue}` : ""}`
+                      onMouseEnter={(e) =>
+                        setBarHover({ project: seg.project, x: e.clientX, y: e.clientY })
                       }
+                      onMouseMove={(e) =>
+                        setBarHover((h) =>
+                          h && h.project.id === seg.project.id
+                            ? { ...h, x: e.clientX, y: e.clientY }
+                            : h
+                        )
+                      }
+                      onMouseLeave={() => setBarHover(null)}
                       style={{
                         position: "absolute",
                         left: `calc(${leftPct}% + 4px)`,
@@ -3259,7 +3366,7 @@ function ProjectsCalendarView() {
                         ...statusBarStyle(seg.project.status),
                       }}
                       className={cn(
-                        "pointer-events-auto truncate px-2 text-left text-[10.5px] font-semibold leading-[18px] shadow-sm transition-transform hover:-translate-y-px hover:shadow",
+                        "cal-bar pointer-events-auto truncate px-2 text-left text-[10.5px] font-semibold leading-[18px] hover:-translate-y-px",
                         seg.clipLeft ? "rounded-l-none" : "rounded-l-md",
                         seg.clipRight ? "rounded-r-none" : "rounded-r-md"
                       )}
@@ -3303,7 +3410,167 @@ function ProjectsCalendarView() {
         />
       )}
 
+      {barHover && <CalendarBarPopover info={barHover} />}
+      {taskHover && <CalendarTaskPopover info={taskHover} />}
+
     </div>
+  );
+}
+
+// ── Calendar bar hover popover ───────────────────────────────
+// A lightweight, cursor-anchored card showing a project's basic info
+// when the pointer is over its calendar bar. Pointer-events-none so it
+// never steals the hover; flips left/up near the viewport edges.
+function CalendarBarPopover({
+  info,
+}: {
+  info: { project: CalendarProject; x: number; y: number };
+}) {
+  const p = info.project;
+  const opt = STATUS_BY_VALUE[p.status] ?? STATUS_BY_VALUE.pending;
+  const fmt = (iso: string | null) => {
+    if (!iso) return null;
+    const [y, m, d] = iso.slice(0, 10).split("-");
+    return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString(
+      "en-GB",
+      { day: "2-digit", month: "short", year: "numeric" }
+    );
+  };
+  const span =
+    p.end_date && p.end_date.slice(0, 10) !== p.start_date.slice(0, 10)
+      ? `${fmt(p.start_date)} – ${fmt(p.end_date)}`
+      : fmt(p.start_date);
+  const stage =
+    p.active_section_name ??
+    (p.sections_total ? "All sections complete" : null);
+
+  // Anchor near the cursor, flipping when close to the right/bottom edge.
+  const W = 268;
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+  const left = info.x + W + 16 > vw ? info.x - W - 12 : info.x + 16;
+  const top = Math.min(info.y + 14, vh - 190);
+
+  const rows: Array<[string, string | null]> = [
+    ["Brand", p.brand],
+    ["Venue", p.venue],
+    ["When", span],
+    ["Organizer", p.organizer],
+    ["Stage", stage],
+  ];
+
+  return createPortal(
+    <div
+      className="pointer-events-none fixed z-[60] w-[268px] rounded-md border border-border bg-surface p-3 shadow-slab"
+      style={{ left, top }}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
+          {p.code}
+        </span>
+        <span
+          className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+          style={{
+            backgroundColor: `color-mix(in srgb, ${opt.hex} 15%, white)`,
+            color: opt.hex,
+          }}
+        >
+          <span className="h-1.5 w-1.5 rounded-full" style={{ background: opt.hex }} />
+          {opt.label}
+        </span>
+      </div>
+      <div className="mt-1 font-display text-[13px] font-bold leading-snug tracking-tight text-ink">
+        {p.name}
+      </div>
+      <div className="mt-2 space-y-1">
+        {rows
+          .filter(([, v]) => !!v)
+          .map(([k, v]) => (
+            <div key={k} className="flex gap-2 text-[11px] leading-tight">
+              <span className="w-[58px] shrink-0 text-ink-muted">{k}</span>
+              <span className="min-w-0 flex-1 text-ink-secondary">{v}</span>
+            </div>
+          ))}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// ── Calendar task-chip hover popover ─────────────────────────
+// Cursor-anchored card for a checklist task chip: parent project, task
+// title, due date, owner, and an overdue flag. Mirrors the project bar
+// popover so both hovers feel consistent.
+function CalendarTaskPopover({
+  info,
+}: {
+  info: { task: CalendarTask; x: number; y: number };
+}) {
+  const t = info.task;
+  const opt = STATUS_BY_VALUE[t.project_status ?? "pending"] ?? STATUS_BY_VALUE.pending;
+  const overdue = t.is_overdue === 1;
+  const due = (() => {
+    const [y, m, d] = t.due_date.slice(0, 10).split("-");
+    return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString(
+      "en-GB",
+      { day: "2-digit", month: "short", year: "numeric" }
+    );
+  })();
+
+  const W = 268;
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+  const left = info.x + W + 16 > vw ? info.x - W - 12 : info.x + 16;
+  const top = Math.min(info.y + 14, vh - 180);
+
+  const rows: Array<[string, string | null]> = [
+    ["Project", t.project_name],
+    ["Due", due],
+    ["Owner", t.owner_name || "Unassigned"],
+  ];
+
+  return createPortal(
+    <div
+      className="pointer-events-none fixed z-[60] w-[268px] rounded-md border border-border bg-surface p-3 shadow-slab"
+      style={{ left, top }}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-accent">
+          {t.project_code}
+        </span>
+        {overdue ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-err/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-err">
+            <span className="h-1.5 w-1.5 rounded-full bg-err" />
+            Overdue
+          </span>
+        ) : (
+          <span
+            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+            style={{
+              backgroundColor: `color-mix(in srgb, ${opt.hex} 15%, white)`,
+              color: opt.hex,
+            }}
+          >
+            <span className="h-1.5 w-1.5 rounded-full" style={{ background: opt.hex }} />
+            {opt.label}
+          </span>
+        )}
+      </div>
+      <div className="mt-1 font-display text-[13px] font-bold leading-snug tracking-tight text-ink">
+        {t.title}
+      </div>
+      <div className="mt-2 space-y-1">
+        {rows
+          .filter(([, v]) => !!v)
+          .map(([k, v]) => (
+            <div key={k} className="flex gap-2 text-[11px] leading-tight">
+              <span className="w-[58px] shrink-0 text-ink-muted">{k}</span>
+              <span className="min-w-0 flex-1 text-ink-secondary">{v}</span>
+            </div>
+          ))}
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -3385,7 +3652,7 @@ function CalendarDayModal({
         </div>
 
         {holidays.length > 0 && (
-          <div className="mb-3 rounded-md border border-err/30 bg-err/5 px-3 py-2 text-[12px] text-err">
+          <div className="mb-3 rounded-md border border-[#c9cbe3] bg-[#ecedf6] px-3 py-2 text-[12px] text-[#474d79]">
             <div className="text-[10px] font-semibold uppercase tracking-wider">
               Holiday
             </div>
@@ -3408,36 +3675,36 @@ function CalendarDayModal({
                 <li key={p.id}>
                   <button
                     onClick={() => onOpenProject(p.id)}
-                    className="flex w-full items-start gap-3 px-3 py-2 text-left transition-colors hover:bg-bg/40"
+                    className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-bg/40"
                   >
                     <span
-                      className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full"
+                      className="mt-[5px] h-2.5 w-2.5 shrink-0 rounded-full"
                       style={{ backgroundColor: opt.hex }}
                     />
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-1.5">
+                      <div className="truncate text-[12px] font-medium text-ink">
+                        {p.name}
+                      </div>
+                      <div className="mt-1 flex items-center gap-1.5 text-[10px]">
                         <span
                           className={cn(
-                            "rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
+                            "shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
                             opt.chip
                           )}
                         >
                           {opt.label}
                         </span>
                         {p.brand && (
-                          <span className="font-mono text-[9px] text-ink-muted">
+                          <span className="shrink-0 font-mono text-ink-muted">
                             {p.brand}
                           </span>
                         )}
+                        {p.venue && (
+                          <span className="min-w-0 truncate text-ink-secondary">
+                            · {p.venue}
+                          </span>
+                        )}
                       </div>
-                      <div className="mt-0.5 truncate text-[12px] text-ink">
-                        {p.name}
-                      </div>
-                      {p.venue && (
-                        <div className="mt-0.5 truncate text-[11px] text-ink-secondary">
-                          {p.venue}
-                        </div>
-                      )}
                     </div>
                   </button>
                 </li>
@@ -3451,38 +3718,90 @@ function CalendarDayModal({
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
               Tasks due · {tasks.length}
             </div>
-            <ul className="divide-y divide-border-subtle rounded-md border border-border">
-              {tasks.map((t) => (
-                <li key={t.id}>
-                  <button
-                    onClick={() => onOpenProject(t.project_id)}
-                    className="flex w-full items-start gap-3 px-3 py-2 text-left transition-colors hover:bg-bg/40"
-                  >
-                    <span
-                      className={cn(
-                        "mt-1 h-2 w-2 shrink-0 rounded-full",
-                        t.is_overdue ? "bg-err" : "bg-amber-500"
-                      )}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 text-[11px]">
-                        <span className="font-mono font-bold text-ink-secondary">
-                          {t.project_code}
+            {/* Grouped by project so the (long) project code shows once as a
+                section header instead of repeating on every task row. */}
+            <div className="space-y-2.5">
+              {(() => {
+                const groups: Array<{
+                  id: number;
+                  code: string;
+                  name: string;
+                  status: ProjectStatus | null;
+                  items: CalendarTask[];
+                }> = [];
+                const byId = new Map<number, (typeof groups)[number]>();
+                for (const t of tasks) {
+                  let g = byId.get(t.project_id);
+                  if (!g) {
+                    g = {
+                      id: t.project_id,
+                      code: t.project_code,
+                      name: t.project_name,
+                      status: t.project_status,
+                      items: [],
+                    };
+                    byId.set(t.project_id, g);
+                    groups.push(g);
+                  }
+                  g.items.push(t);
+                }
+                return groups.map((g) => {
+                  const opt =
+                    STATUS_BY_VALUE[g.status ?? "pending"] ??
+                    STATUS_BY_VALUE.pending;
+                  return (
+                    <div
+                      key={g.id}
+                      className="overflow-hidden rounded-md border border-border"
+                    >
+                      <button
+                        onClick={() => onOpenProject(g.id)}
+                        className="flex w-full items-center gap-2 border-b border-border-subtle bg-bg/50 px-3 py-2 text-left transition-colors hover:bg-bg/80"
+                      >
+                        <span
+                          className="h-2.5 w-2.5 shrink-0 rounded-full"
+                          style={{ backgroundColor: opt.hex }}
+                        />
+                        <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-ink">
+                          {g.name}
                         </span>
-                        {t.is_overdue && (
-                          <span className="rounded-full bg-err/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-err">
-                            Overdue
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-0.5 truncate text-[12px] text-ink">
-                        {t.title}
-                      </div>
+                        <span className="shrink-0 rounded-full bg-surface px-1.5 py-0.5 text-[9px] font-bold text-ink-muted">
+                          {g.items.length}
+                        </span>
+                      </button>
+                      <ul className="divide-y divide-border-subtle">
+                        {g.items.map((t) => (
+                          <li key={t.id}>
+                            <button
+                              onClick={() => onOpenProject(t.project_id)}
+                              className="flex w-full items-center gap-2 px-3 py-2 pl-[26px] text-left transition-colors hover:bg-bg/40"
+                            >
+                              <span
+                                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                style={{ backgroundColor: t.is_overdue ? "#b23b3b" : "#cdc8b8" }}
+                              />
+                              <span className="min-w-0 flex-1 truncate text-[12px] text-ink">
+                                {t.title}
+                              </span>
+                              {t.owner_name && (
+                                <span className="shrink-0 text-[10px] text-ink-muted">
+                                  {t.owner_name}
+                                </span>
+                              )}
+                              {t.is_overdue && (
+                                <span className="shrink-0 rounded-full bg-err/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-err">
+                                  Overdue
+                                </span>
+                              )}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                  </button>
-                </li>
-              ))}
-            </ul>
+                  );
+                });
+              })()}
+            </div>
           </>
         )}
       </div>

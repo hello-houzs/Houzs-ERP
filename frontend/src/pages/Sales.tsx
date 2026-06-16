@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Plus, Pencil, Trash2, CheckSquare, Send, Settings as SettingsIcon, X } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
+import { TabStrip } from "../components/TabStrip";
 import { Panel, PanelSection } from "../components/Panel";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
@@ -263,48 +264,18 @@ export function Sales() {
           quick_log_pending count comes back on every list response
           (computed independently of the current filter), so the
           badge stays live whichever view is active. */}
-      <div className="mb-4 border-b border-border">
-        <div className="flex items-center gap-1">
-          {(
-            [
-              { value: "all", label: "All Sales" },
-              { value: "quicklogs", label: "Quick Logs" },
-            ] as const
-          ).map((tab) => {
-            const active = view === tab.value;
-            const badge =
-              tab.value === "quicklogs"
-                ? list.data?.totals.quick_log_pending ?? 0
-                : null;
-            return (
-              <button
-                key={tab.value}
-                onClick={() => patchParams({ view: tab.value === "all" ? "" : tab.value })}
-                className={cn(
-                  "relative -mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-4 py-2.5 text-[12px] font-semibold transition-colors",
-                  active
-                    ? "border-accent text-accent"
-                    : "border-transparent text-ink-secondary hover:text-ink",
-                )}
-              >
-                {tab.label}
-                {badge != null && badge > 0 && (
-                  <span
-                    className={cn(
-                      "inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 font-mono text-[9px] font-bold",
-                      active
-                        ? "bg-accent text-white"
-                        : "bg-amber-100 text-amber-800",
-                    )}
-                  >
-                    {badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <TabStrip
+        value={view}
+        onChange={(v) => patchParams({ view: v === "all" ? "" : v })}
+        options={[
+          { value: "all", label: "All Sales" },
+          {
+            value: "quicklogs",
+            label: "Quick Logs",
+            count: list.data?.totals.quick_log_pending ?? 0,
+          },
+        ]}
+      />
 
       {/* Filters */}
       <div className="mb-3 flex flex-wrap items-center gap-2">

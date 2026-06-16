@@ -14,6 +14,7 @@ import {
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
 import { formatDate, cn, APP_TZ } from "../lib/utils";
+import { EmptyState } from "../components/EmptyState";
 
 interface DriverProjectListItem {
   id: number;
@@ -117,13 +118,11 @@ export function DriverProjects() {
       )}
 
       {list.data && all.length === 0 && (
-        <div className="rounded-lg border border-dashed border-border bg-surface p-8 text-center">
-          <FolderKanban size={28} className="mx-auto mb-3 text-ink-secondary" />
-          <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">No projects assigned</div>
-          <div className="mt-1 text-[12px] text-ink-secondary">
-            New projects appear here once ops adds you to a setup or dismantle crew.
-          </div>
-        </div>
+        <EmptyState
+          icon={<FolderKanban size={28} />}
+          message="No projects assigned"
+          description="New projects appear here once ops adds you to a setup or dismantle crew."
+        />
       )}
 
       {list.data && all.length > 0 && (

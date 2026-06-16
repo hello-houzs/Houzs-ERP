@@ -34,7 +34,7 @@ export function TableSkeleton({ rows = 5, cols = 6 }: { rows?: number; cols?: nu
             <td
               key={j}
               className={cn(
-                "border-b border-border-subtle px-4 py-3.5",
+                "border-b border-border-subtle px-3 py-1.5 leading-tight",
                 j === 0 && "pl-5",
                 j === cols - 1 && "pr-5"
               )}

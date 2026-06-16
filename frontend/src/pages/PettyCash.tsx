@@ -121,12 +121,9 @@ export function PettyCash() {
               Refresh
             </Button>
             {canPost && (
-              <button
-                onClick={() => setAddOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm transition-all hover:bg-accent/90 active:scale-95"
-              >
-                <Plus size={13} /> New entry
-              </button>
+              <Button onClick={() => setAddOpen(true)} icon={<Plus size={13} />}>
+                New entry
+              </Button>
             )}
           </div>
         }
@@ -568,23 +565,22 @@ function AddEntryModal({
           </label>
 
           <div className="flex items-center gap-2 pt-1">
-            <button
+            <Button
               type="button"
+              variant="secondary"
               onClick={onClose}
-              className="flex-1 rounded-md border border-border bg-surface py-2 text-[12px] font-semibold text-ink-secondary transition-colors hover:border-ink-muted hover:text-ink"
+              className="flex-1"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="submit"
               disabled={busy || !amount}
-              className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded-md bg-accent py-2 text-[12px] font-bold uppercase tracking-wide text-white shadow-sm transition-all hover:bg-accent/90 active:scale-95",
-                (busy || !amount) && "cursor-not-allowed opacity-50",
-              )}
+              className="flex-1"
+              icon={<Plus size={13} />}
             >
-              <Plus size={13} /> {busy ? "Posting…" : "Post entry"}
-            </button>
+              {busy ? "Posting…" : "Post entry"}
+            </Button>
           </div>
         </div>
       </form>

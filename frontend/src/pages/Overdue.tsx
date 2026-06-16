@@ -95,13 +95,13 @@ export function Overdue() {
     {
       key: "original_expiry_date",
       label: "Was Expiring",
-      render: (r) => formatDate(r.original_expiry_date),
+      render: (r) => <span className="font-mono text-xs">{formatDate(r.original_expiry_date)}</span>,
       getValue: (r) => formatDate(r.original_expiry_date),
     },
     {
       key: "extended_to",
       label: "Extended To",
-      render: (r) => formatDate(r.extended_to),
+      render: (r) => <span className="font-mono text-xs">{formatDate(r.extended_to)}</span>,
       getValue: (r) => formatDate(r.extended_to),
     },
   ];
