@@ -6,3 +6,4 @@ export * from "./auth";
 export * from "./inventory";
 export * from "./grn";
 export * from "./billing";
+export * from "./movements";

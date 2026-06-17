@@ -68,6 +68,10 @@ const PurchaseInvoiceList = lazy(() => import("./pages/PurchaseInvoiceList").the
 const PurchaseInvoiceDetail = lazy(() => import("./pages/PurchaseInvoiceDetail").then((m) => ({ default: m.PurchaseInvoiceDetail })));
 const PurchaseReturnList = lazy(() => import("./pages/PurchaseReturnList").then((m) => ({ default: m.PurchaseReturnList })));
 const PurchaseReturnDetail = lazy(() => import("./pages/PurchaseReturnDetail").then((m) => ({ default: m.PurchaseReturnDetail })));
+const StockTransferList = lazy(() => import("./pages/StockTransferList").then((m) => ({ default: m.StockTransferList })));
+const StockTransferDetail = lazy(() => import("./pages/StockTransferDetail").then((m) => ({ default: m.StockTransferDetail })));
+const StocktakeList = lazy(() => import("./pages/StocktakeList").then((m) => ({ default: m.StocktakeList })));
+const StocktakeDetail = lazy(() => import("./pages/StocktakeDetail").then((m) => ({ default: m.StocktakeDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -334,6 +338,12 @@ export default function App() {
         <Route path="/scm/returns" element={<Guard perm="*"><PurchaseReturnList /></Guard>} />
         <Route path="/scm/returns/new" element={<Guard perm="*"><PurchaseReturnDetail /></Guard>} />
         <Route path="/scm/returns/:id" element={<Guard perm="*"><PurchaseReturnDetail /></Guard>} />
+        <Route path="/scm/transfers" element={<Guard perm="*"><StockTransferList /></Guard>} />
+        <Route path="/scm/transfers/new" element={<Guard perm="*"><StockTransferDetail /></Guard>} />
+        <Route path="/scm/transfers/:id" element={<Guard perm="*"><StockTransferDetail /></Guard>} />
+        <Route path="/scm/stocktakes" element={<Guard perm="*"><StocktakeList /></Guard>} />
+        <Route path="/scm/stocktakes/new" element={<Guard perm="*"><StocktakeDetail /></Guard>} />
+        <Route path="/scm/stocktakes/:id" element={<Guard perm="*"><StocktakeDetail /></Guard>} />
         <Route
           path="/scm/inventory"
           element={
