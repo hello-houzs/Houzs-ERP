@@ -55,6 +55,9 @@ import deliveryReturns from "./routes/delivery-returns";
 import purchaseConsignmentOrders from "./routes/purchase-consignment-orders";
 import purchaseConsignmentReceives from "./routes/purchase-consignment-receives";
 import purchaseConsignmentReturns from "./routes/purchase-consignment-returns";
+import consignmentOrders from "./routes/consignment-orders";
+import consignmentNotes from "./routes/consignment-notes";
+import consignmentReturns from "./routes/consignment-returns";
 import mfgWarehouses from "./routes/warehouse";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
@@ -222,11 +225,17 @@ app.route("/api/delivery-returns", deliveryReturns);
 // PC Order (order only) -> PC Receive (inventory IN via lib/inventory-movements,
 // source_doc_type 'PC_RECEIVE') -> PC Return (inventory OUT, 'PC_RETURN'); cancel/
 // line-edit emit STOCK_TRANSFER delta movements. No AutoCount collision -> bare
-// mounts. SALES consignment (notes/returns/orders) lands in a follow-up. Owner-
-// only (perm "*").
+// mounts. Owner-only (perm "*").
 app.route("/api/purchase-consignment-orders", purchaseConsignmentOrders);
 app.route("/api/purchase-consignment-receives", purchaseConsignmentReceives);
 app.route("/api/purchase-consignment-returns", purchaseConsignmentReturns);
+// SALES consignment (#67 part 2): Consignment Order (order only, audit ->
+// consignment_so_audit_log) -> Consignment Note (ships goods OUT, source_doc_type
+// 'CS_DO') -> Consignment Return (goods back IN, 'CS_DR'); cancel/line-edit emit
+// STOCK_TRANSFER deltas. Owner-only (perm "*").
+app.route("/api/consignment-orders", consignmentOrders);
+app.route("/api/consignment-notes", consignmentNotes);
+app.route("/api/consignment-returns", consignmentReturns);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);

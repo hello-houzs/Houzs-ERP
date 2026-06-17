@@ -641,3 +641,71 @@ need translation.)
     these are ALREADY created (migration `0031`), so the follow-up is routes+pages
     only. ~20 sales-side pages (Consignment Orders/Notes/Returns lists + details +
     From-pickers). Both verify gates must stay EXIT 0.
+- **2026-06-18 — CONSIGNMENT slice (#67) — SALES side DONE → #67 COMPLETE.** The
+  deferred sales-consignment routes + pages are now built; the whole consignment
+  group (purchase + sales) is finished. **NO migration needed** — every column the
+  routes touch already exists in `0031`/`schema.pg.ts` (verified field-by-field);
+  no `0032`. Both gates EXIT 0; `window.confirm|alert|prompt` grep in the new
+  `pages/scm/Consignment*.tsx` = 0. Nothing applied to any DB (batched for #70).
+  - **Routes (3, PostGREST→Drizzle, mounted owner-only `"*"`):**
+    `consignment-orders.ts` → `/api/consignment-orders` (clone mfg-sales-orders,
+    Strategy-2 pricing-engine-stripped); `consignment-notes.ts` →
+    `/api/consignment-notes` (clone delivery-orders-mfg); `consignment-returns.ts`
+    → `/api/consignment-returns` (clone delivery-returns). All three mounted in
+    index.ts after the PC block.
+  - **CO (Consignment Order) — NO stock.** Generic line model
+    (item_group/code/qty/unit_price/discount, plain text — the SAME stripping the
+    SO slice did: no recomputeFromSnapshot / sofa-combo / fabric-tier / variant
+    pricing / allowed-options / validateItemCodes / customer-resolve RPC / state
+    derive / R2 photos). Variant cols KEPT nullable, passed through; description2 =
+    client value (buildVariantSummary dropped). Audit → `consignment_so_audit_log`
+    via a route-local `recordCoAudit` (mirror of lib/so-audit, FK so_doc_no → CO).
+    Endpoints ported: list (+item_categories/has_children/payment_methods_summary
+    aggregates), `/mine`, `/debtors/search`, detail (+per-line `deliveries`),
+    create (CONFIRMED), `/status`, `/audit-log`, header PATCH (partial IDENTITY
+    lock once a Note exists), line CRUD, `/items/:id/override`, payments ledger.
+    doc_no = CS-YYMM-NNN (max+1). Dropped vs source: PWP/free-gift, the per-line R2
+    photo upload/proxy/sign endpoints (no SO_ITEM_PHOTOS binding), cross-category
+    delivery-fee, allowed-options. coHasDownstream queries
+    `consignment_delivery_orders` by consignment_so_doc_no (the CO's real downstream).
+  - **CN (Consignment Note) → inventory OUT (the headline).** UNIFIED model: a Note
+    ships goods OUT (FIFO consumed, COGS leaves) via one self-healing
+    `resyncNoteInventory` (translated from the 2990s source; mirrors DO
+    resyncInventoryForDo + the PC-Receive resync) — first OUT per
+    warehouse/product/variant/batch bucket = `writeMovements(… source_doc_type:
+    'CS_DO', batch_no from resolveWarehouseLotBatches)`, later increase/decrease =
+    `'STOCK_TRANSFER'` OUT/IN deltas, cancel → status CANCELLED → net driven back to
+    0 via IN. Fires on create / status→shipped (DISPATCHED..INVOICED) / line CRUD /
+    cancel; per-line ship-from warehouse = the linked CO line's warehouse → header →
+    default. `recomputeSoStockAllocation` after every move. Status starts DISPATCHED
+    on create. From-order picker (`/from-orders`, outstanding = ordered − delivered,
+    one-customer) + manual create. doc_no = CN-YYMM-NNN. Child-lock vs a
+    non-cancelled Consignment Return. Payments ledger ported. DROPPED the SO-remaining
+    over-pick guard + short-stock/sofa guards (a loaner ships what's on the shelf).
+  - **CR (Consignment Return) → inventory IN.** Goods back via one IN-primary
+    `resyncReturnInventory` (mirror of the DR resync) — first IN per bucket =
+    `source_doc_type:'CS_DR'` (cost = line snapshot, else on-hand avg via
+    resolveWarehouseLotCosts so no 0-cost lot), deltas/cancel = `'STOCK_TRANSFER'`
+    (cancel → OUT removes the returned stock). "No DO, no return" is RELAXED per the
+    2990s source — lines may reference a CN line OR be free-entry. Status starts
+    RECEIVED; lifecycle RECEIVED→INSPECTED→REFUNDED/CREDIT_NOTED/REJECTED + Cancel;
+    terminal states (CANCELLED/REFUNDED/CREDIT_NOTED) lock line edits. From-note
+    picker (`/from-notes`, remaining = delivered − returned) + manual create.
+    doc_no = CR-YYMM-NNN. recomputeSoStockAllocation after every move.
+  - **Pages (11 + query hooks) in `pages/scm/`:** ConsignmentOrders/OrderNew/
+    OrderDetail, ConsignmentNotes/NoteFromOrder/NoteNew/NoteDetail, ConsignmentReturns/
+    ReturnFromNote/ReturnNew/ReturnDetail + `consignment-sales-queries.ts` (Houzs api
+    client + react-query, wire shapes match the routes). Strategy-2: plain `<table>` +
+    Suppliers/PurchaseOrderDetail CSS modules (DataGrid + furniture configurator
+    dropped); inline RM↔centi editor; in-app useDialog/useToast (rule #10), never
+    window.*. App.tsx routes (static /new + /from-* before /:id|/:docNo, all
+    `<Guard perm="*">`); Sidebar "Consignment Orders/Notes/Returns" (Handshake) under
+    Supply Chain after the PC entries.
+  - **SEAMS/deviations:** created_by/salesperson_id/collected_by/actor_id → users.id
+    INTEGER soft-ref (rule #4); CN/CR per-line warehouse traced via the cloned
+    consignment_* FKs; inventory via lib/inventory-movements (CS_DO/CS_DR already in
+    the MovementInput union from 0026). GL/accounting OUT OF SCOPE (no 2990s
+    consignment route posts to a GL — nothing to stub). `inventory-movements.ts`
+    `source_doc_type:'CONSIGNMENT_NOTE'` JSDoc comment still references
+    schema.pg.ts:1357 — informational only, the actual writes use CS_DO/CS_DR.
+  - Migration: NONE (no `0032`). Nothing applied to any DB (batched for staging #70).

@@ -93,6 +93,20 @@ const ScmPcReturns = lazy(() => import("./pages/scm/PurchaseConsignmentReturns")
 const ScmPcReturnFromReceive = lazy(() => import("./pages/scm/PurchaseConsignmentReturnFromReceive").then((m) => ({ default: m.PurchaseConsignmentReturnFromReceive })));
 const ScmPcReturnNew = lazy(() => import("./pages/scm/PurchaseConsignmentReturnNew").then((m) => ({ default: m.PurchaseConsignmentReturnNew })));
 const ScmPcReturnDetail = lazy(() => import("./pages/scm/PurchaseConsignmentReturnDetail").then((m) => ({ default: m.PurchaseConsignmentReturnDetail })));
+// SCM 1:1 clone — CONSIGNMENT, SALES side (#67 part 2, pages/scm/*). Consignment
+// Order (order only) -> Consignment Note (inventory OUT, CS_DO) -> Consignment
+// Return (inventory IN, CS_DR). No AutoCount collision.
+const ScmCoOrders = lazy(() => import("./pages/scm/ConsignmentOrders").then((m) => ({ default: m.ConsignmentOrders })));
+const ScmCoOrderNew = lazy(() => import("./pages/scm/ConsignmentOrderNew").then((m) => ({ default: m.ConsignmentOrderNew })));
+const ScmCoOrderDetail = lazy(() => import("./pages/scm/ConsignmentOrderDetail").then((m) => ({ default: m.ConsignmentOrderDetail })));
+const ScmCnNotes = lazy(() => import("./pages/scm/ConsignmentNotes").then((m) => ({ default: m.ConsignmentNotes })));
+const ScmCnNoteFromOrder = lazy(() => import("./pages/scm/ConsignmentNoteFromOrder").then((m) => ({ default: m.ConsignmentNoteFromOrder })));
+const ScmCnNoteNew = lazy(() => import("./pages/scm/ConsignmentNoteNew").then((m) => ({ default: m.ConsignmentNoteNew })));
+const ScmCnNoteDetail = lazy(() => import("./pages/scm/ConsignmentNoteDetail").then((m) => ({ default: m.ConsignmentNoteDetail })));
+const ScmCrReturns = lazy(() => import("./pages/scm/ConsignmentReturns").then((m) => ({ default: m.ConsignmentReturns })));
+const ScmCrReturnFromNote = lazy(() => import("./pages/scm/ConsignmentReturnFromNote").then((m) => ({ default: m.ConsignmentReturnFromNote })));
+const ScmCrReturnNew = lazy(() => import("./pages/scm/ConsignmentReturnNew").then((m) => ({ default: m.ConsignmentReturnNew })));
+const ScmCrReturnDetail = lazy(() => import("./pages/scm/ConsignmentReturnDetail").then((m) => ({ default: m.ConsignmentReturnDetail })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -659,6 +673,20 @@ export default function App() {
         <Route path="/purchase-consignment-returns/from-receive" element={<Guard perm="*"><ScmPcReturnFromReceive /></Guard>} />
         <Route path="/purchase-consignment-returns/new" element={<Guard perm="*"><ScmPcReturnNew /></Guard>} />
         <Route path="/purchase-consignment-returns/:id" element={<Guard perm="*"><ScmPcReturnDetail /></Guard>} />
+        {/* SCM 1:1 clone — CONSIGNMENT (sales side, #67 part 2, pages/scm/*). Owner-
+            only (perm "*"). /api/consignment-orders|notes|returns back these. Static
+            /new + /from-* before /:id|/:docNo. */}
+        <Route path="/consignment-orders" element={<Guard perm="*"><ScmCoOrders /></Guard>} />
+        <Route path="/consignment-orders/new" element={<Guard perm="*"><ScmCoOrderNew /></Guard>} />
+        <Route path="/consignment-orders/:docNo" element={<Guard perm="*"><ScmCoOrderDetail /></Guard>} />
+        <Route path="/consignment-notes" element={<Guard perm="*"><ScmCnNotes /></Guard>} />
+        <Route path="/consignment-notes/from-order" element={<Guard perm="*"><ScmCnNoteFromOrder /></Guard>} />
+        <Route path="/consignment-notes/new" element={<Guard perm="*"><ScmCnNoteNew /></Guard>} />
+        <Route path="/consignment-notes/:id" element={<Guard perm="*"><ScmCnNoteDetail /></Guard>} />
+        <Route path="/consignment-returns" element={<Guard perm="*"><ScmCrReturns /></Guard>} />
+        <Route path="/consignment-returns/from-note" element={<Guard perm="*"><ScmCrReturnFromNote /></Guard>} />
+        <Route path="/consignment-returns/new" element={<Guard perm="*"><ScmCrReturnNew /></Guard>} />
+        <Route path="/consignment-returns/:id" element={<Guard perm="*"><ScmCrReturnDetail /></Guard>} />
         <Route
           path="/sales"
           element={
