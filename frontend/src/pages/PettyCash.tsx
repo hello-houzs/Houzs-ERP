@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   Plus,
+  Pencil,
   ArrowDownCircle,
   ArrowUpCircle,
   Receipt,
@@ -99,6 +100,7 @@ export function PettyCash() {
   );
 
   const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState<EntryRow | null>(null);
 
   const summary = list.data?.summary;
 
@@ -181,13 +183,22 @@ export function PettyCash() {
       key: "actions",
       label: "",
       align: "right",
-      render: (r) => (
-        <LedgerRowActions
-          row={r}
-          canManage={canManage}
-          onChange={() => list.reload()}
-        />
-      ),
+      render: (r) => {
+        // Posters can edit their own entry within 24 h; managers anytime
+        // (mirrors the PATCH endpoint's rule).
+        const fresh =
+          Date.now() - new Date(r.created_at).getTime() < 24 * 3600 * 1000;
+        const canEdit = canManage || (r.posted_by === user?.id && fresh);
+        return (
+          <LedgerRowActions
+            row={r}
+            canManage={canManage}
+            canEdit={canEdit}
+            onEdit={() => setEditing(r)}
+            onChange={() => list.reload()}
+          />
+        );
+      },
     },
   ];
 
@@ -316,6 +327,20 @@ export function PettyCash() {
           knownCategories={(cats.data?.rows ?? []).map((c) => c.category)}
         />
       )}
+
+      {editing && (
+        <AddEntryModal
+          entry={editing}
+          onClose={() => setEditing(null)}
+          onSuccess={() => {
+            setEditing(null);
+            list.reload();
+            cats.reload();
+            toast.success("Entry updated");
+          }}
+          knownCategories={(cats.data?.rows ?? []).map((c) => c.category)}
+        />
+      )}
     </div>
   );
 }
@@ -339,10 +364,14 @@ function DirBadge({ dir }: { dir: "in" | "out" }) {
 function LedgerRowActions({
   row,
   canManage,
+  canEdit,
+  onEdit,
   onChange,
 }: {
   row: EntryRow;
   canManage: boolean;
+  canEdit: boolean;
+  onEdit: () => void;
   onChange: () => void;
 }) {
   const toast = useToast();
@@ -379,6 +408,15 @@ function LedgerRowActions({
           <Receipt size={14} />
         </button>
       )}
+      {canEdit && (
+        <button
+          onClick={onEdit}
+          className="rounded p-1 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
+          title="Edit entry"
+        >
+          <Pencil size={14} />
+        </button>
+      )}
       {canManage && (
         <button
           onClick={remove}
@@ -396,18 +434,26 @@ function AddEntryModal({
   onClose,
   onSuccess,
   knownCategories,
+  entry,
 }: {
   onClose: () => void;
   onSuccess: () => void;
   knownCategories: string[];
+  /** When set, the modal edits this entry instead of creating a new one. */
+  entry?: EntryRow;
 }) {
   const toast = useToast();
-  const [direction, setDirection] = useState<"in" | "out">("out");
-  const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState("");
-  const [counterparty, setCounterparty] = useState("");
-  const [note, setNote] = useState("");
-  const [occurredOn, setOccurredOn] = useState(new Date().toISOString().slice(0, 10));
+  const isEdit = !!entry;
+  const [direction, setDirection] = useState<"in" | "out">(entry?.direction ?? "out");
+  const [amount, setAmount] = useState(
+    entry ? (entry.amount_cents / 100).toFixed(2) : "",
+  );
+  const [category, setCategory] = useState(entry?.category ?? "");
+  const [counterparty, setCounterparty] = useState(entry?.counterparty ?? "");
+  const [note, setNote] = useState(entry?.note ?? "");
+  const [occurredOn, setOccurredOn] = useState(
+    entry?.occurred_on ?? new Date().toISOString().slice(0, 10),
+  );
   const [receipt, setReceipt] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -420,18 +466,27 @@ function AddEntryModal({
     }
     setBusy(true);
     try {
-      const created = await api.post<{ row: EntryRow }>("/api/petty-cash", {
-        direction,
-        amount_cents: cents,
-        category: category.trim() || undefined,
-        counterparty: counterparty.trim() || undefined,
-        note: note.trim() || undefined,
-        occurred_on: occurredOn,
-      });
+      const saved = isEdit
+        ? await api.patch<{ row: EntryRow }>(`/api/petty-cash/${entry!.id}`, {
+            direction,
+            amount_cents: cents,
+            category: category.trim() || null,
+            counterparty: counterparty.trim() || null,
+            note: note.trim() || null,
+            occurred_on: occurredOn,
+          })
+        : await api.post<{ row: EntryRow }>("/api/petty-cash", {
+            direction,
+            amount_cents: cents,
+            category: category.trim() || undefined,
+            counterparty: counterparty.trim() || undefined,
+            note: note.trim() || undefined,
+            occurred_on: occurredOn,
+          });
       if (receipt) {
         try {
           await api.putBinary(
-            `/api/petty-cash/${created.row.id}/receipt?name=${encodeURIComponent(receipt.name)}`,
+            `/api/petty-cash/${saved.row.id}/receipt?name=${encodeURIComponent(receipt.name)}`,
             receipt,
             receipt.type || "application/octet-stream",
           );
@@ -466,7 +521,7 @@ function AddEntryModal({
               Petty cash
             </div>
             <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
-              New entry
+              {isEdit ? "Edit entry" : "New entry"}
             </div>
           </div>
           <button
@@ -590,7 +645,11 @@ function AddEntryModal({
 
           <label className="block">
             <span className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-              Receipt photo (optional)
+              {isEdit
+                ? entry?.receipt_r2_key
+                  ? "Replace receipt (optional)"
+                  : "Add receipt (optional)"
+                : "Receipt photo (optional)"}
             </span>
             <input
               type="file"
@@ -618,9 +677,15 @@ function AddEntryModal({
               type="submit"
               disabled={busy || !amount}
               className="flex-1"
-              icon={<Plus size={13} />}
+              icon={isEdit ? undefined : <Plus size={13} />}
             >
-              {busy ? "Posting…" : "Post entry"}
+              {busy
+                ? isEdit
+                  ? "Saving…"
+                  : "Posting…"
+                : isEdit
+                ? "Save changes"
+                : "Post entry"}
             </Button>
           </div>
         </div>
