@@ -58,6 +58,7 @@ const DriverProjects = lazy(() => import("./pages/DriverProjects").then((m) => (
 const DriverProjectDetail = lazy(() => import("./pages/DriverProjectDetail").then((m) => ({ default: m.DriverProjectDetail })));
 // Supply Chain (ported from 2990s)
 const SupplierMaster = lazy(() => import("./pages/SupplierMaster").then((m) => ({ default: m.SupplierMaster })));
+const SupplierDetail = lazy(() => import("./pages/SupplierDetail").then((m) => ({ default: m.SupplierDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -267,6 +268,14 @@ export default function App() {
           element={
             <Guard perm="*">
               <SupplierMaster />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/suppliers/:id"
+          element={
+            <Guard perm="*">
+              <SupplierDetail />
             </Guard>
           }
         />

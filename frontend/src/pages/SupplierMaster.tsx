@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Plus, RefreshCw, X, Trash2 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
@@ -55,6 +56,7 @@ const STATUS_TONE: Record<string, string> = {
 
 export function SupplierMaster() {
   const toast = useToast();
+  const navigate = useNavigate();
   const [params, setParams] = useStickyFilters("scm-suppliers", FILTER_KEYS);
   const search = params.get("search") || "";
   const status = params.get("status") || "";
@@ -253,7 +255,7 @@ export function SupplierMaster() {
         error={list.error}
         emptyLabel="No suppliers yet — click New supplier to add one."
         getRowKey={(r) => r.id}
-        onRowClick={(r) => setEditing(r)}
+        onRowClick={(r) => navigate(`/scm/suppliers/${r.id}`)}
         serverSort
         onSortChange={handleSortChange}
       />
@@ -289,7 +291,7 @@ export function SupplierMaster() {
 
 const PAYMENT_TERMS = ["COD", "NET 7", "NET 14", "NET 30", "NET 60", "NET 90"];
 
-function SupplierFormModal({
+export function SupplierFormModal({
   supplier,
   onClose,
   onSaved,
