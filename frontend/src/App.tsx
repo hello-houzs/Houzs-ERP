@@ -63,6 +63,11 @@ const ScmStockTransferDetail = lazy(() => import("./pages/scm/StockTransferDetai
 const ScmStockTakes = lazy(() => import("./pages/scm/StockTakes").then((m) => ({ default: m.StockTakes })));
 const ScmStockTakeNew = lazy(() => import("./pages/scm/StockTakeNew").then((m) => ({ default: m.StockTakeNew })));
 const ScmStockTakeDetail = lazy(() => import("./pages/scm/StockTakeDetail").then((m) => ({ default: m.StockTakeDetail })));
+// SCM 1:1 clone — Sales Orders (pages/scm/*). Houzs has `sales_orders` (AutoCount,
+// different name) + the existing /orders + /sales routes -> distinct /sales-orders.
+const ScmSalesOrders = lazy(() => import("./pages/scm/MfgSalesOrdersList").then((m) => ({ default: m.MfgSalesOrders })));
+const ScmSalesOrderNew = lazy(() => import("./pages/scm/SalesOrderNew").then((m) => ({ default: m.SalesOrderNew })));
+const ScmSalesOrderDetail = lazy(() => import("./pages/scm/SalesOrderDetail").then((m) => ({ default: m.SalesOrderDetail })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -570,6 +575,34 @@ export default function App() {
           element={
             <Guard perm="*">
               <ScmStockTakeDetail />
+            </Guard>
+          }
+        />
+        {/* Supply Chain — Sales Orders (1:1 clone of 2990s, pages/scm/*). Owner-
+            only (perm "*"), matching the backend requirePermission("*") gate.
+            /api/mfg-sales-orders backs these. DISTINCT from the AutoCount /orders
+            + /sales routes. Static /new MUST precede the /:docNo param route. */}
+        <Route
+          path="/sales-orders"
+          element={
+            <Guard perm="*">
+              <ScmSalesOrders />
+            </Guard>
+          }
+        />
+        <Route
+          path="/sales-orders/new"
+          element={
+            <Guard perm="*">
+              <ScmSalesOrderNew />
+            </Guard>
+          }
+        />
+        <Route
+          path="/sales-orders/:docNo"
+          element={
+            <Guard perm="*">
+              <ScmSalesOrderDetail />
             </Guard>
           }
         />

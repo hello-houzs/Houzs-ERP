@@ -158,6 +158,7 @@ export const NAV_TABS: NavTab[] = [
     groupId: "supply_chain",
     perm: "*",
     children: [
+      { to: "/sales-orders", label: "Sales Orders", icon: ShoppingBag, perm: "*" },
       { to: "/suppliers", label: "Suppliers", icon: Package, perm: "*" },
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
       { to: "/grns", label: "Goods Received", icon: Truck, perm: "*" },

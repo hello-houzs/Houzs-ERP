@@ -1723,3 +1723,353 @@ export const purchaseReturnItems = pgTable('purchase_return_items', {
 }, (t) => ({
   idxPr: index('idx_pr_items_pr').on(t.purchaseReturnId),
 }));
+
+/* ════════════════════════════════════════════════════════════════════════
+   SALES ORDERS slice — 1:1 clone of 2990s (packages/db/src/schema.ts:
+   customers L513, mfgSalesOrders L1210, mfgSalesOrderItems L1379 + the SO
+   audit / payment tables L1483-1572). BARE names (Houzs has `sales_orders`
+   (AutoCount, different name) + no `customers`/`mfg_sales_orders`), so no
+   collision -> verbatim 2990s names.
+
+   Defs copied verbatim (camelCase keys + snake_case cols + enums). KEPT all
+   columns incl. the furniture variant/pricing cols for fidelity. The only
+   deviations are the documented seams:
+     - staff.id (uuid) refs (created_by / salesperson_id / changed_by /
+       approved_by / actor_id / collected_by) -> Houzs users.id (INTEGER)
+       soft-refs, no FK (rule #4). Houzs `users` is a separate auth table.
+     - venue_id / hub_id / customer_po_id -> nullable columns, FK DROPPED
+       (Houzs has no venues / delivery_hubs; kept for fidelity, soft).
+     - warehouse_id (per-line) -> real FK to mfg_warehouses (nullable soft
+       binding; same as the PO/GRN slices).
+     - customer_id -> real FK to the cloned `customers` table.
+   currencyCode + the money centi columns are reused verbatim. The retail
+   `orders` table + `venues`/`showrooms`/`my_localities` masters are NOT
+   cloned (out of scope); columns that referenced them become soft text/uuid.
+   ════════════════════════════════════════════════════════════════════════ */
+
+// Generic customer directory (2990s schema.ts:513). Clean 1:1 clone — no seam.
+export const customers = pgTable('customers', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  name:         text('name').notNull(),
+  phone:        text('phone'),                    // normalized intl format
+  email:        text('email'),
+  // Human-readable shareable code (minted on first create in 2990s via an RPC;
+  // Houzs leaves it nullable — no minting wired this slice).
+  customerCode: text('customer_code'),
+  address:      text('address'),
+  addressLine2: text('address_line2'),
+  postcode:     text('postcode'),
+  city:         text('city'),
+  state:        text('state'),
+  notes:        text('notes'),
+  firstSeenAt:  timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt:   timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  phoneIdx: index('idx_customers_phone').on(t.phone),
+  /* One customer per normalised (name, phone). Partial so legacy phone-less
+     rows don't collide on a NULL phone. */
+  namePhoneUnique: uniqueIndex('customers_name_phone_unique')
+    .on(sql`lower(trim(${t.name}))`, t.phone)
+    .where(sql`${t.phone} IS NOT NULL`),
+  customerCodeUnique: uniqueIndex('customers_customer_code_unique')
+    .on(t.customerCode)
+    .where(sql`${t.customerCode} IS NOT NULL`),
+}));
+
+// SO header status (2990s mfgSoStatus, schema.ts:1196).
+export const mfgSoStatus = pgEnum('mfg_so_status', [
+  'CONFIRMED', 'IN_PRODUCTION', 'READY_TO_SHIP', 'SHIPPED',
+  'DELIVERED', 'INVOICED', 'CLOSED', 'ON_HOLD', 'CANCELLED',
+]);
+
+// Slip review state for POS handover payment slips (2990s slipState,
+// schema.ts:65). Cloned for fidelity (the SO header carries slip_state).
+export const slipState = pgEnum('slip_state', [
+  'none', 'pending', 'verified', 'flagged',
+]);
+
+export const mfgSalesOrders = pgTable('mfg_sales_orders', {
+  // doc_no PK as TEXT — human-readable like 'SO-2606-001'
+  docNo:             text('doc_no').primaryKey(),
+  transferTo:        text('transfer_to'),
+  soDate:            date('so_date').notNull().defaultNow(),
+  branding:          text('branding'),
+  debtorCode:        text('debtor_code'),
+  debtorName:        text('debtor_name').notNull(),
+  agent:             text('agent'),
+  salesLocation:     text('sales_location'),
+  ref:               text('ref'),
+  poDocNo:           text('po_doc_no'),                            // customer's PO
+  venue:             text('venue'),
+  // SEAM: 2990s FK -> venues(id). Houzs has no venues master -> nullable uuid,
+  // no FK (kept for fidelity).
+  venueId:           uuid('venue_id'),
+
+  // Address fields (4 address lines + phone)
+  address1:          text('address1'),
+  address2:          text('address2'),
+  address3:          text('address3'),
+  address4:          text('address4'),
+  phone:             text('phone'),
+
+  // Money breakdown by category (denormalized for fast filter)
+  mattressSofaCenti: integer('mattress_sofa_centi').notNull().default(0),
+  bedframeCenti:     integer('bedframe_centi').notNull().default(0),
+  accessoriesCenti:  integer('accessories_centi').notNull().default(0),
+  othersCenti:       integer('others_centi').notNull().default(0),
+  // Per-category COST breakdown (mirrors revenue columns).
+  mattressSofaCostCenti: integer('mattress_sofa_cost_centi').notNull().default(0),
+  bedframeCostCenti:     integer('bedframe_cost_centi').notNull().default(0),
+  accessoriesCostCenti:  integer('accessories_cost_centi').notNull().default(0),
+  othersCostCenti:       integer('others_cost_centi').notNull().default(0),
+  // SERVICE lines (delivery fee / dispose / lift) own revenue bucket.
+  serviceCenti:     integer('service_centi').notNull().default(0),
+  serviceCostCenti: integer('service_cost_centi').notNull().default(0),
+  localTotalCenti:   integer('local_total_centi').notNull().default(0),
+  balanceCenti:      integer('balance_centi').notNull().default(0),
+
+  totalCostCenti:    integer('total_cost_centi').notNull().default(0),
+  totalRevenueCenti: integer('total_revenue_centi').notNull().default(0),
+  totalMarginCenti:  integer('total_margin_centi').notNull().default(0),
+  marginPctBasis:    integer('margin_pct_basis').notNull().default(0), // × 100 (e.g. 23.50% = 2350)
+  lineCount:         integer('line_count').notNull().default(0),
+  // Fabric-tier SELLING add-on total (reporting snapshot — furniture; KEPT).
+  fabricTierAddonCenti: integer('fabric_tier_addon_centi').notNull().default(0),
+  // Delivery fee in sen — folded into local_total/revenue/balance/margin.
+  deliveryFeeCenti:  integer('delivery_fee_centi').notNull().default(0),
+  // Cross-category delivery link (the earlier SO this SO was linked back to).
+  crossCategorySourceDocNo: text('cross_category_source_doc_no'),
+
+  currency:          currencyCode('currency').notNull().default('MYR'),
+  status:            mfgSoStatus('status').notNull().default('CONFIRMED'),
+  remark2:           text('remark2'),
+  remark3:           text('remark3'),
+  remark4:           text('remark4'),
+  note:              text('note'),
+  processingDate:    date('processing_date'),
+  // POS "Proceed" stamp — auto-set on the FIRST transition to IN_PRODUCTION.
+  proceededAt:       timestamp('proceeded_at', { withTimezone: true }),
+  salesExemptionExpiry: date('sales_exemption_expiry'),
+
+  // Customer master link (existing customers table) — debtor_name kept as a
+  // denormalised snapshot for display speed.
+  customerId:        uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+  customerState:     text('customer_state'),
+  // Country snapshot auto-derived from customer_state.
+  customerCountry:   text('customer_country'),
+  // Customer PO — 3 structured fields + optional scanned image base64
+  customerPo:        text('customer_po'),
+  customerPoId:      text('customer_po_id'),
+  customerPoDate:    date('customer_po_date'),
+  customerPoImageB64: text('customer_po_image_b64'),
+  // Customer's own SO number from their ERP.
+  customerSoNo:      text('customer_so_no'),
+  // Multi-branch customer (nullable uuid + snapshot text).
+  hubId:             uuid('hub_id'),
+  hubName:           text('hub_name'),
+  // Delivery date granularity
+  customerDeliveryDate: date('customer_delivery_date'),
+  internalExpectedDd: date('internal_expected_dd'),
+  linkedDoDocNo:     text('linked_do_doc_no'),
+  // Multi-address (in addition to legacy address1-4)
+  shipToAddress:     text('ship_to_address'),
+  billToAddress:     text('bill_to_address'),
+  installToAddress:  text('install_to_address'),
+  // Money + overdue
+  subtotalSen:       integer('subtotal_sen'),
+  overdue:           text('overdue'),                       // 'PENDING' | 'DUE' | 'OVERDUE' | null
+
+  // POS handover customer/address/emergency/target-date round-trip.
+  email:                          text('email'),
+  customerType:                   text('customer_type'),              // 'NEW' | 'EXISTING'
+  // SEAM: 2990s FK -> staff(id) uuid. Houzs users.id INTEGER soft-ref (rule #4).
+  salespersonId:                  integer('salesperson_id'),
+  city:                           text('city'),
+  postcode:                       text('postcode'),
+  buildingType:                   text('building_type'),              // Condo / Landed / Apartment / Office / Shop / Other
+  emergencyContactName:           text('emergency_contact_name'),
+  emergencyContactPhone:          text('emergency_contact_phone'),
+  emergencyContactRelationship:   text('emergency_contact_relationship'),
+  targetDate:                     date('target_date'),
+  // POS handover customer signature (data URL, image/png base64).
+  signatureB64:                   text('signature_b64'),
+  // POS handover payment slip (R2 key) + coordinator review state.
+  slipKey:                        text('slip_key'),
+  slipState:                      slipState('slip_state').notNull().default('none'),
+
+  // Payment fields mirrored from POS handover (free text here).
+  paymentMethod:        text('payment_method'),       // cash | transfer | merchant
+  installmentMonths:    integer('installment_months'), // 6 | 12 — NULL = normal swipe
+  merchantProvider:     text('merchant_provider'),    // GHL | HLB | MBB | PBB
+  approvalCode:         text('approval_code'),        // auth / slip / receipt no
+  paymentDate:          date('payment_date'),
+  depositCenti:         integer('deposit_centi').notNull().default(0),
+  paidCenti:            integer('paid_centi').notNull().default(0),
+
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // SEAM: 2990s FK -> staff(id) uuid. Houzs users.id INTEGER soft-ref (rule #4).
+  createdBy:         integer('created_by'),
+  updatedAt:         timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxDate:     index('idx_mso_date').on(t.soDate),
+  idxDebtor:   index('idx_mso_debtor').on(t.debtorCode),
+  idxStatus:   index('idx_mso_status').on(t.status),
+  idxBranding: index('idx_mso_branding').on(t.branding),
+  idxCustomer: index('idx_mso_customer').on(t.customerId),
+}));
+
+export const mfgSalesOrderItems = pgTable('mfg_sales_order_items', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  docNo:             text('doc_no').notNull().references(() => mfgSalesOrders.docNo, { onDelete: 'cascade' }),
+  lineDate:          date('line_date').notNull().defaultNow(),
+  debtorCode:        text('debtor_code'),
+  debtorName:        text('debtor_name'),
+  agent:             text('agent'),
+  itemGroup:         text('item_group').notNull(),                 // bedframe/sofa/mattress/accessory/others
+  itemCode:          text('item_code').notNull(),
+  description:       text('description'),
+  description2:      text('description2'),
+  uom:               text('uom').notNull().default('UNIT'),
+  location:          text('location'),
+  // Per-LINE ship-from warehouse (the warehouse binding). Real FK to
+  // mfg_warehouses (nullable soft binding; same as the PO/GRN slices).
+  warehouseId:       uuid('warehouse_id').references(() => mfgWarehouses.id, { onDelete: 'set null' }),
+  qty:               integer('qty').notNull().default(1),
+  unitPriceCenti:    integer('unit_price_centi').notNull().default(0),
+  discountCenti:     integer('discount_centi').notNull().default(0),
+  totalCenti:        integer('total_centi').notNull().default(0),
+  taxCenti:          integer('tax_centi').notNull().default(0),
+  totalIncCenti:     integer('total_inc_centi').notNull().default(0),
+  balanceCenti:      integer('balance_centi').notNull().default(0),
+  paymentStatus:     text('payment_status').notNull().default('Unchecked'),
+  venue:             text('venue'),
+  branding:          text('branding'),
+  remark:            text('remark'),
+  cancelled:         boolean('cancelled').notNull().default(false),
+  variants:          jsonb('variants'),                             // {fabric, gap, divanHeight, legHeight, ...}
+  unitCostCenti:     integer('unit_cost_centi').notNull().default(0),
+  lineCostCenti:     integer('line_cost_centi').notNull().default(0),
+  lineMarginCenti:   integer('line_margin_centi').notNull().default(0),
+
+  // Bedframe variant pricing + sofa line suffix + free-text custom specials
+  // (furniture; KEPT for fidelity, no configurator UI per Strategy-2).
+  gapInches:         integer('gap_inches'),
+  divanHeightInches: integer('divan_height_inches'),
+  divanPriceSen:     integer('divan_price_sen').notNull().default(0),
+  legHeightInches:   integer('leg_height_inches'),
+  legPriceSen:       integer('leg_price_sen').notNull().default(0),
+  customSpecials:    jsonb('custom_specials'),               // [{ description, surchargeSen }]
+  lineSuffix:        text('line_suffix'),                    // '-01', '-02' for sofa modules
+  specialOrderPriceSen: integer('special_order_price_sen').notNull().default(0),
+
+  // How much of this line has been emitted to one or more POs (cumulative).
+  // Remaining convertible = qty - po_qty_picked. Recounted by recomputeSoPicked
+  // in the PO route (now wired).
+  poQtyPicked:       integer('po_qty_picked').notNull().default(0),
+
+  // Per-item delivery date with master-follower cascade.
+  lineDeliveryDate:            date('line_delivery_date'),
+  lineDeliveryDateOverridden:  boolean('line_delivery_date_overridden').notNull().default(false),
+
+  // Per-line photos for customisation orders (R2 object keys).
+  photoUrls:         text('photo_urls').array().notNull().default([]),
+
+  // Per-line fulfillment flag. PENDING -> READY when stock arrives (manual or
+  // auto-from-inventory via recomputeSoStockAllocation). Drives the Stock
+  // Status chip + auto-advance to READY_TO_SHIP.
+  stockStatus:       text('stock_status').notNull().default('PENDING'),
+  // How much of qty is currently allocated/ready (written by allocation).
+  stockQtyReady:     integer('stock_qty_ready').notNull().default(0),
+  // SOFA whole-set batch lock (furniture; KEPT for fidelity, no sofa allocator
+  // wired per Strategy-2).
+  allocatedBatchNo:  text('allocated_batch_no'),
+
+  // Explicit per-SO line sequence (listing order). NULL on legacy rows.
+  lineNo:            integer('line_no'),
+
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxDoc:       index('idx_mso_items_doc').on(t.docNo),
+  idxItemCode:  index('idx_mso_items_item').on(t.itemCode),
+  idxItemGroup: index('idx_mso_items_group').on(t.itemGroup),
+}));
+
+/* SO audit trails — two append-only tables driving the SO detail history. */
+export const mfgSoStatusChanges = pgTable('mfg_so_status_changes', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  docNo:        text('doc_no').notNull().references(() => mfgSalesOrders.docNo, { onDelete: 'cascade' }),
+  fromStatus:   text('from_status'),
+  toStatus:     text('to_status').notNull(),
+  // SEAM: staff(id) uuid -> Houzs users.id INTEGER soft-ref.
+  changedBy:    integer('changed_by'),
+  notes:        text('notes'),
+  autoActions:  jsonb('auto_actions'),                       // string[]
+  createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxDoc: index('idx_so_status_changes_doc').on(t.docNo),
+  idxAt:  index('idx_so_status_changes_at').on(t.createdAt),
+}));
+
+export const mfgSoPriceOverrides = pgTable('mfg_so_price_overrides', {
+  id:                 uuid('id').primaryKey().defaultRandom(),
+  docNo:              text('doc_no').notNull().references(() => mfgSalesOrders.docNo, { onDelete: 'cascade' }),
+  itemId:             uuid('item_id').notNull().references(() => mfgSalesOrderItems.id, { onDelete: 'cascade' }),
+  itemCode:           text('item_code').notNull(),
+  originalPriceSen:   integer('original_price_sen').notNull(),
+  overridePriceSen:   integer('override_price_sen').notNull(),
+  reason:             text('reason'),
+  // SEAM: staff(id) uuid -> Houzs users.id INTEGER soft-ref.
+  approvedBy:         integer('approved_by'),
+  createdAt:          timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxDoc:  index('idx_so_overrides_doc').on(t.docNo),
+  idxItem: index('idx_so_overrides_item').on(t.itemId),
+}));
+
+/* Unified SO audit trail — insert-only, captures every mutation type with
+   field-level from->to diffs in field_changes. */
+export const mfgSoAuditLog = pgTable('mfg_so_audit_log', {
+  id:                 uuid('id').primaryKey().defaultRandom(),
+  soDocNo:            text('so_doc_no').notNull().references(() => mfgSalesOrders.docNo, { onDelete: 'cascade' }),
+  action:             text('action').notNull(),
+  // SEAM: staff(id) uuid -> Houzs users.id INTEGER soft-ref.
+  actorId:            integer('actor_id'),
+  actorNameSnapshot:  text('actor_name_snapshot'),
+  fieldChanges:       jsonb('field_changes').notNull().default([]),
+  statusSnapshot:     text('status_snapshot'),
+  source:             text('source').default('web'),
+  note:               text('note'),
+  createdAt:          timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxDoc:   index('idx_msoaudit_doc').on(t.soDocNo),
+  idxDocAt: index('idx_msoaudit_doc_at').on(t.soDocNo, t.createdAt),
+  idxActor: index('idx_msoaudit_actor').on(t.actorId),
+}));
+
+/* Payments as transactions — each receipt is one row (total paid =
+   sum(amount_centi) per so_doc_no). */
+export const mfgSalesOrderPayments = pgTable('mfg_sales_order_payments', {
+  id:                 uuid('id').primaryKey().defaultRandom(),
+  soDocNo:            text('so_doc_no').notNull().references(() => mfgSalesOrders.docNo, { onDelete: 'cascade' }),
+  paidAt:             date('paid_at').notNull().defaultNow(),
+  method:             text('method').notNull(),               // 'merchant' | 'transfer' | 'cash' | 'installment'
+  merchantProvider:   text('merchant_provider'),
+  installmentMonths:  integer('installment_months'),
+  // Online sub-type (Bank Transfer / TNG / Cheque / DuitNow).
+  onlineType:         text('online_type'),
+  approvalCode:       text('approval_code'),
+  amountCenti:        integer('amount_centi').notNull(),
+  accountSheet:       text('account_sheet'),
+  slipKey:            text('slip_key'),
+  // SEAM: staff(id) uuid -> Houzs users.id INTEGER soft-ref.
+  collectedBy:        integer('collected_by'),
+  note:               text('note'),
+  // True on the auto-row the SO POST writes for a POS deposit.
+  isDeposit:          boolean('is_deposit').notNull().default(false),
+  createdAt:          timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // SEAM: staff(id) uuid -> Houzs users.id INTEGER soft-ref.
+  createdBy:          integer('created_by'),
+}, (t) => ({
+  idxDoc:    index('idx_msop_doc').on(t.soDocNo),
+  idxPaidAt: index('idx_msop_paid_at').on(t.paidAt),
+}));

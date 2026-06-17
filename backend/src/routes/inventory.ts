@@ -69,6 +69,7 @@ import {
 } from "../db/schema";
 import { requirePermission } from "../middleware/auth";
 import { writeMovements } from "../lib/inventory-movements";
+import { recomputeSoStockAllocation } from "../lib/so-stock-allocation";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -93,14 +94,10 @@ function isFkViolation(e: unknown): boolean {
   return Boolean(e && typeof e === "object" && (e as { code?: string }).code === "23503");
 }
 
-/* SO stock-allocation recount — STUB. 2990s re-walks open SO lines after a
-   stock mutation so READY/PENDING flips correctly. The SO slice isn't cloned, so
-   there's nothing to recompute -> no-op. Call site kept verbatim so wiring this
-   when the SO slice lands is a one-function change.
-   TODO: wire recomputeSoStockAllocation when the SO slice lands. */
-async function recomputeSoStockAllocation(_db: ReturnType<typeof getDb>): Promise<void> {
-  return;
-}
+/* SO stock-allocation recount — WIRED now that the SO slice has landed. A stock
+   mutation (manual adjustment here) re-walks open SO lines so READY/PENDING
+   flips correctly. Imported from ../lib/so-stock-allocation (best-effort;
+   returns an AllocationResult the call sites ignore). */
 
 /* ── Warehouses CRUD ─────────────────────────────────────────────────── */
 app.get("/warehouses", async (c) => {
@@ -785,7 +782,8 @@ app.post("/adjustments", async (c) => {
   ]);
   if (!res.ok) return c.json({ error: "insert_failed", reason: res.reason }, 500);
 
-  // SO allocation recount (no-op until SO slice lands).
+  // SO allocation recount — a manual adjustment changes on-hand, so re-walk
+  // open SO lines (READY/PENDING flips). Best-effort.
   try {
     await recomputeSoStockAllocation(db);
   } catch {

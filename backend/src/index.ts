@@ -48,6 +48,7 @@ import purchaseInvoices from "./routes/purchase-invoices";
 import purchaseReturns from "./routes/purchase-returns";
 import stockTransfers from "./routes/stock-transfers";
 import stockTakes from "./routes/stock-takes";
+import mfgSalesOrders from "./routes/mfg-sales-orders";
 import mfgWarehouses from "./routes/warehouse";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
@@ -192,6 +193,14 @@ app.route("/api/purchase-returns", purchaseReturns);
 // collision -> /api/stock-transfers + /api/stock-takes. Owner-only (perm "*").
 app.route("/api/stock-transfers", stockTransfers);
 app.route("/api/stock-takes", stockTakes);
+// SCM 1:1 clone — Sales Orders (the biggest slice). Generic document lifecycle
+// (CONFIRMED..CANCELLED), line CRUD, payments-as-transactions, price overrides,
+// stock-status flip + auto-advance, unified audit trail; stock readiness/
+// allocation wired to the inventory ledger (lib/so-stock-allocation). Furniture
+// pricing engine + DO/SI/DR aggregates dropped per Strategy-2 (see route header).
+// Houzs has `sales_orders` (AutoCount, different name) -> /api/mfg-sales-orders.
+// Owner-only (perm "*").
+app.route("/api/mfg-sales-orders", mfgSalesOrders);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);

@@ -60,6 +60,7 @@ import {
   reverseMovements,
   resolveWarehouseLotBatches,
 } from "../lib/inventory-movements";
+import { recomputeSoStockAllocation } from "../lib/so-stock-allocation";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -79,12 +80,9 @@ function isoOrNull(v: Date | string | null): string | null {
 
 const VALID_STATUS = new Set(["POSTED", "CANCELLED"]);
 
-/* SO stock-allocation recount — STUB (Strategy-2). 2990s re-walks open SO lines
-   after a stock mutation. The SO slice isn't cloned -> no-op. Call sites kept.
-   TODO: wire recomputeSoStockAllocation when the SO slice lands. */
-async function recomputeSoStockAllocation(_db: Db): Promise<void> {
-  return;
-}
+/* SO stock-allocation recount — WIRED now that the SO slice has landed. A
+   transfer changes per-warehouse on-hand, so re-walk open SO lines (READY/
+   PENDING flips). Imported from ../lib/so-stock-allocation (best-effort). */
 
 // ── Header / line response mappers (Drizzle camelCase -> 2990s wire shape) ──
 type WarehouseLite = { id: string; code: string; name: string } | null;

@@ -67,6 +67,7 @@ import {
 } from "../db/schema";
 import { requirePermission } from "../middleware/auth";
 import { writeMovements, defaultWarehouseId } from "../lib/inventory-movements";
+import { recomputeSoStockAllocation } from "../lib/so-stock-allocation";
 import { computeVariantKey, type VariantAttrs } from "@shared/index";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -197,9 +198,15 @@ async function postGrnAndRollup(
   } catch (e) {
     console.error("[grn-rack] place failed:", e);
   }
-  /* SO auto-allocation (SO slice not cloned per Strategy-2) — was a re-walk of
-     PENDING SO lines after new stock arrived. No-op here.
-     TODO: recomputeSoStockAllocation(db) when the SO slice lands. */
+  /* SO auto-allocation — WIRED now that the SO slice has landed. New stock just
+     arrived (the GRN IN movement), so re-walk open SO lines: PENDING lines this
+     stock now covers flip to READY (and the SO may auto-advance to
+     READY_TO_SHIP). Best-effort — never blocks the GRN post. */
+  try {
+    await recomputeSoStockAllocation(db);
+  } catch (e) {
+    console.error("[so-allocation] post-GRN failed:", e);
+  }
   return { ok: true };
 }
 

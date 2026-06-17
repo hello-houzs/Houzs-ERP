@@ -397,3 +397,66 @@ need translation.)
     (done-slice precedent). window.confirm/alert kept verbatim (1:1 fidelity; done
     slices kept it). No migration `0029`.
   - Nothing applied to any DB (no migration; batched for staging at #70).
+- **2026-06-18 — Sales Orders slice DONE (#65):** the biggest slice. Verbatim
+  clone of 2990s's `customers` + `mfg_sales_orders` + `mfg_sales_order_items` +
+  the SO audit / payment tables (BARE names — Houzs has `sales_orders` (AutoCount,
+  different name) + no `customers`/`mfg_*`). Migration `0029_sales_orders.sql`
+  (`mfg_so_status` enum CONFIRMED..CANCELLED + `slip_state` enum; `currency_code`
+  reused from 0024). Route at `/api/mfg-sales-orders` (mounted in index.ts,
+  owner-only `"*"`). Libs `so-audit.ts` + `so-readiness.ts` + `so-stock-allocation.ts`
+  + `so-delivery-sync.ts` + `service-sku.ts` in `backend/src/lib/`. Pages
+  MfgSalesOrdersList/SalesOrderNew/SalesOrderDetail + query hooks
+  `sales-orders-queries.ts` in `pages/scm/`; App.tsx routes (`/sales-orders[/new|
+  /:docNo]`, all `<Guard perm="*">`, static `/new` before `/:docNo`; DISTINCT from
+  the live AutoCount `/orders` + `/sales`); nav "Sales Orders" (ShoppingBag) at the
+  top of the Supply Chain group. Both gates EXIT 0.
+  - **SO→inventory wiring (the headline):** `so-stock-allocation.ts` allocates live
+    `inventory_balances` to PENDING SO lines (FIFO by delivery-date → doc_no →
+    created_at, per-warehouse bucket, partial→PARTIAL) and auto-advances/regresses
+    the header (all-MAIN-READY → READY_TO_SHIP; a MAIN line back to PENDING →
+    CONFIRMED). Fired on SO create / line add-edit-delete / status change AND from
+    every done stock-mutating slice (see un-stubs below). `stock_status` + `stock_qty_ready`
+    columns added to `mfg_sales_order_items`; the manual PATCH `/stock-status` flip +
+    auto-advance ported verbatim.
+  - **Un-stubbed across done slices:** (a) PO route `recomputeSoPicked` now recounts
+    `mfg_sales_order_items.po_qty_picked` from live non-MRP PO lines (1:1 w/ 2990s),
+    and PO detail `so_doc_no` + `so_drift` now read the real SO line (drift spec via
+    description2, see deviation). (b) The 4 local `recomputeSoStockAllocation` no-op
+    stubs (inventory.ts manual-adjust, stock-transfers.ts, stock-takes.ts) + the
+    removed call-sites (grns.ts post, purchase-returns.ts post/line-delta/cancel) all
+    now import + call the REAL `../lib/so-stock-allocation` so a GRN-IN / PR-OUT /
+    transfer / stocktake / adjustment re-walks SO readiness (READY↔PENDING flips).
+  - **Strategy-2 — DROPPED (the most furniture-coupled slice):** the ENTIRE furniture
+    pricing engine (computeMfgLinePrice/recomputeFromSnapshot/mfgPricingDriftExceeds,
+    sofa-combo/fabric-tier/variant pricing, allowed-options + variant-completeness
+    checks, PWP / free-gift / TBC sofa-exchange handlers, cross-category delivery-fee
+    engine, the 6813-line route's ~1700 lines of TBC-swap + ~1700 lines of create-
+    recompute). SO lines use the GENERIC model (product_code/group/qty/unit_price/
+    discount/total, plain inputs) — same as PO/GRN/PI. Variant columns KEPT (nullable)
+    in the schema for fidelity; no configurator UI. recomputeTotals ported minus the
+    sofa-combo COST spread. Customer directory = clean 1:1 clone.
+  - **DEFERRED / stubbed (await DO·SI·MRP·Products slices, all `// TODO`):**
+    `so-delivery-sync` async wrapper (DO→SO Delivered reconcile — the pure
+    `isSoFullyCovered` IS ported); the DO/SI-dependent list+detail aggregates
+    (delivery_state / lifecycle_state / current_doc_no / deliverable-remaining /
+    per-line delivered breakdown / MRP coverage) return faithful empties; `soHasDownstream`
+    child-lock is a no-op (no DO/SI table) so nothing locks yet; customer-credits
+    (SO-cancel→credit + the credit-balance lookup) stubbed to 0; the slip-upload R2
+    plumbing on POST /payments dropped (no R2 binding); `mfgSoStatusChanges` legacy
+    timeline kept alongside the unified `mfg_so_audit_log`. The 2990s `/mine`,
+    `/customer-search`, `/debtors/search`, payments, overrides, status, stock-status,
+    audit-log endpoints ARE all ported.
+  - **SEAM/deviations (documented in files):** ALL staff.id (uuid) refs (created_by /
+    salesperson_id / changed_by / approved_by / actor_id / collected_by) → Houzs
+    users.id INTEGER soft-refs from `c.get("user")` (rule #4; so-audit snapshots
+    `users.name`); `venue_id`/`hub_id`/`customer_po_id` → nullable columns, FK DROPPED
+    (no venues/delivery_hubs masters); `warehouse_id` (per-line) → real FK to
+    `mfg_warehouses` (nullable soft); `customer_id` → real FK to the cloned `customers`.
+    PO `so_item_id` LEFT SOFT (no FK, as prior slices) — `recomputeSoPicked` joins it
+    logically. so_drift spec-compare uses description2/description (2990s's
+    `buildVariantSummary` is furniture, dropped). doc_no = SO-YYMM-NNN (max+1).
+    Roles/admin-gate for price-override + POS-tablet drift collapse to the module's
+    owner-only `"*"` mount. Pages use plain inline RM↔centi editors + `<table>` +
+    Suppliers/PurchaseOrderDetail CSS modules (DataGrid + configurator dropped);
+    window.confirm/alert kept (done-slice precedent).
+  - Migration `0029` NOT applied to any DB (batched for staging at #70).

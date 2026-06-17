@@ -59,6 +59,7 @@ import {
   grnItems as grnItemsTable,
   purchaseInvoices as piTable,
   purchaseReturns as prTable,
+  mfgSalesOrderItems as soItemsTable,
 } from "../db/schema";
 import { requirePermission } from "../middleware/auth";
 
@@ -276,16 +277,56 @@ app.get("/:id", async (c) => {
     };
 
     /* Per-line GR breakdown so the PO list expansion / detail can show a
-       "Received" column (which GR took how much). so_doc_no + so_drift still
-       derive from mfg_sales_order_items (SO slice not cloned) -> null.
-       TODO: wire so_doc_no + so_drift when the SO slice lands. */
+       "Received" column (which GR took how much). */
     const receiptsMap = await poLineReceipts(db, itemRows.map((it) => it.id));
-    const items = itemRows.map((it) => ({
-      ...toPoItemResponse(it),
-      receipts: receiptsMap.get(it.id) ?? [],
-      so_doc_no: null as string | null,
-      so_drift: null as unknown,
-    }));
+
+    /* so_doc_no + so_drift — WIRED now that the SO slice has landed (mirror
+       2990s). For each PO line with a source so_item_id, look up the live SO
+       line and surface (a) the SO doc_no, (b) a drift flag when the live SO spec
+       no longer matches this PO line's snapshot, so the purchaser re-sends.
+       STRATEGY-2 DEVIATION: 2990s computes the spec via buildVariantSummary (the
+       furniture formatter, dropped) — here the spec compare uses description2
+       (or description) instead; the item-code-change signal is unchanged. */
+    type SoSnap = { item_code: string; item_group: string | null; description: string | null; description2: string | null };
+    const soLineById = new Map<string, SoSnap>();
+    const soDocByItem = new Map<string, string>();
+    try {
+      const soItemIds = [...new Set(itemRows.map((it) => it.soItemId as string | null | undefined).filter(Boolean))] as string[];
+      if (soItemIds.length > 0) {
+        const soLines = await db
+          .select({ id: soItemsTable.id, docNo: soItemsTable.docNo, itemCode: soItemsTable.itemCode, itemGroup: soItemsTable.itemGroup, description: soItemsTable.description, description2: soItemsTable.description2 })
+          .from(soItemsTable)
+          .where(inArray(soItemsTable.id, soItemIds));
+        for (const r of soLines) {
+          soDocByItem.set(r.id, r.docNo);
+          soLineById.set(r.id, { item_code: r.itemCode, item_group: r.itemGroup, description: r.description, description2: r.description2 });
+        }
+      }
+    } catch {
+      /* leave so_doc_no / drift null */
+    }
+
+    const items = itemRows.map((it) => {
+      const soId = it.soItemId as string | null;
+      const so = soId ? soLineById.get(soId) ?? null : null;
+      let so_drift: null | { specPo: string; specSo: string; itemPo: string; itemSo: string; itemChanged: boolean } = null;
+      if (so) {
+        const specPo = String(it.description2 ?? it.description ?? "");
+        const specSo = String(so.description2 ?? so.description ?? "");
+        const itemPo = String(it.materialCode ?? "");
+        const itemSo = String(so.item_code ?? "");
+        const itemChanged = itemPo !== itemSo;
+        if (specPo !== specSo || itemChanged) {
+          so_drift = { specPo, specSo, itemPo, itemSo, itemChanged };
+        }
+      }
+      return {
+        ...toPoItemResponse(it),
+        receipts: receiptsMap.get(it.id) ?? [],
+        so_doc_no: soId ? soDocByItem.get(soId) ?? null : null,
+        so_drift,
+      };
+    });
 
     return c.json({ purchaseOrder, items });
   } catch (e) {
@@ -543,17 +584,56 @@ async function recomputePoTotals(db: ReturnType<typeof getDb>, poId: string) {
 }
 
 /* ── Self-healing SO "picked" counter ───────────────────────────────────────
-   STUB. 2990s recounts mfg_sales_order_items.po_qty_picked from the live PO
-   lines on every PO mutation (add/edit/delete/cancel/reopen) so SO lines drop
-   in/out of the From-SO picker. The SO slice isn't cloned, so there is no
-   counter to recount -> no-op. All call sites are kept verbatim so wiring this
-   when the SO slice lands is a one-function change.
-   TODO: recount mfg_sales_order_items.po_qty_picked when the SO slice lands. */
+   Recounts mfg_sales_order_items.po_qty_picked from the live PO lines on every
+   PO mutation (add/edit/delete/cancel/reopen) so SO lines drop in/out of the
+   From-SO picker. WIRED now that the SO slice has landed — 1:1 with 2990s's
+   recomputeSoPicked (PostgREST -> Drizzle).
+
+   MRP-origin PO lines (from_mrp = true) are reference-only: they do NOT lock the
+   source SO line via po_qty_picked, so the recount excludes them (Commander
+   2026-05-31; the picker drops MRP-covered lines via the pooled-supply model
+   instead — which the From-SO picker itself lives in the SO slice, deferred).
+
+   Best-effort, never throws: the primary write already committed; the live-count
+   model self-heals on the next operation that touches these SO lines. */
 async function recomputeSoPicked(
-  _db: ReturnType<typeof getDb>,
-  _soItemIds: Array<string | null | undefined>,
+  db: ReturnType<typeof getDb>,
+  soItemIds: Array<string | null | undefined>,
 ): Promise<void> {
-  return;
+  const ids = [...new Set(soItemIds.filter((x): x is string => Boolean(x)))];
+  if (ids.length === 0) return;
+  try {
+    const lines = await db
+      .select({
+        soItemId: poItemsTable.soItemId,
+        qty: poItemsTable.qty,
+        purchaseOrderId: poItemsTable.purchaseOrderId,
+        fromMrp: poItemsTable.fromMrp,
+      })
+      .from(poItemsTable)
+      .where(inArray(poItemsTable.soItemId, ids));
+    const rows = lines.filter((r) => r.fromMrp !== true && r.soItemId);
+    const poIds = [...new Set(rows.map((r) => r.purchaseOrderId).filter(Boolean))];
+    const cancelled = new Set<string>();
+    if (poIds.length > 0) {
+      const pos = await db.select({ id: poTable.id, status: poTable.status }).from(poTable).where(inArray(poTable.id, poIds));
+      for (const p of pos) if (p.status === "CANCELLED") cancelled.add(p.id);
+    }
+    const pickedBySo = new Map<string, number>(ids.map((id) => [id, 0]));
+    for (const r of rows) {
+      if (cancelled.has(r.purchaseOrderId)) continue;
+      const k = r.soItemId as string;
+      pickedBySo.set(k, (pickedBySo.get(k) ?? 0) + Number(r.qty ?? 0));
+    }
+    await Promise.all(
+      [...pickedBySo.entries()].map(([soItemId, picked]) =>
+        db.update(soItemsTable).set({ poQtyPicked: picked }).where(eq(soItemsTable.id, soItemId)),
+      ),
+    );
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("[recomputeSoPicked] best-effort recount failed", { soItemIds: ids, error: errMsg(e) });
+  }
 }
 
 app.post("/:id/items", async (c) => {

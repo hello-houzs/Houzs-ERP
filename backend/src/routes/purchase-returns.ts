@@ -66,6 +66,7 @@ import {
 } from "../db/schema";
 import { requirePermission } from "../middleware/auth";
 import { writeMovements, reverseMovements, defaultWarehouseId } from "../lib/inventory-movements";
+import { recomputeSoStockAllocation } from "../lib/so-stock-allocation";
 import { recomputePoReceived, resolvePoBatchByItem } from "./grns";
 import { computeVariantKey, type VariantAttrs } from "@shared/index";
 
@@ -304,9 +305,13 @@ async function writePurchaseReturnMovements(db: Db, prId: string, returnNumber: 
     .filter((m): m is NonNullable<typeof m> => m !== null);
   if (movements.length > 0) {
     await writeMovements(db, movements);
-    /* PR post = stock OUT to supplier -> other READY SOs that needed it may
-       regress. 2990s re-walks SO allocation here (recomputeSoStockAllocation).
-       SO slice not cloned (Strategy-2). TODO when the SO slice lands. */
+    /* PR post = stock OUT to supplier -> READY SOs that needed that stock may
+       regress to PENDING. WIRED now that the SO slice has landed. Best-effort. */
+    try {
+      await recomputeSoStockAllocation(db);
+    } catch (e) {
+      console.error("[so-allocation] post-PR failed:", e);
+    }
   }
 }
 
@@ -377,7 +382,13 @@ async function writePrLineDeltaMovement(
         notes: isOut ? "PR line added/increased" : "PR line reduced/removed — reversing return",
       },
     ]);
-    /* recomputeSoStockAllocation (SO slice) — not cloned. TODO when SO lands. */
+    /* PR line delta moved real stock -> re-walk SO allocation. WIRED now that
+       the SO slice has landed. Best-effort. */
+    try {
+      await recomputeSoStockAllocation(db);
+    } catch (e2) {
+      console.error("[so-allocation] post-PR-line-delta failed:", e2);
+    }
   } catch (e) {
     console.error("[pr-line-delta] movement failed:", e);
   }
@@ -857,8 +868,13 @@ app.patch("/:id/cancel", async (c) => {
   // unit_cost_sen the OUT stamped (idempotent, per-line-warehouse aware).
   try {
     await reverseMovements(db, "PURCHASE_RETURN", id, user.id);
-    /* PR cancel reversed stock IN -> may unlock PENDING SOs. SO slice not cloned.
-       TODO: recomputeSoStockAllocation(db) when the SO slice lands. */
+    /* PR cancel reversed the OUT (stock IN) -> PENDING SOs that stock now covers
+       may flip to READY. WIRED now that the SO slice has landed. Best-effort. */
+    try {
+      await recomputeSoStockAllocation(db);
+    } catch (e) {
+      console.error("[so-allocation] post-PR-cancel failed:", e);
+    }
   } catch {
     /* best-effort: never un-cancel on a movement failure */
   }
