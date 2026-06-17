@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery as useTanstackQuery } from "@tanstack/react-query";
 
 export interface QueryState<T> {
   data: T | null;
@@ -7,38 +7,27 @@ export interface QueryState<T> {
   reload: () => void;
 }
 
+// Backed by TanStack Query (see lib/queryClient.ts). The public API is
+// unchanged from the old hand-rolled hook — every existing callsite keeps
+// working as `useQuery(fetcher, deps)` — but now gets caching, request dedup
+// and cache-while-revalidate for free. The query key is derived from the
+// fetcher's source plus the deps, so each callsite/deps combination caches
+// separately (callsites must keep their dynamic values in `deps`, the same
+// rule the old hook required to refetch correctly).
 export function useQuery<T>(
   fetcher: () => Promise<T>,
-  deps: ReadonlyArray<unknown> = []
+  deps: ReadonlyArray<unknown> = [],
 ): QueryState<T> {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const tick = useRef(0);
-
-  const run = useCallback(() => {
-    const myTick = ++tick.current;
-    setLoading(true);
-    setError(null);
-    fetcher()
-      .then((d) => {
-        if (myTick === tick.current) {
-          setData(d);
-          setLoading(false);
-        }
-      })
-      .catch((e) => {
-        if (myTick === tick.current) {
-          setError(e?.message || String(e));
-          setLoading(false);
-        }
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-
-  useEffect(() => {
-    run();
-  }, [run]);
-
-  return { data, loading, error, reload: run };
+  const q = useTanstackQuery<T>({
+    queryKey: ["uq", fetcher.toString(), ...deps],
+    queryFn: () => fetcher(),
+  });
+  return {
+    data: q.data ?? null,
+    loading: q.isPending,
+    error: q.error ? (q.error as Error).message || String(q.error) : null,
+    reload: () => {
+      void q.refetch();
+    },
+  };
 }
