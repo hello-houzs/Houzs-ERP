@@ -12,6 +12,7 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { Skeleton, ListSkeleton } from "../components/Skeleton";
+import { DataTable, type Column } from "../components/DataTable";
 import { EmptyState } from "../components/EmptyState";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
@@ -208,10 +209,6 @@ function MembersTab({
   const [filterDept, setFilterDept] = useState<number | "">("");
   const [filterPos, setFilterPos] = useState<number | "">("");
   const [searchQ, setSearchQ] = useState("");
-  const [sortKey, setSortKey] = useState<
-    "name" | "department" | "position" | "last_seen"
-  >("name");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   // Per-user brand picker — opens a small modal scoped to one member.
   const [brandsFor, setBrandsFor] = useState<TeamMember | null>(null);
@@ -403,27 +400,14 @@ function MembersTab({
     }
   }
 
-  function toggleSort(key: typeof sortKey) {
-    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortKey(key);
-      setSortDir("asc");
-    }
-  }
   const posNameById = useMemo(() => {
     const m = new Map<number, string>();
     for (const p of positions.data?.positions ?? []) m.set(p.id, p.name);
     return m;
   }, [positions.data]);
-  const memberHeaders: { key: typeof sortKey; label: string }[] = [
-    { key: "name", label: "Member" },
-    { key: "department", label: "Department" },
-    { key: "position", label: "Position" },
-    { key: "last_seen", label: "Last Seen" },
-  ];
   const filteredMembers = useMemo(() => {
     const q = searchQ.trim().toLowerCase();
-    const rows = (members.data?.users ?? []).filter(
+    return (members.data?.users ?? []).filter(
       (u) =>
         (filterDept === "" || u.department_id === filterDept) &&
         (filterPos === "" || u.position_id === filterPos) &&
@@ -431,27 +415,208 @@ function MembersTab({
           (u.name || "").toLowerCase().includes(q) ||
           (u.email || "").toLowerCase().includes(q)),
     );
-    const dir = sortDir === "asc" ? 1 : -1;
-    const keyVal = (u: TeamMember): string => {
-      switch (sortKey) {
-        case "department":
-          return (u.department_name || "").toLowerCase();
-        case "position":
-          return (u.position_id != null ? posNameById.get(u.position_id) || "" : "").toLowerCase();
-        case "last_seen":
-          return u.last_login_at || "";
-        default:
-          return (u.name || u.email || "").toLowerCase();
-      }
-    };
-    return [...rows].sort((a, b) => {
-      const av = keyVal(a);
-      const bv = keyVal(b);
-      if (av < bv) return -1 * dir;
-      if (av > bv) return 1 * dir;
-      return 0;
-    });
-  }, [members.data, filterDept, filterPos, searchQ, sortKey, sortDir, posNameById]);
+  }, [members.data, filterDept, filterPos, searchQ]);
+
+  const memberColumns: Column<TeamMember>[] = [
+    {
+      key: "name",
+      label: "Member",
+      getValue: (u) => u.name || u.email || "",
+      render: (u) => (
+        <div className="flex min-w-0 items-center gap-2.5">
+          <Avatar
+            userId={u.id}
+            hasImage={u.profile_pic_r2_key}
+            name={u.name}
+            email={u.email}
+            size={32}
+          />
+          <StatusDot
+            variant={
+              u.status === "active"
+                ? "synced"
+                : u.status === "disabled"
+                ? "error"
+                : "neutral"
+            }
+          />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-[13px] font-semibold text-ink">
+                {u.name || u.email}
+              </span>
+              {u.id === me?.id && (
+                <span className="shrink-0 rounded bg-accent-soft px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wider text-accent-ink">
+                  You
+                </span>
+              )}
+            </div>
+            <div className="truncate text-[11px] text-ink-muted">
+              {u.email}
+              {u.phone ? ` · ${u.phone}` : ""}
+            </div>
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "department",
+      label: "Department",
+      width: "160px",
+      getValue: (u) => u.department_name || "",
+      render: (u) =>
+        canManage && u.id !== me?.id ? (
+          <select
+            value={u.department_id ?? ""}
+            onChange={(e) =>
+              changeDepartment(u, e.target.value ? Number(e.target.value) : null)
+            }
+            title="Department"
+            style={
+              u.department_color
+                ? { borderLeft: `3px solid #${u.department_color}` }
+                : undefined
+            }
+            className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+          >
+            <option value="">— None —</option>
+            {depts.data?.departments.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="truncate text-[12px] text-ink-secondary">
+            {u.department_name || "—"}
+          </span>
+        ),
+    },
+    {
+      key: "position",
+      label: "Position",
+      width: "160px",
+      getValue: (u) =>
+        u.position_id != null ? posNameById.get(u.position_id) || "" : "",
+      render: (u) =>
+        canManage && u.id !== me?.id ? (
+          <select
+            value={u.position_id ?? ""}
+            onChange={(e) =>
+              changePosition(u, e.target.value ? Number(e.target.value) : null)
+            }
+            title="Position"
+            className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+          >
+            <option value="">— None —</option>
+            {(positions.data?.positions ?? [])
+              .filter(
+                (p) =>
+                  !u.department_id ||
+                  !p.department_id ||
+                  p.department_id === u.department_id,
+              )
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+          </select>
+        ) : (
+          <span className="truncate text-[12px] text-ink-secondary">
+            {u.position_id != null ? posNameById.get(u.position_id) || "—" : "—"}
+          </span>
+        ),
+    },
+    {
+      key: "last_seen",
+      label: "Last Seen",
+      width: "110px",
+      getValue: (u) => u.last_login_at || "",
+      render: (u) => (
+        <span className="truncate text-[11px] text-ink-muted">
+          {u.last_login_at ? relativeTime(u.last_login_at) : "never"}
+        </span>
+      ),
+    },
+    {
+      key: "manager",
+      label: "Reports to",
+      width: "190px",
+      render: (u) =>
+        canManage && u.id !== me?.id ? (
+          <select
+            value={u.manager_id ?? ""}
+            onChange={(e) =>
+              changeManager(u, e.target.value ? Number(e.target.value) : null)
+            }
+            title="Reports to"
+            className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+          >
+            <option value="">— None —</option>
+            {(members.data?.users ?? [])
+              .filter((m) => m.id !== u.id && m.status !== "disabled")
+              .slice()
+              .sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email))
+              .map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name || m.email}
+                </option>
+              ))}
+          </select>
+        ) : (
+          <span className="truncate text-[12px] text-ink-secondary">
+            {u.manager_name || u.manager_email || "—"}
+          </span>
+        ),
+    },
+    {
+      key: "actions",
+      label: "Actions",
+      width: "236px",
+      align: "right",
+      render: (u) => {
+        const manageable = canManage && u.id !== me?.id;
+        if (!manageable) return <span className="text-[11px] text-ink-muted">—</span>;
+        return (
+          <div className="flex items-center justify-end gap-1">
+            <button
+              onClick={() => setBrandsFor(u)}
+              title="Edit brand allow-list"
+              className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-1 text-[10px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+            >
+              <Tag size={11} /> Brands
+            </button>
+            {u.status !== "invited" && (
+              <button
+                onClick={() => sendReset(u)}
+                title="Send password reset link"
+                className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-1 text-[10px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+              >
+                <KeyRound size={11} /> Reset
+              </button>
+            )}
+            <button
+              onClick={() => toggleStatus(u)}
+              title={u.status === "active" ? "Disable user" : "Enable user"}
+              className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-1 text-[10px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+            >
+              {u.status === "active" ? <UserX size={11} /> : <UserCheck size={11} />}
+              {u.status === "active" ? "Disable" : "Enable"}
+            </button>
+            <button
+              onClick={() => removeUser(u)}
+              aria-label="Delete permanently"
+              title="Delete permanently (irreversible)"
+              className="rounded p-1.5 text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        );
+      },
+    },
+  ];
 
   return (
     <div>
@@ -510,235 +675,16 @@ function MembersTab({
             </select>
           </div>
         </div>
-        <div className="thin-scroll overflow-x-auto rounded-md border border-border bg-surface shadow-stone">
-          <div className="min-w-[1040px]">
-            {/* Column headers — click to sort */}
-            <div className="grid grid-cols-[minmax(170px,1fr)_148px_148px_96px_180px_232px] items-center gap-3 border-b-2 border-border bg-surface-dim px-5 py-2">
-              {memberHeaders.map((h) => {
-                const active = sortKey === h.key;
-                return (
-                  <button
-                    key={h.key}
-                    onClick={() => toggleSort(h.key)}
-                    className={cn(
-                      "flex items-center gap-1 text-left text-[10px] font-semibold uppercase tracking-brand transition-colors hover:text-accent",
-                      active ? "text-accent" : "text-ink-secondary",
-                    )}
-                  >
-                    {h.label}
-                    <span className={active ? "opacity-100" : "opacity-30"}>
-                      {active ? (
-                        sortDir === "asc" ? <ArrowUp size={10} /> : <ArrowDown size={10} />
-                      ) : (
-                        <ChevronsUpDown size={10} />
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
-              <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
-                Reports to
-              </div>
-              <div className="text-right text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
-                Actions
-              </div>
-            </div>
-
-            {members.loading && (
-              <div className="space-y-2 px-5 py-4">
-                <ListSkeleton rows={5} />
-              </div>
-            )}
-            {members.error && (
-              <div className="px-5 py-4 text-[13px] text-err">{members.error}</div>
-            )}
-            {!members.loading && !members.error && filteredMembers.length === 0 && (
-              <div className="px-5 py-10 text-center text-[12px] text-ink-muted">
-                No members match these filters.
-              </div>
-            )}
-
-            {filteredMembers.map((u) => {
-              const manageable = canManage && u.id !== me?.id;
-              return (
-                <div
-                  key={u.id}
-                  className="grid grid-cols-[minmax(170px,1fr)_148px_148px_96px_180px_232px] items-center gap-3 border-b border-border-subtle px-5 py-2.5 transition-colors last:border-b-0 hover:bg-accent-soft/30"
-                >
-                  {/* Member */}
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <Avatar
-                      userId={u.id}
-                      hasImage={u.profile_pic_r2_key}
-                      name={u.name}
-                      email={u.email}
-                      size={32}
-                    />
-                    <StatusDot
-                      variant={
-                        u.status === "active"
-                          ? "synced"
-                          : u.status === "disabled"
-                          ? "error"
-                          : "neutral"
-                      }
-                    />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="truncate text-[13px] font-semibold text-ink">
-                          {u.name || u.email}
-                        </span>
-                        {u.id === me?.id && (
-                          <span className="shrink-0 rounded bg-accent-soft px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-wider text-accent-ink">
-                            You
-                          </span>
-                        )}
-                      </div>
-                      <div className="truncate text-[11px] text-ink-muted">
-                        {u.email}
-                        {u.phone ? ` · ${u.phone}` : ""}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Department */}
-                  {manageable ? (
-                    <select
-                      value={u.department_id ?? ""}
-                      onChange={(e) =>
-                        changeDepartment(u, e.target.value ? Number(e.target.value) : null)
-                      }
-                      title="Department"
-                      style={
-                        u.department_color
-                          ? { borderLeft: `3px solid #${u.department_color}` }
-                          : undefined
-                      }
-                      className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
-                    >
-                      <option value="">— None —</option>
-                      {depts.data?.departments.map((d) => (
-                        <option key={d.id} value={d.id}>
-                          {d.name}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span className="truncate text-[12px] text-ink-secondary">
-                      {u.department_name || "—"}
-                    </span>
-                  )}
-
-                  {/* Position */}
-                  {manageable ? (
-                    <select
-                      value={u.position_id ?? ""}
-                      onChange={(e) =>
-                        changePosition(u, e.target.value ? Number(e.target.value) : null)
-                      }
-                      title="Position"
-                      className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
-                    >
-                      <option value="">— None —</option>
-                      {(positions.data?.positions ?? [])
-                        .filter(
-                          (p) =>
-                            !u.department_id ||
-                            !p.department_id ||
-                            p.department_id === u.department_id,
-                        )
-                        .map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                    </select>
-                  ) : (
-                    <span className="truncate text-[12px] text-ink-secondary">
-                      {u.position_id != null ? posNameById.get(u.position_id) || "—" : "—"}
-                    </span>
-                  )}
-
-                  {/* Last seen */}
-                  <div className="truncate text-[11px] text-ink-muted">
-                    {u.last_login_at ? relativeTime(u.last_login_at) : "never"}
-                  </div>
-
-                  {/* Reports to (manager) */}
-                  {manageable ? (
-                    <select
-                      value={u.manager_id ?? ""}
-                      onChange={(e) =>
-                        changeManager(u, e.target.value ? Number(e.target.value) : null)
-                      }
-                      title="Reports to"
-                      className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
-                    >
-                      <option value="">— None —</option>
-                      {(members.data?.users ?? [])
-                        .filter((m) => m.id !== u.id && m.status !== "disabled")
-                        .slice()
-                        .sort((a, b) =>
-                          (a.name || a.email).localeCompare(b.name || b.email),
-                        )
-                        .map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name || m.email}
-                          </option>
-                        ))}
-                    </select>
-                  ) : (
-                    <span className="truncate text-[12px] text-ink-secondary">
-                      {u.manager_name || u.manager_email || "—"}
-                    </span>
-                  )}
-
-                  {/* Actions */}
-                  <div className="flex items-center justify-end gap-1">
-                    {manageable ? (
-                      <>
-                        <button
-                          onClick={() => setBrandsFor(u)}
-                          title="Edit brand allow-list"
-                          className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-1 text-[10px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
-                        >
-                          <Tag size={11} /> Brands
-                        </button>
-                        {u.status !== "invited" && (
-                          <button
-                            onClick={() => sendReset(u)}
-                            title="Send password reset link"
-                            className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-1 text-[10px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
-                          >
-                            <KeyRound size={11} /> Reset
-                          </button>
-                        )}
-                        <button
-                          onClick={() => toggleStatus(u)}
-                          title={u.status === "active" ? "Disable user" : "Enable user"}
-                          className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-1 text-[10px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
-                        >
-                          {u.status === "active" ? <UserX size={11} /> : <UserCheck size={11} />}
-                          {u.status === "active" ? "Disable" : "Enable"}
-                        </button>
-                        <button
-                          onClick={() => removeUser(u)}
-                          aria-label="Delete permanently"
-                          title="Delete permanently (irreversible)"
-                          className="rounded p-1.5 text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </>
-                    ) : (
-                      <span className="text-[11px] text-ink-muted">—</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        <DataTable
+          tableId="team-members"
+          columns={memberColumns}
+          rows={members.data ? filteredMembers : null}
+          loading={members.loading}
+          error={members.error}
+          getRowKey={(u) => u.id}
+          emptyLabel="No members match these filters."
+          exportName="team-members"
+        />
       </div>
 
       {/* Pending invitations */}
