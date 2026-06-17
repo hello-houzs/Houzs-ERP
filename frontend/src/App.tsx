@@ -107,6 +107,10 @@ const ScmCrReturns = lazy(() => import("./pages/scm/ConsignmentReturns").then((m
 const ScmCrReturnFromNote = lazy(() => import("./pages/scm/ConsignmentReturnFromNote").then((m) => ({ default: m.ConsignmentReturnFromNote })));
 const ScmCrReturnNew = lazy(() => import("./pages/scm/ConsignmentReturnNew").then((m) => ({ default: m.ConsignmentReturnNew })));
 const ScmCrReturnDetail = lazy(() => import("./pages/scm/ConsignmentReturnDetail").then((m) => ({ default: m.ConsignmentReturnDetail })));
+// SCM 1:1 clone — MRP · Stock Status (pages/scm/*). PURE read-only planner
+// (demand vs supply vs shortage). Furniture category tabs + sofa-SETs dropped
+// per Strategy-2; one generic flat list. /api/mrp backs it.
+const ScmMrp = lazy(() => import("./pages/scm/Mrp").then((m) => ({ default: m.Mrp })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -687,6 +691,9 @@ export default function App() {
         <Route path="/consignment-returns/from-note" element={<Guard perm="*"><ScmCrReturnFromNote /></Guard>} />
         <Route path="/consignment-returns/new" element={<Guard perm="*"><ScmCrReturnNew /></Guard>} />
         <Route path="/consignment-returns/:id" element={<Guard perm="*"><ScmCrReturnDetail /></Guard>} />
+        {/* Supply Chain — MRP · Stock Status (1:1 clone of 2990s, pages/scm/*).
+            Owner-only (perm "*"). /api/mrp backs it (pure read-only planner). */}
+        <Route path="/mrp" element={<Guard perm="*"><ScmMrp /></Guard>} />
         <Route
           path="/sales"
           element={

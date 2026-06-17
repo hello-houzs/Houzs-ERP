@@ -3131,3 +3131,20 @@ export const purchaseConsignmentReturnItems = pgTable('purchase_consignment_retu
 }, (t) => ({
   idxReturn: index('idx_pct_items_return').on(t.purchaseConsignmentReturnId),
 }));
+
+// ────────────────────────────────────────────────────────────────────────────
+// MRP · Stock Status (slice #64). 1:1 clone of 2990s — the planner (routes/mrp.ts)
+// is a PURE CALCULATOR (demand = open SO lines, supply = inventory_balances +
+// open PO lines, greedy allocation by delivery date per warehouse+product+variant)
+// with NO persistence; recomputed on every GET. The ONE persisted MRP table is
+// the per-category lead-times config below (clone of 2990s mrp_category_lead_times
+// / migration 0099 -> Houzs migration 0032). It backs the order-by-date calc
+// (order-by = delivery date - lead_days[category]). BARE name (no Houzs collision).
+// ────────────────────────────────────────────────────────────────────────────
+export const mrpCategoryLeadTimes = pgTable('mrp_category_lead_times', {
+  // 'sofa' | 'bedframe' | 'mattress' | 'accessory' | 'service' (lowercase, matches
+  // mfg_sales_order_items.item_group; the MRP server uppercase-normalises on lookup).
+  category:   text('category').primaryKey(),
+  leadDays:   integer('lead_days').notNull().default(0),
+  updatedAt:  timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

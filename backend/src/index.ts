@@ -58,6 +58,8 @@ import purchaseConsignmentReturns from "./routes/purchase-consignment-returns";
 import consignmentOrders from "./routes/consignment-orders";
 import consignmentNotes from "./routes/consignment-notes";
 import consignmentReturns from "./routes/consignment-returns";
+import mrp from "./routes/mrp";
+import mrpLeadTimes from "./routes/mrp-lead-times";
 import mfgWarehouses from "./routes/warehouse";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
@@ -236,6 +238,15 @@ app.route("/api/purchase-consignment-returns", purchaseConsignmentReturns);
 app.route("/api/consignment-orders", consignmentOrders);
 app.route("/api/consignment-notes", consignmentNotes);
 app.route("/api/consignment-returns", consignmentReturns);
+// SCM 1:1 clone — MRP · Stock Status (slice #64). /api/mrp is the PURE CALCULATOR
+// (demand = open SO lines, supply = inventory_balances + open PO lines, greedy
+// allocation by delivery date per warehouse+product+variant; NO persistence,
+// recomputed every GET). /api/mrp-lead-times is the one persisted config table
+// (mrp_category_lead_times, migration 0032) feeding the order-by-date calc.
+// Furniture sofa-SET grouping dropped per Strategy-2 (generic by product_code).
+// Owner-only (perm "*").
+app.route("/api/mrp", mrp);
+app.route("/api/mrp-lead-times", mrpLeadTimes);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);

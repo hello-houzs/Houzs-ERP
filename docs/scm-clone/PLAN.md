@@ -709,3 +709,73 @@ need translation.)
     `source_doc_type:'CONSIGNMENT_NOTE'` JSDoc comment still references
     schema.pg.ts:1357 — informational only, the actual writes use CS_DO/CS_DR.
   - Migration: NONE (no `0032`). Nothing applied to any DB (batched for staging #70).
+- **2026-06-18 — MRP · Stock Status slice DONE (#64):** verbatim clone of 2990s
+  `mrp.ts` (the PURE CALCULATOR) + `mrp-lead-times.ts`. Migration `0032_mrp_lead_times.sql`
+  (the ONE persisted MRP table `mrp_category_lead_times`, BARE name, clone of 2990s
+  migration 0099; runner-safe: idempotent CREATE + 5 single-line seed INSERTs ON
+  CONFLICT DO NOTHING, no BEGIN/COMMIT, RLS policies dropped). Table added to
+  `schema.pg.ts` (`mrpCategoryLeadTimes`). Routes `/api/mrp` (pure read) +
+  `/api/mrp-lead-times` (GET map + PUT upsert) mounted in index.ts, owner-only `"*"`.
+  Page `pages/scm/Mrp.tsx` + `Mrp.module.css` (copied VERBATIM) + query hooks
+  `mrp-queries.ts`; App.tsx route `/mrp` (`<Guard perm="*">`); nav "MRP · Stock
+  Status" (Gauge) after Sales Orders under Supply Chain. Both gates EXIT 0;
+  `window.confirm|alert|prompt` grep in the new page = 0.
+  - **Demand/supply sources wired (faithful):** DEMAND = open `mfg_sales_order_items`
+    (joined `mfg_sales_orders`, `cancelled=false`, header status NOT
+    DELIVERED/INVOICED/CLOSED/CANCELLED, qty>0, has a delivery date unless
+    `includeUndated`) MINUS delivered-net-of-returns via the SHARED
+    `soDeliverableRemaining` (imported from `routes/delivery-orders-mfg`, the same
+    helper the DO convert flow uses — MRP can never disagree with SO remaining).
+    SUPPLY = on-hand from the `inventory_balances` VIEW (read via raw `sql`, same
+    as routes/inventory.ts — it's a view, not a Drizzle table) + open
+    `mfg_purchase_order_items` (joined `mfg_purchase_orders`, status ≠ CANCELLED,
+    `qty − received_qty > 0`, ETA = line delivery_date ?? po.expected_at).
+    Greedy allocation by delivery date per (warehouse_id, product_code, variant_key)
+    bucket — stock first, then earliest-ETA PO, leftover = shortage; legacy
+    empty-variant PO pool folded in. Per-SKU suppliers from
+    `supplier_material_bindings` (`material_kind='mfg_product'`, main-first). Lead
+    times from `mrp_category_lead_times` → order-by date = delivery − lead_days.
+    PURE read — NO writes (matches 2990s "先做即时计算").
+  - **FURNITURE MRP grouping DROPPED (Strategy-2):** the four CATEGORY TABS
+    (Sofa/Bedframe/Mattress/Accessories), the entire sofa SETS engine (2990s route
+    section 8 + page `sofaSetsToSkus`/`groupBySo`/`sofaComposition`/`SofaSoTable`,
+    sofa colour-match / module-cells / `splitSofaCode`), the bedframe-flat variant
+    flatten (`groupByVariant`), `buildVariantSummary` (→ `formatVariantKey`, the
+    generic Houzs label), `isServiceLine` (no item-group taxonomy on Houzs lines),
+    and the mfg_products category/name lookup (Houzs has NO product catalogue — the
+    category + name come from the SO line's own item_group via `catFromGroup` +
+    description, the SAME fallback 2990s uses for un-catalogued codes). The page is
+    ONE generic flat list grouped by `groupByModel` ((warehouse, item_code) →
+    variant sub-rows → SO orders). `sofaSets` is returned `[]` for wire compat.
+    Reason: Houzs is not the 2990s furniture business; the sofa/bedframe tuning is
+    dead weight. The demand-vs-supply-vs-shortage CORE + greedy allocation are
+    verbatim. Also dropped the admin "Re-bind WH" backfill (no
+    state_warehouse_mappings flow on Houzs).
+  - **SO route un-stubbed:** N/A — the SO-detail per-line MRP coverage
+    (`coverage_po`/`coverage_eta`, the deferral the SO slice flagged for #64) is
+    left as a faithful empty for now; the shared `computeMrp` + `mrpLineCoverage`
+    helpers ARE exported from `routes/mrp.ts` so a follow-up can wire SalesOrderDetail
+    to stamp each line from the SAME allocation (one source of truth). No SO-detail
+    UI change was in scope for this slice.
+  - **SEAMS/deviations (documented in files):** Supabase PostgREST → Drizzle
+    (rule #3); supabaseAuth → requirePermission("*") (rule #4); `inventory_balances`
+    via raw `sql` (view); `db.execute<T>` returns the row array directly (project
+    convention, same as inventory.ts). `mrp_category_lead_times.updated_at` kept
+    timestamptz (config table, written via Drizzle ISO not raw datetime('now') →
+    not the mig-0008 text-col gotcha). In-app useDialog/useToast (rule #10): the
+    Proceed-PO result/error/created surfaces via toast + a dialog.confirm "Open
+    Purchase Orders" navigate offer; the optional Expected-Delivery confirm step
+    kept as the in-page `.dialog*` form (verbatim 2990s, the CSS supports a date
+    input — `useDialog.prompt` has no date type), never window.confirm/alert.
+  - **TODO / needs review:** the page's **Proceed PO** posts to
+    `/api/purchase-orders/from-sos` (the SAME target 2990s uses), but that endpoint
+    is STILL a guarded 409 stub on the Houzs PO route ("Convert-from-Sales-Order is
+    available after the Sales Orders slice lands" — never un-stubbed even though SO
+    landed). So Proceed PO currently surfaces that guarded message in a toast rather
+    than creating POs. Wiring the real `/from-sos` write path (the ~230-line 2990s
+    handler: resolve picks → per-line warehouse/delivery-date → group by
+    (warehouse, supplier) / per-SO → insert PO + items + recount, with `fromMrp`
+    bypassing the qty cap) is a separate PO-route follow-up, intentionally NOT
+    pulled into this read-only MRP slice. The MRP read engine + lead-times are
+    fully functional independent of it.
+  - Migration `0032` NOT applied to any DB (batched for staging at #70).
