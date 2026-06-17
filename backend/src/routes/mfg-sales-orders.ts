@@ -29,13 +29,12 @@
 //     fidelity; the create/edit handlers pass them through as-is. Description 2
 //     is whatever the client sends (2990s's buildVariantSummary formatter is
 //     furniture-coupled and dropped).
-//   - DROPPED the DO/SI/DR-dependent aggregates (delivery state / lifecycle /
-//     current-doc / deliverable-remaining / per-line delivered breakdown / MRP
-//     coverage) — those slices are NOT cloned yet. The list/detail responses
-//     carry the faithful empty/default shapes (delivery_state:'none', etc.) so
-//     the pages render; each carries a // TODO: DO/SI slice.
-//   - DROPPED customer-credits (SO-cancel -> credit) + slip-upload R2 plumbing
-//     (SI slice / no R2 binding) — stubbed with // TODO.
+//   - DO/SI/DR-dependent aggregates (delivery state / lifecycle / current-doc /
+//     deliverable-remaining / per-line delivered breakdown / child-lock) are now
+//     WIRED to the DO/SI/DR slice (#66) via lib/so-downstream. Only MRP coverage
+//     (coverage_po / coverage_eta) stays an empty (MRP slice #64 not cloned).
+//   - DROPPED customer-credits (SO-cancel -> credit; SI customer_credits out of
+//     SCM-clone scope) + slip-upload R2 plumbing (no R2 binding) — stubbed // TODO.
 //   - KEPT verbatim (generic, faithful): the document lifecycle/lanes/status,
 //     so-readiness (stock readiness), so-stock-allocation (allocate inventory to
 //     SO lines — wired to the inventory ledger), so-audit (history), the
@@ -85,6 +84,7 @@ import { recordSoAudit, type FieldChange } from "../lib/so-audit";
 import { recomputeSoStockAllocation } from "../lib/so-stock-allocation";
 import { summariseReadiness } from "../lib/so-readiness";
 import { isServiceLine, isDeliveryFeeServiceCode } from "../lib/service-sku";
+import { soChildLock, soHasChildrenSet, computeSoLifecycle, soCurrentDocNo, soLineDeliveryInfo, soDeliveryStateMap } from "../lib/so-downstream";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -99,12 +99,11 @@ function errMsg(e: unknown): string {
 
 /* ── SO child-lock guard (Tier 2 — downstream lock) ─────────────────────────
    An SO locks (read-only — no line edit / no CANCELLED transition) once it has
-   ANY non-cancelled Delivery Order OR Sales Invoice referencing it. The DO/SI
-   tables are NOT cloned yet -> no downstream can exist -> never locks. Kept as
-   a function so the call sites stay verbatim; wire when the DO/SI slice lands.
-   TODO: DO/SI slice — query delivery_orders / sales_invoices by so_doc_no. */
-async function soHasDownstream(_db: Db, _soDocNo: string): Promise<{ error: string; message: string } | null> {
-  return null;
+   ANY non-cancelled Delivery Order OR Sales Invoice referencing it. Wired to the
+   DO/SI slice (#66) via lib/so-downstream — queries delivery_orders /
+   sales_invoices by so_doc_no. */
+async function soHasDownstream(db: Db, soDocNo: string): Promise<{ error: string; message: string } | null> {
+  return soChildLock(db, soDocNo);
 }
 
 /* ── SO processing-date lock (Owner 2026-06-12) ─────────────────────────────
@@ -555,17 +554,28 @@ app.get("/", async (c) => {
         }
       }
 
+      /* Tier 2 downstream-lock + DO/SI/DR lifecycle aggregates — wired to the
+         DO/SI/DR slice (#66) via lib/so-downstream. has_children = any
+         non-cancelled DO/SI; delivery_state = none/partial/full from net
+         delivered qty; lifecycle_state = latest-event-wins; current_doc_no =
+         furthest-forward doc (falls back to the SO no). */
+      const [childSet, lifecycleByDoc, currentByDoc, deliveryStateByDoc] = await Promise.all([
+        soHasChildrenSet(db, docNos),
+        computeSoLifecycle(db, docNos),
+        soCurrentDocNo(db, docNos),
+        soDeliveryStateMap(db, docNos),
+      ]);
+
       for (const r of rows) {
         const docNo = (r.doc_no as string) ?? "";
         const perGroup = agg.get(docNo);
         r.item_categories = [...(cats.get(docNo) ?? [])].sort();
-        /* Tier 2 downstream-lock + DO/SI lifecycle aggregates: DO/SI not cloned
-           -> faithful defaults. TODO: DO/SI slice. */
-        r.has_children = false;
-        r.delivery_state = "none";
-        r.lifecycle_state = "none";
-        r.current_doc_no = docNo || null;
-        r.has_undelivered = true;
+        r.has_children = childSet.has(docNo);
+        const ds = deliveryStateByDoc.get(docNo);
+        r.delivery_state = ds?.state ?? "none";
+        r.lifecycle_state = lifecycleByDoc.get(docNo) ?? "none";
+        r.current_doc_no = currentByDoc.get(docNo) ?? (docNo || null);
+        r.has_undelivered = ds?.hasUndelivered ?? true;
         const readiness = readinessByDoc.get(docNo);
         r.stock_remark = readiness?.stockRemark ?? "";
         r.is_main_ready = readiness?.isMainReady ?? false;
@@ -784,29 +794,48 @@ app.get("/:docNo", async (c) => {
     const totalRevenueCenti = header.totalRevenueCenti ?? 0;
     const paidCentiTotal = (depositInLedger ? 0 : headerDepositCenti) + paidLedgerCenti;
 
+    /* DO/SI/DR aggregates — wired to the slice (#66) via lib/so-downstream.
+       customer_credit (SI customer-credits) stays 0 (out of SCM-clone scope). */
+    const [childLockState, lifecycleByDoc, currentByDoc, lineInfo] = await Promise.all([
+      soChildLock(db, docNo),
+      computeSoLifecycle(db, [docNo]),
+      soCurrentDocNo(db, [docNo]),
+      soLineDeliveryInfo(db, docNo),
+    ]);
+    const allFull = itemRows.length > 0 && itemRows.every((it) => {
+      const info = lineInfo.get(it.id);
+      const net = (info?.delivered ?? 0) - (info?.returned ?? 0);
+      return net >= Number(it.qty ?? 0) && Number(it.qty ?? 0) > 0;
+    });
+    const anyDelivered = itemRows.some((it) => { const info = lineInfo.get(it.id); return ((info?.delivered ?? 0) - (info?.returned ?? 0)) > 0; });
+    const deliveryState = allFull ? "full" : anyDelivered ? "partial" : "none";
+
     const salesOrder = {
       ...toSoHeaderResponse(header),
-      /* DO/SI not cloned -> faithful defaults. TODO: DO/SI slice. */
-      has_children: false,
-      customer_credit_centi: 0,
+      has_children: Boolean(childLockState),
+      customer_credit_centi: 0, // TODO: SI customer-credits out of SCM-clone scope.
       paid_centi_total: paidCentiTotal,
       balance_centi: Math.max(0, totalRevenueCenti - paidCentiTotal),
-      delivery_state: "none",
-      lifecycle_state: "none",
-      current_doc_no: docNo || null,
+      delivery_state: deliveryState,
+      lifecycle_state: lifecycleByDoc.get(docNo) ?? "none",
+      current_doc_no: currentByDoc.get(docNo) ?? (docNo || null),
     };
 
-    const items = itemRows.map((it) => ({
-      ...toSoItemResponse(it),
-      /* Per-line delivered breakdown + MRP coverage come from the DO/MRP slices
-         (not cloned) -> faithful empties. TODO: DO/SI slice. */
-      deliveries: [] as unknown[],
-      delivered_qty: 0,
-      remaining_qty: Number(it.qty ?? 0),
-      stock_state: it.stockStatus === "READY" ? "stock" : null,
-      coverage_po: null as string | null,
-      coverage_eta: null as string | null,
-    }));
+    const items = itemRows.map((it) => {
+      const info = lineInfo.get(it.id);
+      const delivered = info?.delivered ?? 0;
+      const remaining = info?.remaining ?? Number(it.qty ?? 0);
+      return {
+        ...toSoItemResponse(it),
+        deliveries: info?.deliveries ?? [],
+        delivered_qty: delivered,
+        remaining_qty: remaining,
+        stock_state: it.stockStatus === "READY" ? "stock" : null,
+        // MRP coverage (PO ETA) comes from the MRP slice — not cloned -> empties.
+        coverage_po: null as string | null,
+        coverage_eta: null as string | null,
+      };
+    });
 
     // pwpCodes — PWP (换购) is furniture (dropped). Faithful empty array.
     return c.json({ salesOrder, items, pwpCodes: [] as unknown[] });

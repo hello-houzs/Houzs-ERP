@@ -68,6 +68,17 @@ const ScmStockTakeDetail = lazy(() => import("./pages/scm/StockTakeDetail").then
 const ScmSalesOrders = lazy(() => import("./pages/scm/MfgSalesOrdersList").then((m) => ({ default: m.MfgSalesOrders })));
 const ScmSalesOrderNew = lazy(() => import("./pages/scm/SalesOrderNew").then((m) => ({ default: m.SalesOrderNew })));
 const ScmSalesOrderDetail = lazy(() => import("./pages/scm/SalesOrderDetail").then((m) => ({ default: m.SalesOrderDetail })));
+// SCM 1:1 clone — Delivery Orders + Sales Invoices + Delivery Returns (order-to-
+// cash downstream, pages/scm/*). DISTINCT from the AutoCount DeliveryOrders page.
+const ScmDeliveryOrders = lazy(() => import("./pages/scm/DeliveryOrdersList").then((m) => ({ default: m.MfgDeliveryOrders })));
+const ScmDeliveryOrderFromSo = lazy(() => import("./pages/scm/DeliveryOrderFromSo").then((m) => ({ default: m.DeliveryOrderFromSo })));
+const ScmDeliveryOrderDetail = lazy(() => import("./pages/scm/DeliveryOrderDetail").then((m) => ({ default: m.DeliveryOrderDetail })));
+const ScmSalesInvoices = lazy(() => import("./pages/scm/SalesInvoicesList").then((m) => ({ default: m.SalesInvoices })));
+const ScmSalesInvoiceFromDo = lazy(() => import("./pages/scm/SalesInvoiceFromDo").then((m) => ({ default: m.SalesInvoiceFromDo })));
+const ScmSalesInvoiceDetail = lazy(() => import("./pages/scm/SalesInvoiceDetail").then((m) => ({ default: m.SalesInvoiceDetail })));
+const ScmDeliveryReturns = lazy(() => import("./pages/scm/DeliveryReturnsList").then((m) => ({ default: m.DeliveryReturns })));
+const ScmDeliveryReturnFromDo = lazy(() => import("./pages/scm/DeliveryReturnFromDo").then((m) => ({ default: m.DeliveryReturnFromDo })));
+const ScmDeliveryReturnDetail = lazy(() => import("./pages/scm/DeliveryReturnDetail").then((m) => ({ default: m.DeliveryReturnDetail })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -606,6 +617,20 @@ export default function App() {
             </Guard>
           }
         />
+        {/* Supply Chain — Delivery Orders + Sales Invoices + Delivery Returns
+            (order-to-cash downstream, 1:1 clone of 2990s, pages/scm/*). Owner-only
+            (perm "*"). /api/mfg-delivery-orders + /api/sales-invoices +
+            /api/delivery-returns back these. DISTINCT from the AutoCount
+            DeliveryOrders page. Static /from-so + /from-do MUST precede /:id. */}
+        <Route path="/delivery-orders" element={<Guard perm="*"><ScmDeliveryOrders /></Guard>} />
+        <Route path="/delivery-orders/from-so" element={<Guard perm="*"><ScmDeliveryOrderFromSo /></Guard>} />
+        <Route path="/delivery-orders/:id" element={<Guard perm="*"><ScmDeliveryOrderDetail /></Guard>} />
+        <Route path="/sales-invoices" element={<Guard perm="*"><ScmSalesInvoices /></Guard>} />
+        <Route path="/sales-invoices/from-do" element={<Guard perm="*"><ScmSalesInvoiceFromDo /></Guard>} />
+        <Route path="/sales-invoices/:id" element={<Guard perm="*"><ScmSalesInvoiceDetail /></Guard>} />
+        <Route path="/delivery-returns" element={<Guard perm="*"><ScmDeliveryReturns /></Guard>} />
+        <Route path="/delivery-returns/from-do" element={<Guard perm="*"><ScmDeliveryReturnFromDo /></Guard>} />
+        <Route path="/delivery-returns/:id" element={<Guard perm="*"><ScmDeliveryReturnDetail /></Guard>} />
         <Route
           path="/sales"
           element={

@@ -494,3 +494,77 @@ need translation.)
   typecheck + frontend build both EXIT 0; final `window.confirm|window.alert` grep in
   `pages/scm` = 0 executable calls (8 remaining matches are descriptive comments,
   refreshed to say "in-app, never window.confirm/alert"). No DB / backend touched.
+- **2026-06-18 — DO + SI + DR slice DONE (#66, order-to-cash downstream):**
+  verbatim clone of 2990s `delivery-orders-mfg.ts` + `sales-invoices.ts` +
+  `delivery-returns.ts`. Tables `delivery_orders`/`_items`/`_payments` +
+  `sales_invoices`/`_items`/`_payments` + `delivery_returns`/`_items` (8 tables,
+  BARE names — Houzs has none; the bare `/api/delivery` is the AutoCount logistics
+  route, untouched). Enums `do_status` / `sales_invoice_status` /
+  `delivery_return_status` (EXACTLY 2990s's names + values). Migration
+  `0030_delivery_billing.sql` (runner-safe: single-line enum DO-guards, idempotent,
+  no BEGIN/COMMIT). Routes `/api/mfg-delivery-orders` + `/api/sales-invoices` +
+  `/api/delivery-returns` (mounted in index.ts, owner-only `"*"`). Lib
+  `so-downstream.ts` (SO↔DO/SI/DR aggregates) + `so-delivery-sync.ts` COMPLETED
+  (was a stub). Pages DeliveryOrdersList/FromSo/Detail + SalesInvoicesList/FromDo/
+  Detail + DeliveryReturnsList/FromDo/Detail + `delivery-billing-queries.ts` in
+  `pages/scm/`; App.tsx routes (`/delivery-orders[/from-so|/:id]`, `/sales-invoices
+  [/from-do|/:id]`, `/delivery-returns[/from-do|/:id]`, all `<Guard perm="*">`,
+  static /from-* before /:id); nav "Delivery Orders" (Truck) + "Sales Invoices"
+  (Receipt) + "Delivery Returns" (Undo2) under Supply Chain (sales side, after SO).
+  **NOTE: the schema column set was rebuilt from the LIVE 2990s ROUTE field-set
+  (migrations 0100/0101/0102/0165 folded in) — packages/db/src/schema.ts is the
+  PRE-rebuild version (driver/m3 only) and is NOT the source of truth for these
+  tables; the routes are (the documented "ledger ≠ schema.ts" gap).** Both gates
+  EXIT 0; `window.confirm|window.alert|window.prompt` grep in the new pages = 0.
+  - **DO → inventory (the headline):** DO create / from-sos / status-to-shipped =
+    ship stock OUT via `writeMovements(db, … source_doc_type:'DO', qty shipped,
+    warehouse per SO line)` → `restampDoActualCost` (line cost ← real booked FIFO
+    cost) → `recomputeSoStockAllocation` → `syncSoDeliveredFromDo` (SO advances to
+    DELIVERED on full coverage). A line edit/add/delete on a SHIPPED DO writes
+    DELTA movements (`resyncInventoryForDo`). Cancel → positive ADJUSTMENT per
+    bucket (`reverseInventoryForDo`, idempotent) + SO releases DELIVERED→READY.
+    Line-level partial delivery (`soDeliverableRemaining` = qty − delivered +
+    returned, same-customer + over-remaining + race guards). Per-line warehouse =
+    the SO line's warehouse (stock never crosses warehouses).
+  - **DR → inventory:** DR create / from-dos = return stock IN via `writeMovements
+    (… source_doc_type:'DR', movement_type:'IN', unit cost from the line)`, per-line
+    warehouse traced do_item→so_item→warehouse. Line edit/delete/cancel → one signed
+    ADJUSTMENT delta per bucket (`resyncInventoryForReturn`, CANCELLED target = net
+    0; the three rollback paths share one code path). Every DR mutation re-walks SO
+    allocation + `reopenSoFromReturn` (DELIVERED→READY_TO_SHIP). "No DO, no return"
+    + service-lines-not-returnable + over-return + race guards ported.
+  - **SI = AR finance doc, NO stock impact** (inventory landed at DO ship). POST /
+    from-dos create SENT; payment ledger rolls SENT→PARTIALLY_PAID→PAID
+    (`recomputePaid`); cancel releases the qty to the invoiceable pool; reopen
+    (CANCELLED→SENT) re-validates the pool. Line-level partial invoice
+    (`doLineRemaining` = delivered − invoiced − returned).
+  - **SO route un-stubbed (the deferred hooks):** (a) `soHasDownstream` now queries
+    delivery_orders/sales_invoices by so_doc_no (child-lock engages); (b) list
+    aggregates `has_children` / `delivery_state` (none/partial/full) / `lifecycle_state`
+    (latest-event-wins) / `current_doc_no` (furthest-forward doc) / `has_undelivered`
+    now computed via lib/so-downstream (were hardcoded empties); (c) detail
+    aggregates + per-line `deliveries`/`delivered_qty`/`remaining_qty` now live; (d)
+    `syncSoDeliveredFromDo` async reconcile fully ported (delivered/returned netting
+    + bidirectional DELIVERED↔READY_TO_SHIP + line READY flip + dual audit write).
+  - **SEAM/deviations (documented in files):** created_by / salesperson_id /
+    collected_by → users.id INTEGER soft-ref (rule #4); so_doc_no → real FK
+    mfg_sales_orders(doc_no); delivery_order_id / so_item_id / do_item_id /
+    sales_invoice_id → real FKs; warehouse_id → mfg_warehouses(id) (SET NULL);
+    driver_id / venue_id → nullable columns, FK DROPPED (no drivers/venues master).
+    Dropped per Strategy-2: catalog itemCode guard (validateItemCodes), soft
+    stock-availability check + confirmShortStock gate, ALL sofa guards
+    (findSofaLinesWithoutCompleteBatch / findIncompleteSofaSets / loadSofaBatchStock)
+    + the sofa dye-lot batch (allocated_batch_no) on movements, buildVariantSummary
+    (description2 passes through). **GL/AR posting OUT OF SCOPE (Houzs GL differs):**
+    2990s's `postSiRevenue`/`reverseSiRevenue`/`resyncSiRevenue` (journal_entries) +
+    customer-credits (apply-on-create / cancel-with-payment / overpay reconcile)
+    dropped with a `// TODO` at each site; the SI returns `revenue:{posted:false,
+    status:"out_of_scope"}` and customer_credit_centi:0. `restampDoActualCost` KEPT
+    (generic — real FIFO cost, no sofa-batch dimension). Pages use plain inline
+    RM↔centi editors + `<table>` + Suppliers/PurchaseOrderDetail CSS modules
+    (DataGrid + configurator + jsPDF print dropped); in-app useDialog/useToast (rule
+    #10), never window.confirm/alert/prompt.
+  - **DEFERRED:** MRP coverage on the SO detail per-line (`coverage_po`/`coverage_eta`
+    → null, MRP slice #64 not cloned). Manual blank-DO/SI/DR create-from-scratch
+    forms (the convert-from picker is the primary path, matching 2990s). Migration
+    `0030` NOT applied to any DB (batched for staging at #70).

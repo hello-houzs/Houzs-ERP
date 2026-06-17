@@ -2073,3 +2073,402 @@ export const mfgSalesOrderPayments = pgTable('mfg_sales_order_payments', {
   idxDoc:    index('idx_msop_doc').on(t.soDocNo),
   idxPaidAt: index('idx_msop_paid_at').on(t.paidAt),
 }));
+
+/* ════════════════════════════════════════════════════════════════════════
+   Delivery Orders + Sales Invoices + Delivery Returns (SCM #66 — order-to-cash
+   downstream). 1:1 clone of 2990s delivery_orders / sales_invoices /
+   delivery_returns (+ their items + the DO/SI payment ledgers). BARE names —
+   Houzs has none of these tables. Columns reflect the LIVE 2990s schema (route
+   field-set with migrations 0100/0101/0102/0165 folded in — packages/db/src/
+   schema.ts is the pre-rebuild version and is NOT the source of truth here; the
+   routes are). Seams (docs/scm-clone/PLAN.md, identical to prior slices):
+     - created_by / salesperson_id / collected_by: 2990s staff(id) uuid -> Houzs
+       users.id INTEGER soft-ref (rule #4). No FK (cross-domain).
+     - so_doc_no -> real FK mfg_sales_orders(doc_no); delivery_order_id /
+       so_item_id / do_item_id / sales_invoice_id -> real FKs to the cloned
+       tables; warehouse_id -> real FK mfg_warehouses(id) (nullable soft).
+     - driver_id / venue_id -> nullable uuid columns, FK DROPPED (Houzs has no
+       drivers / venues master); money kept centi-internal (rule #5).
+   ════════════════════════════════════════════════════════════════════════ */
+
+// DO header status (2990s doStatus, schema.ts:1201).
+export const doStatus = pgEnum('do_status', [
+  'LOADED', 'DISPATCHED', 'IN_TRANSIT', 'SIGNED',
+  'DELIVERED', 'INVOICED', 'CANCELLED',
+]);
+
+// SI header status (2990s salesInvoiceStatus, schema.ts:1206).
+export const salesInvoiceStatus = pgEnum('sales_invoice_status', [
+  'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED',
+]);
+
+// DR header status (2990s deliveryReturnStatus, schema.ts:1714).
+export const deliveryReturnStatus = pgEnum('delivery_return_status', [
+  'PENDING', 'RECEIVED', 'INSPECTED', 'REFUNDED', 'CREDIT_NOTED', 'REJECTED', 'CANCELLED',
+]);
+
+/* Delivery Order — goods sent to the customer. */
+export const deliveryOrders = pgTable('delivery_orders', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  doNumber:          text('do_number').notNull().unique(),           // 'DO-2605-001'
+  soDocNo:           text('so_doc_no').references(() => mfgSalesOrders.docNo, { onDelete: 'set null' }),
+  debtorCode:        text('debtor_code'),
+  debtorName:        text('debtor_name').notNull(),
+  doDate:            date('do_date').notNull().defaultNow(),
+  expectedDeliveryAt: date('expected_delivery_at'),
+  customerDeliveryDate: date('customer_delivery_date'),
+  signedAt:          timestamp('signed_at', { withTimezone: true }),
+  deliveredAt:       timestamp('delivered_at', { withTimezone: true }),
+  dispatchedAt:      timestamp('dispatched_at', { withTimezone: true }),
+
+  // SEAM: drivers master not cloned -> nullable column, FK dropped.
+  driverId:          uuid('driver_id'),
+  driverName:        text('driver_name'),                            // snapshot
+  vehicle:           text('vehicle'),
+  m3Total:           integer('m3_total_milli').notNull().default(0), // × 1000
+
+  // Address snapshot.
+  address1:          text('address1'),
+  address2:          text('address2'),
+  city:              text('city'),
+  state:             text('state'),
+  postcode:          text('postcode'),
+  phone:             text('phone'),
+
+  // SO-clone header fields (migration 0100).
+  salespersonId:     integer('salesperson_id'),                      // SEAM: users.id soft-ref
+  agent:             text('agent'),
+  email:             text('email'),
+  customerType:      text('customer_type'),
+  buildingType:      text('building_type'),
+  branding:          text('branding'),
+  venue:             text('venue'),
+  venueId:           uuid('venue_id'),                               // SEAM: venues master not cloned
+  ref:               text('ref'),
+  customerSoNo:      text('customer_so_no'),
+  poDocNo:           text('po_doc_no'),
+  salesLocation:     text('sales_location'),
+  customerState:     text('customer_state'),
+  customerCountry:   text('customer_country'),
+  note:              text('note'),
+  emergencyContactName:         text('emergency_contact_name'),
+  emergencyContactPhone:        text('emergency_contact_phone'),
+  emergencyContactRelationship: text('emergency_contact_relationship'),
+
+  // Per-category revenue + cost totals (migration 0100; recomputeTotals).
+  mattressSofaCenti:     integer('mattress_sofa_centi').notNull().default(0),
+  bedframeCenti:         integer('bedframe_centi').notNull().default(0),
+  accessoriesCenti:      integer('accessories_centi').notNull().default(0),
+  othersCenti:           integer('others_centi').notNull().default(0),
+  serviceCenti:          integer('service_centi').notNull().default(0),
+  mattressSofaCostCenti: integer('mattress_sofa_cost_centi').notNull().default(0),
+  bedframeCostCenti:     integer('bedframe_cost_centi').notNull().default(0),
+  accessoriesCostCenti:  integer('accessories_cost_centi').notNull().default(0),
+  othersCostCenti:       integer('others_cost_centi').notNull().default(0),
+  serviceCostCenti:      integer('service_cost_centi').notNull().default(0),
+  localTotalCenti:       integer('local_total_centi').notNull().default(0),
+  totalCostCenti:        integer('total_cost_centi').notNull().default(0),
+  totalMarginCenti:      integer('total_margin_centi').notNull().default(0),
+  marginPctBasis:        integer('margin_pct_basis').notNull().default(0),
+  lineCount:             integer('line_count').notNull().default(0),
+
+  currency:          currencyCode('currency').notNull().default('MYR'),
+  warehouseId:       uuid('warehouse_id').references(() => mfgWarehouses.id, { onDelete: 'set null' }),
+  podR2Key:          text('pod_r2_key'),                             // proof of delivery photo
+  signatureData:     text('signature_data'),                         // base64 png
+  status:            doStatus('status').notNull().default('LOADED'),
+  notes:             text('notes'),
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:         integer('created_by'),                          // SEAM: users.id soft-ref
+  updatedAt:         timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxSo:     index('idx_do_so').on(t.soDocNo),
+  idxStatus: index('idx_do_status').on(t.status),
+  idxDate:   index('idx_do_date').on(t.doDate),
+}));
+
+export const deliveryOrderItems = pgTable('delivery_order_items', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  deliveryOrderId:   uuid('delivery_order_id').notNull().references(() => deliveryOrders.id, { onDelete: 'cascade' }),
+  soItemId:          uuid('so_item_id').references(() => mfgSalesOrderItems.id, { onDelete: 'set null' }),
+  itemCode:          text('item_code').notNull(),
+  itemGroup:         text('item_group'),
+  description:       text('description'),
+  description2:      text('description2'),
+  uom:               text('uom').notNull().default('UNIT'),
+  qty:               integer('qty').notNull(),
+  m3Milli:           integer('m3_milli').notNull().default(0),
+  unitPriceCenti:    integer('unit_price_centi').notNull().default(0),
+  discountCenti:     integer('discount_centi').notNull().default(0),
+  lineTotalCenti:    integer('line_total_centi').notNull().default(0),
+  unitCostCenti:     integer('unit_cost_centi').notNull().default(0),
+  lineCostCenti:     integer('line_cost_centi').notNull().default(0),
+  lineMarginCenti:   integer('line_margin_centi').notNull().default(0),
+  notes:             text('notes'),
+  // Variant columns (furniture; KEPT nullable for fidelity, no configurator UI).
+  gapInches:             integer('gap_inches'),
+  divanHeightInches:     integer('divan_height_inches'),
+  divanPriceSen:         integer('divan_price_sen').notNull().default(0),
+  legHeightInches:       integer('leg_height_inches'),
+  legPriceSen:           integer('leg_price_sen').notNull().default(0),
+  customSpecials:        jsonb('custom_specials'),
+  lineSuffix:            text('line_suffix'),
+  specialOrderPriceSen:  integer('special_order_price_sen').notNull().default(0),
+  variants:              jsonb('variants'),
+  lineDeliveryDate:            date('line_delivery_date'),
+  lineDeliveryDateOverridden:  boolean('line_delivery_date_overridden').notNull().default(false),
+  lineNo:            integer('line_no'),                             // migration 0165 — listing order
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxDo:     index('idx_do_items_do').on(t.deliveryOrderId),
+  idxSoItem: index('idx_do_items_so_item').on(t.soItemId),
+}));
+
+/* DO payment ledger (migration 0100 — mirrors mfg_sales_order_payments). */
+export const deliveryOrderPayments = pgTable('delivery_order_payments', {
+  id:                 uuid('id').primaryKey().defaultRandom(),
+  deliveryOrderId:    uuid('delivery_order_id').notNull().references(() => deliveryOrders.id, { onDelete: 'cascade' }),
+  paidAt:             date('paid_at').notNull().defaultNow(),
+  method:             text('method').notNull(),                      // merchant | transfer | cash | installment
+  merchantProvider:   text('merchant_provider'),
+  installmentMonths:  integer('installment_months'),
+  onlineType:         text('online_type'),
+  approvalCode:       text('approval_code'),
+  amountCenti:        integer('amount_centi').notNull(),
+  accountSheet:       text('account_sheet'),
+  collectedBy:        integer('collected_by'),                       // SEAM: users.id soft-ref
+  note:               text('note'),
+  createdAt:          timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:          integer('created_by'),                         // SEAM: users.id soft-ref
+}, (t) => ({
+  idxDo: index('idx_dop_do').on(t.deliveryOrderId),
+}));
+
+/* Sales Invoice — we bill the customer. */
+export const salesInvoices = pgTable('sales_invoices', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  invoiceNumber:     text('invoice_number').notNull().unique(),      // 'SI-2605-001'
+  soDocNo:           text('so_doc_no').references(() => mfgSalesOrders.docNo, { onDelete: 'set null' }),
+  deliveryOrderId:   uuid('delivery_order_id').references(() => deliveryOrders.id, { onDelete: 'set null' }),
+  debtorCode:        text('debtor_code'),
+  debtorName:        text('debtor_name').notNull(),
+  invoiceDate:       date('invoice_date').notNull().defaultNow(),
+  dueDate:           date('due_date'),
+  customerDeliveryDate: date('customer_delivery_date'),
+  currency:          currencyCode('currency').notNull().default('MYR'),
+  subtotalCenti:     integer('subtotal_centi').notNull().default(0),
+  discountCenti:     integer('discount_centi').notNull().default(0),
+  taxCenti:          integer('tax_centi').notNull().default(0),
+  totalCenti:        integer('total_centi').notNull().default(0),
+  paidCenti:         integer('paid_centi').notNull().default(0),
+
+  // SO/DO-clone header fields (migration 0101).
+  salespersonId:     integer('salesperson_id'),                      // SEAM: users.id soft-ref
+  agent:             text('agent'),
+  email:             text('email'),
+  customerType:      text('customer_type'),
+  buildingType:      text('building_type'),
+  branding:          text('branding'),
+  venue:             text('venue'),
+  venueId:           uuid('venue_id'),
+  ref:               text('ref'),
+  customerSoNo:      text('customer_so_no'),
+  poDocNo:           text('po_doc_no'),
+  salesLocation:     text('sales_location'),
+  customerState:     text('customer_state'),
+  customerCountry:   text('customer_country'),
+  note:              text('note'),
+  address1:          text('address1'),
+  address2:          text('address2'),
+  city:              text('city'),
+  state:             text('state'),
+  postcode:          text('postcode'),
+  phone:             text('phone'),
+  emergencyContactName:         text('emergency_contact_name'),
+  emergencyContactPhone:        text('emergency_contact_phone'),
+  emergencyContactRelationship: text('emergency_contact_relationship'),
+
+  // Per-category revenue + cost totals (migration 0101; recomputeTotals).
+  mattressSofaCenti:     integer('mattress_sofa_centi').notNull().default(0),
+  bedframeCenti:         integer('bedframe_centi').notNull().default(0),
+  accessoriesCenti:      integer('accessories_centi').notNull().default(0),
+  othersCenti:           integer('others_centi').notNull().default(0),
+  serviceCenti:          integer('service_centi').notNull().default(0),
+  mattressSofaCostCenti: integer('mattress_sofa_cost_centi').notNull().default(0),
+  bedframeCostCenti:     integer('bedframe_cost_centi').notNull().default(0),
+  accessoriesCostCenti:  integer('accessories_cost_centi').notNull().default(0),
+  othersCostCenti:       integer('others_cost_centi').notNull().default(0),
+  serviceCostCenti:      integer('service_cost_centi').notNull().default(0),
+  localTotalCenti:       integer('local_total_centi').notNull().default(0),
+  totalCostCenti:        integer('total_cost_centi').notNull().default(0),
+  totalMarginCenti:      integer('total_margin_centi').notNull().default(0),
+  marginPctBasis:        integer('margin_pct_basis').notNull().default(0),
+  lineCount:             integer('line_count').notNull().default(0),
+
+  status:            salesInvoiceStatus('status').notNull().default('SENT'),
+  notes:             text('notes'),
+  sentAt:            timestamp('sent_at', { withTimezone: true }),
+  paidAt:            timestamp('paid_at', { withTimezone: true }),
+  confirmedAt:       timestamp('confirmed_at', { withTimezone: true }),
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:         integer('created_by'),                          // SEAM: users.id soft-ref
+  updatedAt:         timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxSo:      index('idx_si_so').on(t.soDocNo),
+  idxDo:      index('idx_si_do').on(t.deliveryOrderId),
+  idxDebtor:  index('idx_si_debtor').on(t.debtorCode),
+  idxStatus:  index('idx_si_status').on(t.status),
+  idxDueDate: index('idx_si_due_date').on(t.dueDate),
+}));
+
+export const salesInvoiceItems = pgTable('sales_invoice_items', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  salesInvoiceId:    uuid('sales_invoice_id').notNull().references(() => salesInvoices.id, { onDelete: 'cascade' }),
+  soItemId:          uuid('so_item_id').references(() => mfgSalesOrderItems.id, { onDelete: 'set null' }),
+  doItemId:          uuid('do_item_id').references(() => deliveryOrderItems.id, { onDelete: 'set null' }),
+  itemCode:          text('item_code').notNull(),
+  itemGroup:         text('item_group'),
+  description:       text('description'),
+  description2:      text('description2'),
+  uom:               text('uom').notNull().default('UNIT'),
+  qty:               integer('qty').notNull(),
+  unitPriceCenti:    integer('unit_price_centi').notNull().default(0),
+  discountCenti:     integer('discount_centi').notNull().default(0),
+  taxCenti:          integer('tax_centi').notNull().default(0),
+  lineTotalCenti:    integer('line_total_centi').notNull().default(0),
+  unitCostCenti:     integer('unit_cost_centi').notNull().default(0),
+  lineCostCenti:     integer('line_cost_centi').notNull().default(0),
+  lineMarginCenti:   integer('line_margin_centi').notNull().default(0),
+  notes:             text('notes'),
+  // Variant columns (furniture; KEPT nullable for fidelity).
+  gapInches:             integer('gap_inches'),
+  divanHeightInches:     integer('divan_height_inches'),
+  divanPriceSen:         integer('divan_price_sen').notNull().default(0),
+  legHeightInches:       integer('leg_height_inches'),
+  legPriceSen:           integer('leg_price_sen').notNull().default(0),
+  customSpecials:        jsonb('custom_specials'),
+  lineSuffix:            text('line_suffix'),
+  specialOrderPriceSen:  integer('special_order_price_sen').notNull().default(0),
+  variants:              jsonb('variants'),
+  lineNo:            integer('line_no'),                             // migration 0165 — listing order
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxSi:     index('idx_si_items_si').on(t.salesInvoiceId),
+  idxDoItem: index('idx_si_items_do_item').on(t.doItemId),
+}));
+
+/* SI payment ledger (migration 0101 — mirrors mfg_sales_order_payments). */
+export const salesInvoicePayments = pgTable('sales_invoice_payments', {
+  id:                 uuid('id').primaryKey().defaultRandom(),
+  salesInvoiceId:     uuid('sales_invoice_id').notNull().references(() => salesInvoices.id, { onDelete: 'cascade' }),
+  paidAt:             date('paid_at').notNull().defaultNow(),
+  method:             text('method').notNull(),                      // merchant | transfer | cash | installment
+  merchantProvider:   text('merchant_provider'),
+  installmentMonths:  integer('installment_months'),
+  onlineType:         text('online_type'),
+  approvalCode:       text('approval_code'),
+  amountCenti:        integer('amount_centi').notNull(),
+  accountSheet:       text('account_sheet'),
+  collectedBy:        integer('collected_by'),                       // SEAM: users.id soft-ref
+  note:               text('note'),
+  createdAt:          timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:          integer('created_by'),                         // SEAM: users.id soft-ref
+}, (t) => ({
+  idxSi: index('idx_sip_si').on(t.salesInvoiceId),
+}));
+
+/* Delivery Return — customer returning previously-delivered goods. */
+export const deliveryReturns = pgTable('delivery_returns', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  returnNumber:      text('return_number').notNull().unique(),       // 'DR-2605-001'
+  doDocNo:           text('do_doc_no'),                              // snapshot of the source DO number
+  deliveryOrderId:   uuid('delivery_order_id').references(() => deliveryOrders.id, { onDelete: 'set null' }),
+  salesInvoiceId:    uuid('sales_invoice_id').references(() => salesInvoices.id, { onDelete: 'set null' }),
+  debtorCode:        text('debtor_code'),
+  debtorName:        text('debtor_name').notNull(),
+  returnDate:        date('return_date').notNull().defaultNow(),
+  reason:            text('reason'),
+  status:            deliveryReturnStatus('status').notNull().default('PENDING'),
+  receivedAt:        timestamp('received_at', { withTimezone: true }),
+  inspectedAt:       timestamp('inspected_at', { withTimezone: true }),
+  refundedAt:        timestamp('refunded_at', { withTimezone: true }),
+  refundCenti:       integer('refund_centi').notNull().default(0),
+  inspectionNotes:   text('inspection_notes'),
+
+  // DO-clone header fields (migration 0102).
+  salespersonId:     integer('salesperson_id'),                      // SEAM: users.id soft-ref
+  agent:             text('agent'),
+  email:             text('email'),
+  customerType:      text('customer_type'),
+  buildingType:      text('building_type'),
+  branding:          text('branding'),
+  venue:             text('venue'),
+  venueId:           uuid('venue_id'),
+  ref:               text('ref'),
+  customerSoNo:      text('customer_so_no'),
+  salesLocation:     text('sales_location'),
+  customerState:     text('customer_state'),
+  customerCountry:   text('customer_country'),
+  note:              text('note'),
+  address1:          text('address1'),
+  address2:          text('address2'),
+  city:              text('city'),
+  state:             text('state'),
+  postcode:          text('postcode'),
+  phone:             text('phone'),
+  emergencyContactName:         text('emergency_contact_name'),
+  emergencyContactPhone:        text('emergency_contact_phone'),
+  emergencyContactRelationship: text('emergency_contact_relationship'),
+
+  // Per-category revenue + cost totals (migration 0102; recomputeTotals).
+  mattressSofaCenti:     integer('mattress_sofa_centi').notNull().default(0),
+  bedframeCenti:         integer('bedframe_centi').notNull().default(0),
+  accessoriesCenti:      integer('accessories_centi').notNull().default(0),
+  othersCenti:           integer('others_centi').notNull().default(0),
+  mattressSofaCostCenti: integer('mattress_sofa_cost_centi').notNull().default(0),
+  bedframeCostCenti:     integer('bedframe_cost_centi').notNull().default(0),
+  accessoriesCostCenti:  integer('accessories_cost_centi').notNull().default(0),
+  othersCostCenti:       integer('others_cost_centi').notNull().default(0),
+  localTotalCenti:       integer('local_total_centi').notNull().default(0),
+  totalCostCenti:        integer('total_cost_centi').notNull().default(0),
+  totalMarginCenti:      integer('total_margin_centi').notNull().default(0),
+  marginPctBasis:        integer('margin_pct_basis').notNull().default(0),
+  lineCount:             integer('line_count').notNull().default(0),
+
+  currency:          currencyCode('currency').notNull().default('MYR'),
+  warehouseId:       uuid('warehouse_id').references(() => mfgWarehouses.id, { onDelete: 'set null' }),
+  notes:             text('notes'),
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:         integer('created_by'),                          // SEAM: users.id soft-ref
+  updatedAt:         timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxDo:     index('idx_dr_do').on(t.deliveryOrderId),
+  idxStatus: index('idx_dr_status').on(t.status),
+  idxDebtor: index('idx_dr_debtor').on(t.debtorCode),
+}));
+
+export const deliveryReturnItems = pgTable('delivery_return_items', {
+  id:                  uuid('id').primaryKey().defaultRandom(),
+  deliveryReturnId:    uuid('delivery_return_id').notNull().references(() => deliveryReturns.id, { onDelete: 'cascade' }),
+  doItemId:            uuid('do_item_id').references(() => deliveryOrderItems.id, { onDelete: 'set null' }),
+  itemCode:            text('item_code').notNull(),
+  itemGroup:           text('item_group'),
+  description:         text('description'),
+  description2:        text('description2'),
+  uom:                 text('uom').notNull().default('UNIT'),
+  qtyReturned:         integer('qty_returned').notNull(),
+  condition:           text('condition'),                            // 'NEW' | 'DAMAGED' | 'DEFECT'
+  unitPriceCenti:      integer('unit_price_centi').notNull().default(0),
+  discountCenti:       integer('discount_centi').notNull().default(0),
+  lineTotalCenti:      integer('line_total_centi').notNull().default(0),
+  unitCostCenti:       integer('unit_cost_centi').notNull().default(0),
+  lineCostCenti:       integer('line_cost_centi').notNull().default(0),
+  lineMarginCenti:     integer('line_margin_centi').notNull().default(0),
+  refundCenti:         integer('refund_centi').notNull().default(0),
+  variants:            jsonb('variants'),
+  notes:               text('notes'),
+  createdAt:           timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxDr:     index('idx_dr_items_dr').on(t.deliveryReturnId),
+  idxDoItem: index('idx_dr_items_do_item').on(t.doItemId),
+}));

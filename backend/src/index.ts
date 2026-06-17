@@ -49,6 +49,9 @@ import purchaseReturns from "./routes/purchase-returns";
 import stockTransfers from "./routes/stock-transfers";
 import stockTakes from "./routes/stock-takes";
 import mfgSalesOrders from "./routes/mfg-sales-orders";
+import mfgDeliveryOrders from "./routes/delivery-orders-mfg";
+import salesInvoices from "./routes/sales-invoices";
+import deliveryReturns from "./routes/delivery-returns";
 import mfgWarehouses from "./routes/warehouse";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
@@ -201,6 +204,17 @@ app.route("/api/stock-takes", stockTakes);
 // Houzs has `sales_orders` (AutoCount, different name) -> /api/mfg-sales-orders.
 // Owner-only (perm "*").
 app.route("/api/mfg-sales-orders", mfgSalesOrders);
+// SCM 1:1 clone — Delivery Orders + Sales Invoices + Delivery Returns
+// (order-to-cash downstream). DO post = ship stock (inventory OUT via
+// lib/inventory-movements, source_doc_type:'DO') + advance the SO via
+// so-delivery-sync. DR = return from customer (inventory IN, source_doc_type:'DR').
+// SI = AR finance doc, no stock impact (GL/AR posting out of SCM-clone scope).
+// The bare /api/delivery is Houzs's existing AutoCount logistics route (NOT
+// touched) -> DO mounts at /api/mfg-delivery-orders. No collision for SI/DR.
+// Owner-only (perm "*").
+app.route("/api/mfg-delivery-orders", mfgDeliveryOrders);
+app.route("/api/sales-invoices", salesInvoices);
+app.route("/api/delivery-returns", deliveryReturns);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);
