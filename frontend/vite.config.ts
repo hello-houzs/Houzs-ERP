@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
 
 // Dev-server proxy rules.
 //
@@ -36,6 +37,9 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
+    resolve: {
+      alias: { "@shared": fileURLToPath(new URL("../shared", import.meta.url)) },
+    },
     plugins: [react()],
     build: {
       rollupOptions: {

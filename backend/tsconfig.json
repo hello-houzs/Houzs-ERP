@@ -14,7 +14,9 @@
     "isolatedModules": true,
     "resolveJsonModule": true,
     "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx"
+    "jsxImportSource": "hono/jsx",
+    "baseUrl": ".",
+    "paths": { "@shared/*": ["../shared/*"] }
   },
   "include": ["src/**/*.ts"]
 }
