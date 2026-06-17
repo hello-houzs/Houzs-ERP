@@ -13,7 +13,7 @@ import {
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { StatCard } from "../components/StatCard";
-import { DashboardGrid } from "../components/Dashboard";
+import { DashboardBreakdown, DashboardPanels } from "../components/Dashboard";
 import { DataTable, type Column } from "../components/DataTable";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
@@ -103,6 +103,40 @@ export function PettyCash() {
   const [editing, setEditing] = useState<EntryRow | null>(null);
 
   const summary = list.data?.summary;
+  const rows = list.data?.rows ?? [];
+
+  // Derived insights (client-side, from the current filtered rows).
+  const topOut = (
+    by: (r: EntryRow) => string | null,
+    fallback: string,
+  ): Array<{ label: string; count: number }> => {
+    const m = new Map<string, number>();
+    for (const r of rows) {
+      if (r.direction !== "out") continue;
+      const k = (by(r) || fallback).trim() || fallback;
+      m.set(k, (m.get(k) || 0) + r.amount_cents);
+    }
+    return [...m.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([label, count]) => ({ label, count }));
+  };
+  const byCategory = useMemo(() => topOut((r) => r.category, "Uncategorized"), [rows]);
+  const byPayee = useMemo(() => topOut((r) => r.counterparty, "Unspecified"), [rows]);
+  const monthly = useMemo(() => {
+    const m = new Map<string, { in: number; out: number }>();
+    for (const r of rows) {
+      const key = r.occurred_on.slice(0, 7);
+      const cur = m.get(key) || { in: 0, out: 0 };
+      if (r.direction === "in") cur.in += r.amount_cents;
+      else cur.out += r.amount_cents;
+      m.set(key, cur);
+    }
+    return [...m.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .slice(-6)
+      .map(([month, v]) => ({ month, ...v }));
+  }, [rows]);
 
   const columns: Column<EntryRow>[] = [
     {
@@ -227,17 +261,22 @@ export function PettyCash() {
         }
       />
 
-      <DashboardGrid cols={3}>
-        <StatCard
-          label="Cash on hand"
-          value={summary ? formatRM(summary.balance_cents) : "—"}
-          subtitle={
-            summary
-              ? `${summary.count} entries${qs ? " (filtered)" : ""}`
-              : "Loading…"
-          }
-          tone="success"
-        />
+      {/* D — KPI hero: prominent live balance + supporting metrics */}
+      <div className="mb-4 grid gap-3 lg:grid-cols-[1.5fr_1fr_1fr_1fr]">
+        <div className="relative overflow-hidden rounded-lg border border-border bg-surface px-5 py-5 shadow-stone">
+          <span className="pointer-events-none absolute left-0 top-0 h-px w-full bg-gradient-to-r from-transparent via-accent to-transparent" />
+          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+            Cash on hand
+          </div>
+          <div className="mt-2 font-display text-[34px] font-extrabold leading-none tracking-tight text-synced">
+            {summary ? formatRM(summary.balance_cents) : "—"}
+          </div>
+          <div className="mt-2 text-[11px] font-medium text-ink-secondary">
+            {summary
+              ? `${summary.count} ${summary.count === 1 ? "entry" : "entries"}${qs ? " in view" : ""} · live float balance`
+              : "Loading…"}
+          </div>
+        </div>
         <StatCard
           label={qs ? "Inflow (filtered)" : "Total inflow"}
           value={summary ? formatRM(qs ? summary.filtered_in_cents : summary.total_in_cents) : "—"}
@@ -248,7 +287,46 @@ export function PettyCash() {
           value={summary ? formatRM(qs ? summary.filtered_out_cents : summary.total_out_cents) : "—"}
           subtitle="Purchases, expenses"
         />
-      </DashboardGrid>
+        <StatCard
+          label={qs ? "Net (filtered)" : "Net position"}
+          value={
+            summary
+              ? formatRM(
+                  (qs ? summary.filtered_in_cents : summary.total_in_cents) -
+                    (qs ? summary.filtered_out_cents : summary.total_out_cents),
+                )
+              : "—"
+          }
+          subtitle="In − Out"
+          tone={
+            summary &&
+            (qs ? summary.filtered_in_cents : summary.total_in_cents) -
+              (qs ? summary.filtered_out_cents : summary.total_out_cents) <
+              0
+              ? "error"
+              : "success"
+          }
+        />
+      </div>
+
+      {/* C — cash flow trend (in vs out over recent months) */}
+      <CashFlowTrend data={monthly} />
+
+      {/* A + B — spend breakdowns */}
+      <DashboardPanels cols={2}>
+        <DashboardBreakdown
+          title="Spend by category"
+          items={byCategory}
+          formatCount={formatRM}
+          emptyLabel="No outflow recorded yet"
+        />
+        <DashboardBreakdown
+          title="Top payees"
+          items={byPayee}
+          formatCount={formatRM}
+          emptyLabel="No payees recorded yet"
+        />
+      </DashboardPanels>
 
       {/* Filters */}
       <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2 shadow-stone">
@@ -340,6 +418,110 @@ export function PettyCash() {
           }}
           knownCategories={(cats.data?.rows ?? []).map((c) => c.category)}
         />
+      )}
+    </div>
+  );
+}
+
+function CashFlowTrend({
+  data,
+}: {
+  data: Array<{ month: string; in: number; out: number }>;
+}) {
+  const max = Math.max(1, ...data.flatMap((d) => [d.in, d.out]));
+  const monthLabel = (m: string) => {
+    const [y, mm] = m.split("-");
+    return new Date(Number(y), Number(mm) - 1, 1).toLocaleDateString("en", {
+      month: "short",
+    });
+  };
+  return (
+    <div className="relative mb-4 overflow-hidden rounded-lg border border-border bg-surface px-5 py-5 shadow-stone">
+      <span className="pointer-events-none absolute left-0 top-0 h-px w-full bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+          Cash flow · last {data.length || 0} months
+        </div>
+        <div className="flex items-center gap-3 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-synced" /> In
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-err" /> Out
+          </span>
+        </div>
+      </div>
+      {data.length === 0 ? (
+        <div className="py-4 text-[12px] text-ink-muted">Not enough data yet</div>
+      ) : (
+        (() => {
+          const n = data.length;
+          const xAt = (i: number) => (n <= 1 ? 50 : (i / (n - 1)) * 100);
+          const yAt = (v: number) => 96 - (v / max) * 88; // 4–96 vertical padding
+          const pts = (sel: (d: (typeof data)[number]) => number) =>
+            data.map((d, i) => `${xAt(i)},${yAt(sel(d))}`).join(" ");
+          const area = (sel: (d: (typeof data)[number]) => number) =>
+            `${xAt(0)},100 ${pts(sel)} ${xAt(n - 1)},100`;
+          const IN = "#3f7d4f";
+          const OUT = "#a83232";
+          return (
+            <div className="relative h-32">
+              <svg
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                className="absolute inset-0 h-full w-full"
+              >
+                <polygon points={area((d) => d.in)} fill={IN} opacity={0.08} />
+                <polygon points={area((d) => d.out)} fill={OUT} opacity={0.07} />
+                <polyline
+                  points={pts((d) => d.in)}
+                  fill="none"
+                  stroke={IN}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <polyline
+                  points={pts((d) => d.out)}
+                  fill="none"
+                  stroke={OUT}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+              {/* round dots (HTML, so they stay circular under the stretch) */}
+              {data.map((d, i) => (
+                <span
+                  key={`in-${d.month}`}
+                  className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-synced"
+                  style={{ left: `${xAt(i)}%`, top: `${yAt(d.in)}%` }}
+                  title={`${monthLabel(d.month)} · In ${formatRM(d.in)}`}
+                />
+              ))}
+              {data.map((d, i) => (
+                <span
+                  key={`out-${d.month}`}
+                  className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-err"
+                  style={{ left: `${xAt(i)}%`, top: `${yAt(d.out)}%` }}
+                  title={`${monthLabel(d.month)} · Out ${formatRM(d.out)}`}
+                />
+              ))}
+              {/* month axis */}
+              {data.map((d, i) => (
+                <span
+                  key={`lbl-${d.month}`}
+                  className="absolute bottom-0 -translate-x-1/2 font-mono text-[9px] text-ink-muted"
+                  style={{ left: `${xAt(i)}%` }}
+                >
+                  {monthLabel(d.month)}
+                </span>
+              ))}
+            </div>
+          );
+        })()
       )}
     </div>
   );
