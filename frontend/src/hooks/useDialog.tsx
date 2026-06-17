@@ -237,7 +237,7 @@ function DialogShell({
           <div className="px-5 pb-3">
             {item.opts.multiline ? (
               <textarea
-                ref={(el) => (inputRef.current = el)}
+                ref={(el) => { inputRef.current = el; }}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder={item.opts.placeholder}
@@ -246,7 +246,7 @@ function DialogShell({
               />
             ) : (
               <input
-                ref={(el) => (inputRef.current = el)}
+                ref={(el) => { inputRef.current = el; }}
                 type={item.opts.inputType ?? "text"}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
