@@ -62,6 +62,8 @@ const SupplierDetail = lazy(() => import("./pages/SupplierDetail").then((m) => (
 const PurchaseOrderList = lazy(() => import("./pages/PurchaseOrderList").then((m) => ({ default: m.PurchaseOrderList })));
 const ScmPurchaseOrderDetail = lazy(() => import("./pages/PurchaseOrderDetail").then((m) => ({ default: m.PurchaseOrderDetail })));
 const Inventory = lazy(() => import("./pages/Inventory").then((m) => ({ default: m.Inventory })));
+const GoodsReceiptList = lazy(() => import("./pages/GoodsReceiptList").then((m) => ({ default: m.GoodsReceiptList })));
+const GoodsReceiptDetail = lazy(() => import("./pages/GoodsReceiptDetail").then((m) => ({ default: m.GoodsReceiptDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -295,6 +297,30 @@ export default function App() {
           element={
             <Guard perm="*">
               <ScmPurchaseOrderDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/goods-receipts"
+          element={
+            <Guard perm="*">
+              <GoodsReceiptList />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/goods-receipts/new"
+          element={
+            <Guard perm="*">
+              <GoodsReceiptDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/goods-receipts/:id"
+          element={
+            <Guard perm="*">
+              <GoodsReceiptDetail />
             </Guard>
           }
         />

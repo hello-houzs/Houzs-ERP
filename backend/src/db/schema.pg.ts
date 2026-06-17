@@ -1062,3 +1062,50 @@ export const scm_stock_moves = pgTable(
     idx_created: index("idx_scm_moves_created").on(t.created_at),
   }),
 );
+
+// scm_goods_receipt_notes — GRN header. Posting a GRN advances PO received_qty
+// and writes GRN_IN rows into scm_stock_moves. See migrations-pg/0020.
+export const scm_goods_receipt_notes = pgTable(
+  "scm_goods_receipt_notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    grn_number: text("grn_number").notNull().unique(),
+    supplier_id: uuid("supplier_id").notNull(), // soft ref scm_suppliers.id
+    purchase_order_id: uuid("purchase_order_id"), // soft ref scm_purchase_orders.id (nullable)
+    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
+    status: text("status").notNull().default("DRAFT"),
+    received_date: date("received_date").notNull().defaultNow(),
+    notes: text("notes"),
+    posted_at: timestamp("posted_at", { withTimezone: true }),
+    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
+    created_by: integer("created_by"), // users.id soft ref (set from auth)
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_po: index("idx_scm_grn_po").on(t.purchase_order_id),
+    idx_status: index("idx_scm_grn_status").on(t.status),
+  }),
+);
+
+// scm_goods_receipt_note_items — GRN lines
+export const scm_goods_receipt_note_items = pgTable(
+  "scm_goods_receipt_note_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    grn_id: uuid("grn_id")
+      .notNull()
+      .references(() => scm_goods_receipt_notes.id, { onDelete: "cascade" }),
+    po_item_id: uuid("po_item_id"), // soft ref scm_purchase_order_items.id (nullable)
+    material_kind: text("material_kind").notNull().default("mfg_product"),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name"),
+    qty_received: integer("qty_received").notNull().default(0),
+    unit_cost_centi: integer("unit_cost_centi").notNull().default(0),
+    notes: text("notes"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_grn: index("idx_scm_grn_items_grn").on(t.grn_id),
+  }),
+);
