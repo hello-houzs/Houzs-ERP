@@ -56,22 +56,6 @@ const DriverTrip = lazy(() => import("./pages/DriverTrip").then((m) => ({ defaul
 const DriverProfile = lazy(() => import("./pages/DriverProfile").then((m) => ({ default: m.DriverProfile })));
 const DriverProjects = lazy(() => import("./pages/DriverProjects").then((m) => ({ default: m.DriverProjects })));
 const DriverProjectDetail = lazy(() => import("./pages/DriverProjectDetail").then((m) => ({ default: m.DriverProjectDetail })));
-// Supply Chain (ported from 2990s)
-const SupplierMaster = lazy(() => import("./pages/SupplierMaster").then((m) => ({ default: m.SupplierMaster })));
-const SupplierDetail = lazy(() => import("./pages/SupplierDetail").then((m) => ({ default: m.SupplierDetail })));
-const PurchaseOrderList = lazy(() => import("./pages/PurchaseOrderList").then((m) => ({ default: m.PurchaseOrderList })));
-const ScmPurchaseOrderDetail = lazy(() => import("./pages/PurchaseOrderDetail").then((m) => ({ default: m.PurchaseOrderDetail })));
-const Inventory = lazy(() => import("./pages/Inventory").then((m) => ({ default: m.Inventory })));
-const GoodsReceiptList = lazy(() => import("./pages/GoodsReceiptList").then((m) => ({ default: m.GoodsReceiptList })));
-const GoodsReceiptDetail = lazy(() => import("./pages/GoodsReceiptDetail").then((m) => ({ default: m.GoodsReceiptDetail })));
-const PurchaseInvoiceList = lazy(() => import("./pages/PurchaseInvoiceList").then((m) => ({ default: m.PurchaseInvoiceList })));
-const PurchaseInvoiceDetail = lazy(() => import("./pages/PurchaseInvoiceDetail").then((m) => ({ default: m.PurchaseInvoiceDetail })));
-const PurchaseReturnList = lazy(() => import("./pages/PurchaseReturnList").then((m) => ({ default: m.PurchaseReturnList })));
-const PurchaseReturnDetail = lazy(() => import("./pages/PurchaseReturnDetail").then((m) => ({ default: m.PurchaseReturnDetail })));
-const StockTransferList = lazy(() => import("./pages/StockTransferList").then((m) => ({ default: m.StockTransferList })));
-const StockTransferDetail = lazy(() => import("./pages/StockTransferDetail").then((m) => ({ default: m.StockTransferDetail })));
-const StocktakeList = lazy(() => import("./pages/StocktakeList").then((m) => ({ default: m.StocktakeList })));
-const StocktakeDetail = lazy(() => import("./pages/StocktakeDetail").then((m) => ({ default: m.StocktakeDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -273,83 +257,6 @@ export default function App() {
             <PageGuard page="purchase_orders">
               <PurchaseOrderDetail />
             </PageGuard>
-          }
-        />
-        {/* Supply Chain (ported from 2990s) — owner-only until scm.* perm exists */}
-        <Route
-          path="/scm/suppliers"
-          element={
-            <Guard perm="*">
-              <SupplierMaster />
-            </Guard>
-          }
-        />
-        <Route
-          path="/scm/suppliers/:id"
-          element={
-            <Guard perm="*">
-              <SupplierDetail />
-            </Guard>
-          }
-        />
-        <Route
-          path="/scm/purchase-orders"
-          element={
-            <Guard perm="*">
-              <PurchaseOrderList />
-            </Guard>
-          }
-        />
-        <Route
-          path="/scm/purchase-orders/:id"
-          element={
-            <Guard perm="*">
-              <ScmPurchaseOrderDetail />
-            </Guard>
-          }
-        />
-        <Route
-          path="/scm/goods-receipts"
-          element={
-            <Guard perm="*">
-              <GoodsReceiptList />
-            </Guard>
-          }
-        />
-        <Route
-          path="/scm/goods-receipts/new"
-          element={
-            <Guard perm="*">
-              <GoodsReceiptDetail />
-            </Guard>
-          }
-        />
-        <Route
-          path="/scm/goods-receipts/:id"
-          element={
-            <Guard perm="*">
-              <GoodsReceiptDetail />
-            </Guard>
-          }
-        />
-        <Route path="/scm/purchase-invoices" element={<Guard perm="*"><PurchaseInvoiceList /></Guard>} />
-        <Route path="/scm/purchase-invoices/new" element={<Guard perm="*"><PurchaseInvoiceDetail /></Guard>} />
-        <Route path="/scm/purchase-invoices/:id" element={<Guard perm="*"><PurchaseInvoiceDetail /></Guard>} />
-        <Route path="/scm/returns" element={<Guard perm="*"><PurchaseReturnList /></Guard>} />
-        <Route path="/scm/returns/new" element={<Guard perm="*"><PurchaseReturnDetail /></Guard>} />
-        <Route path="/scm/returns/:id" element={<Guard perm="*"><PurchaseReturnDetail /></Guard>} />
-        <Route path="/scm/transfers" element={<Guard perm="*"><StockTransferList /></Guard>} />
-        <Route path="/scm/transfers/new" element={<Guard perm="*"><StockTransferDetail /></Guard>} />
-        <Route path="/scm/transfers/:id" element={<Guard perm="*"><StockTransferDetail /></Guard>} />
-        <Route path="/scm/stocktakes" element={<Guard perm="*"><StocktakeList /></Guard>} />
-        <Route path="/scm/stocktakes/new" element={<Guard perm="*"><StocktakeDetail /></Guard>} />
-        <Route path="/scm/stocktakes/:id" element={<Guard perm="*"><StocktakeDetail /></Guard>} />
-        <Route
-          path="/scm/inventory"
-          element={
-            <Guard perm="*">
-              <Inventory />
-            </Guard>
           }
         />
         {/* Legacy /creditors → Purchase Orders' Creditors tab */}
