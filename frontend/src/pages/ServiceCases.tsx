@@ -7,6 +7,10 @@ import {
   Search,
   ChevronLeft,
   ChevronRight,
+  ChevronsUp,
+  ChevronUp,
+  ChevronDown,
+  Minus,
   Upload,
   MessageSquare,
   Truck as TruckIcon,
@@ -16,6 +20,9 @@ import {
   Package,
   UserPlus,
   Calendar,
+  CalendarDays,
+  List as ListIcon,
+  LayoutGrid,
   ShieldCheck,
   Clock,
   DollarSign,
@@ -32,7 +39,6 @@ import {
   HeaderButton,
 } from "../components/DetailLayout";
 import { Button } from "../components/Button";
-import { FilterPills } from "../components/FilterPills";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
 import {
@@ -43,6 +49,7 @@ import {
   resolutionLabel,
 } from "../components/StatusDot";
 import { Pagination } from "../components/Pagination";
+import { EmptyState } from "../components/EmptyState";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
 import { InlineEdit } from "../components/InlineEdit";
 import { ExpandableText } from "../components/ExpandableText";
@@ -123,6 +130,83 @@ const NEXT_STAGE: Record<string, { stage: AssrStage; label: string }> = {
   pending_item_ready:       { stage: "pending_delivery_service", label: "Arrange Delivery" },
   pending_delivery_service: { stage: "completed",                label: "Close Case" },
 };
+
+// ── Cases-surface view modes ──────────────────────────────────
+// The Cases surface can be read three ways. "list" is the dense,
+// server-paginated DataTable (the original). "board" is an SLA-urgency
+// kanban — cases bucketed by how close they are to their SLA deadline.
+// "calendar" plots every open case on a month grid by its SLA deadline
+// (or reported date). Board + Calendar fetch all matching cases in one
+// shot client-side (per_page high) since they need the whole set to
+// lay out, not a page at a time.
+type CaseViewMode = "list" | "board" | "calendar";
+
+// Filters shared across all three views — built once in CasesView and
+// handed to Board/Calendar so every mode honours the same stage / search
+// / archived / mine / creditor scope.
+type CaseFilters = {
+  stage?: string;
+  search?: string;
+  include_archived?: number;
+  exclude_stage?: string;
+  assigned_to?: number;
+  creditor_code?: string;
+};
+
+// Stage value → human label, sourced from the canonical STAGE_OPTIONS so
+// Board/Calendar chips read the same vocabulary as the filter pills
+// (StatusDot.stageLabel still maps the older 6-stage enum).
+const STAGE_LABEL_BY_VALUE: Record<string, string> = Object.fromEntries(
+  STAGE_OPTIONS.filter((o) => o.value !== "ALL").map((o) => [o.value, o.label])
+);
+
+function caseStageLabel(stage: string): string {
+  return STAGE_LABEL_BY_VALUE[stage] ?? stageLabel(stage);
+}
+
+// SLA urgency, derived from the server-computed `hours_to_deadline`
+// (negative = past deadline). One model drives the colour of both the
+// Board columns and the Calendar chips so the two views read identically.
+type Urgency = "overdue" | "today" | "soon" | "later" | "none";
+
+const URGENCY_ORDER: Urgency[] = ["overdue", "today", "soon", "later", "none"];
+
+const URGENCY_META: Record<
+  Urgency,
+  { label: string; hint: string; hex: string; tint: string; text: string }
+> = {
+  overdue: { label: "Overdue",   hint: "Past SLA deadline",       hex: "#b23b3b", tint: "rgba(178,59,59,0.12)",  text: "#8f2f2f" },
+  today:   { label: "Due today", hint: "SLA deadline within 24h", hex: "#c2740f", tint: "rgba(194,116,15,0.13)", text: "#8a540b" },
+  soon:    { label: "Due soon",  hint: "SLA deadline in 1–3 days", hex: "#a16a2e", tint: "rgba(161,106,46,0.12)", text: "#7c5224" },
+  later:   { label: "On track",  hint: "More than 3 days of SLA", hex: "#3f6b53", tint: "rgba(63,107,83,0.12)",  text: "#2f5340" },
+  none:    { label: "No SLA",    hint: "No SLA deadline set",     hex: "#6c7167", tint: "rgba(108,113,103,0.10)", text: "#585d53" },
+};
+
+function caseUrgency(c: AssrCase): Urgency {
+  if (c.stage === "completed") return "later";
+  const h = c.hours_to_deadline;
+  if (c.deadline_at == null || h == null) return "none";
+  if (h < 0) return "overdue";
+  if (h < 24) return "today";
+  if (h < 72) return "soon";
+  return "later";
+}
+
+// "3h overdue" / "2d left" — compact countdown off hours_to_deadline.
+function formatCountdown(h: number | null | undefined): string | null {
+  if (h == null) return null;
+  const abs = Math.abs(h);
+  const txt = abs >= 48 ? `${Math.round(abs / 24)}d` : `${Math.max(1, Math.round(abs))}h`;
+  return h < 0 ? `${txt} overdue` : `${txt} left`;
+}
+
+// Local YYYY-MM-DD (calendar grid keys off local days, matching formatDate).
+function isoLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 // ── Main page ─────────────────────────────────────────────────
 
@@ -270,6 +354,21 @@ function CasesView({
   const [params, setParams] = useSearchParams();
   const creditorFilter = params.get("creditor_code");
 
+  // View mode (list / board / calendar) is URL-backed (`?cases=`) so a
+  // bookmark or shared link lands on the same layout. Defaults to the
+  // dense list.
+  const caseViewParam = params.get("cases");
+  const caseView: CaseViewMode =
+    caseViewParam === "board" || caseViewParam === "calendar"
+      ? caseViewParam
+      : "list";
+  const setCaseView = (next: CaseViewMode) => {
+    const nextParams = new URLSearchParams(params);
+    if (next === "list") nextParams.delete("cases");
+    else nextParams.set("cases", next);
+    setParams(nextParams, { replace: true });
+  };
+
   // ?focus=ID — Overview inbox deep-links straight to the detail page.
   useFocusFromUrl((id) => navigate(`/assr/${id}`, { replace: true }));
 
@@ -278,6 +377,17 @@ function CasesView({
   // broken. Lets the user override the toggle by picking that stage.
   const excludeStageParam =
     hideCompleted && stage !== "completed" ? "completed" : undefined;
+
+  // Shared filter scope handed to Board / Calendar so every view honours
+  // the same stage / search / archived / mine / creditor selection.
+  const caseFilters: CaseFilters = {
+    stage: stage === "ALL" ? undefined : stage,
+    search: search || undefined,
+    include_archived: showArchived ? 1 : undefined,
+    exclude_stage: excludeStageParam,
+    assigned_to: myCases && user?.id ? user.id : undefined,
+    creditor_code: creditorFilter || undefined,
+  };
 
   const list = useQuery<Paginated<AssrCase>>(
     () =>
@@ -381,26 +491,33 @@ function CasesView({
               Archived
             </span>
           )}
-          <StatusDot variant={stageVariant(r.stage)} label={stageLabel(r.stage)} />
-          {r.stage !== "completed" && r.is_breached === 1 && (
+          <StatusDot variant={stageVariant(r.stage)} label={caseStageLabel(r.stage)} />
+          {r.stage !== "completed" && (r.is_breached === 1 || r.escalated_at) && (
+            // One SLA badge: solid red = breached, outline = escalated
+            // only (overdue >24h). Merged from the old separate SLA + Esc
+            // pills to calm the row.
             <span
-              className="inline-flex items-center rounded-full bg-err px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white"
-              title={`SLA breached by ${Math.abs(r.hours_to_deadline ?? 0)}h`}
+              className={cn(
+                "inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider",
+                r.is_breached === 1
+                  ? "bg-err text-white"
+                  : "border border-err text-err"
+              )}
+              title={
+                r.is_breached === 1
+                  ? `SLA breached by ${Math.abs(r.hours_to_deadline ?? 0)}h${r.escalated_at ? " · escalated" : ""}`
+                  : `Auto-escalated ${r.escalated_at?.slice(0, 10)} — SLA overdue >24h`
+              }
             >
               SLA
             </span>
           )}
-          {r.stage !== "completed" && r.escalated_at && (
-            <span
-              className="inline-flex items-center rounded-full border border-err px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-err"
-              title={`Auto-escalated ${r.escalated_at.slice(0, 10)} — SLA overdue >24h`}
-            >
-              Esc
-            </span>
-          )}
           {r.stage !== "completed" && r.days_in_stage != null && r.days_in_stage > 3 && (
+            // Neutral aging hint — red is reserved for actual SLA breach
+            // (the badge above). Showing every >3-day case in red made the
+            // whole list look on-fire.
             <span
-              className="inline-flex items-center rounded-full bg-err/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-err"
+              className="inline-flex items-center rounded-full bg-ink/[0.06] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-muted"
               title={`In this stage for ${r.days_in_stage} day(s)`}
             >
               {r.days_in_stage}d
@@ -414,12 +531,35 @@ function CasesView({
       key: "priority",
       label: "Priority",
       align: "center",
-      render: (r) => (
-        <span className="inline-flex items-center gap-1">
-          <span className={cn("h-2 w-2 rounded-full", priorityColor(r.priority))} />
-          <span className="text-[11px] capitalize text-ink-secondary">{r.priority}</span>
-        </span>
-      ),
+      // Symbol-only — chevrons encode the level (most cases are Normal,
+      // so the word added noise). Urgent/High get a coloured chip so they
+      // pop; Normal/Low stay quiet. Hover for the label.
+      render: (r) => {
+        const p = r.priority;
+        const Icon =
+          p === "urgent" ? ChevronsUp : p === "high" ? ChevronUp : p === "low" ? ChevronDown : Minus;
+        const color =
+          p === "urgent"
+            ? "text-err"
+            : p === "high"
+            ? "text-[#c2740f]"
+            : p === "low"
+            ? "text-ink-muted/50"
+            : "text-ink-muted";
+        const chip =
+          p === "urgent" ? "bg-err/12" : p === "high" ? "bg-[#c2740f]/12" : "";
+        return (
+          <span
+            title={p}
+            className={cn(
+              "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full",
+              chip
+            )}
+          >
+            <Icon size={16} strokeWidth={2.5} className={color} />
+          </span>
+        );
+      },
       getValue: (r) => r.priority,
     },
     {
@@ -450,12 +590,19 @@ function CasesView({
     {
       key: "item_code",
       label: "Item",
+      // Product code — visible on the detail page; hidden here to cut
+      // clutter, still available from the Columns menu.
+      defaultHidden: true,
       render: (r) => <span className="font-mono text-[11px]">{r.item_code || "—"}</span>,
       getValue: (r) => r.item_code,
     },
     {
       key: "resolution_method",
       label: "Resolution",
+      // Empty until a case reaches the solution stage, so it's mostly
+      // "—" on the working list — hidden by default to cut clutter,
+      // still available from the Columns menu.
+      defaultHidden: true,
       render: (r) => (
         <span className="text-[11px] text-ink-secondary">
           {resolutionLabel(r.resolution_method)}
@@ -527,12 +674,40 @@ function CasesView({
           </button>
         </div>
       )}
-      <div className="mb-4 flex items-center gap-4">
-        <FilterPills
-          value={stage}
-          onChange={(v) => { setPage(1); setStage(v); }}
-          options={STAGE_OPTIONS}
-        />
+      <StageStatStrip
+        stage={stage}
+        onPick={(v) => { setPage(1); setStage(v); }}
+      />
+
+      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-3">
+        {/* View mode — List / Board / Calendar. The board and calendar
+            re-read the same cases through an SLA-urgency lens; the list
+            stays the dense system-of-record. */}
+        <div className="inline-flex overflow-hidden rounded-md border border-border bg-bg/40">
+          {([
+            { v: "list" as const, label: "List", icon: ListIcon },
+            { v: "board" as const, label: "Board", icon: LayoutGrid },
+            { v: "calendar" as const, label: "Calendar", icon: CalendarDays },
+          ]).map(({ v, label, icon: Icon }) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setCaseView(v)}
+              aria-pressed={caseView === v}
+              className={cn(
+                "inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold transition-colors",
+                caseView === v
+                  ? "bg-accent text-white"
+                  : "text-ink-muted hover:text-accent"
+              )}
+            >
+              <Icon size={13} />
+              {label}
+            </button>
+          ))}
+        </div>
+        {/* Stage selection now lives in the per-stage stat cards above —
+            click a card to filter, click it again to clear back to All. */}
         <label className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-ink-secondary">
           <input
             type="checkbox"
@@ -586,6 +761,15 @@ function CasesView({
         </Button>
       </div>
 
+      {caseView === "board" && (
+        <CasesBoardView filters={caseFilters} onOpen={(id) => navigate(`/assr/${id}`)} />
+      )}
+      {caseView === "calendar" && (
+        <CasesCalendarView filters={caseFilters} onOpen={(id) => navigate(`/assr/${id}`)} />
+      )}
+
+      {caseView === "list" && (
+      <>
       {bulkSelected.size > 0 && (
         <BulkActionsBar
           count={bulkSelected.size}
@@ -702,6 +886,8 @@ function CasesView({
           onPerPageChange={(n) => { setPerPage(n); setPage(1); }}
         />
       )}
+      </>
+      )}
 
       {/* Create panel */}
       {showCreate && (
@@ -716,6 +902,765 @@ function CasesView({
         />
       )}
     </div>
+  );
+}
+
+// ── Cases · per-stage stat strip ──────────────────────────────
+// A card per workflow stage showing how many cases sit there, with
+// SLA-breach count as the sub-line (red when any are overdue). Each
+// card is a drill-down: click to filter the list/board/calendar to
+// that stage, click again to clear back to All. Counts come from the
+// shared `/api/assr/summary` aggregate (stage_funnel = archived-excluded
+// totals + breach counts); a wide window captures long-open cases.
+type StageFunnelRow = { stage: string; total: number; breached: number };
+type AssrSummary = {
+  total?: number;
+  active_count?: number;
+  stage_funnel?: StageFunnelRow[];
+};
+
+function StageStatStrip({
+  stage,
+  onPick,
+}: {
+  stage: StageFilter;
+  onPick: (s: StageFilter) => void;
+}) {
+  const q = useQuery<AssrSummary>(
+    () => api.get("/api/assr/summary?since_days=730"),
+    []
+  );
+
+  // The /summary aggregate runs ~13 queries and flakes with a 500 on a
+  // cold Supabase pool during cutover (same transient issue as the list).
+  // It's a read-only count, so silently retry a few times rather than
+  // stranding the cards on "Unavailable" — the next attempt usually warms
+  // the pool and succeeds.
+  const retriesRef = useRef(0);
+  useEffect(() => {
+    if (q.data) {
+      retriesRef.current = 0;
+      return;
+    }
+    if (q.error && retriesRef.current < 4) {
+      retriesRef.current += 1;
+      const id = setTimeout(() => q.reload(), 700);
+      return () => clearTimeout(id);
+    }
+  }, [q.error, q.data, q.reload]);
+
+  const byStage = new Map<string, StageFunnelRow>(
+    (q.data?.stage_funnel ?? []).map((r) => [r.stage, r])
+  );
+  const stages = STAGE_OPTIONS.filter((o) => o.value !== "ALL");
+  const ready = !!q.data;
+  const allTotal = (q.data?.stage_funnel ?? []).reduce((s, r) => s + r.total, 0);
+  const openCount = q.data?.active_count ?? 0;
+
+  return (
+    <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+      {/* All — clears the stage filter back to every case. */}
+      <StatCard
+        label="All Cases"
+        value={ready ? allTotal.toLocaleString() : "—"}
+        subtitle={
+          !ready
+            ? q.loading
+              ? "Loading…"
+              : "Unavailable"
+            : `${openCount.toLocaleString()} open`
+        }
+        active={stage === "ALL"}
+        onClick={() => onPick("ALL")}
+      />
+      {stages.map((s) => {
+        const row = byStage.get(s.value);
+        const total = row?.total ?? 0;
+        const breached = row?.breached ?? 0;
+        const isCompleted = s.value === "completed";
+        // `ready` (component scope) distinguishes loaded / loading /
+        // errored — don't paint a 500 as a genuine "0 cases" (the summary
+        // endpoint flakes during cutover).
+        return (
+          <StatCard
+            key={s.value}
+            label={s.label}
+            value={ready ? total.toLocaleString() : "—"}
+            subtitle={
+              !ready
+                ? q.loading
+                  ? "Loading…"
+                  : "Unavailable"
+                : isCompleted
+                ? "Closed cases"
+                : breached > 0
+                ? `${breached} SLA breached`
+                : total > 0
+                ? "On track"
+                : "No cases"
+            }
+            tone={ready && !isCompleted && breached > 0 ? "error" : "default"}
+            active={stage === s.value}
+            onClick={() => onPick(stage === s.value ? "ALL" : s.value)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Cases · SLA Board ─────────────────────────────────────────
+// Kanban-by-urgency. Every open case is dropped into one of five
+// columns by how close it is to its SLA deadline. Ops triage reads
+// left-to-right: clear the red column first.
+
+function CasesBoardView({
+  filters,
+  onOpen,
+}: {
+  filters: CaseFilters;
+  onOpen: (id: number) => void;
+}) {
+  // Forward-looking triage board — completed cases carry no live SLA, so
+  // drop them unless the user is explicitly filtering to that stage. This
+  // also spends the 200-row server budget on open work, not closed noise.
+  const effective: CaseFilters = {
+    ...filters,
+    exclude_stage: filters.stage === "completed" ? filters.exclude_stage : "completed",
+  };
+  const q = useQuery<Paginated<AssrCase>>(
+    () => api.get(`/api/assr${buildQuery({ ...effective, page: 1, per_page: 500 })}`),
+    [
+      effective.stage,
+      effective.search,
+      effective.include_archived,
+      effective.exclude_stage,
+      effective.assigned_to,
+      effective.creditor_code,
+    ]
+  );
+  const cases = q.data?.data ?? [];
+  const total = q.data?.total ?? cases.length;
+
+  const buckets = useMemo(() => {
+    const b: Record<Urgency, AssrCase[]> = {
+      overdue: [],
+      today: [],
+      soon: [],
+      later: [],
+      none: [],
+    };
+    for (const c of cases) b[caseUrgency(c)].push(c);
+    for (const k of URGENCY_ORDER) {
+      b[k].sort(
+        (a, z) =>
+          (a.hours_to_deadline ?? Number.POSITIVE_INFINITY) -
+          (z.hours_to_deadline ?? Number.POSITIVE_INFINITY)
+      );
+    }
+    return b;
+  }, [cases]);
+
+  if (q.loading) {
+    return (
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {URGENCY_ORDER.map((u) => (
+          <div
+            key={u}
+            className="h-64 animate-pulse rounded-lg border border-border bg-surface-dim/40"
+          />
+        ))}
+      </div>
+    );
+  }
+  if (q.error) {
+    return (
+      <EmptyState
+        message="Couldn't load cases"
+        description={q.error}
+        icon={<LayoutGrid size={24} />}
+      />
+    );
+  }
+  if (cases.length === 0) {
+    return (
+      <EmptyState
+        message="No open cases"
+        description="Nothing matches the current filters."
+        icon={<LayoutGrid size={24} />}
+      />
+    );
+  }
+
+  return (
+    <div>
+      {total > cases.length && (
+        <p className="mb-2 text-[11px] text-ink-muted">
+          Showing the first {cases.length} of {total} cases — narrow the
+          filters to see the rest.
+        </p>
+      )}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {URGENCY_ORDER.map((u) => {
+          const meta = URGENCY_META[u];
+          const items = buckets[u];
+          return (
+            <div
+              key={u}
+              className="flex flex-col overflow-hidden rounded-lg border border-border bg-surface-dim/40"
+            >
+              <div
+                className="flex items-center gap-2 border-b border-border px-3 py-2"
+                style={{ borderTop: `2px solid ${meta.hex}` }}
+              >
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ background: meta.hex }}
+                />
+                <span
+                  className="text-[11px] font-semibold uppercase tracking-wider"
+                  style={{ color: meta.text }}
+                  title={meta.hint}
+                >
+                  {meta.label}
+                </span>
+                <span className="ml-auto font-mono text-[11px] font-bold text-ink-muted">
+                  {items.length}
+                </span>
+              </div>
+              <div className="flex-1 space-y-2 p-2">
+                {items.length === 0 ? (
+                  <p className="px-1 py-4 text-center text-[11px] text-ink-muted/70">
+                    Nothing here
+                  </p>
+                ) : (
+                  items.map((c) => (
+                    <CaseCard key={c.id} c={c} onOpen={onOpen} />
+                  ))
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Compact case card — shared by the Board columns and the Calendar
+// day-modal. Left rail + countdown colour encode SLA urgency.
+function CaseCard({ c, onOpen }: { c: AssrCase; onOpen: (id: number) => void }) {
+  const u = caseUrgency(c);
+  const meta = URGENCY_META[u];
+  const countdown = formatCountdown(c.hours_to_deadline);
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(c.id)}
+      style={{ borderLeftColor: meta.hex }}
+      className="block w-full rounded-md border border-border border-l-[3px] bg-surface px-3 py-2.5 text-left shadow-stone transition hover:-translate-y-px hover:border-accent/40 hover:shadow-md"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
+        <span className="whitespace-nowrap font-mono text-[11px] font-semibold text-ink">
+          {c.assr_no}
+        </span>
+        {countdown && c.stage !== "completed" && (
+          <span
+            className="shrink-0 whitespace-nowrap text-[10px] font-semibold"
+            style={{ color: meta.text }}
+          >
+            {countdown}
+          </span>
+        )}
+      </div>
+      <div className="mt-1 truncate text-[12px] font-medium text-ink">
+        {c.customer_name || "—"}
+      </div>
+      {c.item_code && (
+        <div className="truncate font-mono text-[10px] text-ink-muted">
+          {c.item_code}
+        </div>
+      )}
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <span className={cn("h-2 w-2 shrink-0 rounded-full", priorityColor(c.priority))} />
+        <span className="truncate text-[10px] text-ink-secondary">
+          {caseStageLabel(c.stage)}
+        </span>
+        {c.assigned_to_name && (
+          <span className="ml-auto truncate text-[10px] text-ink-muted">
+            {c.assigned_to_name}
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+// ── Cases · Calendar ──────────────────────────────────────────
+// Month grid plotting every open case on its SLA deadline (or the
+// reported date). Chips are coloured by SLA urgency; hover reveals the
+// case basics, "+N more" opens a day list. Mirrors the Projects
+// calendar's visual language (blank adjacent cells, prominent today,
+// wheel-to-navigate).
+
+function CasesCalendarView({
+  filters,
+  onOpen,
+}: {
+  filters: CaseFilters;
+  onOpen: (id: number) => void;
+}) {
+  const [params, setParams] = useSearchParams();
+  // Reported date is the default basis: nearly every case has a
+  // complained_date, whereas SLA deadlines are sparsely set — so the
+  // calendar lands populated rather than mostly empty.
+  const basis: "deadline" | "reported" =
+    params.get("cbasis") === "deadline" ? "deadline" : "reported";
+
+  function patch(next: Record<string, string>) {
+    const p = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(next)) {
+      if (v === "") p.delete(k);
+      else p.set(k, v);
+    }
+    setParams(p, { replace: true });
+  }
+
+  const monthStr = params.get("cmonth") || "";
+  const anchor = useMemo(() => {
+    if (/^\d{4}-\d{2}$/.test(monthStr)) {
+      return new Date(Number(monthStr.slice(0, 4)), Number(monthStr.slice(5, 7)) - 1, 1);
+    }
+    const d = new Date();
+    d.setDate(1);
+    return d;
+  }, [monthStr]);
+
+  const setAnchor = (d: Date) =>
+    patch({ cmonth: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}` });
+
+  // Like the board, the calendar is about live work — hide completed
+  // cases unless that stage is explicitly selected.
+  const effective: CaseFilters = {
+    ...filters,
+    exclude_stage: filters.stage === "completed" ? filters.exclude_stage : "completed",
+  };
+  const q = useQuery<Paginated<AssrCase>>(
+    () => api.get(`/api/assr${buildQuery({ ...effective, page: 1, per_page: 500 })}`),
+    [
+      effective.stage,
+      effective.search,
+      effective.include_archived,
+      effective.exclude_stage,
+      effective.assigned_to,
+      effective.creditor_code,
+    ]
+  );
+  const cases = q.data?.data ?? [];
+  const total = q.data?.total ?? cases.length;
+
+  // Group by the active date basis (local day key).
+  const byDate = useMemo(() => {
+    const m = new Map<string, AssrCase[]>();
+    for (const c of cases) {
+      const raw =
+        basis === "reported" ? c.complained_date : c.deadline_at || c.complained_date;
+      if (!raw) continue;
+      const key = raw.slice(0, 10);
+      const arr = m.get(key);
+      if (arr) arr.push(c);
+      else m.set(key, [c]);
+    }
+    // Sort each day by urgency then countdown so the worst sits on top.
+    for (const arr of m.values()) {
+      arr.sort(
+        (a, z) =>
+          URGENCY_ORDER.indexOf(caseUrgency(a)) - URGENCY_ORDER.indexOf(caseUrgency(z)) ||
+          (a.hours_to_deadline ?? Number.POSITIVE_INFINITY) -
+            (z.hours_to_deadline ?? Number.POSITIVE_INFINITY)
+      );
+    }
+    return m;
+  }, [cases, basis]);
+
+  // 6×7 month grid, Monday-first, starting on the Monday on/before the 1st.
+  const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const startOffset = (first.getDay() + 6) % 7;
+  const gridStart = new Date(first);
+  gridStart.setDate(first.getDate() - startOffset);
+  const cells: { date: Date; iso: string; inMonth: boolean }[] = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart);
+    d.setDate(gridStart.getDate() + i);
+    cells.push({ date: d, iso: isoLocal(d), inMonth: d.getMonth() === anchor.getMonth() });
+  }
+  const today = isoLocal(new Date());
+  const monthLabel = anchor.toLocaleDateString("en-MY", { month: "long", year: "numeric" });
+
+  // Wheel over the grid steps months (throttled, non-passive).
+  const gridRef = useRef<HTMLDivElement>(null);
+  const wheelTsRef = useRef(0);
+  const anchorRef = useRef(anchor);
+  anchorRef.current = anchor;
+  const setAnchorRef = useRef(setAnchor);
+  setAnchorRef.current = setAnchor;
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      e.preventDefault();
+      const now = Date.now();
+      if (now - wheelTsRef.current < 380) return;
+      wheelTsRef.current = now;
+      const d = new Date(anchorRef.current);
+      d.setMonth(d.getMonth() + (e.deltaY > 0 ? 1 : -1));
+      setAnchorRef.current(d);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const [hover, setHover] = useState<{ c: AssrCase; x: number; y: number } | null>(null);
+  const [dayModal, setDayModal] = useState<string | null>(null);
+
+  const MAX_CHIPS = 3;
+  const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+  return (
+    <div>
+      {/* Toolbar */}
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <div className="inline-flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              const d = new Date(anchor);
+              d.setMonth(d.getMonth() - 1);
+              setAnchor(d);
+            }}
+            className="rounded-md border border-border bg-surface p-1.5 text-ink-muted transition hover:border-accent/40 hover:text-accent"
+            aria-label="Previous month"
+          >
+            <ChevronLeft size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const d = new Date(anchor);
+              d.setMonth(d.getMonth() + 1);
+              setAnchor(d);
+            }}
+            className="rounded-md border border-border bg-surface p-1.5 text-ink-muted transition hover:border-accent/40 hover:text-accent"
+            aria-label="Next month"
+          >
+            <ChevronRight size={15} />
+          </button>
+        </div>
+        <h2 className="font-display text-lg font-semibold text-ink">{monthLabel}</h2>
+        <button
+          type="button"
+          onClick={() => {
+            const d = new Date();
+            d.setDate(1);
+            setAnchor(d);
+          }}
+          className="rounded-md border border-border bg-surface px-2.5 py-1 text-[11px] font-semibold text-ink-secondary transition hover:border-accent/40 hover:text-accent"
+        >
+          Today
+        </button>
+
+        {/* Date basis */}
+        <div className="ml-auto inline-flex overflow-hidden rounded-md border border-border bg-bg/40 text-[10.5px] font-semibold">
+          {([
+            { v: "reported", label: "Reported date" },
+            { v: "deadline", label: "SLA deadline" },
+          ] as const).map(({ v, label }) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => patch({ cbasis: v === "reported" ? "" : v })}
+              aria-pressed={basis === v}
+              className={cn(
+                "px-2.5 py-1.5 transition-colors",
+                basis === v ? "bg-accent text-white" : "text-ink-muted hover:text-accent"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        {URGENCY_ORDER.map((u) => (
+          <span key={u} className="inline-flex items-center gap-1.5 text-[10.5px] text-ink-secondary">
+            <span className="h-2.5 w-2.5 rounded-[3px]" style={{ background: URGENCY_META[u].hex }} />
+            {URGENCY_META[u].label}
+          </span>
+        ))}
+        <span className="ml-auto text-[10.5px] text-ink-muted">Scroll to change month</span>
+      </div>
+
+      {q.error ? (
+        <EmptyState message="Couldn't load cases" description={q.error} icon={<CalendarDays size={24} />} />
+      ) : (
+        <>
+          {total > cases.length && (
+            <p className="mb-2 text-[11px] text-ink-muted">
+              Showing the first {cases.length} of {total} cases — narrow the filters to see the rest.
+            </p>
+          )}
+          <div
+            ref={gridRef}
+            className={cn(
+              "overflow-hidden rounded-lg border border-border bg-surface",
+              q.loading && "animate-pulse opacity-60"
+            )}
+          >
+            {/* Weekday header */}
+            <div className="grid grid-cols-7 border-b border-border bg-surface-dim/60">
+              {WEEKDAYS.map((d) => (
+                <div
+                  key={d}
+                  className="px-2 py-1.5 text-center text-[10px] font-semibold uppercase tracking-wider text-ink-muted"
+                >
+                  {d}
+                </div>
+              ))}
+            </div>
+            {/* Cells */}
+            <div className="grid grid-cols-7">
+              {cells.map((cell, i) => {
+                const items = byDate.get(cell.iso) ?? [];
+                const isToday = cell.iso === today;
+                return (
+                  <div
+                    key={cell.iso}
+                    className={cn(
+                      "min-h-[104px] border-b border-r border-border/70 p-1.5",
+                      i % 7 === 6 && "border-r-0",
+                      i >= 35 && "border-b-0",
+                      !cell.inMonth && "bg-surface-dim/40"
+                    )}
+                  >
+                    {cell.inMonth && (
+                      <>
+                        <div className="mb-1 flex items-center justify-between">
+                          <span
+                            className={cn(
+                              "inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-semibold",
+                              isToday
+                                ? "bg-accent text-white"
+                                : "text-ink-secondary"
+                            )}
+                          >
+                            {cell.date.getDate()}
+                          </span>
+                          {items.length > 0 && (
+                            <span className="font-mono text-[9px] text-ink-muted">
+                              {items.length}
+                            </span>
+                          )}
+                        </div>
+                        <div className="space-y-1">
+                          {items.slice(0, MAX_CHIPS).map((c) => {
+                            const meta = URGENCY_META[caseUrgency(c)];
+                            return (
+                              <button
+                                key={c.id}
+                                type="button"
+                                onClick={() => onOpen(c.id)}
+                                onMouseEnter={(e) =>
+                                  setHover({ c, x: e.clientX, y: e.clientY })
+                                }
+                                onMouseMove={(e) =>
+                                  setHover({ c, x: e.clientX, y: e.clientY })
+                                }
+                                onMouseLeave={() => setHover(null)}
+                                style={{ background: meta.tint, borderLeft: `3px solid ${meta.hex}` }}
+                                className="block w-full truncate rounded-[4px] px-1.5 py-1 text-left text-[10.5px] font-medium leading-tight text-ink transition hover:-translate-y-px"
+                                title={`${c.assr_no} · ${c.customer_name || ""}`}
+                              >
+                                <span className="font-mono text-[9.5px] text-ink-muted">
+                                  {c.assr_no}
+                                </span>{" "}
+                                {c.customer_name || "—"}
+                              </button>
+                            );
+                          })}
+                          {items.length > MAX_CHIPS && (
+                            <button
+                              type="button"
+                              onClick={() => setDayModal(cell.iso)}
+                              className="w-full rounded-[4px] px-1.5 py-0.5 text-left text-[10px] font-semibold text-accent hover:bg-accent-soft/40"
+                            >
+                              +{items.length - MAX_CHIPS} more
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+
+      {hover && <CaseChipPopover info={hover} basis={basis} />}
+
+      {dayModal && (
+        <CaseDayModal
+          iso={dayModal}
+          cases={byDate.get(dayModal) ?? []}
+          basis={basis}
+          onClose={() => setDayModal(null)}
+          onOpen={onOpen}
+        />
+      )}
+    </div>
+  );
+}
+
+// Cursor-anchored hover card for a calendar chip.
+function CaseChipPopover({
+  info,
+  basis,
+}: {
+  info: { c: AssrCase; x: number; y: number };
+  basis: "deadline" | "reported";
+}) {
+  const { c, x, y } = info;
+  const meta = URGENCY_META[caseUrgency(c)];
+  const countdown = formatCountdown(c.hours_to_deadline);
+  const left = Math.min(x + 14, window.innerWidth - 272);
+  const top = Math.min(y + 14, window.innerHeight - 220);
+  return createPortal(
+    <div
+      className="pointer-events-none fixed z-[70] w-64 rounded-lg border border-border bg-surface p-3 shadow-xl"
+      style={{ left, top }}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[12px] font-semibold text-ink">{c.assr_no}</span>
+        <span
+          className="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+          style={{ background: meta.tint, color: meta.text }}
+        >
+          {c.stage === "completed" ? "Completed" : meta.label}
+        </span>
+      </div>
+      <div className="mt-1.5 text-[13px] font-semibold text-ink">
+        {c.customer_name || "—"}
+      </div>
+      <div className="mt-2 space-y-1 text-[11px] text-ink-secondary">
+        <div className="flex justify-between gap-2">
+          <span className="text-ink-muted">Stage</span>
+          <span className="text-right">{caseStageLabel(c.stage)}</span>
+        </div>
+        <div className="flex justify-between gap-2">
+          <span className="text-ink-muted">Priority</span>
+          <span className="capitalize">{c.priority}</span>
+        </div>
+        {c.item_code && (
+          <div className="flex justify-between gap-2">
+            <span className="text-ink-muted">Item</span>
+            <span className="font-mono text-right">{c.item_code}</span>
+          </div>
+        )}
+        <div className="flex justify-between gap-2">
+          <span className="text-ink-muted">
+            {basis === "reported" ? "Reported" : "SLA due"}
+          </span>
+          <span className="text-right">
+            {formatDate(basis === "reported" ? c.complained_date : c.deadline_at)}
+            {countdown && c.stage !== "completed" && basis === "deadline" && (
+              <span className="ml-1" style={{ color: meta.text }}>
+                ({countdown})
+              </span>
+            )}
+          </span>
+        </div>
+        {c.assigned_to_name && (
+          <div className="flex justify-between gap-2">
+            <span className="text-ink-muted">Assigned</span>
+            <span className="text-right">{c.assigned_to_name}</span>
+          </div>
+        )}
+      </div>
+      {c.complaint_issue && (
+        <p className="mt-2 line-clamp-3 border-t border-border pt-2 text-[11px] text-ink-secondary">
+          {c.complaint_issue}
+        </p>
+      )}
+    </div>,
+    document.body
+  );
+}
+
+// Day overflow modal — every case landing on one day, as cards.
+function CaseDayModal({
+  iso,
+  cases,
+  basis,
+  onClose,
+  onOpen,
+}: {
+  iso: string;
+  cases: AssrCase[];
+  basis: "deadline" | "reported";
+  onClose: () => void;
+  onOpen: (id: number) => void;
+}) {
+  const label = new Date(iso + "T00:00:00").toLocaleDateString("en-MY", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-ink/30 p-4 backdrop-blur-sm sm:p-10"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-xl border border-border bg-surface shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+              {basis === "reported" ? "Reported" : "SLA due"} · {cases.length} case
+              {cases.length === 1 ? "" : "s"}
+            </div>
+            <h3 className="font-display text-sm font-semibold text-ink">{label}</h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1 text-ink-muted transition hover:bg-surface-dim hover:text-ink"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="max-h-[60vh] space-y-2 overflow-y-auto p-3">
+          {cases.map((c) => (
+            <CaseCard
+              key={c.id}
+              c={c}
+              onOpen={(id) => {
+                onClose();
+                onOpen(id);
+              }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
