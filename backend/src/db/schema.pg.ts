@@ -974,3 +974,64 @@ export const scm_supplier_material_bindings = pgTable(
       .where(sql`${t.is_main_supplier} = true`),
   }),
 );
+
+// scm_purchase_orders — PO header (trimmed to generic purchasing fields)
+export const scm_purchase_orders = pgTable(
+  "scm_purchase_orders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    po_number: text("po_number").notNull().unique(),
+    supplier_id: uuid("supplier_id")
+      .notNull()
+      .references(() => scm_suppliers.id, { onDelete: "restrict" }),
+    status: text("status").notNull().default("SUBMITTED"),
+    po_date: date("po_date").notNull().defaultNow(),
+    expected_at: date("expected_at"),
+    currency: text("currency").notNull().default("MYR"),
+    subtotal_centi: integer("subtotal_centi").notNull().default(0),
+    tax_centi: integer("tax_centi").notNull().default(0),
+    total_centi: integer("total_centi").notNull().default(0),
+    notes: text("notes"),
+    submitted_at: timestamp("submitted_at", { withTimezone: true }),
+    received_at: timestamp("received_at", { withTimezone: true }),
+    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
+    created_by: integer("created_by"), // users.id soft ref (set from auth)
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_supplier: index("idx_scm_po_supplier").on(t.supplier_id),
+    idx_status: index("idx_scm_po_status").on(t.status),
+  }),
+);
+
+// scm_purchase_order_items — PO lines
+export const scm_purchase_order_items = pgTable(
+  "scm_purchase_order_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    purchase_order_id: uuid("purchase_order_id")
+      .notNull()
+      .references(() => scm_purchase_orders.id, { onDelete: "cascade" }),
+    binding_id: uuid("binding_id").references(() => scm_supplier_material_bindings.id, {
+      onDelete: "set null",
+    }),
+    material_kind: text("material_kind").notNull().default("mfg_product"),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name").notNull(),
+    supplier_sku: text("supplier_sku"),
+    qty: integer("qty").notNull().default(0),
+    unit_price_centi: integer("unit_price_centi").notNull().default(0),
+    discount_centi: integer("discount_centi").notNull().default(0),
+    line_total_centi: integer("line_total_centi").notNull().default(0),
+    received_qty: integer("received_qty").notNull().default(0),
+    uom: text("uom").notNull().default("UNIT"),
+    variants: jsonb("variants"),
+    notes: text("notes"),
+    delivery_date: date("delivery_date"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_po: index("idx_scm_po_items_po").on(t.purchase_order_id),
+  }),
+);
