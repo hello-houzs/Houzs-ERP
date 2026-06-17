@@ -27,6 +27,13 @@ export default defineWorkersConfig(async () => {
   );
 
   return {
+    // Vitest uses Vite to load modules and does NOT read tsconfig "paths", so
+    // the @shared/* alias (resolved by esbuild at deploy + tsc at typecheck)
+    // must be declared here too, or every suite that imports an scm route
+    // fails with "Failed to load url @shared/...".
+    resolve: {
+      alias: { "@shared": path.resolve(__dirname, "../shared") },
+    },
     test: {
       globals: true,
       setupFiles: ["./tests/setup.ts"],
