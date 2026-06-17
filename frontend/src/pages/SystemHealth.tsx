@@ -339,12 +339,12 @@ export function SystemHealth() {
               ) : (
                 <div className="thin-scroll max-h-[28rem] overflow-auto">
                   <table className="w-full text-[12px]">
-                    <thead className="sticky top-0 bg-surface">
-                      <tr className="border-b border-border text-left text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                        <th className="py-1.5 pr-3 font-semibold">When</th>
-                        <th className="py-1.5 pr-3 font-semibold">Who</th>
-                        <th className="py-1.5 pr-3 font-semibold">Action</th>
-                        <th className="py-1.5 font-semibold">What</th>
+                    <thead className="sticky top-0">
+                      <tr className="border-b-2 border-border bg-surface-dim text-left text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+                        <th className="py-1.5 pr-3">When</th>
+                        <th className="py-1.5 pr-3">Who</th>
+                        <th className="py-1.5 pr-3">Action</th>
+                        <th className="py-1.5">What</th>
                       </tr>
                     </thead>
                     <tbody>

@@ -354,18 +354,18 @@ export function ServiceMetrics() {
         {m && m.creditor_performance.length > 0 ? (
           <table className="w-full text-[12px]">
             <thead>
-              <tr className="text-left text-ink-muted">
-                <th className="px-5 py-2 font-semibold">Creditor</th>
-                <th className="px-3 py-2 text-right font-semibold">Cases</th>
-                <th className="px-3 py-2 text-right font-semibold">Closed</th>
-                <th className="px-3 py-2 text-right font-semibold">Breached</th>
-                <th className="px-3 py-2 text-right font-semibold">Avg Resolution</th>
-                <th className="px-3 py-2 text-right font-semibold">Rating</th>
+              <tr className="border-b-2 border-border bg-surface-dim text-left text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+                <th className="px-5 py-2">Creditor</th>
+                <th className="px-3 py-2 text-right">Cases</th>
+                <th className="px-3 py-2 text-right">Closed</th>
+                <th className="px-3 py-2 text-right">Breached</th>
+                <th className="px-3 py-2 text-right">Avg Resolution</th>
+                <th className="px-3 py-2 text-right">Rating</th>
               </tr>
             </thead>
             <tbody>
               {m.creditor_performance.map((s) => (
-                <tr key={s.creditor_code} className="border-t border-border">
+                <tr key={s.creditor_code} className="border-t border-border-subtle hover:bg-bg/40">
                   <td className="px-5 py-2">
                     <div className="font-semibold">{s.name || s.creditor_code}</div>
                     <div className="font-mono text-[10px] text-ink-muted">{s.creditor_code}</div>
