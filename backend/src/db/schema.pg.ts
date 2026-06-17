@@ -1566,3 +1566,160 @@ export const warehouseRackMovements = pgTable('warehouse_rack_movements', {
   typeEnum:   check('warehouse_rack_movements_type_chk',
     sql`movement_type IN ('STOCK_IN','STOCK_OUT','TRANSFER')`),
 }));
+
+// ── Purchase Invoice + Purchase Return slice (1:1 clone of 2990s) ───────────
+// Copied VERBATIM from 2990s packages/db/src/schema.ts:
+//   purchase_invoice_status (enum, ~L1053), purchase_invoices (~L1129),
+//   purchase_invoice_items (~L1155), purchase_return_status (~L1772),
+//   purchase_returns (~L1778), purchase_return_items (~L1801). camelCase keys +
+//   snake_case column strings + the real pgEnums, so the ported /purchase-invoices
+//   + /purchase-returns routes reference these unchanged.
+//
+// Document flow: PO -> GRN -> {Purchase Invoice (AP), Purchase Return (return to
+// supplier)}. A PI is a FINANCE record (no stock impact — that landed at GRN
+// time); on post it bumps grn_items.invoiced_qty. A PR is a stock-OUT (returns
+// goods to the supplier); on post it writes inventory OUT movements + bumps
+// grn_items.returned_qty + recomputes the parent PO's received_qty.
+//
+// NO AutoCount collision (Houzs has none of these tables) -> BARE physical names
+// + bare export keys (rule #1). All later-migration columns are folded in so the
+// schema is the FINAL shape migration 0028 creates: PI variant/discount/unit-cost
+// fields (2990s mig 0057), paid_centi + statuses, PR variant fields (0057).
+//
+// Only the documented SEAMS change vs 2990s:
+//   - createdBy: 2990s uuid -> staff.id. rule #4 -> Houzs users.id is serial
+//     INTEGER; SOFT ref (no FK), matching the PO/GRN/inventory slices.
+//   - supplierId -> suppliers(id) REAL FK (restrict), exactly as 2990s.
+//   - purchaseOrderId -> mfg_purchase_orders(id) (the cloned PO table); nullable
+//     REAL FK (set null) — 2990s declares it nullable on PI/PR too.
+//   - grnId -> grns(id) nullable REAL FK (set null), exactly as 2990s.
+//   - item grnItemId -> grn_items(id) nullable REAL FK (set null), as 2990s.
+//   - GL/accounting AP-posting is OUT OF SCOPE (Houzs GL differs) — the schema is
+//     unaffected (2990s posts to a separate chart-of-accounts; no PI/PR column).
+
+export const purchaseInvoiceStatus = pgEnum('purchase_invoice_status', [
+  'POSTED', 'PARTIALLY_PAID', 'PAID', 'CANCELLED',
+]);
+
+export const purchaseInvoices = pgTable('purchase_invoices', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  invoiceNumber:     text('invoice_number').notNull().unique(),     // 'PI-2605-001' (ours)
+  supplierInvoiceRef: text('supplier_invoice_ref'),                 // supplier's invoice number
+  supplierId:        uuid('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'restrict' }),
+  // SEAM: -> mfg_purchase_orders (the cloned PO table); nullable as 2990s.
+  purchaseOrderId:   uuid('purchase_order_id').references(() => purchaseOrders.id, { onDelete: 'set null' }),
+  grnId:             uuid('grn_id').references(() => grns.id, { onDelete: 'set null' }),
+  invoiceDate:       date('invoice_date').notNull().defaultNow(),
+  dueDate:           date('due_date'),
+  currency:          currencyCode('currency').notNull().default('MYR'),
+  subtotalCenti:     integer('subtotal_centi').notNull().default(0),
+  taxCenti:          integer('tax_centi').notNull().default(0),
+  totalCenti:        integer('total_centi').notNull().default(0),
+  paidCenti:         integer('paid_centi').notNull().default(0),
+  status:            purchaseInvoiceStatus('status').notNull().default('POSTED'),
+  notes:             text('notes'),
+  postedAt:          timestamp('posted_at', { withTimezone: true }),
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // SEAM (rule #4): 2990s uuid -> staff.id. Houzs users.id is serial INTEGER; soft ref.
+  createdBy:         integer('created_by').notNull(),
+  updatedAt:         timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxSupplier: index('idx_pi_supplier').on(t.supplierId),
+  idxPo:       index('idx_pi_po').on(t.purchaseOrderId),
+  idxStatus:   index('idx_pi_status').on(t.status),
+}));
+
+export const purchaseInvoiceItems = pgTable('purchase_invoice_items', {
+  id:                  uuid('id').primaryKey().defaultRandom(),
+  purchaseInvoiceId:   uuid('purchase_invoice_id').notNull().references(() => purchaseInvoices.id, { onDelete: 'cascade' }),
+  grnItemId:           uuid('grn_item_id').references(() => grnItems.id, { onDelete: 'set null' }),
+  materialKind:        materialKind('material_kind').notNull(),
+  materialCode:        text('material_code').notNull(),
+  materialName:        text('material_name').notNull(),
+  qty:                 integer('qty').notNull(),
+  unitPriceCenti:      integer('unit_price_centi').notNull(),
+  lineTotalCenti:      integer('line_total_centi').notNull(),
+  notes:               text('notes'),
+  /* 2990s PR #42 — variant fields (migration 0057). Strategy-2: KEPT for fidelity;
+     the Houzs UI does not surface the sofa-variant editor (generic fields only). */
+  gapInches:             integer('gap_inches'),
+  divanHeightInches:     integer('divan_height_inches'),
+  divanPriceSen:         integer('divan_price_sen').notNull().default(0),
+  legHeightInches:       integer('leg_height_inches'),
+  legPriceSen:           integer('leg_price_sen').notNull().default(0),
+  customSpecials:        jsonb('custom_specials'),
+  lineSuffix:            text('line_suffix'),
+  specialOrderPriceSen:  integer('special_order_price_sen').notNull().default(0),
+  variants:              jsonb('variants'),
+  itemGroup:             text('item_group'),
+  description:           text('description'),
+  description2:          text('description2'),
+  uom:                   text('uom').notNull().default('UNIT'),
+  discountCenti:         integer('discount_centi').notNull().default(0),
+  unitCostCenti:         integer('unit_cost_centi').notNull().default(0),
+  createdAt:           timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxPi: index('idx_pi_items_pi').on(t.purchaseInvoiceId),
+}));
+
+export const purchaseReturnStatus = pgEnum('purchase_return_status', [
+  'POSTED',      // created + sent to supplier, awaiting confirmation (default on create)
+  'COMPLETED',   // supplier confirmed refund / credit-note
+  'CANCELLED',   // returned items kept after all
+]);
+
+export const purchaseReturns = pgTable('purchase_returns', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  returnNumber:      text('return_number').notNull().unique(),       // 'PRT-2605-001'
+  // SEAM: -> mfg_purchase_orders (the cloned PO table); nullable as 2990s.
+  purchaseOrderId:   uuid('purchase_order_id').references(() => purchaseOrders.id, { onDelete: 'set null' }),
+  grnId:             uuid('grn_id').references(() => grns.id, { onDelete: 'set null' }),
+  supplierId:        uuid('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'restrict' }),
+  returnDate:        date('return_date').notNull().defaultNow(),
+  reason:            text('reason'),                                 // 'DEFECT'|'WRONG_ITEM'|'OVERSUPPLY'|free text
+  status:            purchaseReturnStatus('status').notNull().default('POSTED'),
+  postedAt:          timestamp('posted_at', { withTimezone: true }),
+  completedAt:       timestamp('completed_at', { withTimezone: true }),
+  creditNoteRef:     text('credit_note_ref'),                        // supplier's CN# once issued
+  refundCenti:       integer('refund_centi').notNull().default(0),
+  notes:             text('notes'),
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // SEAM (rule #4): 2990s uuid -> staff.id. Houzs users.id is serial INTEGER; soft ref.
+  createdBy:         integer('created_by').notNull(),
+  updatedAt:         timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxPo:       index('idx_pr_po').on(t.purchaseOrderId),
+  idxSupplier: index('idx_pr_supplier').on(t.supplierId),
+  idxStatus:   index('idx_pr_status').on(t.status),
+}));
+
+export const purchaseReturnItems = pgTable('purchase_return_items', {
+  id:                    uuid('id').primaryKey().defaultRandom(),
+  purchaseReturnId:      uuid('purchase_return_id').notNull().references(() => purchaseReturns.id, { onDelete: 'cascade' }),
+  grnItemId:             uuid('grn_item_id').references(() => grnItems.id, { onDelete: 'set null' }),
+  materialKind:          materialKind('material_kind').notNull(),
+  materialCode:          text('material_code').notNull(),
+  materialName:          text('material_name').notNull(),
+  qtyReturned:           integer('qty_returned').notNull(),
+  unitPriceCenti:        integer('unit_price_centi').notNull().default(0),
+  lineRefundCenti:       integer('line_refund_centi').notNull().default(0),
+  reason:                text('reason'),                             // per-line reason if mixed
+  notes:                 text('notes'),
+  /* 2990s PR #42 — variant fields (migration 0057). Strategy-2: KEPT for fidelity. */
+  gapInches:             integer('gap_inches'),
+  divanHeightInches:     integer('divan_height_inches'),
+  divanPriceSen:         integer('divan_price_sen').notNull().default(0),
+  legHeightInches:       integer('leg_height_inches'),
+  legPriceSen:           integer('leg_price_sen').notNull().default(0),
+  customSpecials:        jsonb('custom_specials'),
+  lineSuffix:            text('line_suffix'),
+  specialOrderPriceSen:  integer('special_order_price_sen').notNull().default(0),
+  variants:              jsonb('variants'),
+  itemGroup:             text('item_group'),
+  description:           text('description'),
+  description2:          text('description2'),
+  uom:                   text('uom').notNull().default('UNIT'),
+  createdAt:             timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxPr: index('idx_pr_items_pr').on(t.purchaseReturnId),
+}));

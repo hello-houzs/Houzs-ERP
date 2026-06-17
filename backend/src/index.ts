@@ -44,6 +44,8 @@ import suppliers from "./routes/suppliers";
 import mfgPurchaseOrders from "./routes/mfg-purchase-orders";
 import inventory from "./routes/inventory";
 import grns from "./routes/grns";
+import purchaseInvoices from "./routes/purchase-invoices";
+import purchaseReturns from "./routes/purchase-returns";
 import mfgWarehouses from "./routes/warehouse";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
@@ -177,6 +179,11 @@ app.route("/api/mfg-warehouses", mfgWarehouses);
 // received_qty onto mfg_purchase_order_items + writes an inventory IN movement +
 // places lines on racks. No AutoCount collision -> /api/grns. Owner-only (perm "*").
 app.route("/api/grns", grns);
+// SCM 1:1 clone — Purchase Invoice (AP record, no stock impact) + Purchase Return
+// (return to supplier, stock OUT). PO -> GRN -> {PI, PR}. No AutoCount collision
+// -> /api/purchase-invoices + /api/purchase-returns. Owner-only (perm "*").
+app.route("/api/purchase-invoices", purchaseInvoices);
+app.route("/api/purchase-returns", purchaseReturns);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);

@@ -57,6 +57,8 @@ import {
   suppliers as suppliersTable,
   grns as grnsTable,
   grnItems as grnItemsTable,
+  purchaseInvoices as piTable,
+  purchaseReturns as prTable,
 } from "../db/schema";
 import { requirePermission } from "../middleware/auth";
 
@@ -300,17 +302,27 @@ app.get("/:id/linked", async (c) => {
   const id = c.req.param("id");
   const db = getDb(c.env);
   try {
-    const grnRows = await db
-      .select({
-        id: grnsTable.id,
-        grn_number: grnsTable.grnNumber,
-        status: grnsTable.status,
-        received_at: grnsTable.receivedAt,
-      })
-      .from(grnsTable)
-      .where(eq(grnsTable.purchaseOrderId, id))
-      .orderBy(desc(grnsTable.receivedAt));
-    return c.json({ grns: grnRows, invoices: [] as unknown[], returns: [] as unknown[] });
+    // GRN/PI/PR slices have all landed -> wire the real downstream docs tied to
+    // this PO (each links back via its purchase_order_id FK). Mirrors 2990s's
+    // PO /:id/linked Smart-Buttons fan-out.
+    const [grnRows, invoiceRows, returnRows] = await Promise.all([
+      db
+        .select({ id: grnsTable.id, grn_number: grnsTable.grnNumber, status: grnsTable.status, received_at: grnsTable.receivedAt })
+        .from(grnsTable)
+        .where(eq(grnsTable.purchaseOrderId, id))
+        .orderBy(desc(grnsTable.receivedAt)),
+      db
+        .select({ id: piTable.id, invoice_number: piTable.invoiceNumber, status: piTable.status, invoice_date: piTable.invoiceDate, total_centi: piTable.totalCenti })
+        .from(piTable)
+        .where(eq(piTable.purchaseOrderId, id))
+        .orderBy(desc(piTable.invoiceDate)),
+      db
+        .select({ id: prTable.id, return_number: prTable.returnNumber, status: prTable.status, return_date: prTable.returnDate, refund_centi: prTable.refundCenti })
+        .from(prTable)
+        .where(eq(prTable.purchaseOrderId, id))
+        .orderBy(desc(prTable.returnDate)),
+    ]);
+    return c.json({ grns: grnRows, invoices: invoiceRows, returns: returnRows });
   } catch (e) {
     return c.json({ error: "load_failed", reason: errMsg(e) }, 500);
   }

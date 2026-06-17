@@ -294,3 +294,54 @@ need translation.)
     `source_doc_no` (= GRN no) since warehouse_rack_items has no source_grn_id column
     in 2990s's schema.ts. Convert-to-PI/PR actions dropped (PI/PR slices pending).
   - Migration `0027` NOT applied to any DB (batched for staging at #70).
+- **2026-06-18 — PI + PR slice DONE (#61):** verbatim clone → tables
+  `purchase_invoices`+`purchase_invoice_items` (`purchase_invoice_status` enum
+  POSTED/PARTIALLY_PAID/PAID/CANCELLED) + `purchase_returns`+`purchase_return_items`
+  (`purchase_return_status` enum POSTED/COMPLETED/CANCELLED), all BARE names (no
+  AutoCount collision); migration `0028_purchase_billing.sql`; routes at
+  `/api/purchase-invoices` + `/api/purchase-returns`; query hooks `flow-queries.ts`;
+  pages PurchaseInvoicesList/New/FromGrn/Detail + PurchaseReturnsList/New/Detail in
+  `pages/scm/`; App.tsx routes (`/purchase-invoices[/new|/from-grn|/:id]`,
+  `/purchase-returns[/new|/:id]`, all `<Guard perm="*">`); nav "Purchase Invoices"
+  (Receipt) + "Purchase Returns" (Undo2) under Supply Chain. Both gates EXIT 0.
+  - **PI = FINANCE record, NO stock impact** (inventory landed at GRN time). POST
+    creates POSTED; payment endpoint moves UNPAID→PARTIALLY_PAID→PAID
+    (`paid_centi` vs `total_centi`); cancel releases. On every PI write path
+    `recomputeGrnInvoiced` recounts `grn_items.invoiced_qty` from live PI lines
+    (per-GRN-line cap = accepted − invoiced − returned, + post-insert race verify).
+    From-GRN convert paths (`/from-grn`, `/from-grn-items`) + manual create ported.
+  - **PR = return-to-supplier, OUTBOUND stock.** On post `writePurchaseReturnMovements`
+    writes inventory **OUT** via `writeMovements(db, ... movement_type:'OUT',
+    source_doc_type:'PURCHASE_RETURN', source_doc_id=PR id, qty=qty_returned,
+    batch_no=source GRN's dye-lot)`, per-line warehouse-resolved (source GRN line's
+    warehouse → primary GRN → default); then `adjustGrnReturnedQty` recounts
+    `grn_items.returned_qty` from live PR lines + calls `recomputePoReceived(db,
+    [poItemId])` (net received drops → PO re-opens). Line CRUD writes compensating
+    delta movements (`writePrLineDeltaMovement`: add/+qty → OUT, reduce/delete → IN
+    at the OUT's stamped cost/batch). **Cancel reverses via `reverseMovements(db,
+    'PURCHASE_RETURN', id, userId)`** (signed-net-per-bucket IN) + releases
+    returned_qty. Complete (with CN ref) POSTED→COMPLETED. From-GRN converts
+    (`/from-grns` rejected-qty batch, `/from-grn` whole-GRN) ported.
+  - **PO route un-stubbed:** `/:id/linked` `invoices`/`returns` now query the real
+    `purchase_invoices`/`purchase_returns` tied to the PO (were `[]` after GRN slice).
+  - **GRN route un-stubbed:** detail `/:id` per-line `downstream` PI/PR breakdown
+    (new `grnLineDownstream` Drizzle helper, cancelled docs excluded) + `/:id/linked`
+    `invoices`/`returns` now query real tables (were `[]`). `grnHasDownstream`
+    child-lock already READ invoiced/returned qty — now those counters are actually
+    WRITTEN by the PI/PR routes, so GRN edit-lock fully engages.
+  - **GL/accounting OUT OF SCOPE (Houzs GL differs):** 2990s's AP→GL posting
+    (`reversePiAccounting`/`resyncPiAccounting` on PI, AP post on PR) is DROPPED with
+    a `// TODO: AP→GL posting is out of SCM clone scope` at each site; the PI/PR docs
+    + payment-status stay fully functional. The 2990s Costing-B re-cost chain
+    (`recostForPi`/`recostFromGrn` → DO/SI margin) is NOT cloned (SO/DO/SI slices
+    pending) → dropped with `// TODO`. SO-allocation re-walk
+    (`recomputeSoStockAllocation`, fired by 2990s after a PR moves stock) likewise
+    `// TODO` (SO slice pending).
+  - **SEAM/deviations (documented in files):** `created_by`→int soft-ref (users.id);
+    `purchase_order_id`→real FK to `mfg_purchase_orders` (nullable, as 2990s);
+    `grn_id`/`grn_item_id`/`supplier_id`→real FKs; dropped `buildVariantSummary`
+    (description2 passes the client value through; variant columns persisted for
+    fidelity); New pages use plain-text manual lines (no furniture variant editor /
+    mfg-products / supplier-binding lookup / auto-due-date) per Strategy-2. `sql`
+    import unused → removed from PR route; unused `navigate` removed from detail pages.
+  - Migration `0028` NOT applied to any DB (batched for staging at #70).

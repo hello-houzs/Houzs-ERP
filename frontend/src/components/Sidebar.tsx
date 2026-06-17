@@ -161,6 +161,8 @@ export const NAV_TABS: NavTab[] = [
       { to: "/suppliers", label: "Suppliers", icon: Package, perm: "*" },
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
       { to: "/grns", label: "Goods Received", icon: Truck, perm: "*" },
+      { to: "/purchase-invoices", label: "Purchase Invoices", icon: Receipt, perm: "*" },
+      { to: "/purchase-returns", label: "Purchase Returns", icon: Undo2, perm: "*" },
       { to: "/inventory", label: "Inventory", icon: Boxes, perm: "*" },
       { to: "/stock-adjustments", label: "Stock Adjustments", icon: ClipboardCheck, perm: "*" },
       { to: "/warehouses", label: "Warehouses", icon: PackageCheck, perm: "*" },

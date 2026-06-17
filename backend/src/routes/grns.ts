@@ -60,6 +60,10 @@ import {
   purchaseOrders as poTable,
   purchaseOrderItems as poItemsTable,
   suppliers as suppliersTable,
+  purchaseInvoices as piTable,
+  purchaseInvoiceItems as piItemsTable,
+  purchaseReturns as prTable,
+  purchaseReturnItems as prItemsTable,
 } from "../db/schema";
 import { requirePermission } from "../middleware/auth";
 import { writeMovements, defaultWarehouseId } from "../lib/inventory-movements";
@@ -487,6 +491,58 @@ async function grnReverseWouldGoNegative(
   return null;
 }
 
+/* ── Per-GRN-line downstream breakdown (PI/PR slices now landed) ────────────
+   For each GRN item id, the documents it was carried into: Purchase Invoices
+   (via purchase_invoice_items.grn_item_id) and Purchase Returns (via
+   purchase_return_items.grn_item_id). Carries the parent doc number + kind +
+   qty + status. Cancelled PIs/PRs are excluded so "Transfer To" never shows a
+   voided document. The GRN counterpart of poLineReceipts — read-only display
+   aid, no writes. */
+export type GrnLineDownstream = { docNumber: string; docType: "PI" | "PR"; qty: number; status: string };
+export async function grnLineDownstream(db: Db, grnItemIds: string[]): Promise<Map<string, GrnLineDownstream[]>> {
+  const out = new Map<string, GrnLineDownstream[]>();
+  const ids = [...new Set(grnItemIds.filter((x): x is string => Boolean(x)))];
+  if (ids.length === 0) return out;
+
+  const [piLines, prLines] = await Promise.all([
+    db.select({ grnItemId: piItemsTable.grnItemId, qty: piItemsTable.qty, purchaseInvoiceId: piItemsTable.purchaseInvoiceId }).from(piItemsTable).where(inArray(piItemsTable.grnItemId, ids)),
+    db.select({ grnItemId: prItemsTable.grnItemId, qtyReturned: prItemsTable.qtyReturned, purchaseReturnId: prItemsTable.purchaseReturnId }).from(prItemsTable).where(inArray(prItemsTable.grnItemId, ids)),
+  ]);
+  const piIds = [...new Set(piLines.map((r) => r.purchaseInvoiceId).filter(Boolean))];
+  const prIds = [...new Set(prLines.map((r) => r.purchaseReturnId).filter(Boolean))];
+  const [piHead, prHead] = await Promise.all([
+    piIds.length > 0 ? db.select({ id: piTable.id, invoiceNumber: piTable.invoiceNumber, status: piTable.status }).from(piTable).where(inArray(piTable.id, piIds)) : Promise.resolve([] as Array<{ id: string; invoiceNumber: string | null; status: string | null }>),
+    prIds.length > 0 ? db.select({ id: prTable.id, returnNumber: prTable.returnNumber, status: prTable.status }).from(prTable).where(inArray(prTable.id, prIds)) : Promise.resolve([] as Array<{ id: string; returnNumber: string | null; status: string | null }>),
+  ]);
+  const piMeta = new Map<string, { docNumber: string; status: string }>();
+  for (const p of piHead) {
+    if ((p.status ?? "").toUpperCase() === "CANCELLED") continue;
+    piMeta.set(p.id, { docNumber: p.invoiceNumber ?? "—", status: (p.status ?? "").toUpperCase() });
+  }
+  const prMeta = new Map<string, { docNumber: string; status: string }>();
+  for (const p of prHead) {
+    if ((p.status ?? "").toUpperCase() === "CANCELLED") continue;
+    prMeta.set(p.id, { docNumber: p.returnNumber ?? "—", status: (p.status ?? "").toUpperCase() });
+  }
+  const push = (grnItemId: string | null, entry: GrnLineDownstream) => {
+    if (!grnItemId) return;
+    const arr = out.get(grnItemId) ?? [];
+    arr.push(entry);
+    out.set(grnItemId, arr);
+  };
+  for (const r of piLines) {
+    const meta = piMeta.get(r.purchaseInvoiceId);
+    if (!meta) continue; // cancelled PI — excluded
+    push(r.grnItemId, { docNumber: meta.docNumber, docType: "PI", qty: Number(r.qty ?? 0), status: meta.status });
+  }
+  for (const r of prLines) {
+    const meta = prMeta.get(r.purchaseReturnId);
+    if (!meta) continue; // cancelled PR — excluded
+    push(r.grnItemId, { docNumber: meta.docNumber, docType: "PR", qty: Number(r.qtyReturned ?? 0), status: meta.status });
+  }
+  return out;
+}
+
 /* ── Per-GRN consumption flags (migration 0106) ────────────────────────────
    has_children (any line invoiced_qty>0 or returned_qty>0), fully_invoiced
    (every accepted line invoiced_qty >= qty_accepted), fully_returned (likewise).
@@ -672,6 +728,8 @@ app.get("/:id", async (c) => {
     const headerReceivedAt = headerRow.grn.receivedAt ?? null;
     const poItemIds = [...new Set(itemRows.map((it) => it.purchaseOrderItemId).filter((x): x is string => Boolean(x)))];
     const poNoByItemId = new Map<string, string>();
+    // downstream (per-line PI/PR breakdown) — the PI/PR slices have now landed.
+    const downstreamMap = await grnLineDownstream(db, itemRows.map((it) => it.id));
     if (poItemIds.length > 0) {
       const poiRows = await db
         .select({ id: poItemsTable.id, poNumber: poTable.poNumber })
@@ -680,14 +738,11 @@ app.get("/:id", async (c) => {
         .where(inArray(poItemsTable.id, poItemIds));
       for (const r of poiRows) if (r.poNumber) poNoByItemId.set(r.id, r.poNumber);
     }
-    /* downstream (per-line PI/PR breakdown) — the PI/PR slices that create those
-       docs are not cloned yet -> faithful empty array per line.
-       TODO: wire grnLineDownstream when the PI/PR slice lands. */
     const items = itemRows.map((it) => ({
       ...toGrnItemResponse(it),
       source_po_number: it.purchaseOrderItemId ? (poNoByItemId.get(it.purchaseOrderItemId) ?? null) : null,
       received_at: headerReceivedAt,
-      downstream: [] as unknown[],
+      downstream: downstreamMap.get(it.id) ?? [],
     }));
     return c.json({ grn, items });
   } catch (e) {
@@ -696,30 +751,37 @@ app.get("/:id", async (c) => {
 });
 
 // ── Linked docs (Smart Buttons fan-out) ─────────────────────────────
-// For a GRN: the parent PO + downstream PIs + PRs. The PI/PR slices are not
-// cloned yet -> faithful empty arrays so the page renders zero counters.
-// TODO: wire invoices / returns to purchase_invoices / purchase_returns.
+// For a GRN: the parent PO + downstream PIs + PRs. The PI/PR slices have landed
+// -> wire the real purchase_invoices / purchase_returns tied to this GRN.
 app.get("/:id/linked", async (c) => {
   const db = getDb(c.env);
   const id = c.req.param("id");
   try {
-    const rows = await db
-      .select({
-        id: grnsTable.id,
-        purchase_order_id: grnsTable.purchaseOrderId,
-        po: { id: poTable.id, po_number: poTable.poNumber },
-      })
-      .from(grnsTable)
-      .leftJoin(poTable, eq(grnsTable.purchaseOrderId, poTable.id))
-      .where(eq(grnsTable.id, id))
-      .limit(1);
+    const [rows, invoices, returns] = await Promise.all([
+      db
+        .select({
+          id: grnsTable.id,
+          purchase_order_id: grnsTable.purchaseOrderId,
+          po: { id: poTable.id, po_number: poTable.poNumber },
+        })
+        .from(grnsTable)
+        .leftJoin(poTable, eq(grnsTable.purchaseOrderId, poTable.id))
+        .where(eq(grnsTable.id, id))
+        .limit(1),
+      db
+        .select({ id: piTable.id, invoice_number: piTable.invoiceNumber, status: piTable.status, invoice_date: piTable.invoiceDate })
+        .from(piTable)
+        .where(eq(piTable.grnId, id))
+        .orderBy(desc(piTable.invoiceDate)),
+      db
+        .select({ id: prTable.id, return_number: prTable.returnNumber, status: prTable.status, return_date: prTable.returnDate })
+        .from(prTable)
+        .where(eq(prTable.grnId, id))
+        .orderBy(desc(prTable.returnDate)),
+    ]);
     const row = rows[0];
     if (!row) return c.json({ error: "not_found" }, 404);
-    return c.json({
-      purchaseOrder: row.po?.id ? row.po : null,
-      invoices: [] as unknown[],
-      returns: [] as unknown[],
-    });
+    return c.json({ purchaseOrder: row.po?.id ? row.po : null, invoices, returns });
   } catch (e) {
     return c.json({ error: "load_failed", reason: errMsg(e) }, 500);
   }

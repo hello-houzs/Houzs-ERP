@@ -46,6 +46,15 @@ const ScmGoodsReceived = lazy(() => import("./pages/scm/GoodsReceivedList").then
 const ScmGoodsReceivedDetail = lazy(() => import("./pages/scm/GoodsReceivedDetail").then((m) => ({ default: m.GoodsReceivedDetail })));
 const ScmGrnNew = lazy(() => import("./pages/scm/GrnNew").then((m) => ({ default: m.GrnNew })));
 const ScmGrnFromPo = lazy(() => import("./pages/scm/GrnFromPo").then((m) => ({ default: m.GrnFromPo })));
+// SCM 1:1 clone — Purchase Invoice + Purchase Return (pages/scm/*). No AutoCount
+// surface for either; all paths are free.
+const ScmPurchaseInvoices = lazy(() => import("./pages/scm/PurchaseInvoicesList").then((m) => ({ default: m.PurchaseInvoices })));
+const ScmPurchaseInvoiceNew = lazy(() => import("./pages/scm/PurchaseInvoiceNew").then((m) => ({ default: m.PurchaseInvoiceNew })));
+const ScmPurchaseInvoiceFromGrn = lazy(() => import("./pages/scm/PurchaseInvoiceFromGrn").then((m) => ({ default: m.PurchaseInvoiceFromGrn })));
+const ScmPurchaseInvoiceDetail = lazy(() => import("./pages/scm/PurchaseInvoiceDetail").then((m) => ({ default: m.PurchaseInvoiceDetail })));
+const ScmPurchaseReturns = lazy(() => import("./pages/scm/PurchaseReturnsList").then((m) => ({ default: m.PurchaseReturns })));
+const ScmPurchaseReturnNew = lazy(() => import("./pages/scm/PurchaseReturnNew").then((m) => ({ default: m.PurchaseReturnNew })));
+const ScmPurchaseReturnDetail = lazy(() => import("./pages/scm/PurchaseReturnDetail").then((m) => ({ default: m.PurchaseReturnDetail })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -440,6 +449,67 @@ export default function App() {
           element={
             <Guard perm="*">
               <ScmGoodsReceivedDetail />
+            </Guard>
+          }
+        />
+        {/* Supply Chain — Purchase Invoice (AP) + Purchase Return (stock OUT)
+            (1:1 clone of 2990s, pages/scm/*). Owner-only (perm "*"), matching the
+            backend requirePermission("*") gate. /api/purchase-invoices +
+            /api/purchase-returns back these. Static /new + /from-grn MUST precede
+            the /:id param route. */}
+        <Route
+          path="/purchase-invoices"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseInvoices />
+            </Guard>
+          }
+        />
+        <Route
+          path="/purchase-invoices/new"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseInvoiceNew />
+            </Guard>
+          }
+        />
+        <Route
+          path="/purchase-invoices/from-grn"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseInvoiceFromGrn />
+            </Guard>
+          }
+        />
+        <Route
+          path="/purchase-invoices/:id"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseInvoiceDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/purchase-returns"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseReturns />
+            </Guard>
+          }
+        />
+        <Route
+          path="/purchase-returns/new"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseReturnNew />
+            </Guard>
+          }
+        />
+        <Route
+          path="/purchase-returns/:id"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseReturnDetail />
             </Guard>
           }
         />
