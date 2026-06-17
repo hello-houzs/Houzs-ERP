@@ -52,6 +52,9 @@ import mfgSalesOrders from "./routes/mfg-sales-orders";
 import mfgDeliveryOrders from "./routes/delivery-orders-mfg";
 import salesInvoices from "./routes/sales-invoices";
 import deliveryReturns from "./routes/delivery-returns";
+import purchaseConsignmentOrders from "./routes/purchase-consignment-orders";
+import purchaseConsignmentReceives from "./routes/purchase-consignment-receives";
+import purchaseConsignmentReturns from "./routes/purchase-consignment-returns";
 import mfgWarehouses from "./routes/warehouse";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
@@ -215,6 +218,15 @@ app.route("/api/mfg-sales-orders", mfgSalesOrders);
 app.route("/api/mfg-delivery-orders", mfgDeliveryOrders);
 app.route("/api/sales-invoices", salesInvoices);
 app.route("/api/delivery-returns", deliveryReturns);
+// SCM 1:1 clone — CONSIGNMENT (last document-flow group). PURCHASE consignment:
+// PC Order (order only) -> PC Receive (inventory IN via lib/inventory-movements,
+// source_doc_type 'PC_RECEIVE') -> PC Return (inventory OUT, 'PC_RETURN'); cancel/
+// line-edit emit STOCK_TRANSFER delta movements. No AutoCount collision -> bare
+// mounts. SALES consignment (notes/returns/orders) lands in a follow-up. Owner-
+// only (perm "*").
+app.route("/api/purchase-consignment-orders", purchaseConsignmentOrders);
+app.route("/api/purchase-consignment-receives", purchaseConsignmentReceives);
+app.route("/api/purchase-consignment-returns", purchaseConsignmentReturns);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);

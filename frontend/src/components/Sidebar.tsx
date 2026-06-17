@@ -33,6 +33,7 @@ import {
   ListTree,
   Gauge,
   Activity,
+  Handshake,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -167,6 +168,9 @@ export const NAV_TABS: NavTab[] = [
       { to: "/grns", label: "Goods Received", icon: Truck, perm: "*" },
       { to: "/purchase-invoices", label: "Purchase Invoices", icon: Receipt, perm: "*" },
       { to: "/purchase-returns", label: "Purchase Returns", icon: Undo2, perm: "*" },
+      { to: "/purchase-consignment-orders", label: "PC Orders", icon: Handshake, perm: "*" },
+      { to: "/purchase-consignment-receives", label: "PC Receives", icon: Handshake, perm: "*" },
+      { to: "/purchase-consignment-returns", label: "PC Returns", icon: Handshake, perm: "*" },
       { to: "/inventory", label: "Inventory", icon: Boxes, perm: "*" },
       { to: "/stock-transfers", label: "Stock Transfers", icon: ArrowLeftRight, perm: "*" },
       { to: "/stock-takes", label: "Stock Takes", icon: ClipboardList, perm: "*" },

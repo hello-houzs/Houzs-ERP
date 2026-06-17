@@ -568,3 +568,76 @@ need translation.)
     → null, MRP slice #64 not cloned). Manual blank-DO/SI/DR create-from-scratch
     forms (the convert-from picker is the primary path, matching 2990s). Migration
     `0030` NOT applied to any DB (batched for staging at #70).
+- **2026-06-18 — CONSIGNMENT slice (#67) — schema+migration (ALL) + PURCHASE side
+  DONE; SALES side DEFERRED.** The last document-flow group. 14 consignment tables
+  + the CO audit log appended to `schema.pg.ts` (BARE names — Houzs has none);
+  migration `0031_consignment.sql` (runner-safe: 6 single-line enum DO-guards, 15
+  idempotent CREATE TABLE, no BEGIN/COMMIT). Both gates EXIT 0; `window.confirm|
+  alert` grep in the new pages = 0 (one `window.prompt` for the CN credit-note ref,
+  kept exactly as the PI/PR slices per rule #10). Migration NOT applied (batched #70).
+  - **Enums created (6):** `consignment_so_status` (CO, CONFIRMED..CANCELLED),
+    `consignment_do_status` (CN, LOADED..CANCELLED), `consignment_dr_status` (CR,
+    PENDING..CANCELLED), `purchase_consignment_order_status` (PCO, SUBMITTED..
+    CANCELLED), `purchase_consignment_receive_status` (PCR, POSTED/CLOSED/CANCELLED),
+    `purchase_consignment_return_status` (PCT, POSTED/COMPLETED/CANCELLED).
+  - **Tables (14 + 1):** SALES — `consignment_sales_orders`/`_items`/`_payments`
+    (clone mfg_sales_orders) + `consignment_so_audit_log` (clone mfg_so_audit_log,
+    FK → CO so CS- doc numbers don't collide with mfg_sales_orders) +
+    `consignment_delivery_orders`/`_items`/`_payments` (Consignment Note, clone
+    delivery_orders) + `consignment_delivery_returns`/`_items` (Consignment Return,
+    clone delivery_returns). PURCHASE — `purchase_consignment_orders`/`_items`
+    (clone mfg_purchase_orders) + `purchase_consignment_receives`/`_items` (clone
+    grns) + `purchase_consignment_returns`/`_items` (clone purchase_returns).
+  - **schema.ts-vs-route STALENESS (confirmed + cloned the routes):** 2990s's
+    `packages/db/src/schema.ts` has essentially NO consignment tables — only comment
+    lines (the documented "ledger != schema.ts" gap, same as DO/SI/DR). EVERY column
+    set below was reconstructed from the LIVE ROUTES (consignment-*.ts +
+    purchase-consignment-*.ts; migrations 0153/0154/0056/0057 folded in). The routes
+    are the source of truth; cloned what's live.
+  - **PURCHASE-consignment DONE (routes + pages):** routes
+    `purchase-consignment-orders.ts` (clone mfg-purchase-orders), `…receives.ts`
+    (clone grns), `…returns.ts` (clone purchase-returns) — full PostgREST→Drizzle
+    translation, mounted `/api/purchase-consignment-orders|receives|returns`
+    (owner-only `"*"`). Pages in `pages/scm/`: PurchaseConsignmentOrders/OrderNew/
+    OrderDetail, PurchaseConsignmentReceives/ReceiveFromOrder/ReceiveNew/
+    ReceiveDetail, PurchaseConsignmentReturns/ReturnFromReceive/ReturnNew/
+    ReturnDetail + query hooks `consignment-purchase-queries.ts` (+ reused supplier/
+    warehouse option hooks). App.tsx routes (static /new + /from-* before /:id) +
+    Sidebar "PC Orders/Receives/Returns" (Handshake) under Supply Chain.
+  - **Consignment → inventory wiring (the headline, via lib/inventory-movements):**
+    PC Receive POST/from-pcos/line-CRUD → `resyncReceiveInventory` (self-healing
+    delta-reconcile, mirrors DO's resyncInventoryForDo): first IN per product::variant
+    bucket = `writeMovements(… source_doc_type:'PC_RECEIVE', batch_no=source PCO no,
+    warehouse=header)`; later increase / decrease / cancel → `'STOCK_TRANSFER'` IN/OUT
+    deltas driving the net to target (cancel → net 0). PC Return POST/from-pc-
+    receive(s)/line-CRUD → `resyncPcReturnInventory` (OUT-primary): first OUT per
+    bucket = `source_doc_type:'PC_RETURN'` (per-line warehouse traced
+    receive_item→receive, dye-lot via resolveWarehouseLotBatches); deltas/cancel →
+    `'STOCK_TRANSFER'` (cancel → IN gives stock back). PC Order writes NO inventory
+    (order only). Rollups: PC Receive recounts `purchase_consignment_order_items
+    .received_qty` (net of returned) + re-evaluates PCO status (SUBMITTED→PARTIALLY_
+    RECEIVED→RECEIVED); PC Return recounts `purchase_consignment_receive_items
+    .returned_qty` (clamped to accepted) + nets the PCO back down. `recomputeSo
+    StockAllocation` fired after every consignment stock move (SO readiness re-walk).
+  - **SEAM/deviations (documented in schema.pg.ts + the route headers):** created_by /
+    salesperson_id / collected_by / actor_id → users.id INTEGER soft-ref (rule #4);
+    customer_id → FK customers(id); supplier_id → FK suppliers(id); warehouse_id /
+    purchase_location_id → FK mfg_warehouses(id) (SET NULL); consignment_so_doc_no →
+    FK consignment_sales_orders(doc_no); all intra-consignment parent links → real
+    FKs; rack_id → FK warehouse_racks(id); venue_id / hub_id / customer_po_id /
+    driver_id → nullable, FK DROPPED (no masters); money kept centi. Strategy-2:
+    DROPPED `buildVariantSummary` (description2 passes through), variant columns
+    persisted for fidelity; no `validateItemCodes`/mfg_products catalog lookups; pages
+    use plain-text manual lines + the convert-from pickers (no furniture variant
+    editor); in-app useDialog/useToast (rule #10). GL/accounting OUT OF SCOPE (no
+    2990s consignment route posts to a GL — nothing to stub).
+  - **DEFERRED (follow-up agent — a clean continuation point):** the SALES-consignment
+    routes + pages — `consignment-notes.ts` (Consignment Note, clone delivery-orders-
+    mfg; CS_DO ship-out OUT + CS_DR-on-cancel via resyncNoteInventory),
+    `consignment-returns.ts` (Consignment Return, CS_DR IN), and `consignment-orders.ts`
+    (CO upstream order — the most furniture-coupled; clone mfg-sales-orders with the
+    ENTIRE pricing engine stripped per Strategy-2, like the SO slice; uses the cloned
+    `consignment_so_audit_log` + `recordSoAudit`-style audit). The TABLES for all of
+    these are ALREADY created (migration `0031`), so the follow-up is routes+pages
+    only. ~20 sales-side pages (Consignment Orders/Notes/Returns lists + details +
+    From-pickers). Both verify gates must stay EXIT 0.

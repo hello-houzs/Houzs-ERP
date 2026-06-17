@@ -79,6 +79,20 @@ const ScmSalesInvoiceDetail = lazy(() => import("./pages/scm/SalesInvoiceDetail"
 const ScmDeliveryReturns = lazy(() => import("./pages/scm/DeliveryReturnsList").then((m) => ({ default: m.DeliveryReturns })));
 const ScmDeliveryReturnFromDo = lazy(() => import("./pages/scm/DeliveryReturnFromDo").then((m) => ({ default: m.DeliveryReturnFromDo })));
 const ScmDeliveryReturnDetail = lazy(() => import("./pages/scm/DeliveryReturnDetail").then((m) => ({ default: m.DeliveryReturnDetail })));
+// SCM 1:1 clone — CONSIGNMENT (last doc-flow group), PURCHASE side (pages/scm/*).
+// PC Order -> PC Receive (inventory IN) -> PC Return (inventory OUT). No AutoCount
+// collision. SALES-consignment (notes/returns/orders) lands in a follow-up.
+const ScmPcOrders = lazy(() => import("./pages/scm/PurchaseConsignmentOrders").then((m) => ({ default: m.PurchaseConsignmentOrders })));
+const ScmPcOrderNew = lazy(() => import("./pages/scm/PurchaseConsignmentOrderNew").then((m) => ({ default: m.PurchaseConsignmentOrderNew })));
+const ScmPcOrderDetail = lazy(() => import("./pages/scm/PurchaseConsignmentOrderDetail").then((m) => ({ default: m.PurchaseConsignmentOrderDetail })));
+const ScmPcReceives = lazy(() => import("./pages/scm/PurchaseConsignmentReceives").then((m) => ({ default: m.PurchaseConsignmentReceives })));
+const ScmPcReceiveFromOrder = lazy(() => import("./pages/scm/PurchaseConsignmentReceiveFromOrder").then((m) => ({ default: m.PurchaseConsignmentReceiveFromOrder })));
+const ScmPcReceiveNew = lazy(() => import("./pages/scm/PurchaseConsignmentReceiveNew").then((m) => ({ default: m.PurchaseConsignmentReceiveNew })));
+const ScmPcReceiveDetail = lazy(() => import("./pages/scm/PurchaseConsignmentReceiveDetail").then((m) => ({ default: m.PurchaseConsignmentReceiveDetail })));
+const ScmPcReturns = lazy(() => import("./pages/scm/PurchaseConsignmentReturns").then((m) => ({ default: m.PurchaseConsignmentReturns })));
+const ScmPcReturnFromReceive = lazy(() => import("./pages/scm/PurchaseConsignmentReturnFromReceive").then((m) => ({ default: m.PurchaseConsignmentReturnFromReceive })));
+const ScmPcReturnNew = lazy(() => import("./pages/scm/PurchaseConsignmentReturnNew").then((m) => ({ default: m.PurchaseConsignmentReturnNew })));
+const ScmPcReturnDetail = lazy(() => import("./pages/scm/PurchaseConsignmentReturnDetail").then((m) => ({ default: m.PurchaseConsignmentReturnDetail })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -631,6 +645,20 @@ export default function App() {
         <Route path="/delivery-returns" element={<Guard perm="*"><ScmDeliveryReturns /></Guard>} />
         <Route path="/delivery-returns/from-do" element={<Guard perm="*"><ScmDeliveryReturnFromDo /></Guard>} />
         <Route path="/delivery-returns/:id" element={<Guard perm="*"><ScmDeliveryReturnDetail /></Guard>} />
+        {/* Supply Chain — CONSIGNMENT (PURCHASE side, 1:1 clone of 2990s,
+            pages/scm/*). Owner-only (perm "*"). /api/purchase-consignment-orders|
+            receives|returns back these. Static /new + /from-* MUST precede /:id. */}
+        <Route path="/purchase-consignment-orders" element={<Guard perm="*"><ScmPcOrders /></Guard>} />
+        <Route path="/purchase-consignment-orders/new" element={<Guard perm="*"><ScmPcOrderNew /></Guard>} />
+        <Route path="/purchase-consignment-orders/:id" element={<Guard perm="*"><ScmPcOrderDetail /></Guard>} />
+        <Route path="/purchase-consignment-receives" element={<Guard perm="*"><ScmPcReceives /></Guard>} />
+        <Route path="/purchase-consignment-receives/from-order" element={<Guard perm="*"><ScmPcReceiveFromOrder /></Guard>} />
+        <Route path="/purchase-consignment-receives/new" element={<Guard perm="*"><ScmPcReceiveNew /></Guard>} />
+        <Route path="/purchase-consignment-receives/:id" element={<Guard perm="*"><ScmPcReceiveDetail /></Guard>} />
+        <Route path="/purchase-consignment-returns" element={<Guard perm="*"><ScmPcReturns /></Guard>} />
+        <Route path="/purchase-consignment-returns/from-receive" element={<Guard perm="*"><ScmPcReturnFromReceive /></Guard>} />
+        <Route path="/purchase-consignment-returns/new" element={<Guard perm="*"><ScmPcReturnNew /></Guard>} />
+        <Route path="/purchase-consignment-returns/:id" element={<Guard perm="*"><ScmPcReturnDetail /></Guard>} />
         <Route
           path="/sales"
           element={
