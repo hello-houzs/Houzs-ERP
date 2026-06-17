@@ -54,6 +54,8 @@ import ideaComments from "./routes/ideaComments";
 import pettyCash from "./routes/pettyCash";
 import innovations from "./routes/innovations";
 import suggestions from "./routes/suggestions";
+import scmSuppliers from "./routes/scm-suppliers";
+import scmPurchaseOrders from "./routes/scm-purchase-orders";
 import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
@@ -124,6 +126,9 @@ app.route("/api/orders", orders);
 app.route("/api/sync", sync);
 app.route("/api/balance", balance);
 app.route("/api/po", po);
+// Supply Chain (ported from 2990s) — internal purchasing vendor master.
+app.route("/api/scm-suppliers", scmSuppliers);
+app.route("/api/scm-purchase-orders", scmPurchaseOrders);
 // Mount the Lead Time Portal first so /api/assr/portal/* doesn't
 // fall through into the catch-all /:id handler on the main module.
 app.route("/api/assr/portal", assrPortal);

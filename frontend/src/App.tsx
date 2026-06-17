@@ -56,6 +56,11 @@ const DriverTrip = lazy(() => import("./pages/DriverTrip").then((m) => ({ defaul
 const DriverProfile = lazy(() => import("./pages/DriverProfile").then((m) => ({ default: m.DriverProfile })));
 const DriverProjects = lazy(() => import("./pages/DriverProjects").then((m) => ({ default: m.DriverProjects })));
 const DriverProjectDetail = lazy(() => import("./pages/DriverProjectDetail").then((m) => ({ default: m.DriverProjectDetail })));
+// Supply Chain (ported from 2990s)
+const SupplierMaster = lazy(() => import("./pages/SupplierMaster").then((m) => ({ default: m.SupplierMaster })));
+const SupplierDetail = lazy(() => import("./pages/SupplierDetail").then((m) => ({ default: m.SupplierDetail })));
+const PurchaseOrderList = lazy(() => import("./pages/PurchaseOrderList").then((m) => ({ default: m.PurchaseOrderList })));
+const ScmPurchaseOrderDetail = lazy(() => import("./pages/PurchaseOrderDetail").then((m) => ({ default: m.PurchaseOrderDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -257,6 +262,39 @@ export default function App() {
             <PageGuard page="purchase_orders">
               <PurchaseOrderDetail />
             </PageGuard>
+          }
+        />
+        {/* Supply Chain (ported from 2990s) — owner-only until scm.* perm exists */}
+        <Route
+          path="/scm/suppliers"
+          element={
+            <Guard perm="*">
+              <SupplierMaster />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/suppliers/:id"
+          element={
+            <Guard perm="*">
+              <SupplierDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/purchase-orders"
+          element={
+            <Guard perm="*">
+              <PurchaseOrderList />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/purchase-orders/:id"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseOrderDetail />
+            </Guard>
           }
         />
         {/* Legacy /creditors → Purchase Orders' Creditors tab */}

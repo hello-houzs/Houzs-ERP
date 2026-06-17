@@ -143,6 +143,20 @@ export const NAV_TABS: NavTab[] = [
     ],
   },
 
+  // ── Supply Chain — purchasing / suppliers / inventory (ported from 2990s) ──
+  // Owner-only for now (perm "*"); open up via a dedicated scm.* permission
+  // once the module is validated and rolled out to purchasing staff.
+  {
+    label: "Supply Chain",
+    icon: Package,
+    groupId: "supply-chain",
+    perm: "*",
+    children: [
+      { to: "/scm/suppliers", label: "Suppliers", icon: Truck, perm: "*" },
+      { to: "/scm/purchase-orders", label: "Purchase Orders", icon: Package, perm: "*" },
+    ],
+  },
+
   // ── Service — quality + ASSR ─────────────────────────────────
   {
     label: "Service",

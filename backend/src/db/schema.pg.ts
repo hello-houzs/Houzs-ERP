@@ -32,6 +32,12 @@ import {
   text,
   doublePrecision,
   primaryKey,
+  uuid,
+  boolean,
+  jsonb,
+  timestamp,
+  date,
+  index,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -894,4 +900,138 @@ export const project_sales_attendees = pgTable(
     created_by: integer("created_by"),
   },
   (t) => ({ pk: primaryKey({ columns: [t.project_id, t.sales_rep_id] }) }),
+);
+
+// ── Supply Chain module (ported from the 2990s ERP) — scm_* namespace ───
+// Self-contained island: Postgres-native types (uuid / timestamptz / jsonb),
+// no FK into the legacy serial-id tables. See migrations-pg/0017_scm_suppliers.sql.
+
+// scm_suppliers — purchasing-side vendor master
+export const scm_suppliers = pgTable("scm_suppliers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  code: text("code").notNull().unique(),
+  name: text("name").notNull(),
+  whatsapp_number: text("whatsapp_number"),
+  email: text("email"),
+  contact_person: text("contact_person"),
+  phone: text("phone"),
+  address: text("address"),
+  state: text("state"),
+  country: text("country").notNull().default("Malaysia"),
+  payment_terms: text("payment_terms"),
+  status: text("status").notNull().default("ACTIVE"),
+  rating: integer("rating").notNull().default(0),
+  notes: text("notes"),
+  supplier_type: text("supplier_type"),
+  category: text("category"),
+  tin_number: text("tin_number"),
+  business_reg_no: text("business_reg_no"),
+  postcode: text("postcode"),
+  area: text("area"),
+  mobile: text("mobile"),
+  fax: text("fax"),
+  website: text("website"),
+  attention: text("attention"),
+  business_nature: text("business_nature"),
+  currency: text("currency").notNull().default("MYR"),
+  statement_type: text("statement_type").notNull().default("OPEN_ITEM"),
+  aging_basis: text("aging_basis").notNull().default("INVOICE_DATE"),
+  credit_limit_sen: integer("credit_limit_sen").notNull().default(0),
+  created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// scm_supplier_material_bindings — our material_code <-> supplier SKU + price
+export const scm_supplier_material_bindings = pgTable(
+  "scm_supplier_material_bindings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    supplier_id: uuid("supplier_id")
+      .notNull()
+      .references(() => scm_suppliers.id, { onDelete: "cascade" }),
+    material_kind: text("material_kind").notNull(),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name").notNull(),
+    supplier_sku: text("supplier_sku").notNull(),
+    unit_price_centi: integer("unit_price_centi").notNull().default(0),
+    currency: text("currency").notNull().default("MYR"),
+    lead_time_days: integer("lead_time_days").notNull().default(0),
+    payment_terms_override: text("payment_terms_override"),
+    moq: integer("moq").notNull().default(0),
+    price_valid_from: date("price_valid_from"),
+    price_valid_to: date("price_valid_to"),
+    is_main_supplier: boolean("is_main_supplier").notNull().default(false),
+    notes: text("notes"),
+    price_matrix: jsonb("price_matrix"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_supplier: index("idx_scm_smb_supplier").on(t.supplier_id),
+    idx_material: index("idx_scm_smb_material").on(t.material_kind, t.material_code),
+    idx_main: index("idx_scm_smb_main_per_material")
+      .on(t.material_kind, t.material_code)
+      .where(sql`${t.is_main_supplier} = true`),
+  }),
+);
+
+// scm_purchase_orders — PO header (trimmed to generic purchasing fields)
+export const scm_purchase_orders = pgTable(
+  "scm_purchase_orders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    po_number: text("po_number").notNull().unique(),
+    supplier_id: uuid("supplier_id")
+      .notNull()
+      .references(() => scm_suppliers.id, { onDelete: "restrict" }),
+    status: text("status").notNull().default("SUBMITTED"),
+    po_date: date("po_date").notNull().defaultNow(),
+    expected_at: date("expected_at"),
+    currency: text("currency").notNull().default("MYR"),
+    subtotal_centi: integer("subtotal_centi").notNull().default(0),
+    tax_centi: integer("tax_centi").notNull().default(0),
+    total_centi: integer("total_centi").notNull().default(0),
+    notes: text("notes"),
+    submitted_at: timestamp("submitted_at", { withTimezone: true }),
+    received_at: timestamp("received_at", { withTimezone: true }),
+    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
+    created_by: integer("created_by"), // users.id soft ref (set from auth)
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_supplier: index("idx_scm_po_supplier").on(t.supplier_id),
+    idx_status: index("idx_scm_po_status").on(t.status),
+  }),
+);
+
+// scm_purchase_order_items — PO lines
+export const scm_purchase_order_items = pgTable(
+  "scm_purchase_order_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    purchase_order_id: uuid("purchase_order_id")
+      .notNull()
+      .references(() => scm_purchase_orders.id, { onDelete: "cascade" }),
+    binding_id: uuid("binding_id").references(() => scm_supplier_material_bindings.id, {
+      onDelete: "set null",
+    }),
+    material_kind: text("material_kind").notNull().default("mfg_product"),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name").notNull(),
+    supplier_sku: text("supplier_sku"),
+    qty: integer("qty").notNull().default(0),
+    unit_price_centi: integer("unit_price_centi").notNull().default(0),
+    discount_centi: integer("discount_centi").notNull().default(0),
+    line_total_centi: integer("line_total_centi").notNull().default(0),
+    received_qty: integer("received_qty").notNull().default(0),
+    uom: text("uom").notNull().default("UNIT"),
+    variants: jsonb("variants"),
+    notes: text("notes"),
+    delivery_date: date("delivery_date"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_po: index("idx_scm_po_items_po").on(t.purchase_order_id),
+  }),
 );
