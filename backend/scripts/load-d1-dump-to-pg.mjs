@@ -12,7 +12,14 @@ import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import postgres from "postgres";
 
-const url = readFileSync(".dev.vars", "utf8").match(/DATABASE_URL="([^"]+)"/)[1];
+const url = process.env.DATABASE_URL || readFileSync(".dev.vars", "utf8").match(/DATABASE_URL="([^"]+)"/)[1];
+// PROD GUARD (added after the 2026-06-17 incident where this wiped prod):
+// this script DROPs + reloads EVERY table. Refuse to run against the prod
+// project unless an operator explicitly acknowledges a real re-cutover.
+if (url.includes("anogrigyjbduyzclzjgn") && process.env.ACK_PROD_WIPE !== "yes") {
+  console.error("REFUSING: target DB is PROD (anogrigyjbduyzclzjgn). This script DROPs+reloads every table. If you truly mean to re-cutover prod, set ACK_PROD_WIPE=yes.");
+  process.exit(1);
+}
 const pg = postgres(url, { ssl: "require", prepare: false, max: 1 });
 
 // ---- 1) line-based extraction --------------------------------------------
