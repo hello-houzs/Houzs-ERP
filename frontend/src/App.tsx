@@ -33,6 +33,14 @@ const ScmPurchaseOrders = lazy(() => import("./pages/scm/PurchaseOrders").then((
 const ScmPurchaseOrderDetail = lazy(() => import("./pages/scm/PurchaseOrderDetail").then((m) => ({ default: m.PurchaseOrderDetail })));
 const ScmPurchaseOrderNew = lazy(() => import("./pages/scm/PurchaseOrderNew").then((m) => ({ default: m.PurchaseOrderNew })));
 const ScmPurchaseOrderFromSo = lazy(() => import("./pages/scm/PurchaseOrderFromSo").then((m) => ({ default: m.PurchaseOrderFromSo })));
+// SCM 1:1 clone — Inventory + Warehouse (pages/scm/*). DISTINCT routes from the
+// live AutoCount surface (no frontend /inventory, /warehouses, /stock-* pages
+// exist yet — all paths are free).
+const ScmInventory = lazy(() => import("./pages/scm/Inventory").then((m) => ({ default: m.Inventory })));
+const ScmStockCard = lazy(() => import("./pages/scm/StockCard").then((m) => ({ default: m.StockCard })));
+const ScmStockAdjustments = lazy(() => import("./pages/scm/StockAdjustments").then((m) => ({ default: m.StockAdjustments })));
+const ScmStockAdjustmentNew = lazy(() => import("./pages/scm/StockAdjustmentNew").then((m) => ({ default: m.StockAdjustmentNew })));
+const ScmWarehouses = lazy(() => import("./pages/scm/Warehouses").then((m) => ({ default: m.Warehouses })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -347,6 +355,50 @@ export default function App() {
           element={
             <Guard perm="*">
               <ScmPurchaseOrderDetail />
+            </Guard>
+          }
+        />
+        {/* Supply Chain — Inventory + Warehouse (1:1 clone of 2990s, pages/scm/*).
+            Owner-only (perm "*"), matching the backend requirePermission("*")
+            gate. /api/inventory + /api/mfg-warehouses back these. Static
+            /stock-adjustments/new precedes the /stock-card/:productCode param. */}
+        <Route
+          path="/inventory"
+          element={
+            <Guard perm="*">
+              <ScmInventory />
+            </Guard>
+          }
+        />
+        <Route
+          path="/stock-card/:productCode"
+          element={
+            <Guard perm="*">
+              <ScmStockCard />
+            </Guard>
+          }
+        />
+        <Route
+          path="/stock-adjustments/new"
+          element={
+            <Guard perm="*">
+              <ScmStockAdjustmentNew />
+            </Guard>
+          }
+        />
+        <Route
+          path="/stock-adjustments"
+          element={
+            <Guard perm="*">
+              <ScmStockAdjustments />
+            </Guard>
+          }
+        />
+        <Route
+          path="/warehouses"
+          element={
+            <Guard perm="*">
+              <ScmWarehouses />
             </Guard>
           }
         />

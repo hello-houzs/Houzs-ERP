@@ -42,6 +42,8 @@ import search from "./routes/search";
 import creditors from "./routes/creditors";
 import suppliers from "./routes/suppliers";
 import mfgPurchaseOrders from "./routes/mfg-purchase-orders";
+import inventory from "./routes/inventory";
+import mfgWarehouses from "./routes/warehouse";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
 import assrPortal from "./routes/assrPortal";
@@ -164,6 +166,12 @@ app.route("/api/suppliers", suppliers);
 // SCM 1:1 clone — manufacturer-side Purchase Orders. DISTINCT from the existing
 // AutoCount /api/po route/page (do NOT touch that one). Owner-only (perm "*").
 app.route("/api/purchase-orders", mfgPurchaseOrders);
+// SCM 1:1 clone — Inventory (FIFO ledger/lots/valuation) + Warehouse rack mgmt.
+// Inventory is /api/inventory. Rack management is /api/mfg-warehouses — DISTINCT
+// from the live AutoCount /api/warehouses route above (do NOT touch that one);
+// the clone's warehouse table is mfg_warehouses. Owner-only (perm "*").
+app.route("/api/inventory", inventory);
+app.route("/api/mfg-warehouses", mfgWarehouses);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);

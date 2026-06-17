@@ -236,9 +236,14 @@ need translation.)
   `created_by` = `users.id` from auth (`c.get("user")`). Both gates EXIT 0.
 - **NAMING CONVENTION (decided):** when a 2990s table name collides with a live
   AutoCount table, the clone takes a distinct physical name reusing 2990s's `mfg_`
-  vocabulary — `purchase_orders`→`mfg_purchase_orders`, `warehouses`→`mfg_warehouses`
-  — while the Drizzle export key stays 2990s's (route code verbatim). Rename to the
-  bare name at cutover (#71). Non-colliding tables (grns, purchase_invoices,
+  vocabulary — `purchase_orders`→`mfg_purchase_orders`, `warehouses`→`mfg_warehouses`.
+  The Drizzle export key stays 2990s's camelCase key (route code verbatim) UNLESS
+  that identifier already exists in schema.pg.ts — a single-word name like
+  `warehouses` is identical in snake/camel and AutoCount already exports it, so the
+  export key ALSO takes the prefix (`mfgWarehouses`), imported in routes as
+  `mfgWarehouses as warehousesTable` so handler bodies stay verbatim. (`purchaseOrders`
+  camel ≠ AutoCount's `purchase_orders` snake, so PO kept the bare camel key.)
+  Rename to the bare name at cutover (#71). Non-colliding tables (grns, purchase_invoices,
   inventory_*, stock_*, mfg_sales_orders, delivery_orders — Houzs has none of these)
   use bare names.
 - **SLICE REORDER:** Inventory/Warehouse (#62) moves BEFORE GRN (#60): GRN / purchase-
@@ -246,7 +251,25 @@ need translation.)
   ledger + `inventory-movements` lib must exist first. Order now: Suppliers ✓ → PO ✓
   → **Inventory/Warehouse (#62)** → GRN (#60) → PI/PR (#61) → Transfers/Stocktake
   (#63) → Products (#58) → MRP (#64) → SO (#65) → DO/SI/DR (#66) → Consignment (#67).
-- **NEXT:** Inventory + Warehouse (#62) — clone `warehouses`→`mfg_warehouses`(+racks),
-  `inventory_movements`/`inventory_lots`/`lot_consumptions`, the `inventory-movements`
-  lib (post/derive/FIFO), inventory route + Inventory/StockCard/Warehouses/
-  StockAdjustments pages.
+- **2026-06-17 — Inventory + Warehouse DONE (#62):** migration `0026` (11 tables:
+  `mfg_warehouses` + inventory_movements/lots/lot_consumptions + stock_transfers/
+  _lines + stock_takes/_lines + warehouse_racks/_items/_movements; `inventory_movement_type`
+  enum; 3 single-line plpgsql FIFO fns + `trg_inventory_movement_fifo` trigger + 4
+  product-free views; KL/PJ seed). Routes `/api/inventory` + `/api/mfg-warehouses`;
+  lib `inventory-movements.ts`; pages in `pages/scm/`. Catalogue-coupled views
+  (`v_inventory_all_skus`, `v_inventory_product_totals` — CROSS JOIN mfg_products)
+  NOT created → `/inventory?showAll` + `/inventory/products` return empty until
+  Products slice. Both gates EXIT 0.
+  - **`inventory-movements` lib API (GRN/PR/transfer/stocktake call this):**
+    `writeMovements(db, rows: MovementInput[])` (fires the DB FIFO trigger — lots/
+    consumptions/COGS auto-maintained; never touch lots directly),
+    `reverseMovements(db, sourceDocType, sourceDocId, performedBy)`,
+    `defaultWarehouseId(db)`, `resolveWarehouseLotBatches(db, whId)`,
+    `resolveWarehouseLotCosts(db, whId)`. `MovementInput` = `{ movement_type
+    'IN'|'OUT'|'ADJUSTMENT'; warehouse_id; product_code; variant_key?; product_name?;
+    qty; unit_cost_sen?; source_doc_type 'GRN'|'DO'|'DR'|'PURCHASE_RETURN'|...;
+    source_doc_id?; source_doc_no?; batch_no?; reason_code?; performed_by?: number }`.
+- **NEXT:** GRN slice (#60) — clone `grns`+`grn_items` + grn-rack-sync, route at
+  `/api/grns`, pages GrnFromPo/GrnNew/GoodsReceivedList in `pages/scm/`; GRN POST
+  calls `writeMovements(... source_doc_type:'GRN')` + advances PO `received_qty` +
+  recomputes PO status. (grns/grn_items have no AutoCount collision → bare names.)

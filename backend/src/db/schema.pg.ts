@@ -39,6 +39,8 @@ import {
   timestamp,
   date,
   index,
+  uniqueIndex,
+  check,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -1158,3 +1160,296 @@ export const purchaseOrderLines = pgTable('mfg_purchase_order_lines', {
   qty:              integer('qty').notNull(),
   createdAt:        timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Inventory + Warehouse slice (1:1 clone of 2990s) ────────────────────────
+// Copied VERBATIM from 2990s packages/db/src/schema.ts:
+//   inventoryMovementType (enum) ~L2344, warehouses ~L2348, inventoryMovements
+//   ~L2424, inventoryLots ~L2456, stockTransfers ~L2488, stockTransferLines
+//   ~L2508, stockTakes ~L2529, stockTakeLines ~L2549, inventoryLotConsumptions
+//   ~L2568, warehouseRacks ~L2695, warehouseRackItems ~L2715,
+//   warehouseRackMovements ~L2734. camelCase keys + snake_case column strings +
+//   the real inventory_movement_type pgEnum, exactly as in 2990s, so the ported
+//   inventory/warehouse route references compile unchanged. The FIFO engine
+//   itself is a DB trigger (fn_inventory_movement_fifo + fn_consume_fifo[_batch]),
+//   cloned verbatim into migration 0026; these tables are the ledger it maintains.
+//
+// LATER-MIGRATION COLUMNS folded in (so the schema is the final shape, matching
+// what migration 0026 creates): inventory_movements.variant_key (2990s mig 0095),
+// .batch_no (0120), .reason_code (0150); inventory_lots.variant_key + .batch_no;
+// inventory_lot_consumptions.variant_key; stock_transfer_lines.variant_key;
+// warehouses.is_consignment (0152).
+//
+// Only the documented SEAMS change:
+//   - PHYSICAL TABLE NAME + EXPORT KEY (collision deviation — PLAN.md collision
+//     map / NAMING CONVENTION): Houzs ALREADY has an AutoCount table physically
+//     named `warehouses` AND already `export const warehouses` (schema.pg.ts
+//     ~L282, keyed by `code`), served by /api/warehouses. Two pgTable
+//     ('warehouses', ...) — and two `export const warehouses` — cannot coexist,
+//     and the brief forbids touching the AutoCount route/table. So the clone
+//     takes 2990s's own `mfg_` vocabulary for BOTH: physical name `mfg_warehouses`
+//     and export key `mfgWarehouses`. Ported routes import it aliased
+//     (`mfgWarehouses as warehousesTable`) so the route bodies still read like
+//     2990s. (PLAN said "export key stays `warehouses`", but the pre-existing
+//     AutoCount `export const warehouses` makes that impossible — documented
+//     necessary deviation.) The four non-colliding tables (warehouse_racks,
+//     inventory_movements, inventory_lots, inventory_lot_consumptions — Houzs has
+//     none) keep bare names; their warehouse FKs point at mfgWarehouses (the
+//     mfg_warehouses table). Rename both to the bare `warehouses` only at the
+//     gated cutover (task #71), once the AutoCount table/export is removed.
+//   - performedBy / createdBy: 2990s is uuid -> staff.id. Houzs has no `staff`
+//     table; rule #4 maps staff -> Houzs `users` (id = serial INTEGER). So these
+//     are INTEGER + SOFT refs (no FK) to users.id (matching the PO slice's
+//     created_by). 2990s ON DELETE SET NULL becomes "just a soft int" here.
+//   - Stock-transfer / stock-take tables ARE cloned now (the inventory ledger +
+//     FIFO trigger they post into must exist as one unit), but their POST routes
+//     land in the Transfers/Stocktake slice (#63). Cloned verbatim for fidelity.
+
+export const inventoryMovementType = pgEnum('inventory_movement_type', [
+  'IN', 'OUT', 'ADJUSTMENT', 'TRANSFER',
+]);
+
+export const mfgWarehouses = pgTable('mfg_warehouses', {
+  id:         uuid('id').primaryKey().defaultRandom(),
+  code:       text('code').notNull().unique(),    // 'KL', 'PJ'
+  name:       text('name').notNull(),
+  location:   text('location'),
+  isActive:   boolean('is_active').notNull().default(true),
+  isDefault:  boolean('is_default').notNull().default(false),
+  // 2990s migration 0152 — virtual holding warehouse for goods out on sales
+  // consignment (still owned, not sellable). Excluded from pickers; the
+  // inventory route reads is_consignment to keep consigned stock visible.
+  isConsignment: boolean('is_consignment').notNull().default(false),
+  createdAt:  timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:  timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxActive: index('idx_warehouses_active').on(t.isActive),
+}));
+
+export const inventoryMovements = pgTable('inventory_movements', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  movementType:   inventoryMovementType('movement_type').notNull(),
+  warehouseId:    uuid('warehouse_id').notNull().references(() => mfgWarehouses.id, { onDelete: 'restrict' }),
+  productCode:    text('product_code').notNull(),
+  productName:    text('product_name'),
+  // 2990s migration 0095 — attribute-composition bucket key (packages/shared
+  // computeVariantKey). '' = unclassified/legacy. Strategy-2: Houzs materials are
+  // plain text with no category, so this stays '' (one unclassified bucket per
+  // product_code) until a product layer lands. computeVariantKey is ported.
+  variantKey:     text('variant_key').notNull().default(''),
+  qty:            integer('qty').notNull(),
+  // 2990s PR #37 — per-unit cost in sen. IN: provided by caller (from GRN/PI).
+  // OUT: computed by the FIFO trigger from consumed lots.
+  unitCostSen:    integer('unit_cost_sen').default(0),
+  totalCostSen:   integer('total_cost_sen').default(0),
+  sourceDocType:  text('source_doc_type'),  // 'GRN' | 'DO' | 'CONSIGNMENT_NOTE' | 'PURCHASE_RETURN' | 'ADJUSTMENT' | ...
+  sourceDocId:    uuid('source_doc_id'),
+  sourceDocNo:    text('source_doc_no'),
+  // 2990s migration 0120 — production batch (source PO number). Carried on the IN
+  // movement; the FIFO trigger copies it onto the lot it creates. NULL = un-batched.
+  batchNo:        text('batch_no'),
+  // 2990s migration 0150 — structured adjustment reason (DAMAGE/LOSS/THEFT/FOUND/
+  // COUNT/SAMPLE/WRITEOFF/OTHER). NULL for IN/OUT + legacy rows.
+  reasonCode:     text('reason_code'),
+  notes:          text('notes'),
+  // SEAM (rule #4): 2990s uuid -> staff.id. Houzs users.id is serial INTEGER;
+  // SOFT ref (no FK).
+  performedBy:    integer('performed_by'),
+  createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxWarehouseProduct: index('idx_inv_mov_warehouse_product').on(t.warehouseId, t.productCode, t.variantKey),
+  idxDoc:              index('idx_inv_mov_doc').on(t.sourceDocType, t.sourceDocId),
+  idxCreated:          index('idx_inv_mov_created').on(t.createdAt),
+}));
+
+/* 2990s PR #37 — FIFO lots (one row per IN) + consumptions (FIFO consumes per
+   OUT). The DB-side trigger fn_inventory_movement_fifo() maintains these. */
+export const inventoryLots = pgTable('inventory_lots', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  warehouseId:    uuid('warehouse_id').notNull().references(() => mfgWarehouses.id, { onDelete: 'restrict' }),
+  productCode:    text('product_code').notNull(),
+  productName:    text('product_name'),
+  variantKey:     text('variant_key').notNull().default(''),  // migration 0095
+  qtyReceived:    integer('qty_received').notNull(),
+  qtyRemaining:   integer('qty_remaining').notNull(),
+  unitCostSen:    integer('unit_cost_sen').notNull().default(0),
+  receivedAt:     timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  sourceDocType:  text('source_doc_type'),
+  sourceDocId:    uuid('source_doc_id'),
+  sourceDocNo:    text('source_doc_no'),
+  movementId:     uuid('movement_id'),
+  // migration 0120 — production batch (source PO number), copied from the IN
+  // movement by the FIFO trigger. NULL = un-batched.
+  batchNo:        text('batch_no'),
+  notes:          text('notes'),
+  createdBy:      integer('created_by'),  // SEAM rule #4: 2990s uuid -> users.id int
+  createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxWhProduct: index('idx_inv_lots_wh_product').on(t.warehouseId, t.productCode, t.variantKey, t.receivedAt),
+  idxBatch:     index('idx_inv_lots_batch').on(t.warehouseId, t.batchNo, t.productCode, t.variantKey),
+}));
+
+/* 2990s PR Inv PR4. Stock transfers move qty between warehouses with a proper
+   document trail. POST writes paired OUT (from) + IN (to) into
+   inventory_movements with source_doc_type='STOCK_TRANSFER'. Route lands in the
+   Transfers slice (#63); cloned now so the ledger schema is whole. */
+export const stockTransfers = pgTable('stock_transfers', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  transferNo:        text('transfer_no').notNull().unique(),         // ST-YYMM-NNN
+  status:            text('status').notNull().default('POSTED'),     // POSTED|CANCELLED
+  fromWarehouseId:   uuid('from_warehouse_id').notNull().references(() => mfgWarehouses.id, { onDelete: 'restrict' }),
+  toWarehouseId:     uuid('to_warehouse_id').notNull().references(() => mfgWarehouses.id, { onDelete: 'restrict' }),
+  transferDate:      date('transfer_date').notNull().defaultNow(),
+  notes:             text('notes'),
+  postedAt:          timestamp('posted_at', { withTimezone: true }),
+  cancelledAt:       timestamp('cancelled_at', { withTimezone: true }),
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:         integer('created_by'),  // SEAM rule #4
+}, (t) => ({
+  idxStatus:  index('idx_stock_transfers_status').on(t.status, t.transferDate),
+  idxFromWh:  index('idx_stock_transfers_from_wh').on(t.fromWarehouseId),
+  idxToWh:    index('idx_stock_transfers_to_wh').on(t.toWarehouseId),
+  notSameWh:  check('stock_transfers_not_same_wh', sql`from_warehouse_id <> to_warehouse_id`),
+  statusEnum: check('stock_transfers_status_chk', sql`status IN ('POSTED','CANCELLED')`),
+}));
+
+export const stockTransferLines = pgTable('stock_transfer_lines', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  stockTransferId:   uuid('stock_transfer_id').notNull().references(() => stockTransfers.id, { onDelete: 'cascade' }),
+  productCode:       text('product_code').notNull(),
+  productName:       text('product_name'),
+  variantKey:        text('variant_key').notNull().default(''),  // migration 0117
+  qty:               integer('qty').notNull(),
+  notes:             text('notes'),
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxXfer: index('idx_stock_transfer_lines_xfer').on(t.stockTransferId),
+  qtyPos:  check('stock_transfer_lines_qty_pos', sql`qty > 0`),
+}));
+
+/* 2990s PR Inv PR5. Stock takes are AutoCount-style cycle counts. Post writes
+   ADJUSTMENT movements per non-zero variance line. Route lands in the Stocktake
+   slice (#63); cloned now so the ledger schema is whole. */
+export const stockTakes = pgTable('stock_takes', {
+  id:              uuid('id').primaryKey().defaultRandom(),
+  takeNo:          text('take_no').notNull().unique(),              // STK-YYMM-NNN
+  status:          text('status').notNull().default('OPEN'),        // OPEN|POSTED|CANCELLED
+  warehouseId:     uuid('warehouse_id').notNull().references(() => mfgWarehouses.id, { onDelete: 'restrict' }),
+  scopeType:       text('scope_type').notNull().default('ALL'),     // ALL|CATEGORY|CODE_PREFIX
+  scopeValue:      text('scope_value'),
+  takeDate:        date('take_date').notNull().defaultNow(),
+  notes:           text('notes'),
+  postedAt:        timestamp('posted_at', { withTimezone: true }),
+  cancelledAt:     timestamp('cancelled_at', { withTimezone: true }),
+  createdAt:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:       integer('created_by'),  // SEAM rule #4
+}, (t) => ({
+  idxStatus:    index('idx_stock_takes_status').on(t.status, t.takeDate),
+  idxWarehouse: index('idx_stock_takes_warehouse').on(t.warehouseId),
+  statusEnum:   check('stock_takes_status_chk',     sql`status IN ('OPEN','POSTED','CANCELLED')`),
+  scopeEnum:    check('stock_takes_scope_type_chk', sql`scope_type IN ('ALL','CATEGORY','CODE_PREFIX')`),
+}));
+
+export const stockTakeLines = pgTable('stock_take_lines', {
+  id:              uuid('id').primaryKey().defaultRandom(),
+  stockTakeId:     uuid('stock_take_id').notNull().references(() => stockTakes.id, { onDelete: 'cascade' }),
+  productCode:     text('product_code').notNull(),
+  productName:     text('product_name'),
+  systemQty:       integer('system_qty').notNull().default(0),  // snapshot at create time
+  countedQty:      integer('counted_qty'),                      // nullable until entered
+  // GENERATED ALWAYS in the DB; modeled as a plain integer for reads.
+  variance:        integer('variance'),
+  notes:           text('notes'),
+  createdAt:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxTake:    index('idx_stock_take_lines_take').on(t.stockTakeId),
+  uniqLine:   uniqueIndex('stock_take_lines_take_product_unique').on(t.stockTakeId, t.productCode),
+}));
+
+export const inventoryLotConsumptions = pgTable('inventory_lot_consumptions', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  lotId:          uuid('lot_id').notNull().references(() => inventoryLots.id, { onDelete: 'cascade' }),
+  warehouseId:    uuid('warehouse_id').notNull().references(() => mfgWarehouses.id, { onDelete: 'restrict' }),
+  productCode:    text('product_code').notNull(),
+  variantKey:     text('variant_key').notNull().default(''),  // migration 0095
+  qtyConsumed:    integer('qty_consumed').notNull(),
+  unitCostSen:    integer('unit_cost_sen').notNull(),
+  totalCostSen:   integer('total_cost_sen').notNull(),
+  consumedAt:     timestamp('consumed_at', { withTimezone: true }).notNull().defaultNow(),
+  sourceDocType:  text('source_doc_type'),
+  sourceDocId:    uuid('source_doc_id'),
+  sourceDocNo:    text('source_doc_no'),
+  movementId:     uuid('movement_id'),
+  createdBy:      integer('created_by'),  // SEAM rule #4
+}, (t) => ({
+  idxLot:      index('idx_inv_cons_lot').on(t.lotId),
+  idxDoc:      index('idx_inv_cons_doc').on(t.sourceDocType, t.sourceDocId),
+  idxConsumed: index('idx_inv_cons_consumed').on(t.consumedAt),
+}));
+
+/* ── Warehouse rack/bin management (2990s migration 0094, ported from Hookka) ──
+   A physical-location layer on top of warehouses: each warehouse splits into
+   racks, each rack holds zero-to-many items, every stock-in/out/transfer is an
+   append-only rack movement. Status (OCCUPIED/RESERVED/EMPTY) is derived but
+   persisted so the rack-grid list stays a single SELECT. Complementary to (not
+   a replacement for) the FIFO ledger above. TEXT + CHECK (not pgEnum), verbatim. */
+export const warehouseRacks = pgTable('warehouse_racks', {
+  id:          uuid('id').primaryKey().defaultRandom(),
+  warehouseId: uuid('warehouse_id').notNull().references(() => mfgWarehouses.id, { onDelete: 'cascade' }),
+  rack:        text('rack').notNull(),                // 'Rack 1' … 'Rack N' — unique per warehouse
+  position:    text('position'),                      // optional finer position
+  status:      text('status').notNull().default('EMPTY'),  // 'OCCUPIED' | 'EMPTY' | 'RESERVED'
+  reserved:    boolean('reserved').notNull().default(false),
+  notes:       text('notes'),
+  createdAt:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:   timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  uniqWhRack:   uniqueIndex('warehouse_racks_warehouse_rack_key').on(t.warehouseId, t.rack),
+  idxWarehouse: index('idx_warehouse_racks_warehouse').on(t.warehouseId, t.rack),
+  idxStatus:    index('idx_warehouse_racks_status').on(t.status),
+  statusEnum:   check('warehouse_racks_status_chk', sql`status IN ('OCCUPIED','EMPTY','RESERVED')`),
+}));
+
+export const warehouseRackItems = pgTable('warehouse_rack_items', {
+  id:            uuid('id').primaryKey().defaultRandom(),
+  rackId:        uuid('rack_id').notNull().references(() => warehouseRacks.id, { onDelete: 'cascade' }),
+  productCode:   text('product_code').notNull(),
+  variantKey:    text('variant_key').notNull().default(''),  // aligns with inventory buckets
+  productName:   text('product_name'),
+  sizeLabel:     text('size_label'),
+  customerName:  text('customer_name'),
+  sourceDocNo:   text('source_doc_no'),               // optional ref to the SO/doc that stocked it in
+  qty:           integer('qty').notNull().default(1),
+  stockedInDate: date('stocked_in_date').notNull().defaultNow(),
+  notes:         text('notes'),
+  createdAt:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxRack:    index('idx_warehouse_rack_items_rack').on(t.rackId),
+  idxProduct: index('idx_warehouse_rack_items_product').on(t.productCode),
+  qtyPos:     check('warehouse_rack_items_qty_pos', sql`qty > 0`),
+}));
+
+export const warehouseRackMovements = pgTable('warehouse_rack_movements', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  movementType: text('movement_type').notNull(),      // 'STOCK_IN' | 'STOCK_OUT' | 'TRANSFER'
+  // Kept loose (no FK) so history survives a rack being deleted/renamed — the
+  // rack_label snapshot preserves the display.
+  rackId:       uuid('rack_id'),
+  rackLabel:    text('rack_label'),
+  toRackId:     uuid('to_rack_id'),     // TRANSFER destination (rackId = source)
+  toRackLabel:  text('to_rack_label'),
+  warehouseId:  uuid('warehouse_id').references(() => mfgWarehouses.id, { onDelete: 'set null' }),
+  productCode:  text('product_code'),
+  variantKey:   text('variant_key').notNull().default(''),
+  productName:  text('product_name'),
+  sourceDocNo:  text('source_doc_no'),
+  quantity:     integer('quantity').notNull().default(1),
+  reason:       text('reason'),
+  performedBy:  integer('performed_by'),  // SEAM rule #4
+  createdAt:    timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxType:    index('idx_warehouse_rack_movements_type').on(t.movementType),
+  idxRack:    index('idx_warehouse_rack_movements_rack').on(t.rackId),
+  idxCreated: index('idx_warehouse_rack_movements_created').on(t.createdAt),
+  typeEnum:   check('warehouse_rack_movements_type_chk',
+    sql`movement_type IN ('STOCK_IN','STOCK_OUT','TRANSFER')`),
+}));

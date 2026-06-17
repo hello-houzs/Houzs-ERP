@@ -1,0 +1,378 @@
+/* Inventory page — VERBATIM copy of 2990s apps/backend/src/pages/Inventory.module.css
+   (CSS Modules; Vite supports them out of the box — rule #6). The design tokens
+   (--c-cream, --c-ink, --c-burnt, --font-*, --space-*, --radius-*, --fs-*,
+   --shadow-*, --line, --fg-muted, --c-secondary-a, --c-festive-b, --c-orange)
+   are the same 2990s tokens the Suppliers/PO slices already rely on in Houzs.
+
+   Self-contained CHROME ADDENDUM at the bottom: the few detail-page classes
+   StockCard/StockAdjustmentNew read from 2990s's SalesOrderDetail.module.css
+   `chrome` import (backBtn / titleBlock / card / cardHeader / cardTitle /
+   subtitle / fieldFull) are added here so each ported page needs ONE stylesheet
+   instead of pulling a large unrelated SO-detail module. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-6) var(--space-7);
+  background: var(--c-cream);
+  min-height: 100%;
+}
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.title {
+  font-family: var(--font-title);
+  font-weight: 700;
+  color: var(--c-ink);
+  margin: 0;
+}
+
+.subtitle {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--fg-muted);
+  margin: 4px 0 0;
+}
+
+.tabRow {
+  display: inline-flex;
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 4px;
+  gap: 2px;
+}
+
+.tab {
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-pill);
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.tab:hover { color: var(--c-ink); }
+.tab[data-active='true'] {
+  background: var(--c-ink);
+  color: var(--c-cream);
+  box-shadow: var(--shadow-1);
+}
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.warehouseChips {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.chip {
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--c-paper);
+  color: var(--c-ink);
+  cursor: pointer;
+}
+.chip[data-active='true'] {
+  border-color: var(--c-ink);
+  background: var(--c-ink);
+  color: var(--c-cream);
+}
+
+.searchBox {
+  position: relative;
+  flex: 1;
+  min-width: 280px;
+  max-width: 460px;
+}
+.searchIcon {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+.searchInput {
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-7);
+  color: var(--c-ink);
+  outline: none;
+}
+.searchInput:focus { border-color: var(--line-strong); background: var(--c-cream); }
+
+.eyebrow {
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--c-burnt);
+  margin: 0;
+  padding-left: var(--space-2);
+  border-left: 3px solid var(--c-burnt);
+  line-height: 1.25;
+}
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-4);
+}
+
+.statCard {
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.statLabel {
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.statValue {
+  font-family: var(--font-mark);
+  font-size: var(--fs-24);
+  font-weight: 800;
+  font-stretch: 80%;
+  color: var(--c-ink);
+}
+.statCaption {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--fg-soft);
+}
+
+.tableCard {
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  box-shadow: none;
+  overflow: hidden;
+  margin-top: var(--space-2);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table thead th {
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  background: var(--c-paper);
+  border-bottom: 1px solid var(--line);
+}
+
+.table tbody td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  color: var(--c-ink);
+}
+
+.table tbody tr:last-child td { border-bottom: none; }
+.table tbody tr:hover { background: var(--c-cream); }
+
+.codeChip {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  background: var(--c-cream);
+  color: var(--c-ink);
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+}
+
+.numCell {
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  text-align: right;
+  font-weight: 600;
+  color: var(--c-ink);
+}
+
+.numCellPos {
+  color: var(--c-secondary-a);
+}
+
+.numCellNeg {
+  color: var(--c-festive-b, #B8331F);
+}
+
+.numCellZero {
+  color: var(--fg-soft);
+}
+
+.movementPill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+}
+
+.movementIn  { background: rgba(47, 93, 79, 0.12);  color: var(--c-secondary-a); }
+.movementOut { background: rgba(184, 51, 31, 0.10); color: var(--c-festive-b, #B8331F); }
+.movementAdj { background: rgba(166, 71, 30, 0.12); color: var(--c-burnt); }
+
+.docLink {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  color: var(--c-burnt);
+  text-decoration: none;
+}
+.docLink:hover { text-decoration: underline; }
+
+.emptyRow {
+  text-align: center;
+  color: var(--fg-muted);
+  padding: var(--space-6);
+}
+
+.bannerWarn {
+  background: rgba(232, 107, 58, 0.08);
+  border: 1px solid var(--c-orange);
+  color: var(--c-burnt);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-13);
+}
+
+/* ── CHROME ADDENDUM (detail-page shell — mirrors the classes StockCard /
+   StockAdjustmentNew consumed from 2990s SalesOrderDetail.module.css). ──────── */
+.titleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.backBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--c-burnt);
+  text-decoration: none;
+  width: fit-content;
+}
+.backBtn:hover { text-decoration: underline; }
+
+.card {
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+.cardTitle {
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--c-burnt);
+  margin: 0;
+}
+.cardBody {
+  padding: var(--space-4);
+}
+
+/* Form fields (StockAdjustmentNew) — mirror 2990s SO-detail field classes. */
+.field { display: flex; flex-direction: column; gap: 4px; }
+.fieldFull { grid-column: 1 / -1; }
+.fieldLabel {
+  font-family: var(--font-button);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.fieldInput,
+.fieldSelect {
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  color: var(--c-ink);
+  outline: none;
+}
+.fieldInput:focus,
+.fieldSelect:focus { border-color: var(--line-strong); background: var(--c-cream); }
+.selectWrap { position: relative; display: block; }
+.selectChevron {
+  position: absolute;
+  right: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+.actions { display: flex; align-items: center; gap: var(--space-2); }
+.formGrid2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-3);
+}
+.formGrid4 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-3);
+}
