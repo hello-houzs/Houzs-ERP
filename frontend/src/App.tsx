@@ -61,6 +61,7 @@ const SupplierMaster = lazy(() => import("./pages/SupplierMaster").then((m) => (
 const SupplierDetail = lazy(() => import("./pages/SupplierDetail").then((m) => ({ default: m.SupplierDetail })));
 const PurchaseOrderList = lazy(() => import("./pages/PurchaseOrderList").then((m) => ({ default: m.PurchaseOrderList })));
 const ScmPurchaseOrderDetail = lazy(() => import("./pages/PurchaseOrderDetail").then((m) => ({ default: m.PurchaseOrderDetail })));
+const Inventory = lazy(() => import("./pages/Inventory").then((m) => ({ default: m.Inventory })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -294,6 +295,14 @@ export default function App() {
           element={
             <Guard perm="*">
               <ScmPurchaseOrderDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/inventory"
+          element={
+            <Guard perm="*">
+              <Inventory />
             </Guard>
           }
         />

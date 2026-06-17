@@ -3,3 +3,4 @@
 // e.g. `import { supplierCreateSchema } from "@shared/scm"`.
 export * from "./scm";
 export * from "./auth";
+export * from "./inventory";

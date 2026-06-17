@@ -1035,3 +1035,30 @@ export const scm_purchase_order_items = pgTable(
     idx_po: index("idx_scm_po_items_po").on(t.purchase_order_id),
   }),
 );
+
+// scm_stock_moves — append-only stock-movement ledger. On-hand qty and FIFO
+// valuation are DERIVED from these rows (no snapshot table). qty is signed:
+// +inbound, -outbound. See migrations-pg/0019_scm_inventory.sql.
+export const scm_stock_moves = pgTable(
+  "scm_stock_moves",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
+    material_kind: text("material_kind").notNull(),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name"),
+    qty: integer("qty").notNull(), // signed: +inbound, -outbound
+    unit_cost_centi: integer("unit_cost_centi").notNull().default(0),
+    move_type: text("move_type").notNull(),
+    ref_type: text("ref_type"),
+    ref_id: uuid("ref_id"),
+    note: text("note"),
+    created_by: integer("created_by"), // users.id soft ref
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_whmat: index("idx_scm_moves_whmat").on(t.warehouse_code, t.material_kind, t.material_code),
+    idx_ref: index("idx_scm_moves_ref").on(t.ref_type, t.ref_id),
+    idx_created: index("idx_scm_moves_created").on(t.created_at),
+  }),
+);
