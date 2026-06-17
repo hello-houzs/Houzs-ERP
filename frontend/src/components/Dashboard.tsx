@@ -38,11 +38,17 @@ export function DashboardBreakdown({
   items,
   emptyLabel = "No data",
   formatCount = (n) => n.toLocaleString(),
+  onItemClick,
+  activeLabel,
 }: {
   title: string;
   items: Array<{ label: string; count: number; tone?: "default" | "success" | "warn" | "error" }>;
   emptyLabel?: string;
   formatCount?: (n: number) => string;
+  /** When set, each row becomes a button — click to drill down. */
+  onItemClick?: (label: string) => void;
+  /** Highlight the currently-selected row. */
+  activeLabel?: string;
 }) {
   const max = Math.max(1, ...items.map((i) => i.count));
   return (
@@ -58,6 +64,7 @@ export function DashboardBreakdown({
         <div className="space-y-2.5">
           {items.map((it) => {
             const pct = (it.count / max) * 100;
+            const active = activeLabel != null && activeLabel === it.label;
             const barColor =
               it.tone === "error"
                 ? "bg-err/70"
@@ -66,10 +73,33 @@ export function DashboardBreakdown({
                 : it.tone === "success"
                 ? "bg-synced/70"
                 : "bg-accent/65";
+            const Row = onItemClick ? "button" : "div";
             return (
-              <div key={it.label}>
+              <Row
+                key={it.label}
+                {...(onItemClick
+                  ? {
+                      type: "button" as const,
+                      onClick: () => onItemClick(it.label),
+                      title: `Filter by ${it.label}`,
+                    }
+                  : {})}
+                className={cn(
+                  "block w-full text-left",
+                  onItemClick &&
+                    "-mx-2 rounded-md px-2 py-1 transition-colors hover:bg-accent-soft/40",
+                  active && "bg-accent-soft/60",
+                )}
+              >
                 <div className="mb-1 flex items-center justify-between gap-3 text-[12px]">
-                  <span className="truncate font-medium text-ink-secondary">{it.label}</span>
+                  <span
+                    className={cn(
+                      "truncate font-medium",
+                      active ? "text-accent" : "text-ink-secondary",
+                    )}
+                  >
+                    {it.label}
+                  </span>
                   <span className="shrink-0 font-mono text-[11px] font-semibold text-ink">
                     {formatCount(it.count)}
                   </span>
@@ -80,7 +110,7 @@ export function DashboardBreakdown({
                     style={{ width: `${pct}%` }}
                   />
                 </div>
-              </div>
+              </Row>
             );
           })}
         </div>

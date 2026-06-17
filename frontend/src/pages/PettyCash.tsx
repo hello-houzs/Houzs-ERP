@@ -45,7 +45,7 @@ interface Summary {
   count: number;
 }
 
-const FILTER_KEYS = ["from", "to", "direction", "category"] as const;
+const FILTER_KEYS = ["from", "to", "direction", "category", "payee"] as const;
 
 function formatRM(cents: number): string {
   const sign = cents < 0 ? "-" : "";
@@ -68,6 +68,9 @@ export function PettyCash() {
   const to = params.get("to") || "";
   const direction = params.get("direction") || "";
   const category = params.get("category") || "";
+  // Payee is a client-side drill-down (no backend param) — filters the
+  // visible ledger rows by counterparty.
+  const payee = params.get("payee") || "";
 
   function setFilter(key: string, value: string) {
     const next = new URLSearchParams(params);
@@ -78,6 +81,25 @@ export function PettyCash() {
   function clearAll() {
     const next = new URLSearchParams(params);
     for (const k of FILTER_KEYS) next.delete(k);
+    setParams(next, { replace: true });
+  }
+  // Cash-flow chart drill-down: clicking a month sets the from/to window to
+  // that whole month (click again to clear).
+  const activeMonth =
+    from && to && from.slice(0, 7) === to.slice(0, 7) && from.endsWith("-01")
+      ? from.slice(0, 7)
+      : "";
+  function toggleMonth(m: string) {
+    const next = new URLSearchParams(params);
+    if (activeMonth === m) {
+      next.delete("from");
+      next.delete("to");
+    } else {
+      const [y, mm] = m.split("-").map(Number);
+      const last = new Date(y, mm, 0).getDate();
+      next.set("from", `${m}-01`);
+      next.set("to", `${m}-${String(last).padStart(2, "0")}`);
+    }
     setParams(next, { replace: true });
   }
 
@@ -104,6 +126,10 @@ export function PettyCash() {
 
   const summary = list.data?.summary;
   const rows = list.data?.rows ?? [];
+  // Rows actually shown in the ledger — narrowed by the payee drill-down.
+  const displayRows = payee
+    ? rows.filter((r) => (r.counterparty || "Unspecified") === payee)
+    : rows;
 
   // Derived insights (client-side, from the current filtered rows).
   const topOut = (
@@ -280,12 +306,16 @@ export function PettyCash() {
         <StatCard
           label={qs ? "Inflow (filtered)" : "Total inflow"}
           value={summary ? formatRM(qs ? summary.filtered_in_cents : summary.total_in_cents) : "—"}
-          subtitle="Top-ups, refunds"
+          subtitle={direction === "in" ? "Showing inflow · tap to clear" : "Top-ups, refunds"}
+          tone={direction === "in" ? "success" : "default"}
+          onClick={() => setFilter("direction", direction === "in" ? "" : "in")}
         />
         <StatCard
           label={qs ? "Outflow (filtered)" : "Total outflow"}
           value={summary ? formatRM(qs ? summary.filtered_out_cents : summary.total_out_cents) : "—"}
-          subtitle="Purchases, expenses"
+          subtitle={direction === "out" ? "Showing outflow · tap to clear" : "Purchases, expenses"}
+          tone={direction === "out" ? "error" : "default"}
+          onClick={() => setFilter("direction", direction === "out" ? "" : "out")}
         />
         <StatCard
           label={qs ? "Net (filtered)" : "Net position"}
@@ -310,21 +340,29 @@ export function PettyCash() {
       </div>
 
       {/* C — cash flow trend (in vs out over recent months) */}
-      <CashFlowTrend data={monthly} />
+      <CashFlowTrend
+        data={monthly}
+        activeMonth={activeMonth}
+        onMonthClick={toggleMonth}
+      />
 
-      {/* A + B — spend breakdowns */}
+      {/* A + B — spend breakdowns (click a row to drill into the ledger) */}
       <DashboardPanels cols={2}>
         <DashboardBreakdown
           title="Spend by category"
           items={byCategory}
           formatCount={formatRM}
           emptyLabel="No outflow recorded yet"
+          activeLabel={category}
+          onItemClick={(c) => setFilter("category", category === c ? "" : c)}
         />
         <DashboardBreakdown
           title="Top payees"
           items={byPayee}
           formatCount={formatRM}
           emptyLabel="No payees recorded yet"
+          activeLabel={payee}
+          onItemClick={(p) => setFilter("payee", payee === p ? "" : p)}
         />
       </DashboardPanels>
 
@@ -370,7 +408,16 @@ export function PettyCash() {
             </option>
           ))}
         </select>
-        {qs && (
+        {payee && (
+          <button
+            onClick={() => setFilter("payee", "")}
+            className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[10px] font-semibold text-accent-ink transition-colors hover:bg-accent hover:text-white"
+            title="Clear payee filter"
+          >
+            Payee: {payee} <X size={10} />
+          </button>
+        )}
+        {(qs || payee) && (
           <button
             onClick={() => clearAll()}
             className="ml-auto inline-flex items-center gap-1 rounded text-[10px] font-semibold uppercase tracking-brand text-ink-muted transition-colors hover:text-accent"
@@ -384,7 +431,7 @@ export function PettyCash() {
       <DataTable
         tableId="petty-cash"
         columns={columns}
-        rows={list.data?.rows ?? null}
+        rows={list.data ? displayRows : null}
         loading={list.loading}
         error={list.error}
         getRowKey={(r) => r.id}
@@ -425,8 +472,12 @@ export function PettyCash() {
 
 function CashFlowTrend({
   data,
+  activeMonth,
+  onMonthClick,
 }: {
   data: Array<{ month: string; in: number; out: number }>;
+  activeMonth?: string;
+  onMonthClick?: (month: string) => void;
 }) {
   const max = Math.max(1, ...data.flatMap((d) => [d.in, d.out]));
   const monthLabel = (m: string) => {
@@ -456,7 +507,9 @@ function CashFlowTrend({
       ) : (
         (() => {
           const n = data.length;
-          const xAt = (i: number) => (n <= 1 ? 50 : (i / (n - 1)) * 100);
+          // Centre points in equal columns so the clickable month strips,
+          // dots and labels all line up.
+          const xAt = (i: number) => ((i + 0.5) / n) * 100;
           const yAt = (v: number) => 96 - (v / max) * 88; // 4–96 vertical padding
           const pts = (sel: (d: (typeof data)[number]) => number) =>
             data.map((d, i) => `${xAt(i)},${yAt(sel(d))}`).join(" ");
@@ -466,10 +519,26 @@ function CashFlowTrend({
           const OUT = "#a83232";
           return (
             <div className="relative h-32">
+              {/* clickable month strips (behind the chart) */}
+              <div className="absolute inset-0 flex gap-1">
+                {data.map((d) => (
+                  <button
+                    key={`hit-${d.month}`}
+                    type="button"
+                    onClick={() => onMonthClick?.(d.month)}
+                    title={`${monthLabel(d.month)} · In ${formatRM(d.in)} · Out ${formatRM(d.out)}`}
+                    className={cn(
+                      "flex-1 rounded-md transition-colors",
+                      onMonthClick && "hover:bg-accent-soft/40",
+                      activeMonth === d.month && "bg-accent-soft/60 ring-1 ring-inset ring-accent/30",
+                    )}
+                  />
+                ))}
+              </div>
               <svg
                 viewBox="0 0 100 100"
                 preserveAspectRatio="none"
-                className="absolute inset-0 h-full w-full"
+                className="pointer-events-none absolute inset-0 h-full w-full"
               >
                 <polygon points={area((d) => d.in)} fill={IN} opacity={0.08} />
                 <polygon points={area((d) => d.out)} fill={OUT} opacity={0.07} />
@@ -496,7 +565,7 @@ function CashFlowTrend({
               {data.map((d, i) => (
                 <span
                   key={`in-${d.month}`}
-                  className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-synced"
+                  className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-synced"
                   style={{ left: `${xAt(i)}%`, top: `${yAt(d.in)}%` }}
                   title={`${monthLabel(d.month)} · In ${formatRM(d.in)}`}
                 />
@@ -504,7 +573,7 @@ function CashFlowTrend({
               {data.map((d, i) => (
                 <span
                   key={`out-${d.month}`}
-                  className="absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-err"
+                  className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-err"
                   style={{ left: `${xAt(i)}%`, top: `${yAt(d.out)}%` }}
                   title={`${monthLabel(d.month)} · Out ${formatRM(d.out)}`}
                 />
@@ -513,7 +582,7 @@ function CashFlowTrend({
               {data.map((d, i) => (
                 <span
                   key={`lbl-${d.month}`}
-                  className="absolute bottom-0 -translate-x-1/2 font-mono text-[9px] text-ink-muted"
+                  className="pointer-events-none absolute bottom-0 -translate-x-1/2 font-mono text-[9px] text-ink-muted"
                   style={{ left: `${xAt(i)}%` }}
                 >
                   {monthLabel(d.month)}
