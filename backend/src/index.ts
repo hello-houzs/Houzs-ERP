@@ -46,6 +46,8 @@ import inventory from "./routes/inventory";
 import grns from "./routes/grns";
 import purchaseInvoices from "./routes/purchase-invoices";
 import purchaseReturns from "./routes/purchase-returns";
+import stockTransfers from "./routes/stock-transfers";
+import stockTakes from "./routes/stock-takes";
 import mfgWarehouses from "./routes/warehouse";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
@@ -184,6 +186,12 @@ app.route("/api/grns", grns);
 // -> /api/purchase-invoices + /api/purchase-returns. Owner-only (perm "*").
 app.route("/api/purchase-invoices", purchaseInvoices);
 app.route("/api/purchase-returns", purchaseReturns);
+// SCM 1:1 clone — Stock Transfers (paired OUT@from + IN@to inventory movements,
+// FIFO cost handoff) + Stock Takes (cycle count -> signed ADJUSTMENT movements).
+// Both write into the inventory ledger via lib/inventory-movements. No AutoCount
+// collision -> /api/stock-transfers + /api/stock-takes. Owner-only (perm "*").
+app.route("/api/stock-transfers", stockTransfers);
+app.route("/api/stock-takes", stockTakes);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);

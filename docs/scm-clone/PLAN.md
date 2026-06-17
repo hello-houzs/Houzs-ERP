@@ -345,3 +345,55 @@ need translation.)
     mfg-products / supplier-binding lookup / auto-due-date) per Strategy-2. `sql`
     import unused → removed from PR route; unused `navigate` removed from detail pages.
   - Migration `0028` NOT applied to any DB (batched for staging at #70).
+- **2026-06-18 — Stock Transfers + Stock Takes slice DONE (#63):** verbatim clone
+  of 2990s `stock-transfers.ts` + `stock-takes.ts` (PostgREST→Drizzle). Routes at
+  `/api/stock-transfers` + `/api/stock-takes` (mounted in index.ts, owner-only
+  perm `"*"`); pages StockTransfers/New/Detail + StockTakes/New/Detail in
+  `pages/scm/` + query hooks `stock-transfers-queries.ts` + `stock-takes-queries.ts`;
+  App.tsx routes (`/stock-transfers[/new|/:id]`, `/stock-takes[/new|/:id]`, all
+  `<Guard perm="*">`, static `/new` before `/:id`); nav "Stock Transfers"
+  (ArrowLeftRight) + "Stock Takes" (ClipboardList) under Supply Chain. List pages
+  use plain `<table>` + `Inventory.module.css` verbatim (StockAdjustments pattern,
+  2990s DataGrid dropped); New/Detail pages use a slice-local `StockDoc.module.css`
+  reproducing 2990s's `SalesOrderDetail.module.css` look (SO slice not cloned).
+  **NO migration needed** — `0026` already created `stock_transfers`/`_lines` +
+  `stock_takes`/`_lines` with columns IDENTICAL to 2990s's schema.ts (verified
+  field-by-field); the only diffs are the already-applied seams (`created_by`
+  integer, FKs→`mfg_warehouses`, `variance` generated). Both gates EXIT 0.
+  - **Transfer→inventory wiring (faithful):** POST creates POSTED + inline writes,
+    per line: (1) direct `db.insert(inventoryMovements)` of an **OUT@from**
+    (`source_doc_type:'STOCK_TRANSFER'`, source dye-lot stamped via the lib's
+    `resolveWarehouseLotBatches` when the source bucket sits in ONE batch), then
+    **RE-QUERY** that row's `total_cost_sen` (the FIFO trigger stamps cost via a
+    separate UPDATE that INSERT…RETURNING can't see — the 2990s C-1 fix), then
+    (2) `writeMovements(db, [IN@to])` with `unit_cost_sen = OUT.total/OUT.qty` so
+    the destination lot opens at the consumed basis (+ mirrored batch_no). Cancel
+    (POSTED→CANCELLED, gated, idempotent) → `reverseMovements(db,'STOCK_TRANSFER',
+    id,userId)` (signed-net-per-bucket reversal). `/post` = legacy no-op.
+  - **Stocktake→inventory wiring (faithful):** create snapshots `system_qty` per
+    in-scope SKU then inserts OPEN lines (counted_qty NULL); `/lines` bulk-updates
+    counted_qty (OPEN only); **`/post`** (OPEN→POSTED, gated) writes ONE
+    `movement_type:'ADJUSTMENT'` of the SIGNED `(counted−system)` variance per
+    non-zero line via `writeMovements(db, …, source_doc_type:'STOCK_TAKE',
+    reason_code:'COUNT')` so the ledger reconciles to the counted figure; `/reverse`
+    (POSTED→CANCELLED, gated) writes the opposite-signed ADJUSTMENT per forward
+    movement; `/cancel` (OPEN) + `/delete` (OPEN) terminal. SO-allocation re-walk
+    is a no-op stub (SO slice pending), call sites kept.
+  - **SEAM/deviations (documented in files):** `created_by`→int (users.id from
+    `c.get("user")`); from/to warehouses must differ (CHECK already exists).
+    **Stocktake snapshot source SWAPPED** — 2990s reads `v_inventory_all_skus`
+    (CROSS JOIN mfg_products, NOT created in Houzs) → Houzs snapshots from
+    `inventory_balances` (movement rollup, product-free, exists): ALL =
+    every product_code with a balance row at the wh; CODE_PREFIX = filtered by
+    `product_code ILIKE prefix%`; **CATEGORY = zero rows** (no category column in
+    Houzs balances → server returns `scope_empty`; kept in the UI dropdown for
+    fidelity, preview shows 0, TODO when a product layer + categories land).
+    StockTakeNew preview reads `inventory_balances` (showAll=false) — the SAME
+    source the server snapshots from — so ALL/CODE_PREFIX previews are honest.
+    Dropped per Strategy-2: `useMfgProducts` (SKU-picker datalist + auto-name +
+    prefix suggestions) → plain text inputs; `buildVariantSummary` → "Description 2"
+    shows stored description2 (none on Houzs transfer/take lines) else em-dash;
+    `fmtDateOrDash`/`SkeletonDetailPage` inlined / replaced with plain loading text
+    (done-slice precedent). window.confirm/alert kept verbatim (1:1 fidelity; done
+    slices kept it). No migration `0029`.
+  - Nothing applied to any DB (no migration; batched for staging at #70).

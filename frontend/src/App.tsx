@@ -55,6 +55,14 @@ const ScmPurchaseInvoiceDetail = lazy(() => import("./pages/scm/PurchaseInvoiceD
 const ScmPurchaseReturns = lazy(() => import("./pages/scm/PurchaseReturnsList").then((m) => ({ default: m.PurchaseReturns })));
 const ScmPurchaseReturnNew = lazy(() => import("./pages/scm/PurchaseReturnNew").then((m) => ({ default: m.PurchaseReturnNew })));
 const ScmPurchaseReturnDetail = lazy(() => import("./pages/scm/PurchaseReturnDetail").then((m) => ({ default: m.PurchaseReturnDetail })));
+// SCM 1:1 clone — Stock Transfers + Stock Takes (pages/scm/*). No AutoCount
+// /stock-transfers or /stock-takes surface -> distinct routes.
+const ScmStockTransfers = lazy(() => import("./pages/scm/StockTransfers").then((m) => ({ default: m.StockTransfers })));
+const ScmStockTransferNew = lazy(() => import("./pages/scm/StockTransferNew").then((m) => ({ default: m.StockTransferNew })));
+const ScmStockTransferDetail = lazy(() => import("./pages/scm/StockTransferDetail").then((m) => ({ default: m.StockTransferDetail })));
+const ScmStockTakes = lazy(() => import("./pages/scm/StockTakes").then((m) => ({ default: m.StockTakes })));
+const ScmStockTakeNew = lazy(() => import("./pages/scm/StockTakeNew").then((m) => ({ default: m.StockTakeNew })));
+const ScmStockTakeDetail = lazy(() => import("./pages/scm/StockTakeDetail").then((m) => ({ default: m.StockTakeDetail })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -510,6 +518,58 @@ export default function App() {
           element={
             <Guard perm="*">
               <ScmPurchaseReturnDetail />
+            </Guard>
+          }
+        />
+        {/* Supply Chain — Stock Transfers + Stock Takes (1:1 clone of 2990s,
+            pages/scm/*). Owner-only (perm "*"), matching the backend
+            requirePermission("*") gate. /api/stock-transfers + /api/stock-takes
+            back these. Static /new MUST precede the /:id param route. */}
+        <Route
+          path="/stock-transfers"
+          element={
+            <Guard perm="*">
+              <ScmStockTransfers />
+            </Guard>
+          }
+        />
+        <Route
+          path="/stock-transfers/new"
+          element={
+            <Guard perm="*">
+              <ScmStockTransferNew />
+            </Guard>
+          }
+        />
+        <Route
+          path="/stock-transfers/:id"
+          element={
+            <Guard perm="*">
+              <ScmStockTransferDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/stock-takes"
+          element={
+            <Guard perm="*">
+              <ScmStockTakes />
+            </Guard>
+          }
+        />
+        <Route
+          path="/stock-takes/new"
+          element={
+            <Guard perm="*">
+              <ScmStockTakeNew />
+            </Guard>
+          }
+        />
+        <Route
+          path="/stock-takes/:id"
+          element={
+            <Guard perm="*">
+              <ScmStockTakeDetail />
             </Guard>
           }
         />
