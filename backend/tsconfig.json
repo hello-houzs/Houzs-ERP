@@ -16,7 +16,10 @@
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx",
     "baseUrl": ".",
-    "paths": { "@shared/*": ["../shared/*"] }
+    "paths": {
+      "@shared/*": ["../shared/*"],
+      "zod": ["./node_modules/zod"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

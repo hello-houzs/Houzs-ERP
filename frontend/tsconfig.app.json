@@ -18,7 +18,10 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "baseUrl": ".",
-    "paths": { "@shared/*": ["../shared/*"] }
+    "paths": {
+      "@shared/*": ["../shared/*"],
+      "zod": ["./node_modules/zod"]
+    }
   },
   "include": ["src"]
 }
