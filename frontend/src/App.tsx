@@ -64,6 +64,10 @@ const ScmPurchaseOrderDetail = lazy(() => import("./pages/PurchaseOrderDetail").
 const Inventory = lazy(() => import("./pages/Inventory").then((m) => ({ default: m.Inventory })));
 const GoodsReceiptList = lazy(() => import("./pages/GoodsReceiptList").then((m) => ({ default: m.GoodsReceiptList })));
 const GoodsReceiptDetail = lazy(() => import("./pages/GoodsReceiptDetail").then((m) => ({ default: m.GoodsReceiptDetail })));
+const PurchaseInvoiceList = lazy(() => import("./pages/PurchaseInvoiceList").then((m) => ({ default: m.PurchaseInvoiceList })));
+const PurchaseInvoiceDetail = lazy(() => import("./pages/PurchaseInvoiceDetail").then((m) => ({ default: m.PurchaseInvoiceDetail })));
+const PurchaseReturnList = lazy(() => import("./pages/PurchaseReturnList").then((m) => ({ default: m.PurchaseReturnList })));
+const PurchaseReturnDetail = lazy(() => import("./pages/PurchaseReturnDetail").then((m) => ({ default: m.PurchaseReturnDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -324,6 +328,12 @@ export default function App() {
             </Guard>
           }
         />
+        <Route path="/scm/purchase-invoices" element={<Guard perm="*"><PurchaseInvoiceList /></Guard>} />
+        <Route path="/scm/purchase-invoices/new" element={<Guard perm="*"><PurchaseInvoiceDetail /></Guard>} />
+        <Route path="/scm/purchase-invoices/:id" element={<Guard perm="*"><PurchaseInvoiceDetail /></Guard>} />
+        <Route path="/scm/returns" element={<Guard perm="*"><PurchaseReturnList /></Guard>} />
+        <Route path="/scm/returns/new" element={<Guard perm="*"><PurchaseReturnDetail /></Guard>} />
+        <Route path="/scm/returns/:id" element={<Guard perm="*"><PurchaseReturnDetail /></Guard>} />
         <Route
           path="/scm/inventory"
           element={

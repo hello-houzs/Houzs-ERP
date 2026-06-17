@@ -1109,3 +1109,104 @@ export const scm_goods_receipt_note_items = pgTable(
     idx_grn: index("idx_scm_grn_items_grn").on(t.grn_id),
   }),
 );
+
+// scm_purchase_invoices — supplier billing header. FINANCE record only, NO stock
+// impact (stock arrives via GRN; PI-without-GRN is intentional). status is driven
+// by amount_paid_centi vs total_centi. See migrations-pg/0021_scm_purchase_billing.sql.
+export const scm_purchase_invoices = pgTable(
+  "scm_purchase_invoices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    invoice_number: text("invoice_number").notNull().unique(),
+    supplier_invoice_no: text("supplier_invoice_no"), // the supplier's own invoice ref
+    supplier_id: uuid("supplier_id").notNull(), // soft ref scm_suppliers.id
+    purchase_order_id: uuid("purchase_order_id"), // soft ref scm_purchase_orders.id (nullable)
+    invoice_date: date("invoice_date").notNull().defaultNow(),
+    due_date: date("due_date"),
+    currency: text("currency").notNull().default("MYR"),
+    subtotal_centi: integer("subtotal_centi").notNull().default(0),
+    tax_centi: integer("tax_centi").notNull().default(0),
+    total_centi: integer("total_centi").notNull().default(0),
+    amount_paid_centi: integer("amount_paid_centi").notNull().default(0),
+    status: text("status").notNull().default("UNPAID"),
+    notes: text("notes"),
+    created_by: integer("created_by"), // users.id soft ref (set from auth)
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_supplier: index("idx_scm_pi_supplier").on(t.supplier_id),
+    idx_status: index("idx_scm_pi_status").on(t.status),
+  }),
+);
+
+// scm_purchase_invoice_items — PI lines (no received/stock columns; finance only)
+export const scm_purchase_invoice_items = pgTable(
+  "scm_purchase_invoice_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    invoice_id: uuid("invoice_id")
+      .notNull()
+      .references(() => scm_purchase_invoices.id, { onDelete: "cascade" }),
+    material_kind: text("material_kind").notNull().default("mfg_product"),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name"),
+    qty: integer("qty").notNull().default(0),
+    unit_price_centi: integer("unit_price_centi").notNull().default(0),
+    discount_centi: integer("discount_centi").notNull().default(0),
+    line_total_centi: integer("line_total_centi").notNull().default(0),
+    notes: text("notes"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_invoice: index("idx_scm_pi_items_invoice").on(t.invoice_id),
+  }),
+);
+
+// scm_purchase_returns — return-to-supplier header. MIRRORS the GRN but OUTBOUND:
+// posting writes NEGATIVE-qty PURCHASE_RETURN_OUT rows into scm_stock_moves.
+// See migrations-pg/0021_scm_purchase_billing.sql.
+export const scm_purchase_returns = pgTable(
+  "scm_purchase_returns",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    return_number: text("return_number").notNull().unique(),
+    supplier_id: uuid("supplier_id").notNull(), // soft ref scm_suppliers.id
+    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
+    purchase_order_id: uuid("purchase_order_id"), // soft ref scm_purchase_orders.id (nullable)
+    status: text("status").notNull().default("DRAFT"),
+    reason: text("reason"),
+    notes: text("notes"),
+    posted_at: timestamp("posted_at", { withTimezone: true }),
+    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
+    created_by: integer("created_by"), // users.id soft ref (set from auth)
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_supplier: index("idx_scm_rtn_supplier").on(t.supplier_id),
+    idx_status: index("idx_scm_rtn_status").on(t.status),
+  }),
+);
+
+// scm_purchase_return_items — return lines. qty_returned is stored positive here;
+// it is written NEGATIVE to the scm_stock_moves ledger on post.
+export const scm_purchase_return_items = pgTable(
+  "scm_purchase_return_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    return_id: uuid("return_id")
+      .notNull()
+      .references(() => scm_purchase_returns.id, { onDelete: "cascade" }),
+    material_kind: text("material_kind").notNull().default("mfg_product"),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name"),
+    qty_returned: integer("qty_returned").notNull().default(0),
+    unit_cost_centi: integer("unit_cost_centi").notNull().default(0),
+    notes: text("notes"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_return: index("idx_scm_rtn_items_return").on(t.return_id),
+  }),
+);

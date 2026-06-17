@@ -58,6 +58,8 @@ import scmSuppliers from "./routes/scm-suppliers";
 import scmPurchaseOrders from "./routes/scm-purchase-orders";
 import scmInventory from "./routes/scm-inventory";
 import scmGoodsReceipts from "./routes/scm-goods-receipts";
+import scmPurchaseInvoices from "./routes/scm-purchase-invoices";
+import scmPurchaseReturns from "./routes/scm-purchase-returns";
 import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
@@ -133,6 +135,8 @@ app.route("/api/scm-suppliers", scmSuppliers);
 app.route("/api/scm-purchase-orders", scmPurchaseOrders);
 app.route("/api/scm-inventory", scmInventory);
 app.route("/api/scm-goods-receipts", scmGoodsReceipts);
+app.route("/api/scm-purchase-invoices", scmPurchaseInvoices);
+app.route("/api/scm-purchase-returns", scmPurchaseReturns);
 // Mount the Lead Time Portal first so /api/assr/portal/* doesn't
 // fall through into the catch-all /:id handler on the main module.
 app.route("/api/assr/portal", assrPortal);
