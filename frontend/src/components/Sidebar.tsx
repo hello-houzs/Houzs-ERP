@@ -160,6 +160,7 @@ export const NAV_TABS: NavTab[] = [
     children: [
       { to: "/suppliers", label: "Suppliers", icon: Package, perm: "*" },
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
+      { to: "/grns", label: "Goods Received", icon: Truck, perm: "*" },
       { to: "/inventory", label: "Inventory", icon: Boxes, perm: "*" },
       { to: "/stock-adjustments", label: "Stock Adjustments", icon: ClipboardCheck, perm: "*" },
       { to: "/warehouses", label: "Warehouses", icon: PackageCheck, perm: "*" },

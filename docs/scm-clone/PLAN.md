@@ -269,7 +269,28 @@ need translation.)
     'IN'|'OUT'|'ADJUSTMENT'; warehouse_id; product_code; variant_key?; product_name?;
     qty; unit_cost_sen?; source_doc_type 'GRN'|'DO'|'DR'|'PURCHASE_RETURN'|...;
     source_doc_id?; source_doc_no?; batch_no?; reason_code?; performed_by?: number }`.
-- **NEXT:** GRN slice (#60) — clone `grns`+`grn_items` + grn-rack-sync, route at
-  `/api/grns`, pages GrnFromPo/GrnNew/GoodsReceivedList in `pages/scm/`; GRN POST
-  calls `writeMovements(... source_doc_type:'GRN')` + advances PO `received_qty` +
-  recomputes PO status. (grns/grn_items have no AutoCount collision → bare names.)
+- **2026-06-18 — GRN slice DONE (#60):** verbatim clone → tables `grns`+`grn_items`
+  (BARE names, no AutoCount collision), `grn_status` enum (POSTED/CLOSED/CANCELLED),
+  migration `0027_grns.sql`, route at `/api/grns`, lib `grn-rack-sync.ts`, pages
+  GoodsReceivedList/GrnNew/GrnFromPo/GoodsReceivedDetail + `grn-queries.ts` in
+  `pages/scm/`, routes in App.tsx (`/grns`, `/grns/new`, `/grns/from-po`, `/grns/:id`),
+  nav "Goods Received" under Supply Chain. GRN POST flow wired faithfully: (a)
+  `writeMovements(db, ... source_doc_type:'GRN', batch_no=source PO no)` for IN; (b)+(c)
+  `recomputePoReceived` recounts `mfg_purchase_order_items.received_qty` + re-evaluates
+  parent PO status (SUBMITTED→PARTIALLY_RECEIVED→RECEIVED); (d) `placeGrnLinesOnRacks`.
+  Cancel reverses (OUT + rack reversal + PO recount). All over-receipt guards +
+  child-lock + downstream-consumption guard + line-edit inventory deltas + warehouse
+  relocation ported. Both gates EXIT 0.
+  - **PO route un-stubbed:** `poHasDownstream` (PO locks once it has a non-cancelled
+    GRN), list+detail `has_children`, per-line `receipts` (poLineReceipts), and
+    `/:id/linked` `grns` now query the real grns/grn_items. SO stubs
+    (recomputeSoPicked, so_drift, so_doc_no) kept stubbed (SO slice pending).
+  - **SEAM/deviations (documented in files):** `grns.purchase_order_id` made NULLABLE
+    (2990s declares NOT NULL but the route inserts null for manual GRNs — schema/route
+    mismatch in 2990s); `warehouse_id`→real FK to `mfg_warehouses`; `created_by`→int
+    soft-ref (users.id); dropped furniture engine (buildVariantSummary, recostFromGrn,
+    mfg_products/maintenance-config variant editors, per-line rack picker UX) +
+    so-stock-allocation (SO slice) per Strategy-2; rack-sync idempotency keyed on
+    `source_doc_no` (= GRN no) since warehouse_rack_items has no source_grn_id column
+    in 2990s's schema.ts. Convert-to-PI/PR actions dropped (PI/PR slices pending).
+  - Migration `0027` NOT applied to any DB (batched for staging at #70).

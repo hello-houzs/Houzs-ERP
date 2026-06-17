@@ -48,13 +48,15 @@
 // ----------------------------------------------------------------------------
 
 import { Hono } from "hono";
-import { and, asc, desc, eq, inArray, like } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, ne } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb } from "../db/client";
 import {
   purchaseOrders as poTable,
   purchaseOrderItems as poItemsTable,
   suppliers as suppliersTable,
+  grns as grnsTable,
+  grnItems as grnItemsTable,
 } from "../db/schema";
 import { requirePermission } from "../middleware/auth";
 
@@ -72,17 +74,68 @@ type CurrencyT = "MYR" | "RMB" | "USD" | "SGD";
 type MaterialKindT = "mfg_product" | "fabric" | "raw";
 
 /* ── PO child-lock guard (Tier 2 — downstream lock) ─────────────────────────
-   In 2990s a PO locks (no header/line edit, no cancel) once it has any non-
-   cancelled GRN. The GRN table is not cloned yet, so there is never a
-   downstream child here -> this always returns null (free to edit). The
-   call sites are kept verbatim so wiring the lock when the GRN slice lands is
-   a one-function change.
-   TODO: query grns once the GRN slice lands. */
+   A PO locks (read-only — no header edit / no line edit / no cancel) once it has
+   ANY non-cancelled GRN. The convert-to-GRN path is NOT gated by this: partial
+   receiving is still allowed (the PO can keep emitting GRNs); only header/line
+   MUTATIONS + CANCEL are blocked, mirroring grnHasDownstream in routes/grns.ts.
+   Wired to the real grns table now that the GRN slice has landed. */
 async function poHasDownstream(
-  _db: ReturnType<typeof getDb>,
-  _poId: string,
+  db: ReturnType<typeof getDb>,
+  poId: string,
 ): Promise<{ error: string; message: string } | null> {
+  const rows = await db
+    .select({ id: grnsTable.id })
+    .from(grnsTable)
+    .where(and(eq(grnsTable.purchaseOrderId, poId), ne(grnsTable.status, "CANCELLED")));
+  if (rows.length > 0) {
+    return { error: "po_has_downstream", message: "PO has a Goods Receipt — delete or cancel it first to edit" };
+  }
   return null;
+}
+
+/* Per-line goods-receipt breakdown — which GR(s) each PO line was received into
+   (one entry per GRN line), carrying the GR number + net qty + status. Cancelled
+   GRNs are excluded. Net qty = qty_accepted − returned_qty; zero/negative nets
+   (fully returned) are dropped. Read-only display aid. (Mirror 2990s
+   poLineReceipts, now that grn_items exists.) */
+type PoLineReceiptInternal = { grnNumber: string; qty: number; status: string };
+async function poLineReceipts(
+  db: ReturnType<typeof getDb>,
+  poItemIds: string[],
+): Promise<Map<string, PoLineReceiptInternal[]>> {
+  const out = new Map<string, PoLineReceiptInternal[]>();
+  if (poItemIds.length === 0) return out;
+  const grnLines = await db
+    .select({
+      purchaseOrderItemId: grnItemsTable.purchaseOrderItemId,
+      qtyAccepted: grnItemsTable.qtyAccepted,
+      returnedQty: grnItemsTable.returnedQty,
+      grnId: grnItemsTable.grnId,
+    })
+    .from(grnItemsTable)
+    .where(inArray(grnItemsTable.purchaseOrderItemId, poItemIds));
+  const grnIds = [...new Set(grnLines.map((r) => r.grnId).filter(Boolean))];
+  if (grnIds.length === 0) return out;
+  const grnRows = await db
+    .select({ id: grnsTable.id, grnNumber: grnsTable.grnNumber, status: grnsTable.status })
+    .from(grnsTable)
+    .where(inArray(grnsTable.id, grnIds));
+  const grnMeta = new Map<string, { grnNumber: string; status: string }>();
+  for (const g of grnRows) {
+    if ((g.status ?? "").toUpperCase() === "CANCELLED") continue;
+    grnMeta.set(g.id, { grnNumber: g.grnNumber ?? "—", status: (g.status ?? "").toUpperCase() });
+  }
+  for (const r of grnLines) {
+    if (!r.purchaseOrderItemId) continue;
+    const meta = grnMeta.get(r.grnId);
+    if (!meta) continue; // cancelled GRN — excluded
+    const net = Number(r.qtyAccepted ?? 0) - Number(r.returnedQty ?? 0);
+    if (net <= 0) continue;
+    const arr = out.get(r.purchaseOrderItemId) ?? [];
+    arr.push({ grnNumber: meta.grnNumber, qty: net, status: meta.status });
+    out.set(r.purchaseOrderItemId, arr);
+  }
+  return out;
 }
 
 // ── List ──────────────────────────────────────────────────────────────
@@ -140,15 +193,24 @@ app.get("/", async (c) => {
       }
     }
 
-    /* Tier 2 downstream-lock (2990s stamps has_children from non-cancelled
-       GRNs). GRN table not cloned yet -> has_children is always false. The
-       list grid simply never hides Edit/Cancel for now.
-       TODO: wire has_children to grns when the GRN slice lands. */
+    /* Tier 2 downstream-lock (mirror computeGrnFlags in routes/grns.ts) — one
+       extra query: pull the distinct purchase_order_ids that have any non-
+       cancelled GRN, then stamp has_children on every PO row. The list grid uses
+       this to hide Edit / Cancel from POs that are downstream-locked. (Wired now
+       that the GRN slice has landed.) */
+    const childIds = new Set<string>();
+    if (ids.length > 0) {
+      const grnRows = await db
+        .select({ purchaseOrderId: grnsTable.purchaseOrderId })
+        .from(grnsTable)
+        .where(and(inArray(grnsTable.purchaseOrderId, ids), ne(grnsTable.status, "CANCELLED")));
+      for (const g of grnRows) if (g.purchaseOrderId) childIds.add(g.purchaseOrderId);
+    }
     const purchaseOrders = headerRows.map((r) => ({
       ...toPoHeaderResponse(r.po),
       supplier: r.supplier?.id ? r.supplier : null,
       items: itemsByPo.get(r.po.id) ?? [],
-      has_children: false,
+      has_children: childIds.has(r.po.id),
     }));
     return c.json({ purchaseOrders });
   } catch (e) {
@@ -198,22 +260,27 @@ app.get("/:id", async (c) => {
     const headerRow = headerRows[0];
     if (!headerRow) return c.json({ error: "not_found" }, 404);
 
-    /* has_children + per-line receipts + so_doc_no/so_drift all derive from
-       GRN / mfg_sales_order_items, which are not cloned yet. Faithful empty
-       shapes: has_children=false, receipts=[], so_doc_no=null, so_drift=null —
-       so the detail page renders exactly as 2990s with nothing received and no
-       SO source.
-       TODO: wire has_children + receipts when the GRN slice lands; so_doc_no +
-       so_drift when the SO slice lands. */
+    /* Tier 2 downstream-lock — stamp has_children on the detail header so the PO
+       Detail page can lock once any non-cancelled GRN exists. (Wired now that the
+       GRN slice has landed.) */
+    const childGrns = await db
+      .select({ id: grnsTable.id })
+      .from(grnsTable)
+      .where(and(eq(grnsTable.purchaseOrderId, id), ne(grnsTable.status, "CANCELLED")));
     const purchaseOrder = {
       ...toPoHeaderResponse(headerRow.po),
       supplier: headerRow.supplier?.id ? headerRow.supplier : null,
-      has_children: false,
+      has_children: childGrns.length > 0,
     };
 
+    /* Per-line GR breakdown so the PO list expansion / detail can show a
+       "Received" column (which GR took how much). so_doc_no + so_drift still
+       derive from mfg_sales_order_items (SO slice not cloned) -> null.
+       TODO: wire so_doc_no + so_drift when the SO slice lands. */
+    const receiptsMap = await poLineReceipts(db, itemRows.map((it) => it.id));
     const items = itemRows.map((it) => ({
       ...toPoItemResponse(it),
-      receipts: [] as unknown[],
+      receipts: receiptsMap.get(it.id) ?? [],
       so_doc_no: null as string | null,
       so_drift: null as unknown,
     }));
@@ -225,12 +292,28 @@ app.get("/:id", async (c) => {
 });
 
 // ── Linked docs (Smart Buttons fan-out) ─────────────────────────────
-// STUB. 2990s returns the GRNs / Purchase Invoices / Purchase Returns that
-// descend from this PO. None of those tables are cloned yet -> faithful empty
-// arrays so the page's smart-button row renders with zero counters.
-// TODO: wire to grns / purchase_invoices / purchase_returns as those slices land.
+// Returns the GRNs (wired now that the GRN slice landed) + Purchase Invoices /
+// Purchase Returns (still empty until those slices land) that descend from this
+// PO. Tiny shape per child — counters + clickable link only.
+// TODO: wire invoices / returns to purchase_invoices / purchase_returns.
 app.get("/:id/linked", async (c) => {
-  return c.json({ grns: [] as unknown[], invoices: [] as unknown[], returns: [] as unknown[] });
+  const id = c.req.param("id");
+  const db = getDb(c.env);
+  try {
+    const grnRows = await db
+      .select({
+        id: grnsTable.id,
+        grn_number: grnsTable.grnNumber,
+        status: grnsTable.status,
+        received_at: grnsTable.receivedAt,
+      })
+      .from(grnsTable)
+      .where(eq(grnsTable.purchaseOrderId, id))
+      .orderBy(desc(grnsTable.receivedAt));
+    return c.json({ grns: grnRows, invoices: [] as unknown[], returns: [] as unknown[] });
+  } catch (e) {
+    return c.json({ error: "load_failed", reason: errMsg(e) }, 500);
+  }
 });
 
 // ── Create ────────────────────────────────────────────────────────────

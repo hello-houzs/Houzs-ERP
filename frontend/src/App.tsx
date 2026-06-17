@@ -41,6 +41,11 @@ const ScmStockCard = lazy(() => import("./pages/scm/StockCard").then((m) => ({ d
 const ScmStockAdjustments = lazy(() => import("./pages/scm/StockAdjustments").then((m) => ({ default: m.StockAdjustments })));
 const ScmStockAdjustmentNew = lazy(() => import("./pages/scm/StockAdjustmentNew").then((m) => ({ default: m.StockAdjustmentNew })));
 const ScmWarehouses = lazy(() => import("./pages/scm/Warehouses").then((m) => ({ default: m.Warehouses })));
+// SCM 1:1 clone — Goods Receipt (GRN) (pages/scm/*). No AutoCount /grns surface.
+const ScmGoodsReceived = lazy(() => import("./pages/scm/GoodsReceivedList").then((m) => ({ default: m.GoodsReceived })));
+const ScmGoodsReceivedDetail = lazy(() => import("./pages/scm/GoodsReceivedDetail").then((m) => ({ default: m.GoodsReceivedDetail })));
+const ScmGrnNew = lazy(() => import("./pages/scm/GrnNew").then((m) => ({ default: m.GrnNew })));
+const ScmGrnFromPo = lazy(() => import("./pages/scm/GrnFromPo").then((m) => ({ default: m.GrnFromPo })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -399,6 +404,42 @@ export default function App() {
           element={
             <Guard perm="*">
               <ScmWarehouses />
+            </Guard>
+          }
+        />
+        {/* Supply Chain — Goods Receipt (GRN) (1:1 clone of 2990s, pages/scm/*).
+            Owner-only (perm "*"), matching the backend requirePermission("*")
+            gate. /api/grns backs these. Static /new + /from-po MUST precede the
+            /:id param route. */}
+        <Route
+          path="/grns"
+          element={
+            <Guard perm="*">
+              <ScmGoodsReceived />
+            </Guard>
+          }
+        />
+        <Route
+          path="/grns/new"
+          element={
+            <Guard perm="*">
+              <ScmGrnNew />
+            </Guard>
+          }
+        />
+        <Route
+          path="/grns/from-po"
+          element={
+            <Guard perm="*">
+              <ScmGrnFromPo />
+            </Guard>
+          }
+        />
+        <Route
+          path="/grns/:id"
+          element={
+            <Guard perm="*">
+              <ScmGoodsReceivedDetail />
             </Guard>
           }
         />

@@ -43,6 +43,7 @@ import creditors from "./routes/creditors";
 import suppliers from "./routes/suppliers";
 import mfgPurchaseOrders from "./routes/mfg-purchase-orders";
 import inventory from "./routes/inventory";
+import grns from "./routes/grns";
 import mfgWarehouses from "./routes/warehouse";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
@@ -172,6 +173,10 @@ app.route("/api/purchase-orders", mfgPurchaseOrders);
 // the clone's warehouse table is mfg_warehouses. Owner-only (perm "*").
 app.route("/api/inventory", inventory);
 app.route("/api/mfg-warehouses", mfgWarehouses);
+// SCM 1:1 clone — Goods Receipt (GRN): PO -> GRN -> (PI/PR later). GRN POST rolls
+// received_qty onto mfg_purchase_order_items + writes an inventory IN movement +
+// places lines on racks. No AutoCount collision -> /api/grns. Owner-only (perm "*").
+app.route("/api/grns", grns);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);

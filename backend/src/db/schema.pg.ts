@@ -1161,6 +1161,119 @@ export const purchaseOrderLines = pgTable('mfg_purchase_order_lines', {
   createdAt:        timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Goods Receipt (GRN) slice (1:1 clone of 2990s) ──────────────────────────
+// Copied VERBATIM from 2990s packages/db/src/schema.ts: grn_status (enum, ~L1051),
+// grns (~L1057), grn_items (~L1083). camelCase keys + snake_case column strings +
+// the real grn_status pgEnum, so the ported /grns route + grn-rack-sync reference
+// these unchanged. The procurement chain is PO -> GRN -> (PI/PR later); a GRN POST
+// rolls qty_accepted onto mfg_purchase_order_items.received_qty, recomputes the
+// parent mfg_purchase_orders.status, writes an inventory IN movement (FIFO trigger,
+// migration 0026), and optionally places lines onto warehouse racks.
+//
+// NO AutoCount collision (Houzs has no `grns` / `grn_items`) -> BARE names + bare
+// export keys (rule #1). All later-migration columns are folded in so the schema
+// is the FINAL shape migration 0027 creates: currency/subtotal/tax/total (2990s
+// mig 0101), discount/line_total/delivery_date/unit_cost/supplier_sku (0101),
+// invoiced_qty/returned_qty (0106), rack_id (0151).
+//
+// Only the documented SEAMS change vs 2990s:
+//   - purchaseOrderId: 2990s declares it .notNull() with FK -> purchase_orders,
+//     BUT the route inserts purchase_order_id:null for MANUAL/blank GRNs
+//     (Commander 2026-05-29). To keep that route path faithful, the FK is REAL
+//     (-> mfg_purchase_orders) but NULLABLE (onDelete:'set null'). Documented
+//     necessary deviation (the 2990s schema/route already disagree here).
+//   - supplierId / purchaseOrderItemId / grnId: REAL FKs (suppliers /
+//     mfg_purchase_order_items / grns), exactly as 2990s.
+//   - warehouseId: 2990s FK -> warehouses.id (uuid). Now that the Inventory slice
+//     cloned mfg_warehouses, this is a REAL FK -> mfgWarehouses (matching the
+//     inventory ledger the GRN posts into). 2990s ON DELETE behaviour kept loose
+//     (set null) so deleting a warehouse never blocks GRN history.
+//   - rackId: REAL FK -> warehouseRacks (set null), as 2990s (mig 0151).
+//   - createdBy: 2990s uuid -> staff.id. rule #4 -> Houzs users.id (serial
+//     INTEGER); SOFT ref (no FK), matching the PO/inventory slices.
+
+export const grnStatus = pgEnum('grn_status', ['POSTED', 'CLOSED', 'CANCELLED']);
+
+export const grns = pgTable('grns', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  grnNumber:         text('grn_number').notNull().unique(),         // 'GRN-2605-001'
+  // SEAM (see header): nullable REAL FK so manual/blank GRNs (no parent PO) save.
+  purchaseOrderId:   uuid('purchase_order_id').references(() => purchaseOrders.id, { onDelete: 'set null' }),
+  supplierId:        uuid('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'restrict' }),
+  // SEAM: REAL FK -> mfg_warehouses (the cloned inventory warehouse table).
+  warehouseId:       uuid('warehouse_id').references(() => mfgWarehouses.id, { onDelete: 'set null' }),
+  receivedAt:        date('received_at').notNull().defaultNow(),
+  deliveryNoteRef:   text('delivery_note_ref'),                     // supplier's DO number
+  status:            grnStatus('status').notNull().default('POSTED'),
+  notes:             text('notes'),
+  /* 2990s migration 0101 — GRN <-> PO money parity. currency reuses the same
+     currency_code enum as purchase_orders. subtotal/total are recomputed
+     server-side as Σ grn_items.line_total_centi (no tax for GRN). */
+  currency:          currencyCode('currency').notNull().default('MYR'),
+  subtotalCenti:     integer('subtotal_centi').notNull().default(0),
+  taxCenti:          integer('tax_centi').notNull().default(0),
+  totalCenti:        integer('total_centi').notNull().default(0),
+  postedAt:          timestamp('posted_at', { withTimezone: true }),
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // SEAM (rule #4): 2990s uuid -> staff.id. Houzs users.id is serial INTEGER; soft ref.
+  createdBy:         integer('created_by').notNull(),
+  updatedAt:         timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxPo:       index('idx_grn_po').on(t.purchaseOrderId),
+  idxSupplier: index('idx_grn_supplier').on(t.supplierId),
+  idxStatus:   index('idx_grn_status').on(t.status),
+}));
+
+export const grnItems = pgTable('grn_items', {
+  id:                    uuid('id').primaryKey().defaultRandom(),
+  grnId:                 uuid('grn_id').notNull().references(() => grns.id, { onDelete: 'cascade' }),
+  purchaseOrderItemId:   uuid('purchase_order_item_id').references(() => purchaseOrderItems.id, { onDelete: 'set null' }),
+  materialKind:          materialKind('material_kind').notNull(),
+  materialCode:          text('material_code').notNull(),
+  materialName:          text('material_name').notNull(),
+  qtyReceived:           integer('qty_received').notNull(),
+  qtyAccepted:           integer('qty_accepted').notNull(),
+  qtyRejected:           integer('qty_rejected').notNull().default(0),
+  rejectionReason:       text('rejection_reason'),
+  unitPriceCenti:        integer('unit_price_centi').notNull(),     // snapshot from PO line
+  notes:                 text('notes'),
+  /* 2990s PR #42 — variant fields (migration 0057). Strategy-2: KEPT for fidelity;
+     the Houzs UI does not surface the sofa-variant editor (generic fields only). */
+  gapInches:             integer('gap_inches'),
+  divanHeightInches:     integer('divan_height_inches'),
+  divanPriceSen:         integer('divan_price_sen').notNull().default(0),
+  legHeightInches:       integer('leg_height_inches'),
+  legPriceSen:           integer('leg_price_sen').notNull().default(0),
+  customSpecials:        jsonb('custom_specials'),
+  lineSuffix:            text('line_suffix'),
+  specialOrderPriceSen:  integer('special_order_price_sen').notNull().default(0),
+  variants:              jsonb('variants'),
+  itemGroup:             text('item_group'),
+  description:           text('description'),
+  description2:          text('description2'),
+  uom:                   text('uom').notNull().default('UNIT'),
+  discountCenti:         integer('discount_centi').notNull().default(0),
+  /* 2990s migration 0101 — GRN <-> PO line money parity.
+     lineTotalCenti = qty_received * unit_price_centi - discount_centi.
+     deliveryDate / unitCostCenti / supplierSku mirror mfg_purchase_order_items. */
+  lineTotalCenti:        integer('line_total_centi').notNull().default(0),
+  deliveryDate:          date('delivery_date'),
+  unitCostCenti:         integer('unit_cost_centi').notNull().default(0),
+  supplierSku:           text('supplier_sku'),
+  /* 2990s migration 0106 — GRN line consumption tracking (GRN -> {PI, PR}).
+     invoicedQty = Σ PI line qty drawn from this line; returnedQty = Σ PR line qty
+     drawn. Either > 0 => the GRN has a downstream child (edit-lock). The PI/PR
+     slices that WRITE these land later; the GRN route READS them for has_children. */
+  invoicedQty:           integer('invoiced_qty').notNull().default(0),
+  returnedQty:           integer('returned_qty').notNull().default(0),
+  /* 2990s migration 0151 — physical rack this received line is placed onto.
+     REAL FK -> warehouse_racks (set null); grn-rack-sync reads it on post. */
+  rackId:                uuid('rack_id').references(() => warehouseRacks.id, { onDelete: 'set null' }),
+  createdAt:             timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxGrn: index('idx_grn_items_grn').on(t.grnId),
+}));
+
 // ── Inventory + Warehouse slice (1:1 clone of 2990s) ────────────────────────
 // Copied VERBATIM from 2990s packages/db/src/schema.ts:
 //   inventoryMovementType (enum) ~L2344, warehouses ~L2348, inventoryMovements
