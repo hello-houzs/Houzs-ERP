@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  Wallet,
   Plus,
   ArrowDownCircle,
   ArrowUpCircle,
@@ -14,8 +13,7 @@ import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { StatCard } from "../components/StatCard";
 import { DashboardGrid } from "../components/Dashboard";
-import { EmptyState } from "../components/EmptyState";
-import { ListSkeleton } from "../components/Skeleton";
+import { DataTable, type Column } from "../components/DataTable";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useAuth } from "../auth/AuthContext";
@@ -103,6 +101,95 @@ export function PettyCash() {
   const [addOpen, setAddOpen] = useState(false);
 
   const summary = list.data?.summary;
+
+  const columns: Column<EntryRow>[] = [
+    {
+      key: "occurred_on",
+      label: "Date",
+      getValue: (r) => r.occurred_on,
+      render: (r) => (
+        <span className="font-mono text-[11px] font-semibold text-ink-secondary">
+          {r.occurred_on}
+        </span>
+      ),
+    },
+    {
+      key: "direction",
+      label: "Type",
+      getValue: (r) => r.direction,
+      render: (r) => <DirBadge dir={r.direction} />,
+    },
+    {
+      key: "category",
+      label: "Category",
+      getValue: (r) => r.category ?? "",
+      render: (r) =>
+        r.category ? (
+          <span className="rounded-full bg-accent-soft/60 px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-accent-ink">
+            {r.category}
+          </span>
+        ) : (
+          <span className="text-ink-muted">—</span>
+        ),
+    },
+    {
+      key: "counterparty",
+      label: "Source / Payee",
+      getValue: (r) => r.counterparty ?? "",
+      render: (r) => (
+        <span className="text-[12px] font-semibold text-ink">
+          {r.counterparty || "—"}
+        </span>
+      ),
+    },
+    {
+      key: "note",
+      label: "Note",
+      getValue: (r) => r.note ?? "",
+      render: (r) => (
+        <span className="text-[11.5px] text-ink-secondary">{r.note || "—"}</span>
+      ),
+    },
+    {
+      key: "posted_by",
+      label: "Posted by",
+      getValue: (r) => r.posted_by_name ?? "",
+      render: (r) => (
+        <span className="text-[10.5px] text-ink-muted">
+          {r.posted_by_name || `User #${r.posted_by}`} · {relativeTime(r.created_at)}
+        </span>
+      ),
+    },
+    {
+      key: "amount",
+      label: "Amount",
+      align: "right",
+      getValue: (r) => (r.direction === "in" ? r.amount_cents : -r.amount_cents),
+      render: (r) => (
+        <span
+          className={cn(
+            "font-mono text-[13px] font-extrabold",
+            r.direction === "in" ? "text-synced" : "text-err",
+          )}
+        >
+          {r.direction === "in" ? "+" : "−"}
+          {formatRM(r.amount_cents)}
+        </span>
+      ),
+    },
+    {
+      key: "actions",
+      label: "",
+      align: "right",
+      render: (r) => (
+        <LedgerRowActions
+          row={r}
+          canManage={canManage}
+          onChange={() => list.reload()}
+        />
+      ),
+    },
+  ];
 
   return (
     <div>
@@ -205,34 +292,17 @@ export function PettyCash() {
       </div>
 
       {/* Ledger */}
-      {list.loading ? (
-        <ListSkeleton rows={6} />
-      ) : list.error ? (
-        <EmptyState icon={<Wallet size={20} />} message="Couldn't load ledger" description={list.error} />
-      ) : (list.data?.rows ?? []).length === 0 ? (
-        <EmptyState
-          icon={<Wallet size={20} />}
-          message="No entries"
-          description={
-            canPost
-              ? "Click 'New entry' to log a top-up or expense."
-              : "Nothing here yet."
-          }
-        />
-      ) : (
-        <div className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
-          <ul className="divide-y divide-border-subtle">
-            {(list.data?.rows ?? []).map((r) => (
-              <EntryRowItem
-                key={r.id}
-                row={r}
-                canManage={canManage}
-                onChange={() => list.reload()}
-              />
-            ))}
-          </ul>
-        </div>
-      )}
+      <DataTable
+        tableId="petty-cash"
+        columns={columns}
+        rows={list.data?.rows ?? null}
+        loading={list.loading}
+        error={list.error}
+        getRowKey={(r) => r.id}
+        emptyLabel={canPost ? "No entries yet — click 'New entry' to log one." : "No entries yet."}
+        exportName="petty-cash"
+        caption="Ledger"
+      />
 
       {addOpen && canPost && (
         <AddEntryModal
@@ -250,7 +320,23 @@ export function PettyCash() {
   );
 }
 
-function EntryRowItem({
+function DirBadge({ dir }: { dir: "in" | "out" }) {
+  const isIn = dir === "in";
+  const Icon = isIn ? ArrowDownCircle : ArrowUpCircle;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider",
+        isIn ? "bg-synced/10 text-synced" : "bg-err/10 text-err",
+      )}
+    >
+      <Icon size={11} />
+      {isIn ? "In" : "Out"}
+    </span>
+  );
+}
+
+function LedgerRowActions({
   row,
   canManage,
   onChange,
@@ -260,8 +346,6 @@ function EntryRowItem({
   onChange: () => void;
 }) {
   const toast = useToast();
-  const isIn = row.direction === "in";
-  const Icon = isIn ? ArrowDownCircle : ArrowUpCircle;
 
   async function remove() {
     if (!confirm("Archive this entry? It will stop counting toward the balance.")) return;
@@ -285,69 +369,26 @@ function EntryRowItem({
   }
 
   return (
-    <li className="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-bg/40 sm:flex-nowrap">
-      <Icon
-        size={20}
-        className={cn(
-          "shrink-0",
-          isIn ? "text-synced" : "text-err",
-        )}
-      />
-      <div className="min-w-0 flex-1 basis-[60%] sm:basis-auto">
-        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <span className="font-mono text-[11px] font-semibold text-ink-secondary">
-            {row.occurred_on}
-          </span>
-          {row.category && (
-            <span className="rounded-full bg-accent-soft/60 px-1.5 py-0.5 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-accent-ink">
-              {row.category}
-            </span>
-          )}
-          {row.counterparty && (
-            <span className="truncate text-[12.5px] font-semibold text-ink">
-              {row.counterparty}
-            </span>
-          )}
-        </div>
-        {row.note && (
-          <div className="mt-0.5 truncate text-[11px] text-ink-secondary">
-            {row.note}
-          </div>
-        )}
-        <div className="mt-0.5 text-[10px] text-ink-muted">
-          {row.posted_by_name || `User #${row.posted_by}`} · {relativeTime(row.created_at)}
-        </div>
-      </div>
-      <div className="ml-auto flex items-center gap-2">
-        <span
-          className={cn(
-            "font-mono text-[14px] font-extrabold",
-            isIn ? "text-synced" : "text-err",
-          )}
+    <div className="flex items-center justify-end gap-1">
+      {row.receipt_r2_key && (
+        <button
+          onClick={viewReceipt}
+          className="rounded p-1 text-ink-muted transition-colors hover:bg-bg/60 hover:text-accent"
+          title="View receipt"
         >
-          {isIn ? "+" : "−"}
-          {formatRM(row.amount_cents)}
-        </span>
-        {row.receipt_r2_key && (
-          <button
-            onClick={viewReceipt}
-            className="rounded p-1 text-ink-muted transition-colors hover:bg-bg/60 hover:text-accent"
-            title="View receipt"
-          >
-            <Receipt size={14} />
-          </button>
-        )}
-        {canManage && (
-          <button
-            onClick={remove}
-            className="rounded p-1 text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
-            title="Archive"
-          >
-            <Trash2 size={14} />
-          </button>
-        )}
-      </div>
-    </li>
+          <Receipt size={14} />
+        </button>
+      )}
+      {canManage && (
+        <button
+          onClick={remove}
+          className="rounded p-1 text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
+          title="Archive"
+        >
+          <Trash2 size={14} />
+        </button>
+      )}
+    </div>
   );
 }
 
