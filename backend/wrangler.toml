@@ -120,6 +120,14 @@ enabled = true
 invocation_logs = true
 
 [observability.traces]
+
+# Resolve the bare `zod` import inside the out-of-tree shared/ module to THIS
+# worker's own node_modules. Without it, esbuild (wrangler deploy) walks up from
+# /shared, finds no node_modules, and fails "Could not resolve zod" on a clean
+# CI build (Cloudflare's own error suggests this alias).
+[alias]
+zod = "./node_modules/zod"
+
 # ── Staging environment (isolated from prod) ──────────────────────────────
 # Separate Worker on its own Hyperdrive -> the staging Supabase
 # (minnapsemfzjmtvnnvdd). No crons (staging must never pull AutoCount or run
