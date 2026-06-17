@@ -148,6 +148,21 @@ export const NAV_TABS: NavTab[] = [
     ],
   },
 
+  // ── Supply Chain — Suppliers + Purchase Orders (1:1 clone of 2990s), more
+  //    slices to follow (GRN, Inventory...). Owner-only for now (perm "*"),
+  //    matching the backend requirePermission("*") gate. The PO entry points at
+  //    the clone /purchase-orders (DISTINCT from the AutoCount /po page).
+  {
+    label: "Supply Chain",
+    icon: Boxes,
+    groupId: "supply_chain",
+    perm: "*",
+    children: [
+      { to: "/suppliers", label: "Suppliers", icon: Package, perm: "*" },
+      { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
+    ],
+  },
+
   // ── Service — quality + ASSR ─────────────────────────────────
   {
     label: "Service",

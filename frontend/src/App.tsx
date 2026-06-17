@@ -25,6 +25,14 @@ const DeliveryOrders = lazy(() => import("./pages/DeliveryOrders").then((m) => (
 const PurchaseOrders = lazy(() => import("./pages/PurchaseOrders").then((m) => ({ default: m.PurchaseOrders })));
 const PurchaseOrderDetail = lazy(() => import("./pages/PurchaseOrders").then((m) => ({ default: m.PurchaseOrderDetail })));
 const CreditorDetail = lazy(() => import("./pages/CreditorDetail").then((m) => ({ default: m.CreditorDetail })));
+const Suppliers = lazy(() => import("./pages/Suppliers").then((m) => ({ default: m.Suppliers })));
+const SupplierDetail = lazy(() => import("./pages/SupplierDetail").then((m) => ({ default: m.SupplierDetail })));
+// SCM 1:1 clone — Purchase Orders (pages/scm/*). DISTINCT names from the
+// AutoCount PurchaseOrders above (different module: ./pages/scm/PurchaseOrders).
+const ScmPurchaseOrders = lazy(() => import("./pages/scm/PurchaseOrders").then((m) => ({ default: m.PurchaseOrders })));
+const ScmPurchaseOrderDetail = lazy(() => import("./pages/scm/PurchaseOrderDetail").then((m) => ({ default: m.PurchaseOrderDetail })));
+const ScmPurchaseOrderNew = lazy(() => import("./pages/scm/PurchaseOrderNew").then((m) => ({ default: m.PurchaseOrderNew })));
+const ScmPurchaseOrderFromSo = lazy(() => import("./pages/scm/PurchaseOrderFromSo").then((m) => ({ default: m.PurchaseOrderFromSo })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -288,12 +296,59 @@ export default function App() {
             </PageGuard>
           }
         />
-        {/* Legacy /suppliers → Creditors tab under Purchase Orders.
-            Phase 3 dropped the local Suppliers module; kept as redirect
-            for existing bookmarks. */}
+        {/* Supply Chain — Suppliers (1:1 clone of 2990s). Owner-only for
+            now (matches the backend requirePermission("*") gate). */}
         <Route
           path="/suppliers"
-          element={<Navigate to="/po?view=creditors" replace />}
+          element={
+            <Guard perm="*">
+              <Suppliers />
+            </Guard>
+          }
+        />
+        <Route
+          path="/suppliers/:id"
+          element={
+            <Guard perm="*">
+              <SupplierDetail />
+            </Guard>
+          }
+        />
+        {/* Supply Chain — Purchase Orders (1:1 clone of 2990s, pages/scm/*).
+            Owner-only (perm "*"), matching the backend requirePermission("*")
+            gate. DISTINCT from the AutoCount /po route/page. Static paths
+            (/new, /from-so) MUST precede the /:id param route. */}
+        <Route
+          path="/purchase-orders"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseOrders />
+            </Guard>
+          }
+        />
+        <Route
+          path="/purchase-orders/new"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseOrderNew />
+            </Guard>
+          }
+        />
+        <Route
+          path="/purchase-orders/from-so"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseOrderFromSo />
+            </Guard>
+          }
+        />
+        <Route
+          path="/purchase-orders/:id"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseOrderDetail />
+            </Guard>
+          }
         />
         <Route
           path="/sales"

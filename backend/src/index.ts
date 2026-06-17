@@ -40,6 +40,8 @@ import projectsPrint from "./routes/projects_print";
 import finance from "./routes/finance";
 import search from "./routes/search";
 import creditors from "./routes/creditors";
+import suppliers from "./routes/suppliers";
+import mfgPurchaseOrders from "./routes/mfg-purchase-orders";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
 import assrPortal from "./routes/assrPortal";
@@ -158,6 +160,10 @@ app.route("/api/projects-print", projectsPrint);
 app.route("/api/finance", finance);
 app.route("/api/search", search);
 app.route("/api/creditors", creditors);
+app.route("/api/suppliers", suppliers);
+// SCM 1:1 clone — manufacturer-side Purchase Orders. DISTINCT from the existing
+// AutoCount /api/po route/page (do NOT touch that one). Owner-only (perm "*").
+app.route("/api/purchase-orders", mfgPurchaseOrders);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);

@@ -27,6 +27,7 @@
 // ---------------------------------------------------------------------------
 import {
   pgTable,
+  pgEnum,
   serial,
   integer,
   text,
@@ -902,406 +903,258 @@ export const project_sales_attendees = pgTable(
   (t) => ({ pk: primaryKey({ columns: [t.project_id, t.sales_rep_id] }) }),
 );
 
-// ── Supply Chain module (ported from the 2990s ERP) — scm_* namespace ───
-// Self-contained island: Postgres-native types (uuid / timestamptz / jsonb),
-// no FK into the legacy serial-id tables. See migrations-pg/0017_scm_suppliers.sql.
+// ── Supply Chain module ─────────────────────────────────────────────────
+// The earlier adapted "scm_*" island was removed here. The owner rejected that
+// adaptation (single-PO GRN, text-typed status, scm_ prefix) in favour of a
+// verbatim 1:1 clone of 2990s's SCM — decision 2026-06-17, see
+// docs/scm-clone/PLAN.md. The physical scm_* tables are dropped by
+// migrations-pg/0023_drop_adapted_scm_island.sql. The 1:1 clone tables
+// (suppliers, supplier_material_bindings, purchase_orders, grns, ...) are added
+// slice by slice in following edits/migrations.
 
-// scm_suppliers — purchasing-side vendor master
-export const scm_suppliers = pgTable("scm_suppliers", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  code: text("code").notNull().unique(),
-  name: text("name").notNull(),
-  whatsapp_number: text("whatsapp_number"),
-  email: text("email"),
-  contact_person: text("contact_person"),
-  phone: text("phone"),
-  address: text("address"),
-  state: text("state"),
-  country: text("country").notNull().default("Malaysia"),
-  payment_terms: text("payment_terms"),
-  status: text("status").notNull().default("ACTIVE"),
-  rating: integer("rating").notNull().default(0),
-  notes: text("notes"),
-  supplier_type: text("supplier_type"),
-  category: text("category"),
-  tin_number: text("tin_number"),
-  business_reg_no: text("business_reg_no"),
-  postcode: text("postcode"),
-  area: text("area"),
-  mobile: text("mobile"),
-  fax: text("fax"),
-  website: text("website"),
-  attention: text("attention"),
-  business_nature: text("business_nature"),
-  currency: text("currency").notNull().default("MYR"),
-  statement_type: text("statement_type").notNull().default("OPEN_ITEM"),
-  aging_basis: text("aging_basis").notNull().default("INVOICE_DATE"),
-  credit_limit_sen: integer("credit_limit_sen").notNull().default(0),
-  created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+// ── Suppliers slice (1:1 clone of 2990s) ────────────────────────────────
+// Copied VERBATIM from 2990s packages/db/src/schema.ts (suppliers ~L860,
+// supplierMaterialBindings ~L911) + the pgEnums they use (supplierStatus,
+// currencyCode, materialKind). camelCase keys + snake_case column strings +
+// real pgEnums, exactly as in 2990s. Only the surrounding stack changes.
+
+export const supplierStatus = pgEnum('supplier_status', ['ACTIVE', 'INACTIVE', 'BLOCKED']);
+
+export const currencyCode = pgEnum('currency_code', ['MYR', 'RMB', 'USD', 'SGD']);
+
+export const materialKind = pgEnum('material_kind', ['mfg_product', 'fabric', 'raw']);
+
+export const suppliers = pgTable('suppliers', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  code:           text('code').notNull().unique(),                          // Credit Account ('400-B002')
+  name:           text('name').notNull(),                                   // Company Name
+  whatsappNumber: text('whatsapp_number'),
+  email:          text('email'),
+  // HOOKKA-port fields (migration 0041): full master record for purchasing.
+  contactPerson:  text('contact_person'),
+  phone:          text('phone'),
+  address:        text('address'),                                          // Billing Address (multiline)
+  state:          text('state'),
+  /* PR #47 — country drives State cascade from my_localities */
+  country:        text('country').notNull().default('Malaysia'),
+  paymentTerms:   text('payment_terms'),                                    // dropdown: 'COD' | 'NET 7' | 'NET 30' | etc
+  status:         supplierStatus('status').notNull().default('ACTIVE'),
+  rating:         integer('rating').notNull().default(0),                   // 0-5 scale
+  notes:          text('notes'),
+  /* PR #40 — Commander 2026-05-26 AutoCount parity (migration 0055) */
+  supplierType:   text('supplier_type'),                                    // 'Matrix', 'Distributor', 'Maker', ...
+  category:       text('category'),                                         // 'Bedframe', 'Fabric', 'Hardware', ...
+  tinNumber:      text('tin_number'),
+  businessRegNo: text('business_reg_no'),
+  postcode:       text('postcode'),
+  area:           text('area'),
+  mobile:         text('mobile'),
+  fax:            text('fax'),
+  website:        text('website'),
+  attention:      text('attention'),
+  businessNature: text('business_nature'),
+  currency:       text('currency').notNull().default('MYR'),
+  statementType:  text('statement_type').notNull().default('OPEN_ITEM'),    // OPEN_ITEM | BALANCE_FORWARD | NO_STATEMENT
+  agingBasis:     text('aging_basis').notNull().default('INVOICE_DATE'),    // INVOICE_DATE | DUE_DATE
+  creditLimitSen: integer('credit_limit_sen').notNull().default(0),         // 0 = unlimited
+  createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:      timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-// scm_supplier_material_bindings — our material_code <-> supplier SKU + price
-export const scm_supplier_material_bindings = pgTable(
-  "scm_supplier_material_bindings",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    supplier_id: uuid("supplier_id")
-      .notNull()
-      .references(() => scm_suppliers.id, { onDelete: "cascade" }),
-    material_kind: text("material_kind").notNull(),
-    material_code: text("material_code").notNull(),
-    material_name: text("material_name").notNull(),
-    supplier_sku: text("supplier_sku").notNull(),
-    unit_price_centi: integer("unit_price_centi").notNull().default(0),
-    currency: text("currency").notNull().default("MYR"),
-    lead_time_days: integer("lead_time_days").notNull().default(0),
-    payment_terms_override: text("payment_terms_override"),
-    moq: integer("moq").notNull().default(0),
-    price_valid_from: date("price_valid_from"),
-    price_valid_to: date("price_valid_to"),
-    is_main_supplier: boolean("is_main_supplier").notNull().default(false),
-    notes: text("notes"),
-    price_matrix: jsonb("price_matrix"),
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_supplier: index("idx_scm_smb_supplier").on(t.supplier_id),
-    idx_material: index("idx_scm_smb_material").on(t.material_kind, t.material_code),
-    idx_main: index("idx_scm_smb_main_per_material")
-      .on(t.material_kind, t.material_code)
-      .where(sql`${t.is_main_supplier} = true`),
-  }),
-);
+/* ───── supplier_material_bindings — the "two-code mapping" table ─────
+   The crux of the HOOKKA port: maps our internal `material_code`
+   (e.g. mfg_products.code '1003-(K)' or fabrics.code 'AVANI 01')
+   to the supplier's own SKU + price + lead time + currency.
+   One material can have N suppliers; exactly one per material is
+   `is_main_supplier=true` (enforced at app layer, not DB constraint).
 
-// scm_purchase_orders — PO header (trimmed to generic purchasing fields)
-export const scm_purchase_orders = pgTable(
-  "scm_purchase_orders",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    po_number: text("po_number").notNull().unique(),
-    supplier_id: uuid("supplier_id")
-      .notNull()
-      .references(() => scm_suppliers.id, { onDelete: "restrict" }),
-    status: text("status").notNull().default("SUBMITTED"),
-    po_date: date("po_date").notNull().defaultNow(),
-    expected_at: date("expected_at"),
-    currency: text("currency").notNull().default("MYR"),
-    subtotal_centi: integer("subtotal_centi").notNull().default(0),
-    tax_centi: integer("tax_centi").notNull().default(0),
-    total_centi: integer("total_centi").notNull().default(0),
-    notes: text("notes"),
-    submitted_at: timestamp("submitted_at", { withTimezone: true }),
-    received_at: timestamp("received_at", { withTimezone: true }),
-    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
-    created_by: integer("created_by"), // users.id soft ref (set from auth)
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_supplier: index("idx_scm_po_supplier").on(t.supplier_id),
-    idx_status: index("idx_scm_po_status").on(t.status),
-  }),
-);
+   `material_kind` lets one binding row reference either a finished
+   SKU (mfg_product) or a fabric — extend with more values when raw
+   materials get ported.
+   ─────────────────────────────────────────────────────────────────── */
 
-// scm_purchase_order_items — PO lines
-export const scm_purchase_order_items = pgTable(
-  "scm_purchase_order_items",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    purchase_order_id: uuid("purchase_order_id")
-      .notNull()
-      .references(() => scm_purchase_orders.id, { onDelete: "cascade" }),
-    binding_id: uuid("binding_id").references(() => scm_supplier_material_bindings.id, {
-      onDelete: "set null",
-    }),
-    material_kind: text("material_kind").notNull().default("mfg_product"),
-    material_code: text("material_code").notNull(),
-    material_name: text("material_name").notNull(),
-    supplier_sku: text("supplier_sku"),
-    qty: integer("qty").notNull().default(0),
-    unit_price_centi: integer("unit_price_centi").notNull().default(0),
-    discount_centi: integer("discount_centi").notNull().default(0),
-    line_total_centi: integer("line_total_centi").notNull().default(0),
-    received_qty: integer("received_qty").notNull().default(0),
-    uom: text("uom").notNull().default("UNIT"),
-    variants: jsonb("variants"),
-    notes: text("notes"),
-    delivery_date: date("delivery_date"),
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_po: index("idx_scm_po_items_po").on(t.purchase_order_id),
-  }),
-);
+export const supplierMaterialBindings = pgTable('supplier_material_bindings', {
+  id:                uuid('id').primaryKey().defaultRandom(),
+  supplierId:        uuid('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'cascade' }),
+  materialKind:      materialKind('material_kind').notNull(),
+  materialCode:      text('material_code').notNull(),    // OUR internal code ('1003-(K)','AVANI 01')
+  materialName:      text('material_name').notNull(),    // snapshot for the binding row
+  supplierSku:       text('supplier_sku').notNull(),     // SUPPLIER's own SKU
+  unitPriceCenti:    integer('unit_price_centi').notNull().default(0),  // × 100; works for both MYR + RMB
+  currency:          currencyCode('currency').notNull().default('MYR'),
+  leadTimeDays:      integer('lead_time_days').notNull().default(0),
+  paymentTermsOverride: text('payment_terms_override'),  // overrides supplier.payment_terms if set
+  moq:               integer('moq').notNull().default(0),                // min order quantity
+  priceValidFrom:    date('price_valid_from'),
+  priceValidTo:      date('price_valid_to'),
+  isMainSupplier:    boolean('is_main_supplier').notNull().default(false),
+  notes:             text('notes'),
+  /* PR — Commander 2026-05-27 ("跟着 Product Maintenance 的排版"): per-category
+     cost matrix that mirrors the Products Maintenance shape. Migration 0089.
+     SOFA:      {"24":{"P1":N,"P2":N,"P3":N},"26":{...},...} centi per
+                (seat-height × fabric tier) — same axes as the Products SOFA
+                price table.
+     BEDFRAME:  {"P1":N,"P2":N} centi per fabric upholstery tier.
+     MATTRESS/ACCESSORY/SERVICE: NULL — single price flows through
+                unit_price_centi above (unchanged).
+     Shape is validated server-side (apps/api/src/routes/suppliers.ts) per
+     the binding's mfg_products.category. */
+  priceMatrix:       jsonb('price_matrix'),
+  createdAt:         timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:         timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxSupplier:        index('idx_smb_supplier').on(t.supplierId),
+  idxMaterial:        index('idx_smb_material').on(t.materialKind, t.materialCode),
+  idxMain:            index('idx_smb_main_per_material')
+                        .on(t.materialKind, t.materialCode)
+                        .where(sql`${t.isMainSupplier} = true`),
+}));
 
-// scm_stock_moves — append-only stock-movement ledger. On-hand qty and FIFO
-// valuation are DERIVED from these rows (no snapshot table). qty is signed:
-// +inbound, -outbound. See migrations-pg/0019_scm_inventory.sql.
-export const scm_stock_moves = pgTable(
-  "scm_stock_moves",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
-    material_kind: text("material_kind").notNull(),
-    material_code: text("material_code").notNull(),
-    material_name: text("material_name"),
-    qty: integer("qty").notNull(), // signed: +inbound, -outbound
-    unit_cost_centi: integer("unit_cost_centi").notNull().default(0),
-    move_type: text("move_type").notNull(),
-    ref_type: text("ref_type"),
-    ref_id: uuid("ref_id"),
-    note: text("note"),
-    created_by: integer("created_by"), // users.id soft ref
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_whmat: index("idx_scm_moves_whmat").on(t.warehouse_code, t.material_kind, t.material_code),
-    idx_ref: index("idx_scm_moves_ref").on(t.ref_type, t.ref_id),
-    idx_created: index("idx_scm_moves_created").on(t.created_at),
-  }),
-);
+// ── Purchase Orders slice (1:1 clone of 2990s) ──────────────────────────
+// Copied VERBATIM from 2990s packages/db/src/schema.ts (poStatus ~L853,
+// purchaseOrders ~L948, purchaseOrderItems ~L979, purchaseOrderLines ~L1031).
+// camelCase keys + snake_case column strings + the real po_status pgEnum,
+// exactly as in 2990s, so the ported route references (.poNumber, .supplierId,
+// .soItemId, …) compile unchanged. Only the documented SEAMS change:
+//
+//   - PHYSICAL TABLE NAME (collision deviation — see docs/scm-clone/PLAN.md
+//     collision map): Houzs ALREADY has an AutoCount table physically named
+//     `purchase_orders` (schema.pg.ts ~L399, ~thousands of live rows, served by
+//     /api/po). Two pgTable('purchase_orders', ...) cannot coexist, and the
+//     brief forbids touching the AutoCount route/table. So the clone tables take
+//     2990s's OWN `mfg_*` vocabulary (its route file is mfg-purchase-orders.ts;
+//     it already uses mfg_sales_orders / mfg_sales_order_items) as the physical
+//     name — `mfg_purchase_orders` / `mfg_purchase_order_items` /
+//     `mfg_purchase_order_lines`. The Drizzle EXPORT KEYS stay verbatim
+//     (purchaseOrders / purchaseOrderItems / purchaseOrderLines). Tighten to the
+//     bare `purchase_orders` name only at the gated cutover (task #71), once the
+//     AutoCount table is removed.
+//
+//   - createdBy: 2990s is uuid -> staff.id. Houzs has no `staff` table; rule #4
+//     maps staff -> Houzs `users` (id = serial INTEGER). So createdBy is INTEGER
+//     and a SOFT ref (no FK) to users.id.
+//
+//   - purchaseLocationId / warehouseId: 2990s FK -> warehouses.id (uuid). Houzs's
+//     `warehouses` (AutoCount) is keyed by a text `code` and the 2990s warehouses
+//     table is NOT cloned yet. Kept as a NULLABLE SOFT ref (uuid, no FK); tighten
+//     when the Warehouse slice lands (PLAN "Collisions for UPCOMING slices").
+//
+//   - soItemId: 2990s FK -> mfg_sales_order_items.id (uuid). The SO slice is not
+//     cloned yet -> NULLABLE SOFT ref (uuid, no FK). Tighten when SO lands.
+//
+//   - purchaseOrderLines.orderId: 2990s FK -> orders.id (the retail POS order).
+//     Houzs has no `orders` table in this schema -> NULLABLE SOFT ref (text, no
+//     FK). This child table is the legacy retail-order→supplier-PO link and is
+//     unused by the mfg PO route; ported verbatim for schema fidelity.
 
-// scm_goods_receipt_notes — GRN header. Posting a GRN advances PO received_qty
-// and writes GRN_IN rows into scm_stock_moves. See migrations-pg/0020.
-export const scm_goods_receipt_notes = pgTable(
-  "scm_goods_receipt_notes",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    grn_number: text("grn_number").notNull().unique(),
-    supplier_id: uuid("supplier_id").notNull(), // soft ref scm_suppliers.id
-    purchase_order_id: uuid("purchase_order_id"), // soft ref scm_purchase_orders.id (nullable)
-    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
-    status: text("status").notNull().default("DRAFT"),
-    received_date: date("received_date").notNull().defaultNow(),
-    notes: text("notes"),
-    posted_at: timestamp("posted_at", { withTimezone: true }),
-    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
-    created_by: integer("created_by"), // users.id soft ref (set from auth)
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_po: index("idx_scm_grn_po").on(t.purchase_order_id),
-    idx_status: index("idx_scm_grn_status").on(t.status),
-  }),
-);
+export const poStatus = pgEnum('po_status', [
+  'SUBMITTED',            // sent to supplier, awaiting acknowledgement (default on create)
+  'PARTIALLY_RECEIVED',   // some GRN posted
+  'RECEIVED',             // all items GRN'd
+  'CANCELLED',
+]);
 
-// scm_goods_receipt_note_items — GRN lines
-export const scm_goods_receipt_note_items = pgTable(
-  "scm_goods_receipt_note_items",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    grn_id: uuid("grn_id")
-      .notNull()
-      .references(() => scm_goods_receipt_notes.id, { onDelete: "cascade" }),
-    po_item_id: uuid("po_item_id"), // soft ref scm_purchase_order_items.id (nullable)
-    material_kind: text("material_kind").notNull().default("mfg_product"),
-    material_code: text("material_code").notNull(),
-    material_name: text("material_name"),
-    qty_received: integer("qty_received").notNull().default(0),
-    unit_cost_centi: integer("unit_cost_centi").notNull().default(0),
-    notes: text("notes"),
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_grn: index("idx_scm_grn_items_grn").on(t.grn_id),
-  }),
-);
+export const purchaseOrders = pgTable('mfg_purchase_orders', {
+  id:          uuid('id').primaryKey().defaultRandom(),
+  poNumber:    text('po_number').notNull().unique(),       // 'PO-2026-001'
+  supplierId:  uuid('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'restrict' }),
+  // Extended fields (migration 0041)
+  status:      poStatus('status').notNull().default('SUBMITTED'),
+  poDate:      date('po_date').notNull().defaultNow(),
+  expectedAt:  date('expected_at'),                        // delivery ETA
+  // PR #77 — Default ship-to warehouse for every line on this PO (mirrors
+  // AutoCount's header "Purchase Location"). Per-line warehouse_id on the
+  // items table overrides when commander wants split delivery.
+  // SEAM: nullable SOFT ref (no FK) — warehouses table not cloned yet.
+  purchaseLocationId: uuid('purchase_location_id'),
+  currency:    currencyCode('currency').notNull().default('MYR'),
+  subtotalCenti: integer('subtotal_centi').notNull().default(0),
+  taxCenti:    integer('tax_centi').notNull().default(0),
+  totalCenti:  integer('total_centi').notNull().default(0),
+  notes:       text('notes'),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  receivedAt:  timestamp('received_at', { withTimezone: true }),
+  cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+  createdAt:   timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // SEAM (rule #4): 2990s uuid -> staff.id. Houzs users.id is serial INTEGER;
+  // SOFT ref (no FK) so the PO module isn't coupled to the users table FK.
+  createdBy:   integer('created_by').notNull(),
+  updatedAt:   timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxSupplier: index('idx_po_supplier').on(t.supplierId),
+  idxStatus:   index('idx_po_status').on(t.status),
+}));
 
-// scm_purchase_invoices — supplier billing header. FINANCE record only, NO stock
-// impact (stock arrives via GRN; PI-without-GRN is intentional). status is driven
-// by amount_paid_centi vs total_centi. See migrations-pg/0021_scm_purchase_billing.sql.
-export const scm_purchase_invoices = pgTable(
-  "scm_purchase_invoices",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    invoice_number: text("invoice_number").notNull().unique(),
-    supplier_invoice_no: text("supplier_invoice_no"), // the supplier's own invoice ref
-    supplier_id: uuid("supplier_id").notNull(), // soft ref scm_suppliers.id
-    purchase_order_id: uuid("purchase_order_id"), // soft ref scm_purchase_orders.id (nullable)
-    invoice_date: date("invoice_date").notNull().defaultNow(),
-    due_date: date("due_date"),
-    currency: text("currency").notNull().default("MYR"),
-    subtotal_centi: integer("subtotal_centi").notNull().default(0),
-    tax_centi: integer("tax_centi").notNull().default(0),
-    total_centi: integer("total_centi").notNull().default(0),
-    amount_paid_centi: integer("amount_paid_centi").notNull().default(0),
-    status: text("status").notNull().default("UNPAID"),
-    notes: text("notes"),
-    created_by: integer("created_by"), // users.id soft ref (set from auth)
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_supplier: index("idx_scm_pi_supplier").on(t.supplier_id),
-    idx_status: index("idx_scm_pi_status").on(t.status),
-  }),
-);
+/* PO items — what we're ordering FROM a supplier (vs purchase_order_lines
+   which links a retail-order SKU to a supplier-PO for the existing retail
+   /purchase-orders skeleton). */
+export const purchaseOrderItems = pgTable('mfg_purchase_order_items', {
+  id:               uuid('id').primaryKey().defaultRandom(),
+  purchaseOrderId:  uuid('purchase_order_id').notNull().references(() => purchaseOrders.id, { onDelete: 'cascade' }),
+  // Optional FK to the binding row that priced this line — gives us
+  // traceability when supplier prices change later.
+  bindingId:        uuid('binding_id').references(() => supplierMaterialBindings.id, { onDelete: 'set null' }),
+  materialKind:     materialKind('material_kind').notNull(),
+  materialCode:     text('material_code').notNull(),
+  materialName:     text('material_name').notNull(),
+  supplierSku:      text('supplier_sku'),                  // snapshot at PO time
+  qty:              integer('qty').notNull(),
+  unitPriceCenti:   integer('unit_price_centi').notNull(),
+  lineTotalCenti:   integer('line_total_centi').notNull(),
+  receivedQty:      integer('received_qty').notNull().default(0), // updated by GRN (when ported)
+  notes:            text('notes'),
+  /* PR #41 — Variant fields (migration 0056). Mirrors mfg_sales_order_items
+     so SO→PO and PO→GRN conversions preserve sofa color / bedframe D1 etc.
+     Strategy-2: KEPT for fidelity; the Houzs UI does not surface the
+     sofa-variant editor (generic qty/price fields only). */
+  gapInches:               integer('gap_inches'),
+  divanHeightInches:       integer('divan_height_inches'),
+  divanPriceSen:           integer('divan_price_sen').notNull().default(0),
+  legHeightInches:         integer('leg_height_inches'),
+  legPriceSen:             integer('leg_price_sen').notNull().default(0),
+  customSpecials:          jsonb('custom_specials'),
+  lineSuffix:              text('line_suffix'),
+  specialOrderPriceSen:    integer('special_order_price_sen').notNull().default(0),
+  variants:                jsonb('variants'),               // { fabricColor, seatHeight, ... }
+  itemGroup:               text('item_group'),              // 'sofa'|'bedframe'|'mattress'|'accessory'|'service'
+  description:             text('description'),
+  description2:            text('description2'),
+  uom:                     text('uom').notNull().default('UNIT'),
+  discountCenti:           integer('discount_centi').notNull().default(0),
+  unitCostCenti:           integer('unit_cost_centi').notNull().default(0),
+  // PR #77 — per-line delivery date + ship-to warehouse. Both nullable;
+  // empty = inherit from PO header (expected_at + purchase_location_id).
+  // SEAM: warehouseId is a nullable SOFT ref (no FK) — warehouses not cloned.
+  deliveryDate:            date('delivery_date'),
+  warehouseId:             uuid('warehouse_id'),
+  /* Migration 0098 — Commander 2026-05-29 (BUG 1). Source SO line this PO
+     line was converted from (From-SO picker). NULL for manually-added lines.
+     Lets the delete handler release po_qty_picked back to the SO line.
+     SEAM: nullable SOFT ref (no FK) — mfg_sales_order_items not cloned yet. */
+  soItemId:                uuid('so_item_id'),
+  /* Migration 0118 — Commander 2026-05-31. Tags a PO line raised through the MRP
+     "convert to PO" path. MRP-origin lines are REFERENCE-ONLY: excluded from the
+     po_qty_picked recount + the qty_exceeds_remaining cap, so the same SO line is
+     infinitely convertible from MRP. Ordinary SO→PO picks keep from_mrp=false. */
+  fromMrp:                 boolean('from_mrp').notNull().default(false),
+  createdAt:        timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxPo:        index('idx_po_items_po').on(t.purchaseOrderId),
+  idxWarehouse: index('idx_po_items_warehouse').on(t.warehouseId),
+  idxSoItem:    index('idx_po_items_so_item').on(t.soItemId),
+}));
 
-// scm_purchase_invoice_items — PI lines (no received/stock columns; finance only)
-export const scm_purchase_invoice_items = pgTable(
-  "scm_purchase_invoice_items",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    invoice_id: uuid("invoice_id")
-      .notNull()
-      .references(() => scm_purchase_invoices.id, { onDelete: "cascade" }),
-    material_kind: text("material_kind").notNull().default("mfg_product"),
-    material_code: text("material_code").notNull(),
-    material_name: text("material_name"),
-    qty: integer("qty").notNull().default(0),
-    unit_price_centi: integer("unit_price_centi").notNull().default(0),
-    discount_centi: integer("discount_centi").notNull().default(0),
-    line_total_centi: integer("line_total_centi").notNull().default(0),
-    notes: text("notes"),
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_invoice: index("idx_scm_pi_items_invoice").on(t.invoice_id),
-  }),
-);
-
-// scm_purchase_returns — return-to-supplier header. MIRRORS the GRN but OUTBOUND:
-// posting writes NEGATIVE-qty PURCHASE_RETURN_OUT rows into scm_stock_moves.
-// See migrations-pg/0021_scm_purchase_billing.sql.
-export const scm_purchase_returns = pgTable(
-  "scm_purchase_returns",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    return_number: text("return_number").notNull().unique(),
-    supplier_id: uuid("supplier_id").notNull(), // soft ref scm_suppliers.id
-    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
-    purchase_order_id: uuid("purchase_order_id"), // soft ref scm_purchase_orders.id (nullable)
-    status: text("status").notNull().default("DRAFT"),
-    reason: text("reason"),
-    notes: text("notes"),
-    posted_at: timestamp("posted_at", { withTimezone: true }),
-    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
-    created_by: integer("created_by"), // users.id soft ref (set from auth)
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_supplier: index("idx_scm_rtn_supplier").on(t.supplier_id),
-    idx_status: index("idx_scm_rtn_status").on(t.status),
-  }),
-);
-
-// scm_purchase_return_items — return lines. qty_returned is stored positive here;
-// it is written NEGATIVE to the scm_stock_moves ledger on post.
-export const scm_purchase_return_items = pgTable(
-  "scm_purchase_return_items",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    return_id: uuid("return_id")
-      .notNull()
-      .references(() => scm_purchase_returns.id, { onDelete: "cascade" }),
-    material_kind: text("material_kind").notNull().default("mfg_product"),
-    material_code: text("material_code").notNull(),
-    material_name: text("material_name"),
-    qty_returned: integer("qty_returned").notNull().default(0),
-    unit_cost_centi: integer("unit_cost_centi").notNull().default(0),
-    notes: text("notes"),
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_return: index("idx_scm_rtn_items_return").on(t.return_id),
-  }),
-);
-
-// scm_stock_transfers — warehouse-to-warehouse transfer header. Posting writes a
-// matched pair per line into scm_stock_moves (NEGATIVE TRANSFER_OUT at source +
-// POSITIVE TRANSFER_IN at destination, both at the source's current FIFO avg
-// cost) so total value is preserved, just relocated. from/to must differ.
-// See migrations-pg/0022_scm_transfers_stocktake.sql.
-export const scm_stock_transfers = pgTable(
-  "scm_stock_transfers",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    transfer_number: text("transfer_number").notNull().unique(),
-    from_warehouse_code: text("from_warehouse_code").notNull(), // soft ref warehouses.code
-    to_warehouse_code: text("to_warehouse_code").notNull(), // soft ref warehouses.code
-    status: text("status").notNull().default("DRAFT"),
-    notes: text("notes"),
-    posted_at: timestamp("posted_at", { withTimezone: true }),
-    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
-    created_by: integer("created_by"), // users.id soft ref (set from auth)
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_status: index("idx_scm_trf_status").on(t.status),
-  }),
-);
-
-// scm_stock_transfer_items — transfer lines. qty is stored positive here; on post
-// it is written NEGATIVE (TRANSFER_OUT) at the source and POSITIVE (TRANSFER_IN)
-// at the destination.
-export const scm_stock_transfer_items = pgTable(
-  "scm_stock_transfer_items",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    transfer_id: uuid("transfer_id")
-      .notNull()
-      .references(() => scm_stock_transfers.id, { onDelete: "cascade" }),
-    material_kind: text("material_kind").notNull().default("mfg_product"),
-    material_code: text("material_code").notNull(),
-    material_name: text("material_name"),
-    qty: integer("qty").notNull().default(0),
-    notes: text("notes"),
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_transfer: index("idx_scm_trf_items_transfer").on(t.transfer_id),
-  }),
-);
-
-// scm_stocktakes — physical count header. At create time each line snapshots
-// system_qty (derived on-hand); at post time, for each line where counted_qty
-// differs from system_qty, ONE signed STOCKTAKE_ADJ move of (counted - system)
-// is written so the ledger reconciles to the counted figure.
-// See migrations-pg/0022_scm_transfers_stocktake.sql.
-export const scm_stocktakes = pgTable(
-  "scm_stocktakes",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    stocktake_number: text("stocktake_number").notNull().unique(),
-    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
-    status: text("status").notNull().default("DRAFT"),
-    notes: text("notes"),
-    posted_at: timestamp("posted_at", { withTimezone: true }),
-    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
-    created_by: integer("created_by"), // users.id soft ref (set from auth)
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_warehouse: index("idx_scm_stk_warehouse").on(t.warehouse_code),
-    idx_status: index("idx_scm_stk_status").on(t.status),
-  }),
-);
-
-// scm_stocktake_items — count lines. system_qty is the on-hand snapshot at create
-// time; counted_qty is the physical count. The signed diff (counted - system) is
-// written as a STOCKTAKE_ADJ move on post.
-export const scm_stocktake_items = pgTable(
-  "scm_stocktake_items",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    stocktake_id: uuid("stocktake_id")
-      .notNull()
-      .references(() => scm_stocktakes.id, { onDelete: "cascade" }),
-    material_kind: text("material_kind").notNull().default("mfg_product"),
-    material_code: text("material_code").notNull(),
-    material_name: text("material_name"),
-    system_qty: integer("system_qty").notNull().default(0),
-    counted_qty: integer("counted_qty").notNull().default(0),
-    notes: text("notes"),
-    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    idx_stocktake: index("idx_scm_stk_items_stocktake").on(t.stocktake_id),
-  }),
-);
+export const purchaseOrderLines = pgTable('mfg_purchase_order_lines', {
+  id:               uuid('id').primaryKey().defaultRandom(),
+  purchaseOrderId:  uuid('purchase_order_id').notNull().references(() => purchaseOrders.id, { onDelete: 'cascade' }),
+  // SEAM: 2990s FK -> orders.id (retail POS order, text). Houzs has no `orders`
+  // table here -> nullable SOFT ref (text, no FK). Legacy retail link, unused
+  // by the mfg PO route; ported verbatim for schema fidelity.
+  orderId:          text('order_id').notNull(),
+  sku:              text('sku').notNull(),
+  name:             text('name').notNull(),
+  size:             text('size'),
+  colour:           text('colour'),
+  qty:              integer('qty').notNull(),
+  createdAt:        timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
