@@ -59,6 +59,8 @@ const DriverProjectDetail = lazy(() => import("./pages/DriverProjectDetail").the
 // Supply Chain (ported from 2990s)
 const SupplierMaster = lazy(() => import("./pages/SupplierMaster").then((m) => ({ default: m.SupplierMaster })));
 const SupplierDetail = lazy(() => import("./pages/SupplierDetail").then((m) => ({ default: m.SupplierDetail })));
+const PurchaseOrderList = lazy(() => import("./pages/PurchaseOrderList").then((m) => ({ default: m.PurchaseOrderList })));
+const ScmPurchaseOrderDetail = lazy(() => import("./pages/PurchaseOrderDetail").then((m) => ({ default: m.PurchaseOrderDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -276,6 +278,22 @@ export default function App() {
           element={
             <Guard perm="*">
               <SupplierDetail />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/purchase-orders"
+          element={
+            <Guard perm="*">
+              <PurchaseOrderList />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/purchase-orders/:id"
+          element={
+            <Guard perm="*">
+              <ScmPurchaseOrderDetail />
             </Guard>
           }
         />

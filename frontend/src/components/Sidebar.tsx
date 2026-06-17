@@ -153,6 +153,7 @@ export const NAV_TABS: NavTab[] = [
     perm: "*",
     children: [
       { to: "/scm/suppliers", label: "Suppliers", icon: Truck, perm: "*" },
+      { to: "/scm/purchase-orders", label: "Purchase Orders", icon: Package, perm: "*" },
     ],
   },
 

@@ -3,6 +3,7 @@ import type { Env } from "../types";
 import { getDb } from "../db/client";
 import { scm_suppliers, scm_supplier_material_bindings } from "../db/schema";
 import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { requirePermission } from "../middleware/auth";
 
 /**
  * Supply Chain — Supplier master + supplier<->material bindings.
@@ -26,6 +27,9 @@ import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
  * page-access key is wired into the roles matrix.
  */
 const app = new Hono<{ Bindings: Env }>();
+// Owner-only until a dedicated scm.* permission exists (mirrors the Sidebar +
+// Route guards; closes the API-layer hole — UI hiding alone isn't access control).
+app.use("*", requirePermission("*"));
 
 const SUPPLIER_SORT: Record<string, any> = {
   code: scm_suppliers.code,
