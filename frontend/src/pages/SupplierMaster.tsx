@@ -12,6 +12,7 @@ import { useServerSort } from "../hooks/useServerSort";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api, buildQuery } from "../api/client";
 import { cn } from "../lib/utils";
+import { supplierCreateSchema, supplierUpdateSchema } from "@shared/scm";
 
 // Ported from the 2990s ERP supplier master. The scm_* namespace keeps this
 // distinct from the AutoCount-synced Creditors and the ASSR service suppliers.
@@ -327,18 +328,16 @@ export function SupplierFormModal({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!f.code.trim()) {
-      toast.error("Code is required");
-      return;
-    }
-    if (!f.name.trim()) {
-      toast.error("Name is required");
+    const schema = isEdit ? supplierUpdateSchema : supplierCreateSchema;
+    const result = schema.safeParse(f);
+    if (!result.success) {
+      toast.error(result.error.issues[0]?.message || "Please check the form");
       return;
     }
     setBusy(true);
     try {
-      if (isEdit) await api.patch(`/api/scm-suppliers/${supplier!.id}`, f);
-      else await api.post("/api/scm-suppliers", f);
+      if (isEdit) await api.patch(`/api/scm-suppliers/${supplier!.id}`, result.data);
+      else await api.post("/api/scm-suppliers", result.data);
       onSaved();
     } catch (e: any) {
       toast.error(e?.message || "Save failed");

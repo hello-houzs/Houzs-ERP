@@ -4,6 +4,7 @@ import { getDb } from "../db/client";
 import { scm_suppliers, scm_supplier_material_bindings } from "../db/schema";
 import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { requirePermission } from "../middleware/auth";
+import { supplierCreateSchema, supplierUpdateSchema } from "@shared/scm";
 
 /**
  * Supply Chain — Supplier master + supplier<->material bindings.
@@ -130,9 +131,9 @@ app.get("/:id", async (c) => {
 app.post("/", async (c) => {
   const db = getDb(c.env);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-  const data = pick(body, SUPPLIER_FIELDS);
-  if (!data.code || !String(data.code).trim()) return c.json({ error: "Code is required" }, 400);
-  if (!data.name || !String(data.name).trim()) return c.json({ error: "Name is required" }, 400);
+  const parsed = supplierCreateSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message || "Invalid supplier" }, 400);
+  const data = parsed.data;
   try {
     const [row] = await db.insert(scm_suppliers).values(data as any).returning();
     return c.json({ supplier: row }, 201);
@@ -146,8 +147,9 @@ app.patch("/:id", async (c) => {
   const db = getDb(c.env);
   const id = c.req.param("id");
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-  const data = pick(body, SUPPLIER_FIELDS);
-  data.updated_at = new Date();
+  const parsed = supplierUpdateSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message || "Invalid supplier" }, 400);
+  const data = { ...parsed.data, updated_at: new Date() } as Record<string, unknown>;
   try {
     const [row] = await db
       .update(scm_suppliers)

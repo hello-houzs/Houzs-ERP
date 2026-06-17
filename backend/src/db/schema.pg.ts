@@ -1035,3 +1035,273 @@ export const scm_purchase_order_items = pgTable(
     idx_po: index("idx_scm_po_items_po").on(t.purchase_order_id),
   }),
 );
+
+// scm_stock_moves — append-only stock-movement ledger. On-hand qty and FIFO
+// valuation are DERIVED from these rows (no snapshot table). qty is signed:
+// +inbound, -outbound. See migrations-pg/0019_scm_inventory.sql.
+export const scm_stock_moves = pgTable(
+  "scm_stock_moves",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
+    material_kind: text("material_kind").notNull(),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name"),
+    qty: integer("qty").notNull(), // signed: +inbound, -outbound
+    unit_cost_centi: integer("unit_cost_centi").notNull().default(0),
+    move_type: text("move_type").notNull(),
+    ref_type: text("ref_type"),
+    ref_id: uuid("ref_id"),
+    note: text("note"),
+    created_by: integer("created_by"), // users.id soft ref
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_whmat: index("idx_scm_moves_whmat").on(t.warehouse_code, t.material_kind, t.material_code),
+    idx_ref: index("idx_scm_moves_ref").on(t.ref_type, t.ref_id),
+    idx_created: index("idx_scm_moves_created").on(t.created_at),
+  }),
+);
+
+// scm_goods_receipt_notes — GRN header. Posting a GRN advances PO received_qty
+// and writes GRN_IN rows into scm_stock_moves. See migrations-pg/0020.
+export const scm_goods_receipt_notes = pgTable(
+  "scm_goods_receipt_notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    grn_number: text("grn_number").notNull().unique(),
+    supplier_id: uuid("supplier_id").notNull(), // soft ref scm_suppliers.id
+    purchase_order_id: uuid("purchase_order_id"), // soft ref scm_purchase_orders.id (nullable)
+    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
+    status: text("status").notNull().default("DRAFT"),
+    received_date: date("received_date").notNull().defaultNow(),
+    notes: text("notes"),
+    posted_at: timestamp("posted_at", { withTimezone: true }),
+    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
+    created_by: integer("created_by"), // users.id soft ref (set from auth)
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_po: index("idx_scm_grn_po").on(t.purchase_order_id),
+    idx_status: index("idx_scm_grn_status").on(t.status),
+  }),
+);
+
+// scm_goods_receipt_note_items — GRN lines
+export const scm_goods_receipt_note_items = pgTable(
+  "scm_goods_receipt_note_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    grn_id: uuid("grn_id")
+      .notNull()
+      .references(() => scm_goods_receipt_notes.id, { onDelete: "cascade" }),
+    po_item_id: uuid("po_item_id"), // soft ref scm_purchase_order_items.id (nullable)
+    material_kind: text("material_kind").notNull().default("mfg_product"),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name"),
+    qty_received: integer("qty_received").notNull().default(0),
+    unit_cost_centi: integer("unit_cost_centi").notNull().default(0),
+    notes: text("notes"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_grn: index("idx_scm_grn_items_grn").on(t.grn_id),
+  }),
+);
+
+// scm_purchase_invoices — supplier billing header. FINANCE record only, NO stock
+// impact (stock arrives via GRN; PI-without-GRN is intentional). status is driven
+// by amount_paid_centi vs total_centi. See migrations-pg/0021_scm_purchase_billing.sql.
+export const scm_purchase_invoices = pgTable(
+  "scm_purchase_invoices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    invoice_number: text("invoice_number").notNull().unique(),
+    supplier_invoice_no: text("supplier_invoice_no"), // the supplier's own invoice ref
+    supplier_id: uuid("supplier_id").notNull(), // soft ref scm_suppliers.id
+    purchase_order_id: uuid("purchase_order_id"), // soft ref scm_purchase_orders.id (nullable)
+    invoice_date: date("invoice_date").notNull().defaultNow(),
+    due_date: date("due_date"),
+    currency: text("currency").notNull().default("MYR"),
+    subtotal_centi: integer("subtotal_centi").notNull().default(0),
+    tax_centi: integer("tax_centi").notNull().default(0),
+    total_centi: integer("total_centi").notNull().default(0),
+    amount_paid_centi: integer("amount_paid_centi").notNull().default(0),
+    status: text("status").notNull().default("UNPAID"),
+    notes: text("notes"),
+    created_by: integer("created_by"), // users.id soft ref (set from auth)
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_supplier: index("idx_scm_pi_supplier").on(t.supplier_id),
+    idx_status: index("idx_scm_pi_status").on(t.status),
+  }),
+);
+
+// scm_purchase_invoice_items — PI lines (no received/stock columns; finance only)
+export const scm_purchase_invoice_items = pgTable(
+  "scm_purchase_invoice_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    invoice_id: uuid("invoice_id")
+      .notNull()
+      .references(() => scm_purchase_invoices.id, { onDelete: "cascade" }),
+    material_kind: text("material_kind").notNull().default("mfg_product"),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name"),
+    qty: integer("qty").notNull().default(0),
+    unit_price_centi: integer("unit_price_centi").notNull().default(0),
+    discount_centi: integer("discount_centi").notNull().default(0),
+    line_total_centi: integer("line_total_centi").notNull().default(0),
+    notes: text("notes"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_invoice: index("idx_scm_pi_items_invoice").on(t.invoice_id),
+  }),
+);
+
+// scm_purchase_returns — return-to-supplier header. MIRRORS the GRN but OUTBOUND:
+// posting writes NEGATIVE-qty PURCHASE_RETURN_OUT rows into scm_stock_moves.
+// See migrations-pg/0021_scm_purchase_billing.sql.
+export const scm_purchase_returns = pgTable(
+  "scm_purchase_returns",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    return_number: text("return_number").notNull().unique(),
+    supplier_id: uuid("supplier_id").notNull(), // soft ref scm_suppliers.id
+    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
+    purchase_order_id: uuid("purchase_order_id"), // soft ref scm_purchase_orders.id (nullable)
+    status: text("status").notNull().default("DRAFT"),
+    reason: text("reason"),
+    notes: text("notes"),
+    posted_at: timestamp("posted_at", { withTimezone: true }),
+    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
+    created_by: integer("created_by"), // users.id soft ref (set from auth)
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_supplier: index("idx_scm_rtn_supplier").on(t.supplier_id),
+    idx_status: index("idx_scm_rtn_status").on(t.status),
+  }),
+);
+
+// scm_purchase_return_items — return lines. qty_returned is stored positive here;
+// it is written NEGATIVE to the scm_stock_moves ledger on post.
+export const scm_purchase_return_items = pgTable(
+  "scm_purchase_return_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    return_id: uuid("return_id")
+      .notNull()
+      .references(() => scm_purchase_returns.id, { onDelete: "cascade" }),
+    material_kind: text("material_kind").notNull().default("mfg_product"),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name"),
+    qty_returned: integer("qty_returned").notNull().default(0),
+    unit_cost_centi: integer("unit_cost_centi").notNull().default(0),
+    notes: text("notes"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_return: index("idx_scm_rtn_items_return").on(t.return_id),
+  }),
+);
+
+// scm_stock_transfers — warehouse-to-warehouse transfer header. Posting writes a
+// matched pair per line into scm_stock_moves (NEGATIVE TRANSFER_OUT at source +
+// POSITIVE TRANSFER_IN at destination, both at the source's current FIFO avg
+// cost) so total value is preserved, just relocated. from/to must differ.
+// See migrations-pg/0022_scm_transfers_stocktake.sql.
+export const scm_stock_transfers = pgTable(
+  "scm_stock_transfers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    transfer_number: text("transfer_number").notNull().unique(),
+    from_warehouse_code: text("from_warehouse_code").notNull(), // soft ref warehouses.code
+    to_warehouse_code: text("to_warehouse_code").notNull(), // soft ref warehouses.code
+    status: text("status").notNull().default("DRAFT"),
+    notes: text("notes"),
+    posted_at: timestamp("posted_at", { withTimezone: true }),
+    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
+    created_by: integer("created_by"), // users.id soft ref (set from auth)
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_status: index("idx_scm_trf_status").on(t.status),
+  }),
+);
+
+// scm_stock_transfer_items — transfer lines. qty is stored positive here; on post
+// it is written NEGATIVE (TRANSFER_OUT) at the source and POSITIVE (TRANSFER_IN)
+// at the destination.
+export const scm_stock_transfer_items = pgTable(
+  "scm_stock_transfer_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    transfer_id: uuid("transfer_id")
+      .notNull()
+      .references(() => scm_stock_transfers.id, { onDelete: "cascade" }),
+    material_kind: text("material_kind").notNull().default("mfg_product"),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name"),
+    qty: integer("qty").notNull().default(0),
+    notes: text("notes"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_transfer: index("idx_scm_trf_items_transfer").on(t.transfer_id),
+  }),
+);
+
+// scm_stocktakes — physical count header. At create time each line snapshots
+// system_qty (derived on-hand); at post time, for each line where counted_qty
+// differs from system_qty, ONE signed STOCKTAKE_ADJ move of (counted - system)
+// is written so the ledger reconciles to the counted figure.
+// See migrations-pg/0022_scm_transfers_stocktake.sql.
+export const scm_stocktakes = pgTable(
+  "scm_stocktakes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    stocktake_number: text("stocktake_number").notNull().unique(),
+    warehouse_code: text("warehouse_code").notNull(), // soft ref warehouses.code
+    status: text("status").notNull().default("DRAFT"),
+    notes: text("notes"),
+    posted_at: timestamp("posted_at", { withTimezone: true }),
+    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
+    created_by: integer("created_by"), // users.id soft ref (set from auth)
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_warehouse: index("idx_scm_stk_warehouse").on(t.warehouse_code),
+    idx_status: index("idx_scm_stk_status").on(t.status),
+  }),
+);
+
+// scm_stocktake_items — count lines. system_qty is the on-hand snapshot at create
+// time; counted_qty is the physical count. The signed diff (counted - system) is
+// written as a STOCKTAKE_ADJ move on post.
+export const scm_stocktake_items = pgTable(
+  "scm_stocktake_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    stocktake_id: uuid("stocktake_id")
+      .notNull()
+      .references(() => scm_stocktakes.id, { onDelete: "cascade" }),
+    material_kind: text("material_kind").notNull().default("mfg_product"),
+    material_code: text("material_code").notNull(),
+    material_name: text("material_name"),
+    system_qty: integer("system_qty").notNull().default(0),
+    counted_qty: integer("counted_qty").notNull().default(0),
+    notes: text("notes"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    idx_stocktake: index("idx_scm_stk_items_stocktake").on(t.stocktake_id),
+  }),
+);

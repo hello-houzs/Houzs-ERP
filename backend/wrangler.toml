@@ -120,3 +120,41 @@ enabled = true
 invocation_logs = true
 
 [observability.traces]
+
+# Resolve the bare `zod` import inside the out-of-tree shared/ module to THIS
+# worker's own node_modules. Without it, esbuild (wrangler deploy) walks up from
+# /shared, finds no node_modules, and fails "Could not resolve zod" on a clean
+# CI build (Cloudflare's own error suggests this alias).
+[alias]
+zod = "./node_modules/zod"
+
+# ── Staging environment (isolated from prod) ──────────────────────────────
+# Separate Worker on its own Hyperdrive -> the staging Supabase
+# (minnapsemfzjmtvnnvdd). No crons (staging must never pull AutoCount or run
+# prod jobs). Used to build + verify the stack upgrade before promoting.
+[env.staging]
+name = "autocount-sync-api-staging"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[env.staging.vars]
+AUTOCOUNT_API_URL = "https://it-houzs.dev/"
+AUTOCOUNT_SYNC_DISABLED = "true"
+PUBLIC_APP_URL = "https://houzs-erp-staging.pages.dev"
+EMAIL_FROM = "Houzs ERP Staging <no-reply@houzscentury.com>"
+EMAIL_REPLY_TO = "Houzs Century <hello@houzscentury.com>"
+
+[[env.staging.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "b776100058d04d609bb6e19182263683"
+
+[[env.staging.r2_buckets]]
+binding = "POD_BUCKET"
+bucket_name = "houzs-erp"
+
+[[env.staging.kv_namespaces]]
+binding = "SESSION_CACHE"
+id = "c25f593faf5a46a2b94155eba91083e1"
+
+[env.staging.triggers]
+crons = []

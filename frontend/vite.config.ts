@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
 
 // Dev-server proxy rules.
 //
@@ -36,6 +37,15 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
+    resolve: {
+      alias: {
+        "@shared": fileURLToPath(new URL("../shared", import.meta.url)),
+        // shared/ lives at the repo root (out of this app's node_modules tree),
+        // so Rollup can't resolve its bare `zod` import on a clean CI build.
+        // Pin it to this app's own copy.
+        zod: fileURLToPath(new URL("./node_modules/zod", import.meta.url)),
+      },
+    },
     plugins: [react()],
     build: {
       rollupOptions: {
