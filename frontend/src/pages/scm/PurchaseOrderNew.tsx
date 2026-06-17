@@ -37,6 +37,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "../../components/Button";
 import { api } from "../../api/client";
 import { useCreatePurchaseOrder, type NewPoItem, type MaterialKind } from "./PurchaseOrders";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -129,6 +130,7 @@ function useSupplierBindings(supplierId: string) {
 
 export const PurchaseOrderNew = () => {
   const navigate = useNavigate();
+  const toast = useToast();
   const create = useCreatePurchaseOrder();
 
   // ── Header state ──────────────────────────────────────────────────
@@ -172,16 +174,16 @@ export const PurchaseOrderNew = () => {
 
   const onSave = () => {
     if (!supplierId) {
-      window.alert("Pick a Creditor (supplier) first.");
+      toast.error("Pick a Creditor (supplier) first.");
       return;
     }
     // Expected Delivery + Purchase Location are required (API rejects missing).
     if (!expectedAt) {
-      window.alert("Expected Delivery date is required.");
+      toast.error("Expected Delivery date is required.");
       return;
     }
     if (!purchaseLocationId) {
-      window.alert("Purchase Location is required.");
+      toast.error("Purchase Location is required.");
       return;
     }
     const validLines = lines.filter((l) => l.materialCode.trim() && l.qty > 0);
@@ -210,7 +212,7 @@ export const PurchaseOrderNew = () => {
       },
       {
         onSuccess: (res) => navigate(`/purchase-orders/${res.id}`),
-        onError: (err) => window.alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`),
+        onError: (err) => toast.error(`Save failed: ${err instanceof Error ? err.message : String(err)}`),
       },
     );
   };

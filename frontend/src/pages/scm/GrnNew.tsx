@@ -18,7 +18,8 @@
 //     ./inventory-queries (Houzs api client + TanStack). Identical shapes (rule #7).
 //   - Components: @2990s/design-system Button -> Houzs components/Button; 2990s
 //     MoneyInput -> a minimal inline RM<->centi input; react-router ->
-//     react-router-dom (rule #9). ActionResultDialog -> window.alert.
+//     react-router-dom (rule #9). ActionResultDialog -> Houzs useToast (in-app,
+//     never window.alert).
 //
 // Strategy-2 product-layer simplifications (Houzs is not the furniture business):
 //   - DROPPED the furniture line machinery: mfg_products / maintenance-config /
@@ -40,6 +41,7 @@ import { api } from "../../api/client";
 import { useCreateGrn, type NewGrnItem } from "./grn-queries";
 import { usePurchaseOrders, usePurchaseOrderDetail } from "./PurchaseOrders";
 import { useWarehouses } from "./inventory-queries";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -88,6 +90,7 @@ type SupplierLite = { id: string; code: string; name: string };
 
 export const GrnNew = () => {
   const navigate = useNavigate();
+  const toast = useToast();
   const [params] = useSearchParams();
 
   // From-PO-multi picks — read ONCE on mount; when present they drive the form.
@@ -268,7 +271,7 @@ export const GrnNew = () => {
 
   const onSave = async () => {
     if (!supplierId) {
-      window.alert(
+      toast.error(
         hasPicks
           ? "The picks are missing a supplier — go back to the picker and try again."
           : "Choose the PO you are receiving against, or pick a supplier for a manual receipt.",
@@ -277,11 +280,11 @@ export const GrnNew = () => {
     }
     const realLines = lines.filter((l) => l.materialCode.trim());
     if (realLines.length === 0) {
-      window.alert("Add at least one item to receive.");
+      toast.error("Add at least one item to receive.");
       return;
     }
     if (!canSave) {
-      window.alert("Each line must have a received qty of 0 or more.");
+      toast.error("Each line must have a received qty of 0 or more.");
       return;
     }
     try {
@@ -312,7 +315,7 @@ export const GrnNew = () => {
       });
       navigate(`/grns/${res.id}`);
     } catch (e) {
-      window.alert(`Receive failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Receive failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 

@@ -25,6 +25,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from "lucide-react";
 import { Button } from "../../components/Button";
 import { useOutstandingGrnItems, type OutstandingGrnItem } from "./flow-queries";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -42,6 +43,7 @@ const fmtDateOrDash = (iso: string | null): string => {
 
 export const PurchaseInvoiceFromGrn = () => {
   const navigate = useNavigate();
+  const toast = useToast();
   const itemsQ = useOutstandingGrnItems();
 
   const [picks, setPicks] = useState<Record<string, { picked: boolean; qty: number }>>({});
@@ -92,7 +94,7 @@ export const PurchaseInvoiceFromGrn = () => {
 
   const onContinue = () => {
     if (pickedCount === 0 || !activeGrnId) {
-      window.alert("Tick at least one line from one note first.");
+      toast.error("Tick at least one line from one note first.");
       return;
     }
     const stash = picked.map(([grnItemId, v]) => ({ grnItemId, qty: v.qty }));

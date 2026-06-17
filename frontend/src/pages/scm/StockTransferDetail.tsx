@@ -28,6 +28,8 @@ import {
   type StockTransferItemInput,
   type StockTransferStatus,
 } from "./stock-transfers-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "./StockDoc.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -53,6 +55,8 @@ const fmtDateTime = (iso: string | null): string => {
 export const StockTransferDetail = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
 
   const detail = useStockTransferDetail(id ?? null);
   const cancel = useCancelStockTransfer();
@@ -94,15 +98,15 @@ export const StockTransferDetail = () => {
   void wmap;
 
   // ── Cancel ───────────────────────────────────────────────────────────
-  const onCancel = () => {
+  const onCancel = async () => {
     if (!id) return;
-    const proceed = window.confirm(
+    const proceed = await dialog.confirm(
       "Cancel this transfer? The paired stock movements (out of the source warehouse, into the destination) will be reversed automatically — the stock returns to where it started.",
     );
     if (!proceed) return;
     cancel.mutate(id, {
       onSuccess: () => detail.refetch(),
-      onError: (err) => window.alert(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`),
+      onError: (err) => toast.error(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`),
     });
   };
 

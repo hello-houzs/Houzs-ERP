@@ -27,6 +27,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Plus } from "lucide-react";
 import { Button } from "../../components/Button";
 import { useSalesOrders, useUpdateSalesOrderStatus, type SoRow, type SoStatus } from "./sales-orders-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "../Suppliers.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -58,6 +60,8 @@ const fmtDateOrDash = (iso: string | null): string => {
 
 export const MfgSalesOrders = () => {
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = (searchParams.get("status") ?? "all") as "all" | SoStatus;
   const search = searchParams.get("q") ?? "";
@@ -94,12 +98,12 @@ export const MfgSalesOrders = () => {
     return all;
   }, [data, statusChip, search]);
 
-  const doCancel = (s: SoRow) => {
+  const doCancel = async (s: SoRow) => {
     if (s.status === "CANCELLED") return;
-    if (!confirm(`Cancel Sales Order ${s.doc_no}? This sets status to CANCELLED — a cancelled SO is final (re-order via a new SO).`)) return;
+    if (!(await dialog.confirm(`Cancel Sales Order ${s.doc_no}? This sets status to CANCELLED — a cancelled SO is final (re-order via a new SO).`))) return;
     updateStatus.mutate(
       { docNo: s.doc_no, status: "CANCELLED" },
-      { onError: (e) => alert(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`) },
+      { onError: (e) => toast.error(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`) },
     );
   };
 

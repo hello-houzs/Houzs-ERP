@@ -29,6 +29,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Plus, ArrowRightLeft } from "lucide-react";
 import { Button } from "../../components/Button";
 import { useGrns, useCancelGrn, type GrnRow, type GrnStatus } from "./grn-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "../Suppliers.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -60,6 +62,8 @@ const fmtDateOrDash = (iso: string | null): string => {
 
 export const GoodsReceived = () => {
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = (searchParams.get("status") ?? "all") as "all" | GrnStatus;
   const setStatusChip = (s: "all" | GrnStatus) => {
@@ -77,15 +81,15 @@ export const GoodsReceived = () => {
     return statusChip === "all" ? all : all.filter((g) => g.status === statusChip);
   }, [data, statusChip]);
 
-  const doCancelGrn = (g: GrnRow) => {
+  const doCancelGrn = async (g: GrnRow) => {
     if (
-      !confirm(
+      !(await dialog.confirm(
         `Cancel GRN ${g.grn_number}? This reverses the receipt — stock is taken back out and the source PO's received qty is rolled back. Line items stay for audit.`,
-      )
+      ))
     )
       return;
     cancelGrn.mutate(g.id, {
-      onError: (e) => alert(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`),
+      onError: (e) => toast.error(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`),
     });
   };
 

@@ -19,6 +19,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Plus, ArrowRightLeft } from "lucide-react";
 import { Button } from "../../components/Button";
 import { usePurchaseReturns, useCancelPurchaseReturn, type PrRow, type PrStatus } from "./flow-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "../Suppliers.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -49,6 +51,8 @@ const fmtDateOrDash = (iso: string | null): string => {
 
 export const PurchaseReturns = () => {
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = (searchParams.get("status") ?? "all") as "all" | PrStatus;
   const setStatusChip = (s: "all" | PrStatus) => {
@@ -66,10 +70,10 @@ export const PurchaseReturns = () => {
     return statusChip === "all" ? all : all.filter((p) => p.status === statusChip);
   }, [data, statusChip]);
 
-  const doCancelPr = (p: PrRow) => {
-    if (!confirm(`Cancel return ${p.return_number}? This reverses the return — the goods are put back into stock. Line items stay for audit.`)) return;
+  const doCancelPr = async (p: PrRow) => {
+    if (!(await dialog.confirm(`Cancel return ${p.return_number}? This reverses the return — the goods are put back into stock. Line items stay for audit.`))) return;
     cancelPr.mutate(p.id, {
-      onError: (e) => alert(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`),
+      onError: (e) => toast.error(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`),
     });
   };
 

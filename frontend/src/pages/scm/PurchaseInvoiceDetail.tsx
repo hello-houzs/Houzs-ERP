@@ -20,7 +20,7 @@
 //   - Components: @2990s/design-system Button -> Houzs components/Button; 2990s
 //     MoneyInput -> a minimal inline RM<->centi editor; react-router ->
 //     react-router-dom (rule #9). useConfirm / RelationshipMapButton -> plain
-//     loading text + window.confirm.
+//     loading text + Houzs useDialog/useToast (in-app, never window.confirm/alert).
 //
 // Strategy-2 product-layer notes (dropped from the 2990s page):
 //   - Print PDF (jspdf), buildVariantSummary / ItemGroupPill, the per-line variant
@@ -43,6 +43,8 @@ import {
   type PiRow,
   type PiStatus,
 } from "./flow-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -87,6 +89,8 @@ const lineSnapshot = (it: PiItemRow): LineDraft => ({ qty: it.qty, unitPriceCent
 
 export const PurchaseInvoiceDetail = () => {
   const { id } = useParams<{ id: string }>();
+  const dialog = useDialog();
+  const toast = useToast();
   const detail = usePurchaseInvoiceDetail(id ?? null);
   const updateHeader = useUpdatePurchaseInvoiceHeader();
   const cancel = useCancelPurchaseInvoice();
@@ -174,30 +178,34 @@ export const PurchaseInvoiceDetail = () => {
       setHeaderDraft(null);
       setLineDrafts({});
     } catch (e) {
-      window.alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSavingDraft(false);
     }
   };
 
-  const doRecordPayment = () => {
+  const doRecordPayment = async () => {
     if (isLocked && pi.status === "CANCELLED") return;
-    const raw = window.prompt(`Record a payment for ${pi.invoice_number}. Amount in ${pi.currency} (balance ${fmtRm(balance, pi.currency)}):`, (balance / 100).toFixed(2));
+    const raw = await dialog.prompt({
+      message: `Record a payment for ${pi.invoice_number}. Amount in ${pi.currency} (balance ${fmtRm(balance, pi.currency)}):`,
+      defaultValue: (balance / 100).toFixed(2),
+      inputType: "number",
+    });
     if (raw == null) return;
     const amount = Number(raw.trim());
     if (!Number.isFinite(amount) || amount <= 0) {
-      window.alert("Enter a positive amount.");
+      toast.error("Enter a positive amount.");
       return;
     }
     recordPayment.mutate(
       { id: pi.id, amountCenti: Math.round(amount * 100) },
-      { onError: (e) => window.alert(`Payment failed: ${e instanceof Error ? e.message : String(e)}`) },
+      { onError: (e) => toast.error(`Payment failed: ${e instanceof Error ? e.message : String(e)}`) },
     );
   };
 
-  const doCancel = () => {
-    if (!confirm(`Cancel invoice ${pi.invoice_number}? This sets status to CANCELLED — line items stay for audit.`)) return;
-    cancel.mutate(pi.id, { onError: (err) => window.alert(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`) });
+  const doCancel = async () => {
+    if (!(await dialog.confirm(`Cancel invoice ${pi.invoice_number}? This sets status to CANCELLED — line items stay for audit.`))) return;
+    cancel.mutate(pi.id, { onError: (err) => toast.error(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`) });
   };
 
   return (
@@ -310,9 +318,9 @@ export const PurchaseInvoiceDetail = () => {
                             className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
                             title="Remove line"
                             disabled={isLocked || deleteItem.isPending}
-                            onClick={() => {
+                            onClick={async () => {
                               if (isLocked) return;
-                              if (confirm("Remove this line? The source GRN line is released for re-invoicing.")) {
+                              if (await dialog.confirm("Remove this line? The source GRN line is released for re-invoicing.")) {
                                 deleteItem.mutate({ piId: pi.id, itemId: it.id });
                               }
                             }}

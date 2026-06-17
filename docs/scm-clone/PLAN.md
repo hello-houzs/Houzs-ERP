@@ -77,6 +77,19 @@ Apply these *consistently* at every seam so ported routes/pages compile unchange
    `import {z} from "zod"` broke CI 2× before; this is mandatory.
 9. **Imports:** 2990s `@2990s/db|shared|design-system` and `@/...` → Houzs relative
    / `@shared/*` equivalents.
+10. **Dialogs/notifications:** `window.confirm` / `window.alert` / bare
+    `confirm(...)` / `alert(...)` → Houzs **in-app** hooks, NEVER the native
+    primitives. Gate actions with `const dialog = useDialog()` (from
+    `frontend/src/hooks/useDialog`) → `if (!(await dialog.confirm({ ... }))) return;`
+    (make the enclosing handler `async`); surface validation/error/success messages
+    with `const toast = useToast()` (from `frontend/src/hooks/useToast`) →
+    `toast.error(...)` / `toast.success(...)` / `toast.warning(...)`. Hooks are called
+    at component top level (hoist out of nested row/onClick callbacks). This matches
+    **2990s production (migrated off window.confirm in PR #657)** and the owner's
+    standing **"no naked edits — use in-app ConfirmDialog, never window.confirm"**
+    rule. (Earlier slices intentionally kept the native primitives "1:1"; that was
+    superseded by this rule — see the 2026-06-18 status entry. `window.prompt` has no
+    Houzs equivalent yet and is left as-is where 2990s used it.)
 
 ## Collision map (Houzs already has these)
 
@@ -460,3 +473,24 @@ need translation.)
     Suppliers/PurchaseOrderDetail CSS modules (DataGrid + configurator dropped);
     window.confirm/alert kept (done-slice precedent).
   - Migration `0029` NOT applied to any DB (batched for staging at #70).
+- **2026-06-18 — Native dialogs → in-app (cross-slice cleanup):** converted every
+  `window.confirm` / `window.alert` / bare `confirm(...)` / `alert(...)` in
+  `frontend/src/pages/scm/*.tsx` to Houzs's in-app `useDialog` (confirm gate) +
+  `useToast` (error/success/warning) — see canonical rule #10. This SUPERSEDES the
+  earlier "window.confirm/alert kept verbatim (1:1 fidelity)" notes in the Stock
+  Transfers/Takes (#63) and Sales Orders (#65) entries above, and applies the
+  no-naked-edits rule + 2990s PR #657 across the whole SCM page surface. 60
+  call-sites across 17 files: PurchaseOrders(2), PurchaseOrderNew(4),
+  PurchaseOrderDetail(9), GoodsReceivedList(1), GrnNew(5), GrnFromPo(1),
+  GoodsReceivedDetail(4), PurchaseInvoicesList(1), PurchaseInvoiceNew(5),
+  PurchaseInvoiceFromGrn(1), PurchaseInvoiceDetail(6, prompt left), PurchaseReturnsList(1),
+  PurchaseReturnNew(3), PurchaseReturnDetail(5, prompt left), Inventory(1), Warehouses(1),
+  StockAdjustmentNew(3), StockTransferNew(3), StockTransferDetail(2), StockTakeNew(3),
+  StockTakeDetail(15), MfgSalesOrdersList(2), SalesOrderNew(4), SalesOrderDetail(11).
+  Exact message text + control flow preserved; handlers/onClick made `async` where a
+  confirm gates them; hooks hoisted to component top in nested cases (Warehouse drawer,
+  SalesOrderDetail PaymentsPanel, line-row delete buttons). `window.prompt` (PI/PR
+  detail payment + credit-note ref) left as-is — no Houzs equivalent yet. Backend
+  typecheck + frontend build both EXIT 0; final `window.confirm|window.alert` grep in
+  `pages/scm` = 0 executable calls (8 remaining matches are descriptive comments,
+  refreshed to say "in-app, never window.confirm/alert"). No DB / backend touched.

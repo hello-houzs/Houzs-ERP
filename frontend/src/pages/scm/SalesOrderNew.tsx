@@ -28,6 +28,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, Plus, Save, Trash2, ChevronDown } from "lucide-react";
 import { Button } from "../../components/Button";
 import { useCreateSalesOrder, type NewSoItem } from "./sales-orders-queries";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -62,6 +63,7 @@ const blankLine = (): DraftLine => ({
 
 export const SalesOrderNew = () => {
   const navigate = useNavigate();
+  const toast = useToast();
   const create = useCreateSalesOrder();
   const saving = create.isPending;
 
@@ -96,17 +98,17 @@ export const SalesOrderNew = () => {
 
   const onSave = async () => {
     if (!canSave) {
-      window.alert("Customer name and phone are required.");
+      toast.error("Customer name and phone are required.");
       return;
     }
     // Processing + delivery date must pair (server enforces; pre-check for UX).
     if (Boolean(internalExpectedDd) !== Boolean(customerDeliveryDate)) {
-      window.alert("Processing Date and Delivery Date must be set together (or both left empty).");
+      toast.error("Processing Date and Delivery Date must be set together (or both left empty).");
       return;
     }
     const realLines = lines.filter((l) => l.itemCode.trim());
     if (realLines.some((l) => l.qty < 1)) {
-      window.alert("Each line needs a quantity of at least 1.");
+      toast.error("Each line needs a quantity of at least 1.");
       return;
     }
     try {
@@ -141,7 +143,7 @@ export const SalesOrderNew = () => {
       });
       navigate(`/sales-orders/${res.docNo ?? res.doc_no}`);
     } catch (err) {
-      window.alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 

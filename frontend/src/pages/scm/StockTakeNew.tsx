@@ -30,6 +30,8 @@ import { ArrowLeft, Save, X, ClipboardList } from "lucide-react";
 import { Button } from "../../components/Button";
 import { useWarehouses, useInventoryBalances } from "./inventory-queries";
 import { useCreateStockTake, type StockTakeScopeType } from "./stock-takes-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "./StockDoc.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -50,6 +52,8 @@ const CATEGORIES: Array<{ value: string; label: string }> = [
 
 export const StockTakeNew = () => {
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   const create = useCreateStockTake();
 
   const [warehouseId, setWarehouseId] = useState<string>("");
@@ -80,13 +84,13 @@ export const StockTakeNew = () => {
   const needsScopeValue = scopeType === "CATEGORY" || scopeType === "CODE_PREFIX";
   const canCreate = Boolean(warehouseId && takeDate && (!needsScopeValue || scopeValue.trim()));
 
-  const onCreate = () => {
+  const onCreate = async () => {
     if (!canCreate) {
-      window.alert("Pick a warehouse, date, and (for Category/Prefix scopes) a scope value.");
+      toast.error("Pick a warehouse, date, and (for Category/Prefix scopes) a scope value.");
       return;
     }
     if (previewCount === 0) {
-      const proceed = window.confirm(
+      const proceed = await dialog.confirm(
         "No SKUs match this scope at the chosen warehouse. The count sheet will be empty. Continue?",
       );
       if (!proceed) return;
@@ -101,7 +105,7 @@ export const StockTakeNew = () => {
       },
       {
         onSuccess: (res) => navigate(`/stock-takes/${res.id}`),
-        onError: (err) => window.alert(`Create failed: ${err instanceof Error ? err.message : String(err)}`),
+        onError: (err) => toast.error(`Create failed: ${err instanceof Error ? err.message : String(err)}`),
       },
     );
   };

@@ -32,6 +32,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Save, CheckSquare, Square } from "lucide-react";
 import { Button } from "../../components/Button";
 import { useOutstandingPoItems, type OutstandingPoItem } from "./grn-queries";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -55,6 +56,7 @@ export type GrnFromPoPick = OutstandingPoItem & { _pickQty: number };
 
 export const GrnFromPo = () => {
   const navigate = useNavigate();
+  const toast = useToast();
   const itemsQ = useOutstandingPoItems();
 
   // ?poId=<id> (single / batch convert) → scope to those POs. Empty = full picker.
@@ -141,7 +143,7 @@ export const GrnFromPo = () => {
       if (p?.picked && p.qty > 0) stash.push({ ...r, _pickQty: p.qty });
     }
     if (stash.length === 0) {
-      window.alert("Tick at least one PO line to receive.");
+      toast.error("Tick at least one PO line to receive.");
       return;
     }
     try {

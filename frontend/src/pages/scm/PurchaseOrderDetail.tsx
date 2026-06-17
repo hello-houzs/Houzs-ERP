@@ -28,7 +28,8 @@
 //     name. Purchase Location shows the raw saved id (warehouses not cloned);
 //     editable as plain text. TODO: warehouse picker when the Warehouse slice lands.
 //   - RelationshipMapButton / SkeletonDetailPage / useConfirm -> plain loading
-//     text + window.confirm (no such shared components in this slice).
+//     text + Houzs useDialog/useToast (in-app, never window.confirm/alert —
+//     matches 2990s #657 + the no-naked-edits rule).
 // ----------------------------------------------------------------------------
 
 import { useEffect, useState } from "react";
@@ -49,6 +50,8 @@ import {
   type PoHeaderRow,
   type PoStatus,
 } from "./PurchaseOrders";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -102,6 +105,8 @@ const lineSnapshot = (it: PoItemRow): LineDraft => ({
 export const PurchaseOrderDetail = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   const detail = usePurchaseOrderDetail(id ?? null);
   const updateHeader = useUpdatePurchaseOrderHeader();
   const cancel = useCancelPurchaseOrder();
@@ -225,7 +230,7 @@ export const PurchaseOrderDetail = () => {
       setHeaderDraft(null);
       setLineDrafts({});
     } catch (e) {
-      window.alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSavingDraft(false);
     }
@@ -256,10 +261,10 @@ export const PurchaseOrderDetail = () => {
           {(po.status === "SUBMITTED" || po.status === "PARTIALLY_RECEIVED") && (
             <Button
               variant="ghost"
-              onClick={() => {
-                if (!confirm(`Cancel PO ${po.po_number}? This sets status to CANCELLED — line items + linked docs stay for audit.`)) return;
+              onClick={async () => {
+                if (!(await dialog.confirm(`Cancel PO ${po.po_number}? This sets status to CANCELLED — line items + linked docs stay for audit.`))) return;
                 cancel.mutate(po.id, {
-                  onError: (err) => window.alert(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`),
+                  onError: (err) => toast.error(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`),
                 });
               }}
               disabled={cancel.isPending}
@@ -271,10 +276,10 @@ export const PurchaseOrderDetail = () => {
           {po.status === "CANCELLED" && (
             <Button
               variant="ghost"
-              onClick={() => {
-                if (!confirm(`Reopen PO ${po.po_number}? Status returns to SUBMITTED and this PO re-claims its Sales-Order quota.`)) return;
+              onClick={async () => {
+                if (!(await dialog.confirm(`Reopen PO ${po.po_number}? Status returns to SUBMITTED and this PO re-claims its Sales-Order quota.`))) return;
                 reopen.mutate(po.id, {
-                  onError: (err) => window.alert(`Reopen failed: ${err instanceof Error ? err.message : String(err)}`),
+                  onError: (err) => toast.error(`Reopen failed: ${err instanceof Error ? err.message : String(err)}`),
                 });
               }}
               disabled={reopen.isPending}
@@ -286,11 +291,11 @@ export const PurchaseOrderDetail = () => {
           {po.status === "CANCELLED" && (
             <Button
               variant="ghost"
-              onClick={() => {
-                if (!confirm(`Permanently delete PO ${po.po_number}? This removes the header + all line items and cannot be undone.`)) return;
+              onClick={async () => {
+                if (!(await dialog.confirm(`Permanently delete PO ${po.po_number}? This removes the header + all line items and cannot be undone.`))) return;
                 deletePo.mutate(po.id, {
                   onSuccess: () => navigate("/purchase-orders"),
-                  onError: (err) => window.alert(`Delete failed: ${err instanceof Error ? err.message : String(err)}`),
+                  onError: (err) => toast.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`),
                 });
               }}
               disabled={deletePo.isPending}
@@ -411,9 +416,9 @@ export const PurchaseOrderDetail = () => {
                               className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
                               title="Remove line"
                               disabled={isLocked || deleteItem.isPending}
-                              onClick={() => {
+                              onClick={async () => {
                                 if (isLocked) return;
-                                if (confirm("Remove this line? The line is deleted and its converted SO quantity is released back to the From-SO picker.")) {
+                                if (await dialog.confirm("Remove this line? The line is deleted and its converted SO quantity is released back to the From-SO picker.")) {
                                   deleteItem.mutate({ poId: po.id, itemId: it.id });
                                 }
                               }}

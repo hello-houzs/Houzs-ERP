@@ -39,6 +39,8 @@ import {
   useInventoryProductBreakdown,
   useInventoryBuckets,
 } from "./inventory-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "./Inventory.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -47,6 +49,8 @@ type AdjustmentType = "increase" | "decrease";
 
 export const StockAdjustmentNew = () => {
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   const adjust = useStockAdjustment();
 
   // ── Form state ─────────────────────────────────────────────────────
@@ -111,18 +115,18 @@ export const StockAdjustmentNew = () => {
     return b ? b.qty : null;
   }, [type, variantKey, batchNo, buckets]);
 
-  const onSave = () => {
+  const onSave = async () => {
     if (!canSave) {
-      window.alert("Fill Warehouse, SKU, Qty, and pick a Reason before saving.");
+      toast.error("Fill Warehouse, SKU, Qty, and pick a Reason before saving.");
       return;
     }
     // DECREASE gate — when there are open lots, the operator must say which one.
     if (type === "decrease" && buckets.length > 0 && !variantKey && !batchNo) {
-      window.alert("Pick which batch/variant to take the stock from.");
+      toast.error("Pick which batch/variant to take the stock from.");
       return;
     }
     if (willGoNegative) {
-      const proceed = window.confirm(`This adjustment will push the balance to ${resultingBalance} (below zero). Continue?`);
+      const proceed = await dialog.confirm(`This adjustment will push the balance to ${resultingBalance} (below zero). Continue?`);
       if (!proceed) return;
     }
     const trimmedBatch = batchNo.trim();
@@ -141,7 +145,7 @@ export const StockAdjustmentNew = () => {
       },
       {
         onSuccess: () => navigate("/stock-adjustments"),
-        onError: (err) => window.alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`),
+        onError: (err) => toast.error(`Save failed: ${err instanceof Error ? err.message : String(err)}`),
       },
     );
   };

@@ -13,7 +13,8 @@
 //     ./flow-queries (Houzs api client + TanStack). Shapes identical (rule #7).
 //   - Components: @2990s/design-system Button -> Houzs components/Button; 2990s
 //     MoneyInput -> a minimal inline RM<->centi input; react-router ->
-//     react-router-dom (rule #9). ActionResultDialog -> window.alert + navigate.
+//     react-router-dom (rule #9). ActionResultDialog -> Houzs useToast (in-app,
+//     never window.alert) + navigate.
 //
 // Strategy-2 product-layer simplifications (Houzs is not the furniture business):
 //   - DROPPED the furniture line machinery (mfg_products / variant editors /
@@ -30,6 +31,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "../../components/Button";
 import { api } from "../../api/client";
 import { useCreatePurchaseReturn, type NewPrItem } from "./flow-queries";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -66,6 +68,7 @@ const blankLine = (): DraftLine => ({
 
 export const PurchaseReturnNew = () => {
   const navigate = useNavigate();
+  const toast = useToast();
   const create = useCreatePurchaseReturn();
   const saving = create.isPending;
 
@@ -86,12 +89,12 @@ export const PurchaseReturnNew = () => {
 
   const onSave = async () => {
     if (!supplierId) {
-      window.alert("Choose a supplier for this return.");
+      toast.error("Choose a supplier for this return.");
       return;
     }
     const realLines = lines.filter((l) => l.materialCode.trim() && l.qtyReturned > 0);
     if (realLines.length === 0) {
-      window.alert("Add at least one item with a return qty > 0.");
+      toast.error("Add at least one item with a return qty > 0.");
       return;
     }
     try {
@@ -112,7 +115,7 @@ export const PurchaseReturnNew = () => {
       });
       navigate(`/purchase-returns/${res.id}`);
     } catch (err) {
-      window.alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 

@@ -18,7 +18,8 @@
 //     api client + TanStack). Shapes identical (rule #7).
 //   - Components: @2990s/design-system Button -> Houzs components/Button; 2990s
 //     MoneyInput -> a minimal inline RM<->centi editor; react-router ->
-//     react-router-dom (rule #9). useConfirm -> plain loading text + window.confirm.
+//     react-router-dom (rule #9). useConfirm -> plain loading text + Houzs
+//     useDialog/useToast (in-app, never window.confirm/alert).
 //
 // Strategy-2 product-layer notes (dropped from the 2990s page):
 //   - Print PDF (jspdf), buildVariantSummary / ItemGroupPill, the per-line variant
@@ -40,6 +41,8 @@ import {
   type PrRow,
   type PrStatus,
 } from "./flow-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -82,6 +85,8 @@ const lineSnapshot = (it: PrItemRow): LineDraft => ({ qtyReturned: it.qty_return
 
 export const PurchaseReturnDetail = () => {
   const { id } = useParams<{ id: string }>();
+  const dialog = useDialog();
+  const toast = useToast();
   const detail = usePurchaseReturnDetail(id ?? null);
   const updateHeader = useUpdatePurchaseReturnHeader();
   const cancel = useCancelPurchaseReturn();
@@ -164,24 +169,27 @@ export const PurchaseReturnDetail = () => {
       setHeaderDraft(null);
       setLineDrafts({});
     } catch (e) {
-      window.alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSavingDraft(false);
     }
   };
 
-  const doComplete = () => {
-    const cn = window.prompt(`Mark ${pr.return_number} completed. Enter the supplier's credit-note ref (optional):`, pr.credit_note_ref ?? "");
+  const doComplete = async () => {
+    const cn = await dialog.prompt({
+      message: `Mark ${pr.return_number} completed. Enter the supplier's credit-note ref (optional):`,
+      defaultValue: pr.credit_note_ref ?? "",
+    });
     if (cn == null) return; // cancelled the prompt
     complete.mutate(
       { id: pr.id, creditNoteRef: cn.trim() || undefined },
-      { onError: (e) => window.alert(`Complete failed: ${e instanceof Error ? e.message : String(e)}`) },
+      { onError: (e) => toast.error(`Complete failed: ${e instanceof Error ? e.message : String(e)}`) },
     );
   };
 
-  const doCancel = () => {
-    if (!confirm(`Cancel return ${pr.return_number}? This reverses the return — the goods are put back into stock. Line items stay for audit.`)) return;
-    cancel.mutate(pr.id, { onError: (err) => window.alert(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`) });
+  const doCancel = async () => {
+    if (!(await dialog.confirm(`Cancel return ${pr.return_number}? This reverses the return — the goods are put back into stock. Line items stay for audit.`))) return;
+    cancel.mutate(pr.id, { onError: (err) => toast.error(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`) });
   };
 
   return (
@@ -286,9 +294,9 @@ export const PurchaseReturnDetail = () => {
                             className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
                             title="Remove line"
                             disabled={isLocked || deleteItem.isPending}
-                            onClick={() => {
+                            onClick={async () => {
                               if (isLocked) return;
-                              if (confirm("Remove this line? Its return is reversed (stock back in) and the source GRN line is released.")) {
+                              if (await dialog.confirm("Remove this line? Its return is reversed (stock back in) and the source GRN line is released.")) {
                                 deleteItem.mutate({ prId: pr.id, itemId: it.id });
                               }
                             }}

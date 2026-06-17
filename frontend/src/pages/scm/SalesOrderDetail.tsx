@@ -18,8 +18,8 @@
 //     (Houzs api client + TanStack). Identical request/response shapes (rule #7).
 //   - Components: @2990s/design-system Button -> Houzs components/Button; 2990s
 //     MoneyInput -> minimal inline RM<->centi editors; react-router ->
-//     react-router-dom; useConfirm/ConfirmDialog -> window.confirm (1:1 with the
-//     other done slices).
+//     react-router-dom; useConfirm/ConfirmDialog -> Houzs useDialog/useToast
+//     (in-app, never window.confirm/alert — matches 2990s #657 + no-naked-edits).
 //
 // Strategy-2 / cross-slice notes:
 //   - Furniture variant editor / OverridePriceModal / VariantsPills configurator
@@ -49,6 +49,8 @@ import {
   type SoItemRow,
   type SoStatus,
 } from "./sales-orders-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -89,6 +91,8 @@ type LineDraft = { qty: number; unitPriceCenti: number; discountCenti: number; i
 export const SalesOrderDetail = () => {
   const { docNo } = useParams<{ docNo: string }>();
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const editing = searchParams.get("edit") === "1";
 
@@ -158,31 +162,31 @@ export const SalesOrderDetail = () => {
       }
       setEdit(false);
     } catch (e) {
-      window.alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
-  const onDeleteLine = (it: SoItemRow) => {
-    if (!confirm(`Delete line ${it.item_code}?`)) return;
-    deleteItem.mutate({ docNo: docNo!, itemId: it.id }, { onError: (e) => window.alert(`Delete failed: ${e instanceof Error ? e.message : String(e)}`) });
+  const onDeleteLine = async (it: SoItemRow) => {
+    if (!(await dialog.confirm(`Delete line ${it.item_code}?`))) return;
+    deleteItem.mutate({ docNo: docNo!, itemId: it.id }, { onError: (e) => toast.error(`Delete failed: ${e instanceof Error ? e.message : String(e)}`) });
   };
 
   const onAddLine = () => {
     addItem.mutate(
       { docNo: docNo!, item: { itemGroup: "others", itemCode: "NEW-ITEM", description: "New line", qty: 1, unitPriceCenti: 0 } },
-      { onError: (e) => window.alert(`Add failed: ${e instanceof Error ? e.message : String(e)}`) },
+      { onError: (e) => toast.error(`Add failed: ${e instanceof Error ? e.message : String(e)}`) },
     );
   };
 
-  const onChangeStatus = (status: SoStatus) => {
+  const onChangeStatus = async (status: SoStatus) => {
     if (!so || status === so.status) return;
-    if (status === "CANCELLED" && !confirm(`Cancel Sales Order ${docNo}? A cancelled SO is final.`)) return;
-    updateStatus.mutate({ docNo: docNo!, status }, { onError: (e) => window.alert(`Status change failed: ${e instanceof Error ? e.message : String(e)}`) });
+    if (status === "CANCELLED" && !(await dialog.confirm(`Cancel Sales Order ${docNo}? A cancelled SO is final.`))) return;
+    updateStatus.mutate({ docNo: docNo!, status }, { onError: (e) => toast.error(`Status change failed: ${e instanceof Error ? e.message : String(e)}`) });
   };
 
   const toggleStock = (it: SoItemRow) => {
     const next = it.stock_status === "READY" ? "PENDING" : "READY";
-    setStockStatus.mutate({ docNo: docNo!, itemId: it.id, status: next }, { onError: (e) => window.alert(`Stock status failed: ${e instanceof Error ? e.message : String(e)}`) });
+    setStockStatus.mutate({ docNo: docNo!, itemId: it.id, status: next }, { onError: (e) => toast.error(`Stock status failed: ${e instanceof Error ? e.message : String(e)}`) });
   };
 
   if (isLoading) return <div className={styles.page}><p className={styles.emptyRow}>Loading sales order…</p></div>;
@@ -461,6 +465,8 @@ const PaymentsPanel = ({
   onDelete: ReturnType<typeof useDeleteSalesOrderPayment>;
   balanceCenti: number;
 }) => {
+  const dialog = useDialog();
+  const toast = useToast();
   const [method, setMethod] = useState<"cash" | "transfer" | "merchant" | "installment">("cash");
   const [amountCenti, setAmountCenti] = useState(0);
   const [paidAt, setPaidAt] = useState(() => new Date().toISOString().slice(0, 10));
@@ -468,7 +474,7 @@ const PaymentsPanel = ({
 
   const submit = () => {
     if (amountCenti <= 0) {
-      window.alert("Enter a payment amount.");
+      toast.error("Enter a payment amount.");
       return;
     }
     onRecord.mutate(
@@ -478,7 +484,7 @@ const PaymentsPanel = ({
           setAmountCenti(0);
           setApprovalCode("");
         },
-        onError: (e) => window.alert(`Payment failed: ${e instanceof Error ? e.message : String(e)}`),
+        onError: (e) => toast.error(`Payment failed: ${e instanceof Error ? e.message : String(e)}`),
       },
     );
   };
@@ -560,8 +566,8 @@ const PaymentsPanel = ({
                     type="button"
                     className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
                     title="Delete payment"
-                    onClick={() => {
-                      if (confirm("Delete this payment?")) onDelete.mutate({ docNo, id: p.id }, { onError: (e) => window.alert(`Delete failed: ${e instanceof Error ? e.message : String(e)}`) });
+                    onClick={async () => {
+                      if (await dialog.confirm("Delete this payment?")) onDelete.mutate({ docNo, id: p.id }, { onError: (e) => toast.error(`Delete failed: ${e instanceof Error ? e.message : String(e)}`) });
                     }}
                   >
                     <Trash2 {...SM_ICON} />

@@ -52,6 +52,7 @@ import {
   type InventoryProductTotal,
   type Warehouse,
 } from "./inventory-queries";
+import { useToast } from "../../hooks/useToast";
 import styles from "./Inventory.module.css";
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -1086,6 +1087,7 @@ const WarehousesTab = () => {
 };
 
 const WarehouseDrawer = ({ editing, onClose }: { editing: Warehouse | null; onClose: () => void }) => {
+  const toast = useToast();
   const create = useCreateWarehouse();
   const update = useUpdateWarehouse();
   const [form, setForm] = useState({
@@ -1098,7 +1100,7 @@ const WarehouseDrawer = ({ editing, onClose }: { editing: Warehouse | null; onCl
 
   const submit = () => {
     if (!form.code.trim() || !form.name.trim()) {
-      alert("Code and Name are required.");
+      toast.error("Code and Name are required.");
       return;
     }
     if (editing) {

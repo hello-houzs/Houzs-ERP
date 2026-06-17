@@ -28,6 +28,8 @@ import { ArrowLeft, ArrowRight, Save, X, Plus, Trash2, AlertTriangle } from "luc
 import { Button } from "../../components/Button";
 import { useWarehouses, useInventoryBalances } from "./inventory-queries";
 import { useCreateStockTransfer, type StockTransferItemInput } from "./stock-transfers-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "./StockDoc.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -52,6 +54,8 @@ const todayISO = () => {
 
 export const StockTransferNew = () => {
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   const create = useCreateStockTransfer();
 
   // ── Header state ─────────────────────────────────────────────────────
@@ -97,13 +101,13 @@ export const StockTransferNew = () => {
 
   const canSave = Boolean(fromWarehouseId && toWarehouseId && !sameWarehouse && transferDate && validLines.length > 0);
 
-  const onSave = () => {
+  const onSave = async () => {
     if (!canSave) {
-      window.alert("Pick From + To warehouses (must differ), date, and at least one valid line.");
+      toast.error("Pick From + To warehouses (must differ), date, and at least one valid line.");
       return;
     }
     if (overdrawn.length > 0) {
-      const proceed = window.confirm(
+      const proceed = await dialog.confirm(
         `Some lines exceed available stock at the source warehouse:\n` +
           overdrawn.map((l) => `  ${l.productCode}: want ${l.qty}, have ${balanceMap.get(l.productCode) ?? 0}`).join("\n") +
           `\n\nSaving will post immediately and push the source balance negative. Continue?`,
@@ -125,7 +129,7 @@ export const StockTransferNew = () => {
       },
       {
         onSuccess: (res) => navigate(`/stock-transfers/${res.id}`),
-        onError: (err) => window.alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`),
+        onError: (err) => toast.error(`Save failed: ${err instanceof Error ? err.message : String(err)}`),
       },
     );
   };

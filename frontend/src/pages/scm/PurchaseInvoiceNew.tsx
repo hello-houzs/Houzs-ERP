@@ -15,7 +15,8 @@
 //     TanStack). Shapes identical (rule #7).
 //   - Components: @2990s/design-system Button -> Houzs components/Button; 2990s
 //     MoneyInput -> a minimal inline RM<->centi input; react-router ->
-//     react-router-dom (rule #9). ActionResultDialog -> window.alert + navigate.
+//     react-router-dom (rule #9). ActionResultDialog -> Houzs useToast (in-app,
+//     never window.alert) + navigate.
 //
 // Strategy-2 product-layer simplifications (Houzs is not the furniture business):
 //   - DROPPED the furniture line machinery: mfg_products / maintenance-config /
@@ -33,6 +34,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "../../components/Button";
 import { api } from "../../api/client";
 import { useCreatePurchaseInvoice, type NewPiItem } from "./flow-queries";
+import { useToast } from "../../hooks/useToast";
 import { useGrnDetail } from "./grn-queries";
 import styles from "./PurchaseOrderDetail.module.css";
 
@@ -63,6 +65,7 @@ type DraftLine = {
 
 export const PurchaseInvoiceNew = () => {
   const navigate = useNavigate();
+  const toast = useToast();
   const [params] = useSearchParams();
   const grnId = params.get("grnId");
   // fromPicks = arrived from the GRN->PI picker: build ONLY the ticked lines.
@@ -179,16 +182,16 @@ export const PurchaseInvoiceNew = () => {
 
   const onSave = async () => {
     if (!supplierId) {
-      window.alert(isManual ? "Choose a supplier for this manual invoice." : "This GRN is missing a supplier — reopen it and try again.");
+      toast.error(isManual ? "Choose a supplier for this manual invoice." : "This GRN is missing a supplier — reopen it and try again.");
       return;
     }
     const realLines = lines.filter((l) => l.materialCode.trim());
     if (realLines.length === 0) {
-      window.alert("Pick at least one item to invoice.");
+      toast.error("Pick at least one item to invoice.");
       return;
     }
     if (!canSave) {
-      window.alert("Each line needs qty > 0.");
+      toast.error("Each line needs qty > 0.");
       return;
     }
     try {
@@ -215,7 +218,7 @@ export const PurchaseInvoiceNew = () => {
       });
       navigate(`/purchase-invoices/${res.id}`);
     } catch (err) {
-      window.alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 

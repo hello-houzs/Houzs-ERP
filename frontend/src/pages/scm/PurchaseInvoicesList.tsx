@@ -27,6 +27,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Plus, ArrowRightLeft } from "lucide-react";
 import { Button } from "../../components/Button";
 import { usePurchaseInvoices, useCancelPurchaseInvoice, type PiRow, type PiStatus } from "./flow-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "../Suppliers.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -59,6 +61,8 @@ const fmtDateOrDash = (iso: string | null): string => {
 
 export const PurchaseInvoices = () => {
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = (searchParams.get("status") ?? "all") as "all" | PiStatus;
   const setStatusChip = (s: "all" | PiStatus) => {
@@ -76,10 +80,10 @@ export const PurchaseInvoices = () => {
     return statusChip === "all" ? all : all.filter((p) => p.status === statusChip);
   }, [data, statusChip]);
 
-  const doCancelPi = (p: PiRow) => {
-    if (!confirm(`Cancel invoice ${p.invoice_number}? This sets status to CANCELLED — line items stay for audit.`)) return;
+  const doCancelPi = async (p: PiRow) => {
+    if (!(await dialog.confirm(`Cancel invoice ${p.invoice_number}? This sets status to CANCELLED — line items stay for audit.`))) return;
     cancelPi.mutate(p.id, {
-      onError: (e) => alert(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`),
+      onError: (e) => toast.error(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`),
     });
   };
 

@@ -22,7 +22,8 @@
 //   - Components: @2990s/design-system Button -> Houzs components/Button; 2990s
 //     MoneyInput -> a minimal inline RM<->centi editor; react-router ->
 //     react-router-dom (rule #9). useConfirm / SkeletonDetailPage /
-//     RelationshipMapButton -> plain loading text + window.confirm.
+//     RelationshipMapButton -> plain loading text + Houzs useDialog/useToast
+//     (in-app, never window.confirm/alert).
 //
 // Strategy-2 product-layer notes (dropped from the 2990s page):
 //   - Print PDF (jspdf, furniture labels) — DROPPED. TODO: generic GRN print.
@@ -50,6 +51,8 @@ import {
   type GrnStatus,
 } from "./grn-queries";
 import { useWarehouses } from "./inventory-queries";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "./PurchaseOrderDetail.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -109,6 +112,8 @@ const lineSnapshot = (it: GrnItemRow): LineDraft => ({
 export const GoodsReceivedDetail = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   const detail = useGrnDetail(id ?? null);
   const updateHeader = useUpdateGrnHeader();
   const cancel = useCancelGrn();
@@ -213,7 +218,7 @@ export const GoodsReceivedDetail = () => {
       setHeaderDraft(null);
       setLineDrafts({});
     } catch (e) {
-      window.alert(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSavingDraft(false);
     }
@@ -244,15 +249,15 @@ export const GoodsReceivedDetail = () => {
           {grn.status === "POSTED" && !hasChildren && (
             <Button
               variant="ghost"
-              onClick={() => {
+              onClick={async () => {
                 if (
-                  !confirm(
+                  !(await dialog.confirm(
                     `Cancel GRN ${grn.grn_number}? This reverses the receipt — stock is taken back out and the source PO's received qty is rolled back. Line items stay for audit.`,
-                  )
+                  ))
                 )
                   return;
                 cancel.mutate(grn.id, {
-                  onError: (err) => window.alert(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`),
+                  onError: (err) => toast.error(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`),
                 });
               }}
               disabled={cancel.isPending}
@@ -367,9 +372,9 @@ export const GoodsReceivedDetail = () => {
                               className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
                               title="Remove line"
                               disabled={isLocked || deleteItem.isPending}
-                              onClick={() => {
+                              onClick={async () => {
                                 if (isLocked) return;
-                                if (confirm("Remove this line? Its receipt is reversed (stock out) and the source PO's received qty is rolled back.")) {
+                                if (await dialog.confirm("Remove this line? Its receipt is reversed (stock out) and the source PO's received qty is rolled back.")) {
                                   deleteItem.mutate({ grnId: grn.id, itemId: it.id });
                                 }
                               }}

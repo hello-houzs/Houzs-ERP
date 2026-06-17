@@ -41,6 +41,8 @@ import {
 } from "@tanstack/react-query";
 import { Button } from "../../components/Button";
 import { api } from "../../api/client";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import styles from "../Suppliers.module.css";
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -370,6 +372,8 @@ const summarizeItems = (items: PoHeaderRow["items"]): string | null => {
 
 export const PurchaseOrders = () => {
   const navigate = useNavigate();
+  const dialog = useDialog();
+  const toast = useToast();
   // Default to Outstanding (the 95% view).
   const [status, setStatus] = useState<StatusFilter>("outstanding");
 
@@ -384,16 +388,16 @@ export const PurchaseOrders = () => {
     return all.filter((r) => r.status === "SUBMITTED" || r.status === "PARTIALLY_RECEIVED");
   }, [data, status]);
 
-  const doCancelPo = (po: PoHeaderRow) => {
-    if (!confirm(`Cancel ${po.po_number}? It will stop proceeding and any converted SO lines are released back.`)) return;
+  const doCancelPo = async (po: PoHeaderRow) => {
+    if (!(await dialog.confirm(`Cancel ${po.po_number}? It will stop proceeding and any converted SO lines are released back.`))) return;
     cancelPo.mutate(po.id, {
-      onError: (e) => alert(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`),
+      onError: (e) => toast.error(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`),
     });
   };
-  const doReopenPo = (po: PoHeaderRow) => {
-    if (!confirm(`Reopen ${po.po_number}? Status returns to SUBMITTED and its converted SO lines re-claim their quota.`)) return;
+  const doReopenPo = async (po: PoHeaderRow) => {
+    if (!(await dialog.confirm(`Reopen ${po.po_number}? Status returns to SUBMITTED and its converted SO lines re-claim their quota.`))) return;
     reopenPo.mutate(po.id, {
-      onError: (e) => alert(`Reopen failed: ${e instanceof Error ? e.message : String(e)}`),
+      onError: (e) => toast.error(`Reopen failed: ${e instanceof Error ? e.message : String(e)}`),
     });
   };
 
