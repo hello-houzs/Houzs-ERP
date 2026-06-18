@@ -2506,8 +2506,9 @@ function DetailContent({
           </div>
           <DetailGrid>
             <DetailMain>
-          {/* Items */}
-          <PanelSection title={`Items (${items.length})`}>
+          {/* Product & PO — the product item(s) plus the procurement /
+              PO info (resolution keeps supplier handling only). */}
+          <PanelSection title={`Product & PO (${items.length})`}>
             {items.length === 0 ? (
               <div className="text-[12px] text-ink-muted">No items</div>
             ) : (
@@ -2662,6 +2663,32 @@ function DetailContent({
                 </div>
               );
             })()}
+            {/* Procurement / PO — product-side info (moved out of
+                Resolution, which now only holds supplier handling). */}
+            <div className="mt-2 border-t border-border-subtle pt-2">
+              <InlineEdit
+                label="PO No"
+                value={c.po_no}
+                onSave={(v) => patch({ po_no: v })}
+              />
+              {!c.po_no && c.creditor_code && c.stage !== "completed" && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const res = await api.post<{ po_no: string }>(`/api/assr/${id}/generate-po`);
+                      toast.success(`Generated ${res.po_no}`);
+                      detail.reload();
+                      onUpdated();
+                    } catch (e: any) {
+                      toast.error(e?.message || "Failed to generate PO");
+                    }
+                  }}
+                  className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline"
+                >
+                  <Plus size={12} /> Auto-generate PO number
+                </button>
+              )}
+            </div>
           </PanelSection>
 
           {/* ── Issue (captured at intake) ─────────────────────
@@ -2847,28 +2874,6 @@ function DetailContent({
                 )}
               </div>
             </div>
-            <InlineEdit
-              label="PO No"
-              value={c.po_no}
-              onSave={(v) => patch({ po_no: v })}
-            />
-            {!c.po_no && c.creditor_code && c.stage !== "completed" && (
-              <button
-                onClick={async () => {
-                  try {
-                    const res = await api.post<{ po_no: string }>(`/api/assr/${id}/generate-po`);
-                    toast.success(`Generated ${res.po_no}`);
-                    detail.reload();
-                    onUpdated();
-                  } catch (e: any) {
-                    toast.error(e?.message || "Failed to generate PO");
-                  }
-                }}
-                className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline"
-              >
-                <Plus size={12} /> Auto-generate PO number
-              </button>
-            )}
             <InlineEdit
               label="Supplier status update"
               textarea
