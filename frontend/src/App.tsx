@@ -56,6 +56,7 @@ const ScmStockTakes = lazy(() => import("./pages/scm/StockTakes").then((m) => ({
 const ScmStockTakeDetail = lazy(() => import("./pages/scm/StockTakeDetail").then((m) => ({ default: m.ScmStockTakeDetail })));
 const ScmMfgSalesOrders = lazy(() => import("./pages/scm/MfgSalesOrders").then((m) => ({ default: m.ScmMfgSalesOrders })));
 const ScmMfgSalesOrderDetail = lazy(() => import("./pages/scm/MfgSalesOrderDetail").then((m) => ({ default: m.ScmMfgSalesOrderDetail })));
+const ScmMfgSalesOrderNew = lazy(() => import("./pages/scm/MfgSalesOrderNew").then((m) => ({ default: m.ScmMfgSalesOrderNew })));
 const ScmDeliveryOrders = lazy(() => import("./pages/scm/DeliveryOrders").then((m) => ({ default: m.ScmDeliveryOrders })));
 const ScmDeliveryOrderDetail = lazy(() => import("./pages/scm/DeliveryOrderDetail").then((m) => ({ default: m.ScmDeliveryOrderDetail })));
 const ScmDeliveryReturns = lazy(() => import("./pages/scm/DeliveryReturns").then((m) => ({ default: m.ScmDeliveryReturns })));
@@ -208,6 +209,7 @@ export default function App() {
         <Route path="/scm/stock-takes/new" element={<Guard perm="*"><ScmStockTakeNew /></Guard>} />
         <Route path="/scm/stock-takes/:id" element={<Guard perm="*"><ScmStockTakeDetail /></Guard>} />
         <Route path="/scm/sales-orders" element={<Guard perm="*"><ScmMfgSalesOrders /></Guard>} />
+        <Route path="/scm/sales-orders/new" element={<Guard perm="*"><ScmMfgSalesOrderNew /></Guard>} />
         <Route path="/scm/sales-orders/:id" element={<Guard perm="*"><ScmMfgSalesOrderDetail /></Guard>} />
         <Route path="/scm/delivery-orders" element={<Guard perm="*"><ScmDeliveryOrders /></Guard>} />
         <Route path="/scm/delivery-orders/new" element={<Guard perm="*"><ScmDeliveryOrderNew /></Guard>} />
