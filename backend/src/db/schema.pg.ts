@@ -926,7 +926,7 @@ export const currencyCode = pgEnum('currency_code', ['MYR', 'RMB', 'USD', 'SGD']
 
 export const materialKind = pgEnum('material_kind', ['mfg_product', 'fabric', 'raw']);
 
-export const suppliers = pgTable('suppliers', {
+export const suppliers = pgTable('mfg_suppliers', {
   id:             uuid('id').primaryKey().defaultRandom(),
   code:           text('code').notNull().unique(),                          // Credit Account ('400-B002')
   name:           text('name').notNull(),                                   // Company Name

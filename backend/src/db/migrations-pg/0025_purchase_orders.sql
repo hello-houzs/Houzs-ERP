@@ -41,7 +41,7 @@ DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'po_status') TH
 CREATE TABLE IF NOT EXISTS mfg_purchase_orders (
   id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   po_number             text NOT NULL UNIQUE,
-  supplier_id           uuid NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+  supplier_id           uuid NOT NULL REFERENCES mfg_suppliers(id) ON DELETE RESTRICT,
   status                po_status NOT NULL DEFAULT 'SUBMITTED',
   po_date               date NOT NULL DEFAULT now(),
   expected_at           date,

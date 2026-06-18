@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS grns (
   id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   grn_number         text NOT NULL UNIQUE,
   purchase_order_id  uuid REFERENCES mfg_purchase_orders(id) ON DELETE SET NULL,
-  supplier_id        uuid NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+  supplier_id        uuid NOT NULL REFERENCES mfg_suppliers(id) ON DELETE RESTRICT,
   warehouse_id       uuid REFERENCES mfg_warehouses(id) ON DELETE SET NULL,
   received_at        date NOT NULL DEFAULT now(),
   delivery_note_ref  text,

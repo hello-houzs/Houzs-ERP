@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS products (
   created_at             timestamptz NOT NULL DEFAULT now(),
   updated_at             timestamptz NOT NULL DEFAULT now(),
   updated_by             integer,
-  supplier_id            uuid REFERENCES suppliers(id) ON DELETE RESTRICT
+  supplier_id            uuid REFERENCES mfg_suppliers(id) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_visible ON products (visible) WHERE visible = TRUE;
@@ -366,7 +366,7 @@ CREATE TABLE IF NOT EXISTS sofa_combo_pricing (
   modules                 jsonb NOT NULL DEFAULT '[]'::jsonb,
   tier                    fabric_price_tier,
   customer_id             uuid REFERENCES customers(id) ON DELETE SET NULL,
-  supplier_id             uuid REFERENCES suppliers(id) ON DELETE CASCADE,
+  supplier_id             uuid REFERENCES mfg_suppliers(id) ON DELETE CASCADE,
   prices_by_height        jsonb NOT NULL DEFAULT '{}'::jsonb,
   selling_prices_by_height jsonb NOT NULL DEFAULT '{}'::jsonb,
   pwp_prices_by_height    jsonb NOT NULL DEFAULT '{}'::jsonb,

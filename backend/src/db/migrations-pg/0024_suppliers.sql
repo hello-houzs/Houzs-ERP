@@ -19,7 +19,7 @@ DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'supplier_statu
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'currency_code') THEN CREATE TYPE currency_code AS ENUM ('MYR','RMB','USD','SGD'); END IF; END $$;
 DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'material_kind') THEN CREATE TYPE material_kind AS ENUM ('mfg_product','fabric','raw'); END IF; END $$;
 
-CREATE TABLE IF NOT EXISTS suppliers (
+CREATE TABLE IF NOT EXISTS mfg_suppliers (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code              text NOT NULL UNIQUE,
   name              text NOT NULL,
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
 
 CREATE TABLE IF NOT EXISTS supplier_material_bindings (
   id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  supplier_id             uuid NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+  supplier_id             uuid NOT NULL REFERENCES mfg_suppliers(id) ON DELETE CASCADE,
   material_kind           material_kind NOT NULL,
   material_code           text NOT NULL,
   material_name           text NOT NULL,
