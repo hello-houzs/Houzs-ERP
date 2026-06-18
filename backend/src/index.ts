@@ -1,7 +1,10 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./types";
-import { auth } from "./middleware/auth";
+import { auth, requirePermission } from "./middleware/auth";
+// Ported 2990's SCM modules (furniture supply chain). Talk to the `scm` Postgres
+// schema via supabase-js; namespaced under /api/scm/*, owner-only during the port.
+import { suppliers as scmSuppliers } from "./scm/routes/suppliers";
 import { idempotency } from "./middleware/idempotency";
 import { requestLog } from "./middleware/requestLog";
 import assr from "./routes/assr";
@@ -124,6 +127,12 @@ app.route("/api/inbox", inbox);
 app.route("/api/projects-print", projectsPrint);
 app.route("/api/search", search);
 app.route("/api/assr-print", assrPrint);
+
+// ── Ported 2990's SCM (furniture supply chain) — /api/scm/* ──────────
+// Owner-only while the port is in progress. The routes attach their own
+// scm-scoped supabase client via scm/middleware/auth.
+app.use("/api/scm/*", requirePermission("*"));
+app.route("/api/scm/suppliers", scmSuppliers);
 
 // Map raw infrastructure errors to operator-friendly messages so staff never
 // see a Postgres/driver string (e.g. the "operator does not exist: date < text"
