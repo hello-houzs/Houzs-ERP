@@ -1,0 +1,1950 @@
+// /consignment-orders — B2B consignment orders. Cloned from /mfg-sales-orders
+// (HOUZS pattern) onto the consignment_sales_* tables (migration 0153). Same
+// request/response shape as the SO route's create/detail so the New Consignment
+// Order form can mirror SalesOrderNew's payload near-verbatim.
+//
+// A Consignment Order writes NO inventory movements (order only — same as SO).
+//
+// Dropped vs the SO source (consignment doesn't use them):
+//   · PWP voucher claim / redemption
+//   · cross-category delivery-fee logic (cross_category_source_doc_no)
+//   · MRP / stock-allocation feeds + POST /recompute-allocation
+//   · SO→PO conversion feeds
+//   · POS drift-rejection path (Backend authors the selling price)
+//   · po_qty_picked / stock_status writes
+// The customer auto-resolve (upsert_customer_by_name_phone) is retained — it's
+// a simple, isolated stamp on the header.
+
+import { Hono } from 'hono';
+import { z } from 'zod';
+import { normalizePhone } from '../shared/phone';
+import {
+  pickComboMatch, spreadComboTotal, splitSofaCode, sofaHeightKey,
+  buildVariantSummary, comboChargedPrices, type SofaComboRow, type SofaPriceTier,
+} from '../shared';
+import { supabaseAuth } from '../middleware/auth';
+import { escapeForOr } from '../lib/postgrest-search';
+import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
+import { signSoItemPhotoUrl, soItemPhotoBindings } from '../lib/r2';
+import {
+  loadMaintenanceConfig,
+  loadSpecialAddons,
+  recomputeFromSnapshot,
+  loadProductByCode,
+  loadFabricByCode,
+  loadFabricSellingTiers,
+  loadFabricTierAddonConfig,
+  loadModelFabricTierOverrides,
+  loadModelSofaModulePrices,
+  loadModelSofaModuleCostRows,
+  type MfgItemForRecompute,
+  type RecomputedLine,
+} from '../lib/mfg-pricing-recompute';
+import {
+  checkAllowedOptions,
+  loadProductAndModel,
+} from '../lib/allowed-options-check';
+import { findIncompleteVariantLines } from '../lib/so-variant-check';
+import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
+import type { Env, Variables } from '../env';
+
+export const consignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
+consignmentOrders.use('*', supabaseAuth);
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+/* ── CO child-lock guard (Tier 2 — downstream lock) ─────────────────────────
+   A CO locks (read-only — no line edit / no CANCELLED transition) once it has
+   ANY non-cancelled Delivery Order OR Sales Invoice referencing it. Mirrors the
+   SO route's soHasDownstream. Returns the blocking JSON, or null if free. */
+async function coHasDownstream(sb: any, coDocNo: string): Promise<{ error: string; message: string } | null> {
+  // A Consignment Order's downstream is a Consignment Note (consignment_delivery_orders
+  // keyed on consignment_so_doc_no) — NOT the real delivery_orders/sales_invoices
+  // tables (those never reference a CS- doc number, so the lock silently never fired).
+  const { count: noteCount } = await sb.from('consignment_delivery_orders')
+    .select('id', { head: true, count: 'exact' })
+    .eq('consignment_so_doc_no', coDocNo)
+    .neq('status', 'CANCELLED');
+  if ((noteCount ?? 0) > 0) {
+    return { error: 'co_has_downstream', message: 'Consignment Order has a Consignment Note — cancel it first to edit' };
+  }
+  return null;
+}
+
+/* Identity + value columns a downstream DO / SI snapshots. Frozen on the CO
+   header once a non-cancelled child exists; payment / remark / scheduling
+   columns are intentionally NOT in this set. Keyed by DB column name. */
+const CO_IDENTITY_LOCK_COLS = new Set<string>([
+  'debtor_code', 'debtor_name', 'agent', 'sales_location', 'ref', 'po_doc_no',
+  'venue', 'venue_id', 'branding', 'address1', 'address2', 'address3', 'address4',
+  'phone', 'currency', 'so_date', 'customer_id', 'customer_state', 'customer_po',
+  'customer_po_id', 'customer_po_date', 'customer_po_image_b64', 'customer_so_no',
+  'hub_id', 'hub_name', 'ship_to_address', 'bill_to_address', 'install_to_address',
+  'email', 'customer_type', 'salesperson_id', 'city', 'postcode', 'building_type',
+  'emergency_contact_name', 'emergency_contact_phone', 'emergency_contact_relationship',
+]);
+
+/* Loose equality for the lock diff — null / undefined / '' all collapse. */
+function norm(v: unknown): string {
+  return v === null || v === undefined ? '' : String(v);
+}
+
+/* Server-side combo recompute source. Fetches active master sofa_combo_pricing
+   rows once for the cost-side spread in recomputeTotals + the line recompute. */
+async function loadActiveSofaCombos(sb: any): Promise<SofaComboRow[]> {
+  const { data } = await sb
+    .from('sofa_combo_pricing')
+    .select('id, base_model, modules, tier, customer_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, label, effective_from, deleted_at')
+    .is('deleted_at', null)
+    .is('customer_id', null)
+    .is('supplier_id', null);
+  return ((data ?? []) as Array<{
+    id: string; base_model: string; modules: string[][]; tier: SofaPriceTier | null;
+    customer_id: string | null; prices_by_height: Record<string, number | null>;
+    selling_prices_by_height: Record<string, number | null>;
+    pwp_prices_by_height: Record<string, number | null> | null;
+    label: string | null; effective_from: string; deleted_at: string | null;
+  }>).map((r) => ({
+    id: r.id, baseModel: r.base_model, modules: r.modules ?? [],
+    tier: r.tier, customerId: r.customer_id,
+    pricesByHeight: comboChargedPrices(r.selling_prices_by_height, r.prices_by_height),
+    pwpPricesByHeight: r.pwp_prices_by_height ?? {},
+    label: r.label, effectiveFrom: r.effective_from, deletedAt: r.deleted_at,
+  }));
+}
+
+const HEADER =
+  'doc_no, transfer_to, so_date, branding, debtor_code, debtor_name, agent, sales_location, ref, po_doc_no, venue, venue_id, ' +
+  'address1, address2, address3, address4, phone, ' +
+  'mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, local_total_centi, balance_centi, ' +
+  'mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, ' +
+  'total_cost_centi, total_revenue_centi, total_margin_centi, margin_pct_basis, line_count, ' +
+  'currency, status, remark2, remark3, remark4, note, processing_date, sales_exemption_expiry, ' +
+  'customer_id, customer_po, customer_po_id, customer_po_date, customer_po_image_b64, customer_so_no, hub_id, hub_name, ' +
+  'customer_state, customer_country, customer_delivery_date, internal_expected_dd, linked_do_doc_no, ' +
+  'ship_to_address, bill_to_address, install_to_address, subtotal_sen, overdue, ' +
+  'email, customer_type, salesperson_id, city, postcode, building_type, ' +
+  'emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, target_date, ' +
+  'payment_method, installment_months, merchant_provider, approval_code, payment_date, deposit_centi, paid_centi, ' +
+  'created_at, created_by, updated_at';
+const ITEM =
+  'id, doc_no, line_date, debtor_code, debtor_name, agent, item_group, item_code, description, description2, ' +
+  'uom, location, qty, unit_price_centi, discount_centi, total_centi, tax_centi, total_inc_centi, balance_centi, ' +
+  'payment_status, venue, branding, remark, cancelled, variants, unit_cost_centi, line_cost_centi, line_margin_centi, ' +
+  'line_delivery_date, line_delivery_date_overridden, ' +
+  'photo_urls, ' +
+  'created_at';
+
+/* ── Country auto-derive — look up my_localities for the state's country.
+   Falls back to 'Malaysia' for any non-empty-but-unmatched state (2990 is
+   Malaysia-only today). Returns null only for an empty state. ──────────── */
+const deriveCountryFromState = async (
+  sb: any,
+  state: string | null | undefined,
+): Promise<string | null> => {
+  if (!state) return null;
+  const { data } = await sb
+    .from('my_localities')
+    .select('country')
+    .eq('state', state)
+    .limit(1)
+    .maybeSingle();
+  const country = (data as { country?: string } | null)?.country;
+  return country ?? 'Malaysia';
+};
+
+/* Sales/shipping Location (warehouse) follows the customer's State. Returns the
+   warehouse code for the state, or null when unmapped. */
+const deriveSalesLocationFromState = async (
+  sb: any,
+  state: string | null | undefined,
+): Promise<string | null> => {
+  if (!state) return null;
+  const key = state === 'Wilayah Persekutuan Kuala Lumpur' ? 'Kuala Lumpur' : state;
+  const { data: m } = await sb
+    .from('state_warehouse_mappings')
+    .select('warehouse_id')
+    .eq('state', key)
+    .maybeSingle();
+  const whId = (m as { warehouse_id?: string } | null)?.warehouse_id;
+  if (!whId) return null;
+  const { data: w } = await sb
+    .from('warehouses')
+    .select('name, code')
+    .eq('id', whId)
+    .maybeSingle();
+  const wh = w as { name?: string; code?: string } | null;
+  return wh ? (wh.code ?? wh.name ?? null) : null;
+};
+
+const nextDocNo = async (sb: any): Promise<string> => {
+  // Format: CS-YYMM-NNN (counts within month). Consignment Order numbering.
+  const yymm = (() => {
+    const d = new Date();
+    return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
+  })();
+  const { count } = await sb
+    .from('consignment_sales_orders')
+    .select('doc_no', { head: true, count: 'exact' })
+    .like('doc_no', `CS-${yymm}-%`);
+  return `CS-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+};
+
+/* ── Cost snapshot ──────────────────────────────────────────────────────
+   Pull cost_price_sen off mfg_products on line create so the header's
+   total_cost_centi / category cost columns get populated even when the
+   client doesn't snapshot the cost. Explicit client value (>0) →
+   mfg_products.cost_price_sen → 0. Returns sen (integer). ─────────────── */
+const snapshotUnitCostSen = async (
+  sb: any,
+  itemCode: string,
+  explicit: number,
+): Promise<number> => {
+  if (explicit > 0) return explicit;
+  if (!itemCode) return 0;
+  const { data } = await sb
+    .from('mfg_products')
+    .select('cost_price_sen')
+    .eq('code', itemCode)
+    .maybeSingle();
+  return Number((data as { cost_price_sen?: number } | null)?.cost_price_sen ?? 0);
+};
+
+consignmentOrders.get('/', async (c) => {
+  const sb = c.get('supabase');
+  let q = sb.from('consignment_sales_orders').select(HEADER).order('so_date', { ascending: false }).limit(500);
+  const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  const debtor = c.req.query('debtor'); if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
+  const { data, error } = await q;
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+
+  const rows = (data ?? []) as unknown as Array<{ doc_no?: string } & Record<string, unknown>>;
+  const docNos = rows.map((r) => r.doc_no).filter((x): x is string => !!x);
+  if (docNos.length > 0) {
+    /* Per-CO category set + first-item branding source, mirroring the SO list.
+       Ordered (doc_no, created_at ASC) so the FIRST line per doc_no is its
+       earliest. */
+    const { data: itemRows } = await sb
+      .from('consignment_sales_order_items')
+      .select('doc_no, item_group, cancelled, branding, item_code, created_at')
+      .in('doc_no', docNos)
+      .eq('cancelled', false)
+      .order('doc_no')
+      .order('created_at', { ascending: true });
+    const cats = new Map<string, Set<string>>();
+    const firstCat = new Map<string, string>();
+    const firstBranding = new Map<string, string | null>();
+    const firstItemCode = new Map<string, string | null>();
+    const normCategory = (raw: string): string => {
+      const g = (raw ?? '').trim().toUpperCase();
+      if (g.includes('BEDFRAME')) return 'BEDFRAME';
+      if (g.includes('SOFA'))     return 'SOFA';
+      if (g.includes('MATTRESS')) return 'MATTRESS';
+      if (g.includes('ACCESSOR')) return 'ACCESSORY';
+      return 'OTHERS';
+    };
+    for (const it of (itemRows ?? []) as Array<{ doc_no: string; item_group: string; cancelled: boolean; branding: string | null; item_code: string | null; created_at: string | null }>) {
+      let catSet = cats.get(it.doc_no);
+      if (!catSet) { catSet = new Set(); cats.set(it.doc_no, catSet); }
+      catSet.add(normCategory(it.item_group));
+      if (!firstCat.has(it.doc_no)) {
+        firstCat.set(it.doc_no, normCategory(it.item_group));
+        firstBranding.set(it.doc_no, it.branding ?? null);
+        firstItemCode.set(it.doc_no, it.item_code ?? null);
+      }
+    }
+
+    /* Mattress brand fallback from mfg_products.branding when the first line is a
+       MATTRESS with blank own branding. */
+    const mattressCodesToLookup = new Set<string>();
+    for (const [docNo, cat] of firstCat) {
+      if (cat !== 'MATTRESS') continue;
+      const b = firstBranding.get(docNo);
+      if (b && b.trim()) continue;
+      const code = firstItemCode.get(docNo);
+      if (code) mattressCodesToLookup.add(code);
+    }
+    const productBranding = new Map<string, string>();
+    if (mattressCodesToLookup.size > 0) {
+      const { data: prodRows } = await sb
+        .from('mfg_products')
+        .select('code, branding')
+        .in('code', [...mattressCodesToLookup]);
+      for (const p of (prodRows ?? []) as Array<{ code: string; branding: string | null }>) {
+        if (p.branding && p.branding.trim()) productBranding.set(p.code, p.branding);
+      }
+    }
+
+    /* Payment Method summary from the payments LEDGER. */
+    const paymentMethods = new Map<string, Set<string>>();
+    {
+      const { data: payRows } = await sb
+        .from('consignment_sales_order_payments')
+        .select('so_doc_no, method, online_type')
+        .in('so_doc_no', docNos);
+      for (const p of (payRows ?? []) as Array<{ so_doc_no: string; method: string | null; online_type: string | null }>) {
+        const m = (p.method ?? '').trim().toLowerCase();
+        let label: string;
+        if (m === 'cash') label = 'Cash';
+        else if (m === 'merchant') label = 'Card';
+        else if (m === 'transfer') label = (p.online_type && p.online_type.trim()) ? p.online_type.trim() : 'Transfer';
+        else continue;
+        let set = paymentMethods.get(p.so_doc_no);
+        if (!set) { set = new Set(); paymentMethods.set(p.so_doc_no, set); }
+        set.add(label);
+      }
+    }
+
+    /* Tier 2 downstream-lock — mark has_children on any CO that has a
+       non-cancelled Consignment Note (consignment_delivery_orders) referencing
+       it. (Was wrongly querying the real delivery_orders/sales_invoices tables,
+       which a CS- doc number never matches, so the flag was always false.) */
+    const downstreamDocNos = new Set<string>();
+    const noteRowsRes = await sb.from('consignment_delivery_orders')
+      .select('consignment_so_doc_no').in('consignment_so_doc_no', docNos).neq('status', 'CANCELLED');
+    for (const d of ((noteRowsRes.data ?? []) as Array<{ consignment_so_doc_no: string | null }>)) {
+      if (d.consignment_so_doc_no) downstreamDocNos.add(d.consignment_so_doc_no);
+    }
+
+    for (const r of rows) {
+      const docNo = r.doc_no ?? '';
+      (r as Record<string, unknown>).item_categories = [...(cats.get(docNo) ?? [])].sort();
+      (r as Record<string, unknown>).has_children = downstreamDocNos.has(docNo);
+      const fCat = firstCat.get(docNo);
+      (r as Record<string, unknown>).first_item_category = fCat ?? null;
+      let fBranding = firstBranding.get(docNo) ?? null;
+      if (fCat === 'MATTRESS' && (!fBranding || !fBranding.trim())) {
+        const code = firstItemCode.get(docNo);
+        fBranding = (code && productBranding.get(code)) || fBranding;
+      }
+      (r as Record<string, unknown>).first_item_branding = fBranding;
+      const pm = paymentMethods.get(docNo);
+      (r as Record<string, unknown>).payment_methods_summary = pm ? [...pm].sort().join(' + ') : '';
+    }
+  }
+
+  return c.json({ salesOrders: rows });
+});
+
+/* "My consignment orders" board — the salesperson's OWN COs (lightweight). */
+consignmentOrders.get('/mine', async (c) => {
+  const sb = c.get('supabase'); const user = c.get('user');
+  const { data, error } = await sb
+    .from('consignment_sales_orders')
+    .select(
+      'doc_no, debtor_name, phone, email, address1, address2, city, postcode, customer_state, ' +
+      'customer_delivery_date, internal_expected_dd, status, payment_method, approval_code, note, so_date, created_at, ' +
+      'total_revenue_centi, line_count, deposit_centi',
+    )
+    .eq('salesperson_id', user.id)
+    .not('status', 'in', '("CANCELLED","ON_HOLD")')
+    .order('created_at', { ascending: false })
+    .limit(80);
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+
+  const rows = (data ?? []) as unknown as Array<{ doc_no?: string; deposit_centi?: number } & Record<string, unknown>>;
+  const docNos = rows.map((r) => r.doc_no).filter((x): x is string => !!x);
+  const itemsByDoc = new Map<string, Array<{ item_code: string; description: string | null; qty: number; total_centi: number; variants: unknown }>>();
+  if (docNos.length > 0) {
+    const { data: itemRows } = await sb
+      .from('consignment_sales_order_items')
+      .select('doc_no, item_code, description, qty, total_centi, variants')
+      .in('doc_no', docNos)
+      .eq('cancelled', false)
+      .order('created_at', { ascending: true });
+    for (const it of (itemRows ?? []) as Array<{ doc_no: string; item_code: string; description: string | null; qty: number; total_centi: number; variants: unknown }>) {
+      const arr = itemsByDoc.get(it.doc_no) ?? [];
+      arr.push({ item_code: it.item_code, description: it.description, qty: it.qty, total_centi: it.total_centi, variants: it.variants });
+      itemsByDoc.set(it.doc_no, arr);
+    }
+  }
+
+  const paidLedgerByDoc = new Map<string, number>();
+  if (docNos.length > 0) {
+    const { data: payRows } = await sb
+      .from('consignment_sales_order_payments')
+      .select('so_doc_no, amount_centi')
+      .in('so_doc_no', docNos);
+    for (const p of (payRows ?? []) as Array<{ so_doc_no: string; amount_centi: number }>) {
+      paidLedgerByDoc.set(p.so_doc_no, (paidLedgerByDoc.get(p.so_doc_no) ?? 0) + (p.amount_centi ?? 0));
+    }
+  }
+
+  const salesOrders = rows.map((r) => {
+    const deposit = typeof r.deposit_centi === 'number' ? r.deposit_centi : 0;
+    const ledger = paidLedgerByDoc.get(r.doc_no ?? '') ?? 0;
+    return {
+      ...r,
+      paid_centi_total: deposit + ledger,
+      items: itemsByDoc.get(r.doc_no ?? '') ?? [],
+    };
+  });
+
+  return c.json({ salesOrders });
+});
+
+/* Per-CO-line delivery breakdown — which Consignment Note (=DO) shipped how
+   much against each order line. Mirrors the SO detail's per-line `deliveries`.
+   Cancelled notes are excluded. Read-only; powers the "Delivered" column. */
+type CoLineDelivery = { noNumber: string; qty: number; status: string };
+async function coLineDeliveries(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sb: any,
+  soItemIds: string[],
+): Promise<Map<string, CoLineDelivery[]>> {
+  const out = new Map<string, CoLineDelivery[]>();
+  if (soItemIds.length === 0) return out;
+  const { data: doLines } = await sb
+    .from('consignment_delivery_order_items')
+    .select('consignment_so_item_id, qty, consignment_delivery_order_id')
+    .in('consignment_so_item_id', soItemIds);
+  const rows = (doLines ?? []) as Array<{
+    consignment_so_item_id: string | null; qty: number; consignment_delivery_order_id: string;
+  }>;
+  const doIds = [...new Set(rows.map((r) => r.consignment_delivery_order_id).filter(Boolean))];
+  if (doIds.length === 0) return out;
+  const { data: dos } = await sb.from('consignment_delivery_orders')
+    .select('id, do_number, status').in('id', doIds);
+  const doMeta = new Map<string, { noNumber: string; status: string }>();
+  for (const g of (dos ?? []) as Array<{ id: string; do_number: string | null; status: string | null }>) {
+    if ((g.status ?? '').toUpperCase() === 'CANCELLED') continue;
+    doMeta.set(g.id, { noNumber: g.do_number ?? '—', status: (g.status ?? '').toUpperCase() });
+  }
+  for (const r of rows) {
+    if (!r.consignment_so_item_id) continue;
+    const meta = doMeta.get(r.consignment_delivery_order_id);
+    if (!meta) continue;
+    const qty = Number(r.qty ?? 0);
+    if (qty <= 0) continue;
+    const arr = out.get(r.consignment_so_item_id) ?? [];
+    arr.push({ noNumber: meta.noNumber, qty, status: meta.status });
+    out.set(r.consignment_so_item_id, arr);
+  }
+  return out;
+}
+
+consignmentOrders.get('/:docNo', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo');
+  const [h, i] = await Promise.all([
+    sb.from('consignment_sales_orders').select(`${HEADER}, signature_b64`).eq('doc_no', docNo).maybeSingle(),
+    sb.from('consignment_sales_order_items').select(ITEM).eq('doc_no', docNo).order('created_at'),
+  ]);
+  if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
+  if (!h.data) return c.json({ error: 'not_found' }, 404);
+  /* Tier 2 downstream-lock — stamp has_children from the Consignment Note table
+     (consignment_delivery_orders), the CO's real downstream. */
+  const { count: noteCount } = await sb.from('consignment_delivery_orders')
+    .select('id', { head: true, count: 'exact' })
+    .eq('consignment_so_doc_no', docNo)
+    .neq('status', 'CANCELLED');
+  const salesOrder = {
+    ...(h.data as unknown as Record<string, unknown>),
+    has_children: (noteCount ?? 0) > 0,
+  };
+  const itemRows = (i.data ?? []) as unknown as Array<Record<string, unknown> & { id: string }>;
+  const deliveriesMap = await coLineDeliveries(sb, itemRows.map((it) => it.id));
+  const items = itemRows.map((it) => ({ ...it, deliveries: deliveriesMap.get(it.id) ?? [] }));
+  return c.json({ salesOrder, items });
+});
+
+consignmentOrders.post('/', async (c) => {
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const customerName = (body.debtorName ?? body.customerName) as string | undefined;
+  if (!customerName) return c.json({ error: 'customer_name_required' }, 400);
+  /* Phone is COMPULSORY (mirrors the SO route). Normalise once for both the
+     header snapshot and the customer identity key. */
+  const rawPhone = typeof body.phone === 'string' ? body.phone.trim() : '';
+  if (!rawPhone) {
+    return c.json({ error: 'phone_required', reason: 'A phone number is required on every consignment order.' }, 400);
+  }
+  const normPhone = normalizePhone(rawPhone) ?? rawPhone;
+  const items = (body.items as Array<Record<string, unknown>> | undefined) ?? [];
+
+  const sb = c.get('supabase'); const user = c.get('user');
+
+  // itemCode catalog guard.
+  if (items.length > 0) {
+    const codeCheck = await validateItemCodes(sb, items.map((it) => it.itemCode as string | null | undefined));
+    if (!codeCheck.ok) return c.json(unknownItemCodeResponse(codeCheck.unknown), 409);
+  }
+
+  /* CO composition rules (mirror the SO create path):
+       1. Processing Date + Delivery Date are all-or-nothing.
+       2. SOFA is exclusive among MAIN products (sofa / bedframe / mattress).
+       3. All MATTRESS lines must share ONE brand. */
+  {
+    const procDate  = (body.internalExpectedDd  as string | null | undefined) || null;
+    const delivDate = (body.customerDeliveryDate as string | null | undefined) || null;
+    if (Boolean(procDate) !== Boolean(delivDate)) {
+      return c.json({
+        error: 'processing_delivery_must_pair',
+        reason: 'Processing Date and Delivery Date must be set together (or both left empty).',
+      }, 400);
+    }
+    if (procDate && delivDate && procDate > delivDate) {
+      return c.json({
+        error: 'processing_after_delivery',
+        reason: 'Processing Date cannot be later than the Delivery Date.',
+      }, 400);
+    }
+    if (procDate) {
+      const offenders = findIncompleteVariantLines(
+        items.map((it) => ({
+          itemCode: String(it.itemCode ?? ''),
+          group:    (it.itemGroup as string | null | undefined) ?? null,
+          variants: (it.variants as Record<string, unknown> | null) ?? null,
+        })),
+      );
+      if (offenders.length > 0) {
+        return c.json({
+          error: 'variants_incomplete',
+          message: 'Processing Date requires all category-mandatory variants on every line.',
+          offenders,
+        }, 409);
+      }
+    }
+    const todayMY = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+    if (procDate && procDate < todayMY) {
+      return c.json({ error: 'processing_date_past', reason: 'Processing Date cannot be in the past — today or a future date only.' }, 400);
+    }
+    if (delivDate && delivDate < todayMY) {
+      return c.json({ error: 'delivery_date_past', reason: 'Delivery Date cannot be in the past — today or a future date only.' }, 400);
+    }
+    if (items.length > 0) {
+      const lineCodes = items.map((it) => String(it.itemCode ?? '')).filter(Boolean);
+      const metaByCode = new Map<string, { category: string }>();
+      if (lineCodes.length > 0) {
+        const { data: meta } = await sb
+          .from('mfg_products')
+          .select('code, category')
+          .in('code', lineCodes);
+        for (const m of (meta ?? []) as Array<{ code: string; category: string }>) {
+          metaByCode.set(m.code, { category: m.category });
+        }
+      }
+      const normCat = (raw: string): string => {
+        const g = (raw ?? '').trim().toUpperCase();
+        if (g.includes('BEDFRAME')) return 'BEDFRAME';
+        if (g.includes('SOFA'))     return 'SOFA';
+        if (g.includes('MATTRESS')) return 'MATTRESS';
+        if (g.includes('ACCESSOR')) return 'ACCESSORY';
+        if (g.includes('SERVICE'))  return 'SERVICE';
+        return 'OTHERS';
+      };
+      const MAIN = new Set(['SOFA', 'BEDFRAME', 'MATTRESS']);
+      const cats = items.map((it) =>
+        normCat(metaByCode.get(String(it.itemCode ?? ''))?.category ?? (it.itemGroup as string) ?? ''),
+      );
+      if (cats.includes('SOFA') && cats.some((cat) => cat !== 'SOFA' && MAIN.has(cat))) {
+        return c.json({
+          error: 'so_sofa_no_other_main',
+          reason: 'A sofa order cannot also contain a bedframe or mattress. Service and accessory items are fine.',
+        }, 400);
+      }
+      /* Loo 2026-06-07 — mattress brand mixing is allowed (old Rule 3
+         `so_mattress_one_brand` removed; mirrors mfg-sales-orders.ts). */
+    }
+  }
+
+  const docNo = await nextDocNo(sb);
+
+  /* Auto-stamp venue_id from the caller's staff.venue_id when they're a
+     POS-side role. Backend-only roles leave it NULL; an explicit body.venueId
+     overrides. */
+  let venueIdToStamp: string | null = (body.venueId as string | null | undefined) ?? null;
+  if (!venueIdToStamp) {
+    const { data: callerStaff } = await sb
+      .from('staff')
+      .select('role, venue_id')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (callerStaff && callerStaff.venue_id &&
+        ['sales', 'sales_executive', 'outlet_manager'].includes(callerStaff.role)) {
+      venueIdToStamp = callerStaff.venue_id as string;
+    }
+  }
+
+  // Compute totals + category breakdown
+  let mattressSofa = 0, bedframe = 0, accessories = 0, others = 0, total = 0, totalCost = 0;
+  let mattressSofaCost = 0, bedframeCost = 0, accessoriesCost = 0, othersCost = 0;
+  const headerDeliveryDate = (body.customerDeliveryDate as string | null | undefined) ?? null;
+
+  const cachedConfig = await loadMaintenanceConfig(sb);
+  const cachedSpecialAddons = await loadSpecialAddons(sb);
+  /* allowed_options pre-flight — run BEFORE the pricing recompute so a
+     disallowed variant returns the precise field/value/allowed payload. */
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (!it) continue;
+    const code = String(it.itemCode ?? '');
+    if (!code) continue;
+    const { product, model } = await loadProductAndModel(sb, code);
+    const err = checkAllowedOptions(
+      product,
+      model,
+      (it.variants as Parameters<typeof checkAllowedOptions>[2]) ?? null,
+    );
+    if (err) {
+      return c.json({ ...err, lineIdx: i, itemCode: code }, 400);
+    }
+  }
+  const cachedCombos = await loadActiveSofaCombos(sb);
+  const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb);
+  const cachedModelOverrides = await loadModelFabricTierOverrides(sb);  // migration 0172 — per-Model Δ
+
+  const lineProducts = await Promise.all(
+    items.map((it) => loadProductByCode(sb, String(it.itemCode ?? ''))),
+  );
+
+  /* Resolve the REAL customer identity (find-or-create by name + phone) and
+     stamp it on the CO. Best-effort — an RPC error must not block the order. */
+  let orderCustomerId: string | null = null;
+  {
+    const { data: resolvedCustomerId, error: customerErr } = await sb.rpc('upsert_customer_by_name_phone', {
+      p_name:  customerName,
+      p_phone: normPhone,
+      p_email: typeof body.email === 'string' && body.email.trim() ? body.email.trim() : null,
+    });
+    if (customerErr) {
+      console.error('[consignment-order] customer resolve failed:', customerErr.message ?? customerErr);
+    } else {
+      orderCustomerId = (resolvedCustomerId as string | null) ?? null;
+    }
+  }
+
+  const recomputes: Array<RecomputedLine | null> = await Promise.all(items.map(async (it, idx) => {
+    const itemCode = String(it.itemCode ?? '');
+    if (!itemCode) return null;
+    const product = lineProducts[idx] ?? null;
+    const [fabric, sellingTiers] = await Promise.all([
+      loadFabricByCode(sb, (it.variants as { fabricCode?: string } | null)?.fabricCode ?? null),
+      loadFabricSellingTiers(sb, (it.variants as { fabricId?: string } | null)?.fabricId ?? null),
+    ]);
+    // Audit 2026-06-11 C2 — module COST rows so a build's cost = Σ module costs.
+    const [sofaModulePrices, sofaModuleCostRows] = product?.category === 'SOFA'
+      ? await Promise.all([
+          loadModelSofaModulePrices(
+            sb,
+            product.base_model,
+            String((it.variants as { depth?: unknown } | null)?.depth ?? '24'),
+          ),
+          loadModelSofaModuleCostRows(sb, product.base_model),
+        ])
+      : [null, null];
+    const draft: MfgItemForRecompute = {
+      itemCode,
+      itemGroup:      String(it.itemGroup ?? 'others'),
+      qty:            Number(it.qty ?? 1),
+      unitPriceCenti: Number(it.unitPriceCenti ?? 0),
+      variants:       (it.variants as MfgItemForRecompute['variants']) ?? null,
+    };
+    return recomputeFromSnapshot(draft, product, fabric, cachedConfig, cachedCombos, sofaModulePrices, sellingTiers, cachedFabricAddonConfig, null, null, cachedSpecialAddons, sofaModuleCostRows, cachedModelOverrides);
+  }));
+
+  /* Task #114 — snapshot unit cost from mfg_products when client didn't. */
+  const itemRows = await Promise.all(items.map(async (it, idx) => {
+    const qty = Number(it.qty ?? 1);
+    const recomputed = recomputes[idx] ?? null;
+    /* The server-computed selling price (the bound price-list figure) is always
+       persisted — the Backend is costing-only. Backend authors the price; no
+       drift rejection (consignment has no POS path). */
+    const unit = recomputed ? recomputed.unit_price_sen : Number(it.unitPriceCenti ?? 0);
+    const discount = Number(it.discountCenti ?? 0);
+    const lineTotal = (qty * unit) - discount;
+    const itemCode = String(it.itemCode ?? '');
+    const unitCost = recomputed && recomputed.unit_cost_sen > 0
+      ? recomputed.unit_cost_sen
+      : await snapshotUnitCostSen(sb, itemCode, Number(it.unitCostCenti ?? 0));
+    const lineCost = unitCost * qty;
+    const group = String(it.itemGroup ?? '').toLowerCase();
+    total += lineTotal;
+    totalCost += lineCost;
+    if (group.includes('mattress') || group.includes('sofa')) {
+      mattressSofa += lineTotal;
+      mattressSofaCost += lineCost;
+    } else if (group.includes('bedframe')) {
+      bedframe += lineTotal;
+      bedframeCost += lineCost;
+    } else if (group.includes('accessor')) {
+      accessories += lineTotal;
+      accessoriesCost += lineCost;
+    } else {
+      others += lineTotal;
+      othersCost += lineCost;
+    }
+    const hasExplicitLineDate = it.lineDeliveryDate !== undefined && it.lineDeliveryDate !== null;
+    const lineDeliveryDate = hasExplicitLineDate
+      ? (it.lineDeliveryDate as string | null)
+      : headerDeliveryDate;
+    const lineDeliveryDateOverridden = hasExplicitLineDate
+      ? (it.lineDeliveryDateOverridden === undefined ? true : Boolean(it.lineDeliveryDateOverridden))
+      : Boolean(it.lineDeliveryDateOverridden ?? false);
+    return {
+      line_date: (it.lineDate as string) ?? new Date().toISOString().slice(0, 10),
+      debtor_code: (body.debtorCode as string) ?? null,
+      debtor_name: body.debtorName,
+      agent: (body.agent as string) ?? null,
+      item_group: it.itemGroup ?? 'others',
+      item_code: it.itemCode,
+      description: (it.description as string) ?? null,
+      description2: buildVariantSummary(String(it.itemGroup ?? ''), (it.variants as Record<string, unknown> | null) ?? null) || null,
+      uom: (it.uom as string) ?? 'UNIT',
+      qty,
+      unit_price_centi: unit,
+      discount_centi: discount,
+      total_centi: lineTotal,
+      total_inc_centi: lineTotal,
+      balance_centi: lineTotal,
+      variants: (it.variants as unknown) ?? null,
+      unit_cost_centi: unitCost,
+      line_cost_centi: lineCost,
+      line_margin_centi: lineTotal - lineCost,
+      divan_price_sen:         recomputed?.divan_price_sen ?? 0,
+      leg_price_sen:           recomputed?.leg_price_sen ?? 0,
+      special_order_price_sen: recomputed?.special_order_sen ?? 0,
+      custom_specials:         recomputed?.custom_specials ?? null,
+      line_delivery_date: lineDeliveryDate,
+      line_delivery_date_overridden: lineDeliveryDateOverridden,
+    };
+  }));
+
+  const margin = total - totalCost;
+  const marginPctBasis = total > 0 ? Math.round((margin / total) * 10000) : 0;
+
+  const customerCountrySnapshot = await deriveCountryFromState(
+    sb,
+    (body.customerState as string | null | undefined) ?? null,
+  );
+
+  const derivedSalesLocation =
+    (body.salesLocation as string | null | undefined) ??
+    (await deriveSalesLocationFromState(
+      sb,
+      (body.customerState as string | null | undefined) ?? null,
+    ));
+
+  const { error: hErr } = await sb.from('consignment_sales_orders').insert({
+    doc_no: docNo,
+    transfer_to: (body.transferTo as string) ?? null,
+    so_date: (body.soDate as string) ?? new Date().toISOString().slice(0, 10),
+    branding: (body.branding as string) ?? null,
+    debtor_code: (body.debtorCode ?? body.customerCode as string) ?? null,
+    debtor_name: customerName,
+    agent: (body.agent as string) ?? null,
+    sales_location: derivedSalesLocation ?? null,
+    ref: (body.ref as string) ?? null,
+    po_doc_no: (body.poDocNo as string) ?? null,
+    venue: (body.venue as string) ?? null,
+    venue_id: venueIdToStamp,
+    address1: (body.address1 as string) ?? null,
+    address2: (body.address2 as string) ?? null,
+    address3: (body.address3 as string) ?? null,
+    address4: (body.address4 as string) ?? null,
+    phone: normPhone,
+    mattress_sofa_centi: mattressSofa,
+    bedframe_centi: bedframe,
+    accessories_centi: accessories,
+    others_centi: others,
+    mattress_sofa_cost_centi: mattressSofaCost,
+    bedframe_cost_centi:      bedframeCost,
+    accessories_cost_centi:   accessoriesCost,
+    others_cost_centi:        othersCost,
+    local_total_centi: total,
+    balance_centi: total,
+    total_cost_centi: totalCost,
+    total_revenue_centi: total,
+    total_margin_centi: margin,
+    margin_pct_basis: marginPctBasis,
+    line_count: items.length,
+    currency: ((body.currency as string) ?? 'MYR').toUpperCase(),
+    note: (body.note as string) ?? null,
+    email: (body.email as string) ?? null,
+    customer_type: (body.customerType as string) ?? null,
+    salesperson_id: (body.salespersonId as string) ?? null,
+    city: (body.city as string) ?? null,
+    postcode: (body.postcode as string) ?? null,
+    building_type: (body.buildingType as string) ?? null,
+    emergency_contact_name: (body.emergencyContactName as string) ?? null,
+    emergency_contact_phone: typeof body.emergencyContactPhone === 'string'
+      ? (normalizePhone(body.emergencyContactPhone) ?? body.emergencyContactPhone)
+      : null,
+    emergency_contact_relationship: (body.emergencyContactRelationship as string) ?? null,
+    target_date: (body.targetDate as string) ?? null,
+    customer_id: orderCustomerId,
+    customer_state: (body.customerState as string) ?? null,
+    customer_country: customerCountrySnapshot,
+    customer_delivery_date: (body.customerDeliveryDate as string) ?? null,
+    internal_expected_dd: (body.internalExpectedDd as string) ?? null,
+    customer_so_no: (body.customerSoNo as string) ?? null,
+    customer_po: (body.customerPo as string) ?? null,
+    hub_id: (body.hubId as string) ?? null,
+    hub_name: (body.hubName as string) ?? null,
+    bill_to_address: (body.billToAddress as string) ?? null,
+    signature_b64: (body.signatureB64 as string) ?? null,
+    payment_method:     (body.paymentMethod as string) ?? null,
+    installment_months: typeof body.installmentMonths === 'number' ? body.installmentMonths : null,
+    merchant_provider:  (body.merchantProvider as string) ?? null,
+    approval_code:      (body.approvalCode as string) ?? null,
+    payment_date:       (body.paymentDate as string) ?? null,
+    deposit_centi:      typeof body.depositCenti === 'number' ? body.depositCenti : 0,
+    paid_centi:         typeof body.paidCenti === 'number' ? body.paidCenti : 0,
+    /* Every new CO is CONFIRMED on insert (2990 has no DRAFT step). */
+    status: 'CONFIRMED',
+    created_by: user.id,
+  });
+  if (hErr) { return c.json({ error: 'insert_failed', reason: hErr.message }, 500); }
+
+  if (itemRows.length > 0) {
+    const rowsWithDoc = itemRows.map((r) => ({ ...r, doc_no: docNo }));
+    const { error: iErr } = await sb.from('consignment_sales_order_items').insert(rowsWithDoc);
+    if (iErr) { await sb.from('consignment_sales_orders').delete().eq('doc_no', docNo); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
+    /* Re-roll the header through recomputeTotals so a matched sofa SET picks up
+       its MASTER combo cost (spread across the lines). No-op otherwise. */
+    await recomputeTotals(sb, docNo);
+  }
+
+  // Audit row — one CREATE entry.
+  const createFields: FieldChange[] = [];
+  const captureIfSet = (k: string, v: unknown) => {
+    if (v !== undefined && v !== null && v !== '') createFields.push({ field: k, to: v });
+  };
+  captureIfSet('debtorName', customerName);
+  captureIfSet('debtorCode', body.debtorCode);
+  captureIfSet('agent', body.agent);
+  captureIfSet('phone', body.phone);
+  captureIfSet('email', body.email);
+  captureIfSet('soDate', body.soDate);
+  captureIfSet('lineCount', items.length);
+  captureIfSet('localTotalCenti', total);
+  captureIfSet('paymentMethod', body.paymentMethod);
+  captureIfSet('depositCenti', body.depositCenti);
+  captureIfSet('internalExpectedDd', body.internalExpectedDd);
+  captureIfSet('customerSoNo', body.customerSoNo);
+  captureIfSet('customerPo', body.customerPo);
+  await recordSoAudit(sb, {
+    docNo,
+    action: 'CREATE',
+    actorId: user.id,
+    actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+    fieldChanges: createFields,
+    statusSnapshot: 'CONFIRMED',
+  });
+
+  return c.json({ docNo }, 201);
+});
+
+// Status transition with audit row.
+consignmentOrders.patch('/:docNo/status', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
+  let body: { status?: string; notes?: string };
+  try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  if (!body.status) return c.json({ error: 'status_required' }, 400);
+
+  const { data: prev } = await sb.from('consignment_sales_orders').select('status').eq('doc_no', docNo).maybeSingle();
+  const fromStatus = (prev as { status: string } | null)?.status ?? null;
+
+  /* Tier 2 downstream-lock — only the CANCELLED transition is gated. */
+  if (body.status === 'CANCELLED' && fromStatus !== 'CANCELLED') {
+    const childLock = await coHasDownstream(sb, docNo);
+    if (childLock) return c.json(childLock, 409);
+  }
+
+  const patch: Record<string, unknown> = { status: body.status, updated_at: new Date().toISOString() };
+  const { data, error } = await sb.from('consignment_sales_orders').update(patch)
+    .eq('doc_no', docNo).select('doc_no, status').single();
+  if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+
+  await recordSoAudit(sb, {
+    docNo,
+    action: 'UPDATE_STATUS',
+    actorId: user.id,
+    actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+    fieldChanges: [{ field: 'status', from: fromStatus, to: body.status }],
+    statusSnapshot: body.status,
+    note: body.notes ?? undefined,
+  });
+
+  return c.json({ salesOrder: data });
+});
+
+// ── GET /:docNo/audit-log — unified history feed (newest first). ──────
+consignmentOrders.get('/:docNo/audit-log', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo');
+  const { data, error } = await sb.from('mfg_so_audit_log')
+    .select('id, so_doc_no, action, actor_id, actor_name_snapshot, field_changes, status_snapshot, source, note, created_at')
+    .eq('so_doc_no', docNo)
+    .order('created_at', { ascending: false });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ entries: data ?? [] });
+});
+
+// POST — override the price on a single line item.
+consignmentOrders.post('/:docNo/items/:itemId/override', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId');
+  const user = c.get('user');
+  let body: { overridePriceSen?: number; reason?: string };
+  try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const newPrice = Number(body.overridePriceSen ?? 0);
+  if (!Number.isFinite(newPrice) || newPrice < 0) return c.json({ error: 'invalid_price' }, 400);
+
+  const { data: item } = await sb.from('consignment_sales_order_items')
+    .select('id, doc_no, item_code, unit_price_centi, qty, discount_centi')
+    .eq('id', itemId).maybeSingle();
+  if (!item) return c.json({ error: 'item_not_found' }, 404);
+  const i = item as { id: string; doc_no: string; item_code: string; unit_price_centi: number; qty: number; discount_centi: number };
+  if (i.doc_no !== docNo) return c.json({ error: 'item_doc_mismatch' }, 400);
+
+  const originalPriceSen = i.unit_price_centi;
+  const overridePriceSen = newPrice;
+
+  const newLineTotal = (i.qty * newPrice) - i.discount_centi;
+  const { data: costRow } = await sb.from('consignment_sales_order_items')
+    .select('line_cost_centi')
+    .eq('id', itemId)
+    .maybeSingle();
+  const currentLineCost = Number((costRow as { line_cost_centi?: number } | null)?.line_cost_centi ?? 0);
+  const { error } = await sb.from('consignment_sales_order_items').update({
+    unit_price_centi: newPrice,
+    total_centi: newLineTotal,
+    total_inc_centi: newLineTotal,
+    balance_centi: newLineTotal,
+    line_margin_centi: newLineTotal - currentLineCost,
+  }).eq('id', itemId);
+  if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  await recomputeTotals(sb, docNo);
+
+  await recordSoAudit(sb, {
+    docNo,
+    action: 'UPDATE_LINE',
+    actorId: user.id,
+    actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+    fieldChanges: [
+      { field: 'unitPriceCenti', from: originalPriceSen, to: overridePriceSen },
+    ],
+    note: (body.reason as string) || undefined,
+  });
+
+  return c.json({ ok: true, itemId, newPrice });
+});
+
+// ── PATCH header — edit debtor info, addresses, note, etc. ───────────
+consignmentOrders.patch('/:docNo', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
+
+  /* Phone is COMPULSORY — guard only when phone is present in the body. */
+  if (body.phone !== undefined) {
+    const patchPhone = typeof body.phone === 'string' ? body.phone.trim() : '';
+    if (!patchPhone) {
+      return c.json({ error: 'phone_required', reason: 'A phone number is required on every consignment order.' }, 400);
+    }
+  }
+
+  const map: Array<[string, string]> = [
+    ['debtorCode', 'debtor_code'], ['debtorName', 'debtor_name'], ['agent', 'agent'],
+    ['salesLocation', 'sales_location'], ['ref', 'ref'], ['poDocNo', 'po_doc_no'],
+    ['venue', 'venue'], ['venueId', 'venue_id'], ['branding', 'branding'], ['transferTo', 'transfer_to'],
+    ['address1', 'address1'], ['address2', 'address2'], ['address3', 'address3'],
+    ['address4', 'address4'], ['phone', 'phone'], ['note', 'note'],
+    ['remark2', 'remark2'], ['remark3', 'remark3'], ['remark4', 'remark4'],
+    ['soDate', 'so_date'], ['currency', 'currency'],
+    ['customerId', 'customer_id'], ['customerState', 'customer_state'],
+    ['customerPo', 'customer_po'], ['customerPoId', 'customer_po_id'],
+    ['customerPoDate', 'customer_po_date'], ['customerPoImageB64', 'customer_po_image_b64'],
+    ['customerSoNo', 'customer_so_no'],
+    ['hubId', 'hub_id'], ['hubName', 'hub_name'],
+    ['customerDeliveryDate', 'customer_delivery_date'],
+    ['internalExpectedDd', 'internal_expected_dd'],
+    ['linkedDoDocNo', 'linked_do_doc_no'],
+    ['shipToAddress', 'ship_to_address'], ['billToAddress', 'bill_to_address'],
+    ['installToAddress', 'install_to_address'],
+    ['email', 'email'], ['customerType', 'customer_type'],
+    ['salespersonId', 'salesperson_id'],
+    ['city', 'city'], ['postcode', 'postcode'], ['buildingType', 'building_type'],
+    ['emergencyContactName', 'emergency_contact_name'],
+    ['emergencyContactPhone', 'emergency_contact_phone'],
+    ['emergencyContactRelationship', 'emergency_contact_relationship'],
+    ['targetDate', 'target_date'],
+    ['paymentMethod', 'payment_method'],
+    ['installmentMonths', 'installment_months'],
+    ['merchantProvider', 'merchant_provider'],
+    ['approvalCode', 'approval_code'],
+    ['paymentDate', 'payment_date'],
+    ['depositCenti', 'deposit_centi'],
+    ['paidCenti', 'paid_centi'],
+  ];
+  const PHONE_FIELDS = new Set(['phone', 'emergencyContactPhone']);
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  for (const [from, to] of map) {
+    if (body[from] === undefined) continue;
+    if (PHONE_FIELDS.has(from) && typeof body[from] === 'string') {
+      const raw = body[from] as string;
+      updates[to] = normalizePhone(raw) ?? raw;
+    } else {
+      updates[to] = body[from];
+    }
+  }
+  /* When customerState changes, re-derive customer_country + sales_location. */
+  if (body['customerState'] !== undefined) {
+    updates['customer_country'] = await deriveCountryFromState(
+      sb,
+      body['customerState'] as string | null,
+    );
+    if (body['salesLocation'] === undefined) {
+      const derived = await deriveSalesLocationFromState(
+        sb,
+        body['customerState'] as string | null,
+      );
+      if (derived) updates['sales_location'] = derived;
+    }
+  }
+
+  if (Object.keys(updates).length === 1) return c.json({ ok: true, changed: 0 });
+
+  /* Processing Date set → every non-cancelled line must carry its category-
+     required variants. */
+  if (body['internalExpectedDd'] !== undefined && body['internalExpectedDd'] !== null && body['internalExpectedDd'] !== '') {
+    const { data: liveItems } = await sb
+      .from('consignment_sales_order_items')
+      .select('id, item_code, item_group, variants, cancelled')
+      .eq('doc_no', docNo);
+    const offenders = findIncompleteVariantLines(
+      ((liveItems ?? []) as Array<{ id: string; item_code: string; item_group: string; variants: Record<string, unknown> | null; cancelled: boolean }>)
+        .filter((it) => !it.cancelled)
+        .map((it) => ({ id: it.id, itemCode: it.item_code, group: it.item_group, variants: it.variants })),
+    );
+    if (offenders.length > 0) {
+      return c.json({
+        error: 'variants_incomplete',
+        message: 'Processing Date requires all category-mandatory variants on every line.',
+        offenders,
+      }, 409);
+    }
+  }
+
+  // Snapshot the row before update for the audit diff + the date / lock guards.
+  const beforeCols = map.map(([, snake]) => snake).concat(['status']).join(', ');
+  const { data: before } = await sb.from('consignment_sales_orders').select(beforeCols).eq('doc_no', docNo).maybeSingle();
+
+  /* Processing & Delivery Date may only be today or a future date, BUT an
+     already-past value the edit does NOT change is grandfathered through. */
+  {
+    const beforeRow = (before as unknown as Record<string, unknown> | null);
+    const todayMY = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+    const proc = body['internalExpectedDd'];
+    const deliv = body['customerDeliveryDate'];
+    const origProc = (beforeRow?.['internal_expected_dd'] as string | null) ?? null;
+    const origDeliv = (beforeRow?.['customer_delivery_date'] as string | null) ?? null;
+    if (typeof proc === 'string' && proc && proc < todayMY && proc !== origProc) {
+      return c.json({ error: 'processing_date_past', reason: 'Processing Date cannot be in the past — today or a future date only.' }, 400);
+    }
+    if (typeof deliv === 'string' && deliv && deliv < todayMY && deliv !== origDeliv) {
+      return c.json({ error: 'delivery_date_past', reason: 'Delivery Date cannot be in the past — today or a future date only.' }, 400);
+    }
+    const effProc  = typeof proc  === 'string' ? (proc  || null) : origProc;
+    const effDeliv = typeof deliv === 'string' ? (deliv || null) : origDeliv;
+    if (effProc && effDeliv && effProc > effDeliv) {
+      return c.json({ error: 'processing_after_delivery', reason: 'Processing Date cannot be later than the Delivery Date.' }, 400);
+    }
+  }
+
+  /* Partial header lock. Once a non-cancelled DO / SI exists, the IDENTITY +
+     VALUE fields downstream documents snapshot are frozen. Payment / remark /
+     scheduling fields stay editable. */
+  if (before) {
+    const beforeRow = before as unknown as Record<string, unknown>;
+    const changedLocked = [...CO_IDENTITY_LOCK_COLS].filter(
+      (col) => col in updates && norm(updates[col]) !== norm(beforeRow[col]),
+    );
+    if (changedLocked.length > 0) {
+      const lock = await coHasDownstream(sb, docNo);
+      if (lock) {
+        return c.json({
+          error: 'co_identity_locked',
+          message: 'Consignment Order has a Delivery Order / Sales Invoice — customer, branding, address, reference and value fields are locked. Payment and remarks can still be edited.',
+          lockedFields: changedLocked,
+        }, 409);
+      }
+    }
+  }
+
+  const { data, error } = await sb.from('consignment_sales_orders').update(updates).eq('doc_no', docNo).select('doc_no').maybeSingle();
+  if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  if (!data) return c.json({ error: 'not_found' }, 404);
+
+  /* Master-follower cascade. When the header's customer_delivery_date changes,
+     every non-overridden line picks up the new date. Best-effort. */
+  if (body['customerDeliveryDate'] !== undefined) {
+    const newDate = body['customerDeliveryDate'] as string | null;
+    await sb.from('consignment_sales_order_items')
+      .update({ line_delivery_date: newDate })
+      .eq('doc_no', docNo)
+      .eq('line_delivery_date_overridden', false);
+  }
+
+  /* Audit log row capturing field-level from→to diff. */
+  if (before) {
+    const beforeRow = before as unknown as Record<string, unknown>;
+    const fieldChanges = diffFields(beforeRow, body, map);
+    if (fieldChanges.length > 0) {
+      await recordSoAudit(sb, {
+        docNo,
+        action: 'UPDATE_DETAILS',
+        actorId: user.id,
+        actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+        fieldChanges,
+        statusSnapshot: (beforeRow as { status?: string }).status ?? null,
+      });
+    }
+  }
+
+  return c.json({ ok: true, docNo });
+});
+
+// ── Item CRUD ─────────────────────────────────────────────────────────
+//
+// Each mutation recomputes the header totals + category breakdown so the list
+// view stays accurate without a separate refresh step.
+async function recomputeTotals(sb: any, docNo: string) {
+  const { data: items } = await sb.from('consignment_sales_order_items')
+    .select('id, item_code, item_group, variants, qty, total_centi, line_cost_centi')
+    .eq('doc_no', docNo).eq('cancelled', false);
+  type Row = { id: string; item_code: string; item_group: string; variants: Record<string, unknown> | null; qty: number; total_centi: number; line_cost_centi: number };
+  const rows = (items ?? []) as Row[];
+
+  /* ── Master sofa-combo COST spread ─────────────────────────────────────────
+     A sofa is a set of per-module lines. When those lines (same base model)
+     match a MASTER combo, the set's COST = the combo price, spread across the
+     matched lines off the stored per-line line_cost_centi. Idempotent. */
+  const sofaRows = rows.filter((r) => (r.item_group ?? '').toLowerCase() === 'sofa');
+  if (sofaRows.length > 0) {
+    const combos = await loadActiveSofaCombos(sb); // master scope only
+    if (combos.length > 0) {
+      const fabricCodes = [...new Set(sofaRows.map((r) => String((r.variants ?? {} as Record<string, unknown>).fabricCode ?? '')).filter(Boolean))];
+      const tierByFabric = new Map<string, SofaPriceTier>();
+      if (fabricCodes.length > 0) {
+        const { data: fabs } = await sb.from('fabric_trackings').select('fabric_code, price_tier, sofa_price_tier').in('fabric_code', fabricCodes);
+        for (const f of (fabs ?? []) as Array<{ fabric_code: string; price_tier: SofaPriceTier | null; sofa_price_tier: SofaPriceTier | null }>) {
+          tierByFabric.set(f.fabric_code, (f.sofa_price_tier ?? f.price_tier ?? 'PRICE_2'));
+        }
+      }
+      const groups = new Map<string, Row[]>();
+      for (const r of sofaRows) {
+        const { baseModel, sizeCode } = splitSofaCode(r.item_code);
+        /* Audit 2026-06-11 I-1 — the old `sizeCode.includes('-')` gate was a
+           legacy dash-vocabulary sniff that skipped EVERY canonical parens
+           module (`1A(LHF)`) AND whole-unit codes (1S/2S/3S) — dead code since
+           the 2026-06-04 vocabulary unification. pickComboMatch itself rejects
+           non-matching module sets; we only skip codes with no module token. */
+        if (!sizeCode) continue; // bare model code → nothing to match
+        const key = baseModel.toUpperCase();
+        const arr = groups.get(key) ?? [];
+        arr.push(r); groups.set(key, arr);
+      }
+      for (const [bm, members] of groups) {
+        const tierOf = (m: Row) => tierByFabric.get(String((m.variants ?? {} as Record<string, unknown>).fabricCode ?? '')) ?? 'PRICE_2';
+        const tiers = new Set(members.map(tierOf));
+        if (tiers.size !== 1) continue;
+        const tier = [...tiers][0]!;
+        const heights = new Set(members.map((m) => sofaHeightKey(m.variants)));
+        if (heights.size !== 1) continue;
+        const height = [...heights][0]!;
+        if (!height) continue;
+        /* Audit 2026-06-11 I2 — same-base-model combos ONLY (owner rule: no
+           cross-model fallback; module codes are a shared vocabulary, so the
+           old `named.length > 0 ? named : combos` fallback let another Model's
+           combo price leak in as this set's cost). */
+        const pool = combos.filter((cmb) => (cmb.baseModel ?? '').toUpperCase() === bm);
+        if (pool.length === 0) continue; // no combo named for this Model → no combo
+        const match = pickComboMatch(
+          { baseModel: '', modules: members.map((m) => splitSofaCode(m.item_code).sizeCode), customerId: null, tier, height },
+          pool,
+        );
+        if (!match) continue;
+        const matched = match.matchedIndices.map((i) => members[i]).filter((m): m is Row => !!m);
+        if (matched.length === 0) continue;
+        /* Audit 2026-06-11 I1 — combo price is ONE set; line_cost_centi is a
+           LINE total. Uniform qty q → q sets → comboTotal×q; mixed qtys →
+           SKIP (keep per-module costs, never under-book). */
+        const qtySet = new Set(matched.map((m) => Math.max(1, m.qty || 1)));
+        if (qtySet.size !== 1) continue;
+        const uniformQty = [...qtySet][0]!;
+        const comboTotal = match.comboPriceCenti * uniformQty;
+        if (comboTotal <= 0) continue;
+        const spread = spreadComboTotal(matched.map((m) => m.line_cost_centi || 0), comboTotal);
+        for (let i = 0; i < matched.length; i++) {
+          const m = matched[i]!; const newLineCost = spread[i] ?? 0; const q = Math.max(1, m.qty || 1);
+          m.line_cost_centi = newLineCost; // mutate in place so the rollup below sees it
+          await sb.from('consignment_sales_order_items').update({
+            line_cost_centi:   newLineCost,
+            unit_cost_centi:   Math.round(newLineCost / q),
+            line_margin_centi: (m.total_centi || 0) - newLineCost,
+          }).eq('id', m.id);
+        }
+      }
+    }
+  }
+
+  let mattressSofa = 0, bedframe = 0, accessories = 0, others = 0, total = 0, totalCost = 0;
+  let mattressSofaCost = 0, bedframeCost = 0, accessoriesCost = 0, othersCost = 0;
+  for (const it of (items ?? []) as Array<{ item_group: string; total_centi: number; line_cost_centi: number }>) {
+    const lineTotal = it.total_centi || 0;
+    const lineCost  = it.line_cost_centi || 0;
+    total += lineTotal;
+    totalCost += lineCost;
+    const g = (it.item_group ?? '').toLowerCase();
+    if (g.includes('mattress') || g.includes('sofa')) {
+      mattressSofa += lineTotal;
+      mattressSofaCost += lineCost;
+    } else if (g.includes('bedframe')) {
+      bedframe += lineTotal;
+      bedframeCost += lineCost;
+    } else if (g.includes('accessor')) {
+      accessories += lineTotal;
+      accessoriesCost += lineCost;
+    } else {
+      others += lineTotal;
+      othersCost += lineCost;
+    }
+  }
+  const grandMargin = total - totalCost;
+  await sb.from('consignment_sales_orders').update({
+    mattress_sofa_centi: mattressSofa,
+    bedframe_centi: bedframe,
+    accessories_centi: accessories,
+    others_centi: others,
+    mattress_sofa_cost_centi: mattressSofaCost,
+    bedframe_cost_centi:      bedframeCost,
+    accessories_cost_centi:   accessoriesCost,
+    others_cost_centi:        othersCost,
+    local_total_centi: total,
+    balance_centi: total,
+    total_cost_centi: totalCost,
+    total_revenue_centi: total,
+    total_margin_centi: grandMargin,
+    margin_pct_basis: total > 0 ? Math.round((grandMargin / total) * 10000) : 0,
+    line_count: (items ?? []).length,
+    updated_at: new Date().toISOString(),
+  }).eq('doc_no', docNo);
+}
+
+consignmentOrders.post('/:docNo/items', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
+  let it: Record<string, unknown>;
+  try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  if (!it.itemCode) return c.json({ error: 'item_code_required' }, 400);
+
+  /* itemCode catalog guard. */
+  {
+    const codeCheck = await validateItemCodes(sb, [it.itemCode as string]);
+    if (!codeCheck.ok) return c.json(unknownItemCodeResponse(codeCheck.unknown), 409);
+  }
+
+  /* Tier 2 downstream-lock — line-add is blocked once a DO / SI exists. */
+  const childLock = await coHasDownstream(sb, docNo);
+  if (childLock) return c.json(childLock, 409);
+
+  const { data: header } = await sb.from('consignment_sales_orders').select('debtor_code, debtor_name, agent, branding, venue, customer_delivery_date, customer_state').eq('doc_no', docNo).maybeSingle();
+  if (!header) return c.json({ error: 'not_found' }, 404);
+
+  const qty = Number(it.qty ?? 1);
+  const discount = Number(it.discountCenti ?? 0);
+  const itemCodeStr = String(it.itemCode ?? '');
+  const variantsObj = (it.variants as MfgItemForRecompute['variants']) ?? null;
+  /* allowed_options check on add-item. */
+  {
+    const { product, model } = await loadProductAndModel(sb, itemCodeStr);
+    const aoErr = checkAllowedOptions(
+      product,
+      model,
+      variantsObj as Parameters<typeof checkAllowedOptions>[2],
+    );
+    if (aoErr) return c.json({ ...aoErr, itemCode: itemCodeStr }, 400);
+  }
+  const [cachedConfig, productLite, fabricLite, sofaCombosLite, sellingTiersLite, fabricAddonConfigLite, specialAddonsLite, modelOverridesLite] = await Promise.all([
+    loadMaintenanceConfig(sb),
+    loadProductByCode(sb, itemCodeStr),
+    loadFabricByCode(sb, variantsObj?.fabricCode ?? null),
+    loadActiveSofaCombos(sb),
+    loadFabricSellingTiers(sb, (variantsObj as { fabricId?: string } | null)?.fabricId ?? null),
+    loadFabricTierAddonConfig(sb),
+    loadSpecialAddons(sb),
+    loadModelFabricTierOverrides(sb),
+  ]);
+  // Audit 2026-06-11 C2 — module COST rows so a build's cost = Σ module costs.
+  const [sofaModulePricesLite, sofaModuleCostRowsLite] = productLite?.category === 'SOFA'
+    ? await Promise.all([
+        loadModelSofaModulePrices(
+          sb,
+          productLite.base_model,
+          String((variantsObj as { depth?: unknown } | null)?.depth ?? '24'),
+        ),
+        loadModelSofaModuleCostRows(sb, productLite.base_model),
+      ])
+    : [null, null];
+  const recomputed = recomputeFromSnapshot(
+    {
+      itemCode:       itemCodeStr,
+      itemGroup:      String(it.itemGroup ?? 'others'),
+      qty,
+      unitPriceCenti: Number(it.unitPriceCenti ?? 0),
+      variants:       variantsObj,
+    },
+    productLite,
+    fabricLite,
+    cachedConfig,
+    sofaCombosLite,
+    sofaModulePricesLite,
+    sellingTiersLite,
+    fabricAddonConfigLite,
+    null,                // pwpBaseSen
+    null,                // pwpSofaComboIds
+    specialAddonsLite,
+    sofaModuleCostRowsLite,
+    modelOverridesLite,  // migration 0172 — per-Model Δ
+  );
+  /* Backend authors the selling price; no drift rejection (no POS path). */
+  const unit = recomputed.unit_price_sen;
+  const lineTotal = (qty * unit) - discount;
+  const unitCost = recomputed.unit_cost_sen > 0
+    ? recomputed.unit_cost_sen
+    : await snapshotUnitCostSen(sb, itemCodeStr, Number(it.unitCostCenti ?? 0));
+  const lineCost = unitCost * qty;
+  const hasExplicitLineDate = it.lineDeliveryDate !== undefined && it.lineDeliveryDate !== null;
+  const lineDeliveryDate = hasExplicitLineDate
+    ? (it.lineDeliveryDate as string | null)
+    : (header.customer_delivery_date as string | null) ?? null;
+  const lineDeliveryDateOverridden = hasExplicitLineDate
+    ? (it.lineDeliveryDateOverridden === undefined ? true : Boolean(it.lineDeliveryDateOverridden))
+    : Boolean(it.lineDeliveryDateOverridden ?? false);
+  const row = {
+    doc_no: docNo,
+    line_date: (it.lineDate as string) ?? new Date().toISOString().slice(0, 10),
+    debtor_code: header.debtor_code,
+    debtor_name: header.debtor_name,
+    agent: header.agent,
+    item_group: it.itemGroup ?? 'others',
+    item_code: it.itemCode,
+    description: (it.description as string) ?? null,
+    description2: buildVariantSummary(String(it.itemGroup ?? ''), (it.variants as Record<string, unknown> | null) ?? null) || null,
+    uom: (it.uom as string) ?? 'UNIT',
+    qty,
+    unit_price_centi: unit,
+    discount_centi: discount,
+    total_centi: lineTotal,
+    total_inc_centi: lineTotal,
+    balance_centi: lineTotal,
+    venue: header.venue,
+    branding: header.branding,
+    variants: (it.variants as unknown) ?? null,
+    unit_cost_centi: unitCost,
+    line_cost_centi: lineCost,
+    line_margin_centi: lineTotal - lineCost,
+    divan_price_sen:         recomputed.divan_price_sen,
+    leg_price_sen:           recomputed.leg_price_sen,
+    special_order_price_sen: recomputed.special_order_sen,
+    custom_specials:         recomputed.custom_specials ?? null,
+    line_delivery_date: lineDeliveryDate,
+    line_delivery_date_overridden: lineDeliveryDateOverridden,
+  };
+  const { data, error } = await sb.from('consignment_sales_order_items').insert(row).select('*').single();
+  if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
+  await recomputeTotals(sb, docNo);
+
+  await recordSoAudit(sb, {
+    docNo,
+    action: 'ADD_LINE',
+    actorId: user.id,
+    actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+    fieldChanges: [
+      { field: 'itemCode', to: row.item_code },
+      { field: 'qty', to: row.qty },
+      { field: 'unitPriceCenti', to: row.unit_price_centi },
+      { field: 'totalCenti', to: row.total_centi },
+    ],
+  });
+
+  return c.json({ item: data }, 201);
+});
+
+consignmentOrders.patch('/:docNo/items/:itemId', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+  let it: Record<string, unknown>;
+  try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
+
+  /* itemCode catalog guard (only when caller is changing it). */
+  if (it.itemCode !== undefined) {
+    const codeCheck = await validateItemCodes(sb, [it.itemCode as string]);
+    if (!codeCheck.ok) return c.json(unknownItemCodeResponse(codeCheck.unknown), 409);
+  }
+
+  /* Tier 2 downstream-lock — line-edit is blocked once a DO / SI exists. */
+  const childLock = await coHasDownstream(sb, docNo);
+  if (childLock) return c.json(childLock, 409);
+
+  const { data: prev } = await sb.from('consignment_sales_order_items')
+    .select('qty, unit_price_centi, discount_centi, unit_cost_centi, item_code, item_group, description, description2, uom, variants, remark, cancelled')
+    .eq('id', itemId).maybeSingle();
+  if (!prev) return c.json({ error: 'not_found' }, 404);
+  const qty = it.qty !== undefined ? Number(it.qty) : prev.qty;
+  const clientUnit = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : prev.unit_price_centi;
+  const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : prev.discount_centi;
+
+  /* Server-side recompute on PATCH when the caller touches variants OR
+     unitPriceCenti OR itemCode. */
+  let recomputedPatch: RecomputedLine | null = null;
+  const variantsAfter = it.variants !== undefined
+    ? (it.variants as MfgItemForRecompute['variants'])
+    : ((prev as { variants?: MfgItemForRecompute['variants'] }).variants ?? null);
+  const itemCodeAfter = it.itemCode !== undefined ? String(it.itemCode) : prev.item_code;
+  const itemGroupAfter = it.itemGroup !== undefined ? String(it.itemGroup) : prev.item_group;
+  const shouldRecompute = it.variants !== undefined || it.unitPriceCenti !== undefined || it.itemCode !== undefined;
+
+  if (it.variants !== undefined || it.itemCode !== undefined) {
+    const { product, model } = await loadProductAndModel(sb, itemCodeAfter);
+    const aoErr = checkAllowedOptions(
+      product,
+      model,
+      variantsAfter as Parameters<typeof checkAllowedOptions>[2],
+    );
+    if (aoErr) return c.json({ ...aoErr, itemCode: itemCodeAfter }, 400);
+  }
+  if (shouldRecompute && itemCodeAfter) {
+    const [cfg, prodLite, fabLite, sofaCombosPatch, sellingTiersPatch, fabricAddonConfigPatch, specialAddonsPatch, modelOverridesPatch] = await Promise.all([
+      loadMaintenanceConfig(sb),
+      loadProductByCode(sb, itemCodeAfter),
+      loadFabricByCode(sb, variantsAfter?.fabricCode ?? null),
+      loadActiveSofaCombos(sb),
+      loadFabricSellingTiers(sb, (variantsAfter as { fabricId?: string } | null)?.fabricId ?? null),
+      loadFabricTierAddonConfig(sb),
+      loadSpecialAddons(sb),
+      loadModelFabricTierOverrides(sb),
+    ]);
+    // Audit 2026-06-11 C2 — module COST rows so a build's cost = Σ module costs.
+    const [sofaModulePricesPatch, sofaModuleCostRowsPatch] = prodLite?.category === 'SOFA'
+      ? await Promise.all([
+          loadModelSofaModulePrices(
+            sb,
+            prodLite.base_model,
+            String((variantsAfter as { depth?: unknown } | null)?.depth ?? '24'),
+          ),
+          loadModelSofaModuleCostRows(sb, prodLite.base_model),
+        ])
+      : [null, null];
+    recomputedPatch = recomputeFromSnapshot(
+      {
+        itemCode:       itemCodeAfter,
+        itemGroup:      itemGroupAfter,
+        qty,
+        unitPriceCenti: clientUnit,
+        variants:       variantsAfter,
+      },
+      prodLite,
+      fabLite,
+      cfg,
+      sofaCombosPatch,
+      sofaModulePricesPatch,
+      sellingTiersPatch,
+      fabricAddonConfigPatch,
+      null,                // pwpBaseSen
+      null,                // pwpSofaComboIds
+      specialAddonsPatch,
+      sofaModuleCostRowsPatch,
+      modelOverridesPatch, // migration 0172 — per-Model Δ
+    );
+  }
+  /* Carry the bound price-list figure out when a recompute ran. Backend drift
+     saves silently (no POS path). */
+  const unit = recomputedPatch ? recomputedPatch.unit_price_sen : clientUnit;
+  let unitCost: number;
+  const explicitCost = it.unitCostCenti !== undefined ? Number(it.unitCostCenti) : 0;
+  const itemCodeChanged = it.itemCode !== undefined && it.itemCode !== prev.item_code;
+  if (explicitCost > 0) {
+    unitCost = explicitCost;
+  } else if (recomputedPatch && recomputedPatch.unit_cost_sen > 0) {
+    unitCost = recomputedPatch.unit_cost_sen;
+  } else if (itemCodeChanged) {
+    unitCost = await snapshotUnitCostSen(sb, String(it.itemCode ?? ''), 0);
+  } else {
+    unitCost = prev.unit_cost_centi;
+  }
+  const lineTotal = (qty * unit) - discount;
+  const lineCost = unitCost * qty;
+
+  const updates: Record<string, unknown> = {
+    qty, unit_price_centi: unit, discount_centi: discount, unit_cost_centi: unitCost,
+    total_centi: lineTotal, total_inc_centi: lineTotal, balance_centi: lineTotal,
+    line_cost_centi: lineCost, line_margin_centi: lineTotal - lineCost,
+  };
+  if (recomputedPatch) {
+    updates.divan_price_sen         = recomputedPatch.divan_price_sen;
+    updates.leg_price_sen           = recomputedPatch.leg_price_sen;
+    updates.special_order_price_sen = recomputedPatch.special_order_sen;
+    updates.custom_specials         = recomputedPatch.custom_specials ?? null;
+  }
+  for (const [from, to] of [
+    ['itemCode', 'item_code'], ['itemGroup', 'item_group'], ['description', 'description'],
+    ['description2', 'description2'], ['uom', 'uom'], ['variants', 'variants'],
+    ['remark', 'remark'], ['cancelled', 'cancelled'],
+  ] as const) {
+    if (it[from] !== undefined) updates[to] = it[from];
+  }
+  /* "Description 2" is ALWAYS the server-generated variant summary. */
+  {
+    const effGroup = (it.itemGroup ?? prev.item_group) as string | null | undefined;
+    const effVariants = (it.variants ?? prev.variants) as Record<string, unknown> | null | undefined;
+    updates['description2'] = buildVariantSummary(String(effGroup ?? ''), effVariants ?? null) || null;
+  }
+
+  if (it.lineDeliveryDate !== undefined) {
+    updates['line_delivery_date'] = it.lineDeliveryDate as string | null;
+    updates['line_delivery_date_overridden'] = true;
+  }
+  if (it.lineDeliveryDateOverridden !== undefined) {
+    updates['line_delivery_date_overridden'] = Boolean(it.lineDeliveryDateOverridden);
+  }
+
+  const { error } = await sb.from('consignment_sales_order_items').update(updates).eq('id', itemId);
+  if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  await recomputeTotals(sb, docNo);
+
+  const fieldChanges: FieldChange[] = [];
+  const cmp = (field: string, fromVal: unknown, toVal: unknown) => {
+    const a = fromVal == null ? '' : String(fromVal);
+    const b = toVal == null ? '' : String(toVal);
+    if (a !== b) fieldChanges.push({ field, from: fromVal ?? null, to: toVal ?? null });
+  };
+  cmp('qty', prev.qty, qty);
+  cmp('unitPriceCenti', prev.unit_price_centi, unit);
+  cmp('discountCenti', prev.discount_centi, discount);
+  cmp('unitCostCenti', prev.unit_cost_centi, unitCost);
+  for (const [from, to] of [
+    ['itemCode', 'item_code'], ['itemGroup', 'item_group'], ['description', 'description'],
+    ['description2', 'description2'], ['uom', 'uom'], ['remark', 'remark'], ['cancelled', 'cancelled'],
+  ] as const) {
+    if (it[from] !== undefined) cmp(from, (prev as Record<string, unknown>)[to], it[from]);
+  }
+  if (fieldChanges.length > 0) {
+    fieldChanges.unshift({ field: 'itemCode', to: prev.item_code });
+    await recordSoAudit(sb, {
+      docNo,
+      action: 'UPDATE_LINE',
+      actorId: user.id,
+      actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+      fieldChanges,
+    });
+  }
+
+  return c.json({ ok: true });
+});
+
+consignmentOrders.delete('/:docNo/items/:itemId', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+
+  /* Tier 2 downstream-lock — line-delete is blocked once a DO / SI exists. */
+  const childLock = await coHasDownstream(sb, docNo);
+  if (childLock) return c.json(childLock, 409);
+
+  const { data: prev } = await sb.from('consignment_sales_order_items')
+    .select('item_code, qty, unit_price_centi, total_centi, photo_urls')
+    .eq('id', itemId).maybeSingle();
+  const prevTyped = prev as
+    | { item_code: string; qty: number; unit_price_centi: number; total_centi: number; photo_urls: string[] | null }
+    | null;
+
+  const { error } = await sb.from('consignment_sales_order_items').delete().eq('id', itemId);
+  if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  await recomputeTotals(sb, docNo);
+
+  // Orphan photo cleanup — best-effort.
+  let photosCleaned = 0;
+  const photoKeys = prevTyped?.photo_urls ?? [];
+  if (photoKeys.length > 0 && c.env.SO_ITEM_PHOTOS) {
+    for (const key of photoKeys) {
+      try {
+        await c.env.SO_ITEM_PHOTOS.delete(key);
+        photosCleaned += 1;
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[co-item-photo] orphan cleanup failed for', key, e);
+      }
+    }
+  }
+
+  if (prevTyped) {
+    await recordSoAudit(sb, {
+      docNo,
+      action: 'DELETE_LINE',
+      actorId: user.id,
+      actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+      fieldChanges: [
+        { field: 'itemCode', from: prevTyped.item_code },
+        { field: 'qty', from: prevTyped.qty },
+        { field: 'unitPriceCenti', from: prevTyped.unit_price_centi },
+        { field: 'totalCenti', from: prevTyped.total_centi },
+        ...(photoKeys.length > 0
+          ? [{ field: 'photosCleaned', from: photoKeys.length, to: photosCleaned } satisfies FieldChange]
+          : []),
+      ],
+    });
+  }
+
+  return c.body(null, 204);
+});
+
+// ── Per-line photos (R2-backed photo array on every CO item) ──────────
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // 10 MB
+
+const extFromMime = (mime: string): string => {
+  const m = mime.toLowerCase();
+  if (m === 'image/jpeg' || m === 'image/jpg') return 'jpg';
+  if (m === 'image/png')                       return 'png';
+  if (m === 'image/webp')                      return 'webp';
+  if (m === 'image/gif')                       return 'gif';
+  if (m === 'image/heic')                      return 'heic';
+  if (m === 'image/heif')                      return 'heif';
+  if (m === 'image/avif')                      return 'avif';
+  if (m.startsWith('image/'))                  return 'bin';
+  return '';
+};
+
+consignmentOrders.post('/:docNo/items/:itemId/photos', async (c) => {
+  const sb = c.get('supabase');
+  const docNo = c.req.param('docNo');
+  const itemId = c.req.param('itemId');
+  const user = c.get('user');
+
+  if (!c.env.SO_ITEM_PHOTOS) {
+    return c.json({ error: 'photo_bucket_not_configured' }, 500);
+  }
+
+  const { data: item, error: itemErr } = await sb
+    .from('consignment_sales_order_items')
+    .select('id, doc_no, item_code, photo_urls')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (itemErr) return c.json({ error: 'item_lookup_failed', reason: itemErr.message }, 500);
+  if (!item) return c.json({ error: 'item_not_found' }, 404);
+  const i = item as { id: string; doc_no: string; item_code: string; photo_urls: string[] | null };
+  if (i.doc_no !== docNo) return c.json({ error: 'item_doc_mismatch' }, 400);
+
+  let form: Record<string, unknown>;
+  try {
+    form = await c.req.parseBody();
+  } catch (e) {
+    return c.json({ error: 'invalid_multipart', reason: e instanceof Error ? e.message : String(e) }, 400);
+  }
+  const file = form.file as File | undefined;
+  if (!file || typeof file === 'string') return c.json({ error: 'file_field_required' }, 400);
+
+  if (!file.type || !file.type.toLowerCase().startsWith('image/')) {
+    return c.json({ error: 'invalid_mime', got: file.type || '(none)' }, 400);
+  }
+  if (file.size > MAX_PHOTO_BYTES) {
+    return c.json({ error: 'file_too_large', maxBytes: MAX_PHOTO_BYTES, got: file.size }, 400);
+  }
+
+  const photoId = crypto.randomUUID();
+  const ext = extFromMime(file.type) || 'bin';
+  const photoKey = `co-items/${docNo}/${itemId}/${photoId}.${ext}`;
+
+  try {
+    await c.env.SO_ITEM_PHOTOS.put(photoKey, file.stream(), {
+      httpMetadata: { contentType: file.type },
+      customMetadata: {
+        docNo,
+        itemId,
+        itemCode: i.item_code,
+        uploadedBy: user.id,
+      },
+    });
+  } catch (e) {
+    return c.json({ error: 'r2_put_failed', reason: e instanceof Error ? e.message : String(e) }, 500);
+  }
+
+  const nextKeys = [...(i.photo_urls ?? []), photoKey];
+  const { error: updErr } = await sb
+    .from('consignment_sales_order_items')
+    .update({ photo_urls: nextKeys })
+    .eq('id', itemId);
+  if (updErr) {
+    await c.env.SO_ITEM_PHOTOS.delete(photoKey).catch(() => {});
+    return c.json({ error: 'db_update_failed', reason: updErr.message }, 500);
+  }
+
+  await recordSoAudit(sb, {
+    docNo,
+    action: 'UPDATE_LINE',
+    actorId: user.id,
+    actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+    fieldChanges: [
+      { field: 'itemCode', to: i.item_code },
+      { field: 'photoAdded', to: photoKey },
+    ],
+  });
+
+  try {
+    const bindings = soItemPhotoBindings(c.env);
+    const { signedUrl, expiresAt } = await signSoItemPhotoUrl(bindings, photoKey);
+    return c.json({ photoKey, photoUrl: signedUrl, expiresAt }, 201);
+  } catch (e) {
+    const photoUrl = `/consignment-orders/${docNo}/items/${itemId}/photos/${encodeURIComponent(photoKey)}`;
+    // eslint-disable-next-line no-console
+    console.warn('[co-item-photo] signing failed, falling back to proxy:', e);
+    return c.json({ photoKey, photoUrl }, 201);
+  }
+});
+
+// Refresh a signed GET URL for an existing key.
+consignmentOrders.get('/:docNo/items/:itemId/photos/:photoKey/signed', async (c) => {
+  const sb = c.get('supabase');
+  const docNo = c.req.param('docNo');
+  const itemId = c.req.param('itemId');
+  const photoKey = decodeURIComponent(c.req.param('photoKey'));
+
+  const { data: item } = await sb
+    .from('consignment_sales_order_items')
+    .select('doc_no, photo_urls')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (!item) return c.json({ error: 'item_not_found' }, 404);
+  const i = item as { doc_no: string; photo_urls: string[] | null };
+  if (i.doc_no !== docNo) return c.json({ error: 'item_doc_mismatch' }, 400);
+  if (!(i.photo_urls ?? []).includes(photoKey)) {
+    return c.json({ error: 'photo_not_in_item' }, 404);
+  }
+
+  try {
+    const bindings = soItemPhotoBindings(c.env);
+    const { signedUrl, expiresAt } = await signSoItemPhotoUrl(bindings, photoKey);
+    return c.json({ signedUrl, expiresAt });
+  } catch (e) {
+    return c.json({ error: 'signing_failed', reason: e instanceof Error ? e.message : String(e) }, 500);
+  }
+});
+
+// Proxy GET (fallback for clients holding proxy URLs).
+consignmentOrders.get('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
+  const sb = c.get('supabase');
+  const docNo = c.req.param('docNo');
+  const itemId = c.req.param('itemId');
+  const photoKey = decodeURIComponent(c.req.param('photoKey'));
+
+  if (!c.env.SO_ITEM_PHOTOS) {
+    return c.json({ error: 'photo_bucket_not_configured' }, 500);
+  }
+
+  const { data: item } = await sb
+    .from('consignment_sales_order_items')
+    .select('doc_no, photo_urls')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (!item) return c.json({ error: 'item_not_found' }, 404);
+  const i = item as { doc_no: string; photo_urls: string[] | null };
+  if (i.doc_no !== docNo) return c.json({ error: 'item_doc_mismatch' }, 400);
+  if (!(i.photo_urls ?? []).includes(photoKey)) {
+    return c.json({ error: 'photo_not_in_item' }, 404);
+  }
+
+  const obj = await c.env.SO_ITEM_PHOTOS.get(photoKey);
+  if (!obj) return c.json({ error: 'photo_not_found_in_r2' }, 404);
+
+  const contentType =
+    obj.httpMetadata?.contentType ?? 'application/octet-stream';
+  return new Response(obj.body, {
+    headers: {
+      'content-type': contentType,
+      'cache-control': 'private, max-age=3600',
+    },
+  });
+});
+
+consignmentOrders.delete('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
+  const sb = c.get('supabase');
+  const docNo = c.req.param('docNo');
+  const itemId = c.req.param('itemId');
+  const photoKey = decodeURIComponent(c.req.param('photoKey'));
+  const user = c.get('user');
+
+  if (!c.env.SO_ITEM_PHOTOS) {
+    return c.json({ error: 'photo_bucket_not_configured' }, 500);
+  }
+
+  const { data: item } = await sb
+    .from('consignment_sales_order_items')
+    .select('doc_no, item_code, photo_urls')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (!item) return c.json({ error: 'item_not_found' }, 404);
+  const i = item as { doc_no: string; item_code: string; photo_urls: string[] | null };
+  if (i.doc_no !== docNo) return c.json({ error: 'item_doc_mismatch' }, 400);
+  const existing = i.photo_urls ?? [];
+  if (!existing.includes(photoKey)) {
+    return c.json({ error: 'photo_not_in_item' }, 404);
+  }
+
+  const nextKeys = existing.filter((k) => k !== photoKey);
+  const { error: updErr } = await sb
+    .from('consignment_sales_order_items')
+    .update({ photo_urls: nextKeys })
+    .eq('id', itemId);
+  if (updErr) return c.json({ error: 'db_update_failed', reason: updErr.message }, 500);
+
+  await c.env.SO_ITEM_PHOTOS.delete(photoKey).catch(() => {});
+
+  await recordSoAudit(sb, {
+    docNo,
+    action: 'UPDATE_LINE',
+    actorId: user.id,
+    actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+    fieldChanges: [
+      { field: 'itemCode', to: i.item_code },
+      { field: 'photoRemoved', from: photoKey, to: null },
+    ],
+  });
+
+  return c.json({ ok: true });
+});
+
+// ── Payments — transaction ledger per CO ──────────────────────────────
+const PAYMENT_COLS =
+  'id, so_doc_no, paid_at, method, merchant_provider, installment_months, ' +
+  'online_type, approval_code, amount_centi, account_sheet, collected_by, note, ' +
+  'created_at, created_by';
+
+consignmentOrders.get('/:docNo/payments', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo');
+  const { data, error } = await sb
+    .from('consignment_sales_order_payments')
+    .select(`${PAYMENT_COLS}, staff:collected_by ( name )`)
+    .eq('so_doc_no', docNo)
+    .order('paid_at', { ascending: false })
+    .order('created_at', { ascending: false });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  const payments = (data ?? []).map((r: unknown) => {
+    const row = r as Record<string, unknown> & { staff: { name: string } | null };
+    const { staff, ...rest } = row;
+    return { ...rest, collected_by_name: staff?.name ?? null };
+  });
+  return c.json({ payments });
+});
+
+const paymentCreateSchema = z.object({
+  paidAt:             z.string().min(1),
+  /* 2026-06-06 payment-method unify — 'installment' is first-class L1. */
+  method:             z.enum(['merchant', 'transfer', 'cash', 'installment']),
+  merchantProvider:   z.string().trim().min(1).optional().nullable(),
+  installmentMonths:  z.number().int().min(0).max(60).optional().nullable(),
+  onlineType:         z.string().trim().min(1).optional().nullable(),
+  approvalCode:       z.string().optional().nullable(),
+  amountCenti:        z.number().int().nonnegative(),
+  accountSheet:       z.string().optional().nullable(),
+  collectedBy:        z.string().uuid().optional().nullable(),
+  note:               z.string().optional().nullable(),
+});
+
+consignmentOrders.post('/:docNo/payments', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
+
+  const { data: so } = await sb.from('consignment_sales_orders').select('doc_no').eq('doc_no', docNo).maybeSingle();
+  if (!so) return c.json({ error: 'sales_order_not_found' }, 404);
+
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = paymentCreateSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400);
+  const p = parsed.data;
+
+  const merchantLike      = p.method === 'merchant' || p.method === 'installment';
+  const merchantProvider  = merchantLike ? (p.merchantProvider ?? null) : null;
+  const installmentMonths = merchantLike
+    ? (typeof p.installmentMonths === 'number' && p.installmentMonths > 0 ? p.installmentMonths : null)
+    : null;
+  const onlineType        = p.method === 'transfer' ? (p.onlineType ?? null) : null;
+
+  const { data, error } = await sb.from('consignment_sales_order_payments').insert({
+    so_doc_no:          docNo,
+    paid_at:            p.paidAt,
+    method:             p.method,
+    merchant_provider:  merchantProvider,
+    installment_months: installmentMonths,
+    online_type:        onlineType,
+    approval_code:      p.approvalCode ?? null,
+    amount_centi:       p.amountCenti,
+    account_sheet:      p.accountSheet ?? null,
+    collected_by:       p.collectedBy ?? null,
+    note:               p.note ?? null,
+    created_by:         user.id,
+  }).select(PAYMENT_COLS).single();
+  if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
+
+  await recordSoAudit(sb, {
+    docNo,
+    action: 'ADD_PAYMENT',
+    actorId: user.id,
+    actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+    fieldChanges: [
+      { field: 'paidAt',             from: null, to: p.paidAt },
+      { field: 'method',             from: null, to: p.method },
+      { field: 'amountCenti',        from: null, to: p.amountCenti },
+      ...(merchantProvider  ? [{ field: 'merchantProvider',  from: null, to: merchantProvider  } satisfies FieldChange] : []),
+      ...(installmentMonths ? [{ field: 'installmentMonths', from: null, to: installmentMonths } satisfies FieldChange] : []),
+      ...(onlineType        ? [{ field: 'onlineType',        from: null, to: onlineType        } satisfies FieldChange] : []),
+      ...(p.approvalCode    ? [{ field: 'approvalCode',      from: null, to: p.approvalCode    } satisfies FieldChange] : []),
+      ...(p.accountSheet    ? [{ field: 'accountSheet',      from: null, to: p.accountSheet    } satisfies FieldChange] : []),
+    ],
+  });
+
+  return c.json({ payment: data }, 201);
+});
+
+consignmentOrders.delete('/:docNo/payments/:id', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
+  const user = c.get('user');
+
+  const { data: row } = await sb.from('consignment_sales_order_payments').select('*').eq('id', id).maybeSingle();
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  const rowTyped = row as { so_doc_no: string; paid_at: string; method: string; amount_centi: number; approval_code: string | null };
+  if (rowTyped.so_doc_no !== docNo) return c.json({ error: 'payment_doc_mismatch' }, 400);
+
+  const { error } = await sb.from('consignment_sales_order_payments').delete().eq('id', id);
+  if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+
+  await recordSoAudit(sb, {
+    docNo,
+    action: 'DELETE_PAYMENT',
+    actorId: user.id,
+    actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+    fieldChanges: [
+      { field: 'paidAt',       from: rowTyped.paid_at,       to: null },
+      { field: 'method',       from: rowTyped.method,        to: null },
+      { field: 'amountCenti',  from: rowTyped.amount_centi,  to: null },
+      ...(rowTyped.approval_code ? [{ field: 'approvalCode', from: rowTyped.approval_code, to: null } satisfies FieldChange] : []),
+    ],
+  });
+
+  return c.json({ ok: true });
+});
+
+// ── Debtor lookup — autocomplete from prior consignment orders ────────
+consignmentOrders.get('/debtors/search', async (c) => {
+  const sb = c.get('supabase'); const q = c.req.query('q') ?? '';
+  let query = sb.from('consignment_sales_orders').select('debtor_code, debtor_name, phone, address1, address2, address3, address4').order('updated_at', { ascending: false }).limit(200);
+  { const s = escapeForOr(q); if (s) query = query.or(`debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%`); }
+  const { data, error } = await query;
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+
+  // Dedupe by (debtor_code || debtor_name) — keep most recent only.
+  const seen = new Set<string>();
+  const out = [];
+  for (const r of (data ?? []) as Array<Record<string, string | null>>) {
+    const key = (r.debtor_code || r.debtor_name || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+    if (out.length >= 25) break;
+  }
+  return c.json({ debtors: out });
+});

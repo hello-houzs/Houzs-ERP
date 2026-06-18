@@ -1,0 +1,149 @@
+// ----------------------------------------------------------------------------
+// check-stock-availability — soft "stock not enough" guard for DO ship paths
+// (Commander 2026-05-30, Edge #1 + #2).
+//
+// Before a DO writes its OUT movements (or extends them via line-add / qty-up
+// on a shipped DO), this helper aggregates the requested qty per
+// (product_code, variant_key) bucket and compares to the live qty on hand at
+// the target warehouse (inventory_balances). When short, it also looks up
+// alternative warehouses that DO have stock so the operator can decide whether
+// to ship anyway, switch warehouse, or stop.
+//
+// Soft check by design — caller gates on the operator's confirmShortStock
+// flag (small-shop reality, "stock 不够, 继续吗?"). Never throws; an empty
+// shortages array means everything fits at this warehouse.
+// ----------------------------------------------------------------------------
+
+export type StockLineRequest = {
+  itemCode: string;
+  productName: string | null;
+  variantKey: string;
+  qty: number;
+};
+
+export type WarehouseAlt = {
+  warehouseId: string;
+  warehouseCode: string | null;
+  warehouseName: string | null;
+  available: number;
+};
+
+export type StockShortage = {
+  itemCode: string;
+  productName: string | null;
+  variantKey: string;
+  warehouseId: string;
+  warehouseName: string | null;
+  needed: number;
+  available: number;
+  short: number;
+  alternatives: WarehouseAlt[];
+};
+
+/**
+ * Resolve which requested lines exceed available qty at the given warehouse.
+ * Aggregates lines that share the same (product_code, variant_key) bucket so
+ * two lines of the same SKU don't each pass the check on full bucket qty.
+ *
+ * Returns [] when everything fits, or one shortage per under-stocked bucket
+ * with alternative-warehouse hints attached.
+ */
+export async function checkStockAvailability(
+  sb: any,
+  warehouseId: string,
+  lines: StockLineRequest[],
+): Promise<StockShortage[]> {
+  // Aggregate requested per bucket. Drop zero-qty lines (not shipped).
+  type Bucket = { product_code: string; variant_key: string; product_name: string | null; needed: number };
+  const byBucket = new Map<string, Bucket>();
+  for (const l of lines) {
+    const qty = Number(l.qty || 0);
+    if (qty <= 0) continue;
+    const k = `${l.itemCode}::${l.variantKey ?? ''}`;
+    const cur = byBucket.get(k);
+    if (cur) { cur.needed += qty; }
+    else byBucket.set(k, {
+      product_code: l.itemCode,
+      variant_key: l.variantKey ?? '',
+      product_name: l.productName ?? null,
+      needed: qty,
+    });
+  }
+  const buckets = [...byBucket.values()];
+  if (buckets.length === 0) return [];
+
+  // Pull live qty at THIS warehouse per requested bucket.
+  const productCodes = [...new Set(buckets.map((b) => b.product_code))];
+  const { data: balRows } = await sb
+    .from('inventory_balances')
+    .select('product_code, variant_key, qty')
+    .eq('warehouse_id', warehouseId)
+    .in('product_code', productCodes);
+  const balByBucket = new Map<string, number>();
+  for (const r of (balRows ?? []) as Array<{ product_code: string; variant_key: string | null; qty: number }>) {
+    balByBucket.set(`${r.product_code}::${r.variant_key ?? ''}`, Number(r.qty ?? 0));
+  }
+
+  const shortBuckets: Array<{ b: Bucket; available: number }> = [];
+  for (const b of buckets) {
+    const available = balByBucket.get(`${b.product_code}::${b.variant_key}`) ?? 0;
+    if (available < b.needed) shortBuckets.push({ b, available });
+  }
+  if (shortBuckets.length === 0) return [];
+
+  // Pull warehouse names (target + alternatives) in one shot.
+  const { data: whRows } = await sb.from('warehouses').select('id, code, name');
+  const whById = new Map(((whRows ?? []) as Array<{ id: string; code: string; name: string }>).map((w) => [w.id, w]));
+  const targetWh = whById.get(warehouseId);
+
+  // Cross-warehouse hint — qty available at OTHER warehouses for the short
+  // buckets. A single inventory_balances scan filtered to the same product
+  // codes + > 0 qty avoids the N+1.
+  const shortCodes = [...new Set(shortBuckets.map((s) => s.b.product_code))];
+  const altByBucket = new Map<string, WarehouseAlt[]>();
+  if (shortCodes.length > 0) {
+    const { data: altRows } = await sb
+      .from('inventory_balances')
+      .select('warehouse_id, product_code, variant_key, qty')
+      .neq('warehouse_id', warehouseId)
+      .in('product_code', shortCodes)
+      .gt('qty', 0);
+    for (const r of (altRows ?? []) as Array<{ warehouse_id: string; product_code: string; variant_key: string | null; qty: number }>) {
+      const wh = whById.get(r.warehouse_id);
+      const k = `${r.product_code}::${r.variant_key ?? ''}`;
+      const arr = altByBucket.get(k) ?? [];
+      arr.push({
+        warehouseId: r.warehouse_id,
+        warehouseCode: wh?.code ?? null,
+        warehouseName: wh?.name ?? null,
+        available: Number(r.qty ?? 0),
+      });
+      altByBucket.set(k, arr);
+    }
+  }
+
+  return shortBuckets.map(({ b, available }) => ({
+    itemCode: b.product_code,
+    productName: b.product_name,
+    variantKey: b.variant_key,
+    warehouseId,
+    warehouseName: targetWh?.name ?? null,
+    needed: b.needed,
+    available,
+    short: b.needed - available,
+    alternatives: (altByBucket.get(`${b.product_code}::${b.variant_key}`) ?? [])
+      .sort((a, c) => c.available - a.available), // highest-qty alternative first
+  }));
+}
+
+/** Canonical 409 response body for short-stock rejections. Caller should
+ *  c.json(shortStockResponse(shortages), 409). The frontend catches this,
+ *  shows a "stock not enough — continue?" dialog with the shortages + the
+ *  cross-warehouse alternatives, and retries with confirmShortStock: true. */
+export const shortStockResponse = (shortages: StockShortage[]) => ({
+  error: 'short_stock',
+  message:
+    `Stock not enough at the selected warehouse for ${shortages.length} line${shortages.length === 1 ? '' : 's'}. ` +
+    `Confirm to ship anyway, or switch warehouse / reduce qty first.`,
+  shortages,
+});

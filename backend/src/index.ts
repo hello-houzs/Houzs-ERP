@@ -4,7 +4,7 @@ import type { Env } from "./types";
 import { auth, requirePermission } from "./middleware/auth";
 // Ported 2990's SCM modules (furniture supply chain). Talk to the `scm` Postgres
 // schema via supabase-js; namespaced under /api/scm/*, owner-only during the port.
-import { suppliers as scmSuppliers } from "./scm/routes/suppliers";
+import scmApp from "./scm";
 import { idempotency } from "./middleware/idempotency";
 import { requestLog } from "./middleware/requestLog";
 import assr from "./routes/assr";
@@ -132,7 +132,7 @@ app.route("/api/assr-print", assrPrint);
 // Owner-only while the port is in progress. The routes attach their own
 // scm-scoped supabase client via scm/middleware/auth.
 app.use("/api/scm/*", requirePermission("*"));
-app.route("/api/scm/suppliers", scmSuppliers);
+app.route("/api/scm", scmApp);
 
 // Map raw infrastructure errors to operator-friendly messages so staff never
 // see a Postgres/driver string (e.g. the "operator does not exist: date < text"
