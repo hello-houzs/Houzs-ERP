@@ -24,6 +24,9 @@ const Profile = lazy(() => import("./pages/Profile").then((m) => ({ default: m.P
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 const Team = lazy(() => import("./pages/Team").then((m) => ({ default: m.Team })));
 const SystemHealth = lazy(() => import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealth })));
+// Ported 2990's SCM (furniture supply chain) — owner-gated under /scm/*.
+const ScmSuppliers = lazy(() => import("./pages/scm/Suppliers").then((m) => ({ default: m.ScmSuppliers })));
+const ScmSupplierDetail = lazy(() => import("./pages/scm/SupplierDetail").then((m) => ({ default: m.ScmSupplierDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -113,6 +116,23 @@ export default function App() {
             <PageGuard page="team">
               <Team />
             </PageGuard>
+          }
+        />
+        {/* ── Supply Chain (ported 2990's SCM) — owner-gated /scm/* ── */}
+        <Route
+          path="/scm/suppliers"
+          element={
+            <Guard perm="*">
+              <ScmSuppliers />
+            </Guard>
+          }
+        />
+        <Route
+          path="/scm/suppliers/:id"
+          element={
+            <Guard perm="*">
+              <ScmSupplierDetail />
+            </Guard>
           }
         />
         {/* Legacy /roles → Team page's Roles tab */}
