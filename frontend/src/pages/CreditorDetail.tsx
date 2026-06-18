@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ExternalLink, ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import {
   DetailLayout,
   DetailGrid,
@@ -10,10 +10,68 @@ import {
   StatStrip,
   DefinitionList,
 } from "../components/DetailLayout";
+import { DataTable, type Column } from "../components/DataTable";
 import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
 import { formatCurrency, formatDate } from "../lib/utils";
 import type { Creditor } from "../types";
+
+type RecentPo = CreditorDetailData["recent_pos"][number];
+
+function poStatusLabel(p: RecentPo): string {
+  return p.cancelled
+    ? "Cancelled"
+    : (p.doc_status || "").toUpperCase() === "C"
+    ? "Closed"
+    : "Open";
+}
+
+const PO_COLUMNS: Column<RecentPo>[] = [
+  {
+    key: "doc_no",
+    label: "PO No",
+    getValue: (p) => p.doc_no,
+    render: (p) => (
+      <Link
+        to={`/po/${encodeURIComponent(p.doc_no)}`}
+        className="font-mono font-medium hover:text-accent"
+      >
+        {p.doc_no}
+      </Link>
+    ),
+  },
+  {
+    key: "doc_date",
+    label: "Date",
+    getValue: (p) => p.doc_date || "",
+    render: (p) => (
+      <span className="font-mono text-[11px] text-ink-secondary">
+        {formatDate(p.doc_date)}
+      </span>
+    ),
+  },
+  {
+    key: "ref",
+    label: "Ref",
+    getValue: (p) => p.ref || "",
+    render: (p) => <span className="text-ink-muted">{p.ref || "—"}</span>,
+  },
+  {
+    key: "status",
+    label: "Status",
+    getValue: (p) => poStatusLabel(p),
+    render: (p) => <StatusPill status={poStatusLabel(p)} />,
+  },
+  {
+    key: "local_ex_tax",
+    label: "Cost (ex-tax)",
+    align: "right",
+    getValue: (p) => p.local_ex_tax ?? 0,
+    render: (p) => (
+      <span className="font-mono">{formatCurrency(p.local_ex_tax)}</span>
+    ),
+  },
+];
 
 interface CreditorDetailData {
   creditor: Creditor;
@@ -122,76 +180,15 @@ export function CreditorDetail() {
           <div className="mt-5">
             <DetailGrid>
               <DetailMain>
-                <Section
-                  title={`Recent Purchase Orders (${data.recent_pos.length})`}
-                  dense
-                >
-                  {data.recent_pos.length === 0 ? (
-                    <div className="px-4 py-6 text-[12px] text-ink-muted">
-                      No POs from this creditor.
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-[11.5px]">
-                        <thead className="bg-bg/50 text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
-                          <tr>
-                            <th className="px-4 py-2.5 text-left">PO No</th>
-                            <th className="px-3 py-2.5 text-left">Date</th>
-                            <th className="px-3 py-2.5 text-left">Ref</th>
-                            <th className="px-3 py-2.5 text-left">Status</th>
-                            <th className="px-3 py-2.5 text-right">Cost (ex-tax)</th>
-                            <th className="px-3 py-2.5"></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {data.recent_pos.map((p) => {
-                            const status = p.cancelled
-                              ? "Cancelled"
-                              : (p.doc_status || "").toUpperCase() === "C"
-                              ? "Closed"
-                              : "Open";
-                            return (
-                              <tr
-                                key={p.doc_no}
-                                className="border-t border-border-subtle hover:bg-bg/40"
-                              >
-                                <td className="px-4 py-2 font-mono font-medium">
-                                  <Link
-                                    to={`/po/${encodeURIComponent(p.doc_no)}`}
-                                    className="hover:text-accent"
-                                  >
-                                    {p.doc_no}
-                                  </Link>
-                                </td>
-                                <td className="px-3 py-2 text-ink-secondary">
-                                  {formatDate(p.doc_date)}
-                                </td>
-                                <td className="px-3 py-2 text-ink-muted">
-                                  {p.ref || "—"}
-                                </td>
-                                <td className="px-3 py-2">
-                                  <StatusPill status={status} />
-                                </td>
-                                <td className="px-3 py-2 text-right font-mono">
-                                  {formatCurrency(p.local_ex_tax)}
-                                </td>
-                                <td className="px-3 py-2 text-right">
-                                  <Link
-                                    to={`/po/${encodeURIComponent(p.doc_no)}`}
-                                    className="text-ink-muted hover:text-accent"
-                                    title="Open PO"
-                                  >
-                                    <ExternalLink size={11} />
-                                  </Link>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </Section>
+                <DataTable
+                  tableId="creditor-recent-pos"
+                  caption="Recent Purchase Orders"
+                  columns={PO_COLUMNS}
+                  rows={data.recent_pos}
+                  getRowKey={(p) => p.doc_no}
+                  emptyLabel="No POs from this creditor."
+                  exportName={`creditor-${code}-pos`}
+                />
 
                 <Section
                   title={`All Header Fields (${Object.keys(headerFields).length})`}

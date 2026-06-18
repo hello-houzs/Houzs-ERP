@@ -13,7 +13,7 @@ import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
 import { formatCurrency, formatDate, formatDateTime, cn } from "../lib/utils";
-import { ListSkeleton } from "../components/Skeleton";
+import { DataTable, type Column } from "../components/DataTable";
 import { EmptyState } from "../components/EmptyState";
 
 const SALES_FILTER_KEYS = ["status", "search", "date_from", "date_to", "view"] as const;
@@ -215,6 +215,171 @@ export function Sales() {
     }
   }
 
+  const columns: Column<SalesEntry>[] = [
+    {
+      key: "occurred_at",
+      label: "Date",
+      getValue: (e) => e.occurred_at,
+      render: (e) => (
+        <span className="font-mono text-ink-secondary">{formatDate(e.occurred_at)}</span>
+      ),
+    },
+    {
+      key: "customer",
+      label: "Customer",
+      getValue: (e) => e.customer_name,
+      render: (e) =>
+        e.customer_name === "(quick log)" ? (
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-warning-bg px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wider text-warning-text">
+              Quick log
+            </span>
+            {canWrite && (
+              <button
+                onClick={() => setEditing(e)}
+                className="text-[11px] font-semibold text-accent hover:underline"
+                title="Open this draft and fill in the customer details"
+              >
+                Complete
+              </button>
+            )}
+          </div>
+        ) : (
+          <span
+            className="inline-flex items-baseline gap-1.5"
+            title={
+              e.customer_phone
+                ? `${e.customer_name} · ${e.customer_phone}`
+                : e.customer_name
+            }
+          >
+            <span className="font-semibold text-ink">{e.customer_name}</span>
+            {e.customer_phone && (
+              <span className="font-mono text-[10px] text-ink-muted">
+                · {e.customer_phone}
+              </span>
+            )}
+          </span>
+        ),
+    },
+    {
+      key: "amount",
+      label: "Amount",
+      align: "right",
+      getValue: (e) => e.amount,
+      render: (e) => (
+        <span className="font-mono font-semibold">{formatCurrency(e.amount)}</span>
+      ),
+    },
+    {
+      key: "project_code",
+      label: "Project",
+      getValue: (e) => e.project_code ?? "",
+      render: (e) => (
+        <span className="font-mono text-[11px] text-ink-secondary">
+          {e.project_code || "—"}
+        </span>
+      ),
+    },
+    {
+      key: "status",
+      label: "Status",
+      getValue: (e) => e.status,
+      render: (e) => {
+        const badge = STATUS_BADGE[e.status];
+        return (
+          <span
+            className={cn(
+              "inline-flex rounded-full px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-wider",
+              badge.cls,
+            )}
+          >
+            {badge.label}
+          </span>
+        );
+      },
+    },
+    {
+      key: "created_by",
+      label: "By",
+      getValue: (e) => e.created_by_name ?? e.created_by_email ?? "",
+      render: (e) => (
+        <span className="text-[11px] text-ink-muted">
+          {e.created_by_name || e.created_by_email || "—"}
+        </span>
+      ),
+    },
+    {
+      key: "actions",
+      label: "",
+      align: "right",
+      render: (e) => {
+        const isMine = e.created_by === me?.id;
+        const canEdit = canManage || (isMine && e.status === "draft");
+        const canSubmit = canEdit && e.status === "draft";
+        return (
+          <div className="flex items-center justify-end gap-0.5">
+            {view === "quicklogs" && canEdit && (
+              <button
+                onClick={() => setEditing(e)}
+                className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft px-2 py-1 text-[10.5px] font-semibold text-accent hover:bg-accent hover:text-white"
+                title="Open this draft and fill in the customer details"
+              >
+                <Pencil size={11} /> Complete
+              </button>
+            )}
+            {view !== "quicklogs" && canSubmit && (
+              <button
+                onClick={() => submitEntry(e)}
+                className="rounded p-1.5 text-ink-muted hover:bg-accent-soft hover:text-accent"
+                title="Submit"
+              >
+                <CheckSquare size={13} />
+              </button>
+            )}
+            {view !== "quicklogs" && canEdit && (
+              <button
+                onClick={() => setEditing(e)}
+                className="rounded p-1.5 text-ink-muted hover:bg-surface-dim hover:text-ink"
+                title="Edit"
+              >
+                <Pencil size={13} />
+              </button>
+            )}
+            {canManage && e.status === "submitted" && (
+              <button
+                onClick={() => submitEntry(e)}
+                className="rounded p-1.5 text-ink-muted hover:bg-accent-soft hover:text-accent"
+                title="Push to AutoCount"
+                disabled
+              >
+                <Send size={13} />
+              </button>
+            )}
+            {canManage && e.status !== "void" && (
+              <button
+                onClick={() => voidEntry(e)}
+                className="rounded p-1.5 text-ink-muted hover:bg-err/10 hover:text-err"
+                title="Void"
+              >
+                <X size={13} />
+              </button>
+            )}
+            {canEdit && e.status === "draft" && (
+              <button
+                onClick={() => deleteEntry(e)}
+                className="rounded p-1.5 text-ink-muted hover:bg-err/10 hover:text-err"
+                title="Delete"
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
+          </div>
+        );
+      },
+    },
+  ];
+
   return (
     <div>
       <PageHeader
@@ -327,13 +492,7 @@ export function Sales() {
       </div>
 
       {/* List */}
-      {list.loading && !list.data && <ListSkeleton rows={6} />}
-      {list.error && (
-        <div className="rounded-md border border-err/40 bg-err/5 px-4 py-3 text-[12px] text-err">
-          {list.error}
-        </div>
-      )}
-      {list.data && list.data.data.length === 0 && !list.loading && (
+      {list.data && list.data.data.length === 0 && !list.loading ? (
         <EmptyState
           message={
             view === "quicklogs"
@@ -348,161 +507,16 @@ export function Sales() {
               : undefined
           }
         />
-      )}
-      {list.data && list.data.data.length > 0 && (
-        <div className="overflow-hidden rounded-md border border-border bg-surface shadow-stone">
-          <table className="w-full">
-            <thead className="bg-bg/60">
-              <tr className="text-left text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
-                <th className="px-3 py-2">Date</th>
-                <th className="px-3 py-2">Customer</th>
-                <th className="px-3 py-2 text-right">Amount</th>
-                <th className="px-3 py-2">Project</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">By</th>
-                <th className="px-3 py-2 w-px"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.data.data.map((e) => {
-                const badge = STATUS_BADGE[e.status];
-                const isMine = e.created_by === me?.id;
-                const canEdit = canManage || (isMine && e.status === "draft");
-                const canSubmit = canEdit && e.status === "draft";
-                return (
-                  <tr
-                    key={e.id}
-                    className="border-t border-border-subtle text-[12px] hover:bg-bg/40"
-                  >
-                    <td className="px-3 py-2 font-mono text-ink-secondary">
-                      {formatDate(e.occurred_at)}
-                    </td>
-                    <td className="px-3 py-2">
-                      {e.customer_name === "(quick log)" ? (
-                        <div className="flex items-center gap-2">
-                          <span className="rounded-full border border-amber-500/40 bg-amber-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wider text-amber-800">
-                            Quick log
-                          </span>
-                          {canWrite && (
-                            <button
-                              onClick={() => setEditing(e)}
-                              className="text-[11px] font-semibold text-accent hover:underline"
-                              title="Open this draft and fill in the customer details"
-                            >
-                              Complete
-                            </button>
-                          )}
-                        </div>
-                      ) : (
-                        // Single-line render — name + phone separated by a
-                        // middle dot instead of stacked, so every row
-                        // stays one line per the 2026-05-08 density rule.
-                        <span
-                          className="inline-flex items-baseline gap-1.5"
-                          title={
-                            e.customer_phone
-                              ? `${e.customer_name} · ${e.customer_phone}`
-                              : e.customer_name
-                          }
-                        >
-                          <span className="font-semibold text-ink">{e.customer_name}</span>
-                          {e.customer_phone && (
-                            <span className="font-mono text-[10px] text-ink-muted">
-                              · {e.customer_phone}
-                            </span>
-                          )}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono font-semibold">
-                      {formatCurrency(e.amount)}
-                    </td>
-                    <td className="px-3 py-2 font-mono text-[11px] text-ink-secondary">
-                      {e.project_code || "—"}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={cn(
-                          "inline-flex rounded-full px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-wider",
-                          badge.cls
-                        )}
-                      >
-                        {badge.label}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-[11px] text-ink-muted">
-                      {e.created_by_name || e.created_by_email || "—"}
-                    </td>
-                    <td className="px-1 py-1">
-                      <div className="flex items-center gap-0.5">
-                        {/* Quick Logs view promotes the Complete CTA
-                            into a real button in the action column —
-                            single obvious next step per row. The
-                            small Customer-cell link still works on
-                            the All view. */}
-                        {view === "quicklogs" && canEdit && (
-                          <button
-                            onClick={() => setEditing(e)}
-                            className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft px-2 py-1 text-[10.5px] font-semibold text-accent hover:bg-accent hover:text-white"
-                            title="Open this draft and fill in the customer details"
-                          >
-                            <Pencil size={11} /> Complete
-                          </button>
-                        )}
-                        {view !== "quicklogs" && canSubmit && (
-                          <button
-                            onClick={() => submitEntry(e)}
-                            className="rounded p-1.5 text-ink-muted hover:bg-accent-soft hover:text-accent"
-                            title="Submit"
-                          >
-                            <CheckSquare size={13} />
-                          </button>
-                        )}
-                        {view !== "quicklogs" && canEdit && (
-                          <button
-                            onClick={() => setEditing(e)}
-                            className="rounded p-1.5 text-ink-muted hover:bg-surface-dim hover:text-ink"
-                            title="Edit"
-                          >
-                            <Pencil size={13} />
-                          </button>
-                        )}
-                        {canManage && e.status === "submitted" && (
-                          <button
-                            onClick={() => submitEntry(e)}
-                            className="rounded p-1.5 text-ink-muted hover:bg-accent-soft hover:text-accent"
-                            title="Push to AutoCount"
-                            disabled
-                          >
-                            <Send size={13} />
-                          </button>
-                        )}
-                        {canManage && e.status !== "void" && (
-                          <button
-                            onClick={() => voidEntry(e)}
-                            className="rounded p-1.5 text-ink-muted hover:bg-err/10 hover:text-err"
-                            title="Void"
-                          >
-                            <X size={13} />
-                          </button>
-                        )}
-                        {canEdit && e.status === "draft" && (
-                          <button
-                            onClick={() => deleteEntry(e)}
-                            className="rounded p-1.5 text-ink-muted hover:bg-err/10 hover:text-err"
-                            title="Delete"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      ) : (
+        <DataTable
+          tableId="sales"
+          columns={columns}
+          rows={list.data?.data ?? null}
+          loading={list.loading}
+          error={list.error}
+          getRowKey={(e) => e.id}
+          exportName="sales"
+        />
       )}
 
       {creating && (
