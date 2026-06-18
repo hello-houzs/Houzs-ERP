@@ -1,82 +1,6 @@
 export type Region = "WEST" | "EAST" | "SG";
 export type SyncStatus = "SYNCED" | "ERROR";
 
-export interface SalesOrder {
-  id: number;
-  doc_no: string;
-  region: Region;
-  transfer_to: string | null;
-  doc_date: string | null;
-  ref: string | null;
-  branding: string | null;
-  debtor_name: string | null;
-  phone: string | null;
-  sales_location: string | null;
-  sales_agent: string | null;
-  local_total: number;
-  balance: number;
-  remark2: string | null;
-  remark3: string | null;
-  remark4: string | null;
-  processing_date: string | null;
-  expiry_date: string | null;
-  note: string | null;
-  po_doc_no: string | null;
-  inv_addr1: string | null;
-  inv_addr2: string | null;
-  inv_addr3: string | null;
-  inv_addr4: string | null;
-  venue: string | null;
-  attention: string | null;
-  sync_status: SyncStatus;
-  sync_error: string | null;
-  last_modified: string | null;
-  created_at: string;
-  updated_at: string;
-  // joined from order_details
-  delivery_date?: string | null;
-  time_range?: string | null;
-  lorry_plate?: string | null;
-  driver_name?: string | null;
-  driver_contact?: string | null;
-  property_type?: string | null;
-  consignment_no?: string | null;
-  eta_port?: string | null;
-  estimate_delivery?: string | null;
-  shipout_date?: string | null;
-}
-
-export interface OrderDetails {
-  doc_no: string;
-  delivery_date: string | null;
-  time_range: string | null;
-  time_confirmed: string | null;
-  lorry_plate: string | null;
-  driver_name: string | null;
-  driver_contact: string | null;
-  days_left: string | null;
-  internal_purchasing: string | null;
-  property_type: string | null;
-  new_house_replacement: string | null;
-  item_details: string | null;
-  done_delivery: string | null;
-  consignment_no: string | null;
-  eta_port: string | null;
-  estimate_delivery: string | null;
-  m3: string | null;
-  vessel_voyage: string | null;
-  etd_port_klang: string | null;
-  eta_destination: string | null;
-  transporter_remarks: string | null;
-  seafreight: number | null;
-  local_charges: number | null;
-  inland: number | null;
-  agent_fee: number | null;
-  insurance: number | null;
-  total_cost: number | null;
-  shipout_date: string | null;
-}
-
 export interface PurchaseOrder {
   id: number;
   doc_no: string;
@@ -174,56 +98,6 @@ export interface Creditor {
   po_count?: number;
   open_po_count?: number;
   total_local_ex_tax?: number;
-}
-
-export interface CreditorSummary {
-  totals: {
-    total: number;
-    currency_count: number;
-    type_count: number;
-  };
-  top_by_spend: Array<{
-    creditor_code: string;
-    creditor_name: string;
-    po_count: number;
-    total_spend: number;
-  }>;
-}
-
-/**
- * Doc-level Purchase Order from /api/po/docs (mirrors AutoCount
- * /PurchaseOrder/getAll). One row per PO header — the source of truth
- * for cost roll-ups (P&L) and the "Documents" view.
- */
-export interface PurchaseOrderDoc {
-  doc_no: string;
-  doc_date: string | null;
-  ref: string | null;
-  so_doc_no: string | null;
-  creditor_code: string | null;
-  creditor_name: string | null;
-  purchase_location: string | null;
-  doc_status: string | null;
-  cancelled: number;
-  local_ex_tax: number | null;
-  local_tax: number | null;
-  local_net_total: number | null;
-  final_total: number | null;
-  currency_code: string | null;
-  currency_rate: number | null;
-  remark1: string | null;
-  remark2: string | null;
-  remark3: string | null;
-  remark4: string | null;
-  note: string | null;
-  last_modified: string | null;
-  amount_source: string | null;
-  amount_updated_at: string | null;
-  amount_updated_by: number | null;
-  /** Full AutoCount /PurchaseOrder/getAll payload as a JSON string. */
-  raw: string | null;
-  created_at: string;
-  updated_at: string;
 }
 
 // v3.1 9-stage workflow (backend mig 074). Stage names mirror the SQL
@@ -417,25 +291,6 @@ export interface AssrDetail {
   stage_history?: AssrStageHistoryRow[];
 }
 
-export interface OverdueHistoryRow {
-  id: number;
-  pull_date: string;
-  doc_no: string;
-  debtor_name: string | null;
-  phone: string | null;
-  location: string | null;
-  balance: number | null;
-  original_expiry_date: string | null;
-  extended_to: string | null;
-}
-
-/** Grouped overdue row: sales_order + extension stats */
-export interface OverdueOrderRow extends SalesOrder {
-  extension_count: number;
-  last_extended_at: string;
-  first_original_expiry: string | null;
-}
-
 export interface ExecutionLog {
   id: number;
   request_id: string;
@@ -454,62 +309,12 @@ export interface Paginated<T> {
   total: number;
 }
 
-export interface OrderStats {
-  by_region: Array<{ region: Region; count: number }>;
-  by_status: Array<{ sync_status: SyncStatus; count: number }>;
-  totals: { total_orders: number; total_balance: number };
-}
-
 export interface SyncStatusResponse {
   checkpoint: string | null;
   last_pull: ExecutionLog | null;
   last_pull_all: ExecutionLog | null;
   error_count: number;
   autocount_writes_disabled?: boolean;
-}
-
-// ──────────────────────────────────────────────────────────
-// Dashboard summary payloads
-// ──────────────────────────────────────────────────────────
-export interface OrderSummaryBucket {
-  total: number;
-  by_region: Record<string, number>;
-  by_status: Record<string, number>;
-  total_balance: number;
-  outstanding_count: number;
-  expired: number;
-  expiring_7d: number;
-  no_expiry: number;
-}
-
-export interface OrdersSummary {
-  all: OrderSummaryBucket;
-  delivery: OrderSummaryBucket;
-  latest_modified: string | null;
-  fetched_at: string;
-}
-
-export interface POSummary {
-  totals: {
-    line_count: number;
-    po_count: number;
-    supplier_count: number;
-    remaining_qty: number;
-    outstanding_count?: number;
-    delivered_count?: number;
-    cancelled_count?: number;
-  };
-  overdue: number;
-  missing_supplier_date: number;
-  top_suppliers: Array<{ name: string; count: number }>;
-}
-
-export interface BalanceSummary {
-  totals: { count: number; total: number };
-  expired: { count: number; total: number };
-  warning: { count: number; total: number };
-  by_region: Array<{ region: Region; count: number; total: number }>;
-  top_debtors: Array<{ name: string; total: number }>;
 }
 
 export interface AssrMetrics {
@@ -563,13 +368,6 @@ export interface AssrSummary {
   recent_30d: number;
   aging_count: number;
   breach_count: number;
-}
-
-export interface OverdueSummary {
-  totals: { count: number; total: number };
-  recent_30d: number;
-  by_location: Array<{ location: string; count: number; total: number }>;
-  last_pull: string | null;
 }
 
 // ──────────────────────────────────────────────────────────
@@ -746,114 +544,6 @@ export interface PresenceResponse {
   active: ActiveMember[];
   count: number;
   window_seconds: number;
-}
-
-// ──────────────────────────────────────────────────────────
-// Trips, lorries, warehouses (HC Delivery)
-// ──────────────────────────────────────────────────────────
-
-export type TripStatus = "assigned" | "started" | "in_progress" | "completed" | "cancelled";
-export type TripType = "delivery" | "setup" | "dismantle" | "sg" | "mixed";
-export type StopStatus = "pending" | "arrived" | "delivered" | "failed";
-export type StopType = "delivery" | "service" | "pickup" | "setup" | "dismantle";
-
-export interface Warehouse {
-  code: string;
-  name: string;
-  address: string | null;
-  lat: number | null;
-  lng: number | null;
-}
-
-export interface Lorry {
-  id: number;
-  plate: string;
-  size: string | null;
-  warehouse: string;
-  is_internal: number;
-  default_driver_user_id: number | null;
-  default_driver_name: string | null;
-  is_active: number;
-}
-
-export interface Trip {
-  id: number;
-  trip_no: string;
-  warehouse: string;
-  trip_date: string;
-  lorry_id: number | null;
-  driver_user_id: number | null;
-  status: TripStatus;
-  trip_type: TripType;
-  is_outsourced: number;
-  source: "manual" | "proposal";
-  proposal_id: number | null;
-  started_at: string | null;
-  completed_at: string | null;
-  start_odometer: number | null;
-  end_odometer: number | null;
-  fuel_litres: number | null;
-  fuel_cost: number | null;
-  total_revenue: number;
-  total_distance_km: number;
-  stop_count: number;
-  notes: string | null;
-  created_at: string;
-  updated_at: string;
-  // joined
-  lorry_plate?: string | null;
-  lorry_size?: string | null;
-  driver_name?: string | null;
-  driver_email?: string | null;
-  helper_1_name?: string | null;
-  helper_2_name?: string | null;
-  warehouse_name?: string | null;
-  // mine/today extras
-  stop_count_actual?: number;
-  stops_done?: number;
-}
-
-export interface TripStop {
-  id: number;
-  trip_id: number;
-  doc_no: string;
-  sequence: number;
-  stop_type: StopType;
-  dismantle_session: "morning" | "night" | null;
-  status: StopStatus;
-  arrived_at: string | null;
-  completed_at: string | null;
-  recipient_name: string | null;
-  signature_r2_key: string | null;
-  pod_photo_r2_key: string | null;
-  failure_reason: string | null;
-  notes: string | null;
-  // joined sales_orders
-  debtor_name?: string | null;
-  phone?: string | null;
-  local_total?: number | null;
-  balance?: number | null;
-  inv_addr1?: string | null;
-  inv_addr2?: string | null;
-  inv_addr3?: string | null;
-  inv_addr4?: string | null;
-  stop_lat?: number | null;
-  stop_lng?: number | null;
-  order_warehouse?: string | null;
-  order_state?: string | null;
-}
-
-export interface TripLocation {
-  lat: number;
-  lng: number;
-  accuracy: number | null;
-  recorded_at: string;
-}
-
-export interface TripDetail {
-  trip: Trip & { warehouse_lat?: number | null; warehouse_lng?: number | null };
-  stops: TripStop[];
-  locations: TripLocation[];
 }
 
 // ──────────────────────────────────────────────────────────

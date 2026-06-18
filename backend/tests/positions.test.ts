@@ -52,27 +52,27 @@ describe("position page-access (4-level + inherit)", () => {
 
   test("children inherit parent; explicit child overrides; financials hidden", async () => {
     const id = await seedPosition("sales_exec", {
-      overview: "view",
+      team: "view",
       projects: "view",
       "projects.finances": "none",
     });
     const map = await loadPageAccessForPosition(env, id);
-    expect(map.overview).toBe("view");
+    expect(map.team).toBe("view");
     expect(map.projects).toBe("view");
     expect(map["projects.list"]).toBe("view"); // inherited
     expect(map["projects.calendar"]).toBe("view"); // inherited
     expect(map["projects.finances"]).toBe("none"); // explicit override → hidden
-    expect(map["team.members"]).toBe("none"); // unseeded → none
-    expect(map.orders).toBe("none");
+    expect(map["service_cases.cases"]).toBe("none"); // unseeded → none
+    expect(map.sales).toBe("none");
   });
 
   test("parent full cascades to all children", async () => {
-    const id = await seedPosition("sales_dir", { orders: "full" });
+    const id = await seedPosition("sales_dir", { projects: "full" });
     const map = await loadPageAccessForPosition(env, id);
-    expect(map.orders).toBe("full");
-    expect(map["orders.sales_orders"]).toBe("full");
-    expect(map["orders.balance"]).toBe("full");
-    expect(map["orders.pnl"]).toBe("full");
+    expect(map.projects).toBe("full");
+    expect(map["projects.list"]).toBe("full");
+    expect(map["projects.calendar"]).toBe("full");
+    expect(map["projects.finances"]).toBe("full");
   });
 
   test("narrow grant: parent none + a single child view", async () => {

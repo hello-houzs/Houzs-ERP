@@ -95,7 +95,7 @@ describe("requirePageAccess middleware — Sales pilot", () => {
   test("user with no sales perms is blocked", async () => {
     const outsider = await seedUser({
       email: "outsider@test.local",
-      permissions: ["fleet.read"], // unrelated page
+      permissions: ["logs.read"], // unrelated page
     });
     const res = await api("GET", "/api/sales/entries", outsider.bearer);
     expect(res.status).toBe(403);

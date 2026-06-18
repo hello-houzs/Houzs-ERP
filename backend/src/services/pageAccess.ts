@@ -81,13 +81,6 @@ const teamBackfill = (p: ReadonlySet<string>): AccessLevel =>
       ? "partial"
       : "none";
 
-const logisticsBackfill = (p: ReadonlySet<string>): AccessLevel =>
-  isOwner(p) || has(p, "trips.manage", "planner.run")
-    ? "full"
-    : has(p, "trips.read.all", "fleet.read")
-      ? "partial"
-      : "none";
-
 const serviceCasesBackfill = (p: ReadonlySet<string>): AccessLevel =>
   isOwner(p) || has(p, "service_cases.manage")
     ? "full"
@@ -95,51 +88,8 @@ const serviceCasesBackfill = (p: ReadonlySet<string>): AccessLevel =>
       ? "partial"
       : "none";
 
-const ordersBackfill = (p: ReadonlySet<string>): AccessLevel =>
-  isOwner(p) || has(p, "sales_orders.write")
-    ? "full"
-    : has(p, "sales_orders.read")
-      ? "partial"
-      : "none";
-
 export const PAGES: PageDef[] = [
   // ── Standalone pages (no sub-tabs) ──────────────────────────
-  {
-    key: "overview",
-    label: "Dashboard / Overview",
-    partialMeaning: "Hide finance cards and admin-only summaries.",
-    supportsPartial: true,
-    backfill: (p) =>
-      isOwner(p)
-        ? "full"
-        : has(p, "projects.read", "sales.read", "sales_orders.read")
-          ? "full"
-          : "partial",
-  },
-  {
-    key: "delivery_orders",
-    label: "Delivery Orders",
-    partialMeaning: "Read-only; cannot edit scheduling fields.",
-    supportsPartial: true,
-    backfill: (p) =>
-      isOwner(p) || has(p, "delivery_orders.write")
-        ? "full"
-        : has(p, "delivery_orders.read")
-          ? "partial"
-          : "none",
-  },
-  {
-    key: "purchase_orders",
-    label: "Purchase Orders",
-    partialMeaning: "Read-only; cannot edit supplier dates or push.",
-    supportsPartial: true,
-    backfill: (p) =>
-      isOwner(p) || has(p, "purchase_orders.write")
-        ? "full"
-        : has(p, "purchase_orders.read")
-          ? "partial"
-          : "none",
-  },
   {
     key: "sales",
     label: "Sales Entries",
@@ -158,120 +108,6 @@ export const PAGES: PageDef[] = [
     partialMeaning: "(not used for this page)",
     supportsPartial: false,
     backfill: (p) => (isOwner(p) || has(p, "settings.manage") ? "full" : "none"),
-  },
-  {
-    key: "sales_team",
-    label: "Sales Team org chart",
-    partialMeaning: "View the org chart and rep details; no edits.",
-    supportsPartial: true,
-    backfill: (p) =>
-      isOwner(p) || has(p, "sales_team.manage")
-        ? "full"
-        : has(p, "sales_team.read")
-          ? "partial"
-          : "none",
-  },
-  {
-    key: "sales_team_maintenance",
-    label: "Sales Team admin (positions / tiers)",
-    partialMeaning: "(not used for this page)",
-    supportsPartial: false,
-    backfill: (p) => (isOwner(p) || has(p, "sales_team.manage") ? "full" : "none"),
-  },
-  {
-    key: "petty_cash",
-    label: "Petty Cash",
-    partialMeaning: "View ledger and balance; cannot post or manage entries.",
-    supportsPartial: true,
-    backfill: (p) =>
-      isOwner(p) || has(p, "petty_cash.manage", "petty_cash.post")
-        ? "full"
-        : has(p, "petty_cash.read")
-          ? "partial"
-          : "none",
-  },
-
-  // ── Orders (parent + sub-tabs) ──────────────────────────────
-  {
-    key: "orders",
-    label: "Sales Orders",
-    partialMeaning: "Pick which Orders sub-tabs this role can access.",
-    supportsPartial: true,
-    backfill: ordersBackfill,
-  },
-  {
-    key: "orders.sales_orders",
-    parent: "orders",
-    label: "Sales Orders list",
-    partialMeaning: "Read-only; cannot update status or push to AutoCount.",
-    supportsPartial: true,
-    backfill: ordersBackfill,
-  },
-  {
-    key: "orders.balance",
-    parent: "orders",
-    label: "Balance Collection",
-    partialMeaning: "View only.",
-    supportsPartial: true,
-    backfill: (p) =>
-      isOwner(p) ? "full" : has(p, "balance.read") ? "partial" : "none",
-  },
-  {
-    key: "orders.overdue",
-    parent: "orders",
-    label: "Overdue history",
-    partialMeaning: "View only; cannot trigger auto-extend.",
-    supportsPartial: true,
-    backfill: (p) =>
-      isOwner(p) || has(p, "overdue.write")
-        ? "full"
-        : has(p, "overdue.read")
-          ? "partial"
-          : "none",
-  },
-  {
-    key: "orders.pnl",
-    parent: "orders",
-    label: "P&L",
-    partialMeaning: "(not used; full or none)",
-    supportsPartial: false,
-    backfill: (p) =>
-      isOwner(p) || has(p, "sales_orders.write") ? "full" : "none",
-  },
-
-  // ── Logistics (parent + sub-tabs) ───────────────────────────
-  {
-    key: "logistics",
-    label: "Logistics & Fleet",
-    partialMeaning: "Pick which Logistics sub-tabs this role can access.",
-    supportsPartial: true,
-    backfill: logisticsBackfill,
-  },
-  {
-    key: "logistics.trips",
-    parent: "logistics",
-    label: "Trips dispatcher",
-    partialMeaning: "View only; cannot create, assign, or cancel.",
-    supportsPartial: true,
-    backfill: (p) =>
-      isOwner(p) || has(p, "trips.manage", "planner.run")
-        ? "full"
-        : has(p, "trips.read.all")
-          ? "partial"
-          : "none",
-  },
-  {
-    key: "logistics.fleet",
-    parent: "logistics",
-    label: "Fleet (drivers, helpers, lorries)",
-    partialMeaning: "View only; cannot edit profiles or maintenance.",
-    supportsPartial: true,
-    backfill: (p) =>
-      isOwner(p) || has(p, "fleet.manage")
-        ? "full"
-        : has(p, "fleet.read")
-          ? "partial"
-          : "none",
   },
 
   // ── Service Cases / ASSR (parent + sub-tabs) ────────────────

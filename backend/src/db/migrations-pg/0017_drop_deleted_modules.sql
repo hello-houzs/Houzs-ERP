@@ -6,18 +6,19 @@
 -- references from the retained code (Service/QMS, Projects, People, Settings,
 -- and the shared search / inbox / notifications / events / users infra).
 --
--- DELIBERATELY RETAINED (the retained modules still read these, so they are
--- NOT dropped here): trips, trip_stops, lorries (events calendar + inbox +
--- global search), sales_orders, order_details, creditors, purchase_orders,
--- purchase_order_docs, warehouses (ASSR cost-suggestion / by-creditor / search),
--- sales_reps + sales_* (Projects sales attendees + rep picker), and the
+-- DELIBERATELY RETAINED (the retained modules / dependency-only restored routes
+-- still read these, so they are NOT dropped here): trips, trip_stops, lorries
+-- (events calendar + inbox + global search), sales_orders, order_details,
+-- creditors, purchase_orders, purchase_order_docs, warehouses (ASSR cost-
+-- suggestion / by-creditor / search), sales_reps + sales_* (Projects sales
+-- attendees + rep picker), lorry_incidents + salary_trip_lines (the fleet.ts
+-- route restored for the Projects crew/lorry pickers still reads them), and the
 -- users.points_balance / users.current_streak COLUMNS (the notifications
 -- snapshot reads them — only the point_transactions ledger table is dropped).
 
--- Operations / fleet — leaf children only (parents trips/trip_stops/lorries kept)
+-- Operations / fleet — trip_locations is the only fleet table nothing reads
+-- (trips/trip_stops/lorries/lorry_incidents/salary_trip_lines all still read).
 DROP TABLE IF EXISTS trip_locations CASCADE;
-DROP TABLE IF EXISTS lorry_incidents CASCADE;
-DROP TABLE IF EXISTS salary_trip_lines CASCADE;
 
 -- Engagement / gamify (Houzs Points, Awards, Innovations, Suggestions)
 DROP TABLE IF EXISTS award_redemptions CASCADE;
