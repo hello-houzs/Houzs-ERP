@@ -38,8 +38,11 @@ export function scmStatusClasses(status: string | null | undefined): string {
       return "bg-err/10 text-err border-err/30";
     case "SUBMITTED":
     case "PARTIALLY_RECEIVED":
+    case "PARTIALLY_PAID":
     case "DRAFT":
-      return "bg-warning/15 text-warning border-warning/30";
+      // `warning` token only defines bg/text sub-keys (no DEFAULT), so
+      // text-warning / bg-warning/15 don't resolve — use the explicit names.
+      return "bg-warning-bg text-warning-text border-warning-text/30";
     default:
       return "bg-surface-dim text-ink-muted border-border";
   }

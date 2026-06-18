@@ -27,6 +27,14 @@ const SystemHealth = lazy(() => import("./pages/SystemHealth").then((m) => ({ de
 // Ported 2990's SCM (furniture supply chain) — owner-gated under /scm/*.
 const ScmSuppliers = lazy(() => import("./pages/scm/Suppliers").then((m) => ({ default: m.ScmSuppliers })));
 const ScmSupplierDetail = lazy(() => import("./pages/scm/SupplierDetail").then((m) => ({ default: m.ScmSupplierDetail })));
+const ScmPurchaseOrders = lazy(() => import("./pages/scm/PurchaseOrders").then((m) => ({ default: m.ScmPurchaseOrders })));
+const ScmPurchaseOrderDetail = lazy(() => import("./pages/scm/PurchaseOrderDetail").then((m) => ({ default: m.ScmPurchaseOrderDetail })));
+const ScmGoodsReceived = lazy(() => import("./pages/scm/GoodsReceived").then((m) => ({ default: m.ScmGoodsReceived })));
+const ScmGoodsReceivedDetail = lazy(() => import("./pages/scm/GoodsReceivedDetail").then((m) => ({ default: m.ScmGoodsReceivedDetail })));
+const ScmPurchaseInvoices = lazy(() => import("./pages/scm/PurchaseInvoices").then((m) => ({ default: m.ScmPurchaseInvoices })));
+const ScmPurchaseInvoiceDetail = lazy(() => import("./pages/scm/PurchaseInvoiceDetail").then((m) => ({ default: m.ScmPurchaseInvoiceDetail })));
+const ScmPurchaseReturns = lazy(() => import("./pages/scm/PurchaseReturns").then((m) => ({ default: m.ScmPurchaseReturns })));
+const ScmPurchaseReturnDetail = lazy(() => import("./pages/scm/PurchaseReturnDetail").then((m) => ({ default: m.ScmPurchaseReturnDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -135,6 +143,14 @@ export default function App() {
             </Guard>
           }
         />
+        <Route path="/scm/purchase-orders" element={<Guard perm="*"><ScmPurchaseOrders /></Guard>} />
+        <Route path="/scm/purchase-orders/:id" element={<Guard perm="*"><ScmPurchaseOrderDetail /></Guard>} />
+        <Route path="/scm/grns" element={<Guard perm="*"><ScmGoodsReceived /></Guard>} />
+        <Route path="/scm/grns/:id" element={<Guard perm="*"><ScmGoodsReceivedDetail /></Guard>} />
+        <Route path="/scm/purchase-invoices" element={<Guard perm="*"><ScmPurchaseInvoices /></Guard>} />
+        <Route path="/scm/purchase-invoices/:id" element={<Guard perm="*"><ScmPurchaseInvoiceDetail /></Guard>} />
+        <Route path="/scm/purchase-returns" element={<Guard perm="*"><ScmPurchaseReturns /></Guard>} />
+        <Route path="/scm/purchase-returns/:id" element={<Guard perm="*"><ScmPurchaseReturnDetail /></Guard>} />
         {/* Legacy /roles → Team page's Roles tab */}
         <Route
           path="/roles"
