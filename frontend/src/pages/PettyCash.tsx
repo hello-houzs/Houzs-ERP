@@ -104,26 +104,8 @@ export function PettyCash() {
   // Cash-flow chart is collapsible (persisted) — it's the tallest block and
   // ops often just want the ledger.
   const [cashflowOpen, setCashflowOpen] = useLocalStorage<boolean>("pc:cashflow", true);
-  // Cash-flow chart drill-down: clicking a month sets the from/to window to
-  // that whole month (click again to clear).
-  const activeMonth =
-    from && to && from.slice(0, 7) === to.slice(0, 7) && from.endsWith("-01")
-      ? from.slice(0, 7)
-      : "";
-  function toggleMonth(m: string) {
-    const next = new URLSearchParams(params);
-    if (activeMonth === m) {
-      next.delete("from");
-      next.delete("to");
-    } else {
-      const [y, mm] = m.split("-").map(Number);
-      const last = new Date(y, mm, 0).getDate();
-      next.set("from", `${m}-01`);
-      next.set("to", `${m}-${String(last).padStart(2, "0")}`);
-    }
-    setParams(next, { replace: true });
-  }
-
+  // Cash-flow granularity: month / quarter / half-year (persisted).
+  const [granularity, setGranularity] = useLocalStorage<Gran>("pc:cashflow:gran", "month");
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     if (from) p.set("from", from);
@@ -170,20 +152,51 @@ export function PettyCash() {
   };
   const byCategory = useMemo(() => topOut((r) => r.category, "Uncategorized"), [rows]);
   const byPayee = useMemo(() => topOut((r) => r.counterparty, "Unspecified"), [rows]);
-  const monthly = useMemo(() => {
+  // Cash-flow series, bucketed by the chosen granularity. Net is the
+  // running cumulative (in − out) across ALL buckets (computed before the
+  // window slice) so each plotted point reflects the true cumulative
+  // position, then we keep the last N for display.
+  const periods = useMemo(() => {
     const m = new Map<string, { in: number; out: number }>();
     for (const r of rows) {
-      const key = r.occurred_on.slice(0, 7);
+      const key = pcPeriodKey(r.occurred_on, granularity);
       const cur = m.get(key) || { in: 0, out: 0 };
       if (r.direction === "in") cur.in += r.amount_cents;
       else cur.out += r.amount_cents;
       m.set(key, cur);
     }
-    return [...m.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .slice(-6)
-      .map(([month, v]) => ({ month, ...v }));
-  }, [rows]);
+    const ordered = [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    let run = 0;
+    const withNet = ordered.map(([key, v]) => {
+      run += v.in - v.out;
+      return { key, label: pcPeriodLabel(key, granularity), in: v.in, out: v.out, net: run };
+    });
+    const cap = granularity === "month" ? 12 : granularity === "quarter" ? 8 : 6;
+    return withNet.slice(-cap);
+  }, [rows, granularity]);
+
+  // Cash-flow chart drill-down: clicking a period sets the from/to window to
+  // that whole period (click again to clear).
+  const activePeriodKey = useMemo(() => {
+    if (!from || !to) return "";
+    for (const p of periods) {
+      const r = pcPeriodRange(p.key, granularity);
+      if (r.from === from && r.to === to) return p.key;
+    }
+    return "";
+  }, [from, to, periods, granularity]);
+  function togglePeriod(key: string) {
+    const next = new URLSearchParams(params);
+    if (activePeriodKey === key) {
+      next.delete("from");
+      next.delete("to");
+    } else {
+      const r = pcPeriodRange(key, granularity);
+      next.set("from", r.from);
+      next.set("to", r.to);
+    }
+    setParams(next, { replace: true });
+  }
 
   const columns: Column<EntryRow>[] = [
     {
@@ -362,11 +375,13 @@ export function PettyCash() {
         />
       </div>
 
-      {/* C — cash flow trend (in vs out over recent months), collapsible */}
+      {/* C — cash flow trend (in / out / net over recent periods), collapsible */}
       <CashFlowTrend
-        data={monthly}
-        activeMonth={activeMonth}
-        onMonthClick={toggleMonth}
+        data={periods}
+        granularity={granularity}
+        onGranularity={setGranularity}
+        activeKey={activePeriodKey}
+        onPeriodClick={togglePeriod}
         open={cashflowOpen}
         onToggle={() => setCashflowOpen(!cashflowOpen)}
       />
@@ -504,30 +519,106 @@ export function PettyCash() {
   );
 }
 
+// ── Cash-flow chart helpers ───────────────────────────────────
+type Gran = "month" | "quarter" | "half";
+
+function pcPeriodKey(iso: string, g: Gran): string {
+  const y = iso.slice(0, 4);
+  const mm = Number(iso.slice(5, 7));
+  if (g === "month") return iso.slice(0, 7);
+  if (g === "quarter") return `${y}-Q${Math.ceil(mm / 3)}`;
+  return `${y}-H${mm <= 6 ? 1 : 2}`;
+}
+function pcPeriodRange(key: string, g: Gran): { from: string; to: string } {
+  const y = Number(key.slice(0, 4));
+  const last = (yr: number, m: number) => new Date(yr, m, 0).getDate();
+  const fmt = (yr: number, m: number, d: number) =>
+    `${yr}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  if (g === "month") {
+    const m = Number(key.slice(5, 7));
+    return { from: fmt(y, m, 1), to: fmt(y, m, last(y, m)) };
+  }
+  if (g === "quarter") {
+    const q = Number(key.slice(6));
+    return { from: fmt(y, (q - 1) * 3 + 1, 1), to: fmt(y, q * 3, last(y, q * 3)) };
+  }
+  const h = Number(key.slice(6));
+  return h === 1
+    ? { from: fmt(y, 1, 1), to: fmt(y, 6, 30) }
+    : { from: fmt(y, 7, 1), to: fmt(y, 12, 31) };
+}
+function pcPeriodLabel(key: string, g: Gran): string {
+  if (g === "month") {
+    const [y, m] = key.split("-");
+    return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString("en", { month: "short" });
+  }
+  return key.slice(5); // "Q2" / "H1"
+}
+// Catmull-Rom → cubic-bezier smoothing for a soft, report-style curve.
+function pcSmooth(pts: Array<[number, number]>): string {
+  if (pts.length === 0) return "";
+  if (pts.length === 1) return `M ${pts[0][0]} ${pts[0][1]}`;
+  const out = [`M ${pts[0][0]} ${pts[0][1]}`];
+  const t = 0.18;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const c1x = p1[0] + (p2[0] - p0[0]) * t;
+    const c1y = p1[1] + (p2[1] - p0[1]) * t;
+    const c2x = p2[0] - (p3[0] - p1[0]) * t;
+    const c2y = p2[1] - (p3[1] - p1[1]) * t;
+    out.push(`C ${c1x} ${c1y} ${c2x} ${c2y} ${p2[0]} ${p2[1]}`);
+  }
+  return out.join(" ");
+}
+function pcNiceTicks(min: number, max: number, count = 5): number[] {
+  if (min === max) max = min + 1;
+  const raw = (max - min) / (count - 1);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  const start = Math.floor(min / step) * step;
+  const end = Math.ceil(max / step) * step;
+  const ticks: number[] = [];
+  for (let v = start; v <= end + step * 0.5; v += step) ticks.push(Math.round(v * 100) / 100);
+  return ticks;
+}
+function pcTickLabel(v: number): string {
+  const a = Math.abs(v);
+  const body =
+    a >= 10000 ? `${(a / 1000).toFixed(a % 1000 === 0 ? 0 : 1)}k` : Math.round(a).toLocaleString();
+  return `${v < 0 ? "−" : ""}RM${body}`;
+}
+
 function CashFlowTrend({
   data,
-  activeMonth,
-  onMonthClick,
   open = true,
   onToggle,
+  granularity,
+  onGranularity,
+  activeKey,
+  onPeriodClick,
 }: {
-  data: Array<{ month: string; in: number; out: number }>;
-  activeMonth?: string;
-  onMonthClick?: (month: string) => void;
+  data: Array<{ key: string; label: string; in: number; out: number; net: number }>;
   open?: boolean;
   onToggle?: () => void;
+  granularity: Gran;
+  onGranularity: (g: Gran) => void;
+  activeKey?: string;
+  onPeriodClick?: (key: string) => void;
 }) {
-  const max = Math.max(1, ...data.flatMap((d) => [d.in, d.out]));
-  const monthLabel = (m: string) => {
-    const [y, mm] = m.split("-");
-    return new Date(Number(y), Number(mm) - 1, 1).toLocaleDateString("en", {
-      month: "short",
-    });
-  };
+  const granWord =
+    granularity === "month" ? "monthly" : granularity === "quarter" ? "quarterly" : "half-yearly";
+  const NEUTRAL = "#6c7167";
+  const IN = "#3f7d4f";
+  const OUT = "#a83232";
+  const NET = "#111810";
   return (
     <div className={cn("relative mb-4 overflow-hidden rounded-lg border border-border bg-surface px-5 shadow-stone", open ? "py-5" : "py-3")}>
       <span className="pointer-events-none absolute left-0 top-0 h-px w-full bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
-      <div className={cn("flex items-center justify-between gap-3", open && "mb-4")}>
+      <div className={cn("flex flex-wrap items-center justify-between gap-3", open && "mb-4")}>
         <button
           type="button"
           onClick={onToggle}
@@ -537,128 +628,133 @@ function CashFlowTrend({
         >
           <ChevronDown size={13} className={cn("transition-transform", open ? "" : "-rotate-90")} />
           Cash flow
-          <span className="font-mono normal-case tracking-normal text-ink-muted/70">
-            · last {data.length || 0} month{data.length === 1 ? "" : "s"}
-          </span>
+          <span className="font-mono normal-case tracking-normal text-ink-muted/70">· {granWord}</span>
         </button>
         {open && (
-          <div className="flex items-center gap-3 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-            <span className="inline-flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-synced" /> In
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-err" /> Out
-            </span>
+          <div className="inline-flex overflow-hidden rounded-md border border-border bg-bg/40 text-[10px] font-semibold">
+            {([["month", "Monthly"], ["quarter", "Quarterly"], ["half", "Half-year"]] as const).map(
+              ([g, l]) => (
+                <button
+                  key={g}
+                  type="button"
+                  onClick={() => onGranularity(g)}
+                  aria-pressed={granularity === g}
+                  className={cn(
+                    "px-2.5 py-1 transition-colors",
+                    granularity === g ? "bg-accent text-white" : "text-ink-muted hover:text-accent",
+                  )}
+                >
+                  {l}
+                </button>
+              ),
+            )}
           </div>
         )}
       </div>
       {open && (data.length === 0 ? (
         <div className="py-4 text-[12px] text-ink-muted">Not enough data yet</div>
       ) : data.length === 1 ? (
-        // Single month: a lone dot on a line reads as "broken/empty" — show
-        // a clean In/Out summary instead.
+        // Single period: a lone point reads as "broken" — show a clean
+        // In / Out / Net summary instead of a chart.
         <div className="flex flex-wrap items-end gap-x-10 gap-y-3 py-1">
-          <div>
-            <div className="text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-              {monthLabel(data[0].month)} · In
+          {([
+            [`${data[0].label} · In`, formatRM(data[0].in), "text-synced"],
+            [`${data[0].label} · Out`, formatRM(data[0].out), "text-err"],
+            ["Net position", formatRM(data[0].net), data[0].net >= 0 ? "text-synced" : "text-err"],
+          ] as const).map(([lbl, val, color]) => (
+            <div key={lbl}>
+              <div className="text-[9px] font-semibold uppercase tracking-wider text-ink-muted">{lbl}</div>
+              <div className={cn("mt-1 font-display text-2xl font-bold leading-none", color)}>{val}</div>
             </div>
-            <div className="mt-1 font-display text-2xl font-bold leading-none text-synced">
-              {formatRM(data[0].in)}
-            </div>
-          </div>
-          <div>
-            <div className="text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-              {monthLabel(data[0].month)} · Out
-            </div>
-            <div className="mt-1 font-display text-2xl font-bold leading-none text-err">
-              {formatRM(data[0].out)}
-            </div>
-          </div>
+          ))}
         </div>
       ) : (
         (() => {
+          const W = 720, H = 230, L = 52, R = 14, T = 12, B = 26;
+          const iW = W - L - R, iH = H - T - B;
           const n = data.length;
-          // Centre points in equal columns so the clickable month strips,
-          // dots and labels all line up.
-          const xAt = (i: number) => ((i + 0.5) / n) * 100;
-          const yAt = (v: number) => 96 - (v / max) * 88; // 4–96 vertical padding
-          const pts = (sel: (d: (typeof data)[number]) => number) =>
-            data.map((d, i) => `${xAt(i)},${yAt(sel(d))}`).join(" ");
-          const area = (sel: (d: (typeof data)[number]) => number) =>
-            `${xAt(0)},100 ${pts(sel)} ${xAt(n - 1)},100`;
-          const IN = "#3f7d4f";
-          const OUT = "#a83232";
+          const ins = data.map((d) => d.in / 100);
+          const outs = data.map((d) => -(d.out / 100)); // money out plotted below zero
+          const nets = data.map((d) => d.net / 100);
+          const ticks = pcNiceTicks(
+            Math.min(0, ...outs, ...nets),
+            Math.max(0, ...ins, ...nets),
+            5,
+          );
+          const yMin = ticks[0], yMax = ticks[ticks.length - 1];
+          const xAt = (i: number) => L + (n === 1 ? iW / 2 : (i / (n - 1)) * iW);
+          const yAt = (v: number) => T + ((yMax - v) / (yMax - yMin || 1)) * iH;
+          const pts = (arr: number[]): Array<[number, number]> => arr.map((v, i) => [xAt(i), yAt(v)]);
+          const areaPath = (arr: number[]) =>
+            `${pcSmooth(pts(arr))} L ${xAt(n - 1)} ${yAt(0)} L ${xAt(0)} ${yAt(0)} Z`;
           return (
-            <div className="relative h-32">
-              {/* clickable month strips (behind the chart) */}
-              <div className="absolute inset-0 flex gap-1">
-                {data.map((d) => (
-                  <button
-                    key={`hit-${d.month}`}
-                    type="button"
-                    onClick={() => onMonthClick?.(d.month)}
-                    title={`${monthLabel(d.month)} · In ${formatRM(d.in)} · Out ${formatRM(d.out)}`}
-                    className={cn(
-                      "flex-1 rounded-md transition-colors",
-                      onMonthClick && "hover:bg-accent-soft/40",
-                      activeMonth === d.month && "bg-accent-soft/60 ring-1 ring-inset ring-accent/30",
-                    )}
-                  />
+            <div>
+              <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="aspect-[720/230] w-full">
+                <defs>
+                  <linearGradient id="pc-in" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={IN} stopOpacity={0.22} />
+                    <stop offset="100%" stopColor={IN} stopOpacity={0.02} />
+                  </linearGradient>
+                  <linearGradient id="pc-out" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={OUT} stopOpacity={0.02} />
+                    <stop offset="100%" stopColor={OUT} stopOpacity={0.2} />
+                  </linearGradient>
+                </defs>
+                {ticks.map((tk) => {
+                  const y = yAt(tk);
+                  const zero = Math.abs(tk) < 1e-9;
+                  return (
+                    <g key={`t-${tk}`}>
+                      <line
+                        x1={L} y1={y} x2={W - R} y2={y}
+                        stroke={zero ? NEUTRAL : "#e6e4da"}
+                        strokeWidth={1}
+                        strokeDasharray={zero ? "2 3" : undefined}
+                      />
+                      <text x={L - 8} y={y + 3} textAnchor="end" fill={NEUTRAL} fontSize="10" fontFamily="monospace">
+                        {pcTickLabel(tk)}
+                      </text>
+                    </g>
+                  );
+                })}
+                {data.map((d, i) => {
+                  const cx = xAt(i);
+                  const half = n === 1 ? iW / 2 : iW / (n - 1) / 2;
+                  return (
+                    <rect
+                      key={`hit-${d.key}`}
+                      x={cx - half} y={T} width={half * 2} height={iH}
+                      fill={activeKey === d.key ? "rgba(161,106,46,0.10)" : "transparent"}
+                      className={cn(onPeriodClick && "cursor-pointer")}
+                      onClick={() => onPeriodClick?.(d.key)}
+                    >
+                      <title>{`${d.label} · In ${formatRM(d.in)} · Out ${formatRM(d.out)} · Net ${formatRM(d.net)}`}</title>
+                    </rect>
+                  );
+                })}
+                <path d={areaPath(ins)} fill="url(#pc-in)" />
+                <path d={areaPath(outs)} fill="url(#pc-out)" />
+                <path d={pcSmooth(pts(ins))} fill="none" stroke={IN} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+                <path d={pcSmooth(pts(outs))} fill="none" stroke={OUT} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+                <path d={pcSmooth(pts(nets))} fill="none" stroke={NET} strokeWidth={2} strokeDasharray="6 4" strokeLinejoin="round" strokeLinecap="round" />
+                {pts(ins).map(([x, y], i) => (
+                  <circle key={`di-${i}`} cx={x} cy={y} r={3} fill={IN} stroke="#fff" strokeWidth={1.2} />
                 ))}
-              </div>
-              <svg
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-                className="pointer-events-none absolute inset-0 h-full w-full"
-              >
-                <polygon points={area((d) => d.in)} fill={IN} opacity={0.08} />
-                <polygon points={area((d) => d.out)} fill={OUT} opacity={0.07} />
-                <polyline
-                  points={pts((d) => d.in)}
-                  fill="none"
-                  stroke={IN}
-                  strokeWidth={2}
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                  vectorEffect="non-scaling-stroke"
-                />
-                <polyline
-                  points={pts((d) => d.out)}
-                  fill="none"
-                  stroke={OUT}
-                  strokeWidth={2}
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                  vectorEffect="non-scaling-stroke"
-                />
+                {pts(outs).map(([x, y], i) => (
+                  <circle key={`do-${i}`} cx={x} cy={y} r={3} fill={OUT} stroke="#fff" strokeWidth={1.2} />
+                ))}
+                {data.map((d, i) => (
+                  <text key={`xl-${d.key}`} x={xAt(i)} y={H - 8} textAnchor="middle" fill={NEUTRAL} fontSize="10" fontFamily="monospace">
+                    {d.label}
+                  </text>
+                ))}
               </svg>
-              {/* round dots (HTML, so they stay circular under the stretch) */}
-              {data.map((d, i) => (
-                <span
-                  key={`in-${d.month}`}
-                  className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-synced"
-                  style={{ left: `${xAt(i)}%`, top: `${yAt(d.in)}%` }}
-                  title={`${monthLabel(d.month)} · In ${formatRM(d.in)}`}
-                />
-              ))}
-              {data.map((d, i) => (
-                <span
-                  key={`out-${d.month}`}
-                  className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-err"
-                  style={{ left: `${xAt(i)}%`, top: `${yAt(d.out)}%` }}
-                  title={`${monthLabel(d.month)} · Out ${formatRM(d.out)}`}
-                />
-              ))}
-              {/* month axis */}
-              {data.map((d, i) => (
-                <span
-                  key={`lbl-${d.month}`}
-                  className="pointer-events-none absolute bottom-0 -translate-x-1/2 font-mono text-[9px] text-ink-muted"
-                  style={{ left: `${xAt(i)}%` }}
-                >
-                  {monthLabel(d.month)}
-                </span>
-              ))}
+              <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[10px] font-medium text-ink-secondary">
+                <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-3.5 rounded-sm" style={{ background: IN }} /> Cash inflows</span>
+                <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-3.5 rounded-sm" style={{ background: OUT }} /> Cash outflows</span>
+                <span className="inline-flex items-center gap-1.5"><span className="inline-block h-0 w-4 border-t-2 border-dashed" style={{ borderColor: NET }} /> Net cash position</span>
+                <span className="inline-flex items-center gap-1.5"><span className="inline-block h-0 w-4 border-t border-dotted border-ink-muted" /> $0 baseline</span>
+              </div>
             </div>
           );
         })()
