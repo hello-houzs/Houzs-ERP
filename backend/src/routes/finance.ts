@@ -286,8 +286,7 @@ app.get("/pnl", requirePermission("projects.read"), async (c) => {
 
 // ── GET /api/finance/pnl/bucket?start=YYYY-MM-DD&end=YYYY-MM-DD ──
 // Drill-down: returns the contributing rows for a single bucket
-// (whatever granularity). Replaces /pnl/month but the old endpoint is
-// still served for backwards compatibility.
+// (whatever granularity).
 
 async function bucketDrilldown(env: Env, start: string, end: string) {
   const [sales, projectLines, cases, poLines] = await Promise.all([
@@ -364,28 +363,6 @@ app.get("/pnl/bucket", requirePermission("projects.read"), async (c) => {
   }
   const data = await bucketDrilldown(c.env, start, end);
   return c.json({ start, end, ...data });
-});
-
-// Legacy month drilldown — preserved so older deployments of the
-// frontend keep working until cache busts. Translates (year, month)
-// into (start, endExclusive) and forwards.
-app.get("/pnl/month", requirePermission("projects.read"), async (c) => {
-  const yearParam = c.req.query("year");
-  const monthParam = c.req.query("month");
-  const year = yearParam ? parseInt(yearParam, 10) : NaN;
-  const month = monthParam ? parseInt(monthParam, 10) : NaN;
-  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
-    return c.json({ error: "invalid year" }, 400);
-  }
-  if (!Number.isInteger(month) || month < 1 || month > 12) {
-    return c.json({ error: "invalid month" }, 400);
-  }
-  const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
-  const nextMonth = month === 12 ? 1 : month + 1;
-  const nextYear = month === 12 ? year + 1 : year;
-  const endExclusive = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`;
-  const data = await bucketDrilldown(c.env, startDate, endExclusive);
-  return c.json({ year, month, ...data });
 });
 
 export default app;
