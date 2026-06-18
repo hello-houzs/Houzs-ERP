@@ -161,6 +161,11 @@ export const NAV_TABS: NavTab[] = [
     children: [
       { to: "/sales-orders", label: "Sales Orders", icon: ShoppingBag, perm: "*" },
       { to: "/mrp", label: "MRP · Stock Status", icon: Gauge, perm: "*" },
+      // Products & Maintenance (#58) — FULL furniture catalogue + pricing engine.
+      { to: "/products", label: "SKU Master", icon: Boxes, perm: "*" },
+      { to: "/product-models", label: "Product Models", icon: Package, perm: "*" },
+      { to: "/fabric-converter", label: "Fabric Converter", icon: Wrench, perm: "*" },
+      { to: "/maintenance", label: "Maintenance", icon: Wrench, perm: "*" },
       { to: "/delivery-orders", label: "Delivery Orders", icon: Truck, perm: "*" },
       { to: "/sales-invoices", label: "Sales Invoices", icon: Receipt, perm: "*" },
       { to: "/delivery-returns", label: "Delivery Returns", icon: Undo2, perm: "*" },

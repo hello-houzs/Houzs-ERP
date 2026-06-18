@@ -111,6 +111,12 @@ const ScmCrReturnDetail = lazy(() => import("./pages/scm/ConsignmentReturnDetail
 // (demand vs supply vs shortage). Furniture category tabs + sofa-SETs dropped
 // per Strategy-2; one generic flat list. /api/mrp backs it.
 const ScmMrp = lazy(() => import("./pages/scm/Mrp").then((m) => ({ default: m.Mrp })));
+// Products & Maintenance slice (#58) — FULL furniture catalogue + pricing engine.
+const ScmProducts = lazy(() => import("./pages/scm/Products").then((m) => ({ default: m.Products })));
+const ScmProductModels = lazy(() => import("./pages/scm/ProductModels").then((m) => ({ default: m.ProductModels })));
+const ScmProductModelDetail = lazy(() => import("./pages/scm/ProductModelDetail").then((m) => ({ default: m.ProductModelDetail })));
+const ScmFabricTracking = lazy(() => import("./pages/scm/FabricTracking").then((m) => ({ default: m.FabricTracking })));
+const ScmMaintenance = lazy(() => import("./pages/scm/Maintenance").then((m) => ({ default: m.Maintenance })));
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
@@ -694,6 +700,14 @@ export default function App() {
         {/* Supply Chain — MRP · Stock Status (1:1 clone of 2990s, pages/scm/*).
             Owner-only (perm "*"). /api/mrp backs it (pure read-only planner). */}
         <Route path="/mrp" element={<Guard perm="*"><ScmMrp /></Guard>} />
+        {/* Products & Maintenance (#58) — FULL furniture catalogue + pricing
+            engine clone (NOT Strategy-2-stripped). Owner-only (perm "*").
+            Static /product-models/:id after the list route. */}
+        <Route path="/products" element={<Guard perm="*"><ScmProducts /></Guard>} />
+        <Route path="/product-models" element={<Guard perm="*"><ScmProductModels /></Guard>} />
+        <Route path="/product-models/:id" element={<Guard perm="*"><ScmProductModelDetail /></Guard>} />
+        <Route path="/fabric-converter" element={<Guard perm="*"><ScmFabricTracking /></Guard>} />
+        <Route path="/maintenance" element={<Guard perm="*"><ScmMaintenance /></Guard>} />
         <Route
           path="/sales"
           element={

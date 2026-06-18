@@ -60,6 +60,18 @@ import consignmentNotes from "./routes/consignment-notes";
 import consignmentReturns from "./routes/consignment-returns";
 import mrp from "./routes/mrp";
 import mrpLeadTimes from "./routes/mrp-lead-times";
+// Products & Maintenance slice (#58) — FULL furniture catalogue + pricing engine.
+import productsRoute from "./routes/products";
+import categoriesRoute from "./routes/categories";
+import productModelsRoute from "./routes/product-models";
+import mfgProductsRoute from "./routes/mfg-products";
+import maintenanceConfigRoute from "./routes/maintenance-config";
+import fabricTrackingRoute from "./routes/fabric-tracking";
+import fabricLibraryRoute from "./routes/fabric-library";
+import fabricTierAddonRoute from "./routes/fabric-tier-addon";
+import pwpCodesRoute from "./routes/pwp-codes";
+import pwpRulesRoute from "./routes/pwp-rules";
+import sofaCombosRoute from "./routes/sofa-combos";
 import mfgWarehouses from "./routes/warehouse";
 import stockItems from "./routes/stockItems";
 import assrPrint from "./routes/assr_print";
@@ -247,6 +259,21 @@ app.route("/api/consignment-returns", consignmentReturns);
 // Owner-only (perm "*").
 app.route("/api/mrp", mrp);
 app.route("/api/mrp-lead-times", mrpLeadTimes);
+// Products & Maintenance slice (#58) — FULL clone of 2990s's furniture catalogue
+// + pricing engine (NOT Strategy-2-stripped; owner: clone it all). All routes
+// owner-only (perm "*"); BARE table names (migration 0033). /products = retail
+// catalogue, /mfg-products = manufacturer SKU master.
+app.route("/api/products", productsRoute);
+app.route("/api/categories", categoriesRoute);
+app.route("/api/product-models", productModelsRoute);
+app.route("/api/mfg-products", mfgProductsRoute);
+app.route("/api/maintenance-config", maintenanceConfigRoute);
+app.route("/api/fabric-tracking", fabricTrackingRoute);
+app.route("/api/fabric-library", fabricLibraryRoute);
+app.route("/api/fabric-tier-addon", fabricTierAddonRoute);
+app.route("/api/pwp-codes", pwpCodesRoute);
+app.route("/api/pwp-rules", pwpRulesRoute);
+app.route("/api/sofa-combos", sofaCombosRoute);
 app.route("/api/stockitems", stockItems);
 app.route("/api/assr-print", assrPrint);
 app.route("/api/gamify", gamify);

@@ -3148,3 +3148,499 @@ export const mrpCategoryLeadTimes = pgTable('mrp_category_lead_times', {
   leadDays:   integer('lead_days').notNull().default(0),
   updatedAt:  timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// PRODUCTS & MAINTENANCE (slice #58). FULL clone of 2990s's furniture catalogue
+// + pricing engine (owner: clone it all, modify later — NOT Strategy-2-stripped
+// like the doc-flow slices). 1:1 with 2990s packages/db/src/schema.ts (retail
+// block ~226-498, mfg block ~1844-2282), cross-checked against the live routes.
+// Migration: 0033_products_maintenance.sql. All BARE names (no Houzs collision).
+//
+// SEAMS (canonical rules): staff.id (uuid) refs -> Houzs users.id INTEGER
+// soft-refs (created_by/updated_by/changed_by/owner_staff_id are integer, NO FK
+// to users); customer_id -> FK customers(id); supplier_id -> FK suppliers(id);
+// product_models/mfg_products intra-refs are real FKs; money kept verbatim
+// (retail = whole-MYR integer, mfg = *_centi / *_sen integer).
+// ════════════════════════════════════════════════════════════════════════════
+
+export const pricingKind = pgEnum('pricing_kind', [
+  'size_variants', 'sofa_build', 'bedframe_build', 'flat', 'tbc',
+]);
+export const compGroup = pgEnum('comp_group', [
+  '1-seater', '2-seater', 'Corner', 'L-Shape', 'Accessory',
+]);
+export const mfgProductCategory = pgEnum('mfg_product_category', [
+  'SOFA', 'BEDFRAME', 'ACCESSORY', 'MATTRESS', 'SERVICE',
+]);
+export const mfgProductStatus = pgEnum('mfg_product_status', ['ACTIVE', 'INACTIVE']);
+export const fabricCategory = pgEnum('fabric_category', [
+  'B.M-FABR', 'S-FABR', 'S.M-FABR', 'LINING', 'WEBBING',
+]);
+export const fabricPriceTier = pgEnum('fabric_price_tier', ['PRICE_1', 'PRICE_2', 'PRICE_3']);
+export const addonKind = pgEnum('addon_kind', ['qty', 'floors_items', 'flat']);
+
+// ── Library tables (retail catalogue) ────────────────────────────────────
+export const categories = pgTable('categories', {
+  id:           text('id').primaryKey(),
+  label:        text('label').notNull(),
+  icon:         text('icon').notNull(),
+  tbc:          boolean('tbc').notNull().default(false),
+  heroImageKey: text('hero_image_key'),
+  sortOrder:    integer('sort_order').notNull().default(0),
+});
+
+export const series = pgTable('series', {
+  id:     text('id').primaryKey(),
+  label:  text('label').notNull(),
+  active: boolean('active').notNull().default(true),
+});
+
+export const compartmentLibrary = pgTable('compartment_library', {
+  id:           text('id').primaryKey(),
+  compGroup:    compGroup('comp_group').notNull(),
+  label:        text('label').notNull(),
+  widthCm:      integer('width_cm').notNull(),
+  depthCm:      integer('depth_cm').notNull(),
+  cushions:     integer('cushions').notNull().default(1),
+  defaultPrice: integer('default_price').notNull(),
+  artFilename:  text('art_filename'),
+  isAccessory:  boolean('is_accessory').notNull().default(false),
+  sortOrder:    integer('sort_order').notNull().default(0),
+});
+
+export const bundleLibrary = pgTable('bundle_library', {
+  id:           text('id').primaryKey(),
+  label:        text('label').notNull(),
+  sub:          text('sub').notNull(),
+  signature:    text('signature').notNull(),
+  baseWidthCm:  integer('base_width_cm').notNull(),
+  baseDepthCm:  integer('base_depth_cm').notNull(),
+  cushions:     integer('cushions').notNull(),
+  defaultPrice: integer('default_price').notNull(),
+  artLeft:      text('art_left'),
+  artRight:     text('art_right'),
+  artBase:      text('art_base'),
+  sortOrder:    integer('sort_order').notNull().default(0),
+});
+
+export const sizeLibrary = pgTable('size_library', {
+  id:        text('id').primaryKey(),
+  label:     text('label').notNull(),
+  widthCm:   integer('width_cm').notNull(),
+  lengthCm:  integer('length_cm').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+});
+
+// ── products (retail SKU master) ─────────────────────────────────────────
+// updatedBy -> users.id INTEGER soft-ref (staff seam). supplierId -> FK suppliers.
+export const products = pgTable('products', {
+  id:                   uuid('id').primaryKey().defaultRandom(),
+  sku:                  text('sku').notNull().unique(),
+  categoryId:           text('category_id').notNull().references(() => categories.id),
+  seriesId:             text('series_id').references(() => series.id),
+  pricingKind:          pricingKind('pricing_kind').notNull().default('tbc'),
+  name:                 text('name').notNull(),
+  modelCode:            text('model_code'),
+  detail:               text('detail'),
+  sizeDisplay:          text('size_display'),
+  imgKey:               text('img_key'),
+  thumbKey:             text('thumb_key'),
+  stock:                integer('stock').notNull().default(0),
+  lowAt:                integer('low_at').notNull().default(5),
+  visible:              boolean('visible').notNull().default(true),
+  flatPrice:            integer('flat_price'),
+  reclinerUpgradePrice: integer('recliner_upgrade_price'),
+  seatUpgradeLabel:     text('seat_upgrade_label'),
+  seatUpgradeFootrest:  boolean('seat_upgrade_footrest').notNull().default(true),
+  depthOptions:         text('depth_options'),
+  createdAt:            timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:            timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy:            integer('updated_by'),
+  supplierId:           uuid('supplier_id').references(() => suppliers.id, { onDelete: 'restrict' }),
+}, (t) => ({
+  visibleIdx:  index('idx_products_visible').on(t.visible).where(sql`${t.visible} = TRUE`),
+  categoryIdx: index('idx_products_category').on(t.categoryId),
+}));
+
+export const productSizeVariants = pgTable('product_size_variants', {
+  productId: uuid('product_id').notNull().references(() => products.id, { onDelete: 'cascade' }),
+  sizeId:    text('size_id').notNull().references(() => sizeLibrary.id),
+  active:    boolean('active').notNull().default(true),
+  price:     integer('price').notNull(),
+}, (t) => ({ pk: primaryKey({ columns: [t.productId, t.sizeId] }) }));
+
+export const productCompartments = pgTable('product_compartments', {
+  productId:     uuid('product_id').notNull().references(() => products.id, { onDelete: 'cascade' }),
+  compartmentId: text('compartment_id').notNull().references(() => compartmentLibrary.id),
+  active:        boolean('active').notNull().default(true),
+  price:         integer('price').notNull(),
+}, (t) => ({ pk: primaryKey({ columns: [t.productId, t.compartmentId] }) }));
+
+export const productBundles = pgTable('product_bundles', {
+  productId: uuid('product_id').notNull().references(() => products.id, { onDelete: 'cascade' }),
+  bundleId:  text('bundle_id').notNull().references(() => bundleLibrary.id),
+  active:    boolean('active').notNull().default(true),
+  price:     integer('price').notNull(),
+}, (t) => ({ pk: primaryKey({ columns: [t.productId, t.bundleId] }) }));
+
+// ── Sofa fabric & colour (retail) ────────────────────────────────────────
+export const fabricLibrary = pgTable('fabric_library', {
+  id:               text('id').primaryKey(),
+  label:            text('label').notNull(),
+  tier:             text('tier').notNull().default('standard'),
+  defaultSurcharge: integer('default_surcharge').notNull().default(0),
+  swatchKey:        text('swatch_key'),
+  active:           boolean('active').notNull().default(true),
+  sortOrder:        integer('sort_order').notNull().default(0),
+  sofaTier:         text('sofa_tier'),
+  bedframeTier:     text('bedframe_tier'),
+  fabricCode:       text('fabric_code'),
+});
+
+export const fabricColours = pgTable('fabric_colours', {
+  fabricId:  text('fabric_id').notNull().references(() => fabricLibrary.id, { onDelete: 'cascade' }),
+  colourId:  text('colour_id').notNull(),
+  label:     text('label').notNull(),
+  swatchHex: text('swatch_hex'),
+  swatchKey: text('swatch_key'),
+  active:    boolean('active').notNull().default(true),
+  sortOrder: integer('sort_order').notNull().default(0),
+}, (t) => ({ pk: primaryKey({ columns: [t.fabricId, t.colourId] }) }));
+
+export const productFabrics = pgTable('product_fabrics', {
+  productId: uuid('product_id').notNull().references(() => products.id, { onDelete: 'cascade' }),
+  fabricId:  text('fabric_id').notNull().references(() => fabricLibrary.id),
+  active:    boolean('active').notNull().default(true),
+  surcharge: integer('surcharge').notNull().default(0),
+}, (t) => ({ pk: primaryKey({ columns: [t.productId, t.fabricId] }) }));
+
+// Singleton (id=1). updatedBy -> users.id INTEGER soft-ref.
+export const fabricTierAddonConfig = pgTable('fabric_tier_addon_config', {
+  id:                 integer('id').primaryKey().default(1),
+  sofaTier2Delta:     integer('sofa_tier2_delta').notNull().default(0),
+  sofaTier3Delta:     integer('sofa_tier3_delta').notNull().default(0),
+  bedframeTier2Delta: integer('bedframe_tier2_delta').notNull().default(0),
+  bedframeTier3Delta: integer('bedframe_tier3_delta').notNull().default(0),
+  updatedAt:          timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy:          integer('updated_by'),
+});
+
+// ── Bedframe configurator (retail) ───────────────────────────────────────
+export const bedframeColours = pgTable('bedframe_colours', {
+  id:        text('id').primaryKey(),
+  label:     text('label').notNull(),
+  swatchHex: text('swatch_hex'),
+  surcharge: integer('surcharge').notNull().default(0),
+  active:    boolean('active').notNull().default(true),
+  sortOrder: integer('sort_order').notNull().default(0),
+});
+
+export const productBedframeColours = pgTable('product_bedframe_colours', {
+  productId: uuid('product_id').notNull().references(() => products.id, { onDelete: 'cascade' }),
+  colourId:  text('colour_id').notNull().references(() => bedframeColours.id),
+  active:    boolean('active').notNull().default(true),
+}, (t) => ({ pk: primaryKey({ columns: [t.productId, t.colourId] }) }));
+
+export const bedframeOptions = pgTable('bedframe_options', {
+  id:        text('id').primaryKey(),
+  kind:      text('kind').notNull(),
+  value:     text('value').notNull(),
+  surcharge: integer('surcharge').notNull().default(0),
+  active:    boolean('active').notNull().default(true),
+  sortOrder: integer('sort_order').notNull().default(0),
+}, (t) => ({ kindIdx: index('idx_bedframe_options_kind').on(t.kind) }));
+
+// ── Add-ons + special add-ons (Maintenance UI) ───────────────────────────
+// createdBy -> users.id INTEGER soft-ref.
+export const addons = pgTable('addons', {
+  id:             text('id').primaryKey(),
+  label:          text('label').notNull(),
+  description:    text('description'),
+  icon:           text('icon').notNull(),
+  kind:           addonKind('kind').notNull(),
+  price:          integer('price').notNull(),
+  perFloorItem:   integer('per_floor_item'),
+  unit:           text('unit'),
+  defaultQty:     integer('default_qty').notNull().default(1),
+  stock:          integer('stock'),
+  enabled:        boolean('enabled').notNull().default(true),
+  showAtHandover: boolean('show_at_handover').notNull().default(false),
+  serviceSku:     text('service_sku'),
+  sortOrder:      integer('sort_order').notNull().default(0),
+  updatedAt:      timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const specialAddons = pgTable('special_addons', {
+  id:              uuid('id').primaryKey().defaultRandom(),
+  code:            text('code').notNull().unique(),
+  label:           text('label').notNull(),
+  soDescription:   text('so_description').notNull().default(''),
+  categories:      text('categories').array().notNull().default(sql`'{}'::text[]`),
+  sellingPriceSen: integer('selling_price_sen').notNull().default(0),
+  costPriceSen:    integer('cost_price_sen').notNull().default(0),
+  optionGroups:    jsonb('option_groups').notNull().default(sql`'[]'::jsonb`),
+  active:          boolean('active').notNull().default(true),
+  sortOrder:       integer('sort_order').notNull().default(0),
+  createdAt:       timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:       timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:       integer('created_by'),
+});
+
+// ── product_models (template / second-layer, PR #49) ─────────────────────
+export const productModels = pgTable('product_models', {
+  id:             uuid('id').primaryKey().defaultRandom(),
+  branding:       text('branding'),
+  modelCode:      text('model_code').notNull(),
+  name:           text('name').notNull(),
+  category:       mfgProductCategory('category').notNull(),
+  description:    text('description'),
+  photoUrl:       text('photo_url'),
+  allowedOptions: jsonb('allowed_options').notNull().default({}),
+  active:         boolean('active').notNull().default(true),
+  createdAt:      timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:      timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  uniqCodeCategory: uniqueIndex('product_models_code_category_unique').on(t.modelCode, t.category),
+  idxCategory:      index('idx_product_models_category').on(t.category),
+}));
+
+// ── mfg_products (manufacturer SKU master) ───────────────────────────────
+// retailProductId -> FK products(id); modelId -> FK product_models(id).
+export const mfgProducts = pgTable('mfg_products', {
+  id:                    text('id').primaryKey(),
+  code:                  text('code').notNull(),
+  name:                  text('name').notNull(),
+  category:              mfgProductCategory('category').notNull(),
+  description:           text('description'),
+  baseModel:             text('base_model'),
+  sizeCode:              text('size_code'),
+  sizeLabel:             text('size_label'),
+  fabricUsage:           integer('fabric_usage_centi').notNull().default(0),
+  unitM3:                integer('unit_m3_milli').notNull().default(0),
+  status:                mfgProductStatus('status').notNull().default('ACTIVE'),
+  costPriceSen:          integer('cost_price_sen').notNull().default(0),
+  basePriceSen:          integer('base_price_sen'),
+  price1Sen:             integer('price1_sen'),
+  sellPriceSen:          integer('sell_price_sen'),
+  pwpPriceSen:           integer('pwp_price_sen').notNull().default(0),
+  posActive:             boolean('pos_active').notNull().default(true),
+  includedAddons:        jsonb('included_addons').notNull().default([]),
+  defaultFreeGifts:      jsonb('default_free_gifts').notNull().default([]),
+  productionTimeMinutes: integer('production_time_minutes').notNull().default(0),
+  subAssemblies:         jsonb('sub_assemblies'),
+  skuCode:               text('sku_code'),
+  fabricColor:           text('fabric_color'),
+  branding:              text('branding'),
+  barcode:               text('barcode'),
+  oneShot:               boolean('one_shot').notNull().default(false),
+  sourceDocNo:           text('source_doc_no'),
+  pieces:                jsonb('pieces'),
+  seatHeightPrices:      jsonb('seat_height_prices'),
+  defaultVariants:       jsonb('default_variants'),
+  retailProductId:       uuid('retail_product_id').references(() => products.id, { onDelete: 'set null' }),
+  modelId:               uuid('model_id').references(() => productModels.id, { onDelete: 'set null' }),
+  createdAt:             timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:             timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxCode:     index('idx_mfg_products_code').on(t.code),
+  idxCategory: index('idx_mfg_products_category').on(t.category),
+  idxBase:     index('idx_mfg_products_base_model').on(t.baseModel),
+  idxModelId:  index('idx_mfg_products_model_id').on(t.modelId),
+}));
+
+export const productDeptConfigs = pgTable('product_dept_configs', {
+  productCode:          text('product_code').primaryKey(),
+  unitM3Milli:          integer('unit_m3_milli').notNull().default(0),
+  fabricUsageCenti:     integer('fabric_usage_centi').notNull().default(0),
+  price2Sen:            integer('price2_sen').notNull().default(0),
+  fabCutCategory:       text('fab_cut_category'),
+  fabCutMinutes:        integer('fab_cut_minutes'),
+  fabSewCategory:       text('fab_sew_category'),
+  fabSewMinutes:        integer('fab_sew_minutes'),
+  woodCutCategory:      text('wood_cut_category'),
+  woodCutMinutes:       integer('wood_cut_minutes'),
+  foamCategory:         text('foam_category'),
+  foamMinutes:          integer('foam_minutes'),
+  framingCategory:      text('framing_category'),
+  framingMinutes:       integer('framing_minutes'),
+  upholsteryCategory:   text('upholstery_category'),
+  upholsteryMinutes:    integer('upholstery_minutes'),
+  packingCategory:      text('packing_category'),
+  packingMinutes:       integer('packing_minutes'),
+  subAssemblies:        jsonb('sub_assemblies'),
+  heightsSubAssemblies: jsonb('heights_sub_assemblies'),
+});
+
+// changedBy -> users.id INTEGER soft-ref.
+export const masterPriceHistory = pgTable('master_price_history', {
+  id:           uuid('id').primaryKey().defaultRandom(),
+  productCode:  text('product_code').notNull(),
+  field:        text('field').notNull(),
+  oldValueSen:  integer('old_value_sen'),
+  newValueSen:  integer('new_value_sen'),
+  reason:       text('reason'),
+  changedAt:    timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+  changedBy:    integer('changed_by'),
+}, (t) => ({ idxCode: index('idx_master_price_history_code').on(t.productCode) }));
+
+// ── sofa_combo_pricing (append-only effective-dated combo deals) ──────────
+// customerId -> FK customers; supplierId -> FK suppliers; createdBy -> users.id int.
+export const sofaComboPricing = pgTable('sofa_combo_pricing', {
+  id:                    uuid('id').primaryKey().defaultRandom(),
+  baseModel:             text('base_model').notNull(),
+  modules:              jsonb('modules').$type<string[][]>().notNull().default([]),
+  tier:                  fabricPriceTier('tier'),
+  customerId:            uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+  supplierId:            uuid('supplier_id').references(() => suppliers.id, { onDelete: 'cascade' }),
+  pricesByHeight:        jsonb('prices_by_height').notNull().default({}),
+  sellingPricesByHeight: jsonb('selling_prices_by_height').notNull().default({}),
+  pwpPricesByHeight:     jsonb('pwp_prices_by_height').notNull().default({}),
+  defaultFreeGifts:      jsonb('default_free_gifts').notNull().default([]),
+  label:                 text('label'),
+  effectiveFrom:         date('effective_from').notNull(),
+  deletedAt:             timestamp('deleted_at', { withTimezone: true }),
+  notes:                 text('notes'),
+  createdAt:             timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:             timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:             integer('created_by'),
+}, (t) => ({
+  idxLookup:   index('idx_sofa_combo_pricing_lookup').on(t.baseModel, t.tier, t.customerId, t.supplierId, t.effectiveFrom),
+  idxHistory:  index('idx_sofa_combo_pricing_history').on(t.baseModel, t.tier, t.customerId, t.supplierId, t.effectiveFrom, t.createdAt),
+  idxSupplier: index('idx_sofa_combo_pricing_supplier').on(t.supplierId),
+}));
+
+// ── pwp_rules / pwp_codes (换购 voucher) ──────────────────────────────────
+// createdBy / ownerStaffId -> users.id INTEGER soft-ref; customerId -> FK.
+export const pwpRules = pgTable('pwp_rules', {
+  id:                      uuid('id').primaryKey().defaultRandom(),
+  triggerCategory:         mfgProductCategory('trigger_category').notNull(),
+  triggerEligibleModelIds: jsonb('trigger_eligible_model_ids').$type<string[]>().notNull().default([]),
+  rewardCategory:          mfgProductCategory('reward_category').notNull(),
+  eligibleRewardModelIds:  jsonb('eligible_reward_model_ids').$type<string[]>().notNull().default([]),
+  triggerComboIds:         jsonb('trigger_combo_ids').$type<string[]>().notNull().default([]),
+  rewardComboIds:          jsonb('reward_combo_ids').$type<string[]>().notNull().default([]),
+  qtyPerTrigger:           integer('qty_per_trigger').notNull().default(1),
+  type:                    text('type').notNull().default('pwp'),
+  active:                  boolean('active').notNull().default(true),
+  createdAt:               timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:               timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:               integer('created_by'),
+});
+
+export const pwpCodes = pgTable('pwp_codes', {
+  code:                   text('code').primaryKey(),
+  ruleId:                 uuid('rule_id').references(() => pwpRules.id, { onDelete: 'set null' }),
+  rewardCategory:         mfgProductCategory('reward_category').notNull(),
+  eligibleRewardModelIds: jsonb('eligible_reward_model_ids').$type<string[]>().notNull().default([]),
+  rewardComboIds:         jsonb('reward_combo_ids').$type<string[]>().notNull().default([]),
+  type:                   text('type').notNull().default('pwp'),
+  status:                 text('status').notNull().default('RESERVED'),
+  ownerStaffId:           integer('owner_staff_id'),
+  cartLineKey:            text('cart_line_key'),
+  triggerItemCode:        text('trigger_item_code'),
+  sourceDocNo:            text('source_doc_no'),
+  redeemedDocNo:          text('redeemed_doc_no'),
+  redeemedItemCode:       text('redeemed_item_code'),
+  customerId:             uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
+  createdAt:              timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:              timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  idxOwnerStatus: index('idx_pwp_codes_owner_status').on(t.ownerStaffId, t.status),
+  idxCartLine:    index('idx_pwp_codes_cart_line').on(t.cartLineKey),
+  idxSourceDoc:   index('idx_pwp_codes_source_doc').on(t.sourceDocNo),
+}));
+
+// ── fabrics + fabric_trackings (Fabric Converter cost ledger) ────────────
+export const fabrics = pgTable('fabrics', {
+  id:           text('id').primaryKey(),
+  code:         text('code').notNull().unique(),
+  name:         text('name').notNull(),
+  category:     text('category'),
+  priceSen:     integer('price_sen').notNull().default(0),
+  sohMeters:    integer('soh_meters_centi').notNull().default(0),
+  reorderLevel: integer('reorder_level_centi').notNull().default(0),
+});
+
+export const fabricTrackings = pgTable('fabric_trackings', {
+  id:                  text('id').primaryKey(),
+  fabricCode:          text('fabric_code').notNull(),
+  fabricDescription:   text('fabric_description'),
+  fabricCategory:      fabricCategory('fabric_category'),
+  priceTier:           fabricPriceTier('price_tier'),
+  sofaPriceTier:       fabricPriceTier('sofa_price_tier'),
+  bedframePriceTier:   fabricPriceTier('bedframe_price_tier'),
+  priceCenti:          integer('price_centi').notNull().default(0),
+  sohCenti:            integer('soh_centi').notNull().default(0),
+  poOutstandingCenti:  integer('po_outstanding_centi').notNull().default(0),
+  lastMonthUsageCenti: integer('last_month_usage_centi').notNull().default(0),
+  oneWeekUsageCenti:   integer('one_week_usage_centi').notNull().default(0),
+  twoWeeksUsageCenti:  integer('two_weeks_usage_centi').notNull().default(0),
+  oneMonthUsageCenti:  integer('one_month_usage_centi').notNull().default(0),
+  shortageCenti:       integer('shortage_centi').notNull().default(0),
+  reorderPointCenti:   integer('reorder_point_centi').notNull().default(0),
+  supplier:            text('supplier'),
+  supplierCode:        text('supplier_code'),
+  leadTimeDays:        integer('lead_time_days').notNull().default(0),
+  series:              text('series'),
+  isActive:            boolean('is_active').notNull().default(true),
+}, (t) => ({
+  idxCode:   index('idx_fabric_trackings_code').on(t.fabricCode),
+  idxTier:   index('idx_fabric_trackings_tier').on(t.priceTier),
+  idxSeries: index('idx_fabric_trackings_series').on(t.series).where(sql`${t.series} IS NOT NULL`),
+}));
+
+// ── maintenance_config_history (variant config, effective-dated) ─────────
+// createdBy -> users.id INTEGER soft-ref. Canonical name (see migration header).
+export const maintenanceConfigHistory = pgTable('maintenance_config_history', {
+  id:            text('id').primaryKey(),
+  scope:         text('scope').notNull(),
+  config:        jsonb('config').notNull(),
+  effectiveFrom: date('effective_from').notNull(),
+  notes:         text('notes'),
+  createdAt:     timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy:     integer('created_by'),
+}, (t) => ({ idxScopeEff: index('idx_mch_scope_eff').on(t.scope, t.effectiveFrom) }));
+
+// ── Per-Model overrides ──────────────────────────────────────────────────
+// updatedBy -> users.id INTEGER soft-ref; modelId -> FK product_models(id).
+export const modelSpecialDeliveryFees = pgTable('model_special_delivery_fees', {
+  modelId:             uuid('model_id').primaryKey().references(() => productModels.id, { onDelete: 'cascade' }),
+  standaloneFee:       integer('standalone_fee').notNull().default(0),
+  crossCatFollowupFee: integer('cross_cat_followup_fee').notNull().default(0),
+  updatedAt:           timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy:           integer('updated_by'),
+});
+
+export const modelFabricTierOverrides = pgTable('model_fabric_tier_overrides', {
+  modelId:    uuid('model_id').primaryKey().references(() => productModels.id, { onDelete: 'cascade' }),
+  tier2Delta: integer('tier2_delta'),
+  tier3Delta: integer('tier3_delta'),
+  updatedAt:  timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy:  integer('updated_by'),
+});
+
+export const modelDefaultFreeGifts = pgTable('model_default_free_gifts', {
+  modelId:   uuid('model_id').primaryKey().references(() => productModels.id, { onDelete: 'cascade' }),
+  gifts:     jsonb('gifts').notNull().default([]),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: integer('updated_by'),
+});
+
+// ── sofa_quick_picks (global saved sofa layouts) ─────────────────────────
+// createdBy -> users.id INTEGER soft-ref.
+export const sofaQuickPicks = pgTable('sofa_quick_picks', {
+  id:        uuid('id').primaryKey().defaultRandom(),
+  baseModel: text('base_model').notNull(),
+  label:     text('label'),
+  modules:   jsonb('modules').$type<string[][]>().notNull().default([]),
+  depth:     text('depth').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+  active:    boolean('active').notNull().default(true),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy: integer('created_by'),
+}, (t) => ({
+  idxLookup: index('idx_sofa_quick_picks_lookup').on(t.baseModel, t.sortOrder).where(sql`${t.deletedAt} IS NULL`),
+}));
+

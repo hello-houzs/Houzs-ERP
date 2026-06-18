@@ -1,0 +1,428 @@
+/* ProductModels list — mirrors Suppliers/Products list-page styling.
+   PR #67 — embedded inside Products & Maintenance as a tab. Padding/margin
+   come from the parent shell, so the inner container is just a column. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 1280px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.titleRow h1 { margin: 0; }
+.count {
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+.searchBox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  width: 260px;
+  color: var(--fg-muted);
+}
+.searchBox input {
+  border: none;
+  outline: none;
+  background: transparent;
+  flex: 1;
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  color: var(--fg);
+}
+
+.chipRow {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.filterChip {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  padding: 4px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--c-paper);
+  color: var(--fg);
+  cursor: pointer;
+  transition: all 120ms ease-out;
+}
+.filterChip:hover { border-color: var(--c-orange); }
+.filterChipOn {
+  background: var(--fg);
+  color: var(--bg);
+  border-color: var(--fg);
+}
+
+.errorBanner {
+  padding: var(--space-3) var(--space-4);
+  background: rgba(184, 51, 31, 0.08);
+  color: var(--c-festive-b);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+}
+.loading {
+  padding: var(--space-5);
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+}
+.empty {
+  padding: var(--space-6);
+  background: var(--c-cream);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+/* ─── Section per category ────────────────────────────────────────────── */
+.section {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  box-shadow: var(--shadow-1);
+}
+.sectionTitle {
+  margin: 0 0 var(--space-3) 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-15);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.sectionCount {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+}
+.table th, .table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.table th {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+/* PR #108 — Commander 2026-05-26: row text colour was inconsistent
+   (some Name cells showed the orange link/hover state, others stayed
+   dark), and clicking required hitting the code chip or name link.
+   Whole row is now clickable; text uses one uniform tone, code chip
+   keeps its pill styling but stops carrying a separate <a> color. */
+/* PR #110 — Commander 2026-05-26: row-level click was triggering
+   accidental jumps. Reverted to chip-only as the click target. .row class
+   is left only so per-row hover hint can still flag where the chip lives,
+   without making the whole row clickable. */
+.row {
+  transition: background 100ms ease-out;
+}
+.row:hover {
+  background: var(--c-cream);
+}
+/* PR #110 — Commander 2026-05-26: "字体为什么没有 standardise". Live
+   inspection showed Code chip was running ui-monospace + 11px while
+   Name was Poppins + 12px → the columns looked like two different
+   typesetting systems on the same row. Aligned both to:
+     - var(--font-sans)  (Poppins everywhere — no mono pill)
+     - var(--fs-13)      (same size)
+     - 500 weight        (same visual gravity)
+   Code keeps the cream pill so it still reads as a "code" chip, but
+   the type itself matches the Name column letter-for-letter. */
+.codeChip {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  font-weight: 500;
+  background: var(--c-cream);
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--c-ink);
+  display: inline-block;
+  /* PR #137 — dropped letter-spacing: 0.01em so the chip's text renders
+     letter-for-letter identical to .nameText (commander: "字体 standardise
+     掉"). The pill wrapper stays for the visual code/name distinction.
+     PR #138 — UPPERCASE to match SKU Master / product code style
+     ("应该全部大写啊 像product code那样"). */
+  text-transform: uppercase;
+}
+
+/* PR #137 — whole-row double-click. Commander: "我希望指向那个 row，就可以
+   通过双击点进去". Single-click was reverted in PR #110 (triggered on
+   accidental scroll hovers); double-click is a deliberate action so it
+   reads as intent. */
+.modelRow {
+  cursor: pointer;
+}
+.modelRow:hover {
+  background: var(--c-cream);
+}
+.codeChipLink {
+  text-decoration: none;
+  display: inline-block;
+}
+.codeChipLink:hover .codeChip {
+  border-color: var(--c-orange);
+  color: var(--c-orange);
+  background: var(--c-paper);
+}
+.nameText {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  font-weight: 500;
+  color: var(--c-ink);
+  /* PR #138 — UPPERCASE so Name column matches Code chip ("还是要有全部
+     小写 应该全部大写啊 像product code那样"). */
+  text-transform: uppercase;
+}
+
+.statusPill {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--c-paper);
+  letter-spacing: 0.04em;
+}
+.statusPill.active {
+  background: rgba(38, 95, 73, 0.12);
+  color: var(--c-evergreen, #265F49);
+  border-color: rgba(38, 95, 73, 0.3);
+}
+.statusPill.inactive {
+  background: rgba(150, 150, 150, 0.12);
+  color: var(--fg-muted);
+}
+
+/* ─── New Model modal ─────────────────────────────────────────────────── */
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--c-cream);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-3);
+  width: min(480px, 95vw);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.modalTitle {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-17);
+  font-weight: 600;
+}
+.modalSub {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  color: var(--fg-muted);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.field input, .field select {
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--c-paper);
+  color: var(--fg);
+}
+.field input:focus, .field select:focus {
+  outline: none;
+  border-color: var(--c-orange);
+}
+.modalFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* ─── New Model bulk dialog — compact landscape layout ────────────────────
+   Commander 2026-05-26: "才两个就占满屏幕了。能不能做成长方形、大一点？
+   然后给整个 screen 的字体调小一点". The default `.field` styling is
+   designed for one-field-per-row dialogs; for the bulk Model creator
+   (3-6 rows on screen at once) we need ~50% denser typography + a single
+   horizontal field line per row. These classes scope the shrink to this
+   dialog so existing single-field forms keep their generous padding. */
+.modalCompact {
+  /* Override the .modal defaults — landscape, tighter padding/gap. */
+  width: min(1200px, 95vw) !important;
+  max-width: min(1200px, 95vw) !important;
+  padding: var(--space-4) var(--space-5);
+  gap: var(--space-3);
+}
+.modalCompact .modalTitle {
+  font-size: var(--fs-15);
+}
+.modalCompact .modalSub {
+  font-size: var(--fs-12);
+}
+.compactField {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  min-width: 0;
+}
+.compactField > span {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  line-height: 1.2;
+}
+.compactField input,
+.compactField select {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  padding: 6px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--c-paper);
+  color: var(--fg);
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.compactField input:focus,
+.compactField select:focus {
+  outline: none;
+  border-color: var(--c-orange);
+}
+.compactRowCard {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  background: var(--c-paper);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.compactRowFields {
+  display: grid;
+  gap: 8px;
+  align-items: end;
+}
+.compactRowBadge {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-orange);
+  padding-bottom: 7px;
+}
+.compactRowClose {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: var(--fs-14);
+  padding: 0 4px;
+  line-height: 1;
+  align-self: end;
+  padding-bottom: 8px;
+}
+.compactRowClose:hover {
+  color: var(--c-ink);
+}
+
+/* PR #65 — code-generation template preview inside the New Model dialog. */
+.tplBox {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.tplHead {
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+.tplRow {
+  display: grid;
+  grid-template-columns: 48px max-content 16px 1fr;
+  gap: var(--space-3);
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+}
+.tplLabel {
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  font-size: var(--fs-11);
+  letter-spacing: 0.06em;
+  font-family: var(--font-sans);
+}
+.tplFmt {
+  background: var(--c-cream);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--fg-muted);
+}
+.tplArrow {
+  color: var(--fg-muted);
+}
+.tplExample {
+  background: var(--c-orange);
+  color: var(--bg);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}

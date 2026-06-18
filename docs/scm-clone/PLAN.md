@@ -779,3 +779,78 @@ need translation.)
     pulled into this read-only MRP slice. The MRP read engine + lead-times are
     fully functional independent of it.
   - Migration `0032` NOT applied to any DB (batched for staging at #70).
+- **2026-06-18 — PRODUCTS & MAINTENANCE slice DONE (#58):** the BIGGEST slice and
+  the ONE exception to Strategy-2 — the owner wants the FULL furniture catalogue
+  + pricing engine cloned ("全部搬,办完了我再修改"), so it is NOT stripped here.
+  Migration `0033_products_maintenance.sql` (27 tables, 7 enums, all BARE names —
+  no Houzs collision). Schema appended to `schema.pg.ts` (camelCase keys + explicit
+  snake_case cols, rule #2). 11 routes mounted owner-only (`"*"`): `/api/products`
+  `/api/categories` `/api/product-models` `/api/mfg-products` `/api/maintenance-config`
+  `/api/fabric-tracking` `/api/fabric-library` `/api/fabric-tier-addon` `/api/pwp-codes`
+  `/api/pwp-rules` `/api/sofa-combos`. Pages in `pages/scm/`: Products (SKU Master),
+  ProductModels + ProductModelDetail, FabricTracking (Fabric Converter), Maintenance
+  (config hub) + `products-queries.ts`; the 4 `.module.css` brought VERBATIM (rule #6).
+  App.tsx routes (`/products`, `/product-models[/:id]`, `/fabric-converter`,
+  `/maintenance`, all `<Guard perm="*">`); Sidebar "SKU Master / Product Models /
+  Fabric Converter / Maintenance" under Supply Chain. **Both gates EXIT 0; window.*
+  grep on the 5 new pages = 0.**
+  - **Migration 0033 tables (27):** library — `categories`, `series`,
+    `compartment_library`, `bundle_library`, `size_library`; retail catalogue —
+    `products` + `product_size_variants`/`_compartments`/`_bundles`,
+    `fabric_library`, `fabric_colours`, `product_fabrics`, `fabric_tier_addon_config`
+    (seeded id=1), `bedframe_colours`, `product_bedframe_colours`, `bedframe_options`,
+    `addons`, `special_addons`; mfg/pricing — `product_models`, `mfg_products`,
+    `product_dept_configs`, `master_price_history`, `sofa_combo_pricing`, `pwp_rules`,
+    `pwp_codes`, `fabrics`, `fabric_trackings`, `maintenance_config_history`,
+    `model_special_delivery_fees`, `model_fabric_tier_overrides`,
+    `model_default_free_gifts`, `sofa_quick_picks`. **Enums (7):** `pricing_kind`,
+    `comp_group`, `mfg_product_category`, `mfg_product_status`, `fabric_category`,
+    `fabric_price_tier`, `addon_kind`.
+  - **Shared furniture-pricing packages PORTED (9, into Houzs `shared/`):**
+    `sofa-combo-pricing`, `maintenance-pools`, `mfg-pricing`, `sofa-tier`, `sofa-build`
+    (1666 lines), `fabric-tier-addon`, `variant-summary`, `free-gift`, `schemas/product`
+    (the zod product schema — the `@shared` zod-alias resolves it, rule #8). Copied
+    VERBATIM ("直接 copy paste"); added to the `shared/index.ts` barrel. ONE seam fix:
+    `sofa-build.ts:cellEdges` widened a tuple-typed local to `EdgeType[] | undefined`
+    for Houzs's stricter `noUncheckedIndexedAccess` (2990s's tsconfig didn't flag it).
+    Reused the already-ported `variant-key`.
+  - **schema.ts-vs-route STALENESS found:** (a) `mfgProducts.fabricUsage` etc are
+    present but PR #104 dropped them from the live route SELECT — kept the columns
+    for fidelity (the owner reconciles later). (b) `product-models.ts:409` queries a
+    table named `maintenance_config` which DOES NOT EXIST (the canonical table is
+    `maintenance_config_history`, 12 route call-sites + the 2990s migration 0039
+    CREATE); it's a 2990s route bug wrapped in a try/catch that falls back to static
+    SIZE_INFO — the Houzs clone reads the canonical `maintenance_config_history`.
+  - **SEAMS/deviations (NOT furniture-stripping — this slice keeps it all):**
+    PostgREST→Drizzle (rule #3); supabaseAuth + per-route staff-role gates
+    (EDIT_ROLES/CREATE_ROLES/WRITE_ROLES) → the module's owner-only `requirePermission("*")`
+    mount (rule #4); ALL staff.id (uuid) refs (created_by / updated_by / changed_by /
+    owner_staff_id) → users.id INTEGER soft-refs (rule #4); customer_id → FK
+    customers(id), supplier_id → FK suppliers(id) (cloned in 0024/0029); product_models
+    ↔ mfg_products intra-refs are real FKs; money kept verbatim (retail = whole-MYR
+    integer, mfg = *_centi/*_sen). `products` POST = the `create_product_with_pricing`
+    RPC translated to a Drizzle transaction (insert product + per-pricing-kind rows);
+    `mfg-products` activate-one-shot uses the same db handle (no service-role client);
+    sku-usage guard ported to Drizzle (PO line check uses `material_code` — Houzs's
+    cloned mfg_purchase_order_items has no `item_code` col, the supplier-binding
+    vocabulary). `lib/mfg-pricing-recompute.ts` ports ONLY `loadModelSofaModuleCosts`
+    (combo COST auto-detect); the full 2990s re-cost chain is out of scope.
+  - **DROPPED (R2 / SECURITY DEFINER not wired this slice — return 501 not_configured,
+    documented in-file):** category hero-image upload (PUBLIC_ASSETS bucket),
+    product-model photo proxy/upload/delete (SO_ITEM_PHOTOS bucket), maintenance-config
+    `/sofa-compartments/rename` cascade (rename_sofa_compartment SECURITY DEFINER fn).
+    The DELETE-photo endpoints still null the column.
+  - **DEFERRED (follow-up — pages are functional Houzs-native rebuilds, not 8000-line
+    verbatim ports):** the 2990s pages (Products 4777 / ProductModels 2176 /
+    ProductModelDetail 1331) are deeply POS-coupled (supabase client, @2990s/design-
+    system, useAuth, jspdf, the sofa configurator). The Houzs pages cover the core:
+    SKU Master (list + inline price/status edit + create + price history + delete),
+    Models (list + create + detail with allowed-options sizes/compartments editor +
+    Generate SKUs + SKU list), Fabric Converter (list + create + tier-cycle + inline
+    edits + active + delete), Maintenance (fabric-tier deltas editor + categories +
+    PWP rules + sofa-combo summary). The advanced editors — full sofa-combo BUILDER UI,
+    the effective-dated maintenance_config blob editor, per-SKU variant drawer, CSV
+    export/import (the `/bulk-upsert` + `/batch-import` ROUTES are cloned), R2 photo
+    uploader, the SalesOrderMaintenance + Addons pages — are the documented next step.
+    Backend is COMPLETE (all 11 routes + the pricing engine compile + are mounted).
+  - Migration `0033` NOT applied to any DB (batched for staging at #70).
