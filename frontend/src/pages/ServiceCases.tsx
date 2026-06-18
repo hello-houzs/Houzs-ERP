@@ -2322,9 +2322,20 @@ function DetailContent({
         { label: "Service Cases", to: "/assr" },
         { label: c?.assr_no || "Loading…" },
       ]}
-      eyebrow={c?.assr_no ? `Service Case · ${c.assr_no}` : "Service Case"}
-      title={c?.customer_name || "Loading…"}
-      description={c ? `Stage: ${c.stage}${c.priority ? ` · Priority ${c.priority}` : ""}${c.assigned_to_name ? ` · Assigned ${c.assigned_to_name}` : ""}` : undefined}
+      eyebrow="Service Case"
+      title={c?.assr_no || "Loading…"}
+      description={
+        c
+          ? [
+              c.customer_name || "—",
+              c.ref_no ? `Ref ${c.ref_no}` : null,
+              `Stage: ${caseStageLabel(c.stage)}`,
+              c.assigned_to_name ? `Assigned ${c.assigned_to_name}` : null,
+            ]
+              .filter(Boolean)
+              .join("  ·  ")
+          : undefined
+      }
       backTo="/assr"
       loading={detail.loading && !c}
       error={detail.error}
@@ -2365,30 +2376,8 @@ function DetailContent({
                 Archive
               </HeaderButton>
             )}
-            {/* Free-form stage picker (mig 064) — any → any. The
-                old "next stage" linear button is gone; ops can revert
-                a closed case or skip ahead when supplier ships direct.
-                Closing still gets a one-click button when the case
-                is at resolution since that's the most common path. */}
-            {!c.archived_at && (
-              <select
-                value={c.stage}
-                onChange={(e) => transition(e.target.value as AssrStage)}
-                disabled={transitioning}
-                className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-accent disabled:opacity-60"
-                title="Move this case to any stage"
-              >
-                <option value="pending_review">Pending Review</option>
-                <option value="under_verification">Under Verification</option>
-                <option value="pending_solution">Pending Solution</option>
-                <option value="pending_inspection">Pending Inspection</option>
-                <option value="pending_item_pickup">Pending Item Pickup</option>
-                <option value="pending_supplier_pickup">Pending Supplier Pickup</option>
-                <option value="pending_item_ready">Pending Item Ready</option>
-                <option value="pending_delivery_service">Pending Delivery / Service</option>
-                <option value="completed">Completed</option>
-              </select>
-            )}
+            {/* Stage picker moved into the Workflow Progress card below
+                (rendered as "Change to"), matching the case-detail layout. */}
             {c.stage === "pending_delivery_service" && !c.archived_at && (
               <HeaderButton
                 variant="primary"
@@ -2440,6 +2429,35 @@ function DetailContent({
 
           {/* v3.1 Workflow Progress Tracker — 9-step stepper, top of detail */}
           <div className="border-b border-border bg-bg/40 px-5 py-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-secondary">
+                Workflow Progress
+              </span>
+              {!c.archived_at && (
+                <label className="inline-flex items-center gap-2">
+                  <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                    Change to
+                  </span>
+                  <select
+                    value={c.stage}
+                    onChange={(e) => transition(e.target.value as AssrStage)}
+                    disabled={transitioning}
+                    className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-accent disabled:opacity-60"
+                    title="Move this case to any stage"
+                  >
+                    <option value="pending_review">Pending Review</option>
+                    <option value="under_verification">Under Verification</option>
+                    <option value="pending_solution">Pending Solution</option>
+                    <option value="pending_inspection">Pending Inspection</option>
+                    <option value="pending_item_pickup">Pending Item Pickup</option>
+                    <option value="pending_supplier_pickup">Pending Supplier Pickup</option>
+                    <option value="pending_item_ready">Pending Item Ready</option>
+                    <option value="pending_delivery_service">Pending Delivery / Service</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </label>
+              )}
+            </div>
             <ServiceProgressTracker
               history={(detail.data as any)?.stage_history ?? []}
               currentStage={c.stage}
