@@ -1,11 +1,16 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Plus } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
+import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
+import { Panel } from "../../components/Panel";
 import { useQuery } from "../../hooks/useQuery";
+import { useToast } from "../../hooks/useToast";
 import { api, buildQuery } from "../../api/client";
 import { SCM, scmStatusClasses } from "../../lib/scm";
 import { cn } from "../../lib/utils";
+import { Field, Input, Select } from "./Suppliers";
 
 // Response shape from GET /api/scm/product-models — snake_case, verbatim from
 // the Hono route (backend/src/scm/routes/product-models.ts `productModels.get('/')`).
@@ -56,6 +61,7 @@ export function ScmProductModels() {
   const navigate = useNavigate();
   const [category, setCategory] = useState<Category>("all");
   const [search, setSearch] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
 
   // The route filters by category server-side, but has no ?search= param —
   // it returns the full (optionally category-scoped) set ordered by
@@ -130,6 +136,11 @@ export function ScmProductModels() {
         eyebrow="Supply Chain"
         title="Product Models"
         description="Model templates that group product SKUs by base model. Open one to see its variant SKUs."
+        primaryAction={
+          <Button icon={<Plus size={15} />} onClick={() => setShowCreate(true)}>
+            New Model
+          </Button>
+        }
       />
 
       {/* Category filter chips */}
@@ -166,6 +177,121 @@ export function ScmProductModels() {
         emptyLabel="No product models found"
         exportName="product-models"
       />
+
+      {showCreate && (
+        <CreateProductModelPanel
+          onClose={() => setShowCreate(false)}
+          onCreated={(id) => {
+            setShowCreate(false);
+            list.reload();
+            navigate(`/scm/product-models/${id}`);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// Real category values (drops the list's "all" sentinel) — mirrors the route's
+// CATEGORIES enum. Category is set at create time and cannot be patched later
+// (it would orphan SKUs in the other category — see PATCH route).
+const MODEL_CATEGORIES = ["SOFA", "BEDFRAME", "MATTRESS", "ACCESSORY", "SERVICE"];
+
+function CreateProductModelPanel({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    modelCode: "",
+    name: "",
+    category: "SOFA",
+    branding: "",
+    description: "",
+  });
+  const dirty =
+    form.modelCode.trim() !== "" ||
+    form.name.trim() !== "" ||
+    form.branding.trim() !== "" ||
+    form.description.trim() !== "" ||
+    form.category !== "SOFA";
+  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  async function submit() {
+    if (!form.modelCode.trim()) {
+      toast.error("Model code is required");
+      return;
+    }
+    if (!form.name.trim()) {
+      toast.error("Name is required");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await api.post<{ model: { id: string } }>(`${SCM}/product-models`, {
+        modelCode: form.modelCode.trim(),
+        name: form.name.trim(),
+        category: form.category,
+        branding: form.branding.trim() || undefined,
+        description: form.description.trim() || undefined,
+      });
+      toast.success("Model created");
+      onCreated(res.model.id);
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? "");
+      toast.error(msg.includes("duplicate_code") ? "That model code already exists" : "Failed to create model");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Panel
+      open
+      onClose={onClose}
+      dirty={dirty}
+      onAttemptClose={onClose}
+      title="New Model"
+      subtitle="Create a model template. Add the allowed-options pools after saving."
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={saving}>
+            {saving ? "Saving…" : "Create Model"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3">
+        <Field label="Model Code" required>
+          <Input value={form.modelCode} onChange={(v) => set("modelCode", v)} placeholder="e.g. 5530" />
+        </Field>
+        <Field label="Name" required>
+          <Input value={form.name} onChange={(v) => set("name", v)} placeholder="e.g. SOFA 5530" />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Category" required>
+            <Select value={form.category} onChange={(v) => set("category", v)} options={MODEL_CATEGORIES} />
+          </Field>
+          <Field label="Branding">
+            <Input value={form.branding} onChange={(v) => set("branding", v)} placeholder="optional" />
+          </Field>
+        </div>
+        <Field label="Description">
+          <textarea
+            value={form.description}
+            onChange={(e) => set("description", e.target.value)}
+            rows={3}
+            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+          />
+        </Field>
+      </div>
+    </Panel>
   );
 }

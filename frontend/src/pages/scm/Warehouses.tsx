@@ -1,11 +1,15 @@
 import { useState } from "react";
-import { Star } from "lucide-react";
+import { Plus, Star, Pencil } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
+import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
+import { Panel } from "../../components/Panel";
 import { useQuery } from "../../hooks/useQuery";
+import { useToast } from "../../hooks/useToast";
 import { api, buildQuery } from "../../api/client";
 import { SCM, scmStatusClasses } from "../../lib/scm";
 import { cn } from "../../lib/utils";
+import { Field, Input } from "./Suppliers";
 
 // Response shape from GET /api/scm/inventory/warehouses — snake_case, verbatim
 // from the Hono route (backend/src/scm/routes/inventory.ts `inventory.get('/warehouses')`).
@@ -38,6 +42,8 @@ function StatusPill({ active }: { active: boolean }) {
 export function ScmWarehouses() {
   const [includeInactive, setIncludeInactive] = useState(false);
   const [search, setSearch] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
+  const [editing, setEditing] = useState<WarehouseRow | null>(null);
 
   const list = useQuery<{ warehouses: WarehouseRow[] }>(
     () =>
@@ -99,6 +105,25 @@ export function ScmWarehouses() {
       render: (w) => <StatusPill active={w.is_active} />,
       getValue: (w) => (w.is_active ? "Active" : "Inactive"),
     },
+    {
+      key: "actions",
+      label: "",
+      align: "right",
+      disableSort: true,
+      render: (w) => (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setEditing(w);
+          }}
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+        >
+          <Pencil size={12} />
+          Edit
+        </button>
+      ),
+      getValue: () => "",
+    },
   ];
 
   return (
@@ -107,6 +132,11 @@ export function ScmWarehouses() {
         eyebrow="Supply Chain"
         title="Warehouses"
         description="Physical stock locations — the warehouse master that inventory, GRN, and DO bind against."
+        primaryAction={
+          <Button icon={<Plus size={15} />} onClick={() => setShowCreate(true)}>
+            New Warehouse
+          </Button>
+        }
       />
 
       {/* Include-inactive filter chips */}
@@ -146,6 +176,221 @@ export function ScmWarehouses() {
         emptyLabel="No warehouses found"
         exportName="warehouses"
       />
+
+      {showCreate && (
+        <CreateWarehousePanel
+          onClose={() => setShowCreate(false)}
+          onCreated={() => {
+            setShowCreate(false);
+            list.reload();
+          }}
+        />
+      )}
+
+      {editing && (
+        <EditWarehousePanel
+          warehouse={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            list.reload();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function CreateWarehousePanel({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    code: "",
+    name: "",
+    location: "",
+    isDefault: false,
+  });
+  const dirty = form.code.trim() !== "" || form.name.trim() !== "" || form.location.trim() !== "" || form.isDefault;
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
+
+  async function submit() {
+    if (!form.code.trim()) {
+      toast.error("Code is required");
+      return;
+    }
+    if (!form.name.trim()) {
+      toast.error("Name is required");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.post(`${SCM}/inventory/warehouses`, {
+        code: form.code.trim(),
+        name: form.name.trim(),
+        location: form.location.trim() || undefined,
+        isDefault: form.isDefault,
+      });
+      toast.success("Warehouse created");
+      onCreated();
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? "");
+      toast.error(msg.includes("duplicate_code") ? "That code already exists" : "Failed to create warehouse");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Panel
+      open
+      onClose={onClose}
+      dirty={dirty}
+      onAttemptClose={onClose}
+      title="New Warehouse"
+      subtitle="Create a physical stock location."
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={saving}>
+            {saving ? "Saving…" : "Create Warehouse"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3">
+        <Field label="Code" required>
+          <Input value={form.code} onChange={(v) => set("code", v)} placeholder="e.g. KL / PJ / JB" />
+        </Field>
+        <Field label="Name" required>
+          <Input value={form.name} onChange={(v) => set("name", v)} placeholder="e.g. KL Warehouse" />
+        </Field>
+        <Field label="Location">
+          <Input value={form.location} onChange={(v) => set("location", v)} placeholder="Address / area" />
+        </Field>
+        <Checkbox
+          label="Default warehouse"
+          checked={form.isDefault}
+          onChange={(v) => set("isDefault", v)}
+        />
+      </div>
+    </Panel>
+  );
+}
+
+function EditWarehousePanel({
+  warehouse,
+  onClose,
+  onSaved,
+}: {
+  warehouse: WarehouseRow;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    code: warehouse.code ?? "",
+    name: warehouse.name ?? "",
+    location: warehouse.location ?? "",
+    isDefault: warehouse.is_default,
+    isActive: warehouse.is_active,
+  });
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((f) => ({ ...f, [k]: v }));
+
+  async function submit() {
+    if (!form.code.trim()) {
+      toast.error("Code is required");
+      return;
+    }
+    if (!form.name.trim()) {
+      toast.error("Name is required");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.patch(`${SCM}/inventory/warehouses/${warehouse.id}`, {
+        code: form.code.trim(),
+        name: form.name.trim(),
+        location: form.location,
+        isDefault: form.isDefault,
+        isActive: form.isActive,
+      });
+      toast.success("Warehouse updated");
+      onSaved();
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? "");
+      toast.error(msg.includes("duplicate_code") ? "That code already exists" : "Failed to update warehouse");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Panel
+      open
+      onClose={onClose}
+      dirty
+      onAttemptClose={onClose}
+      title={`Edit ${warehouse.code}`}
+      subtitle="Update the stock location."
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={saving}>
+            {saving ? "Saving…" : "Save Changes"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-3">
+        <Field label="Code" required>
+          <Input value={form.code} onChange={(v) => set("code", v)} />
+        </Field>
+        <Field label="Name" required>
+          <Input value={form.name} onChange={(v) => set("name", v)} />
+        </Field>
+        <Field label="Location">
+          <Input value={form.location} onChange={(v) => set("location", v)} placeholder="Address / area" />
+        </Field>
+        <Checkbox
+          label="Default warehouse"
+          checked={form.isDefault}
+          onChange={(v) => set("isDefault", v)}
+        />
+        <Checkbox label="Active" checked={form.isActive} onChange={(v) => set("isActive", v)} />
+      </div>
+    </Panel>
+  );
+}
+
+function Checkbox({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 text-[13px] text-ink">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-4 w-4 rounded border-border text-accent focus:ring-2 focus:ring-accent/20"
+      />
+      {label}
+    </label>
   );
 }
