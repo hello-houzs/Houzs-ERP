@@ -17,7 +17,6 @@
     "jsxImportSource": "hono/jsx",
     "baseUrl": ".",
     "paths": {
-      "@shared/*": ["../shared/*"],
       "zod": ["./node_modules/zod"]
     }
   },

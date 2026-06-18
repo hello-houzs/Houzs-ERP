@@ -23,6 +23,15 @@ import projects from "./routes/projects";
 // Projects page embeds the sales-entry EntryPanel + submit/void/delete flow.
 // It has no standalone nav/route after the cutover.
 import sales from "./routes/sales";
+// Endpoints retained ONLY because the kept Service/Projects pages still call
+// them (no standalone nav/route): finance.ts backs the Finances P&L tab on both
+// Service and Projects (PnlCalendar); stockItems backs the ASSR By-Creditor
+// "Refresh from AutoCount" button; fleet/lorries back the Projects Setup /
+// Dismantle / Logistics crew + lorry pickers.
+import finance from "./routes/finance";
+import stockItems from "./routes/stockItems";
+import fleet from "./routes/fleet";
+import lorries from "./routes/lorries";
 import settings from "./routes/settings";
 import inbox from "./routes/inbox";
 import projectsPrint from "./routes/projects_print";
@@ -106,6 +115,10 @@ app.route("/api/presence", presence);
 app.route("/api/events", events);
 app.route("/api/projects", projects);
 app.route("/api/sales", sales);
+app.route("/api/finance", finance);
+app.route("/api/stockitems", stockItems);
+app.route("/api/fleet", fleet);
+app.route("/api/lorries", lorries);
 app.route("/api/settings", settings);
 app.route("/api/inbox", inbox);
 app.route("/api/projects-print", projectsPrint);

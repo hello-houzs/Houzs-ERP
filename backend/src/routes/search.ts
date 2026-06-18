@@ -18,6 +18,9 @@ import type { Env } from "../types";
  * src/index.ts). Permission scoping is intentionally loose — search
  * shows match metadata only (no full record contents), and follow-up
  * navigation hits the relevant module which enforces its own perms.
+ *
+ * Sources are limited to the modules that still exist after the
+ * strip-to-core cutover: Projects, ASSR cases, and Users.
  */
 
 const app = new Hono<{ Bindings: Env }>();
@@ -25,15 +28,7 @@ const app = new Hono<{ Bindings: Env }>();
 const PER_SOURCE_LIMIT = 6;
 
 interface Hit {
-  type:
-    | "sales_order"
-    | "purchase_order"
-    | "purchase_order_doc"
-    | "project"
-    | "assr_case"
-    | "creditor"
-    | "trip"
-    | "user";
+  type: "project" | "assr_case" | "user";
   id: string | number;       // primary key for deep-link
   title: string;             // headline
   subtitle?: string | null;  // contextual line
@@ -60,65 +55,7 @@ app.get("/", async (c) => {
 
   // Fire all source queries in parallel — they share a SQLite worker
   // anyway, so this just avoids serial round-trip latency.
-  const [
-    salesRows,
-    poLineRows,
-    poDocRows,
-    projectRows,
-    assrRows,
-    creditorRows,
-    tripRows,
-    userRows,
-  ] = await Promise.all([
-    env.DB.prepare(
-      `SELECT id, doc_no, debtor_name, doc_date
-         FROM sales_orders
-        WHERE doc_no LIKE ?1
-           OR debtor_name LIKE ?1
-           OR ref LIKE ?1
-        ORDER BY doc_date DESC NULLS LAST, id DESC
-        LIMIT ${PER_SOURCE_LIMIT}`
-    )
-      .bind(pat)
-      .all<{ id: number; doc_no: string; debtor_name: string | null; doc_date: string | null }>(),
-
-    env.DB.prepare(
-      `SELECT id, doc_no, item_code, item_description, creditor_name, doc_date
-         FROM purchase_orders
-        WHERE doc_no LIKE ?1
-           OR item_code LIKE ?1
-           OR item_description LIKE ?1
-           OR creditor_name LIKE ?1
-        ORDER BY doc_date DESC NULLS LAST, id DESC
-        LIMIT ${PER_SOURCE_LIMIT}`
-    )
-      .bind(pat)
-      .all<{
-        id: number;
-        doc_no: string;
-        item_code: string;
-        item_description: string | null;
-        creditor_name: string | null;
-        doc_date: string | null;
-      }>(),
-
-    env.DB.prepare(
-      `SELECT doc_no, ref, creditor_name, doc_date
-         FROM purchase_order_docs
-        WHERE doc_no LIKE ?1
-           OR ref LIKE ?1
-           OR creditor_name LIKE ?1
-        ORDER BY doc_date DESC NULLS LAST
-        LIMIT ${PER_SOURCE_LIMIT}`
-    )
-      .bind(pat)
-      .all<{
-        doc_no: string;
-        ref: string | null;
-        creditor_name: string | null;
-        doc_date: string | null;
-      }>(),
-
+  const [projectRows, assrRows, userRows] = await Promise.all([
     env.DB.prepare(
       `SELECT id, code, name, stage, start_date
          FROM projects
@@ -155,43 +92,6 @@ app.get("/", async (c) => {
         complained_date: string | null;
       }>(),
 
-    env.DB.prepare(
-      `SELECT creditor_code, company_name, desc2, email, phone1, currency_code
-         FROM creditors
-        WHERE creditor_code LIKE ?1
-           OR company_name LIKE ?1
-           OR desc2 LIKE ?1
-           OR email LIKE ?1
-           OR phone1 LIKE ?1
-           OR mobile LIKE ?1
-        ORDER BY company_name ASC
-        LIMIT ${PER_SOURCE_LIMIT}`
-    )
-      .bind(pat)
-      .all<{
-        creditor_code: string;
-        company_name: string | null;
-        desc2: string | null;
-        email: string | null;
-        phone1: string | null;
-        currency_code: string | null;
-      }>(),
-
-    env.DB.prepare(
-      `SELECT id, trip_no, status, trip_date
-         FROM trips
-        WHERE trip_no LIKE ?1 OR notes LIKE ?1
-        ORDER BY trip_date DESC NULLS LAST, id DESC
-        LIMIT ${PER_SOURCE_LIMIT}`
-    )
-      .bind(pat)
-      .all<{
-        id: number;
-        trip_no: string;
-        status: string;
-        trip_date: string | null;
-      }>(),
-
     // role_id joins to roles table for the human-readable name; left
     // join is fine because the user list is short.
     env.DB.prepare(
@@ -213,43 +113,6 @@ app.get("/", async (c) => {
       }>(),
   ]);
 
-  for (const r of salesRows.results ?? []) {
-    hits.push({
-      type: "sales_order",
-      id: r.id,
-      title: r.doc_no,
-      subtitle: r.debtor_name,
-      date: r.doc_date,
-      link: `/orders?focus=${r.id}`,
-    });
-  }
-
-  // Dedup PO line/doc — if a doc_no shows up in both, prefer the doc
-  // hit (it's the canonical row in the unified Purchase Orders view).
-  const seenPoDoc = new Set<string>();
-  for (const r of poDocRows.results ?? []) {
-    seenPoDoc.add(r.doc_no);
-    hits.push({
-      type: "purchase_order_doc",
-      id: r.doc_no,
-      title: r.doc_no,
-      subtitle: [r.creditor_name, r.ref].filter(Boolean).join(" · ") || null,
-      date: r.doc_date,
-      link: `/po?focus=${encodeURIComponent(r.doc_no)}`,
-    });
-  }
-  for (const r of poLineRows.results ?? []) {
-    if (seenPoDoc.has(r.doc_no)) continue;
-    hits.push({
-      type: "purchase_order",
-      id: r.id,
-      title: `${r.doc_no} · ${r.item_code}`,
-      subtitle: [r.creditor_name, r.item_description].filter(Boolean).join(" · ") || null,
-      date: r.doc_date,
-      link: `/po?focus=${encodeURIComponent(r.doc_no)}`,
-    });
-  }
-
   for (const r of projectRows.results ?? []) {
     hits.push({
       type: "project",
@@ -269,30 +132,6 @@ app.get("/", async (c) => {
       subtitle: [r.customer_name, r.complaint_issue].filter(Boolean).join(" · ") || r.status,
       date: r.complained_date,
       link: `/assr?focus=${r.id}`,
-    });
-  }
-
-  for (const r of creditorRows.results ?? []) {
-    hits.push({
-      type: "creditor",
-      id: r.creditor_code,
-      title: r.company_name || r.creditor_code,
-      subtitle:
-        [r.desc2, r.currency_code, r.email || r.phone1]
-          .filter(Boolean)
-          .join(" · ") || r.creditor_code,
-      link: `/po?view=creditors&focus=${encodeURIComponent(r.creditor_code)}`,
-    });
-  }
-
-  for (const r of tripRows.results ?? []) {
-    hits.push({
-      type: "trip",
-      id: r.id,
-      title: r.trip_no,
-      subtitle: r.status,
-      date: r.trip_date,
-      link: `/trips?focus=${r.id}`,
     });
   }
 

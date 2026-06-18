@@ -13,12 +13,9 @@ import { Link, useNavigate } from "react-router-dom";
 import {
   Search,
   X,
-  ShoppingCart,
-  Truck,
   Wrench,
   Users,
   Layers,
-  Building2,
   CornerDownLeft,
   ArrowUp,
   ArrowDown,
@@ -43,13 +40,8 @@ import { cn, formatDate } from "../lib/utils";
  */
 
 export type SearchHitType =
-  | "sales_order"
-  | "purchase_order"
-  | "purchase_order_doc"
   | "project"
   | "assr_case"
-  | "creditor"
-  | "trip"
   | "user";
 
 export interface SearchHit {
@@ -223,7 +215,7 @@ function Palette({ onClose }: { onClose: () => void }) {
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search orders, POs, projects, cases, suppliers, trips, people…"
+            placeholder="Search projects, service cases, people…"
             className="flex-1 bg-transparent text-[14px] text-ink outline-none placeholder:text-ink-muted"
           />
           <kbd className="hidden rounded border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] text-ink-muted sm:inline">
@@ -364,14 +356,6 @@ function EmptyHelp() {
       </div>
       <ul className="space-y-1.5 text-[12px] text-ink-secondary">
         <li className="flex items-center gap-2">
-          <ShoppingCart size={12} className="text-accent/70" />
-          Sales orders by doc no, customer, or ref
-        </li>
-        <li className="flex items-center gap-2">
-          <ShoppingCart size={12} className="text-accent/70" />
-          Purchase orders by doc no, item, or supplier
-        </li>
-        <li className="flex items-center gap-2">
           <Layers size={12} className="text-accent/70" />
           Projects by code, name, venue, organizer
         </li>
@@ -380,9 +364,8 @@ function EmptyHelp() {
           Service cases by ASSR no, customer, phone, or issue
         </li>
         <li className="flex items-center gap-2">
-          <Building2 size={12} className="text-accent/70" />
-          Suppliers, <Truck size={12} className="text-accent/70" /> trips,
-          and <Users size={12} className="text-accent/70" /> teammates
+          <Users size={12} className="text-accent/70" />
+          Teammates by name, email, or role
         </li>
       </ul>
     </div>
@@ -395,16 +378,7 @@ function groupHits(hits: SearchHit[]): Array<{
   type: SearchHitType;
   items: Array<SearchHit & { _idx: number }>;
 }> {
-  const order: SearchHitType[] = [
-    "sales_order",
-    "purchase_order_doc",
-    "purchase_order",
-    "project",
-    "assr_case",
-    "creditor",
-    "trip",
-    "user",
-  ];
+  const order: SearchHitType[] = ["project", "assr_case", "user"];
   const map = new Map<SearchHitType, Array<SearchHit & { _idx: number }>>();
   hits.forEach((h, i) => {
     const arr = map.get(h.type) ?? [];
@@ -420,13 +394,8 @@ function groupHits(hits: SearchHit[]): Array<{
 }
 
 const TYPE_META: Record<SearchHitType, { label: string; icon: ReactNode }> = {
-  sales_order: { label: "Sales Orders", icon: <ShoppingCart size={13} /> },
-  purchase_order_doc: { label: "Purchase Orders", icon: <ShoppingCart size={13} /> },
-  purchase_order: { label: "PO Lines", icon: <ShoppingCart size={13} /> },
   project: { label: "Projects", icon: <Layers size={13} /> },
   assr_case: { label: "Service Cases", icon: <Wrench size={13} /> },
-  creditor: { label: "Creditors", icon: <Building2 size={13} /> },
-  trip: { label: "Trips", icon: <Truck size={13} /> },
   user: { label: "Users", icon: <Users size={13} /> },
 };
 
