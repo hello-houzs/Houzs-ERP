@@ -27,6 +27,13 @@ import {
   ShoppingCart,
   Send,
   RotateCcw,
+  Sofa,
+  Layers,
+  Calculator,
+  Timer,
+  Scissors,
+  BookOpen,
+  AlertCircle,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -196,6 +203,13 @@ export const NAV_TABS: NavTab[] = [
       { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, perm: "*" },
       { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, perm: "*" },
       { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, perm: "*" },
+      { to: "/scm/products", label: "Products", icon: Sofa, perm: "*" },
+      { to: "/scm/product-models", label: "Product Models", icon: Layers, perm: "*" },
+      { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, perm: "*" },
+      { to: "/scm/mrp-lead-times", label: "Lead Times", icon: Timer, perm: "*" },
+      { to: "/scm/fabric-tracking", label: "Fabric Tracking", icon: Scissors, perm: "*" },
+      { to: "/scm/accounting", label: "Accounting", icon: BookOpen, perm: "*" },
+      { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, perm: "*" },
     ],
   },
 
