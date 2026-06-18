@@ -24,6 +24,9 @@ import {
   Warehouse,
   ArrowLeftRight,
   ClipboardCheck,
+  ShoppingCart,
+  Send,
+  RotateCcw,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -190,6 +193,9 @@ export const NAV_TABS: NavTab[] = [
       { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, perm: "*" },
       { to: "/scm/stock-transfers", label: "Stock Transfers", icon: ArrowLeftRight, perm: "*" },
       { to: "/scm/stock-takes", label: "Stock Takes", icon: ClipboardCheck, perm: "*" },
+      { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, perm: "*" },
+      { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, perm: "*" },
+      { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, perm: "*" },
     ],
   },
 

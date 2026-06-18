@@ -41,6 +41,12 @@ const ScmStockTransfers = lazy(() => import("./pages/scm/StockTransfers").then((
 const ScmStockTransferDetail = lazy(() => import("./pages/scm/StockTransferDetail").then((m) => ({ default: m.ScmStockTransferDetail })));
 const ScmStockTakes = lazy(() => import("./pages/scm/StockTakes").then((m) => ({ default: m.ScmStockTakes })));
 const ScmStockTakeDetail = lazy(() => import("./pages/scm/StockTakeDetail").then((m) => ({ default: m.ScmStockTakeDetail })));
+const ScmMfgSalesOrders = lazy(() => import("./pages/scm/MfgSalesOrders").then((m) => ({ default: m.ScmMfgSalesOrders })));
+const ScmMfgSalesOrderDetail = lazy(() => import("./pages/scm/MfgSalesOrderDetail").then((m) => ({ default: m.ScmMfgSalesOrderDetail })));
+const ScmDeliveryOrders = lazy(() => import("./pages/scm/DeliveryOrders").then((m) => ({ default: m.ScmDeliveryOrders })));
+const ScmDeliveryOrderDetail = lazy(() => import("./pages/scm/DeliveryOrderDetail").then((m) => ({ default: m.ScmDeliveryOrderDetail })));
+const ScmDeliveryReturns = lazy(() => import("./pages/scm/DeliveryReturns").then((m) => ({ default: m.ScmDeliveryReturns })));
+const ScmDeliveryReturnDetail = lazy(() => import("./pages/scm/DeliveryReturnDetail").then((m) => ({ default: m.ScmDeliveryReturnDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -163,6 +169,12 @@ export default function App() {
         <Route path="/scm/stock-transfers/:id" element={<Guard perm="*"><ScmStockTransferDetail /></Guard>} />
         <Route path="/scm/stock-takes" element={<Guard perm="*"><ScmStockTakes /></Guard>} />
         <Route path="/scm/stock-takes/:id" element={<Guard perm="*"><ScmStockTakeDetail /></Guard>} />
+        <Route path="/scm/sales-orders" element={<Guard perm="*"><ScmMfgSalesOrders /></Guard>} />
+        <Route path="/scm/sales-orders/:id" element={<Guard perm="*"><ScmMfgSalesOrderDetail /></Guard>} />
+        <Route path="/scm/delivery-orders" element={<Guard perm="*"><ScmDeliveryOrders /></Guard>} />
+        <Route path="/scm/delivery-orders/:id" element={<Guard perm="*"><ScmDeliveryOrderDetail /></Guard>} />
+        <Route path="/scm/delivery-returns" element={<Guard perm="*"><ScmDeliveryReturns /></Guard>} />
+        <Route path="/scm/delivery-returns/:id" element={<Guard perm="*"><ScmDeliveryReturnDetail /></Guard>} />
         {/* Legacy /roles → Team page's Roles tab */}
         <Route
           path="/roles"
