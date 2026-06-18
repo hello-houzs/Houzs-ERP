@@ -170,18 +170,6 @@ function BellPopover({
         )}
       </div>
 
-      {/* Footer — always shown so "View all" is reachable even when the
-          unread list is empty. */}
-      <div className="border-t border-border-subtle bg-bg/40 px-3 py-2">
-        <Link
-          to="/notifications"
-          onClick={onNavigate}
-          className="flex items-center justify-between gap-2 font-mono text-[10px] font-semibold uppercase tracking-brand text-accent hover:underline"
-        >
-          <span>View all</span>
-          <span aria-hidden>→</span>
-        </Link>
-      </div>
     </div>
   );
 }

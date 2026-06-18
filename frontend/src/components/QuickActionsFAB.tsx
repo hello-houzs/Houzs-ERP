@@ -3,14 +3,8 @@ import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   Plus,
-  ShoppingCart,
-  Truck,
-  Package,
   Briefcase,
   Wrench,
-  Wallet,
-  Lightbulb,
-  MessageCircle,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -39,27 +33,6 @@ interface ActionItem {
 
 const ACTIONS: ActionItem[] = [
   {
-    to: "/orders",
-    label: "Sales order",
-    icon: ShoppingCart,
-    perm: "sales_orders.read",
-    description: "New customer order",
-  },
-  {
-    to: "/delivery-orders",
-    label: "Delivery order",
-    icon: Truck,
-    perm: "delivery_orders.read",
-    description: "Outbound DO",
-  },
-  {
-    to: "/po",
-    label: "Purchase order",
-    icon: Package,
-    perm: "purchase_orders.read",
-    description: "Inbound PO",
-  },
-  {
     to: "/projects",
     label: "Project",
     icon: Briefcase,
@@ -72,25 +45,6 @@ const ACTIONS: ActionItem[] = [
     icon: Wrench,
     perm: "service_cases.read",
     description: "ASSR ticket",
-  },
-  {
-    to: "/petty-cash",
-    label: "Petty cash",
-    icon: Wallet,
-    perm: "petty_cash.post",
-    description: "Cash in or out",
-  },
-  {
-    to: "/innovations",
-    label: "Innovation",
-    icon: Lightbulb,
-    description: "Pitch a big idea",
-  },
-  {
-    to: "/suggestions",
-    label: "Suggestion",
-    icon: MessageCircle,
-    description: "Quick operational fix",
   },
 ];
 
