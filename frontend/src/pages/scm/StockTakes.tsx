@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Plus } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
+import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
 import { useQuery } from "../../hooks/useQuery";
 import { api, buildQuery } from "../../api/client";
@@ -193,6 +195,11 @@ export function ScmStockTakes() {
         eyebrow="Supply Chain"
         title="Stock Takes"
         description="AutoCount-style cycle counts — snapshot system qty, count, post variance adjustments."
+        primaryAction={
+          <Button icon={<Plus size={15} />} onClick={() => navigate("/scm/stock-takes/new")}>
+            New Stock Take
+          </Button>
+        }
       />
 
       {/* Status filter chips */}

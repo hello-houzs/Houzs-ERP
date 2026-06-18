@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Plus } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
+import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
 import { useQuery } from "../../hooks/useQuery";
 import { api, buildQuery } from "../../api/client";
@@ -212,6 +214,11 @@ export function ScmDeliveryOrders() {
         eyebrow="Supply Chain"
         title="Delivery Orders"
         description="Customer delivery orders — the SO → DO → Sales Invoice dispatch step."
+        primaryAction={
+          <Button icon={<Plus size={15} />} onClick={() => navigate("/scm/delivery-orders/new")}>
+            New Delivery
+          </Button>
+        }
       />
 
       {/* Status filter chips */}

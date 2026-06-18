@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Plus } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
+import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
 import { useQuery } from "../../hooks/useQuery";
 import { api, buildQuery } from "../../api/client";
@@ -146,6 +147,11 @@ export function ScmStockTransfers() {
         eyebrow="Supply Chain"
         title="Stock Transfers"
         description="Move stock between warehouses — a paired out/in movement per posted transfer."
+        primaryAction={
+          <Button icon={<Plus size={15} />} onClick={() => navigate("/scm/stock-transfers/new")}>
+            New Transfer
+          </Button>
+        }
       />
 
       {/* Status filter chips */}
