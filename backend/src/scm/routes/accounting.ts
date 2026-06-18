@@ -1,0 +1,536 @@
+// ----------------------------------------------------------------------------
+// /accounting — simple double-entry accounting layer (PR #36).
+//
+// Endpoints:
+//   GET    /accounts                  — chart of accounts
+//   GET    /journal-entries           — list (filter by date range / source)
+//   GET    /journal-entries/:id       — one JE w/ lines
+//   POST   /journal-entries           — create draft JE (lines included)
+//   POST   /journal-entries/:id/post  — mark posted (trigger checks balance)
+//   POST   /post/si/:invoiceNumber    — auto-post a SI: Dr AR, Cr Revenue
+//   POST   /post/pi/:invoiceNumber    — auto-post a PI: Dr Inventory, Cr AP
+//   GET    /gl                        — flat GL stream (v_gl_entries)
+//   GET    /balances                  — running account balances (v_account_balances)
+//   GET    /ar-aging                  — v_ar_aging
+//   GET    /ap-aging                  — v_ap_aging
+//
+// Note: this is intentionally minimal — single legal entity, single currency.
+// ERPNext-style chart hierarchy + cost centres are deferred.
+// ----------------------------------------------------------------------------
+
+import { Hono } from 'hono';
+import { supabaseAuth } from '../middleware/auth';
+import type { Env, Variables } from '../env';
+import { postSiRevenue } from '../lib/post-si-revenue';
+
+export const accounting = new Hono<{ Bindings: Env; Variables: Variables }>();
+accounting.use('*', supabaseAuth);
+
+/* ════════════════════════════════════════════════════════════════════════
+   Helpers
+   ════════════════════════════════════════════════════════════════════════ */
+
+const padMmDd = (d: Date): string => {
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${yy}${m}`;
+};
+
+const nextJeNo = async (sb: any, date: Date): Promise<string> => {
+  const prefix = `JE-${padMmDd(date)}`;
+  const { data } = await sb
+    .from('journal_entries')
+    .select('je_no')
+    .like('je_no', `${prefix}-%`)
+    .order('je_no', { ascending: false })
+    .limit(1);
+  const last = data?.[0]?.je_no ?? null;
+  const lastN = last ? parseInt(String(last).split('-').pop() ?? '0', 10) : 0;
+  return `${prefix}-${String(lastN + 1).padStart(4, '0')}`;
+};
+
+type JeLineIn = {
+  accountCode: string;
+  debitSen?: number;
+  creditSen?: number;
+  partyType?: string | null;
+  partyCode?: string | null;
+  partyName?: string | null;
+  notes?: string | null;
+};
+
+/* ════════════════════════════════════════════════════════════════════════
+   Chart of Accounts
+   ════════════════════════════════════════════════════════════════════════ */
+
+accounting.get('/accounts', async (c) => {
+  const sb = c.get('supabase');
+  const { data, error } = await sb
+    .from('accounts')
+    .select('account_code, account_name, account_type, parent_code, is_active')
+    .order('account_code');
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ accounts: data ?? [] });
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+   Journal Entries
+   ════════════════════════════════════════════════════════════════════════ */
+
+accounting.get('/journal-entries', async (c) => {
+  const sb = c.get('supabase');
+  const sourceType = c.req.query('sourceType');
+  const sourceDocNo = c.req.query('sourceDocNo');
+  const from = c.req.query('from');
+  const to = c.req.query('to');
+  const posted = c.req.query('posted');
+
+  let q = sb.from('journal_entries')
+    .select('id, je_no, entry_date, source_type, source_doc_no, narration, total_debit_sen, total_credit_sen, posted, posted_at, reversed, created_at')
+    .order('entry_date', { ascending: false })
+    .order('je_no', { ascending: false });
+
+  if (sourceType)  q = q.eq('source_type', sourceType);
+  if (sourceDocNo) q = q.eq('source_doc_no', sourceDocNo);
+  if (from)        q = q.gte('entry_date', from);
+  if (to)          q = q.lte('entry_date', to);
+  if (posted === 'true')  q = q.eq('posted', true);
+  if (posted === 'false') q = q.eq('posted', false);
+
+  const { data, error } = await q.limit(500);
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ journalEntries: data ?? [] });
+});
+
+accounting.get('/journal-entries/:id', async (c) => {
+  const id = c.req.param('id');
+  const sb = c.get('supabase');
+  const { data: je, error: e1 } = await sb
+    .from('journal_entries')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (e1) return c.json({ error: 'not_found', reason: e1.message }, 404);
+  const { data: lines, error: e2 } = await sb
+    .from('journal_entry_lines')
+    .select('*')
+    .eq('journal_entry_id', id)
+    .order('line_no');
+  if (e2) return c.json({ error: 'load_failed', reason: e2.message }, 500);
+  return c.json({ journalEntry: je, lines: lines ?? [] });
+});
+
+accounting.post('/journal-entries', async (c) => {
+  let body: any;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+
+  const entryDate = body.entryDate ?? new Date().toISOString().slice(0, 10);
+  const sourceType = String(body.sourceType ?? 'MANUAL');
+  const sourceDocNo = body.sourceDocNo ?? null;
+  const narration = body.narration ?? null;
+  const lines = Array.isArray(body.lines) ? (body.lines as JeLineIn[]) : [];
+  if (lines.length < 2) return c.json({ error: 'min_2_lines' }, 400);
+
+  let dr = 0, cr = 0;
+  for (const l of lines) {
+    dr += Number(l.debitSen ?? 0);
+    cr += Number(l.creditSen ?? 0);
+  }
+  if (dr !== cr) return c.json({ error: 'unbalanced', debit: dr, credit: cr }, 400);
+  if (dr === 0) return c.json({ error: 'zero_amount' }, 400);
+
+  const sb = c.get('supabase');
+  const jeNo = await nextJeNo(sb, new Date(entryDate));
+
+  const { data: je, error: jeErr } = await sb
+    .from('journal_entries')
+    .insert({
+      je_no: jeNo,
+      entry_date: entryDate,
+      source_type: sourceType,
+      source_doc_no: sourceDocNo,
+      narration,
+      total_debit_sen: dr,
+      total_credit_sen: cr,
+    })
+    .select('*')
+    .single();
+  if (jeErr) return c.json({ error: 'insert_failed', reason: jeErr.message }, 500);
+
+  const lineRows = lines.map((l, i) => ({
+    journal_entry_id: je.id,
+    line_no: i + 1,
+    account_code: l.accountCode,
+    debit_sen: Number(l.debitSen ?? 0),
+    credit_sen: Number(l.creditSen ?? 0),
+    party_type: l.partyType ?? null,
+    party_code: l.partyCode ?? null,
+    party_name: l.partyName ?? null,
+    notes: l.notes ?? null,
+  }));
+  const { error: linesErr } = await sb.from('journal_entry_lines').insert(lineRows);
+  if (linesErr) {
+    await sb.from('journal_entries').delete().eq('id', je.id);
+    return c.json({ error: 'lines_insert_failed', reason: linesErr.message }, 500);
+  }
+  return c.json({ journalEntry: je, lineCount: lineRows.length }, 201);
+});
+
+accounting.post('/journal-entries/:id/post', async (c) => {
+  const id = c.req.param('id');
+  const sb = c.get('supabase');
+  const { data, error } = await sb
+    .from('journal_entries')
+    .update({ posted: true })
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (error) {
+    // The trigger throws if unbalanced — pass through as 400
+    if (String(error.message).includes('not balanced')) {
+      return c.json({ error: 'unbalanced', reason: error.message }, 400);
+    }
+    return c.json({ error: 'post_failed', reason: error.message }, 500);
+  }
+  return c.json({ journalEntry: data });
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+   Auto-post helpers — SI / PI confirm
+   ════════════════════════════════════════════════════════════════════════ */
+
+accounting.post('/post/si/:invoiceNumber', async (c) => {
+  const invoiceNumber = c.req.param('invoiceNumber');
+  const sb = c.get('supabase');
+
+  // Delegates to the shared idempotent poster (post-si-revenue). Same code path
+  // the SI POST handler uses on confirm, so manual + auto posting can never
+  // diverge or double-post.
+  const r = await postSiRevenue(sb, invoiceNumber);
+
+  if (r.ok) {
+    if (r.status === 'already_posted') {
+      // Keep the historical 409 contract for the explicit re-post endpoint.
+      return c.json({ error: 'already_posted', existingJe: { id: r.jeId, je_no: r.jeNo } }, 409);
+    }
+    return c.json({ ok: true, jeNo: r.jeNo, jeId: r.jeId, totalSen: r.totalSen });
+  }
+  if (r.status === 'invoice_not_found') return c.json({ error: 'invoice_not_found' }, 404);
+  if (r.status === 'zero_total')        return c.json({ error: 'zero_total' }, 400);
+  return c.json({ error: r.status, reason: r.reason }, 500);
+});
+
+/* ── postPiAccounting (extracted 2026-06-01) — idempotent PI → GL post ──────
+   Writes Dr Inventory (1200) / Cr Payables (2000) for the PI total. Shared by
+   the manual POST /post/pi route AND resyncPiAccounting (void+repost on a
+   post-issue line edit). Mirrors postSiRevenue: keyed on an ACTIVE (non-reversed)
+   PI JE, so a reversed original never blocks a fresh re-post. */
+export type PostPiResult =
+  | { ok: true; status: 'posted'; jeNo: string; jeId: string; totalSen: number }
+  | { ok: true; status: 'already_posted'; jeNo: string; jeId: string }
+  | { ok: false; status: 'invoice_not_found' | 'zero_total' | 'je_insert_failed' | 'lines_insert_failed' | 'post_failed'; reason?: string };
+
+export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<PostPiResult> {
+  // Idempotency — an ACTIVE (non-reversed) PI JE already exists?
+  const { data: existingRows } = await sb
+    .from('journal_entries')
+    .select('id, je_no, reversed')
+    .eq('source_type', 'PI')
+    .eq('source_doc_no', invoiceNumber);
+  const active = ((existingRows ?? []) as Array<{ id: string; je_no: string; reversed: boolean | null }>)
+    .find((r) => !r.reversed);
+  if (active) return { ok: true, status: 'already_posted', jeNo: active.je_no, jeId: active.id };
+
+  const { data: piRaw, error } = await sb
+    .from('purchase_invoices')
+    .select('id, invoice_number, invoice_date, supplier_id, total_centi, suppliers(code, name)')
+    .eq('invoice_number', invoiceNumber)
+    .single();
+  if (error || !piRaw) return { ok: false, status: 'invoice_not_found' };
+  // Cast through `unknown` — Supabase JS without generated types returns
+  // `GenericStringError` from `.select(string).single()` even when data is
+  // populated. Project-wide pattern; see routes/admin.ts L97.
+  const pi = piRaw as unknown as {
+    id: string;
+    invoice_number: string;
+    invoice_date: string;
+    supplier_id: string | null;
+    total_centi: number;
+    suppliers: { code: string | null; name: string | null } | null;
+  };
+
+  const totalSen = Number(pi.total_centi);
+  if (totalSen <= 0) return { ok: false, status: 'zero_total' };
+
+  const supplier = pi.suppliers ?? { code: null, name: null };
+  const lines: JeLineIn[] = [
+    {
+      accountCode: '1200',                                   // Inventory (simplification: all PI → Inventory)
+      debitSen: totalSen,
+      notes: `Inventory from ${pi.invoice_number}`,
+    },
+    {
+      accountCode: '2000',                                   // Accounts Payable
+      creditSen: totalSen,
+      partyType: 'SUPPLIER',
+      partyCode: supplier.code ?? null,
+      partyName: supplier.name ?? null,
+      notes: `AP for ${pi.invoice_number}`,
+    },
+  ];
+
+  const jeNo = await nextJeNo(sb, new Date(pi.invoice_date));
+  const { data: je, error: jeErr } = await sb
+    .from('journal_entries')
+    .insert({
+      je_no: jeNo,
+      entry_date: pi.invoice_date,
+      source_type: 'PI',
+      source_doc_no: pi.invoice_number,
+      narration: `Purchase invoice ${pi.invoice_number} — ${supplier.name ?? ''}`,
+      total_debit_sen: totalSen,
+      total_credit_sen: totalSen,
+    })
+    .select('*')
+    .single();
+  if (jeErr) return { ok: false, status: 'je_insert_failed', reason: jeErr.message };
+
+  const lineRows = lines.map((l, i) => ({
+    journal_entry_id: je.id,
+    line_no: i + 1,
+    account_code: l.accountCode,
+    debit_sen: l.debitSen ?? 0,
+    credit_sen: l.creditSen ?? 0,
+    party_type: l.partyType ?? null,
+    party_code: l.partyCode ?? null,
+    party_name: l.partyName ?? null,
+    notes: l.notes ?? null,
+  }));
+  const { error: linesErr } = await sb.from('journal_entry_lines').insert(lineRows);
+  if (linesErr) {
+    await sb.from('journal_entries').delete().eq('id', je.id);
+    return { ok: false, status: 'lines_insert_failed', reason: linesErr.message };
+  }
+
+  const { error: postErr } = await sb
+    .from('journal_entries')
+    .update({ posted: true })
+    .eq('id', je.id);
+  if (postErr) return { ok: false, status: 'post_failed', reason: postErr.message };
+
+  return { ok: true, status: 'posted', jeNo: je.je_no, jeId: je.id, totalSen };
+}
+
+accounting.post('/post/pi/:invoiceNumber', async (c) => {
+  const invoiceNumber = c.req.param('invoiceNumber');
+  const sb = c.get('supabase');
+  const r = await postPiAccounting(sb, invoiceNumber);
+  if (r.ok && r.status === 'already_posted') {
+    return c.json({ error: 'already_posted', existingJe: { id: r.jeId, je_no: r.jeNo } }, 409);
+  }
+  if (r.ok) return c.json({ ok: true, jeNo: r.jeNo, jeId: r.jeId, totalSen: r.totalSen });
+  if (r.status === 'invoice_not_found') return c.json({ error: 'invoice_not_found' }, 404);
+  if (r.status === 'zero_total') return c.json({ error: 'zero_total' }, 400);
+  return c.json({ error: r.status, reason: r.reason }, 500);
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+   PI accounting reversal (bug #5) — mirror of reverseSiRevenue
+   ────────────────────────────────────────────────────────────────────────
+   PI posting writes Dr Inventory (1200) / Cr Payables (2000). On PI cancel we
+   must trace that back ("取消 PI 要追溯回去") with a contra JE that nets the
+   original to zero + flags the original `reversed = true`, so payables +
+   inventory value stop being overstated. The balance views only count
+   `posted = TRUE AND reversed = FALSE` (migration 0052), so the reversing entry
+   exactly cancels the original — net GL impact zero.
+
+   IDEMPOTENT: keyed on the original JE's `reversed` flag AND on the existence of
+   a reversing JE (source_type='PI_REVERSAL', source_doc_no=invoice_number).
+   Re-cancelling / retries / a second cancel PATCH all no-op. Best-effort
+   (audit-DLQ pattern): the caller logs but never un-cancels the PI on failure. */
+export async function reversePiAccounting(
+  sb: any,
+  invoiceNumber: string,
+): Promise<{ ok: boolean; status: string; jeNo?: string; jeId?: string; reason?: string }> {
+  // Find the ACTIVE (non-reversed) PI JE — an invoice may carry several
+  // historical PI JEs after edit-driven void+repost cycles (resyncPiAccounting),
+  // so we void the live one, not an arbitrary `.limit(1)` row. Nothing live →
+  // nothing to reverse.
+  const { data: origRows } = await sb
+    .from('journal_entries')
+    .select('id, je_no, entry_date, reversed, total_debit_sen, total_credit_sen, narration')
+    .eq('source_type', 'PI')
+    .eq('source_doc_no', invoiceNumber);
+  const orig = ((origRows ?? []) as Array<{ id: string; je_no: string; entry_date: string; reversed: boolean; total_debit_sen: number; total_credit_sen: number; narration: string | null }>)
+    .find((r) => !r.reversed);
+  if (!orig) return { ok: true, status: 'nothing_to_reverse' };
+
+  // Idempotency guard — a reversing JE already tied to THIS original exists (the
+  // flag never stuck). Keyed on reversed_by_je = orig.id, NOT just "any reversal
+  // for this invoice", so a prior cycle's reversal doesn't block voiding the
+  // current live JE.
+  const { data: revExisting } = await sb
+    .from('journal_entries')
+    .select('id, je_no')
+    .eq('source_type', 'PI_REVERSAL')
+    .eq('reversed_by_je', orig.id)
+    .limit(1);
+  if (revExisting && revExisting.length > 0) {
+    // The reversing JE exists but the flag never got set — make the flag stick.
+    await sb.from('journal_entries').update({ reversed: true, reversed_by_je: revExisting[0].id }).eq('id', orig.id);
+    return { ok: true, status: 'already_reversed' };
+  }
+
+  const totalSen = Number(orig.total_debit_sen ?? orig.total_credit_sen ?? 0);
+  if (totalSen <= 0) {
+    // Nothing of value to reverse — just flag it so re-cancels no-op.
+    await sb.from('journal_entries').update({ reversed: true }).eq('id', orig.id);
+    return { ok: true, status: 'reversed', jeNo: orig.je_no, jeId: orig.id };
+  }
+
+  // Load the original lines so the reversal mirrors the SAME accounts + parties,
+  // just with debit/credit swapped (a faithful contra entry).
+  const { data: origLines } = await sb
+    .from('journal_entry_lines')
+    .select('account_code, debit_sen, credit_sen, party_type, party_code, party_name, notes')
+    .eq('journal_entry_id', orig.id)
+    .order('line_no');
+  const oLines = (origLines ?? []) as Array<{
+    account_code: string; debit_sen: number; credit_sen: number;
+    party_type: string | null; party_code: string | null; party_name: string | null; notes: string | null;
+  }>;
+
+  const revJeNo = await nextJeNo(sb, new Date(orig.entry_date));
+  const { data: revJe, error: revErr } = await sb
+    .from('journal_entries')
+    .insert({
+      je_no: revJeNo,
+      entry_date: new Date().toISOString().slice(0, 10),
+      source_type: 'PI_REVERSAL',
+      source_doc_no: invoiceNumber,
+      narration: `Reversal of ${orig.je_no} — Purchase invoice ${invoiceNumber} cancelled`,
+      total_debit_sen: totalSen,
+      total_credit_sen: totalSen,
+      reversed_by_je: orig.id,
+    })
+    .select('*')
+    .single();
+  if (revErr) return { ok: false, status: 'reversal_insert_failed', reason: revErr.message };
+
+  // Swap each original line's debit/credit so the reversal nets the original to
+  // zero (Dr Payables / Cr Inventory). Fall back to the canonical 2-line entry
+  // if the original had no lines.
+  const swapped = oLines.length > 0
+    ? oLines.map((l, i) => ({
+        journal_entry_id: revJe.id,
+        line_no: i + 1,
+        account_code: l.account_code,
+        debit_sen: Number(l.credit_sen ?? 0),
+        credit_sen: Number(l.debit_sen ?? 0),
+        party_type: l.party_type ?? null,
+        party_code: l.party_code ?? null,
+        party_name: l.party_name ?? null,
+        notes: `Reversal — ${l.notes ?? ''}`.trim(),
+      }))
+    : [
+        { journal_entry_id: revJe.id, line_no: 1, account_code: '2000', debit_sen: totalSen, credit_sen: 0, party_type: null, party_code: null, party_name: null, notes: `Reverse AP ${invoiceNumber}` },
+        { journal_entry_id: revJe.id, line_no: 2, account_code: '1200', debit_sen: 0, credit_sen: totalSen, party_type: null, party_code: null, party_name: null, notes: `Reverse inventory ${invoiceNumber}` },
+      ];
+  const { error: linesErr } = await sb.from('journal_entry_lines').insert(swapped);
+  if (linesErr) {
+    await sb.from('journal_entries').delete().eq('id', revJe.id);
+    return { ok: false, status: 'reversal_lines_failed', reason: linesErr.message };
+  }
+
+  // Post the reversal + flag the original. Order matters: if the flag update
+  // fails the reversing JE still exists, so guard #2 makes a retry idempotent.
+  await sb.from('journal_entries').update({ posted: true }).eq('id', revJe.id);
+  await sb.from('journal_entries').update({ reversed: true, reversed_by_je: revJe.id }).eq('id', orig.id);
+
+  return { ok: true, status: 'reversed', jeNo: revJe.je_no, jeId: revJe.id };
+}
+
+/* ── resyncPiAccounting (2026-06-01) — re-align a posted PI's GL after a line edit
+   Wei Siang chose "auto void the stale entry + re-post at the new amount". UNLIKE
+   the SI side, a PI does NOT auto-post on create — it only has a JE once someone
+   manually posts it from the accounting page. So this NEVER auto-creates a JE: it
+   only fires when an ACTIVE PI JE already exists and its total no longer matches
+   the invoice. Idempotent + best-effort. */
+export async function resyncPiAccounting(
+  sb: any,
+  invoiceNumber: string,
+): Promise<{ ok: boolean; status: string; reason?: string }> {
+  const { data: jeRows } = await sb
+    .from('journal_entries')
+    .select('id, total_debit_sen, reversed')
+    .eq('source_type', 'PI')
+    .eq('source_doc_no', invoiceNumber);
+  const active = ((jeRows ?? []) as Array<{ id: string; total_debit_sen: number; reversed: boolean | null }>)
+    .find((r) => !r.reversed);
+  // Not posted to the GL yet → nothing to keep in sync (PI posts only on demand).
+  if (!active) return { ok: true, status: 'not_posted' };
+
+  const { data: pi } = await sb
+    .from('purchase_invoices')
+    .select('total_centi')
+    .eq('invoice_number', invoiceNumber)
+    .maybeSingle();
+  const newTotal = Number((pi as { total_centi?: number } | null)?.total_centi ?? 0);
+  if (Number(active.total_debit_sen) === newTotal) return { ok: true, status: 'unchanged' };
+
+  // Total changed → void the stale JE, then re-post at the new amount.
+  const rev = await reversePiAccounting(sb, invoiceNumber);
+  if (!rev.ok) return { ok: false, status: rev.status, reason: rev.reason };
+  if (newTotal <= 0) return { ok: true, status: 'reversed_to_zero' };
+  const post = await postPiAccounting(sb, invoiceNumber);
+  return post.ok ? { ok: true, status: 'resynced' } : { ok: false, status: post.status, reason: (post as { reason?: string }).reason };
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   GL stream + balances + aging
+   ════════════════════════════════════════════════════════════════════════ */
+
+accounting.get('/gl', async (c) => {
+  const sb = c.get('supabase');
+  const accountCode = c.req.query('accountCode');
+  const from = c.req.query('from');
+  const to = c.req.query('to');
+
+  let q = sb.from('v_gl_entries').select('*').limit(1000);
+  if (accountCode) q = q.eq('account_code', accountCode);
+  if (from)        q = q.gte('entry_date', from);
+  if (to)          q = q.lte('entry_date', to);
+
+  const { data, error } = await q;
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ glEntries: data ?? [] });
+});
+
+accounting.get('/balances', async (c) => {
+  const sb = c.get('supabase');
+  const { data, error } = await sb
+    .from('v_account_balances')
+    .select('*');
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ balances: data ?? [] });
+});
+
+accounting.get('/ar-aging', async (c) => {
+  const sb = c.get('supabase');
+  const { data, error } = await sb
+    .from('v_ar_aging')
+    .select('*')
+    .order('days_overdue', { ascending: false });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ arAging: data ?? [] });
+});
+
+accounting.get('/ap-aging', async (c) => {
+  const sb = c.get('supabase');
+  const { data, error } = await sb
+    .from('v_ap_aging')
+    .select('*')
+    .order('days_overdue', { ascending: false });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ apAging: data ?? [] });
+});

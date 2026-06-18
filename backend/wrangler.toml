@@ -71,6 +71,24 @@ id = "f0f9bd0d6b924496981b97b9ebcfe898"
 binding = "POD_BUCKET"
 bucket_name = "houzs-erp"
 
+# Ported 2990's SCM photo features. The deploy token lacks R2 perms (can't create
+# dedicated buckets), so these reuse the existing houzs-erp bucket — each feature
+# writes under its own key prefix, so they don't collide with POD objects.
+# Reversible: point at dedicated buckets later (e.g. houzs-scm-photos /
+# houzs-scm-public) once an R2-scoped token is available.
+#   • SO_ITEM_PHOTOS — private SO/consignment item photos (served via proxy).
+#   • PUBLIC_ASSETS  — category hero images. NOTE: storage works here, but true
+#     public-URL serving needs a public bucket policy / custom domain (separate).
+# SLIPS (payment-slip presign) is intentionally unbound — peripheral, and also
+# needs the R2 S3 API creds; the slip endpoints throw a clear error until set.
+[[r2_buckets]]
+binding = "SO_ITEM_PHOTOS"
+bucket_name = "houzs-erp"
+
+[[r2_buckets]]
+binding = "PUBLIC_ASSETS"
+bucket_name = "houzs-erp"
+
 # KV cache for the hydrated session user (services/sessionCache.ts). 60s TTL,
 # busted on logout. Pure optimization — auth falls back to the DB if absent.
 [[kv_namespaces]]
@@ -146,6 +164,15 @@ id = "b776100058d04d609bb6e19182263683"
 
 [[env.staging.r2_buckets]]
 binding = "POD_BUCKET"
+bucket_name = "houzs-erp"
+
+# SCM photo features (see prod block) — reuse houzs-erp, prefix-keyed.
+[[env.staging.r2_buckets]]
+binding = "SO_ITEM_PHOTOS"
+bucket_name = "houzs-erp"
+
+[[env.staging.r2_buckets]]
+binding = "PUBLIC_ASSETS"
 bucket_name = "houzs-erp"
 
 [[env.staging.kv_namespaces]]

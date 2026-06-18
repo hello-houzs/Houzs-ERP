@@ -7,7 +7,29 @@ export type Env = {
   // read DATABASE_URL from .dev.vars instead.
   HYPERDRIVE?: { connectionString: string };
   DATABASE_URL?: string;
+  // Supabase REST (PostgREST) access — for the SCM modules ported from 2990's,
+  // which talk to the SAME Supabase via supabase-js (alongside the Drizzle /
+  // Hyperdrive path the rest of Houzs uses). All point at one DB. Set the keys
+  // via `wrangler secret put`. SUPABASE_URL is `https://<project-ref>.supabase.co`.
+  // Required by the ported 2990's SCM routes (they createClient(...) directly).
+  // Set in .dev.vars locally; must be set as Worker vars/secrets for prod.
+  SUPABASE_URL: string;
+  SUPABASE_ANON_KEY: string;
+  SUPABASE_SERVICE_ROLE_KEY: string;
   POD_BUCKET: R2Bucket;
+  // R2 buckets used by the ported SCM routes (SO item photos, public assets).
+  // Typed required so the ported code compiles; bind in wrangler.toml before the
+  // photo/asset endpoints are exercised (they fail at runtime until then).
+  SO_ITEM_PHOTOS: R2Bucket;
+  PUBLIC_ASSETS: R2Bucket;
+  // R2 S3-API credentials for presigned SO-item-photo / slip URLs (ported SCM
+  // photo/slip features). Optional — those endpoints fail at runtime until set.
+  SLIPS?: R2Bucket;
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
+  R2_ENDPOINT?: string;
+  R2_BUCKET_NAME?: string;
+  SO_ITEM_PHOTOS_BUCKET_NAME?: string;
   // Optional KV cache for the hydrated session user (see services/sessionCache.ts).
   // Absent in tests/local — auth falls back to the DB path unchanged.
   SESSION_CACHE?: KVNamespace;
