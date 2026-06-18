@@ -55,6 +55,18 @@ const ScmMrpLeadTimes = lazy(() => import("./pages/scm/MrpLeadTimes").then((m) =
 const ScmFabricTracking = lazy(() => import("./pages/scm/FabricTracking").then((m) => ({ default: m.ScmFabricTracking })));
 const ScmAccounting = lazy(() => import("./pages/scm/Accounting").then((m) => ({ default: m.ScmAccounting })));
 const ScmOutstanding = lazy(() => import("./pages/scm/Outstanding").then((m) => ({ default: m.ScmOutstanding })));
+const ScmConsignmentOrders = lazy(() => import("./pages/scm/ConsignmentOrders").then((m) => ({ default: m.ScmConsignmentOrders })));
+const ScmConsignmentOrderDetail = lazy(() => import("./pages/scm/ConsignmentOrderDetail").then((m) => ({ default: m.ScmConsignmentOrderDetail })));
+const ScmConsignmentNotes = lazy(() => import("./pages/scm/ConsignmentNotes").then((m) => ({ default: m.ScmConsignmentNotes })));
+const ScmConsignmentNoteDetail = lazy(() => import("./pages/scm/ConsignmentNoteDetail").then((m) => ({ default: m.ScmConsignmentNoteDetail })));
+const ScmConsignmentReturns = lazy(() => import("./pages/scm/ConsignmentReturns").then((m) => ({ default: m.ScmConsignmentReturns })));
+const ScmConsignmentReturnDetail = lazy(() => import("./pages/scm/ConsignmentReturnDetail").then((m) => ({ default: m.ScmConsignmentReturnDetail })));
+const ScmPurchaseConsignmentOrders = lazy(() => import("./pages/scm/PurchaseConsignmentOrders").then((m) => ({ default: m.ScmPurchaseConsignmentOrders })));
+const ScmPurchaseConsignmentOrderDetail = lazy(() => import("./pages/scm/PurchaseConsignmentOrderDetail").then((m) => ({ default: m.ScmPurchaseConsignmentOrderDetail })));
+const ScmPurchaseConsignmentReceives = lazy(() => import("./pages/scm/PurchaseConsignmentReceives").then((m) => ({ default: m.ScmPurchaseConsignmentReceives })));
+const ScmPurchaseConsignmentReceiveDetail = lazy(() => import("./pages/scm/PurchaseConsignmentReceiveDetail").then((m) => ({ default: m.ScmPurchaseConsignmentReceiveDetail })));
+const ScmPurchaseConsignmentReturns = lazy(() => import("./pages/scm/PurchaseConsignmentReturns").then((m) => ({ default: m.ScmPurchaseConsignmentReturns })));
+const ScmPurchaseConsignmentReturnDetail = lazy(() => import("./pages/scm/PurchaseConsignmentReturnDetail").then((m) => ({ default: m.ScmPurchaseConsignmentReturnDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -191,6 +203,18 @@ export default function App() {
         <Route path="/scm/fabric-tracking" element={<Guard perm="*"><ScmFabricTracking /></Guard>} />
         <Route path="/scm/accounting" element={<Guard perm="*"><ScmAccounting /></Guard>} />
         <Route path="/scm/outstanding" element={<Guard perm="*"><ScmOutstanding /></Guard>} />
+        <Route path="/scm/consignment-orders" element={<Guard perm="*"><ScmConsignmentOrders /></Guard>} />
+        <Route path="/scm/consignment-orders/:id" element={<Guard perm="*"><ScmConsignmentOrderDetail /></Guard>} />
+        <Route path="/scm/consignment-notes" element={<Guard perm="*"><ScmConsignmentNotes /></Guard>} />
+        <Route path="/scm/consignment-notes/:id" element={<Guard perm="*"><ScmConsignmentNoteDetail /></Guard>} />
+        <Route path="/scm/consignment-returns" element={<Guard perm="*"><ScmConsignmentReturns /></Guard>} />
+        <Route path="/scm/consignment-returns/:id" element={<Guard perm="*"><ScmConsignmentReturnDetail /></Guard>} />
+        <Route path="/scm/purchase-consignment-orders" element={<Guard perm="*"><ScmPurchaseConsignmentOrders /></Guard>} />
+        <Route path="/scm/purchase-consignment-orders/:id" element={<Guard perm="*"><ScmPurchaseConsignmentOrderDetail /></Guard>} />
+        <Route path="/scm/purchase-consignment-receives" element={<Guard perm="*"><ScmPurchaseConsignmentReceives /></Guard>} />
+        <Route path="/scm/purchase-consignment-receives/:id" element={<Guard perm="*"><ScmPurchaseConsignmentReceiveDetail /></Guard>} />
+        <Route path="/scm/purchase-consignment-returns" element={<Guard perm="*"><ScmPurchaseConsignmentReturns /></Guard>} />
+        <Route path="/scm/purchase-consignment-returns/:id" element={<Guard perm="*"><ScmPurchaseConsignmentReturnDetail /></Guard>} />
         {/* Legacy /roles → Team page's Roles tab */}
         <Route
           path="/roles"
