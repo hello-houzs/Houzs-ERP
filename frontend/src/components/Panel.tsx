@@ -190,9 +190,9 @@ export function PanelSection({ title, children, muted, action }: SectionProps) {
         muted ? "bg-bg/60" : "bg-surface"
       )}
     >
-      <div className="mb-2 flex items-center gap-2">
-        <span className="h-px w-3 bg-accent/60" />
-        <div className="flex-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+      <div className="mb-2.5 flex items-center gap-2">
+        <span className="h-3.5 w-[3px] rounded-full bg-accent" />
+        <div className="flex-1 text-[11px] font-bold uppercase tracking-brand text-ink-secondary">
           {title}
         </div>
         {action && <div className="shrink-0">{action}</div>}

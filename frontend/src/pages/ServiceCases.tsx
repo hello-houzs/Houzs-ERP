@@ -2467,10 +2467,13 @@ function DetailContent({
 
           {/* Stage + Priority header */}
           <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-3">
-            <StatusDot variant={stageVariant(c.stage)} label={stageLabel(c.stage)} />
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1 text-[12.5px] font-bold text-ink shadow-stone">
+              <StatusDot variant={stageVariant(c.stage)} />
+              {caseStageLabel(c.stage)}
+            </span>
             <span className="inline-flex items-center gap-1">
               <span className={cn("h-2 w-2 rounded-full", priorityColor(c.priority))} />
-              <span className="text-[11px] capitalize text-ink-secondary">{c.priority}</span>
+              <span className="text-[11px] font-semibold capitalize text-ink-secondary">{c.priority}</span>
             </span>
             <LeadTimePill c={c} priorityMap={priorityMap} />
             {c.resolution_method && (
