@@ -4,7 +4,6 @@ import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TopNavbar } from "./TopNavbar";
 import { MobileTabBar } from "./MobileTabBar";
-import { PointsChip } from "./PointsChip";
 import { PullToRefresh, PullToRefreshGuardProvider } from "./PullToRefresh";
 import { RowActionsMenu, type MenuItem } from "./RowActionsMenu";
 import { useQuery } from "../hooks/useQuery";
@@ -87,7 +86,6 @@ function MobileTopBar() {
         draggable={false}
       />
       <div className="ml-auto flex min-w-0 items-center gap-1.5">
-        <PointsChip compact />
         <GlobalSearchTrigger collapsed />
       </div>
     </div>

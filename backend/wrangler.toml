@@ -98,16 +98,12 @@ id = "c25f593faf5a46a2b94155eba91083e1"
 #                          deploys never break on missing keys.
 
 [triggers]
-# Cron schedule (kept under the Workers free-plan trigger cap):
-#   */5    → SO incremental pull (tight — ops users see new orders fast)
-#   */30   → PO pull (docs + outstanding lines). Procurement changes slowly,
-#            hitting AutoCount every 5 min is overkill.
-#   0 2    → Daily batch: overdue auto-extend, SLA escalation, project
-#            reminders, creditors resync, stock-items refresh, weekly
-#            streak rollover + leaderboard cache refresh (mig 055), AND
-#            monthly gifting reset — idempotent on `users.gifting_reset_at`,
-#            so daily-running it is harmless and the actual grant happens
-#            on the 1st of each month.
+# Cron schedule (kept under the Workers free-plan trigger cap). After the
+# strip-to-core cutover the AutoCount pulls + gamify jobs are gone; what runs:
+#   */5    → Hyperdrive keep-warm ping + durable email-outbox drain
+#   */30   → ASSR per-stage alert scan + scheduled lead-time activations
+#   0 2    → Daily batch: SLA escalation, ASSR daily digest, project
+#            checklist reminders, idempotency-key TTL sweep
 crons = [
   "*/5 * * * *",
   "*/30 * * * *",

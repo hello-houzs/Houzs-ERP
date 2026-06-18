@@ -1,15 +1,7 @@
 import { NavLink, useLocation } from "react-router-dom";
 import {
-  LayoutDashboard,
   ClipboardList,
-  Truck,
-  Route,
   Package,
-  Boxes,
-  PackageCheck,
-  Undo2,
-  ArrowLeftRight,
-  ClipboardCheck,
   Zap,
   Settings as SettingsIcon,
   PanelLeftClose,
@@ -23,17 +15,7 @@ import {
   Wrench,
   FolderKanban,
   ShieldCheck,
-  Trophy,
-  Lightbulb,
-  MessageCircle,
-  ShoppingBag,
-  Wallet,
-  Briefcase,
-  Receipt,
-  ListTree,
-  Gauge,
   Activity,
-  Handshake,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -97,97 +79,6 @@ export interface NavTab {
  * filter recurses so groups with no visible kids hide entirely.
  */
 export const NAV_TABS: NavTab[] = [
-  // ── Workspace — universal landing ────────────────────────────
-  { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
-
-  // ── Sales — order flow REMOVED from the sidebar per owner request
-  //    (2026-06-14). The routes (/sales, /orders, /orders/items, /po),
-  //    their backend, and the AutoCount sync are all untouched — only
-  //    the nav entries are hidden. To restore, un-comment this group.
-  //    Delivery was moved into Operations below so the delivery business
-  //    keeps it front-and-centre.
-  // {
-  //   label: "Sales",
-  //   icon: Briefcase,
-  //   groupId: "sales",
-  //   anyPerm: ["sales.read", "sales_orders.read", "delivery_orders.read", "purchase_orders.read"],
-  //   children: [
-  //     { to: "/sales", label: "Sales Entries", icon: Receipt, perm: "sales.read", pageAccess: "sales" },
-  //     { to: "/orders", label: "Sales Orders", icon: ClipboardList, perm: "sales_orders.read", pageAccess: "orders" },
-  //     { to: "/orders/items", label: "Sales Order Detail", icon: ListTree, perm: "sales_orders.read", pageAccess: "orders" },
-  //     { to: "/delivery-orders", label: "Delivery", icon: Truck, perm: "delivery_orders.read", pageAccess: "delivery_orders", hidePerm: "trips.read.all" },
-  //     { to: "/po", label: "Purchase Orders", icon: Package, perm: "purchase_orders.read", pageAccess: "purchase_orders" },
-  //   ],
-  // },
-
-  // ── Operations — fleet, trips, dispatch, delivery ────────────
-  {
-    label: "Operations",
-    icon: Route,
-    groupId: "operations",
-    anyPerm: ["trips.read.all", "fleet.read", "delivery_orders.read"],
-    children: [
-      // Delivery relocated here from the (now-hidden) Sales group. Members
-      // with delivery_orders.read but no trips.read.all see this flat list;
-      // dispatchers with trips.read.all get the richer Queue tab in
-      // Logistics, so this entry hides for them.
-      {
-        to: "/delivery-orders",
-        label: "Delivery",
-        icon: Truck,
-        perm: "delivery_orders.read",
-        pageAccess: "delivery_orders",
-        hidePerm: "trips.read.all",
-      },
-      {
-        to: "/logistics",
-        label: "Logistics",
-        icon: Route,
-        anyPerm: ["trips.read.all", "fleet.read"],
-        pageAccess: "logistics",
-      },
-    ],
-  },
-
-  // ── Supply Chain — Suppliers + Purchase Orders (1:1 clone of 2990s), more
-  //    slices to follow (GRN, Inventory...). Owner-only for now (perm "*"),
-  //    matching the backend requirePermission("*") gate. The PO entry points at
-  //    the clone /purchase-orders (DISTINCT from the AutoCount /po page).
-  {
-    label: "Supply Chain",
-    icon: Boxes,
-    groupId: "supply_chain",
-    perm: "*",
-    children: [
-      { to: "/sales-orders", label: "Sales Orders", icon: ShoppingBag, perm: "*" },
-      { to: "/mrp", label: "MRP · Stock Status", icon: Gauge, perm: "*" },
-      // Products & Maintenance (#58) — FULL furniture catalogue + pricing engine.
-      { to: "/products", label: "SKU Master", icon: Boxes, perm: "*" },
-      { to: "/product-models", label: "Product Models", icon: Package, perm: "*" },
-      { to: "/fabric-converter", label: "Fabric Converter", icon: Wrench, perm: "*" },
-      { to: "/maintenance", label: "Maintenance", icon: Wrench, perm: "*" },
-      { to: "/delivery-orders", label: "Delivery Orders", icon: Truck, perm: "*" },
-      { to: "/sales-invoices", label: "Sales Invoices", icon: Receipt, perm: "*" },
-      { to: "/delivery-returns", label: "Delivery Returns", icon: Undo2, perm: "*" },
-      { to: "/suppliers", label: "Suppliers", icon: Package, perm: "*" },
-      { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
-      { to: "/grns", label: "Goods Received", icon: Truck, perm: "*" },
-      { to: "/purchase-invoices", label: "Purchase Invoices", icon: Receipt, perm: "*" },
-      { to: "/purchase-returns", label: "Purchase Returns", icon: Undo2, perm: "*" },
-      { to: "/purchase-consignment-orders", label: "PC Orders", icon: Handshake, perm: "*" },
-      { to: "/purchase-consignment-receives", label: "PC Receives", icon: Handshake, perm: "*" },
-      { to: "/purchase-consignment-returns", label: "PC Returns", icon: Handshake, perm: "*" },
-      { to: "/consignment-orders", label: "Consignment Orders", icon: Handshake, perm: "*" },
-      { to: "/consignment-notes", label: "Consignment Notes", icon: Handshake, perm: "*" },
-      { to: "/consignment-returns", label: "Consignment Returns", icon: Handshake, perm: "*" },
-      { to: "/inventory", label: "Inventory", icon: Boxes, perm: "*" },
-      { to: "/stock-transfers", label: "Stock Transfers", icon: ArrowLeftRight, perm: "*" },
-      { to: "/stock-takes", label: "Stock Takes", icon: ClipboardList, perm: "*" },
-      { to: "/stock-adjustments", label: "Stock Adjustments", icon: ClipboardCheck, perm: "*" },
-      { to: "/warehouses", label: "Warehouses", icon: PackageCheck, perm: "*" },
-    ],
-  },
-
   // ── Service — quality + ASSR ─────────────────────────────────
   {
     label: "Service",
@@ -272,49 +163,15 @@ export const NAV_TABS: NavTab[] = [
     ],
   },
 
-  // ── Finance — petty cash today, more later ──────────────────
-  {
-    label: "Finance",
-    icon: DollarSign,
-    groupId: "finance",
-    anyPerm: ["petty_cash.read"],
-    children: [
-      { to: "/petty-cash", label: "Petty Cash", icon: Wallet, perm: "petty_cash.read", pageAccess: "petty_cash" },
-    ],
-  },
-
-  // ── People — team + roles ────────────────────────────────────
+  // ── People — system health + user management ─────────────────
   {
     label: "People",
     icon: Users,
     groupId: "people",
-    anyPerm: ["users.read", "roles.read", "sales_team.read"],
+    anyPerm: ["users.read", "roles.read"],
     children: [
-      { to: "/system", label: "System Dashboard", icon: Gauge, anyPerm: ["users.read"], pageAccess: "team" },
       { to: "/system-health", label: "System Health", icon: Activity, perm: "*" },
       { to: "/team", label: "User Management", icon: Users, anyPerm: ["users.read", "roles.read"], pageAccess: "team" },
-      // Sales Team is the retail-rep org chart, separate from /team
-      // (workspace logins). Most reps don't have a workspace login.
-      { to: "/sales-team", label: "Sales Team", icon: Briefcase, anyPerm: ["sales_team.read"], pageAccess: "sales_team" },
-    ],
-  },
-
-  // ── Engagement — universal: every staff sees these ──────────
-  {
-    label: "Engagement",
-    icon: Trophy,
-    groupId: "engagement",
-    children: [
-      { to: "/gamification", label: "Houzs Points", icon: Trophy },
-      { to: "/shop", label: "Award Shop", icon: ShoppingBag },
-      { to: "/innovations", label: "Innovations", icon: Lightbulb },
-      { to: "/suggestions", label: "Suggestions", icon: MessageCircle },
-      {
-        to: "/gamification/admin",
-        label: "Admin Console",
-        icon: SettingsIcon,
-        perm: "*",
-      },
     ],
   },
 

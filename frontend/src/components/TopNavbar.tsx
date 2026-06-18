@@ -6,7 +6,6 @@ import { useBreadcrumbs } from "../hooks/useBreadcrumbs";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
 import { PresenceIndicator } from "./PresenceIndicator";
-import { PointsChip } from "./PointsChip";
 import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 
@@ -76,8 +75,6 @@ export function TopNavbar() {
         <GlobalSearchTrigger collapsed={false} />
         {user && (
           <>
-            <PointsChip />
-            <div className="h-5 w-px bg-border-subtle" />
             <PresenceIndicator />
             <NotificationBell collapsed direction="down" align="end" />
             <NavLink

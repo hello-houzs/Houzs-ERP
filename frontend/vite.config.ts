@@ -39,10 +39,8 @@ export default defineConfig(({ mode }) => {
   return {
     resolve: {
       alias: {
-        "@shared": fileURLToPath(new URL("../shared", import.meta.url)),
-        // shared/ lives at the repo root (out of this app's node_modules tree),
-        // so Rollup can't resolve its bare `zod` import on a clean CI build.
-        // Pin it to this app's own copy.
+        // Pin the bare `zod` import to this app's own copy so Rollup resolves
+        // it deterministically on a clean CI build.
         zod: fileURLToPath(new URL("./node_modules/zod", import.meta.url)),
       },
     },
