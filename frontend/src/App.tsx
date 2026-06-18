@@ -35,6 +35,12 @@ const ScmPurchaseInvoices = lazy(() => import("./pages/scm/PurchaseInvoices").th
 const ScmPurchaseInvoiceDetail = lazy(() => import("./pages/scm/PurchaseInvoiceDetail").then((m) => ({ default: m.ScmPurchaseInvoiceDetail })));
 const ScmPurchaseReturns = lazy(() => import("./pages/scm/PurchaseReturns").then((m) => ({ default: m.ScmPurchaseReturns })));
 const ScmPurchaseReturnDetail = lazy(() => import("./pages/scm/PurchaseReturnDetail").then((m) => ({ default: m.ScmPurchaseReturnDetail })));
+const ScmInventory = lazy(() => import("./pages/scm/Inventory").then((m) => ({ default: m.ScmInventory })));
+const ScmWarehouses = lazy(() => import("./pages/scm/Warehouses").then((m) => ({ default: m.ScmWarehouses })));
+const ScmStockTransfers = lazy(() => import("./pages/scm/StockTransfers").then((m) => ({ default: m.ScmStockTransfers })));
+const ScmStockTransferDetail = lazy(() => import("./pages/scm/StockTransferDetail").then((m) => ({ default: m.ScmStockTransferDetail })));
+const ScmStockTakes = lazy(() => import("./pages/scm/StockTakes").then((m) => ({ default: m.ScmStockTakes })));
+const ScmStockTakeDetail = lazy(() => import("./pages/scm/StockTakeDetail").then((m) => ({ default: m.ScmStockTakeDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -151,6 +157,12 @@ export default function App() {
         <Route path="/scm/purchase-invoices/:id" element={<Guard perm="*"><ScmPurchaseInvoiceDetail /></Guard>} />
         <Route path="/scm/purchase-returns" element={<Guard perm="*"><ScmPurchaseReturns /></Guard>} />
         <Route path="/scm/purchase-returns/:id" element={<Guard perm="*"><ScmPurchaseReturnDetail /></Guard>} />
+        <Route path="/scm/inventory" element={<Guard perm="*"><ScmInventory /></Guard>} />
+        <Route path="/scm/warehouses" element={<Guard perm="*"><ScmWarehouses /></Guard>} />
+        <Route path="/scm/stock-transfers" element={<Guard perm="*"><ScmStockTransfers /></Guard>} />
+        <Route path="/scm/stock-transfers/:id" element={<Guard perm="*"><ScmStockTransferDetail /></Guard>} />
+        <Route path="/scm/stock-takes" element={<Guard perm="*"><ScmStockTakes /></Guard>} />
+        <Route path="/scm/stock-takes/:id" element={<Guard perm="*"><ScmStockTakeDetail /></Guard>} />
         {/* Legacy /roles → Team page's Roles tab */}
         <Route
           path="/roles"
