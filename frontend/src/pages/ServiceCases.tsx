@@ -2786,7 +2786,7 @@ function DetailContent({
                 in Purchase Orders. */}
             <div>
               <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                Creditor
+                Supplier
                 {c.creditor_code && (
                   <Link
                     to={`/po?view=creditors&focus=${encodeURIComponent(c.creditor_code)}`}
@@ -2805,13 +2805,6 @@ function DetailContent({
                     <div className="font-mono text-[10px] text-ink-muted">
                       {c.creditor_code}
                     </div>
-                    {(c.creditor_email || c.creditor_phone) && (
-                      <div className="mt-1 text-[11px] text-ink-secondary">
-                        {c.creditor_email}
-                        {c.creditor_email && c.creditor_phone ? " · " : ""}
-                        {c.creditor_phone}
-                      </div>
-                    )}
                   </>
                 ) : c.item_code ? (
                   <div className="flex items-center justify-between gap-2">
@@ -2874,7 +2867,7 @@ function DetailContent({
               </button>
             )}
             <InlineEdit
-              label="Action Remark"
+              label="Supplier status update"
               textarea
               value={c.action_remark}
               onSave={(v) => patch({ action_remark: v })}
@@ -2902,12 +2895,9 @@ function DetailContent({
                 toast={toast}
               />
             )}
-            <InlineEdit
-              label="Items Ready Date"
-              type="date"
-              value={c.items_ready_at}
-              onSave={(v) => patch({ items_ready_at: v || null })}
-            />
+            {/* Item-ready date is set in the QC Inspection card (pass →
+                item ready); the completion doc stays here with the
+                supplier-handover paperwork. */}
             {(c.items_ready_at || attachments.some((a: any) => a?.category === "ready_doc")) && (
               <MilestoneAttachmentSlot
                 caseId={id}
@@ -3298,6 +3288,7 @@ function DetailContent({
           {/* Customer & Order */}
           <PanelSection title="Customer & Order" muted>
             <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
+            <FieldRow label="Ref No" mono>{c.ref_no || "—"}</FieldRow>
             <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
             <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
             <InlineEdit
@@ -3727,17 +3718,26 @@ function InspectionCard({
   if (!stageReached && !hasResult && !hasReport) return null;
 
   return (
-    <PanelSection title="Inspection">
+    <PanelSection title="QC Inspection">
       <InlineEdit
-        label="Inspection Result"
+        label="QC Result"
         value={c.inspection_result}
         options={[...INSPECTION_OPTIONS]}
         onSave={(v) => patch({ inspection_result: v })}
       />
+      <InlineEdit
+        label="QC Inspection Date"
+        type="date"
+        value={c.items_ready_at}
+        onSave={(v) => patch({ items_ready_at: v || null })}
+      />
+      <p className="-mt-1 text-[10.5px] leading-snug text-ink-muted">
+        Pass + date → becomes the Item Ready date. Fail → stays pending supplier item-ready.
+      </p>
       <MilestoneAttachmentSlot
         caseId={caseId}
         category="inspection_report"
-        label="Inspection Report"
+        label="QC Inspection Report"
         emptyLabel="No inspection report uploaded yet."
         uploadLabel="Upload inspection report"
         attachments={attachments}
@@ -3824,7 +3824,7 @@ function VerificationCard({
   }
 
   return (
-    <PanelSection title="Verification">
+    <PanelSection title="Issue Inspection">
       <div>
         <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Outcome
