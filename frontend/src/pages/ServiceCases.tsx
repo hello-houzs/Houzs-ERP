@@ -50,6 +50,7 @@ import {
 } from "../components/StatusDot";
 import { Pagination } from "../components/Pagination";
 import { EmptyState } from "../components/EmptyState";
+import { Badge } from "../components/Badge";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
 import { InlineEdit } from "../components/InlineEdit";
 import { ExpandableText } from "../components/ExpandableText";
@@ -487,22 +488,18 @@ function CasesView({
         // are now clipped with ellipsis at the cell edge.
         <div className="flex items-center gap-1.5">
           {r.archived_at && (
-            <span className="inline-flex items-center rounded-full border border-ink-muted/40 bg-ink-muted/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-muted">
+            <Badge tone="neutral" variant="outline" className="bg-ink-muted/10">
               Archived
-            </span>
+            </Badge>
           )}
           <StatusDot variant={stageVariant(r.stage)} label={caseStageLabel(r.stage)} />
           {r.stage !== "completed" && (r.is_breached === 1 || r.escalated_at) && (
             // One SLA badge: solid red = breached, outline = escalated
             // only (overdue >24h). Merged from the old separate SLA + Esc
             // pills to calm the row.
-            <span
-              className={cn(
-                "inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider",
-                r.is_breached === 1
-                  ? "bg-err text-white"
-                  : "border border-err text-err"
-              )}
+            <Badge
+              tone="error"
+              variant={r.is_breached === 1 ? "solid" : "outline"}
               title={
                 r.is_breached === 1
                   ? `SLA breached by ${Math.abs(r.hours_to_deadline ?? 0)}h${r.escalated_at ? " · escalated" : ""}`
@@ -510,18 +507,15 @@ function CasesView({
               }
             >
               SLA
-            </span>
+            </Badge>
           )}
           {r.stage !== "completed" && r.days_in_stage != null && r.days_in_stage > 3 && (
             // Neutral aging hint — red is reserved for actual SLA breach
             // (the badge above). Showing every >3-day case in red made the
             // whole list look on-fire.
-            <span
-              className="inline-flex items-center rounded-full bg-ink/[0.06] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-muted"
-              title={`In this stage for ${r.days_in_stage} day(s)`}
-            >
+            <Badge tone="neutral" variant="soft" title={`In this stage for ${r.days_in_stage} day(s)`}>
               {r.days_in_stage}d
-            </span>
+            </Badge>
           )}
         </div>
       ),
