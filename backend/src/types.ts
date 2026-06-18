@@ -7,6 +7,13 @@ export type Env = {
   // read DATABASE_URL from .dev.vars instead.
   HYPERDRIVE?: { connectionString: string };
   DATABASE_URL?: string;
+  // Supabase REST (PostgREST) access — for the SCM modules ported from 2990's,
+  // which talk to the SAME Supabase via supabase-js (alongside the Drizzle /
+  // Hyperdrive path the rest of Houzs uses). All point at one DB. Set the keys
+  // via `wrangler secret put`. SUPABASE_URL is `https://<project-ref>.supabase.co`.
+  SUPABASE_URL?: string;
+  SUPABASE_ANON_KEY?: string;
+  SUPABASE_SERVICE_ROLE_KEY?: string;
   POD_BUCKET: R2Bucket;
   // Optional KV cache for the hydrated session user (see services/sessionCache.ts).
   // Absent in tests/local — auth falls back to the DB path unchanged.
