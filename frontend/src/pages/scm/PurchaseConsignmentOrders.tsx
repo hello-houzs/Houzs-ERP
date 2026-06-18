@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Plus } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
+import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
 import { useQuery } from "../../hooks/useQuery";
 import { api, buildQuery } from "../../api/client";
@@ -224,6 +226,11 @@ export function ScmPurchaseConsignmentOrders() {
         eyebrow="Supply Chain"
         title="Purchase Consignment Orders"
         description="Supplier places stock with us on consignment — the order step, before any receive."
+        primaryAction={
+          <Button icon={<Plus size={15} />} onClick={() => navigate("/scm/purchase-consignment-orders/new")}>
+            New Order
+          </Button>
+        }
       />
 
       {/* Status filter chips */}
