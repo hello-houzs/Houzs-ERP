@@ -52,11 +52,23 @@ export default defineConfig(({ mode }) => {
         output: {
           // Stable vendor chunks so app-code changes don't bust the
           // cached framework bytes, and heavyweights (leaflet maps,
-          // lucide icon set) live outside the entry bundle.
-          manualChunks: {
-            "react-vendor": ["react", "react-dom", "react-router-dom"],
-            leaflet: ["leaflet"],
-            lucide: ["lucide-react"],
+          // lucide icon set) live outside the entry bundle. Path-based
+          // (not the object form) because the object form was leaking
+          // react-dom into the entry `index` chunk, pushing it past the
+          // bundle-size budget — matching by node_modules path reliably
+          // pulls the framework out of the entry.
+          manualChunks(id) {
+            if (!id.includes("node_modules")) return;
+            if (
+              /[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/.test(
+                id
+              ) ||
+              id.includes("@tanstack")
+            )
+              return "react-vendor";
+            if (id.includes("leaflet")) return "leaflet";
+            if (id.includes("lucide-react")) return "lucide";
+            return "vendor";
           },
         },
       },
