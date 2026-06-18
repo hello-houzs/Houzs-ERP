@@ -180,24 +180,31 @@ interface SectionProps {
   muted?: boolean;
   /** Optional control rendered top-right of the section header. */
   action?: ReactNode;
+  /** Optional small leading icon in the header (lucide, ~13px). */
+  icon?: ReactNode;
+  /** Optional left accent strip colour class (e.g. "bg-accent", "bg-synced"). */
+  accent?: string;
 }
 
-export function PanelSection({ title, children, muted, action }: SectionProps) {
+export function PanelSection({ title, children, muted, action, icon, accent }: SectionProps) {
   return (
     <section
       className={cn(
-        "mb-3 rounded-md border border-border p-3",
-        muted ? "bg-bg/60" : "bg-surface"
+        "relative mb-3 overflow-hidden rounded-lg border border-border px-4 py-3.5 shadow-stone",
+        muted ? "bg-bg/50" : "bg-surface"
       )}
     >
-      <div className="mb-2 flex items-center gap-2">
-        <span className="h-px w-3 bg-accent/60" />
-        <div className="flex-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+      {accent && (
+        <span className={cn("pointer-events-none absolute left-0 top-0 h-full w-1", accent)} />
+      )}
+      <div className="mb-3 flex items-center gap-2">
+        {icon && <span className="shrink-0 text-ink-muted">{icon}</span>}
+        <div className="flex-1 text-[10.5px] font-bold uppercase tracking-wide text-ink-secondary">
           {title}
         </div>
         {action && <div className="shrink-0">{action}</div>}
       </div>
-      <div className="space-y-2">{children}</div>
+      <div className="space-y-2.5">{children}</div>
     </section>
   );
 }
@@ -212,9 +219,13 @@ export function FieldRow({
   mono?: boolean;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3">
-      <span className="shrink-0 text-xs text-ink-muted">{label}</span>
-      <span className={cn("text-right text-sm", mono && "font-mono")}>{children}</span>
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+        {label}
+      </span>
+      <span className={cn("min-w-0 break-words text-right text-[12.5px] leading-snug text-ink", mono && "font-mono text-[11.5px]")}>
+        {children}
+      </span>
     </div>
   );
 }
