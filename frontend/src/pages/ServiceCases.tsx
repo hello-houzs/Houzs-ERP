@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useSearchParams, useNavigate, useParams, Navigate } from "react-router-dom";
 import {
@@ -24,6 +24,9 @@ import {
   List as ListIcon,
   LayoutGrid,
   ShieldCheck,
+  AlertCircle,
+  ClipboardCheck,
+  User,
   Clock,
   DollarSign,
   Printer,
@@ -50,6 +53,7 @@ import {
 } from "../components/StatusDot";
 import { Pagination } from "../components/Pagination";
 import { EmptyState } from "../components/EmptyState";
+import { Badge } from "../components/Badge";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
 import { InlineEdit } from "../components/InlineEdit";
 import { ExpandableText } from "../components/ExpandableText";
@@ -487,22 +491,18 @@ function CasesView({
         // are now clipped with ellipsis at the cell edge.
         <div className="flex items-center gap-1.5">
           {r.archived_at && (
-            <span className="inline-flex items-center rounded-full border border-ink-muted/40 bg-ink-muted/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-muted">
+            <Badge tone="neutral" variant="outline" className="bg-ink-muted/10">
               Archived
-            </span>
+            </Badge>
           )}
           <StatusDot variant={stageVariant(r.stage)} label={caseStageLabel(r.stage)} />
           {r.stage !== "completed" && (r.is_breached === 1 || r.escalated_at) && (
             // One SLA badge: solid red = breached, outline = escalated
             // only (overdue >24h). Merged from the old separate SLA + Esc
             // pills to calm the row.
-            <span
-              className={cn(
-                "inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider",
-                r.is_breached === 1
-                  ? "bg-err text-white"
-                  : "border border-err text-err"
-              )}
+            <Badge
+              tone="error"
+              variant={r.is_breached === 1 ? "solid" : "outline"}
               title={
                 r.is_breached === 1
                   ? `SLA breached by ${Math.abs(r.hours_to_deadline ?? 0)}h${r.escalated_at ? " · escalated" : ""}`
@@ -510,18 +510,15 @@ function CasesView({
               }
             >
               SLA
-            </span>
+            </Badge>
           )}
           {r.stage !== "completed" && r.days_in_stage != null && r.days_in_stage > 3 && (
             // Neutral aging hint — red is reserved for actual SLA breach
             // (the badge above). Showing every >3-day case in red made the
             // whole list look on-fire.
-            <span
-              className="inline-flex items-center rounded-full bg-ink/[0.06] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-ink-muted"
-              title={`In this stage for ${r.days_in_stage} day(s)`}
-            >
+            <Badge tone="neutral" variant="soft" title={`In this stage for ${r.days_in_stage} day(s)`}>
               {r.days_in_stage}d
-            </span>
+            </Badge>
           )}
         </div>
       ),
@@ -2095,7 +2092,7 @@ function DetailContent({
     () => api.get(`/api/assr/${id}`),
     [id]
   );
-  const users = useQuery<{ id: number; name: string }[]>(
+  const users = useQuery<{ id: number; name: string; department_name?: string }[]>(
     () => api.get<any>("/api/users").then((r: any) => r.users ?? r.data ?? r ?? []),
     []
   );
@@ -2321,6 +2318,17 @@ function DetailContent({
   const userOptions = Array.isArray(users.data)
     ? users.data.map((u) => ({ id: u.id, name: u.name }))
     : [];
+  // PIC picker is restricted to Operations-department members. The
+  // currently-assigned person is always kept selectable so an existing
+  // assignment outside Operations doesn't silently vanish.
+  const opsUserOptions = Array.isArray(users.data)
+    ? users.data
+        .filter(
+          (u: any) =>
+            /operation/i.test(u.department_name || "") || u.id === c?.assigned_to,
+        )
+        .map((u) => ({ id: u.id, name: u.name }))
+    : [];
 
   return (
     <DetailLayout
@@ -2328,9 +2336,20 @@ function DetailContent({
         { label: "Service Cases", to: "/assr" },
         { label: c?.assr_no || "Loading…" },
       ]}
-      eyebrow={c?.assr_no ? `Service Case · ${c.assr_no}` : "Service Case"}
-      title={c?.customer_name || "Loading…"}
-      description={c ? `Stage: ${c.stage}${c.priority ? ` · Priority ${c.priority}` : ""}${c.assigned_to_name ? ` · Assigned ${c.assigned_to_name}` : ""}` : undefined}
+      eyebrow="Service Case"
+      title={c?.assr_no || "Loading…"}
+      description={
+        c
+          ? [
+              c.customer_name || "—",
+              c.ref_no ? `Ref ${c.ref_no}` : null,
+              `Stage: ${caseStageLabel(c.stage)}`,
+              c.assigned_to_name ? `Assigned ${c.assigned_to_name}` : null,
+            ]
+              .filter(Boolean)
+              .join("  ·  ")
+          : undefined
+      }
       backTo="/assr"
       loading={detail.loading && !c}
       error={detail.error}
@@ -2371,30 +2390,8 @@ function DetailContent({
                 Archive
               </HeaderButton>
             )}
-            {/* Free-form stage picker (mig 064) — any → any. The
-                old "next stage" linear button is gone; ops can revert
-                a closed case or skip ahead when supplier ships direct.
-                Closing still gets a one-click button when the case
-                is at resolution since that's the most common path. */}
-            {!c.archived_at && (
-              <select
-                value={c.stage}
-                onChange={(e) => transition(e.target.value as AssrStage)}
-                disabled={transitioning}
-                className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-accent disabled:opacity-60"
-                title="Move this case to any stage"
-              >
-                <option value="pending_review">Pending Review</option>
-                <option value="under_verification">Under Verification</option>
-                <option value="pending_solution">Pending Solution</option>
-                <option value="pending_inspection">Pending Inspection</option>
-                <option value="pending_item_pickup">Pending Item Pickup</option>
-                <option value="pending_supplier_pickup">Pending Supplier Pickup</option>
-                <option value="pending_item_ready">Pending Item Ready</option>
-                <option value="pending_delivery_service">Pending Delivery / Service</option>
-                <option value="completed">Completed</option>
-              </select>
-            )}
+            {/* Stage picker moved into the Workflow Progress card below
+                (rendered as "Change to"), matching the case-detail layout. */}
             {c.stage === "pending_delivery_service" && !c.archived_at && (
               <HeaderButton
                 variant="primary"
@@ -2446,6 +2443,35 @@ function DetailContent({
 
           {/* v3.1 Workflow Progress Tracker — 9-step stepper, top of detail */}
           <div className="border-b border-border bg-bg/40 px-5 py-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-secondary">
+                Workflow Progress
+              </span>
+              {!c.archived_at && (
+                <label className="inline-flex items-center gap-2">
+                  <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                    Change to
+                  </span>
+                  <select
+                    value={c.stage}
+                    onChange={(e) => transition(e.target.value as AssrStage)}
+                    disabled={transitioning}
+                    className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-accent disabled:opacity-60"
+                    title="Move this case to any stage"
+                  >
+                    <option value="pending_review">Pending Review</option>
+                    <option value="under_verification">Under Verification</option>
+                    <option value="pending_solution">Pending Solution</option>
+                    <option value="pending_inspection">Pending Inspection</option>
+                    <option value="pending_item_pickup">Pending Item Pickup</option>
+                    <option value="pending_supplier_pickup">Pending Supplier Pickup</option>
+                    <option value="pending_item_ready">Pending Item Ready</option>
+                    <option value="pending_delivery_service">Pending Delivery / Service</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </label>
+              )}
+            </div>
             <ServiceProgressTracker
               history={(detail.data as any)?.stage_history ?? []}
               currentStage={c.stage}
@@ -2455,10 +2481,13 @@ function DetailContent({
 
           {/* Stage + Priority header */}
           <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-3">
-            <StatusDot variant={stageVariant(c.stage)} label={stageLabel(c.stage)} />
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1 text-[12.5px] font-bold text-ink shadow-stone">
+              <StatusDot variant={stageVariant(c.stage)} />
+              {caseStageLabel(c.stage)}
+            </span>
             <span className="inline-flex items-center gap-1">
               <span className={cn("h-2 w-2 rounded-full", priorityColor(c.priority))} />
-              <span className="text-[11px] capitalize text-ink-secondary">{c.priority}</span>
+              <span className="text-[11px] font-semibold capitalize text-ink-secondary">{c.priority}</span>
             </span>
             <LeadTimePill c={c} priorityMap={priorityMap} />
             {c.resolution_method && (
@@ -2488,11 +2517,100 @@ function DetailContent({
               caseId={id}
               toast={toast}
             />
+            <PortalLinksMenu
+              id={id}
+              existingToken={detail.data?.portal_token ?? null}
+              toast={toast}
+              onGenerated={() => detail.reload()}
+            />
           </div>
           <DetailGrid>
             <DetailMain>
-          {/* Items */}
-          <PanelSection title={`Items (${items.length})`}>
+          {/* ── Issue (captured at intake) ─────────────────────
+              Everything in this block was filled in (or auto-derived
+              from) the original create form: the customer's reported
+              complaint, the issue category, and the priority used for
+              SLA calculation. service_category was removed when the
+              intake form was simplified — the issue_category taxonomy
+              now drives both the dashboard breakdown and triage. */}
+          <PanelSection title="Issue" icon={<AlertCircle size={13} />}>
+            <InlineEdit
+              label="Complaint"
+              textarea
+              value={c.complaint_issue}
+              onSave={(v) => patch({ complaint_issue: v })}
+              placeholder="What the customer reported"
+            />
+            <IssueCategoryField
+              value={c.issue_category}
+              onSave={(v) => patch({ issue_category: v })}
+              dialog={dialog}
+              categories={
+                issueOptions.length ? issueOptions : [...ISSUE_CATEGORIES]
+              }
+            />
+            <InlineEdit
+              label="Priority"
+              value={c.priority}
+              options={priorityOptions.length ? priorityOptions : [...PRIORITY_OPTIONS]}
+              onSave={(v) => patch({ priority: v })}
+            />
+            {/* Photos / videos — kept inside the Issue card (intake
+                evidence next to the complaint). */}
+            <div className="border-t border-border-subtle/50 pt-2.5">
+              <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+                Photos / Videos ({attachments.length})
+              </div>
+            {attachments.length > 0 && (
+              <div className="mb-2 grid grid-cols-3 gap-2">
+                {attachments.map((att: any, i: number) => (
+                  <AttachmentThumb
+                    key={att.id}
+                    att={att}
+                    onClick={() => {
+                      if ((att.content_type || "").startsWith("image/")) {
+                        setLightboxIndex(i);
+                      }
+                    }}
+                    onVisibilityChange={async (visible) => {
+                      try {
+                        await api.patch(`/api/assr/attachments/${att.id}/visibility`, { visible_to_customer: visible });
+                        toast.success(visible ? "Now visible to customer" : "Hidden from customer");
+                        detail.reload();
+                      } catch (e: any) {
+                        toast.error(e?.message || "Failed");
+                      }
+                    }}
+                    onArchive={c.archived_at ? undefined : async () => {
+                      if (!await dialog.confirm("Archive this attachment? It'll be hidden everywhere.")) return;
+                      try {
+                        await api.post(`/api/assr/attachments/${att.id}/archive`);
+                        toast.success("Archived");
+                        detail.reload();
+                      } catch (e: any) {
+                        toast.error(e?.message || "Failed");
+                      }
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink hover:border-accent/40">
+              <Upload size={12} />
+              {uploading ? "Uploading..." : "Upload"}
+              <input
+                type="file"
+                accept="image/*,video/mp4,.pdf"
+                className="hidden"
+                onChange={(e) => uploadFile(e, c.stage === "completed" ? "completion" : "evidence")}
+                disabled={uploading}
+              />
+            </label>
+            </div>
+          </PanelSection>
+
+          {/* Product Info — product attributes + procurement (PO). */}
+          <PanelSection title="Product Info" icon={<Package size={13} />}>
             {items.length === 0 ? (
               <div className="text-[12px] text-ink-muted">No items</div>
             ) : (
@@ -2528,6 +2646,15 @@ function DetailContent({
                 <Plus size={12} /> Add Item
               </button>
             )}
+            {/* Product attributes */}
+            <div className="mt-1 space-y-2.5 border-t border-border-subtle/50 pt-2.5">
+              <InlineEdit
+                label="Product Category"
+                value={c.service_category}
+                onSave={(v) => patch({ service_category: v })}
+                placeholder="e.g. Mattress / Bed frame"
+              />
+            </div>
             {showAddItem && (() => {
               // Hide items already on the case so users only see what's
               // still pickable from the SO. Manual fallback below covers
@@ -2647,89 +2774,32 @@ function DetailContent({
                 </div>
               );
             })()}
-          </PanelSection>
-
-          {/* ── Issue (captured at intake) ─────────────────────
-              Everything in this block was filled in (or auto-derived
-              from) the original create form: the customer's reported
-              complaint, the issue category, and the priority used for
-              SLA calculation. service_category was removed when the
-              intake form was simplified — the issue_category taxonomy
-              now drives both the dashboard breakdown and triage. */}
-          <PanelSection title="Issue">
-            <InlineEdit
-              label="Complaint"
-              textarea
-              value={c.complaint_issue}
-              onSave={(v) => patch({ complaint_issue: v })}
-              placeholder="What the customer reported"
-            />
-            <IssueCategoryField
-              value={c.issue_category}
-              onSave={(v) => patch({ issue_category: v })}
-              dialog={dialog}
-              categories={
-                issueOptions.length ? issueOptions : [...ISSUE_CATEGORIES]
-              }
-            />
-            <InlineEdit
-              label="Priority"
-              value={c.priority}
-              options={priorityOptions.length ? priorityOptions : [...PRIORITY_OPTIONS]}
-              onSave={(v) => patch({ priority: v })}
-            />
-          </PanelSection>
-
-          {/* Attachments — sits right under Issue so intake evidence
-              lives next to the complaint that prompted it. Resolution-
-              stage evidence (signatures, completion photos) still drops
-              here too via the same upload box. */}
-          <PanelSection title={`Attachments (${attachments.length})`}>
-            {attachments.length > 0 && (
-              <div className="mb-2 grid grid-cols-3 gap-2">
-                {attachments.map((att: any, i: number) => (
-                  <AttachmentThumb
-                    key={att.id}
-                    att={att}
-                    onClick={() => {
-                      if ((att.content_type || "").startsWith("image/")) {
-                        setLightboxIndex(i);
-                      }
-                    }}
-                    onVisibilityChange={async (visible) => {
-                      try {
-                        await api.patch(`/api/assr/attachments/${att.id}/visibility`, { visible_to_customer: visible });
-                        toast.success(visible ? "Now visible to customer" : "Hidden from customer");
-                        detail.reload();
-                      } catch (e: any) {
-                        toast.error(e?.message || "Failed");
-                      }
-                    }}
-                    onArchive={c.archived_at ? undefined : async () => {
-                      if (!await dialog.confirm("Archive this attachment? It'll be hidden everywhere.")) return;
-                      try {
-                        await api.post(`/api/assr/attachments/${att.id}/archive`);
-                        toast.success("Archived");
-                        detail.reload();
-                      } catch (e: any) {
-                        toast.error(e?.message || "Failed");
-                      }
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink hover:border-accent/40">
-              <Upload size={12} />
-              {uploading ? "Uploading..." : "Upload"}
-              <input
-                type="file"
-                accept="image/*,video/mp4,.pdf"
-                className="hidden"
-                onChange={(e) => uploadFile(e, c.stage === "completed" ? "completion" : "evidence")}
-                disabled={uploading}
+            {/* Procurement / PO — product-side info (moved out of
+                Resolution, which now only holds supplier handling). */}
+            <div className="mt-2 border-t border-border-subtle pt-2">
+              <InlineEdit
+                label="PO No"
+                value={c.po_no}
+                onSave={(v) => patch({ po_no: v })}
               />
-            </label>
+              {!c.po_no && c.creditor_code && c.stage !== "completed" && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const res = await api.post<{ po_no: string }>(`/api/assr/${id}/generate-po`);
+                      toast.success(`Generated ${res.po_no}`);
+                      detail.reload();
+                      onUpdated();
+                    } catch (e: any) {
+                      toast.error(e?.message || "Failed to generate PO");
+                    }
+                  }}
+                  className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline"
+                >
+                  <Plus size={12} /> Auto-generate PO number
+                </button>
+              )}
+            </div>
           </PanelSection>
 
           {/* ── Verification (gate between Under Verification and
@@ -2744,24 +2814,8 @@ function DetailContent({
             dialog={dialog}
           />
 
-          {/* ── Inspection (QA's inspection findings + report).
-              Renders once the case has reached pending_inspection or
-              later, or if a result / report is already on file.
-              `inspection_result` was added in mig 074 but never had a
-              UI surface — this is where it lives. */}
-          <InspectionCard
-            c={c}
-            patch={patch}
-            caseId={id}
-            attachments={attachments}
-            archived={!!c.archived_at}
-            detail={detail}
-            dialog={dialog}
-            toast={toast}
-          />
-
           {/* ── Resolution (filled as the case progresses) ────── */}
-          <PanelSection title="Resolution">
+          <PanelSection title="Resolution" icon={<ClipboardCheck size={13} />}>
             <InlineEdit
               label="Resolution Method"
               value={c.resolution_method}
@@ -2774,7 +2828,7 @@ function DetailContent({
                 in Purchase Orders. */}
             <div>
               <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                Creditor
+                Supplier
                 {c.creditor_code && (
                   <Link
                     to={`/po?view=creditors&focus=${encodeURIComponent(c.creditor_code)}`}
@@ -2793,13 +2847,6 @@ function DetailContent({
                     <div className="font-mono text-[10px] text-ink-muted">
                       {c.creditor_code}
                     </div>
-                    {(c.creditor_email || c.creditor_phone) && (
-                      <div className="mt-1 text-[11px] text-ink-secondary">
-                        {c.creditor_email}
-                        {c.creditor_email && c.creditor_phone ? " · " : ""}
-                        {c.creditor_phone}
-                      </div>
-                    )}
                   </>
                 ) : c.item_code ? (
                   <div className="flex items-center justify-between gap-2">
@@ -2840,29 +2887,7 @@ function DetailContent({
               </div>
             </div>
             <InlineEdit
-              label="PO No"
-              value={c.po_no}
-              onSave={(v) => patch({ po_no: v })}
-            />
-            {!c.po_no && c.creditor_code && c.stage !== "completed" && (
-              <button
-                onClick={async () => {
-                  try {
-                    const res = await api.post<{ po_no: string }>(`/api/assr/${id}/generate-po`);
-                    toast.success(`Generated ${res.po_no}`);
-                    detail.reload();
-                    onUpdated();
-                  } catch (e: any) {
-                    toast.error(e?.message || "Failed to generate PO");
-                  }
-                }}
-                className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline"
-              >
-                <Plus size={12} /> Auto-generate PO number
-              </button>
-            )}
-            <InlineEdit
-              label="Action Remark"
+              label="Supplier status update"
               textarea
               value={c.action_remark}
               onSave={(v) => patch({ action_remark: v })}
@@ -2890,12 +2915,9 @@ function DetailContent({
                 toast={toast}
               />
             )}
-            <InlineEdit
-              label="Items Ready Date"
-              type="date"
-              value={c.items_ready_at}
-              onSave={(v) => patch({ items_ready_at: v || null })}
-            />
+            {/* Item-ready date is set in the QC Inspection card (pass →
+                item ready); the completion doc stays here with the
+                supplier-handover paperwork. */}
             {(c.items_ready_at || attachments.some((a: any) => a?.category === "ready_doc")) && (
               <MilestoneAttachmentSlot
                 caseId={id}
@@ -2911,6 +2933,37 @@ function DetailContent({
               />
             )}
           </PanelSection>
+
+          {/* ── QC Inspection (after Resolution): pass → item ready. */}
+          <InspectionCard
+            c={c}
+            patch={patch}
+            caseId={id}
+            attachments={attachments}
+            archived={!!c.archived_at}
+            detail={detail}
+            dialog={dialog}
+            toast={toast}
+          />
+
+          {/* Reference & Logistics — collapsible (v2): identifiers +
+              logistics rows + related POs, folded by default. */}
+          <CollapsibleBlock title="Reference & Logistics">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+              {([
+                ["SO", c.doc_no, true],
+                ["DO", c.delivery_order, true],
+                ["DO date", formatDate(c.do_date), false],
+                ["PO", c.po_no, true],
+                ["Location", c.location, false],
+                ["Category", c.service_category, false],
+              ] as const).map(([label, val, mono]) => (
+                <div key={label}>
+                  <div className="text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">{label}</div>
+                  <div className={cn("text-[12.5px] text-ink", mono && "font-mono text-[11.5px]")}>{val || "—"}</div>
+                </div>
+              ))}
+            </div>
 
           {/* Logistics */}
           {(c.stage === "pending_item_pickup" || c.stage === "pending_supplier_pickup" || c.stage === "pending_item_ready" || c.stage === "pending_delivery_service" || c.stage === "completed" || logistics.length > 0) && (
@@ -2987,15 +3040,92 @@ function DetailContent({
               </div>
             </PanelSection>
           )}
+          </CollapsibleBlock>
+
+            </DetailMain>
+
+            <DetailAside>
+          {/* Customer & Order */}
+          <PanelSection title="Customer" icon={<User size={13} />}>
+            <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
+            <FieldRow label="Ref No" mono>{c.ref_no || "—"}</FieldRow>
+            <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
+            <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
+            <InlineEdit
+              label="Email"
+              value={c.customer_email}
+              onSave={(v) => patch({ customer_email: v })}
+              placeholder="customer@example.com"
+            />
+            <FieldRow label="Location">{c.location || "—"}</FieldRow>
+            <FieldRow label="Agent">{c.sales_agent || "—"}</FieldRow>
+            <FieldRow label="Date">{formatDate(c.complained_date)}</FieldRow>
+            {c.addr1 && <FieldRow label="Address">{[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}</FieldRow>}
+          </PanelSection>
+
+          {/* PIC — Operations team members only */}
+          <PanelSection title="PIC" icon={<UserPlus size={13} />}>
+            <div>
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                Assigned To
+              </div>
+              <select
+                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+                value={c.assigned_to ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  patch({ assigned_to: v ? parseInt(v, 10) : null });
+                }}
+              >
+                <option value="">— unassigned —</option>
+                {opsUserOptions.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            </div>
+          </PanelSection>
+
+          {/* SLA — compact; whole card turns red when overdue */}
+          {(() => {
+            const breached = c.stage !== "completed" && c.is_breached === 1;
+            const h = c.hours_to_deadline ?? 0;
+            const days = Math.round(Math.abs(h) / 24);
+            return (
+              <div
+                className={cn(
+                  "mb-3 rounded-lg border px-4 py-2.5 shadow-stone",
+                  breached ? "border-err/40 bg-err/5" : "border-border bg-surface",
+                )}
+              >
+                <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+                  <Clock size={12} /> SLA
+                </div>
+                <div className="mt-0.5 text-[11.5px] text-ink-secondary">
+                  Deadline {c.deadline_at ? formatDate(c.deadline_at) : "—"} ·{" "}
+                  <span className="capitalize">{c.priority}</span>
+                </div>
+                <div className="mt-0.5 text-[14px] font-bold leading-tight">
+                  {c.stage === "completed" ? (
+                    <span className="text-synced">Closed</span>
+                  ) : breached ? (
+                    <span className="text-err">{days} {days === 1 ? "day" : "days"} overdue</span>
+                  ) : c.deadline_at ? (
+                    <span className="text-synced">{Math.max(0, Math.round(h / 24))} days left</span>
+                  ) : (
+                    <span className="text-ink-muted">No SLA set</span>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Timeline — chronological log of stage changes, notes,
               customer comments, escalations, etc. Add-note form is
               behind the header button so the timeline reads cleanly. */}
-          <section className="mb-3 rounded-md border border-border bg-surface p-3">
+          <section className="mb-3 rounded-lg border border-border bg-surface px-4 py-3.5 shadow-stone">
             <div className="mb-3 flex items-center gap-2">
-              <span className="h-px w-3 bg-accent/60" />
-              <Clock size={12} className="text-ink-secondary" />
-              <h3 className="flex-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              <Clock size={13} className="shrink-0 text-ink-muted" />
+              <h3 className="flex-1 text-[10.5px] font-bold uppercase tracking-wide text-ink-secondary">
                 Timeline
               </h3>
               {!c.archived_at && (
@@ -3074,7 +3204,7 @@ function DetailContent({
                   { value: "all" as const, label: "All" },
                   { value: "purchasing" as const, label: "Purchasing" },
                   { value: "customer" as const, label: "Customer" },
-                  { value: "system" as const, label: "System" },
+                  { value: "system" as const, label: "Service Admin" },
                 ]
               ).map((opt) => {
                 const active = activityFilter === opt.value;
@@ -3257,7 +3387,7 @@ function DetailContent({
                                 a.category === "system" && "bg-bg text-ink-muted"
                               )}
                             >
-                              {a.category}
+                              {a.category === "system" ? "Service Admin" : a.category}
                             </span>
                           )}
                         </div>
@@ -3280,134 +3410,9 @@ function DetailContent({
               );
             })()}
           </section>
-            </DetailMain>
 
-            <DetailAside>
-          {/* Customer & Order */}
-          <PanelSection title="Customer & Order" muted>
-            <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
-            <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
-            <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
-            <InlineEdit
-              label="Email (notify)"
-              value={c.customer_email}
-              onSave={(v) => patch({ customer_email: v })}
-              placeholder="customer@example.com"
-            />
-            <InlineEdit
-              label="Email (survey)"
-              value={c.email_for_survey ?? null}
-              onSave={(v) => patch({ email_for_survey: v })}
-              placeholder="customer@example.com"
-            />
-            <FieldRow label="Location">{c.location || "—"}</FieldRow>
-            <FieldRow label="Agent">{c.sales_agent || "—"}</FieldRow>
-            <FieldRow label="Date">{formatDate(c.complained_date)}</FieldRow>
-            {c.addr1 && <FieldRow label="Address">{[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}</FieldRow>}
-            <PortalLinkRow
-              id={id}
-              existingToken={detail.data?.portal_token ?? null}
-              toast={toast}
-              onGenerated={() => detail.reload()}
-            />
-            <SupplierPortalLinkRow id={id} toast={toast} />
-          </PanelSection>
-
-          <CustomerHistory id={id} />
-
-          {/* Assigned To */}
-          <PanelSection title="Assignment">
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                Assigned To
-              </div>
-              <select
-                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
-                value={c.assigned_to ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  patch({ assigned_to: v ? parseInt(v, 10) : null });
-                }}
-              >
-                <option value="">— unassigned —</option>
-                {userOptions.map((u) => (
-                  <option key={u.id} value={u.id}>{u.name}</option>
-                ))}
-              </select>
-            </div>
-          </PanelSection>
-
-          {/* Cost Tracking */}
-          <PanelSection title="Cost Tracking">
-            <CostTrackingPanel c={c} patch={patch} toast={toast} id={id} />
-          </PanelSection>
-
-          {/* Manager Approval / Quality Review */}
-          <PanelSection title="Quality Review">
-            <div className="mb-2 flex items-center gap-1.5 text-[10px] text-ink-muted">
-              <ShieldCheck size={11} />
-              Manager sign-off and issue classification
-            </div>
-            {/* Relabelled from "Issue Category" — the intake Issue
-                Category is QA's pre-work guess; here at sign-off we
-                want the actual confirmed root cause. Storage column
-                stays `ncr_category` to preserve historical Pareto data. */}
-            <InlineEdit
-              label="Issue Cause"
-              value={c.ncr_category}
-              options={ncrOptions.length ? ncrOptions : [...NCR_OPTIONS]}
-              onSave={(v) => patch({ ncr_category: v })}
-            />
-            {/* Sign-off attachment slot — verification photo / doc the
-                QA wants on record before flipping the case to Completed.
-                Uses the existing /attachments endpoint with category=sign_off. */}
-            <SignOffAttachmentSlot
-              caseId={id}
-              attachments={attachments}
-              archived={!!c.archived_at}
-              detail={detail}
-              dialog={dialog}
-              toast={toast}
-            />
-            {c.approved_at ? (
-              <div className="rounded-md border border-synced/40 bg-synced/5 p-3 text-[12px]">
-                <div className="flex items-center gap-1.5 text-synced">
-                  <ShieldCheck size={12} />
-                  <span className="font-semibold">
-                    {c.quality_review_passed ? "Quality Review Passed" : "Approved"}
-                  </span>
-                </div>
-                <div className="mt-1 text-ink-secondary">
-                  By {c.approved_by_name || `user #${c.approved_by}`} ·{" "}
-                  {formatDateTime(c.approved_at)}
-                </div>
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                <button
-                  onClick={async () => {
-                    await api.post(`/api/assr/${id}/approve`, { quality_review_passed: true });
-                    detail.reload();
-                    onUpdated();
-                  }}
-                  className="rounded-md bg-synced px-3 py-1.5 text-[11px] font-semibold text-white hover:opacity-90"
-                >
-                  Approve &amp; Pass QA
-                </button>
-                <button
-                  onClick={async () => {
-                    await api.post(`/api/assr/${id}/approve`, { quality_review_passed: false });
-                    detail.reload();
-                    onUpdated();
-                  }}
-                  className="rounded-md border border-border px-3 py-1.5 text-[11px] font-semibold text-ink"
-                >
-                  Mark Reviewed
-                </button>
-              </div>
-            )}
-          </PanelSection>
-
+          {/* Cost / Quality / CSAT — folded by default (v2); relevant
+              mostly at sign-off / close. */}
           {/* Satisfaction (shown when completed) */}
           {c.stage === "completed" && (
             <PanelSection title="Customer Satisfaction">
@@ -3688,6 +3693,40 @@ const INSPECTION_STAGES_OR_LATER: AssrStage[] = [
 
 const INSPECTION_OPTIONS = ["pass", "fail", "na"] as const;
 
+// Collapsible card — bold header + chevron, body hidden until expanded.
+// Used to fold lower-priority detail sections (Reference & Logistics on the
+// left; Cost / Quality / CSAT on the right) per the v2 layout.
+function CollapsibleBlock({
+  title,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="mb-3 overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-bg/40"
+        aria-expanded={open}
+      >
+        <span className="flex-1 text-[10.5px] font-bold uppercase tracking-wide text-ink-secondary">
+          {title}
+        </span>
+        <ChevronRight
+          size={14}
+          className={cn("text-ink-muted transition-transform", open && "rotate-90")}
+        />
+      </button>
+      {open && <div className="space-y-2.5 border-t border-border-subtle px-4 py-3.5">{children}</div>}
+    </section>
+  );
+}
+
 function InspectionCard({
   c,
   patch,
@@ -3715,17 +3754,35 @@ function InspectionCard({
   if (!stageReached && !hasResult && !hasReport) return null;
 
   return (
-    <PanelSection title="Inspection">
+    <PanelSection
+      icon={<ShieldCheck size={13} />}
+      accent="bg-synced"
+      title={
+        <>
+          QC Inspection{" "}
+          <span className="font-normal normal-case tracking-normal text-ink-muted/70">— after repair, pass → Logistics</span>
+        </>
+      }
+    >
       <InlineEdit
-        label="Inspection Result"
+        label="QC Result"
         value={c.inspection_result}
         options={[...INSPECTION_OPTIONS]}
         onSave={(v) => patch({ inspection_result: v })}
       />
+      <InlineEdit
+        label="QC Inspection Date"
+        type="date"
+        value={c.items_ready_at}
+        onSave={(v) => patch({ items_ready_at: v || null })}
+      />
+      <p className="-mt-1 text-[10.5px] leading-snug text-ink-muted">
+        Pass + date → becomes the Item Ready date. Fail → stays pending supplier item-ready.
+      </p>
       <MilestoneAttachmentSlot
         caseId={caseId}
         category="inspection_report"
-        label="Inspection Report"
+        label="QC Inspection Report"
         emptyLabel="No inspection report uploaded yet."
         uploadLabel="Upload inspection report"
         attachments={attachments}
@@ -3812,7 +3869,16 @@ function VerificationCard({
   }
 
   return (
-    <PanelSection title="Verification">
+    <PanelSection
+      icon={<ClipboardCheck size={13} />}
+      accent="bg-accent"
+      title={
+        <>
+          Issue Inspection{" "}
+          <span className="font-normal normal-case tracking-normal text-ink-muted/70">— on receipt</span>
+        </>
+      }
+    >
       <div>
         <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Outcome
@@ -4332,6 +4398,60 @@ function PrintMenu({
             hint="Full internal view"
             onClick={() => go("office")}
           />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Portal-link dropdown — sits next to Print. Lets ops pick which link to
+// generate (customer or supplier) instead of two always-visible rows in the
+// Customer card.
+function PortalLinksMenu({
+  id,
+  existingToken,
+  onGenerated,
+  toast,
+}: {
+  id: number;
+  existingToken: string | null;
+  onGenerated: () => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    function onDown(ev: MouseEvent) {
+      const target = ev.target as HTMLElement | null;
+      if (target?.closest?.("[data-portal-menu]")) return;
+      setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div className="relative" data-portal-menu>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink hover:border-accent/40"
+        title="Generate a customer or supplier portal link"
+      >
+        Portal Link
+        <ChevronRight
+          size={10}
+          style={{ transform: open ? "rotate(270deg)" : "rotate(90deg)" }}
+        />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-30 mt-1 w-72 rounded-md border border-border bg-surface p-2 shadow-stone">
+          <PortalLinkRow
+            id={id}
+            existingToken={existingToken}
+            toast={toast}
+            onGenerated={onGenerated}
+          />
+          <SupplierPortalLinkRow id={id} toast={toast} />
         </div>
       )}
     </div>

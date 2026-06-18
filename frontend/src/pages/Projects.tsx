@@ -1533,11 +1533,9 @@ function ProjectsFinancesView() {
 
   return (
     <div>
-      <PageHeader
-        eyebrow="Operations · Projects · Finances"
-        title={FINANCE_TAB_HEADER[tab].title}
-        description={FINANCE_TAB_HEADER[tab].description}
-      />
+      {/* TabStrip above PageHeader — matches Orders / PurchaseOrders /
+          Settings (the tabbed-module convention: tab bar is the top
+          chrome, per-tab title sits beneath the active tab). */}
       <TabStrip<FinanceTab>
         value={tab}
         onChange={setTab}
@@ -1546,6 +1544,11 @@ function ProjectsFinancesView() {
           { value: "analytics", label: "Analytics" },
           { value: "pnl", label: "P&L" },
         ]}
+      />
+      <PageHeader
+        eyebrow="Operations · Projects · Finances"
+        title={FINANCE_TAB_HEADER[tab].title}
+        description={FINANCE_TAB_HEADER[tab].description}
       />
 
       {tab === "list" && <FinanceListView />}
@@ -5285,9 +5288,9 @@ function ProjectStageStepper({
     <div className="w-full overflow-x-auto">
       <div className="mb-2 flex items-center gap-3 text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
         <span>Auto-detected</span>
-        <span className="text-synced">● Done</span>
-        <span className="text-warning-text">● Pending</span>
-        <span className="text-err">● Overdue</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-synced" /> Done</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-warning-text" /> Pending</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-err" /> Overdue</span>
       </div>
       <div className="flex min-w-fit items-start">
         {PROJECT_STAGES.map((st, i) => {
@@ -7387,8 +7390,8 @@ function StockTransferSection({
           <div className="text-[10px] text-ink-muted">
             {t.created_by_name && `Logged by ${t.created_by_name}`}
             {confirmed && t.confirmed_by_name && (
-              <span className="ml-2 text-synced">
-                ✓ Confirmed by {t.confirmed_by_name} {formatDate(t.confirmed_at)}
+              <span className="ml-2 inline-flex items-center gap-1 text-synced">
+                <Check size={11} /> Confirmed by {t.confirmed_by_name} {formatDate(t.confirmed_at)}
               </span>
             )}
           </div>
