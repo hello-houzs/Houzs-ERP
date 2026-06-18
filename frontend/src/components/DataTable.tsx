@@ -1,4 +1,13 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   Download,
   Upload,
@@ -9,6 +18,10 @@ import {
   ChevronRight,
   LayoutList,
   Table as TableIcon,
+  Pin,
+  PinOff,
+  EyeOff,
+  MoveHorizontal,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { ResetFiltersButton } from "./ResetFiltersButton";
@@ -126,6 +139,13 @@ interface SortState {
   dir: SortDir;
 }
 
+// Resize / pin tuning. MIN_COL_WIDTH is the floor a drag can shrink a
+// column to. DEFAULT_COL_WIDTH is the assumed width when computing a
+// pinned column's sticky-left offset and the column has no user width and
+// no px-parseable `width` default (e.g. a "%" width or none at all).
+const MIN_COL_WIDTH = 64;
+const DEFAULT_COL_WIDTH = 160;
+
 export function DataTable<T>({
   tableId,
   columns,
@@ -163,9 +183,27 @@ export function DataTable<T>({
     `dt:mview:${idKey}`,
     "cards",
   );
+  // Per-column user widths (px). Overrides the column's `width` default.
+  // Keyed by column key; absent = use the column default. Desktop-only —
+  // the mobile card branch ignores widths entirely.
+  const [widths, setWidths] = useLocalStorage<Record<string, number>>(
+    `dt:widths:${idKey}`,
+    {},
+  );
+  // Pinned (frozen-left) column keys. Pinned columns render at the front
+  // (after any alwaysVisible columns) and stick during horizontal scroll.
+  const [pinned, setPinned] = useLocalStorage<string[]>(`dt:pinned:${idKey}`, []);
   const [chooserOpen, setChooserOpen] = useState(false);
   const userHidden = useMemo(() => new Set(hiddenList), [hiddenList]);
   const userShown = useMemo(() => new Set(shownList), [shownList]);
+  const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
+  // Header right-click menu — transient (not persisted). Holds the anchor
+  // point and the column it was opened on. null = closed.
+  const [headerMenu, setHeaderMenu] = useState<{
+    x: number;
+    y: number;
+    colKey: string;
+  } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -208,9 +246,9 @@ export function DataTable<T>({
   // order gets appended (so new columns appear at the end without the
   // user losing their arrangement).
   const allColumns = useMemo(() => {
-    const pinned = rawColumns.filter((c) => c.alwaysVisible);
+    const alwaysFirst = rawColumns.filter((c) => c.alwaysVisible);
     const movable = rawColumns.filter((c) => !c.alwaysVisible);
-    if (!order || order.length === 0) return [...pinned, ...movable];
+    if (!order || order.length === 0) return [...alwaysFirst, ...movable];
     const byKey = new Map(movable.map((c) => [c.key, c]));
     const ordered: Column<T>[] = [];
     for (const k of order) {
@@ -225,7 +263,7 @@ export function DataTable<T>({
     for (const c of movable) {
       if (byKey.has(c.key)) ordered.push(c);
     }
-    return [...pinned, ...ordered];
+    return [...alwaysFirst, ...ordered];
   }, [rawColumns, order]);
 
   // Effective hidden = userHidden ∪ defaultHidden-not-explicitly-shown.
@@ -242,6 +280,67 @@ export function DataTable<T>({
     () => allColumns.filter((c) => c.alwaysVisible || !effectiveHidden.has(c.key)),
     [allColumns, effectiveHidden]
   );
+
+  // Render order with pinned columns hoisted to the front. alwaysVisible
+  // columns keep their existing front position; pinned-but-not-always
+  // columns slot in directly after them (preserving each group's relative
+  // order). Everything else follows. When nothing is pinned this is
+  // identical to `visibleColumns`, so the default render is unchanged.
+  const displayColumns = useMemo(() => {
+    if (pinnedSet.size === 0) return visibleColumns;
+    const always = visibleColumns.filter((c) => c.alwaysVisible);
+    const pinnedCols = visibleColumns.filter(
+      (c) => !c.alwaysVisible && pinnedSet.has(c.key)
+    );
+    const rest = visibleColumns.filter(
+      (c) => !c.alwaysVisible && !pinnedSet.has(c.key)
+    );
+    return [...always, ...pinnedCols, ...rest];
+  }, [visibleColumns, pinnedSet]);
+
+  // The contiguous run of sticky (frozen) columns at the front: every
+  // alwaysVisible column plus any pinned column. They render with
+  // `position: sticky` and cumulative `left` offsets. We treat the
+  // leading alwaysVisible columns as sticky too so a pinned column never
+  // scrolls "under" an unpinned-but-leading one. `stickyCount` is how many
+  // of the leading `displayColumns` are sticky.
+  const stickyCount = useMemo(() => {
+    let n = 0;
+    for (const c of displayColumns) {
+      if (c.alwaysVisible || pinnedSet.has(c.key)) n++;
+      else break;
+    }
+    // Only freeze the run if at least one column is *explicitly* pinned —
+    // alwaysVisible alone shouldn't start sticking (that would change every
+    // existing caller's scroll behaviour). When nothing is pinned, no
+    // column is sticky.
+    return pinnedSet.size === 0 ? 0 : n;
+  }, [displayColumns, pinnedSet]);
+
+  // Resolve a column's effective pixel width: user width wins, else the
+  // column's own `width` if it parses as px, else a sane default. Used both
+  // for the inline width style and for computing sticky-left offsets.
+  const resolveWidth = useCallback(
+    (col: Column<T>): number => {
+      const user = widths[col.key];
+      if (typeof user === "number" && user > 0) return user;
+      const parsed = parsePxWidth(col.width);
+      return parsed ?? DEFAULT_COL_WIDTH;
+    },
+    [widths]
+  );
+
+  // Cumulative left offset (px) for each sticky column, by index into
+  // `displayColumns`. Index >= stickyCount → not sticky (offset unused).
+  const stickyLeft = useMemo(() => {
+    const out: number[] = [];
+    let acc = 0;
+    for (let i = 0; i < stickyCount; i++) {
+      out[i] = acc;
+      acc += resolveWidth(displayColumns[i]);
+    }
+    return out;
+  }, [displayColumns, stickyCount, resolveWidth]);
 
   const chooserOptions = useMemo(
     () =>
@@ -273,7 +372,64 @@ export function DataTable<T>({
   }
 
   function resetOrder() {
+    // Resetting order also clears widths + pinned so the table returns to a
+    // clean default layout (no orphaned per-column sizes or frozen columns
+    // left pointing at a now-rearranged set).
     setOrder([]);
+    setWidths({});
+    setPinned([]);
+  }
+
+  // ── Column resize ──────────────────────────────────────────
+  // Dragging the right-edge handle updates `widths[key]`. The handle is a
+  // dedicated element that stops propagation so it never triggers the
+  // header's sort-on-click. Double-clicking the handle auto-fits (clears
+  // the column's stored width). Pointer events + capture give us a clean
+  // drag without a global listener leak.
+  const resizeRef = useRef<{ key: string; startX: number; startW: number } | null>(
+    null
+  );
+
+  function onResizeStart(e: React.MouseEvent, col: Column<T>) {
+    e.preventDefault();
+    e.stopPropagation();
+    resizeRef.current = {
+      key: col.key,
+      startX: e.clientX,
+      startW: resolveWidth(col),
+    };
+    const onMove = (ev: MouseEvent) => {
+      const r = resizeRef.current;
+      if (!r) return;
+      const next = Math.max(MIN_COL_WIDTH, r.startW + (ev.clientX - r.startX));
+      setWidths((prev) => ({ ...prev, [r.key]: next }));
+    };
+    const onUp = () => {
+      resizeRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  // Auto-fit = clear the stored width so the column falls back to its
+  // natural / default size. (We don't measure the DOM; clearing is the
+  // predictable, persistence-friendly behaviour.)
+  function autoFitColumn(key: string) {
+    setWidths((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }
+
+  // ── Pin / freeze (left) ────────────────────────────────────
+  function togglePin(key: string) {
+    setPinned((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+    );
   }
 
   function handleExport() {
@@ -320,6 +476,16 @@ export function DataTable<T>({
     });
   }
 
+  // Set an explicit sort direction for a column (used by the header
+  // context menu's "Sort ascending / descending"). Mirrors onHeaderClick's
+  // server-mode reporting so server-sorted tables re-query.
+  function applySort(col: Column<T>, dir: SortDir) {
+    if (!col.getValue || col.disableSort) return;
+    const next: SortState = { key: col.key, dir };
+    setSort(next);
+    if (serverSort && onSortChange) onSortChange(next);
+  }
+
   // On mount, if the parent is in server-sort mode and we restored a
   // sort from localStorage, push it up so the initial query matches.
   // (Effect, not render, so we don't fire during render.)
@@ -327,6 +493,25 @@ export function DataTable<T>({
     if (serverSort && onSortChange) onSortChange(sort);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Close the header context menu on any outside click, Escape, or scroll
+  // (the menu is positioned at fixed page coordinates, so a scroll would
+  // detach it from its anchor). Clicks inside the menu stop propagation.
+  useEffect(() => {
+    if (!headerMenu) return;
+    const close = () => setHeaderMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [headerMenu]);
 
   const sortedRows = useMemo(() => {
     if (!rows) return rows;
@@ -500,27 +685,66 @@ export function DataTable<T>({
           <table className="w-full border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-10">
               <tr>
-                {visibleColumns.map((c, i) => {
+                {displayColumns.map((c, i) => {
                   const sortable = !!c.getValue && !c.disableSort;
                   const active = sort?.key === c.key;
+                  const isSticky = i < stickyCount;
+                  const isLastSticky = isSticky && i === stickyCount - 1;
+                  const userW = widths[c.key];
+                  // Inline sizing: a user width (px) always wins; otherwise
+                  // fall through to the column's own `width` string. When a
+                  // width is in force we also pin min/max to it so the cell
+                  // actually holds the size instead of the browser
+                  // redistributing free space.
+                  const cellStyle: React.CSSProperties = {};
+                  if (typeof userW === "number") {
+                    cellStyle.width = userW;
+                    cellStyle.minWidth = userW;
+                    cellStyle.maxWidth = userW;
+                  } else if (c.width) {
+                    cellStyle.width = c.width;
+                  }
+                  if (isSticky) {
+                    cellStyle.position = "sticky";
+                    cellStyle.left = stickyLeft[i];
+                    // Above body sticky cells (z-20) and the sticky header
+                    // baseline (the thead is z-10); 30 keeps frozen headers
+                    // on top of everything during a two-axis scroll.
+                    cellStyle.zIndex = 30;
+                  }
                   return (
                     <th
                       key={c.key}
-                      style={c.width ? { width: c.width } : undefined}
+                      style={cellStyle}
                       onClick={() => sortable && onHeaderClick(c)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setHeaderMenu({ x: e.clientX, y: e.clientY, colKey: c.key });
+                      }}
                       className={cn(
-                        "border-b-2 border-border bg-surface-dim text-[10px] font-semibold uppercase tracking-brand text-ink",
+                        "group/th relative border-b-2 border-border bg-surface-dim text-[10px] font-semibold uppercase tracking-brand text-ink",
                         headPad,
                         c.align === "right" && "text-right",
                         c.align === "center" && "text-center",
                         (c.align === "left" || !c.align) && "text-left",
                         i === 0 && "pl-5",
-                        i === visibleColumns.length - 1 && "pr-5",
+                        i === displayColumns.length - 1 && "pr-5",
                         sortable && "cursor-pointer select-none hover:text-accent",
-                        active && "text-accent"
+                        active && "text-accent",
+                        // Delineate the frozen region: a right border on the
+                        // last sticky column reads as the freeze line.
+                        isLastSticky && "border-r border-border"
                       )}
                     >
                       <span className="inline-flex items-center gap-1">
+                        {pinnedSet.has(c.key) && (
+                          <Pin
+                            size={9}
+                            className="shrink-0 text-accent"
+                            aria-label="Pinned"
+                          />
+                        )}
                         {c.label}
                         {sortable && (
                           <span
@@ -541,17 +765,34 @@ export function DataTable<T>({
                           </span>
                         )}
                       </span>
+                      {/* Resize handle — a dedicated right-edge strip. It
+                          stops click/contextmenu propagation so dragging it
+                          never sorts or opens the column menu. Double-click
+                          auto-fits (clears the stored width). */}
+                      <span
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="Resize column"
+                        onMouseDown={(e) => onResizeStart(e, c)}
+                        onClick={(e) => e.stopPropagation()}
+                        onContextMenu={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          autoFitColumn(c.key);
+                        }}
+                        className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize touch-none select-none opacity-0 transition-opacity hover:bg-accent/40 group-hover/th:opacity-100"
+                      />
                     </th>
                   );
                 })}
               </tr>
             </thead>
             <tbody>
-              {loading && <TableSkeleton rows={8} cols={visibleColumns.length} />}
+              {loading && <TableSkeleton rows={8} cols={displayColumns.length} />}
               {!loading && error && (
                 <tr>
                   <td
-                    colSpan={visibleColumns.length}
+                    colSpan={displayColumns.length}
                     className="px-3 py-14 text-center text-sm text-err"
                   >
                     <div className="font-semibold">Failed to load</div>
@@ -562,7 +803,7 @@ export function DataTable<T>({
               {!loading && !error && sortedRows && sortedRows.length === 0 && (
                 <tr>
                   <td
-                    colSpan={visibleColumns.length}
+                    colSpan={displayColumns.length}
                     className="px-3 py-20 text-center text-sm text-ink-muted"
                   >
                     {emptyLabel}
@@ -574,6 +815,14 @@ export function DataTable<T>({
                 sortedRows &&
                 sortedRows.map((row, rowIdx) => {
                   const customClass = getRowClassName?.(row);
+                  // Opaque zebra background for sticky cells. A sticky cell
+                  // must occlude the body content scrolling beneath it, so
+                  // it needs a solid fill (the row's own bg sits on the
+                  // <tr>, which doesn't paint over the sliding siblings).
+                  // Odd-row value = `surface-dim` (#ecebe2) at 35% over the
+                  // white surface, pre-blended so there's no visible seam.
+                  const stickyBg =
+                    rowIdx % 2 === 0 ? "#ffffff" : "#f8f8f5";
                   return (
                     <tr
                       key={getRowKey(row)}
@@ -585,35 +834,57 @@ export function DataTable<T>({
                         customClass
                       )}
                     >
-                      {visibleColumns.map((c, i) => (
-                        <td
-                          key={c.key}
-                          className={cn(
-                            "border-b border-border-subtle text-[13px] text-ink transition-colors",
-                            cellPad,
-                            // Single-line rule (2026-05-08). Cells stop
-                            // wrapping their text content; long values
-                            // overflow into the next cell visually but
-                            // never push the row to two lines. Render
-                            // functions that genuinely need multi-line
-                            // (rare) can opt back in via `c.className`
-                            // ("whitespace-normal").
-                            "whitespace-nowrap",
-                            // Pine-green tint on hover (matches the
-                            // calendar's "on track" green). Reads clearly
-                            // on both zebra shades. (Was a pale brass
-                            // `accent-soft` wash that looked yellow.)
-                            "group-hover:bg-[#3f6b53]/25",
-                            c.align === "right" && "text-right",
-                            c.align === "center" && "text-center",
-                            i === 0 && "pl-5",
-                            i === visibleColumns.length - 1 && "pr-5",
-                            c.className
-                          )}
-                        >
-                          {c.render(row)}
-                        </td>
-                      ))}
+                      {displayColumns.map((c, i) => {
+                        const isSticky = i < stickyCount;
+                        const isLastSticky = isSticky && i === stickyCount - 1;
+                        const userW = widths[c.key];
+                        const cellStyle: React.CSSProperties = {};
+                        if (typeof userW === "number") {
+                          cellStyle.width = userW;
+                          cellStyle.minWidth = userW;
+                          cellStyle.maxWidth = userW;
+                        } else if (c.width) {
+                          cellStyle.width = c.width;
+                        }
+                        if (isSticky) {
+                          cellStyle.position = "sticky";
+                          cellStyle.left = stickyLeft[i];
+                          cellStyle.zIndex = 20;
+                          cellStyle.background = stickyBg;
+                        }
+                        return (
+                          <td
+                            key={c.key}
+                            style={cellStyle}
+                            className={cn(
+                              "border-b border-border-subtle text-[13px] text-ink transition-colors",
+                              cellPad,
+                              // Single-line rule (2026-05-08). Cells stop
+                              // wrapping their text content; long values
+                              // overflow into the next cell visually but
+                              // never push the row to two lines. Render
+                              // functions that genuinely need multi-line
+                              // (rare) can opt back in via `c.className`
+                              // ("whitespace-normal").
+                              "whitespace-nowrap",
+                              // Pine-green tint on hover (matches the
+                              // calendar's "on track" green). Reads clearly
+                              // on both zebra shades. (Was a pale brass
+                              // `accent-soft` wash that looked yellow.)
+                              "group-hover:bg-[#3f6b53]/25",
+                              c.align === "right" && "text-right",
+                              c.align === "center" && "text-center",
+                              i === 0 && "pl-5",
+                              i === displayColumns.length - 1 && "pr-5",
+                              // Freeze line on the last sticky column.
+                              isLastSticky && "border-r border-border",
+                              c.className
+                            )}
+                          >
+                            {c.render(row)}
+                          </td>
+                        );
+                      })}
                     </tr>
                   );
                 })}
@@ -790,6 +1061,95 @@ export function DataTable<T>({
             );
           })}
       </div>
+
+      {/* ── Header right-click context menu ──────────────────────
+          Portalled to <body> so it escapes the table's overflow clip
+          and sticky-header stacking context. Acts on the clicked
+          column. Closes on outside click / Esc / scroll (effect above). */}
+      {headerMenu &&
+        (() => {
+          const col = allColumns.find((c) => c.key === headerMenu.colKey);
+          if (!col) return null;
+          const sortable = !!col.getValue && !col.disableSort;
+          const isPinned = pinnedSet.has(col.key);
+          const canHide = !col.alwaysVisible;
+          const itemCls =
+            "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:text-ink-muted disabled:hover:bg-transparent";
+          return createPortal(
+            <div
+              className="fixed z-[120] min-w-[176px] overflow-hidden rounded-md border border-border bg-surface py-1 shadow-slab"
+              style={{ top: headerMenu.y, left: headerMenu.x }}
+              onClick={(e) => e.stopPropagation()}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              <button
+                type="button"
+                className={itemCls}
+                disabled={!sortable}
+                onClick={() => {
+                  applySort(col, "asc");
+                  setHeaderMenu(null);
+                }}
+              >
+                <ArrowUp size={13} className="shrink-0 text-ink-muted" />
+                Sort ascending
+              </button>
+              <button
+                type="button"
+                className={itemCls}
+                disabled={!sortable}
+                onClick={() => {
+                  applySort(col, "desc");
+                  setHeaderMenu(null);
+                }}
+              >
+                <ArrowDown size={13} className="shrink-0 text-ink-muted" />
+                Sort descending
+              </button>
+              <div className="my-1 border-t border-border-subtle" />
+              <button
+                type="button"
+                className={itemCls}
+                onClick={() => {
+                  togglePin(col.key);
+                  setHeaderMenu(null);
+                }}
+              >
+                {isPinned ? (
+                  <PinOff size={13} className="shrink-0 text-ink-muted" />
+                ) : (
+                  <Pin size={13} className="shrink-0 text-ink-muted" />
+                )}
+                {isPinned ? "Unpin left" : "Pin left"}
+              </button>
+              <button
+                type="button"
+                className={itemCls}
+                onClick={() => {
+                  autoFitColumn(col.key);
+                  setHeaderMenu(null);
+                }}
+              >
+                <MoveHorizontal size={13} className="shrink-0 text-ink-muted" />
+                Auto-fit width
+              </button>
+              <div className="my-1 border-t border-border-subtle" />
+              <button
+                type="button"
+                className={itemCls}
+                disabled={!canHide}
+                onClick={() => {
+                  if (canHide) toggleColumn(col.key);
+                  setHeaderMenu(null);
+                }}
+              >
+                <EyeOff size={13} className="shrink-0 text-ink-muted" />
+                Hide column
+              </button>
+            </div>,
+            document.body
+          );
+        })()}
     </div>
   );
 }
@@ -798,6 +1158,18 @@ export function DataTable<T>({
 // Handles the common shapes getValue returns: null/undefined last,
 // then numbers numerically, then strings case-insensitively, then
 // booleans (false < true).
+
+// Parse a column's `width` CSS string into a pixel number when possible.
+// "120px" → 120, "120" → 120. Non-px units ("20%", "8rem") and undefined
+// return null so the caller falls back to DEFAULT_COL_WIDTH for offset math
+// (the inline width style still passes the original string through for those).
+function parsePxWidth(width: string | undefined): number | null {
+  if (!width) return null;
+  const m = /^(\d+(?:\.\d+)?)(px)?$/.exec(width.trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
 
 function compareValues(
   a: string | number | boolean | null | undefined,
