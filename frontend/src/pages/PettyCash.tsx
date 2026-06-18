@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
+import { Modal } from "../components/Modal";
 import { StatCard } from "../components/StatCard";
 import { DashboardBreakdown, DashboardPanels } from "../components/Dashboard";
 import { DataTable, type Column } from "../components/DataTable";
@@ -754,13 +755,7 @@ function AddEntryModal({
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="New petty cash entry"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4 backdrop-blur-sm animate-fade-in"
-      onClick={onClose}
-    >
+    <Modal onClose={onClose} aria-label="New petty cash entry">
       <form
         onSubmit={submit}
         onClick={(e) => e.stopPropagation()}
@@ -941,6 +936,6 @@ function AddEntryModal({
           </div>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }

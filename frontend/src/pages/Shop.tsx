@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
+import { Modal } from "../components/Modal";
 import { AwardImage } from "../components/AwardImage";
 import { EmptyState } from "../components/EmptyState";
 import { ListSkeleton } from "../components/Skeleton";
@@ -248,13 +249,7 @@ function RedeemModal({
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Redeem ${award.name}`}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4 backdrop-blur-sm animate-fade-in"
-      onClick={onClose}
-    >
+    <Modal onClose={onClose} aria-label={`Redeem ${award.name}`}>
       <div
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-surface shadow-slab animate-rise"
@@ -349,7 +344,7 @@ function RedeemModal({
           </div>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
