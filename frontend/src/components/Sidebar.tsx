@@ -21,6 +21,9 @@ import {
   PackageCheck,
   ReceiptText,
   Undo2,
+  Warehouse,
+  ArrowLeftRight,
+  ClipboardCheck,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -183,6 +186,10 @@ export const NAV_TABS: NavTab[] = [
       { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, perm: "*" },
       { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, perm: "*" },
       { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, perm: "*" },
+      { to: "/scm/inventory", label: "Inventory", icon: Package, perm: "*" },
+      { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, perm: "*" },
+      { to: "/scm/stock-transfers", label: "Stock Transfers", icon: ArrowLeftRight, perm: "*" },
+      { to: "/scm/stock-takes", label: "Stock Takes", icon: ClipboardCheck, perm: "*" },
     ],
   },
 
