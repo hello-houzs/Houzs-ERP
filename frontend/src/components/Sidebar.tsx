@@ -18,6 +18,9 @@ import {
   Activity,
   Boxes,
   Truck,
+  PackageCheck,
+  ReceiptText,
+  Undo2,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -176,6 +179,10 @@ export const NAV_TABS: NavTab[] = [
     anyPerm: ["*"],
     children: [
       { to: "/scm/suppliers", label: "Suppliers", icon: Truck, perm: "*" },
+      { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
+      { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, perm: "*" },
+      { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, perm: "*" },
+      { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, perm: "*" },
     ],
   },
 
