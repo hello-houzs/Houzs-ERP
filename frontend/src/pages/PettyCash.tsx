@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Plus,
   Pencil,
@@ -9,6 +9,7 @@ import {
   X,
   Filter,
   RefreshCw,
+  ChevronDown,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
@@ -20,6 +21,7 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useAuth } from "../auth/AuthContext";
 import { useStickyFilters } from "../hooks/useStickyFilters";
+import { useLocalStorage } from "../hooks/useLocalStorage";
 import { api } from "../api/client";
 import { cn, relativeTime } from "../lib/utils";
 
@@ -84,6 +86,24 @@ export function PettyCash() {
     for (const k of FILTER_KEYS) next.delete(k);
     setParams(next, { replace: true });
   }
+
+  // Ledger anchor — clicking the Inflow / Outflow KPI cards filters the
+  // ledger by direction AND scrolls it into view so the matching details
+  // surface immediately.
+  const ledgerRef = useRef<HTMLDivElement>(null);
+  function drillDirection(dir: "in" | "out") {
+    const next = direction === dir ? "" : dir;
+    setFilter("direction", next);
+    if (next) {
+      setTimeout(
+        () => ledgerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        60,
+      );
+    }
+  }
+  // Cash-flow chart is collapsible (persisted) — it's the tallest block and
+  // ops often just want the ledger.
+  const [cashflowOpen, setCashflowOpen] = useLocalStorage<boolean>("pc:cashflow", true);
   // Cash-flow chart drill-down: clicking a month sets the from/to window to
   // that whole month (click again to clear).
   const activeMonth =
@@ -307,16 +327,18 @@ export function PettyCash() {
         <StatCard
           label={qs ? "Inflow (filtered)" : "Total inflow"}
           value={summary ? formatRM(qs ? summary.filtered_in_cents : summary.total_in_cents) : "—"}
-          subtitle={direction === "in" ? "Showing inflow · tap to clear" : "Top-ups, refunds"}
+          subtitle={direction === "in" ? "Showing inflow · tap to clear" : "Top-ups, refunds · tap for details"}
           tone={direction === "in" ? "success" : "default"}
-          onClick={() => setFilter("direction", direction === "in" ? "" : "in")}
+          active={direction === "in"}
+          onClick={() => drillDirection("in")}
         />
         <StatCard
           label={qs ? "Outflow (filtered)" : "Total outflow"}
           value={summary ? formatRM(qs ? summary.filtered_out_cents : summary.total_out_cents) : "—"}
-          subtitle={direction === "out" ? "Showing outflow · tap to clear" : "Purchases, expenses"}
+          subtitle={direction === "out" ? "Showing outflow · tap to clear" : "Purchases, expenses · tap for details"}
           tone={direction === "out" ? "error" : "default"}
-          onClick={() => setFilter("direction", direction === "out" ? "" : "out")}
+          active={direction === "out"}
+          onClick={() => drillDirection("out")}
         />
         <StatCard
           label={qs ? "Net (filtered)" : "Net position"}
@@ -340,11 +362,13 @@ export function PettyCash() {
         />
       </div>
 
-      {/* C — cash flow trend (in vs out over recent months) */}
+      {/* C — cash flow trend (in vs out over recent months), collapsible */}
       <CashFlowTrend
         data={monthly}
         activeMonth={activeMonth}
         onMonthClick={toggleMonth}
+        open={cashflowOpen}
+        onToggle={() => setCashflowOpen(!cashflowOpen)}
       />
 
       {/* A + B — spend breakdowns (click a row to drill into the ledger) */}
@@ -421,25 +445,34 @@ export function PettyCash() {
         {(qs || payee) && (
           <button
             onClick={() => clearAll()}
-            className="ml-auto inline-flex items-center gap-1 rounded text-[10px] font-semibold uppercase tracking-brand text-ink-muted transition-colors hover:text-accent"
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent-soft/50 px-2.5 py-1 text-[11px] font-semibold text-accent transition-colors hover:bg-accent hover:text-white"
+            title="Clear all filters and show every entry"
           >
-            <X size={11} /> Clear
+            <X size={12} /> Show all
           </button>
         )}
       </div>
 
       {/* Ledger */}
-      <DataTable
-        tableId="petty-cash"
-        columns={columns}
-        rows={list.data ? displayRows : null}
-        loading={list.loading}
-        error={list.error}
-        getRowKey={(r) => r.id}
-        emptyLabel={canPost ? "No entries yet — click 'New entry' to log one." : "No entries yet."}
-        exportName="petty-cash"
-        caption="Ledger"
-      />
+      <div ref={ledgerRef} className="scroll-mt-4">
+        <DataTable
+          tableId="petty-cash"
+          columns={columns}
+          rows={list.data ? displayRows : null}
+          loading={list.loading}
+          error={list.error}
+          getRowKey={(r) => r.id}
+          emptyLabel={canPost ? "No entries yet — click 'New entry' to log one." : "No entries yet."}
+          exportName="petty-cash"
+          caption={
+            direction === "in"
+              ? "Inflow details"
+              : direction === "out"
+              ? "Outflow details"
+              : "Ledger"
+          }
+        />
+      </div>
 
       {addOpen && canPost && (
         <AddEntryModal
@@ -475,10 +508,14 @@ function CashFlowTrend({
   data,
   activeMonth,
   onMonthClick,
+  open = true,
+  onToggle,
 }: {
   data: Array<{ month: string; in: number; out: number }>;
   activeMonth?: string;
   onMonthClick?: (month: string) => void;
+  open?: boolean;
+  onToggle?: () => void;
 }) {
   const max = Math.max(1, ...data.flatMap((d) => [d.in, d.out]));
   const monthLabel = (m: string) => {
@@ -488,23 +525,56 @@ function CashFlowTrend({
     });
   };
   return (
-    <div className="relative mb-4 overflow-hidden rounded-lg border border-border bg-surface px-5 py-5 shadow-stone">
+    <div className={cn("relative mb-4 overflow-hidden rounded-lg border border-border bg-surface px-5 shadow-stone", open ? "py-5" : "py-3")}>
       <span className="pointer-events-none absolute left-0 top-0 h-px w-full bg-gradient-to-r from-transparent via-accent/40 to-transparent" />
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-          Cash flow · last {data.length || 0} months
-        </div>
-        <div className="flex items-center gap-3 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full bg-synced" /> In
+      <div className={cn("flex items-center justify-between gap-3", open && "mb-4")}>
+        <button
+          type="button"
+          onClick={onToggle}
+          className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted transition-colors hover:text-accent"
+          aria-expanded={open}
+          title={open ? "Collapse cash flow" : "Expand cash flow"}
+        >
+          <ChevronDown size={13} className={cn("transition-transform", open ? "" : "-rotate-90")} />
+          Cash flow
+          <span className="font-mono normal-case tracking-normal text-ink-muted/70">
+            · last {data.length || 0} month{data.length === 1 ? "" : "s"}
           </span>
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full bg-err" /> Out
-          </span>
-        </div>
+        </button>
+        {open && (
+          <div className="flex items-center gap-3 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+            <span className="inline-flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-synced" /> In
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-2 w-2 rounded-full bg-err" /> Out
+            </span>
+          </div>
+        )}
       </div>
-      {data.length === 0 ? (
+      {open && (data.length === 0 ? (
         <div className="py-4 text-[12px] text-ink-muted">Not enough data yet</div>
+      ) : data.length === 1 ? (
+        // Single month: a lone dot on a line reads as "broken/empty" — show
+        // a clean In/Out summary instead.
+        <div className="flex flex-wrap items-end gap-x-10 gap-y-3 py-1">
+          <div>
+            <div className="text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+              {monthLabel(data[0].month)} · In
+            </div>
+            <div className="mt-1 font-display text-2xl font-bold leading-none text-synced">
+              {formatRM(data[0].in)}
+            </div>
+          </div>
+          <div>
+            <div className="text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+              {monthLabel(data[0].month)} · Out
+            </div>
+            <div className="mt-1 font-display text-2xl font-bold leading-none text-err">
+              {formatRM(data[0].out)}
+            </div>
+          </div>
+        </div>
       ) : (
         (() => {
           const n = data.length;
@@ -592,7 +662,7 @@ function CashFlowTrend({
             </div>
           );
         })()
-      )}
+      ))}
     </div>
   );
 }
