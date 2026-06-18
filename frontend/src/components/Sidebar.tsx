@@ -16,6 +16,8 @@ import {
   FolderKanban,
   ShieldCheck,
   Activity,
+  Boxes,
+  Truck,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -160,6 +162,20 @@ export const NAV_TABS: NavTab[] = [
         icon: Wrench,
         pageAccessFull: "projects.maintenance",
       },
+    ],
+  },
+
+  // ── Supply Chain — ported 2990's furniture SCM (/api/scm) ────
+  // Owner-gated (perm "*") while the port is in progress; the server gates
+  // /api/scm/* with requirePermission("*"). New SCM modules get added here as
+  // they're ported.
+  {
+    label: "Supply Chain",
+    icon: Boxes,
+    groupId: "scm",
+    anyPerm: ["*"],
+    children: [
+      { to: "/scm/suppliers", label: "Suppliers", icon: Truck, perm: "*" },
     ],
   },
 
