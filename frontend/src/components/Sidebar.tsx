@@ -34,6 +34,12 @@ import {
   Scissors,
   BookOpen,
   AlertCircle,
+  Handshake,
+  FileText,
+  CornerUpLeft,
+  HandCoins,
+  PackageOpen,
+  Reply,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -210,6 +216,12 @@ export const NAV_TABS: NavTab[] = [
       { to: "/scm/fabric-tracking", label: "Fabric Tracking", icon: Scissors, perm: "*" },
       { to: "/scm/accounting", label: "Accounting", icon: BookOpen, perm: "*" },
       { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, perm: "*" },
+      { to: "/scm/consignment-orders", label: "Consignment Orders", icon: Handshake, perm: "*" },
+      { to: "/scm/consignment-notes", label: "Consignment Notes", icon: FileText, perm: "*" },
+      { to: "/scm/consignment-returns", label: "Consignment Returns", icon: CornerUpLeft, perm: "*" },
+      { to: "/scm/purchase-consignment-orders", label: "Purch. Consign. Orders", icon: HandCoins, perm: "*" },
+      { to: "/scm/purchase-consignment-receives", label: "Purch. Consign. Receives", icon: PackageOpen, perm: "*" },
+      { to: "/scm/purchase-consignment-returns", label: "Purch. Consign. Returns", icon: Reply, perm: "*" },
     ],
   },
 
