@@ -14,9 +14,8 @@
 // mfg_products, so price_matrix is stored as a passthrough JSONB (no shape
 // validation) for now. unit_price_centi remains the simple price field.
 //   TODO: wire price_matrix validation to Houzs product source in the Products slice.
-// The scorecard reads purchase_orders / grns, which land in the PO/GRN slices;
-// until then it returns the faithful zero shape so the detail page renders.
-//   TODO: wire scorecard to Houzs PO/GRN once those slices land.
+// The scorecard reads mfg_purchase_orders / _items / grns / grn_items and is now
+// WIRED (wiring pass #68) — live KPI aggregation, 1:1 with 2990s.
 //
 // Endpoints:
 //   GET   /suppliers
@@ -36,10 +35,17 @@
 // ----------------------------------------------------------------------------
 
 import { Hono } from "hono";
-import { and, asc, desc, eq, ilike, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, ne, or } from "drizzle-orm";
 import type { Env } from "../types";
 import { getDb } from "../db/client";
-import { suppliers as suppliersTable, supplierMaterialBindings } from "../db/schema";
+import {
+  suppliers as suppliersTable,
+  supplierMaterialBindings,
+  purchaseOrders as poTable,
+  purchaseOrderItems as poItemsTable,
+  grns as grnsTable,
+  grnItems as grnItemsTable,
+} from "../db/schema";
 import { requirePermission } from "../middleware/auth";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -515,22 +521,114 @@ app.delete("/:id/bindings/:bindingId", async (c) => {
 //   { onTimeRate %, defectRate %, averageLeadDays, totalPOs, receivedPOs,
 //     onTimeCount, last10POs: [...] }
 //
-// 2990s computed this live from purchase_orders / grn_items /
-// purchase_order_items. Those tables land in the PO + GRN slices; until then
-// this returns the faithful zero shape so the SupplierDetail Overview tab
-// renders. TODO: wire to Houzs PO/GRN once those slices land.
+// WIRED now that the PO + GRN slices have landed (1:1 with 2990s, computed live —
+// NOT from a cached supplier_scorecards row). on-time rate + avg lead days from
+// the supplier's RECEIVED POs; defect rate = Σ qty_rejected / Σ qty_received
+// across this supplier's POSTED GRNs; last 10 POs with ordered/received totals.
+// SEAM: PostgREST -> Drizzle; the cloned mfg_purchase_orders / _items / grns /
+// grn_items (Houzs grn_items columns are qty_received / qty_rejected).
 app.get("/:id/scorecard", async (c) => {
   const id = c.req.param("id");
-  return c.json({
-    supplierId: id,
-    onTimeRate: 0,
-    defectRate: 0,
-    averageLeadDays: 0,
-    totalPOs: 0,
-    receivedPOs: 0,
-    onTimeCount: 0,
-    last10POs: [] as unknown[],
-  });
+  const db = getDb(c.env);
+  try {
+    const pos = await db
+      .select({
+        id: poTable.id,
+        poNumber: poTable.poNumber,
+        status: poTable.status,
+        poDate: poTable.poDate,
+        expectedAt: poTable.expectedAt,
+        receivedAt: poTable.receivedAt,
+        totalCenti: poTable.totalCenti,
+      })
+      .from(poTable)
+      .where(eq(poTable.supplierId, id))
+      .orderBy(desc(poTable.poDate));
+
+    const totalPOs = pos.length;
+    const receivedRows = pos.filter((p) => p.status === "RECEIVED" && p.receivedAt);
+
+    let onTimeCount = 0;
+    let leadDaysSum = 0;
+    for (const p of receivedRows) {
+      const rec = p.receivedAt ? new Date(p.receivedAt as unknown as string).getTime() : NaN;
+      if (p.expectedAt && p.receivedAt) {
+        const exp = new Date(p.expectedAt as unknown as string).getTime();
+        if (Number.isFinite(rec) && Number.isFinite(exp) && rec <= exp) onTimeCount += 1;
+      }
+      if (p.receivedAt && p.poDate) {
+        const ord = new Date(p.poDate as unknown as string).getTime();
+        if (Number.isFinite(rec) && Number.isFinite(ord)) {
+          leadDaysSum += Math.max(0, Math.round((rec - ord) / 86400000));
+        }
+      }
+    }
+
+    const receivedPOs = receivedRows.length;
+    const onTimeRate = receivedPOs > 0 ? (onTimeCount / receivedPOs) * 100 : 0;
+    const averageLeadDays = receivedPOs > 0 ? leadDaysSum / receivedPOs : 0;
+
+    // Defect rate = Σ qty_rejected / Σ qty_received across this supplier's POSTED
+    // GRNs (one batched query over the supplier's POSTED GRN ids).
+    let totalReceived = 0;
+    let totalRejected = 0;
+    const postedGrns = await db
+      .select({ id: grnsTable.id })
+      .from(grnsTable)
+      .where(and(eq(grnsTable.supplierId, id), eq(grnsTable.status, "POSTED")));
+    const grnIds = postedGrns.map((g) => g.id);
+    if (grnIds.length > 0) {
+      const grnLines = await db
+        .select({ qtyReceived: grnItemsTable.qtyReceived, qtyRejected: grnItemsTable.qtyRejected })
+        .from(grnItemsTable)
+        .where(inArray(grnItemsTable.grnId, grnIds));
+      for (const row of grnLines) {
+        totalReceived += Number(row.qtyReceived ?? 0);
+        totalRejected += Number(row.qtyRejected ?? 0);
+      }
+    }
+    const defectRate = totalReceived > 0 ? (totalRejected / totalReceived) * 100 : 0;
+
+    // Last 10 POs with ordered/received qty totals (one batched query).
+    const last10Raw = pos.slice(0, 10);
+    const last10Ids = last10Raw.map((p) => p.id);
+    const orderedByPo = new Map<string, number>();
+    const receivedByPo = new Map<string, number>();
+    if (last10Ids.length > 0) {
+      const itemRows = await db
+        .select({ purchaseOrderId: poItemsTable.purchaseOrderId, qty: poItemsTable.qty, receivedQty: poItemsTable.receivedQty })
+        .from(poItemsTable)
+        .where(inArray(poItemsTable.purchaseOrderId, last10Ids));
+      for (const r of itemRows) {
+        orderedByPo.set(r.purchaseOrderId, (orderedByPo.get(r.purchaseOrderId) ?? 0) + Number(r.qty ?? 0));
+        receivedByPo.set(r.purchaseOrderId, (receivedByPo.get(r.purchaseOrderId) ?? 0) + Number(r.receivedQty ?? 0));
+      }
+    }
+    const last10POs = last10Raw.map((po) => ({
+      id: po.id,
+      poNo: po.poNumber,
+      status: po.status,
+      poDate: po.poDate,
+      expectedDate: po.expectedAt,
+      receivedDate: po.receivedAt,
+      totalCenti: po.totalCenti,
+      orderedQty: orderedByPo.get(po.id) ?? 0,
+      receivedQty: receivedByPo.get(po.id) ?? 0,
+    }));
+
+    return c.json({
+      supplierId: id,
+      onTimeRate,
+      defectRate,
+      averageLeadDays,
+      totalPOs,
+      receivedPOs,
+      onTimeCount,
+      last10POs,
+    });
+  } catch (e) {
+    return c.json({ error: "load_failed", reason: errMsg(e) }, 500);
+  }
 });
 
 // ── Reverse lookup: who supplies this material? ──────────────────────

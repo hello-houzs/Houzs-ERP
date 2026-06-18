@@ -29,8 +29,8 @@
 //     movement rollup, no product table) and works fully.
 //     TODO: wire showAll + /products to a Houzs product source in the Products slice.
 //   - GET /inventory/reconcile cross-checks grns/DOs/purchase_returns/delivery_
-//     returns — none cloned yet -> returns zero issues. TODO: wire when those land.
-//   - recomputeSoStockAllocation (SO slice) is a no-op here; call sites kept.
+//     returns — WIRED (wiring pass #68) now that those slices landed.
+//   - recomputeSoStockAllocation is the real SO allocator (SO slice #65 landed).
 //   - variant_key is computed from the shared computeVariantKey; Houzs materials
 //     have no item-group so it resolves to '' (one bucket per product_code). The
 //     adjustment-increase furniture-axis gate (2990s adjustmentIncreaseErrors) is
@@ -50,7 +50,7 @@
 //   GET    /inventory/cogs
 //   GET    /inventory/value
 //   GET    /inventory/analytics
-//   GET    /inventory/reconcile                (STUB -> zero issues)
+//   GET    /inventory/reconcile                (GRN/DO/PR/DR ledger sweep)
 //   POST   /inventory/adjustments
 //   GET    /inventory/buckets/:productCode
 // ----------------------------------------------------------------------------
@@ -66,6 +66,10 @@ import {
   inventoryLots,
   purchaseOrders as poTable,
   suppliers as suppliersTable,
+  grns as grnsTable,
+  deliveryOrders as doTable,
+  purchaseReturns as prTable,
+  deliveryReturns as drTable,
 } from "../db/schema";
 import { requirePermission } from "../middleware/auth";
 import { writeMovements } from "../lib/inventory-movements";
@@ -690,13 +694,52 @@ app.get("/analytics", async (c) => {
   }
 });
 
-/* ── Ledger reconciliation sweep — STUB (Strategy-2) ─────────────────────────
-   2990s flags non-cancelled GRN/DO/Purchase-Return/Delivery-Return docs that
-   should have moved stock but have ZERO movement rows. None of those doc tables
-   are cloned yet -> nothing to reconcile -> zero issues. Verbatim response shape.
-   TODO: wire to grns / delivery_orders / purchase_returns / delivery_returns. */
+/* ── Ledger reconciliation sweep ─────────────────────────────────────────────
+   Read-only integrity check. Inventory writes are best-effort (a failed movement
+   insert does NOT roll back the document), so a doc can be POSTED / shipped while
+   its stock movement silently never landed. Flags every non-cancelled GRN / DO /
+   Purchase Return / Delivery Return that should have moved stock but has ZERO
+   movement rows. WIRED (wiring pass #68) now that the GRN + DO/SI/DR + PR slices
+   landed (was a Strategy-2 zero-stub while those tables didn't exist). 1:1 with
+   2990s (PostgREST -> Drizzle; source_doc_type buckets GRN/DO/PURCHASE_RETURN/DR
+   match the writeMovements calls in those routes). */
 app.get("/reconcile", async (c) => {
-  return c.json({ asOf: new Date().toISOString(), issueCount: 0, issues: [] as unknown[] });
+  const db = getDb(c.env);
+  try {
+    const movRows = await db
+      .select({ sourceDocType: inventoryMovements.sourceDocType, sourceDocId: inventoryMovements.sourceDocId })
+      .from(inventoryMovements)
+      .limit(200_000);
+    const hasMov = new Set<string>();
+    for (const m of movRows) {
+      if (m.sourceDocId) hasMov.add(`${m.sourceDocType}::${m.sourceDocId}`);
+    }
+
+    const issues: Array<{ docType: string; id: string; docNo: string; status: string }> = [];
+    const flag = (docType: string, movType: string, rows: Array<{ id: string; docNo: string | null; status: string | null }>) => {
+      for (const r of rows) {
+        if (r.id && !hasMov.has(`${movType}::${r.id}`)) {
+          issues.push({ docType, id: r.id, docNo: r.docNo ?? r.id, status: r.status ?? "" });
+        }
+      }
+    };
+
+    const SHIPPED: Array<typeof doTable.$inferSelect.status> = ["DISPATCHED", "IN_TRANSIT", "SIGNED", "DELIVERED", "INVOICED"];
+    const [grnRows, doRows, prRows, drRows] = await Promise.all([
+      db.select({ id: grnsTable.id, docNo: grnsTable.grnNumber, status: grnsTable.status }).from(grnsTable).where(eq(grnsTable.status, "POSTED")).limit(10_000),
+      db.select({ id: doTable.id, docNo: doTable.doNumber, status: doTable.status }).from(doTable).where(inArray(doTable.status, SHIPPED)).limit(10_000),
+      db.select({ id: prTable.id, docNo: prTable.returnNumber, status: prTable.status }).from(prTable).where(sql`${prTable.status} <> 'CANCELLED'`).limit(10_000),
+      db.select({ id: drTable.id, docNo: drTable.returnNumber, status: drTable.status }).from(drTable).where(sql`${drTable.status} <> 'CANCELLED'`).limit(10_000),
+    ]);
+    flag("GRN", "GRN", grnRows);
+    flag("Delivery Order", "DO", doRows);
+    flag("Purchase Return", "PURCHASE_RETURN", prRows);
+    flag("Delivery Return", "DR", drRows);
+
+    return c.json({ asOf: new Date().toISOString(), issueCount: issues.length, issues });
+  } catch (e) {
+    return c.json({ error: "load_failed", reason: errMsg(e) }, 500);
+  }
 });
 
 /* ── Manual adjustment ───────────────────────────────────────────────── */

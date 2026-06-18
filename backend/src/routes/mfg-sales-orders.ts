@@ -30,9 +30,11 @@
 //     is whatever the client sends (2990s's buildVariantSummary formatter is
 //     furniture-coupled and dropped).
 //   - DO/SI/DR-dependent aggregates (delivery state / lifecycle / current-doc /
-//     deliverable-remaining / per-line delivered breakdown / child-lock) are now
-//     WIRED to the DO/SI/DR slice (#66) via lib/so-downstream. Only MRP coverage
-//     (coverage_po / coverage_eta) stays an empty (MRP slice #64 not cloned).
+//     deliverable-remaining / per-line delivered breakdown / child-lock) are
+//     WIRED to the DO/SI/DR slice (#66) via lib/so-downstream. Per-line MRP
+//     coverage (stock_state / coverage_po / coverage_eta) is WIRED (wiring pass
+//     #68) from routes/mrp computeMrp + mrpLineCoverage (one allocation = one
+//     source of truth with the MRP page).
 //   - DROPPED customer-credits (SO-cancel -> credit; SI customer_credits out of
 //     SCM-clone scope) + slip-upload R2 plumbing (no R2 binding) — stubbed // TODO.
 //   - KEPT verbatim (generic, faithful): the document lifecycle/lanes/status,
@@ -85,6 +87,7 @@ import { recomputeSoStockAllocation } from "../lib/so-stock-allocation";
 import { summariseReadiness } from "../lib/so-readiness";
 import { isServiceLine, isDeliveryFeeServiceCode } from "../lib/service-sku";
 import { soChildLock, soHasChildrenSet, computeSoLifecycle, soCurrentDocNo, soLineDeliveryInfo, soDeliveryStateMap } from "../lib/so-downstream";
+import { computeMrp, mrpLineCoverage } from "./mrp";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -802,6 +805,22 @@ app.get("/:docNo", async (c) => {
       soCurrentDocNo(db, [docNo]),
       soLineDeliveryInfo(db, docNo),
     ]);
+
+    /* Per-line MRP coverage — WIRED (wiring pass #68) from the SAME allocation
+       engine the MRP page uses (computeMrp → mrpLineCoverage): stock first →
+       earliest-ETA outstanding PO → shortage, keyed by SO item id. Running it
+       here keeps the Stock column + the MRP page in lock-step (a bare FK-only PO
+       lookup would miss stock-replenishment POs). Best-effort: if the allocation
+       fails the page still loads, lines fall back to no coverage.
+       STRATEGY-2: the sofa batch-aware stock-coverage override is dropped (no
+       sofa allocator) — every line uses the MRP source directly. */
+    let coverageMap = new Map<string, { source: string; po: string | null; eta: string | null }>();
+    try {
+      const mrpResult = await computeMrp(db, { catFilter: null, whFilter: null, includeUndated: true });
+      coverageMap = mrpLineCoverage(mrpResult);
+    } catch {
+      coverageMap = new Map();
+    }
     const allFull = itemRows.length > 0 && itemRows.every((it) => {
       const info = lineInfo.get(it.id);
       const net = (info?.delivered ?? 0) - (info?.returned ?? 0);
@@ -825,15 +844,21 @@ app.get("/:docNo", async (c) => {
       const info = lineInfo.get(it.id);
       const delivered = info?.delivered ?? 0;
       const remaining = info?.remaining ?? Number(it.qty ?? 0);
+      /* stock_state is the allocation outcome (stock / po / shortage); coverage_po
+         + coverage_eta are set ONLY when an outstanding PO covers the line, so the
+         UI shows PO·ETA. A line manually flipped READY but with no MRP row falls
+         back to "stock" so the chip still reflects the operator's flip. */
+      const cov = coverageMap.get(it.id);
+      const covered = cov?.source === "po";
+      const stockState = cov?.source ?? (it.stockStatus === "READY" ? "stock" : null);
       return {
         ...toSoItemResponse(it),
         deliveries: info?.deliveries ?? [],
         delivered_qty: delivered,
         remaining_qty: remaining,
-        stock_state: it.stockStatus === "READY" ? "stock" : null,
-        // MRP coverage (PO ETA) comes from the MRP slice — not cloned -> empties.
-        coverage_po: null as string | null,
-        coverage_eta: null as string | null,
+        stock_state: stockState,
+        coverage_po: covered ? cov?.po ?? null : null,
+        coverage_eta: covered ? cov?.eta ?? null : null,
       };
     });
 

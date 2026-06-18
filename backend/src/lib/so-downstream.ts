@@ -200,6 +200,62 @@ export async function soLineDeliveryInfo(db: Db, docNo: string): Promise<Map<str
   return out;
 }
 
+/* Batched net delivered/returned per SO ITEM id (for ANY set of line ids, across
+   many SOs). delivered = Σ qty on non-cancelled DO lines; returned = Σ
+   qty_returned on non-cancelled DR lines traced via the DO line. Used by
+   so-stock-allocation to compute deliverable_remaining = qty − delivered +
+   returned without importing a route. Same DO/DR netting as soLineDeliveryInfo,
+   only batched + keyed by the caller's id list. */
+export async function soNetDeliveredByItem(
+  db: Db,
+  soItemIds: string[],
+): Promise<Map<string, { delivered: number; returned: number }>> {
+  const out = new Map<string, { delivered: number; returned: number }>();
+  if (soItemIds.length === 0) return out;
+
+  const doLineRows = await db
+    .select({ id: doItemsTable.id, soItemId: doItemsTable.soItemId, qty: doItemsTable.qty, deliveryOrderId: doItemsTable.deliveryOrderId })
+    .from(doItemsTable)
+    .where(inArray(doItemsTable.soItemId, soItemIds));
+  const doIds = [...new Set(doLineRows.map((l) => l.deliveryOrderId).filter(Boolean))];
+  const activeDoIds = new Set<string>();
+  if (doIds.length > 0) {
+    const dos = await db.select({ id: doTable.id, status: doTable.status }).from(doTable).where(inArray(doTable.id, doIds));
+    for (const d of dos) if ((d.status ?? "").toUpperCase() !== "CANCELLED") activeDoIds.add(d.id);
+  }
+  const doLineToSoItem = new Map<string, string>();
+  for (const l of doLineRows) {
+    if (!l.soItemId || !activeDoIds.has(l.deliveryOrderId)) continue;
+    doLineToSoItem.set(l.id, l.soItemId);
+    const cur = out.get(l.soItemId) ?? { delivered: 0, returned: 0 };
+    cur.delivered += Number(l.qty ?? 0);
+    out.set(l.soItemId, cur);
+  }
+
+  const activeDoLineIds = [...doLineToSoItem.keys()];
+  if (activeDoLineIds.length > 0) {
+    const drLineRows = await db
+      .select({ doItemId: drItemsTable.doItemId, qtyReturned: drItemsTable.qtyReturned, deliveryReturnId: drItemsTable.deliveryReturnId })
+      .from(drItemsTable)
+      .where(inArray(drItemsTable.doItemId, activeDoLineIds));
+    const drIds = [...new Set(drLineRows.map((l) => l.deliveryReturnId).filter(Boolean))];
+    const activeDrIds = new Set<string>();
+    if (drIds.length > 0) {
+      const drs = await db.select({ id: drTable.id, status: drTable.status }).from(drTable).where(inArray(drTable.id, drIds));
+      for (const d of drs) if ((d.status ?? "").toUpperCase() !== "CANCELLED") activeDrIds.add(d.id);
+    }
+    for (const l of drLineRows) {
+      if (!l.doItemId || !activeDrIds.has(l.deliveryReturnId)) continue;
+      const soItemId = doLineToSoItem.get(l.doItemId);
+      if (!soItemId) continue;
+      const cur = out.get(soItemId) ?? { delivered: 0, returned: 0 };
+      cur.returned += Number(l.qtyReturned ?? 0);
+      out.set(soItemId, cur);
+    }
+  }
+  return out;
+}
+
 /* Batched per-SO delivery_state for the list: 'none' (nothing delivered),
    'partial' (some but not all net-delivered), 'full' (every non-cancelled SO
    line's NET delivered (Σ DO − Σ DR) ≥ qty). Also returns has_undelivered (any

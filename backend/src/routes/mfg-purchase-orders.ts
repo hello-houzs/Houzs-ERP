@@ -21,26 +21,27 @@
 //     qty * unit_price_centi - discount_centi. The variant columns
 //     (gap/divan/leg/customSpecials/variants jsonb) are KEPT on the table for
 //     fidelity but the create/edit handlers pass them through as-is.
-//   - The From-SO flow + the GRN/PI/PR downstream all reference tables that are
-//     NOT cloned yet (mfg_sales_orders, mfg_sales_order_items, grns,
-//     purchase_invoices, purchase_returns, warehouses). Those endpoints are
-//     STUBBED to faithful empty/guarded shapes so the core PO module is fully
-//     usable now and the pages render. Each carries a // TODO to wire on the
-//     relevant slice. The core PO (manual create / list / detail / edit /
-//     cancel / uncancel / delete / status) is cloned fully.
+//   - The From-SO flow is WIRED (wiring pass #68): the cloned mfg_sales_orders /
+//     mfg_sales_order_items + the MRP pooled-shortage calculator now exist, so
+//     /outstanding-so-items, /from-sos and /:id/convert-from-so run the real
+//     implementation (Strategy-2: the furniture cost engine is dropped — a PO
+//     line's cost is the flat supplier-binding unit_price_centi). The GRN/PI/PR
+//     downstream (linked docs, receipts, child-lock) was wired in those slices.
+//     The core PO (manual create / list / detail / edit / cancel / uncancel /
+//     delete / status) is cloned fully.
 //
 // Endpoints:
 //   GET   /purchase-orders                  — list with filters
-//   GET   /purchase-orders/outstanding-so-items — STUB (SO slice) -> { items: [] }
+//   GET   /purchase-orders/outstanding-so-items — pooled-shortage SO picker (SO+MRP)
 //   GET   /purchase-orders/:id              — detail (header + items)
-//   GET   /purchase-orders/:id/linked       — STUB (GRN/PI/PR slices) -> empties
+//   GET   /purchase-orders/:id/linked       — GRNs + PIs + PRs descending from PO
 //   POST  /purchase-orders                  — create SUBMITTED PO from items
-//   POST  /purchase-orders/from-sos         — STUB (SO slice) -> guarded
+//   POST  /purchase-orders/from-sos         — create POs from picked SO lines
 //   PATCH /purchase-orders/:id              — update header
 //   POST  /purchase-orders/:id/items        — add line
 //   PATCH /purchase-orders/:id/items/:itemId— edit line
 //   DELETE /purchase-orders/:id/items/:itemId— delete line
-//   POST  /purchase-orders/:id/convert-from-so — STUB (SO slice) -> guarded
+//   POST  /purchase-orders/:id/convert-from-so — copy an SO's items into this PO
 //   PATCH /purchase-orders/:id/submit       — idempotent no-op (DRAFT removed)
 //   PATCH /purchase-orders/:id/cancel       — -> CANCELLED
 //   PATCH /purchase-orders/:id/reopen       — CANCELLED -> SUBMITTED
@@ -59,9 +60,13 @@ import {
   grnItems as grnItemsTable,
   purchaseInvoices as piTable,
   purchaseReturns as prTable,
+  mfgSalesOrders as soTable,
   mfgSalesOrderItems as soItemsTable,
+  supplierMaterialBindings as bindingsTable,
+  mfgWarehouses as warehousesTable,
 } from "../db/schema";
 import { requirePermission } from "../middleware/auth";
+import { computeMrp } from "./mrp";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -222,15 +227,123 @@ app.get("/", async (c) => {
 });
 
 /* ── Outstanding SO items for the "From SO" picker ──────────────────────────
-   STUB. 2990s reads mfg_sales_order_items (+ pooled MRP shortage). The SO slice
-   is not cloned yet, so there are no outstanding SO lines -> return the faithful
-   empty shape. The PurchaseOrderFromSo page renders its "available after the
-   Sales Orders slice" empty state from this.
+   WIRED now that the SO + MRP slices have landed (1:1 with 2990s). Reads
+   mfg_sales_order_items (+ parent SO) and shows ONLY lines that still have an
+   UNCOVERED pooled shortage (the SAME stock+open-PO allocation MRP uses, via
+   computeMrp -> per-line shortageQty), so the picker can never disagree with the
+   MRP page: an SO already covered by stock or an open PO drops off; when that
+   stock is later consumed it re-appears. Best-effort: if the pooled compute
+   fails, fall back to the per-line picked cap (qty − po_qty_picked) so the picker
+   still works (degraded). Each SKU's MAIN supplier is resolved from
+   supplier_material_bindings so the grid shows which lines are convertible.
+   STRATEGY-2 DEVIATION: the sofa SETS shortage source is dropped (MRP returns
+   sofaSets: []); the per-SKU shortage path is the only one.
    IMPORTANT (route ordering): this STATIC path stays registered BEFORE `/:id`
-   so Hono doesn't try to cast "outstanding-so-items" to a uuid.
-   TODO: wire to mfg_sales_order_items when the SO slice lands. */
+   so Hono doesn't try to cast "outstanding-so-items" to a uuid. */
 app.get("/outstanding-so-items", async (c) => {
-  return c.json({ items: [] as unknown[] });
+  const db = getDb(c.env);
+  try {
+    // SO lines + parent SO (inner join on doc_no). 2990s embeds the parent SO;
+    // reproduce with an inner join so cancelled SOs / cancelled lines drop.
+    const rows = await db
+      .select({
+        id: soItemsTable.id,
+        docNo: soItemsTable.docNo,
+        itemCode: soItemsTable.itemCode,
+        description: soItemsTable.description,
+        itemGroup: soItemsTable.itemGroup,
+        qty: soItemsTable.qty,
+        poQtyPicked: soItemsTable.poQtyPicked,
+        unitPriceCenti: soItemsTable.unitPriceCenti,
+        variants: soItemsTable.variants,
+        lineSuffix: soItemsTable.lineSuffix,
+        lineDeliveryDate: soItemsTable.lineDeliveryDate,
+        soDocNo: soTable.docNo,
+        debtorName: soTable.debtorName,
+        branding: soTable.branding,
+        soStatus: soTable.status,
+        soDate: soTable.soDate,
+        customerDeliveryDate: soTable.customerDeliveryDate,
+        internalExpectedDd: soTable.internalExpectedDd,
+        salesLocation: soTable.salesLocation,
+      })
+      .from(soItemsTable)
+      .innerJoin(soTable, eq(soItemsTable.docNo, soTable.docNo))
+      .where(eq(soItemsTable.cancelled, false))
+      .orderBy(desc(soItemsTable.docNo))
+      .limit(500);
+
+    // Resolve each SKU's MAIN supplier (is_main_supplier first → first binding).
+    const skuCodes = [...new Set(rows.map((r) => r.itemCode).filter(Boolean))];
+    const mainSupplierByCode = new Map<string, { code: string; name: string }>();
+    if (skuCodes.length > 0) {
+      const binds = await db
+        .select({
+          materialCode: bindingsTable.materialCode,
+          isMain: bindingsTable.isMainSupplier,
+          supplierCode: suppliersTable.code,
+          supplierName: suppliersTable.name,
+        })
+        .from(bindingsTable)
+        .leftJoin(suppliersTable, eq(bindingsTable.supplierId, suppliersTable.id))
+        .where(and(eq(bindingsTable.materialKind, "mfg_product"), inArray(bindingsTable.materialCode, skuCodes)))
+        .orderBy(desc(bindingsTable.isMainSupplier));
+      for (const b of binds) {
+        if (mainSupplierByCode.has(b.materialCode)) continue;
+        if (b.supplierCode) mainSupplierByCode.set(b.materialCode, { code: b.supplierCode, name: b.supplierName ?? "" });
+      }
+    }
+
+    /* Pooled (stock + open-PO) shortage per SO line — the SAME allocation MRP
+       uses, so the picker can never disagree with the MRP page. Best-effort:
+       fall back to the per-line picked cap if the compute fails. */
+    const shortageBySoItem = new Map<string, number>();
+    let pooledOk = true;
+    try {
+      const mrpRes = await computeMrp(db, { catFilter: null, whFilter: null, includeUndated: true });
+      for (const sku of mrpRes.skus) {
+        for (const l of sku.lines) shortageBySoItem.set(l.soItemId, l.shortageQty);
+      }
+    } catch (e) {
+      pooledOk = false;
+      // eslint-disable-next-line no-console
+      console.error("[outstanding-so-items] pooled shortage compute failed; falling back to picked cap", errMsg(e));
+    }
+
+    const outstanding = rows
+      .filter((r) => r.soStatus !== "CANCELLED")
+      .filter((r) => (pooledOk ? (shortageBySoItem.get(r.id) ?? 0) > 0 : Number(r.qty ?? 0) - Number(r.poQtyPicked ?? 0) > 0))
+      .map((r) => {
+        const remaining = pooledOk ? (shortageBySoItem.get(r.id) ?? 0) : Number(r.qty ?? 0) - Number(r.poQtyPicked ?? 0);
+        return {
+          soItemId: r.id,
+          soDocNo: r.docNo,
+          debtorName: r.debtorName,
+          branding: r.branding,
+          soStatus: r.soStatus,
+          soDate: r.soDate,
+          deliveryDate: r.customerDeliveryDate,
+          itemCode: r.itemCode,
+          description: r.description,
+          itemGroup: r.itemGroup,
+          qty: r.qty,
+          poQtyPicked: r.poQtyPicked,
+          remainingQty: remaining,
+          unitPriceCenti: r.unitPriceCenti,
+          variants: r.variants,
+          lineSuffix: r.lineSuffix,
+          processingDate: r.internalExpectedDd,
+          salesLocation: r.salesLocation,
+          lineDeliveryDate: r.lineDeliveryDate,
+          mainSupplierCode: mainSupplierByCode.get(r.itemCode)?.code ?? null,
+          mainSupplierName: mainSupplierByCode.get(r.itemCode)?.name ?? null,
+        };
+      });
+
+    return c.json({ items: outstanding });
+  } catch (e) {
+    return c.json({ error: "load_failed", reason: errMsg(e) }, 500);
+  }
 });
 
 // ── Detail ────────────────────────────────────────────────────────────
@@ -513,22 +626,435 @@ app.post("/", async (c) => {
 });
 
 /* ── POST /from-sos — create POs from selected Sales Order items ─────────────
-   STUB. 2990s resolves SO lines -> main-supplier bindings -> groups into POs.
-   The SO slice (mfg_sales_orders / mfg_sales_order_items) is not cloned yet, so
-   this path has no source data. Returns a guarded response (created: []) so the
-   From-SO page never fakes SO data.
-   TODO: port the full from-SO grouping + (Strategy-2-trimmed) pricing when the
-   SO slice lands. */
+   WIRED now that the SO slice has landed (1:1 with 2990s). For each picked SO
+   line, resolves the EFFECTIVE supplier (per-pick supplierId > supplierByCode
+   override > the SKU's main-supplier binding), derives the per-line warehouse
+   (the SO LINE's own warehouse_id > the SO header sales_location resolved to a
+   warehouse > caller override) + delivery date (SO LINE date > SO header
+   customer_delivery_date), groups into single-warehouse POs (one per
+   (warehouse, supplier); + per-SO in 'per-so' mode), and inserts SUBMITTED POs.
+   Appends to an existing PO when targetPoId is set. fromMrp tags lines
+   reference-only (no SO lock + bypasses the remaining cap). Recounts
+   po_qty_picked so converted lines drop out of the picker.
+
+   STRATEGY-2 DEVIATION (matches the PO POST handler): the furniture cost engine
+   is DROPPED — no computeMfgPoUnitCost / price_matrix P1/P2 projection /
+   sofa-combo redistribution / fabric-tier resolve / maintenance surcharges. A PO
+   line's unit cost is the flat supplier-binding unit_price_centi (0 for an
+   unbound SKU — the price is keyed in at Purchase Invoice time). description2 is
+   passed through (2990s's buildVariantSummary formatter is furniture-coupled and
+   dropped); the variant columns are still carried for fidelity. Sofa lines no
+   longer force per-SO grouping (no colour-match dye-lot concern on Houzs); the
+   'combined'/'per-so' toggle alone decides grouping. */
 app.post("/from-sos", async (c) => {
-  return c.json(
-    {
-      error: "so_slice_unavailable",
-      message: "Convert-from-Sales-Order is available after the Sales Orders slice lands.",
-      created: [] as unknown[],
-      total: 0,
-    },
-    409,
-  );
+  const db = getDb(c.env);
+  const user = c.get("user");
+  let body: {
+    picks?: Array<{ soItemId: string; qty: number; supplierId?: string | null }>;
+    soItems?: Array<{ soDocNo: string; itemCode: string; itemName: string; qty: number }>;
+    expectedAt?: string;
+    purchaseLocationId?: string;
+    mode?: "combined" | "per-so";
+    supplierByCode?: Record<string, string>;
+    targetPoId?: string;
+    fromMrp?: boolean;
+  };
+  try {
+    body = (await c.req.json()) as typeof body;
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  const poMode: "combined" | "per-so" = body.mode === "per-so" ? "per-so" : "combined";
+  const fromMrp = body.fromMrp === true;
+  const supplierByCode = (body.supplierByCode ?? {}) as Record<string, string>;
+  const targetPoId = body.targetPoId as string | undefined;
+
+  // Resolve the append-target PO's supplier up front (fallback for unbound SKUs).
+  let targetPoSupplierId: string | null = null;
+  if (targetPoId) {
+    const tpoRows = await db.select({ supplierId: poTable.supplierId }).from(poTable).where(eq(poTable.id, targetPoId)).limit(1);
+    targetPoSupplierId = tpoRows[0]?.supplierId ?? null;
+  }
+
+  const expectedAtOverride = body.expectedAt;
+  const purchaseLocationOverride = body.purchaseLocationId;
+
+  // Preload warehouses ONCE for the sales_location text → id match.
+  const whRows = await db.select({ id: warehousesTable.id, code: warehousesTable.code, name: warehousesTable.name }).from(warehousesTable);
+  const resolveWarehouseId = (salesLocation: string | null | undefined): string | null => {
+    const needle = (salesLocation ?? "").trim().toLowerCase();
+    if (!needle) return null;
+    const hit = whRows.find((w) => (w.name ?? "").trim().toLowerCase() === needle || (w.code ?? "").trim().toLowerCase() === needle);
+    return hit?.id ?? null;
+  };
+
+  // ── Resolve picks → SO item rows (+ parent SO sales_location/delivery) ──
+  type SoItem = {
+    id: string; doc_no: string; item_code: string; description: string | null;
+    qty: number; po_qty_picked: number; unit_price_centi: number;
+    line_delivery_date: string | null; item_group: string | null;
+    variants: Record<string, unknown> | null; warehouse_id: string | null;
+    so: { sales_location: string | null; customer_delivery_date: string | null } | null;
+  };
+  const pickedItems: Array<{ row: SoItem; qty: number; pickSupplierId: string | null }> = [];
+
+  if (body.picks && body.picks.length > 0) {
+    const ids = body.picks.map((p) => p.soItemId);
+    let rows;
+    try {
+      rows = await db
+        .select({
+          id: soItemsTable.id,
+          docNo: soItemsTable.docNo,
+          itemCode: soItemsTable.itemCode,
+          description: soItemsTable.description,
+          itemGroup: soItemsTable.itemGroup,
+          variants: soItemsTable.variants,
+          qty: soItemsTable.qty,
+          poQtyPicked: soItemsTable.poQtyPicked,
+          unitPriceCenti: soItemsTable.unitPriceCenti,
+          lineDeliveryDate: soItemsTable.lineDeliveryDate,
+          warehouseId: soItemsTable.warehouseId,
+          salesLocation: soTable.salesLocation,
+          customerDeliveryDate: soTable.customerDeliveryDate,
+        })
+        .from(soItemsTable)
+        .innerJoin(soTable, eq(soItemsTable.docNo, soTable.docNo))
+        .where(inArray(soItemsTable.id, ids));
+    } catch (e) {
+      return c.json({ error: "load_failed", reason: errMsg(e) }, 500);
+    }
+    const byId = new Map<string, SoItem>();
+    for (const r of rows) {
+      byId.set(r.id, {
+        id: r.id, doc_no: r.docNo, item_code: r.itemCode, description: r.description,
+        qty: Number(r.qty ?? 0), po_qty_picked: Number(r.poQtyPicked ?? 0), unit_price_centi: Number(r.unitPriceCenti ?? 0),
+        line_delivery_date: r.lineDeliveryDate as string | null, item_group: r.itemGroup,
+        variants: (r.variants as Record<string, unknown> | null) ?? null, warehouse_id: r.warehouseId as string | null,
+        so: { sales_location: r.salesLocation as string | null, customer_delivery_date: r.customerDeliveryDate as string | null },
+      });
+    }
+    for (const p of body.picks) {
+      const row = byId.get(p.soItemId);
+      if (!row) return c.json({ error: "item_not_found", soItemId: p.soItemId }, 400);
+      const remaining = row.qty - row.po_qty_picked;
+      if (p.qty <= 0) return c.json({ error: "qty_must_be_positive", soItemId: p.soItemId }, 400);
+      // MRP-origin converts skip the remaining cap (reference-only, infinitely
+      // convertible); the ordinary picker keeps it so one line can't over-order.
+      if (!fromMrp && p.qty > remaining)
+        return c.json({ error: "qty_exceeds_remaining", soItemId: p.soItemId, requested: p.qty, remaining }, 409);
+      pickedItems.push({ row, qty: p.qty, pickSupplierId: p.supplierId ?? null });
+    }
+  } else {
+    // Legacy soItems path — kept so old callers don't break.
+    const soItemsIn = body.soItems ?? [];
+    if (soItemsIn.length === 0) return c.json({ error: "so_items_required" }, 400);
+    const codes = [...new Set(soItemsIn.map((it) => it.itemCode))];
+    const docNos = [...new Set(soItemsIn.map((it) => it.soDocNo))];
+    const rows = await db
+      .select({
+        id: soItemsTable.id,
+        docNo: soItemsTable.docNo,
+        itemCode: soItemsTable.itemCode,
+        description: soItemsTable.description,
+        itemGroup: soItemsTable.itemGroup,
+        variants: soItemsTable.variants,
+        qty: soItemsTable.qty,
+        poQtyPicked: soItemsTable.poQtyPicked,
+        unitPriceCenti: soItemsTable.unitPriceCenti,
+        lineDeliveryDate: soItemsTable.lineDeliveryDate,
+        warehouseId: soItemsTable.warehouseId,
+        salesLocation: soTable.salesLocation,
+        customerDeliveryDate: soTable.customerDeliveryDate,
+      })
+      .from(soItemsTable)
+      .innerJoin(soTable, eq(soItemsTable.docNo, soTable.docNo))
+      .where(and(inArray(soItemsTable.docNo, docNos), inArray(soItemsTable.itemCode, codes)));
+    const byKey = new Map<string, SoItem>();
+    for (const r of rows) {
+      byKey.set(`${r.docNo}|${r.itemCode}`, {
+        id: r.id, doc_no: r.docNo, item_code: r.itemCode, description: r.description,
+        qty: Number(r.qty ?? 0), po_qty_picked: Number(r.poQtyPicked ?? 0), unit_price_centi: Number(r.unitPriceCenti ?? 0),
+        line_delivery_date: r.lineDeliveryDate as string | null, item_group: r.itemGroup,
+        variants: (r.variants as Record<string, unknown> | null) ?? null, warehouse_id: r.warehouseId as string | null,
+        so: { sales_location: r.salesLocation as string | null, customer_delivery_date: r.customerDeliveryDate as string | null },
+      });
+    }
+    for (const it of soItemsIn) {
+      const row = byKey.get(`${it.soDocNo}|${it.itemCode}`);
+      pickedItems.push({
+        row: row ?? {
+          id: "", doc_no: it.soDocNo, item_code: it.itemCode, description: it.itemName,
+          qty: it.qty, po_qty_picked: 0, unit_price_centi: 0,
+          line_delivery_date: null, item_group: null, variants: null, warehouse_id: null, so: null,
+        },
+        qty: it.qty,
+        pickSupplierId: null,
+      });
+    }
+  }
+
+  if (pickedItems.length === 0) return c.json({ error: "no_pickable_lines" }, 400);
+
+  // Re-project into a flat shape carrying the derived warehouse + delivery date.
+  const soItems = pickedItems.map(({ row, qty, pickSupplierId }) => {
+    const lineWarehouseId =
+      (purchaseLocationOverride as string | undefined) ?? row.warehouse_id ?? resolveWarehouseId(row.so?.sales_location);
+    const lineDeliveryDate =
+      (expectedAtOverride as string | undefined) ?? row.line_delivery_date ?? row.so?.customer_delivery_date ?? null;
+    return {
+      soDocNo: row.doc_no,
+      itemCode: row.item_code,
+      itemName: row.description ?? row.item_code,
+      qty,
+      lineWarehouseId,
+      lineDeliveryDate,
+      itemGroup: row.item_group,
+      variants: row.variants,
+      soItemId: row.id || null,
+      pickSupplierId,
+    };
+  });
+
+  // Resolve the bindings per SKU (for supplier + flat cost + supplier_sku).
+  const codes = [...new Set(soItems.map((it) => it.itemCode))];
+  const bindRows = codes.length > 0
+    ? await db
+        .select({
+          materialCode: bindingsTable.materialCode,
+          supplierId: bindingsTable.supplierId,
+          supplierSku: bindingsTable.supplierSku,
+          unitPriceCenti: bindingsTable.unitPriceCenti,
+          currency: bindingsTable.currency,
+          isMain: bindingsTable.isMainSupplier,
+        })
+        .from(bindingsTable)
+        .where(and(inArray(bindingsTable.materialCode, codes), eq(bindingsTable.materialKind, "mfg_product")))
+        .orderBy(desc(bindingsTable.isMainSupplier))
+    : [];
+
+  // Drop orphaned bindings (supplier deleted) + validate suppliers named outside
+  // bindings (per-pick / override / target PO) so an unbound SKU can ride a
+  // zero-priced pseudo-binding on one of them.
+  type Bind = { material_code: string; supplier_id: string; supplier_sku: string; unit_price_centi: number; currency: string };
+  const supplierIds = [...new Set(bindRows.map((b) => b.supplierId))];
+  const liveSupplierIds = new Set<string>();
+  if (supplierIds.length > 0) {
+    const live = await db.select({ id: suppliersTable.id }).from(suppliersTable).where(inArray(suppliersTable.id, supplierIds));
+    for (const s of live) liveSupplierIds.add(s.id);
+  }
+  const extraCandidates = [...new Set([
+    ...soItems.map((it) => it.pickSupplierId).filter((x): x is string => Boolean(x)),
+    ...Object.values(supplierByCode),
+    ...(targetPoSupplierId ? [targetPoSupplierId] : []),
+  ])].filter((id) => !liveSupplierIds.has(id));
+  if (extraCandidates.length > 0) {
+    const extraLive = await db.select({ id: suppliersTable.id }).from(suppliersTable).where(inArray(suppliersTable.id, extraCandidates));
+    for (const s of extraLive) liveSupplierIds.add(s.id);
+  }
+
+  const mainByCode = new Map<string, Bind>();
+  const bindingByCodeSupplier = new Map<string, Bind>();
+  for (const b of bindRows) {
+    if (!liveSupplierIds.has(b.supplierId)) continue;
+    const bind: Bind = { material_code: b.materialCode, supplier_id: b.supplierId, supplier_sku: b.supplierSku ?? "", unit_price_centi: Number(b.unitPriceCenti ?? 0), currency: (b.currency as string) ?? "MYR" };
+    bindingByCodeSupplier.set(`${b.materialCode}|${b.supplierId}`, bind);
+    const override = supplierByCode[b.materialCode];
+    const existing = mainByCode.get(b.materialCode);
+    if (override) {
+      if (b.supplierId === override) mainByCode.set(b.materialCode, bind);
+      continue;
+    }
+    if (!existing) mainByCode.set(b.materialCode, bind);
+  }
+
+  // Effective binding per line (precedence: per-pick > supplierByCode > main;
+  // else a zero-priced pseudo-binding on a named/target supplier; else null).
+  const effectiveBindingFor = (it: { itemCode: string; pickSupplierId: string | null }): Bind | null => {
+    const chosen = it.pickSupplierId ?? supplierByCode[it.itemCode] ?? null;
+    if (chosen) {
+      const exact = bindingByCodeSupplier.get(`${it.itemCode}|${chosen}`);
+      if (exact) return exact;
+    }
+    const main = mainByCode.get(it.itemCode);
+    if (main) return main;
+    const fallback = chosen ?? targetPoSupplierId;
+    if (fallback && liveSupplierIds.has(fallback)) {
+      return { material_code: it.itemCode, supplier_id: fallback, supplier_sku: "", unit_price_centi: 0, currency: "MYR" };
+    }
+    return null;
+  };
+
+  // Items with NO resolvable supplier at all can't be PO'd.
+  const noBinding = soItems.filter((it) => !effectiveBindingFor(it));
+  if (noBinding.length > 0) {
+    return c.json({
+      error: "missing_bindings",
+      message: "No supplier could be resolved for some items — bind a main supplier or pick one for them",
+      itemCodes: [...new Set(noBinding.map((it) => it.itemCode))],
+    }, 400);
+  }
+
+  // Group items into single-warehouse PO buckets. STRATEGY-2: the flat binding
+  // unit_price_centi is the line cost (no matrix/combo/tier/maintenance engine).
+  type Line = {
+    itemCode: string; itemName: string; qty: number; supplierSku: string; unitPriceCenti: number;
+    warehouseId: string | null; deliveryDate: string | null;
+    itemGroup: string | null; variants: Record<string, unknown> | null; soItemId: string | null;
+  };
+  type Bucket = { supplierId: string; warehouseId: string | null; currency: string; lines: Line[]; soDocNos: Set<string> };
+  const byGroup = new Map<string, Bucket>();
+  for (const it of soItems) {
+    const b = effectiveBindingFor(it)!;
+    const effectiveSupplierId = b.supplier_id;
+    const lineWarehouseId = it.lineWarehouseId;
+    const groupKey = poMode === "per-so"
+      ? `${lineWarehouseId ?? "null"}::${effectiveSupplierId}::${it.soDocNo}`
+      : `${lineWarehouseId ?? "null"}::${effectiveSupplierId}`;
+    const bucket = byGroup.get(groupKey)
+      ?? { supplierId: effectiveSupplierId, warehouseId: lineWarehouseId, currency: b.currency, lines: [], soDocNos: new Set<string>() };
+    bucket.lines.push({
+      itemCode: it.itemCode,
+      itemName: it.itemName,
+      qty: it.qty,
+      supplierSku: b.supplier_sku,
+      unitPriceCenti: b.unit_price_centi,
+      warehouseId: lineWarehouseId,
+      deliveryDate: it.lineDeliveryDate,
+      itemGroup: it.itemGroup,
+      variants: it.variants,
+      soItemId: it.soItemId,
+    });
+    bucket.soDocNos.add(it.soDocNo);
+    byGroup.set(groupKey, bucket);
+  }
+
+  /* ── APPEND to an existing PO (Convert from SO / Add Line Item) ─────────── */
+  if (targetPoId) {
+    const poRows = await db.select({ id: poTable.id, status: poTable.status, supplierId: poTable.supplierId, poNumber: poTable.poNumber }).from(poTable).where(eq(poTable.id, targetPoId)).limit(1);
+    const target = poRows[0];
+    if (!target) return c.json({ error: "po_not_found" }, 404);
+    if (target.status !== "SUBMITTED" && target.status !== "PARTIALLY_RECEIVED") {
+      return c.json({ error: "po_not_editable", reason: `Cannot add lines to a ${target.status} PO.` }, 409);
+    }
+    const targetLines = [...byGroup.values()].filter((bk) => bk.supplierId === target.supplierId).flatMap((bk) => bk.lines);
+    if (targetLines.length === 0) {
+      return c.json({ error: "supplier_mismatch", reason: "None of the picked SO lines belong to this PO's supplier." }, 409);
+    }
+    const rows = targetLines.map((l) => ({
+      purchaseOrderId: target.id,
+      materialKind: "mfg_product" as MaterialKindT,
+      materialCode: l.itemCode,
+      materialName: l.itemName,
+      supplierSku: l.supplierSku,
+      qty: l.qty,
+      unitPriceCenti: l.unitPriceCenti,
+      lineTotalCenti: l.qty * l.unitPriceCenti,
+      deliveryDate: l.deliveryDate,
+      warehouseId: l.warehouseId,
+      itemGroup: l.itemGroup,
+      variants: l.variants,
+      // STRATEGY-2: buildVariantSummary dropped -> description2 null.
+      description2: null,
+      soItemId: l.soItemId,
+      fromMrp,
+    }));
+    try {
+      await db.insert(poItemsTable).values(rows as never).returning();
+    } catch (e) {
+      return c.json({ error: "items_insert_failed", reason: errMsg(e) }, 500);
+    }
+    await recomputePoTotals(db, target.id);
+    try {
+      await recomputeSoPicked(db, targetLines.map((l) => l.soItemId));
+    } catch {
+      /* lines already inserted — don't fail on counter recount */
+    }
+    return c.json({ targetPoId: target.id, poNumber: target.poNumber, added: targetLines.length }, 200);
+  }
+
+  // Generate PO numbers + create one PO per bucket.
+  const d = new Date();
+  const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, "0")}`;
+  let counter = 0;
+  try {
+    const existing = await db.select({ id: poTable.id }).from(poTable).where(like(poTable.poNumber, `PO-${yymm}-%`));
+    counter = existing.length;
+  } catch (e) {
+    return c.json({ error: "insert_failed", reason: errMsg(e) }, 500);
+  }
+
+  const created: Array<{ id: string; poNumber: string; supplierId: string; lineCount: number }> = [];
+  for (const bucket of byGroup.values()) {
+    const supplierId = bucket.supplierId;
+    counter += 1;
+    const poNumber = `PO-${yymm}-${String(counter).padStart(3, "0")}`;
+    const subtotal = bucket.lines.reduce((s, l) => s + l.qty * l.unitPriceCenti, 0);
+    const lineDates = bucket.lines.map((l) => l.deliveryDate).filter((x): x is string => Boolean(x)).sort();
+    const headerExpectedAt = lineDates[0] ?? null;
+    const headerPurchaseLocationId: string | null = bucket.warehouseId;
+
+    let header: { id: string; poNumber: string };
+    try {
+      const inserted = await db
+        .insert(poTable)
+        .values({
+          poNumber,
+          supplierId,
+          status: "SUBMITTED" as PoStatusT,
+          submittedAt: new Date(),
+          currency: bucket.currency as CurrencyT,
+          subtotalCenti: subtotal,
+          taxCenti: 0,
+          totalCenti: subtotal,
+          notes: `From SOs: ${[...bucket.soDocNos].join(", ")}`,
+          createdBy: user.id,
+          expectedAt: headerExpectedAt,
+          purchaseLocationId: headerPurchaseLocationId,
+        } as never)
+        .returning();
+      header = { id: inserted[0].id, poNumber: inserted[0].poNumber };
+    } catch {
+      continue;
+    }
+
+    const rows = bucket.lines.map((l) => ({
+      purchaseOrderId: header.id,
+      materialKind: "mfg_product" as MaterialKindT,
+      materialCode: l.itemCode,
+      materialName: l.itemName,
+      supplierSku: l.supplierSku,
+      qty: l.qty,
+      unitPriceCenti: l.unitPriceCenti,
+      lineTotalCenti: l.qty * l.unitPriceCenti,
+      deliveryDate: l.deliveryDate,
+      warehouseId: l.warehouseId,
+      itemGroup: l.itemGroup,
+      variants: l.variants,
+      // STRATEGY-2: buildVariantSummary dropped -> description2 null.
+      description2: null,
+      soItemId: l.soItemId,
+      fromMrp,
+    }));
+    try {
+      await db.insert(poItemsTable).values(rows as never).returning();
+    } catch {
+      await db.delete(poTable).where(eq(poTable.id, header.id));
+      continue;
+    }
+    created.push({ id: header.id, poNumber: header.poNumber, supplierId, lineCount: bucket.lines.length });
+  }
+
+  // Recount po_qty_picked so converted lines drop out of the From-SO picker.
+  if (body.picks && created.length > 0) {
+    try {
+      await recomputeSoPicked(db, pickedItems.map(({ row }) => row.id));
+    } catch {
+      /* POs already created — don't fail on counter recount */
+    }
+  }
+
+  return c.json({ created, total: created.length }, 201);
 });
 
 /* ── PATCH header (po_date, expected_at, currency, notes, supplier, location) ── */
@@ -823,18 +1349,149 @@ app.delete("/:id/items/:itemId", async (c) => {
 });
 
 /* ── POST /:id/convert-from-so — copy an SO's items into this PO ─────────────
-   STUB. 2990s copies a Sales Order's items into the current PO (supplier-cost
-   priced). The SO slice isn't cloned -> guarded response. Manual line-add via
-   POST /:id/items covers the non-SO path fully.
-   TODO: port convert-from-so when the SO slice lands. */
+   WIRED now that the SO slice has landed (1:1 with 2990s). Copies a Sales
+   Order's non-cancelled items into the current PO at SUPPLIER COST: skips item
+   codes already on the PO, converts ONLY the unpicked remainder (qty −
+   po_qty_picked) so converting the same SO twice can't double-order, stamps
+   so_item_id (release-on-delete), recomputes totals + po_qty_picked.
+
+   Body: { soDocNo: string, itemIds?: string[] } — itemIds omitted = all lines.
+
+   STRATEGY-2 DEVIATION (matches /from-sos + the PO POST handler): the supplier-
+   cost is the flat binding unit_price_centi for the PO's supplier (no
+   computeMfgPoUnitCost matrix/tier/maintenance projection); unbound SKUs land at
+   cost 0 (keyed in at PI time). description2 = the SO line's stored value (no
+   buildVariantSummary). */
 app.post("/:id/convert-from-so", async (c) => {
-  return c.json(
-    {
-      error: "so_slice_unavailable",
-      message: "Convert-from-Sales-Order is available after the Sales Orders slice lands.",
-    },
-    409,
-  );
+  const poId = c.req.param("id");
+  let body: { soDocNo?: string; itemIds?: string[] } = {};
+  try {
+    body = (await c.req.json().catch(() => ({}))) as typeof body;
+  } catch {
+    /* allow empty */
+  }
+  const soDocNo = (body.soDocNo ?? "").trim();
+  if (!soDocNo) return c.json({ error: "so_doc_no_required" }, 400);
+  const filterIds = Array.isArray(body.itemIds) && body.itemIds.length > 0 ? new Set(body.itemIds) : null;
+
+  const db = getDb(c.env);
+
+  // Verify the target PO exists + is editable.
+  const poRows = await db.select({ id: poTable.id, status: poTable.status, supplierId: poTable.supplierId }).from(poTable).where(eq(poTable.id, poId)).limit(1);
+  const po = poRows[0];
+  if (!po) return c.json({ error: "po_not_found" }, 404);
+  if (po.status !== "SUBMITTED" && po.status !== "PARTIALLY_RECEIVED") {
+    return c.json({ error: "po_not_editable", reason: `Cannot convert into a ${po.status} PO.` }, 409);
+  }
+
+  // Read SO items (non-cancelled only).
+  let soItems;
+  try {
+    soItems = await db
+      .select({
+        id: soItemsTable.id,
+        itemCode: soItemsTable.itemCode,
+        description: soItemsTable.description,
+        description2: soItemsTable.description2,
+        itemGroup: soItemsTable.itemGroup,
+        qty: soItemsTable.qty,
+        poQtyPicked: soItemsTable.poQtyPicked,
+        unitPriceCenti: soItemsTable.unitPriceCenti,
+        variants: soItemsTable.variants,
+        uom: soItemsTable.uom,
+        remark: soItemsTable.remark,
+      })
+      .from(soItemsTable)
+      .where(and(eq(soItemsTable.docNo, soDocNo), eq(soItemsTable.cancelled, false)));
+  } catch (e) {
+    return c.json({ error: "so_load_failed", reason: errMsg(e) }, 500);
+  }
+  if (!soItems || soItems.length === 0) {
+    return c.json({ error: "so_has_no_items", reason: `Sales Order ${soDocNo} has no items to convert.` }, 404);
+  }
+
+  const wanted = filterIds ? soItems.filter((r) => filterIds.has(r.id)) : soItems;
+  if (wanted.length === 0) {
+    return c.json({ error: "no_items_selected", reason: "None of the picked SO items matched." }, 400);
+  }
+
+  // Skip item codes already on the PO (no dupes).
+  const codes = wanted.map((r) => r.itemCode);
+  const existingRows = codes.length > 0
+    ? await db.select({ materialCode: poItemsTable.materialCode }).from(poItemsTable).where(and(eq(poItemsTable.purchaseOrderId, poId), inArray(poItemsTable.materialCode, codes)))
+    : [];
+  const existingSet = new Set(existingRows.map((r) => r.materialCode));
+
+  const notOnPo = wanted.filter((r) => !existingSet.has(r.itemCode));
+  // Convert ONLY the unpicked remainder (don't double-order).
+  const toInsert = notOnPo.filter((r) => Number(r.qty ?? 0) - Number(r.poQtyPicked ?? 0) > 0);
+  if (toInsert.length === 0) {
+    return c.json({ copied: 0, skipped: wanted.length, reason: "All matching SO items are already on a PO (or on this one)." });
+  }
+
+  // Supplier-cost = flat binding price for the PO's supplier (STRATEGY-2: no
+  // matrix engine). Unbound SKUs land at cost 0 (keyed in at PI time).
+  const codesToPrice = toInsert.map((r) => r.itemCode);
+  const bindByCode = new Map<string, { supplierSku: string | null; unitPriceCenti: number }>();
+  if (codesToPrice.length > 0) {
+    const binds = await db
+      .select({ materialCode: bindingsTable.materialCode, supplierSku: bindingsTable.supplierSku, unitPriceCenti: bindingsTable.unitPriceCenti })
+      .from(bindingsTable)
+      .where(and(eq(bindingsTable.supplierId, po.supplierId), eq(bindingsTable.materialKind, "mfg_product"), inArray(bindingsTable.materialCode, codesToPrice)));
+    for (const b of binds) {
+      if (!bindByCode.has(b.materialCode)) bindByCode.set(b.materialCode, { supplierSku: b.supplierSku ?? null, unitPriceCenti: Number(b.unitPriceCenti ?? 0) });
+    }
+  }
+  const supplierCostFor = (it: { itemCode: string }): { cost: number; supplierSku: string | null } => {
+    const b = bindByCode.get(it.itemCode);
+    if (!b) return { cost: 0, supplierSku: null };
+    return { cost: b.unitPriceCenti, supplierSku: b.supplierSku };
+  };
+
+  const rows = toInsert.map((it) => {
+    const remaining = Math.max(0, Number(it.qty ?? 0) - Number(it.poQtyPicked ?? 0));
+    const { cost, supplierSku } = supplierCostFor(it);
+    return {
+      purchaseOrderId: poId,
+      materialKind: "mfg_product" as MaterialKindT,
+      materialCode: it.itemCode,
+      materialName: it.description ?? it.itemCode,
+      supplierSku,
+      qty: remaining,
+      unitPriceCenti: cost,
+      lineTotalCenti: remaining * cost,
+      notes: it.remark ?? null,
+      itemGroup: it.itemGroup ?? null,
+      description: it.description ?? null,
+      description2: it.description2 ?? null,
+      uom: it.uom ?? "UNIT",
+      discountCenti: 0,
+      unitCostCenti: cost,
+      variants: (it.variants as unknown) ?? null,
+      soItemId: it.id,
+    };
+  });
+
+  let inserted;
+  try {
+    inserted = await db.insert(poItemsTable).values(rows as never).returning();
+  } catch (e) {
+    return c.json({ error: "insert_failed", reason: errMsg(e) }, 500);
+  }
+
+  await recomputePoTotals(db, poId);
+  try {
+    await recomputeSoPicked(db, toInsert.map((it) => it.id));
+  } catch {
+    /* lines already inserted — don't fail on counter recount */
+  }
+
+  return c.json({
+    copied: rows.length,
+    skipped: existingSet.size,
+    sourceDocNo: soDocNo,
+    items: inserted.map((it) => toPoItemResponse(it)),
+  });
 });
 
 // ── Submit / cancel / reopen ──────────────────────────────────────────

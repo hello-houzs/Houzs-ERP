@@ -33,9 +33,10 @@
 //   - The pg_try_advisory_lock single-flight mutex is dropped (best-effort; the
 //     algorithm is deterministic + idempotent so interleaving is benign, same
 //     fallback 2990s itself takes when the RPC isn't wired).
-//   - delivered/returned netting reads delivery_orders / delivery_returns,
-//     which are NOT cloned yet -> those reads are STUBBED to empty (every line
-//     deliverable_remaining = qty). TODO: DO/SI slice — wire the DO/DR netting.
+//   - delivered/returned netting reads delivery_orders / delivery_returns via
+//     the batched soNetDeliveredByItem (lib/so-downstream) — WIRED (wiring pass
+//     #68) now that the DO/SI/DR slice (#66) landed (was stubbed to qty while the
+//     SO slice shipped). deliverable_remaining = qty − Σ delivered + Σ returned.
 //   - so-audit row on flip: kept (best-effort).
 // ----------------------------------------------------------------------------
 
@@ -45,6 +46,7 @@ import type { getDb } from "../db/client";
 import { mfgSalesOrders, mfgSalesOrderItems, mfgSoAuditLog } from "../db/schema";
 import { isServiceLine } from "./service-sku";
 import { summariseReadiness } from "./so-readiness";
+import { soNetDeliveredByItem } from "./so-downstream";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -143,16 +145,21 @@ export async function recomputeSoStockAllocation(
     if (lines.length === 0) return { ok: true, linesFlipped: 0, ordersAdvanced: 0, ordersRegressed: 0 };
 
     /* 3. deliverable_remaining per line = qty − Σ delivered + Σ returned.
-          DO/DR are NOT cloned yet -> delivered = returned = 0 -> remaining =
-          qty for every line. TODO: DO/SI slice — wire delivery_order_items /
-          delivery_return_items netting here (mirrors 2990s lines 154-197). */
+          WIRED (wiring pass #68) now that the DO/SI/DR slice (#66) cloned
+          delivery_order_items / delivery_return_items — the netting is the
+          batched soNetDeliveredByItem from lib/so-downstream (delivered = Σ
+          non-cancelled DO lines; returned = Σ non-cancelled DR via the DO line),
+          mirroring 2990s lines 154-197. A fully-delivered line drops out (no
+          stock re-allocated to it). */
+    const netByItem = await soNetDeliveredByItem(db, lines.map((l) => l.id));
     const WH_NONE = "NOWH";
     type LineNeed = { id: string; doc_no: string; bucket: string; need: number; current: string; curReady: number };
     const needs: LineNeed[] = [];
     for (const l of lines) {
       // SERVICE lines are services, not goods: never allocate stock to them.
       if (isServiceLine({ itemGroup: l.item_group, itemCode: l.item_code })) continue;
-      const remaining = l.qty; // = qty − delivered + returned, with DO/DR stubbed to 0
+      const net = netByItem.get(l.id);
+      const remaining = l.qty - (net?.delivered ?? 0) + (net?.returned ?? 0);
       if (remaining <= 0) continue;
       const variant_key = variantKeyOf(l.variants);
       const whId = l.warehouse_id ?? null;
