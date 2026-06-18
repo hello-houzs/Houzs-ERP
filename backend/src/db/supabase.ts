@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 import type { Env } from "../types";
 
 /**
@@ -31,9 +31,16 @@ function requireConfig(env: Env): { url: string; serviceKey: string } {
  * Service-role client (full access, RLS bypassed) for the server-side SCM route
  * handlers. Built per request — a Worker request boundary can't share a client.
  */
-export function getSupabaseService(env: Env): SupabaseClient {
+/** Service-role client scoped to the `scm` schema (see below). */
+export function getSupabaseService(env: Env) {
   const { url, serviceKey } = requireConfig(env);
   return createClient(url, serviceKey, {
+    // The ported 2990's SCM tables live in a dedicated `scm` Postgres schema
+    // (kept apart from Houzs's own public.* tables, which carry different
+    // AutoCount-named tables — warehouses / purchase_orders / etc.). Pointing
+    // the default schema here means the ported route code's `sb.from('x')`
+    // calls resolve to `scm.x` unchanged.
+    db: { schema: "scm" },
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }
