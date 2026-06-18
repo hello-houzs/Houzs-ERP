@@ -11,6 +11,7 @@ import {
   HeaderButton,
 } from "../components/DetailLayout";
 import { Button } from "../components/Button";
+import { Modal } from "../components/Modal";
 import { EmptyState } from "../components/EmptyState";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
@@ -288,13 +289,7 @@ function BindingModal({
   const lbl = "text-[10px] font-semibold uppercase tracking-brand text-ink-muted";
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={isEdit ? "Edit binding" : "Add binding"}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4 backdrop-blur-sm animate-fade-in"
-      onClick={onClose}
-    >
+    <Modal onClose={onClose} aria-label={isEdit ? "Edit binding" : "Add binding"}>
       <form
         onSubmit={submit}
         onClick={(e) => e.stopPropagation()}
@@ -423,6 +418,6 @@ function BindingModal({
           </Button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }

@@ -11,6 +11,7 @@ import {
   HeaderButton,
 } from "../components/DetailLayout";
 import { Button } from "../components/Button";
+import { Modal } from "../components/Modal";
 import { EmptyState } from "../components/EmptyState";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
@@ -428,12 +429,7 @@ function AddItemModal({
   const field = "mt-0.5 w-full rounded-md border border-border bg-paper px-2 py-1.5 text-[12px]";
   const lbl = "text-[10px] font-semibold uppercase tracking-brand text-ink-muted";
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4 backdrop-blur-sm animate-fade-in"
-      onClick={onClose}
-    >
+    <Modal onClose={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md rounded-xl border border-border bg-surface shadow-slab animate-rise">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="font-display text-[15px] font-bold text-ink">Add line item</div>
@@ -485,7 +481,7 @@ function AddItemModal({
           </Button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -509,12 +505,7 @@ function EditHeaderModal({ po, onClose, onSaved }: { po: ScmPo; onClose: () => v
   const field = "mt-0.5 w-full rounded-md border border-border bg-paper px-2 py-1.5 text-[12px]";
   const lbl = "text-[10px] font-semibold uppercase tracking-brand text-ink-muted";
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4 backdrop-blur-sm animate-fade-in"
-      onClick={onClose}
-    >
+    <Modal onClose={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-xl border border-border bg-surface shadow-slab animate-rise">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="font-display text-[15px] font-bold text-ink">Edit PO</div>
@@ -541,6 +532,6 @@ function EditHeaderModal({ po, onClose, onSaved }: { po: ScmPo; onClose: () => v
           </Button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

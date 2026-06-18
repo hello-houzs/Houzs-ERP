@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Plus, RefreshCw, X, Trash2 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
+import { Modal } from "../components/Modal";
 import { Button } from "../components/Button";
 import { DataTable, type Column } from "../components/DataTable";
 import { Pagination } from "../components/Pagination";
@@ -350,13 +351,7 @@ export function SupplierFormModal({
   const lbl = "text-[10px] font-semibold uppercase tracking-brand text-ink-muted";
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={isEdit ? "Edit supplier" : "New supplier"}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 p-4 backdrop-blur-sm animate-fade-in"
-      onClick={onClose}
-    >
+    <Modal onClose={onClose} aria-label={isEdit ? "Edit supplier" : "New supplier"}>
       <form
         onSubmit={submit}
         onClick={(e) => e.stopPropagation()}
@@ -462,6 +457,6 @@ export function SupplierFormModal({
           </Button>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
