@@ -35,6 +35,9 @@ const ScmPurchaseInvoices = lazy(() => import("./pages/scm/PurchaseInvoices").th
 const ScmPurchaseInvoiceDetail = lazy(() => import("./pages/scm/PurchaseInvoiceDetail").then((m) => ({ default: m.ScmPurchaseInvoiceDetail })));
 const ScmPurchaseReturns = lazy(() => import("./pages/scm/PurchaseReturns").then((m) => ({ default: m.ScmPurchaseReturns })));
 const ScmPurchaseReturnDetail = lazy(() => import("./pages/scm/PurchaseReturnDetail").then((m) => ({ default: m.ScmPurchaseReturnDetail })));
+const ScmPurchaseOrderNew = lazy(() => import("./pages/scm/PurchaseOrderNew").then((m) => ({ default: m.ScmPurchaseOrderNew })));
+const ScmPurchaseInvoiceNew = lazy(() => import("./pages/scm/PurchaseInvoiceNew").then((m) => ({ default: m.ScmPurchaseInvoiceNew })));
+const ScmPurchaseReturnNew = lazy(() => import("./pages/scm/PurchaseReturnNew").then((m) => ({ default: m.ScmPurchaseReturnNew })));
 const ScmInventory = lazy(() => import("./pages/scm/Inventory").then((m) => ({ default: m.ScmInventory })));
 const ScmWarehouses = lazy(() => import("./pages/scm/Warehouses").then((m) => ({ default: m.ScmWarehouses })));
 const ScmStockTransfers = lazy(() => import("./pages/scm/StockTransfers").then((m) => ({ default: m.ScmStockTransfers })));
@@ -176,12 +179,15 @@ export default function App() {
           }
         />
         <Route path="/scm/purchase-orders" element={<Guard perm="*"><ScmPurchaseOrders /></Guard>} />
+        <Route path="/scm/purchase-orders/new" element={<Guard perm="*"><ScmPurchaseOrderNew /></Guard>} />
         <Route path="/scm/purchase-orders/:id" element={<Guard perm="*"><ScmPurchaseOrderDetail /></Guard>} />
         <Route path="/scm/grns" element={<Guard perm="*"><ScmGoodsReceived /></Guard>} />
         <Route path="/scm/grns/:id" element={<Guard perm="*"><ScmGoodsReceivedDetail /></Guard>} />
         <Route path="/scm/purchase-invoices" element={<Guard perm="*"><ScmPurchaseInvoices /></Guard>} />
+        <Route path="/scm/purchase-invoices/new" element={<Guard perm="*"><ScmPurchaseInvoiceNew /></Guard>} />
         <Route path="/scm/purchase-invoices/:id" element={<Guard perm="*"><ScmPurchaseInvoiceDetail /></Guard>} />
         <Route path="/scm/purchase-returns" element={<Guard perm="*"><ScmPurchaseReturns /></Guard>} />
+        <Route path="/scm/purchase-returns/new" element={<Guard perm="*"><ScmPurchaseReturnNew /></Guard>} />
         <Route path="/scm/purchase-returns/:id" element={<Guard perm="*"><ScmPurchaseReturnDetail /></Guard>} />
         <Route path="/scm/inventory" element={<Guard perm="*"><ScmInventory /></Guard>} />
         <Route path="/scm/warehouses" element={<Guard perm="*"><ScmWarehouses /></Guard>} />

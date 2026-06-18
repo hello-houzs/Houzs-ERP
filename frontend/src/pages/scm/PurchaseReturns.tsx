@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Plus } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
+import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
 import { useQuery } from "../../hooks/useQuery";
 import { api, buildQuery } from "../../api/client";
@@ -147,6 +149,11 @@ export function ScmPurchaseReturns() {
         eyebrow="Supply Chain"
         title="Purchase Returns"
         description="Goods sent back to the supplier — closes the PO → GRN → return → credit-note loop."
+        primaryAction={
+          <Button icon={<Plus size={15} />} onClick={() => navigate("/scm/purchase-returns/new")}>
+            New Return
+          </Button>
+        }
       />
 
       {/* Status filter chips */}
