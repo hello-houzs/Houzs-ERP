@@ -509,7 +509,7 @@ export function DataTable<T>({
                       style={c.width ? { width: c.width } : undefined}
                       onClick={() => sortable && onHeaderClick(c)}
                       className={cn(
-                        "border-b-2 border-border bg-surface-dim text-[10px] font-semibold uppercase tracking-brand text-ink-secondary",
+                        "border-b-2 border-border bg-surface-dim text-[10px] font-semibold uppercase tracking-brand text-ink",
                         headPad,
                         c.align === "right" && "text-right",
                         c.align === "center" && "text-center",
@@ -599,7 +599,11 @@ export function DataTable<T>({
                             // (rare) can opt back in via `c.className`
                             // ("whitespace-normal").
                             "whitespace-nowrap",
-                            "group-hover:bg-accent-soft/55",
+                            // Pine-green tint on hover (matches the
+                            // calendar's "on track" green). Reads clearly
+                            // on both zebra shades. (Was a pale brass
+                            // `accent-soft` wash that looked yellow.)
+                            "group-hover:bg-[#3f6b53]/25",
                             c.align === "right" && "text-right",
                             c.align === "center" && "text-center",
                             i === 0 && "pl-5",
@@ -704,7 +708,7 @@ export function DataTable<T>({
                 className={cn(
                   "relative overflow-hidden rounded-lg border border-border bg-surface shadow-stone transition-colors",
                   onRowClick &&
-                    "cursor-pointer active:bg-accent-soft/40 hover:border-accent/40",
+                    "cursor-pointer active:bg-[#3f6b53]/25 hover:border-accent/40",
                   customClass,
                 )}
               >
