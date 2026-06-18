@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ShieldCheck } from "lucide-react";
 import { DetailLayout } from "../components/DetailLayout";
 import { TabStrip } from "../components/TabStrip";
+import { EmptyState } from "../components/EmptyState";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useAuth } from "../auth/AuthContext";
@@ -111,12 +112,13 @@ export function SalesTeamDetail() {
       )}
 
       {rep && tab === "performance" && (
-        <div className="rounded-md border border-border bg-surface p-6 text-[12px] text-ink-muted">
-          {/* TODO: performance metrics — Orders YTD / Revenue YTD /
-              Avg Order Value / Outstanding + 12-month line chart.
-              Wire up when sales_entries roll-up endpoint exists. */}
-          Performance metrics coming soon.
-        </div>
+        // TODO: performance metrics — Orders YTD / Revenue YTD / Avg Order
+        // Value / Outstanding + 12-month line chart. Wire up when the
+        // sales_entries roll-up endpoint exists.
+        <EmptyState
+          message="Performance metrics coming soon"
+          description="Orders, revenue and outstanding roll-ups will appear here once the reporting endpoint is live."
+        />
       )}
 
       {rep && tab === "audit" && (
