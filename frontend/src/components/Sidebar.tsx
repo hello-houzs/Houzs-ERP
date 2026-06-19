@@ -197,31 +197,82 @@ export const NAV_TABS: NavTab[] = [
     groupId: "scm",
     anyPerm: ["*"],
     children: [
-      { to: "/scm/suppliers", label: "Suppliers", icon: Truck, perm: "*" },
-      { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
-      { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, perm: "*" },
-      { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, perm: "*" },
-      { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, perm: "*" },
-      { to: "/scm/inventory", label: "Inventory", icon: Package, perm: "*" },
-      { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, perm: "*" },
-      { to: "/scm/stock-transfers", label: "Stock Transfers", icon: ArrowLeftRight, perm: "*" },
-      { to: "/scm/stock-takes", label: "Stock Takes", icon: ClipboardCheck, perm: "*" },
-      { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, perm: "*" },
-      { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, perm: "*" },
-      { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, perm: "*" },
-      { to: "/scm/products", label: "Products", icon: Sofa, perm: "*" },
-      { to: "/scm/product-models", label: "Product Models", icon: Layers, perm: "*" },
-      { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, perm: "*" },
-      { to: "/scm/mrp-lead-times", label: "Lead Times", icon: Timer, perm: "*" },
-      { to: "/scm/fabric-tracking", label: "Fabric Tracking", icon: Scissors, perm: "*" },
-      { to: "/scm/accounting", label: "Accounting", icon: BookOpen, perm: "*" },
-      { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, perm: "*" },
-      { to: "/scm/consignment-orders", label: "Consignment Orders", icon: Handshake, perm: "*" },
-      { to: "/scm/consignment-notes", label: "Consignment Notes", icon: FileText, perm: "*" },
-      { to: "/scm/consignment-returns", label: "Consignment Returns", icon: CornerUpLeft, perm: "*" },
-      { to: "/scm/purchase-consignment-orders", label: "Purch. Consign. Orders", icon: HandCoins, perm: "*" },
-      { to: "/scm/purchase-consignment-receives", label: "Purch. Consign. Receives", icon: PackageOpen, perm: "*" },
-      { to: "/scm/purchase-consignment-returns", label: "Purch. Consign. Returns", icon: Reply, perm: "*" },
+      // Organised into sections (mirrors 2990's Procurement / Warehouse / etc.
+      // sectioning) instead of one flat 26-item list. Sub-groups default open
+      // (so every item still shows) but each is collapsible per-user.
+      {
+        label: "Procurement",
+        icon: Package,
+        groupId: "scm-procurement",
+        anyPerm: ["*"],
+        children: [
+          { to: "/scm/suppliers", label: "Suppliers", icon: Truck, perm: "*" },
+          { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
+          { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, perm: "*" },
+          { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, perm: "*" },
+          { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, perm: "*" },
+        ],
+      },
+      {
+        label: "Inventory",
+        icon: Warehouse,
+        groupId: "scm-inventory",
+        anyPerm: ["*"],
+        children: [
+          { to: "/scm/inventory", label: "Inventory", icon: Package, perm: "*" },
+          { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, perm: "*" },
+          { to: "/scm/stock-transfers", label: "Stock Transfers", icon: ArrowLeftRight, perm: "*" },
+          { to: "/scm/stock-takes", label: "Stock Takes", icon: ClipboardCheck, perm: "*" },
+        ],
+      },
+      {
+        label: "Sales & Delivery",
+        icon: ShoppingCart,
+        groupId: "scm-sales",
+        anyPerm: ["*"],
+        children: [
+          { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, perm: "*" },
+          { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, perm: "*" },
+          { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, perm: "*" },
+        ],
+      },
+      {
+        label: "Consignment",
+        icon: Handshake,
+        groupId: "scm-consignment",
+        anyPerm: ["*"],
+        children: [
+          { to: "/scm/consignment-orders", label: "Consignment Orders", icon: Handshake, perm: "*" },
+          { to: "/scm/consignment-notes", label: "Consignment Notes", icon: FileText, perm: "*" },
+          { to: "/scm/consignment-returns", label: "Consignment Returns", icon: CornerUpLeft, perm: "*" },
+          { to: "/scm/purchase-consignment-orders", label: "Purch. Consign. Orders", icon: HandCoins, perm: "*" },
+          { to: "/scm/purchase-consignment-receives", label: "Purch. Consign. Receives", icon: PackageOpen, perm: "*" },
+          { to: "/scm/purchase-consignment-returns", label: "Purch. Consign. Returns", icon: Reply, perm: "*" },
+        ],
+      },
+      {
+        label: "Catalog & Planning",
+        icon: Layers,
+        groupId: "scm-catalog",
+        anyPerm: ["*"],
+        children: [
+          { to: "/scm/products", label: "Products", icon: Sofa, perm: "*" },
+          { to: "/scm/product-models", label: "Product Models", icon: Layers, perm: "*" },
+          { to: "/scm/fabric-tracking", label: "Fabric Tracking", icon: Scissors, perm: "*" },
+          { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, perm: "*" },
+          { to: "/scm/mrp-lead-times", label: "Lead Times", icon: Timer, perm: "*" },
+        ],
+      },
+      {
+        label: "Finance",
+        icon: BookOpen,
+        groupId: "scm-finance",
+        anyPerm: ["*"],
+        children: [
+          { to: "/scm/accounting", label: "Accounting", icon: BookOpen, perm: "*" },
+          { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, perm: "*" },
+        ],
+      },
       { to: "/scm/maintenance", label: "Maintenance", icon: Wrench, perm: "*" },
     ],
   },
@@ -323,9 +374,12 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
       const open = isGroupOpen(tab.groupId || tab.label);
       // Group is "active" if any child is active — keep the brass tint
       // on the parent so the user knows where they are.
-      const childActive = tab.children.some(
-        (k) => k.to && tabIsActive(k.to, k.end)
-      );
+      // Recurse so a group (incl. the Supply Chain umbrella whose direct
+      // children are sub-groups) stays tinted when any descendant is active.
+      const hasActiveDescendant = (n: NavTab): boolean =>
+        (n.to ? tabIsActive(n.to, n.end) : false) ||
+        (n.children?.some(hasActiveDescendant) ?? false);
+      const childActive = tab.children.some(hasActiveDescendant);
       if (collapsed) {
         // In collapsed mode, render children flat with no group header.
         return (
