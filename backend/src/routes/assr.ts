@@ -1169,7 +1169,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
        LEFT JOIN creditors cr ON cr.creditor_code = a.creditor_code
       WHERE a.creditor_code IS NOT NULL
         ${sinceFor("a.")}
-      GROUP BY a.creditor_code
+      GROUP BY a.creditor_code, cr.company_name
       ORDER BY total_cases DESC
       LIMIT 15`
   ).all();
