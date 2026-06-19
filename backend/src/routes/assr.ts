@@ -1129,7 +1129,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
        JOIN assr_cases c ON c.id = i.assr_id
       WHERE 1=1 ${sinceFor("c.")}
       GROUP BY i.item_code
-      HAVING cases >= 2
+      HAVING COUNT(DISTINCT i.assr_id) >= 2
       ORDER BY cases DESC, latest DESC
       LIMIT 20`
   ).all();
@@ -1143,7 +1143,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
       WHERE customer_name IS NOT NULL
         ${sinceClause}
       GROUP BY customer_name, phone
-      HAVING cases >= 2
+      HAVING COUNT(*) >= 2
       ORDER BY cases DESC, latest DESC
       LIMIT 20`
   ).all();
@@ -1187,7 +1187,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
        FROM assr_cases
       WHERE COALESCE(complained_date, created_at) >= date('now', '-12 months')
       GROUP BY month
-      HAVING month IS NOT NULL
+      HAVING strftime('%Y-%m', COALESCE(complained_date, created_at)) IS NOT NULL
       ORDER BY month`
   ).all();
 
