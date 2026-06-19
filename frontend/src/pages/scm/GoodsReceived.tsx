@@ -6,6 +6,7 @@ import { Button } from "../../components/Button";
 import { Panel } from "../../components/Panel";
 import { DataTable, type Column } from "../../components/DataTable";
 import { Field, Input } from "./Suppliers";
+import { LineCard, LineField, lineInputCls, LineTotalRow } from "./_lineKit";
 import { useQuery } from "../../hooks/useQuery";
 import { useToast } from "../../hooks/useToast";
 import { useDialog } from "../../hooks/useDialog";
@@ -486,69 +487,68 @@ function ReceiveGrnPanel({
                   Lines to Receive ({lines.length})
                 </h3>
               </div>
-              <div className="overflow-hidden rounded-lg border border-border">
-                <table className="w-full text-[12px]">
-                  <thead>
-                    <tr className="border-b border-border bg-bg/50 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                      <th className="px-3 py-2 text-left">Item</th>
-                      <th className="px-2 py-2 text-right">Ordered</th>
-                      <th className="px-2 py-2 text-right">Outstanding</th>
-                      <th className="px-2 py-2 text-right">Received</th>
-                      <th className="px-2 py-2 text-right">Rejected</th>
-                      <th className="px-3 py-2 text-right">Line Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {lines.map((l) => (
-                      <tr key={l.src.poItemId} className="border-b border-border-subtle last:border-0">
-                        <td className="px-3 py-2">
-                          <div className="font-mono text-[11px] font-semibold text-ink">
-                            {l.src.itemCode}
-                          </div>
-                          <div className="text-[11px] text-ink-muted">
-                            {l.src.description || l.src.itemGroup || "—"}
-                          </div>
-                        </td>
-                        <td className="px-2 py-2 text-right font-mono text-ink-secondary">{l.src.qty}</td>
-                        <td className="px-2 py-2 text-right font-mono text-ink-secondary">
+              <div className="space-y-2.5">
+                {lines.map((l, idx) => (
+                  <LineCard key={l.src.poItemId} index={idx + 1}>
+                    <LineField label="Item">
+                      <div className="rounded-md border border-border-subtle bg-bg/50 px-2.5 py-1.5">
+                        <div className="font-mono text-[12px] font-semibold text-ink">
+                          {l.src.itemCode}
+                        </div>
+                        <div className="text-[11px] text-ink-muted">
+                          {l.src.description || l.src.itemGroup || "—"}
+                        </div>
+                      </div>
+                    </LineField>
+                    <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                      <LineField label="Ordered" align="right">
+                        <div className="flex h-9 items-center justify-end rounded-md border border-border-subtle bg-bg/50 px-2.5 font-mono text-[13px] text-ink-secondary">
+                          {l.src.qty}
+                        </div>
+                      </LineField>
+                      <LineField label="Outstanding" align="right">
+                        <div className="flex h-9 items-center justify-end rounded-md border border-border-subtle bg-bg/50 px-2.5 font-mono text-[13px] text-ink-secondary">
                           {l.src.remainingQty}
-                        </td>
-                        <td className="px-2 py-2 text-right">
-                          <input
-                            type="number"
-                            min={0}
-                            max={l.src.remainingQty}
-                            value={l.received}
-                            onChange={(e) =>
-                              setQty(
-                                l.src.poItemId,
-                                "received",
-                                Number(e.target.value),
-                                l.src.remainingQty,
-                              )
-                            }
-                            className="h-8 w-16 rounded-md border border-border bg-surface px-2 text-right text-[12px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-                          />
-                        </td>
-                        <td className="px-2 py-2 text-right">
-                          <input
-                            type="number"
-                            min={0}
-                            max={l.received}
-                            value={l.rejected}
-                            onChange={(e) =>
-                              setQty(l.src.poItemId, "rejected", Number(e.target.value), l.received)
-                            }
-                            className="h-8 w-16 rounded-md border border-border bg-surface px-2 text-right text-[12px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-                          />
-                        </td>
-                        <td className="px-3 py-2 text-right font-mono text-ink">
-                          {fmtCenti(l.received * l.src.unitPriceCenti, "MYR")}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                        </div>
+                      </LineField>
+                      <LineField label="Received" align="right">
+                        <input
+                          type="number"
+                          min={0}
+                          max={l.src.remainingQty}
+                          value={l.received}
+                          onChange={(e) =>
+                            setQty(
+                              l.src.poItemId,
+                              "received",
+                              Number(e.target.value),
+                              l.src.remainingQty,
+                            )
+                          }
+                          className={cn(lineInputCls, "text-right")}
+                        />
+                      </LineField>
+                      <LineField label="Rejected" align="right">
+                        <input
+                          type="number"
+                          min={0}
+                          max={l.received}
+                          value={l.rejected}
+                          onChange={(e) =>
+                            setQty(l.src.poItemId, "rejected", Number(e.target.value), l.received)
+                          }
+                          className={cn(lineInputCls, "text-right")}
+                        />
+                      </LineField>
+                    </div>
+                    <LineTotalRow>
+                      <span className="text-[11px] uppercase tracking-brand text-ink-muted">Line Total</span>
+                      <span className="font-mono text-ink">
+                        {fmtCenti(l.received * l.src.unitPriceCenti, "MYR")}
+                      </span>
+                    </LineTotalRow>
+                  </LineCard>
+                ))}
               </div>
               <p className="mt-2 text-[11px] text-ink-muted">
                 Received defaults to the PO line's outstanding quantity. Rejected is netted out of

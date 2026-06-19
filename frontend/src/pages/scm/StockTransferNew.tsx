@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, ArrowRight, Plus, Save, Trash2 } from "lucide-react";
+import { ArrowLeft, Plus, Save } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { Button } from "../../components/Button";
 import { useQuery } from "../../hooks/useQuery";
@@ -8,7 +8,9 @@ import { useToast } from "../../hooks/useToast";
 import { useDialog } from "../../hooks/useDialog";
 import { api } from "../../api/client";
 import { SCM } from "../../lib/scm";
+import { cn } from "../../lib/utils";
 import { Field, Input } from "./Suppliers";
+import { LineCard, LineField, lineInputCls } from "./_lineKit";
 
 // ── Picker response shapes (snake_case, verbatim from the Hono routes) ──────
 // GET /api/scm/inventory/warehouses
@@ -288,37 +290,18 @@ export function ScmStockTransferNew() {
         </h3>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-2.5">
         {lines.map((l, idx) => (
-          <div
-            key={l.rid}
-            className="rounded-lg border border-border bg-surface p-4 shadow-stone"
-          >
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-brand text-ink-muted">
-                Line {idx + 1}
-                <ArrowRight size={11} className="text-ink-muted/70" />
-              </span>
-              <button
-                type="button"
-                onClick={() => dropLine(l.rid)}
-                title="Remove line"
-                aria-label="Remove line"
-                className="inline-flex items-center justify-center rounded p-1 text-ink-muted transition-colors hover:bg-err/5 hover:text-err"
-              >
-                <Trash2 size={15} />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Item Code">
+          <LineCard key={l.rid} index={idx + 1} onRemove={() => dropLine(l.rid)}>
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+              <LineField label="Item Code" className="sm:col-span-2">
                 <input
                   type="text"
                   list={`xfer-items-${l.rid}`}
                   value={l.productCode}
                   onChange={(e) => pickCode(l.rid, e.target.value)}
                   placeholder="Type or pick a SKU…"
-                  className="h-10 w-full rounded-md border border-border bg-surface px-3 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  className={cn(lineInputCls, "font-mono")}
                 />
                 <datalist id={`xfer-items-${l.rid}`}>
                   {products.map((p) => (
@@ -328,8 +311,8 @@ export function ScmStockTransferNew() {
                     </option>
                   ))}
                 </datalist>
-              </Field>
-              <Field label="Qty">
+              </LineField>
+              <LineField label="Qty" align="right">
                 <input
                   type="number"
                   min={1}
@@ -338,28 +321,28 @@ export function ScmStockTransferNew() {
                   onChange={(e) =>
                     setLine(l.rid, { qty: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
                   }
-                  className="h-10 w-full rounded-md border border-border bg-surface px-3 text-right text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  className={cn(lineInputCls, "text-right")}
                 />
-              </Field>
+              </LineField>
             </div>
 
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Description">
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <LineField label="Description">
                 <Input
                   value={l.productName}
                   onChange={(v) => setLine(l.rid, { productName: v })}
                   placeholder="Auto-filled when a SKU is picked"
                 />
-              </Field>
-              <Field label="Line Notes">
+              </LineField>
+              <LineField label="Line Notes">
                 <Input
                   value={l.notes}
                   onChange={(v) => setLine(l.rid, { notes: v })}
                   placeholder="Optional"
                 />
-              </Field>
+              </LineField>
             </div>
-          </div>
+          </LineCard>
         ))}
 
         <button

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, ImagePlus, Plus, Save, Trash2, X } from "lucide-react";
+import { ArrowLeft, ImagePlus, Plus, Save, X } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { Button } from "../../components/Button";
 import { useQuery } from "../../hooks/useQuery";
@@ -9,6 +9,7 @@ import { useDialog } from "../../hooks/useDialog";
 import { api } from "../../api/client";
 import { SCM, fmtCenti } from "../../lib/scm";
 import { Field, Input, Select } from "./Suppliers";
+import { LineCard, LineField, lineInputCls, LineTotalRow } from "./_lineKit";
 
 // GET /api/scm/mfg-products — the sellable SKU catalogue. The CO authors the
 // selling price server-side from this master, but we seed the line's unit price
@@ -325,64 +326,49 @@ export function ScmConsignmentOrderNew() {
         </h3>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-2.5">
         {lines.map((l, idx) => (
-          <div key={l.rid} className="rounded-lg border border-border bg-surface p-4 shadow-stone">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <span className="text-[11px] font-bold uppercase tracking-brand text-ink-muted">Line {idx + 1}</span>
-              <div className="flex items-center gap-3">
-                <span className="font-mono text-[13px] font-semibold text-ink">{fmt(lineTotalSen(l))}</span>
-                <button
-                  type="button"
-                  onClick={() => dropLine(l.rid)}
-                  title="Remove line"
-                  aria-label="Remove line"
-                  className="inline-flex items-center justify-center rounded p-1 text-ink-muted transition-colors hover:bg-err/5 hover:text-err"
-                >
-                  <Trash2 size={15} />
-                </button>
-              </div>
-            </div>
+          <LineCard key={l.rid} index={idx + 1} onRemove={() => dropLine(l.rid)}>
+            <LineField label="Item" required>
+              <input
+                type="text"
+                list={`co-items-${l.rid}`}
+                value={l.itemCode}
+                onChange={(e) => pickItem(l.rid, e.target.value)}
+                placeholder="Type or pick a SKU…"
+                className={`${lineInputCls} font-mono`}
+              />
+              <datalist id={`co-items-${l.rid}`}>
+                {products.map((p) => (
+                  <option key={p.id} value={p.code}>
+                    {p.name} · {p.category ?? ""}
+                  </option>
+                ))}
+              </datalist>
+            </LineField>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Item Code">
-                <input
-                  type="text"
-                  list={`co-items-${l.rid}`}
-                  value={l.itemCode}
-                  onChange={(e) => pickItem(l.rid, e.target.value)}
-                  placeholder="Type or pick a SKU…"
-                  className="h-10 w-full rounded-md border border-border bg-surface px-3 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
-                />
-                <datalist id={`co-items-${l.rid}`}>
-                  {products.map((p) => (
-                    <option key={p.id} value={p.code}>
-                      {p.name} · {p.category ?? ""}
-                    </option>
-                  ))}
-                </datalist>
-              </Field>
-              <Field label="Description">
-                <Input
-                  value={l.description}
-                  onChange={(v) => setLine(l.rid, { description: v })}
-                  placeholder="Auto-filled from the SKU — editable"
-                />
-              </Field>
-            </div>
+            <LineField label="Description">
+              <input
+                type="text"
+                value={l.description}
+                onChange={(e) => setLine(l.rid, { description: e.target.value })}
+                placeholder="Auto-filled from the SKU — editable"
+                className={lineInputCls}
+              />
+            </LineField>
 
-            <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <Field label="Qty">
+            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+              <LineField label="Qty" align="right">
                 <input
                   type="number"
                   min={0}
                   step={1}
                   value={l.qty}
                   onChange={(e) => setLine(l.rid, { qty: Math.max(0, Number(e.target.value)) })}
-                  className="h-10 w-full rounded-md border border-border bg-surface px-3 text-right text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  className={`${lineInputCls} text-right`}
                 />
-              </Field>
-              <Field label={`Unit Price (${currency})`}>
+              </LineField>
+              <LineField label={`Unit Price (${currency})`} align="right">
                 <input
                   type="number"
                   min={0}
@@ -391,24 +377,26 @@ export function ScmConsignmentOrderNew() {
                   value={l.unitPriceRm}
                   onChange={(e) => setLine(l.rid, { unitPriceRm: e.target.value })}
                   placeholder="0.00"
-                  className="h-10 w-full rounded-md border border-border bg-surface px-3 text-right font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  className={`${lineInputCls} text-right font-mono`}
                 />
-              </Field>
-              <Field label="Line Total">
-                <div className="flex h-10 items-center justify-end rounded-md border border-border-subtle bg-bg/50 px-3 font-mono text-[13px] font-semibold text-ink">
-                  {fmt(lineTotalSen(l))}
-                </div>
-              </Field>
+              </LineField>
             </div>
 
             {l.itemCode.trim() && (
-              <PhotoStrip
-                files={l.stagedPhotos}
-                onAdd={(files) => setLine(l.rid, { stagedPhotos: [...l.stagedPhotos, ...files] })}
-                onRemove={(idx) => setLine(l.rid, { stagedPhotos: l.stagedPhotos.filter((_, i) => i !== idx) })}
-              />
+              <LineField label="Photos">
+                <PhotoStrip
+                  files={l.stagedPhotos}
+                  onAdd={(files) => setLine(l.rid, { stagedPhotos: [...l.stagedPhotos, ...files] })}
+                  onRemove={(idx) => setLine(l.rid, { stagedPhotos: l.stagedPhotos.filter((_, i) => i !== idx) })}
+                />
+              </LineField>
             )}
-          </div>
+
+            <LineTotalRow>
+              <span className="text-ink-muted">Line total</span>
+              <span className="font-mono font-semibold text-ink">{fmt(lineTotalSen(l))}</span>
+            </LineTotalRow>
+          </LineCard>
         ))}
 
         <button
@@ -502,9 +490,8 @@ function PhotoStrip({
   }
 
   return (
-    <div className="mt-3">
+    <div>
       <div className="mb-1.5 flex items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-brand text-ink-muted">Photos</span>
         <input ref={inputRef} type="file" accept="image/*" multiple className="hidden" onChange={onPick} />
         <button
           type="button"
