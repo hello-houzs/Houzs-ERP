@@ -12,6 +12,7 @@ import { SCM, fmtCenti } from "../../lib/scm";
 import { formatDate } from "../../lib/utils";
 import { cn } from "../../lib/utils";
 import { Field, Input } from "./Suppliers";
+import { LineCard, LineField, lineInputCls, LineTotalRow } from "./_lineKit";
 
 /* GET /api/scm/grns?status=POSTED → { grns } — header rows with embedded
    supplier + purchase_order. We only need enough to label the picker. */
@@ -289,65 +290,75 @@ export function ScmPurchaseReturnNew() {
               />
             ) : (
               <>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[12px]">
-                    <thead>
-                      <tr className="border-b border-border text-left text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                        <th className="py-2 pr-2 font-semibold">Return</th>
-                        <th className="py-2 pr-2 font-semibold">Item</th>
-                        <th className="py-2 pr-2 font-semibold">Description</th>
-                        <th className="py-2 pr-2 text-right font-semibold">Remaining</th>
-                        <th className="py-2 pr-2 text-right font-semibold">Qty to Return</th>
-                        <th className="py-2 pr-2 text-right font-semibold">Unit Price</th>
-                        <th className="py-2 pr-2 font-semibold">Reason</th>
-                        <th className="py-2 text-right font-semibold">Line Refund</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lines.map((l) => (
-                        <tr key={l.grnItemId} className="border-b border-border-subtle">
-                          <td className="py-2 pr-2">
+                <div className="space-y-2.5">
+                  {lines.map((l, idx) => (
+                    <LineCard key={l.grnItemId} index={idx + 1}>
+                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                        <LineField label="Return">
+                          <label className="flex h-9 items-center gap-2">
                             <input
                               type="checkbox"
                               checked={l.include}
                               onChange={() => toggleLine(l.grnItemId)}
                               className="h-4 w-4 accent-accent"
                             />
-                          </td>
-                          <td className="py-2 pr-2 font-mono text-[11px] text-ink">{l.materialCode || "—"}</td>
-                          <td className="py-2 pr-2 text-ink-secondary">{l.description || "—"}</td>
-                          <td className="py-2 pr-2 text-right font-mono text-ink-secondary">{l.remaining}</td>
-                          <td className="py-2 pr-2 text-right">
-                            <input
-                              type="number"
-                              min={0}
-                              max={l.remaining}
-                              step="0.01"
-                              value={l.qty}
-                              onChange={(e) => setLineQty(l.grnItemId, e.target.value)}
-                              className="h-9 w-24 rounded-md border border-border bg-surface px-2 text-right text-[12px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-                            />
-                          </td>
-                          <td className="py-2 pr-2 text-right font-mono text-ink-secondary">
+                            <span className="text-[13px] text-ink-secondary">
+                              {l.include ? "Included" : "Excluded"}
+                            </span>
+                          </label>
+                        </LineField>
+                        <LineField label="Item">
+                          <div className="flex h-9 items-center rounded-md border border-border-subtle bg-bg/50 px-2.5 font-mono text-[13px] text-ink">
+                            {l.materialCode || "—"}
+                          </div>
+                        </LineField>
+                      </div>
+                      <LineField label="Description">
+                        <div className="flex min-h-9 items-center rounded-md border border-border-subtle bg-bg/50 px-2.5 py-1.5 text-[13px] text-ink-secondary">
+                          {l.description || "—"}
+                        </div>
+                      </LineField>
+                      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                        <LineField label="Remaining" align="right">
+                          <div className="flex h-9 items-center justify-end rounded-md border border-border-subtle bg-bg/50 px-2.5 font-mono text-[13px] text-ink-secondary">
+                            {l.remaining}
+                          </div>
+                        </LineField>
+                        <LineField label="Qty to Return" align="right">
+                          <input
+                            type="number"
+                            min={0}
+                            max={l.remaining}
+                            step="0.01"
+                            value={l.qty}
+                            onChange={(e) => setLineQty(l.grnItemId, e.target.value)}
+                            className={cn(lineInputCls, "text-right")}
+                          />
+                        </LineField>
+                        <LineField label="Unit Price" align="right">
+                          <div className="flex h-9 items-center justify-end rounded-md border border-border-subtle bg-bg/50 px-2.5 font-mono text-[13px] text-ink-secondary">
                             {fmtCenti(l.unitPriceCenti)}
-                          </td>
-                          <td className="py-2 pr-2">
-                            <input
-                              type="text"
-                              value={l.reason}
-                              onChange={(e) => setLineReason(l.grnItemId, e.target.value)}
-                              placeholder="e.g. defective"
-                              disabled={!l.include}
-                              className="h-9 w-40 rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-50"
-                            />
-                          </td>
-                          <td className="py-2 text-right font-mono font-semibold text-ink">
-                            {fmtCenti(l.include ? l.qty * l.unitPriceCenti : 0)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                          </div>
+                        </LineField>
+                      </div>
+                      <LineField label="Reason">
+                        <input
+                          type="text"
+                          value={l.reason}
+                          onChange={(e) => setLineReason(l.grnItemId, e.target.value)}
+                          placeholder="e.g. defective"
+                          disabled={!l.include}
+                          className={lineInputCls}
+                        />
+                      </LineField>
+                      <LineTotalRow>
+                        <span className="text-[11px] uppercase tracking-brand text-ink-muted">Line Refund</span>
+                        <span className="font-mono font-semibold text-ink">
+                          {fmtCenti(l.include ? l.qty * l.unitPriceCenti : 0)}
+                        </span>
+                      </LineTotalRow>
+                    </LineCard>
+                  ))}
                 </div>
                 <div className="mt-3 flex justify-end border-t border-border pt-3">
                   <div className="flex items-baseline gap-3">
