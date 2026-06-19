@@ -25,7 +25,11 @@
 // recover iPhone Safari clients that were stuck on a cached CSS bundle
 // after the page-access refactor — old cache-first /assets entries
 // were serving pre-rebuild CSS, leaving Tailwind classes unapplied.
-const VERSION = "houzs-erp-v3";
+// v4 (2026-06-19): one-shot purge to recover staff clients left on a
+// stale shell after a burst of same-day deploys (the SCM port). The
+// activate step deletes the old v3 caches so every client rebuilds from
+// the live build on its next load — no manual hard-refresh needed.
+const VERSION = "houzs-erp-v4";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
