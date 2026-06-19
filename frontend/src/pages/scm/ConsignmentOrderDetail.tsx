@@ -7,6 +7,7 @@ import { useQuery } from "../../hooks/useQuery";
 import { api } from "../../api/client";
 import { SCM, fmtCenti, scmStatusClasses } from "../../lib/scm";
 import { cn } from "../../lib/utils";
+import { ScmLinePhotos, readPhotoKeys } from "./ScmLinePhotos";
 
 // GET /api/scm/consignment-orders/:docNo → { salesOrder, items }. The header is
 // the full consignment_sales_orders row + has_children (any non-cancelled
@@ -65,6 +66,7 @@ interface CoItem {
   line_margin_centi: number | null;
   cancelled: boolean | null;
   deliveries: CoLineDelivery[] | null;
+  photo_urls?: unknown;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -164,6 +166,22 @@ export function ScmConsignmentOrderDetail() {
         );
       },
       getValue: (it) => (it.deliveries ?? []).map((d) => d.noNumber).join(" "),
+    },
+    {
+      key: "photos",
+      label: "Photos",
+      disableSort: true,
+      render: (it) => {
+        const keys = readPhotoKeys(it);
+        if (keys.length === 0) return <span className="text-ink-muted">—</span>;
+        return (
+          <ScmLinePhotos
+            basePath={`${SCM}/consignment-orders/${encodeURIComponent(id ?? "")}/items/${encodeURIComponent(it.id)}`}
+            photoKeys={keys}
+          />
+        );
+      },
+      getValue: (it) => String(readPhotoKeys(it).length),
     },
     {
       key: "unit_price",
