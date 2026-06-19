@@ -475,6 +475,79 @@ export function ScmMfgSalesOrderNew() {
           })),
         },
       );
+      // ── Post-create photo upload ─────────────────────────────────────────
+      // The SO create POST carries no multipart surface, so staged per-line
+      // photos upload in a SECOND pass now that item ids exist. We fetch the
+      // saved detail, match each draft (by item_code, in order) to a UNIQUE
+      // saved item id, then POST each file to the per-line photo endpoint.
+      //
+      // SAFETY GUARD: the server MAY split a sofa build into N per-compartment
+      // module rows (one draft → many saved items), which makes positional
+      // matching unsafe. So we only attach when a draft's item_code maps to
+      // EXACTLY ONE not-yet-consumed saved item. On any ambiguity (split, or a
+      // duplicate item_code across photo-bearing drafts) we SKIP that line and
+      // soft-warn — never block or fail the SO.
+      const linesWithPhotos = validLines.filter(
+        (l) => (l.stagedPhotos?.length ?? 0) > 0,
+      );
+      if (linesWithPhotos.length > 0) {
+        try {
+          const detail = await api.get<{ items: Array<{ id: string; item_code: string; cancelled?: boolean }> }>(
+            `${SCM}/mfg-sales-orders/${encodeURIComponent(res.docNo)}`,
+          );
+          // code → queue of saved item ids (document order), non-cancelled only.
+          const savedByCode = new Map<string, string[]>();
+          for (const it of detail.items ?? []) {
+            if (it.cancelled) continue;
+            const arr = savedByCode.get(it.item_code) ?? [];
+            arr.push(it.id);
+            savedByCode.set(it.item_code, arr);
+          }
+          // How many photo-bearing drafts want each code — a code wanted by >1
+          // draft can't be positionally disambiguated, so all are skipped.
+          const draftCountByCode = new Map<string, number>();
+          for (const l of linesWithPhotos) {
+            draftCountByCode.set(l.itemCode, (draftCountByCode.get(l.itemCode) ?? 0) + 1);
+          }
+
+          let uploaded = 0;
+          let skipped = 0;
+          let failed = 0;
+          for (const l of linesWithPhotos) {
+            const queue = savedByCode.get(l.itemCode) ?? [];
+            const ambiguous =
+              queue.length !== 1 || (draftCountByCode.get(l.itemCode) ?? 0) > 1;
+            if (ambiguous) {
+              skipped += 1;
+              continue;
+            }
+            const itemId = queue.shift()!; // consume the matched id
+            for (const file of l.stagedPhotos ?? []) {
+              try {
+                await api.uploadFile(
+                  `${SCM}/mfg-sales-orders/${encodeURIComponent(res.docNo)}/items/${encodeURIComponent(itemId)}/photos`,
+                  file,
+                );
+                uploaded += 1;
+              } catch {
+                failed += 1;
+              }
+            }
+          }
+          if (uploaded > 0) toast.success(`Uploaded ${uploaded} photo${uploaded === 1 ? "" : "s"}`);
+          if (skipped > 0)
+            toast.warning(
+              `${skipped} line${skipped === 1 ? "" : "s"} had photos that couldn't be matched automatically — add them on the SO detail page.`,
+            );
+          if (failed > 0)
+            toast.error(`${failed} photo${failed === 1 ? "" : "s"} failed to upload — retry on the SO detail page.`);
+        } catch {
+          // Photo upload is best-effort — the SO already exists. Tell the
+          // operator they can attach photos on the detail page; never block.
+          toast.warning("Sales order created, but photos couldn't be uploaded — add them on the SO detail page.");
+        }
+      }
+
       toast.success(`Sales order ${res.docNo} created`);
       navigate(`/scm/sales-orders/${encodeURIComponent(res.docNo)}`);
     } catch (e) {

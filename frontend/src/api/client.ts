@@ -233,6 +233,40 @@ export const api = {
   },
 
   /**
+   * Multipart upload — POSTs a FormData with one or more files under
+   * `fieldName`. Crucially we do NOT set Content-Type: the browser must set
+   * `multipart/form-data; boundary=…` itself, so we only attach the bearer.
+   * Mirrors putBinary's auth + error handling. Used for the SCM SO / CO
+   * per-line photo endpoints (each POST takes a single `file`, so the typical
+   * caller loops uploadFile per staged photo).
+   */
+  async uploadFiles<T>(path: string, files: File[], fieldName = "files"): Promise<T> {
+    const token = tokenStore.get();
+    const form = new FormData();
+    for (const f of files) form.append(fieldName, f);
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+    if (!res.ok) {
+      let txt = "";
+      try {
+        txt = await res.text();
+      } catch {}
+      throw new Error(`${res.status}: ${txt || res.statusText}`);
+    }
+    if (res.status === 204) return undefined as T;
+    return (await res.json()) as T;
+  },
+
+  /** Single-file multipart upload (one `fieldName` part). Thin wrapper over
+   *  uploadFiles for the common one-file-per-request routes. */
+  uploadFile<T>(path: string, file: File, fieldName = "file"): Promise<T> {
+    return this.uploadFiles<T>(path, [file], fieldName);
+  },
+
+  /**
    * Fetches a protected asset (e.g. R2-backed POD photo) as a blob URL,
    * because <img src> can't pass the Authorization header.
    */
