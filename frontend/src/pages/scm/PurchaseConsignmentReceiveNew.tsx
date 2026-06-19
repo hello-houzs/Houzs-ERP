@@ -9,6 +9,7 @@ import { useDialog } from "../../hooks/useDialog";
 import { api } from "../../api/client";
 import { SCM, fmtCenti } from "../../lib/scm";
 import { Field, Input } from "./Suppliers";
+import { LineCard, LineField, lineInputCls, LineTotalRow } from "./_lineKit";
 
 // Response shape from GET /api/scm/purchase-consignment-receives/outstanding-pco-items
 // — camelCase, verbatim from the Hono route. One flat row per outstanding PC
@@ -278,62 +279,63 @@ export function ScmPurchaseConsignmentReceiveNew() {
                 Lines to Receive ({lines.length})
               </h3>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-[12px]">
-                <thead>
-                  <tr className="border-b border-border text-left text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                    <th className="py-2 pr-2 font-semibold">Item</th>
-                    <th className="py-2 pr-2 text-right font-semibold">Ordered</th>
-                    <th className="py-2 pr-2 text-right font-semibold">Outstanding</th>
-                    <th className="py-2 pr-2 text-right font-semibold">Received</th>
-                    <th className="py-2 pr-2 text-right font-semibold">Rejected</th>
-                    <th className="py-2 text-right font-semibold">Line Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lines.map((l) => (
-                    <tr key={l.src.pcoItemId} className="border-b border-border-subtle">
-                      <td className="py-2 pr-2">
-                        <div className="font-mono text-[11px] font-semibold text-ink">{l.src.itemCode}</div>
-                        <div className="text-[11px] text-ink-muted">
-                          {l.src.description || l.src.itemGroup || "—"}
-                        </div>
-                      </td>
-                      <td className="py-2 pr-2 text-right font-mono text-ink-secondary">{l.src.qty}</td>
-                      <td className="py-2 pr-2 text-right font-mono text-ink-secondary">
+            <div className="space-y-2.5">
+              {lines.map((l, idx) => (
+                <LineCard key={l.src.pcoItemId} index={idx + 1}>
+                  <LineField label="Item">
+                    <div className="rounded-md border border-border-subtle bg-bg/50 px-2.5 py-1.5">
+                      <div className="font-mono text-[13px] font-semibold text-ink">{l.src.itemCode}</div>
+                      <div className="text-[11px] text-ink-muted">
+                        {l.src.description || l.src.itemGroup || "—"}
+                      </div>
+                    </div>
+                  </LineField>
+
+                  <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                    <LineField label="Ordered" align="right">
+                      <div className="flex h-9 items-center justify-end rounded-md border border-border-subtle bg-bg/50 px-2.5 font-mono text-[13px] text-ink-secondary">
+                        {l.src.qty}
+                      </div>
+                    </LineField>
+                    <LineField label="Outstanding" align="right">
+                      <div className="flex h-9 items-center justify-end rounded-md border border-border-subtle bg-bg/50 px-2.5 font-mono text-[13px] text-ink-secondary">
                         {l.src.remainingQty}
-                      </td>
-                      <td className="py-2 pr-2 text-right">
-                        <input
-                          type="number"
-                          min={0}
-                          max={l.src.remainingQty}
-                          value={l.received}
-                          onChange={(e) =>
-                            setQty(l.src.pcoItemId, "received", Number(e.target.value), l.src.remainingQty)
-                          }
-                          className="h-9 w-20 rounded-md border border-border bg-surface px-2 text-right text-[12px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-                        />
-                      </td>
-                      <td className="py-2 pr-2 text-right">
-                        <input
-                          type="number"
-                          min={0}
-                          max={l.received}
-                          value={l.rejected}
-                          onChange={(e) =>
-                            setQty(l.src.pcoItemId, "rejected", Number(e.target.value), l.received)
-                          }
-                          className="h-9 w-20 rounded-md border border-border bg-surface px-2 text-right text-[12px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-                        />
-                      </td>
-                      <td className="py-2 text-right font-mono text-ink">
-                        {fmtCenti(l.received * l.src.unitPriceCenti)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                    </LineField>
+                    <LineField label="Received" align="right">
+                      <input
+                        type="number"
+                        min={0}
+                        max={l.src.remainingQty}
+                        value={l.received}
+                        onChange={(e) =>
+                          setQty(l.src.pcoItemId, "received", Number(e.target.value), l.src.remainingQty)
+                        }
+                        className={`${lineInputCls} text-right`}
+                      />
+                    </LineField>
+                    <LineField label="Rejected" align="right">
+                      <input
+                        type="number"
+                        min={0}
+                        max={l.received}
+                        value={l.rejected}
+                        onChange={(e) =>
+                          setQty(l.src.pcoItemId, "rejected", Number(e.target.value), l.received)
+                        }
+                        className={`${lineInputCls} text-right`}
+                      />
+                    </LineField>
+                  </div>
+
+                  <LineTotalRow>
+                    <span className="text-ink-muted">Line total</span>
+                    <span className="font-mono font-semibold text-ink">
+                      {fmtCenti(l.received * l.src.unitPriceCenti)}
+                    </span>
+                  </LineTotalRow>
+                </LineCard>
+              ))}
             </div>
             <div className="mt-3 flex justify-end border-t border-border pt-3">
               <div className="flex items-baseline gap-3">
