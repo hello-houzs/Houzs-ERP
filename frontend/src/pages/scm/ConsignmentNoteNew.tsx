@@ -11,6 +11,7 @@ import { api } from "../../api/client";
 import { SCM, fmtCenti } from "../../lib/scm";
 import { cn } from "../../lib/utils";
 import { Field, Input } from "./Suppliers";
+import { LineCard, LineField, lineInputCls, LineTotalRow } from "./_lineKit";
 
 // GET /api/scm/consignment-notes/deliverable-order-lines → { lines } — camelCase,
 // verbatim from the Hono route. One flat row per CO line that still has
@@ -236,56 +237,66 @@ export function ScmConsignmentNoteNew() {
               />
             ) : (
               <>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[12px]">
-                    <thead>
-                      <tr className="border-b border-border text-left text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                        <th className="py-2 pr-2 font-semibold">Ship</th>
-                        <th className="py-2 pr-2 font-semibold">Item</th>
-                        <th className="py-2 pr-2 font-semibold">Description</th>
-                        <th className="py-2 pr-2 text-right font-semibold">Outstanding</th>
-                        <th className="py-2 pr-2 text-right font-semibold">Qty to Ship</th>
-                        <th className="py-2 pr-2 text-right font-semibold">Unit Price</th>
-                        <th className="py-2 text-right font-semibold">Line Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lines.map((l) => (
-                        <tr key={l.src.orderItemId} className="border-b border-border-subtle">
-                          <td className="py-2 pr-2">
-                            <input
-                              type="checkbox"
-                              checked={l.include}
-                              onChange={() => toggleLine(l)}
-                              className="h-4 w-4 accent-accent"
-                            />
-                          </td>
-                          <td className="py-2 pr-2 font-mono text-[11px] text-ink">{l.src.itemCode || "—"}</td>
-                          <td className="py-2 pr-2 text-ink-secondary">
+                <div className="space-y-2.5">
+                  {lines.map((l, idx) => (
+                    <LineCard key={l.src.orderItemId} index={idx + 1}>
+                      <LineField label="Ship">
+                        <label className="flex h-9 items-center gap-2 text-[13px] text-ink">
+                          <input
+                            type="checkbox"
+                            checked={l.include}
+                            onChange={() => toggleLine(l)}
+                            className="h-4 w-4 accent-accent"
+                          />
+                          <span className="text-ink-secondary">Include this line</span>
+                        </label>
+                      </LineField>
+
+                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                        <LineField label="Item">
+                          <div className="flex h-9 items-center rounded-md border border-border-subtle bg-bg/50 px-2.5 font-mono text-[13px] text-ink">
+                            {l.src.itemCode || "—"}
+                          </div>
+                        </LineField>
+                        <LineField label="Description">
+                          <div className="flex h-9 items-center rounded-md border border-border-subtle bg-bg/50 px-2.5 text-[13px] text-ink-secondary">
                             {l.src.description || l.src.description2 || "—"}
-                          </td>
-                          <td className="py-2 pr-2 text-right font-mono text-ink-secondary">{l.src.outstanding}</td>
-                          <td className="py-2 pr-2 text-right">
-                            <input
-                              type="number"
-                              min={0}
-                              max={l.src.outstanding}
-                              step="0.01"
-                              value={l.qty}
-                              onChange={(e) => setLineQty(l, e.target.value)}
-                              className="h-9 w-24 rounded-md border border-border bg-surface px-2 text-right text-[12px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-                            />
-                          </td>
-                          <td className="py-2 pr-2 text-right font-mono text-ink-secondary">
+                          </div>
+                        </LineField>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                        <LineField label="Outstanding" align="right">
+                          <div className="flex h-9 items-center justify-end rounded-md border border-border-subtle bg-bg/50 px-2.5 font-mono text-[13px] text-ink-secondary">
+                            {l.src.outstanding}
+                          </div>
+                        </LineField>
+                        <LineField label="Qty to Ship" align="right">
+                          <input
+                            type="number"
+                            min={0}
+                            max={l.src.outstanding}
+                            step="0.01"
+                            value={l.qty}
+                            onChange={(e) => setLineQty(l, e.target.value)}
+                            className={`${lineInputCls} text-right`}
+                          />
+                        </LineField>
+                        <LineField label="Unit Price" align="right">
+                          <div className="flex h-9 items-center justify-end rounded-md border border-border-subtle bg-bg/50 px-2.5 font-mono text-[13px] text-ink-secondary">
                             {fmtCenti(l.src.unitPriceCenti)}
-                          </td>
-                          <td className="py-2 text-right font-mono font-semibold text-ink">
-                            {fmtCenti(l.include ? l.qty * l.src.unitPriceCenti - l.src.discountCenti : 0)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                          </div>
+                        </LineField>
+                      </div>
+
+                      <LineTotalRow>
+                        <span className="text-ink-muted">Line total</span>
+                        <span className="font-mono font-semibold text-ink">
+                          {fmtCenti(l.include ? l.qty * l.src.unitPriceCenti - l.src.discountCenti : 0)}
+                        </span>
+                      </LineTotalRow>
+                    </LineCard>
+                  ))}
                 </div>
                 <div className="mt-3 flex justify-end border-t border-border pt-3">
                   <div className="flex items-baseline gap-3">
