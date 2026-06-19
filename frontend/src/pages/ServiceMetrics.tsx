@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { Star, TrendingUp, AlertTriangle, Clock, CheckCircle2, Activity, Smile, Hourglass, ExternalLink } from "lucide-react";
+import { Star, TrendingUp, AlertTriangle, Clock, CheckCircle2, Activity, Smile, Hourglass, ExternalLink, Gauge, LineChart, PieChart } from "lucide-react";
 import { FilterPills } from "../components/FilterPills";
 import { StatCard } from "../components/StatCard";
 import { DashboardGrid, DashboardPanels, DashboardBreakdown } from "../components/Dashboard";
@@ -88,6 +88,89 @@ const DRILL_LABELS: Record<string, string> = {
 type DrillState =
   | { metric: string; title?: string; extra?: Record<string, string> };
 
+// Period filter — calendar-style buckets. Values stay as `since_days`
+// (the API contract) so the labels are just the human framing of each
+// rolling window: 1 month / 1 quarter / half a year / a year.
+const PERIOD_OPTIONS: { value: "30" | "90" | "180" | "365"; label: string }[] = [
+  { value: "30", label: "Monthly" },
+  { value: "90", label: "Quarterly" },
+  { value: "180", label: "Half-year" },
+  { value: "365", label: "Yearly" },
+];
+const PERIOD_LABEL: Record<string, string> = {
+  "30": "Monthly",
+  "90": "Quarterly",
+  "180": "Half-year",
+  "365": "Yearly",
+};
+
+// Full-width section divider — bold uppercase title + trailing rule.
+// Groups the dashboard into scannable bands (Live / Period / Trends …)
+// instead of one long flat scroll.
+function SectionHeader({
+  icon,
+  title,
+  hint,
+}: {
+  icon: ReactNode;
+  title: string;
+  hint?: string;
+}) {
+  return (
+    <div className="mb-3 mt-9 flex items-center gap-2.5 first:mt-0">
+      <span className="text-accent">{icon}</span>
+      <h2 className="text-[12.5px] font-bold uppercase tracking-wide text-ink">
+        {title}
+      </h2>
+      {hint && (
+        <span className="text-[11px] font-medium text-ink-muted">· {hint}</span>
+      )}
+      <div className="ml-2 h-px flex-1 bg-gradient-to-r from-border to-transparent" />
+    </div>
+  );
+}
+
+// Bordered surface card with a bold icon-led header — the shared chrome
+// for every chart / table panel on this page so they read as one family.
+// `flush` = header gets a bottom border and the body owns its own padding
+// (for tables/lists). `flat` = drop the bottom margin (when laid out in a
+// DashboardPanels grid that supplies its own gap).
+function MetricCard({
+  icon,
+  title,
+  children,
+  flush,
+  flat,
+}: {
+  icon: ReactNode;
+  title: string;
+  children: ReactNode;
+  flush?: boolean;
+  flat?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-lg border border-border bg-surface shadow-stone",
+        !flat && "mb-3"
+      )}
+    >
+      <div
+        className={cn(
+          "flex items-center gap-2 px-5",
+          flush ? "border-b border-border py-3" : "pt-4"
+        )}
+      >
+        <span className="text-accent">{icon}</span>
+        <div className="text-[10.5px] font-bold uppercase tracking-wide text-ink-secondary">
+          {title}
+        </div>
+      </div>
+      <div className={flush ? "" : "px-5 pb-5 pt-3"}>{children}</div>
+    </div>
+  );
+}
+
 export function ServiceMetrics() {
   const [since, setSince] = useState<"30" | "90" | "180" | "365">("90");
   const [drill, setDrill] = useState<DrillState | null>(null);
@@ -117,22 +200,17 @@ export function ServiceMetrics() {
 
   return (
     <div>
-      <div className="mb-4">
-        <FilterPills
-          value={since}
-          onChange={setSince}
-          options={[
-            { value: "30", label: "Last 30d" },
-            { value: "90", label: "Last 90d" },
-            { value: "180", label: "Last 180d" },
-            { value: "365", label: "Last 12m" },
-          ]}
-        />
+      <div className="mb-5">
+        <FilterPills value={since} onChange={setSince} options={PERIOD_OPTIONS} />
       </div>
 
-      {/* v3.1 Pulse — real-time per-stage health. Lives above the
-          windowed metrics so dispatchers see "what's wrong NOW"
-          before the period-aggregates. */}
+      {/* ── Live Status — real-time pulse. "What's wrong NOW" sits above
+          the windowed period aggregates so dispatchers triage first. ── */}
+      <SectionHeader
+        icon={<Activity size={15} />}
+        title="Live Status"
+        hint="Now · all open cases"
+      />
       <DashboardGrid cols={4}>
         <StatCard
           label="Pending Review"
@@ -156,44 +234,27 @@ export function ServiceMetrics() {
           onClick={() => setDrill({ metric: "breach_now" })}
         />
         <StatCard
-          label="Avg E2E Lead Time"
-          value={s?.avg_e2e_days != null ? `${s.avg_e2e_days.toFixed(1)}d` : "—"}
-          subtitle={`Created → closed, last ${since}d`}
+          label="Open"
+          value={h ? h.open_count.toLocaleString() : "—"}
+          subtitle="Still in progress"
+          onClick={() => setDrill({ metric: "open_now" })}
         />
       </DashboardGrid>
 
-      {/* Stage Funnel — proposal §11.2 */}
-      <div className="mb-6 rounded-lg border border-border bg-surface p-5">
-        <div className="mb-3 flex items-center gap-2">
-          <Activity size={14} className="text-accent" />
-          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-            Stage Funnel
-          </div>
-        </div>
+      <MetricCard icon={<Activity size={13} />} title="Stage Funnel">
         {s && s.stage_funnel.length > 0 ? (
           <StageFunnel data={s.stage_funnel} />
         ) : (
           <div className="py-4 text-[12px] text-ink-muted">No open cases right now.</div>
         )}
-      </div>
+      </MetricCard>
 
-      {/* CSAT trend — proposal §11.2 */}
-      <div className="mb-6 rounded-lg border border-border bg-surface p-5">
-        <div className="mb-3 flex items-center gap-2">
-          <Smile size={14} className="text-accent" />
-          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-            CSAT — 13-week rolling
-          </div>
-        </div>
-        {s && s.csat_trend.length > 0 ? (
-          <CsatTrend data={s.csat_trend} />
-        ) : (
-          <div className="py-4 text-[12px] text-ink-muted">
-            No survey responses in the last 13 weeks.
-          </div>
-        )}
-      </div>
-
+      {/* ── This Period — windowed aggregates over the selected range. ── */}
+      <SectionHeader
+        icon={<Gauge size={15} />}
+        title="This Period"
+        hint={`${PERIOD_LABEL[since]} · ${since}d window`}
+      />
       <DashboardGrid cols={4}>
         <StatCard
           label="Total Cases"
@@ -241,22 +302,20 @@ export function ServiceMetrics() {
           subtitle="Created → closed"
         />
         <StatCard
-          label="Open"
-          value={h ? h.open_count.toLocaleString() : "—"}
-          subtitle="Still in progress"
-          onClick={() => setDrill({ metric: "open_now" })}
+          label="Avg E2E Lead Time"
+          value={s?.avg_e2e_days != null ? `${s.avg_e2e_days.toFixed(1)}d` : "—"}
+          subtitle="Created → closed (all stages)"
         />
       </DashboardGrid>
 
-      {/* Case Duration — mirrors the legacy Excel "Case Duration" tile.
-          Bucketed by age of OPEN cases since complained_date. */}
-      <div className="mb-6 rounded-lg border border-border bg-surface p-5">
-        <div className="mb-3 flex items-center gap-2">
-          <Hourglass size={14} className="text-accent" />
-          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-            Case Duration
-          </div>
-        </div>
+      {/* ── Case Duration — mirrors the legacy Excel "Case Duration" tile.
+          Bucketed by age of OPEN cases since complained_date. ── */}
+      <SectionHeader
+        icon={<Hourglass size={15} />}
+        title="Case Duration"
+        hint="Age of open cases"
+      />
+      <div className="mb-3">
         <DashboardGrid cols={5}>
           <StatCard
             label="Opening Cases"
@@ -305,7 +364,30 @@ export function ServiceMetrics() {
         </DashboardGrid>
       </div>
 
+      {/* ── Trends ── */}
+      <SectionHeader icon={<LineChart size={15} />} title="Trends" />
       <DashboardPanels cols={2}>
+        <MetricCard icon={<Smile size={13} />} title="CSAT — 13-week rolling" flat>
+          {s && s.csat_trend.length > 0 ? (
+            <CsatTrend data={s.csat_trend} />
+          ) : (
+            <div className="py-4 text-[12px] text-ink-muted">
+              No survey responses in the last 13 weeks.
+            </div>
+          )}
+        </MetricCard>
+        <MetricCard icon={<TrendingUp size={13} />} title="Monthly Trend" flat>
+          {m && m.monthly_trend.length > 0 ? (
+            <Trend data={m.monthly_trend} />
+          ) : (
+            <div className="py-4 text-[12px] text-ink-muted">Not enough data</div>
+          )}
+        </MetricCard>
+      </DashboardPanels>
+
+      {/* ── Breakdowns ── */}
+      <SectionHeader icon={<PieChart size={15} />} title="Breakdowns" />
+      <DashboardPanels cols={3}>
         <DashboardBreakdown
           title="Service Issue Categories"
           items={
@@ -319,35 +401,23 @@ export function ServiceMetrics() {
           title="Resolution Method Mix"
           items={m?.resolutions.map((r) => ({ label: resolutionLabel(r.method === "unset" ? null : r.method), count: r.count })) ?? []}
         />
-      </DashboardPanels>
-
-      <DashboardPanels cols={1}>
         <DashboardBreakdown
           title="NCR Categories (root-cause)"
           items={m?.ncr.map((r) => ({ label: ncrLabel(r.category), count: r.count })) ?? []}
         />
       </DashboardPanels>
 
-      {/* Monthly trend */}
-      <div className="mb-6 rounded-lg border border-border bg-surface p-5">
-        <div className="mb-3 flex items-center gap-2">
-          <TrendingUp size={14} className="text-accent" />
-          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-            Monthly Trend
-          </div>
-        </div>
-        {m && m.monthly_trend.length > 0 ? (
-          <Trend data={m.monthly_trend} />
-        ) : (
-          <div className="py-4 text-[12px] text-ink-muted">Not enough data</div>
-        )}
-      </div>
+      {/* ── Suppliers & Repeat Issues ── */}
+      <SectionHeader
+        icon={<AlertTriangle size={15} />}
+        title="Suppliers & Repeat Issues"
+      />
 
       {/* Creditor performance */}
-      <div className="mb-6 rounded-lg border border-border bg-surface">
+      <div className="mb-3 overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
         <div className="flex items-center gap-2 border-b border-border px-5 py-3">
-          <CheckCircle2 size={14} className="text-accent" />
-          <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+          <CheckCircle2 size={13} className="text-accent" />
+          <div className="text-[10.5px] font-bold uppercase tracking-wide text-ink-secondary">
             Creditor Performance
           </div>
         </div>
@@ -403,10 +473,10 @@ export function ServiceMetrics() {
 
       <DashboardPanels cols={2}>
         {/* Repeat items */}
-        <div className="rounded-lg border border-border bg-surface">
+        <div className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
           <div className="flex items-center gap-2 border-b border-border px-5 py-3">
-            <AlertTriangle size={14} className="text-err" />
-            <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+            <AlertTriangle size={13} className="text-err" />
+            <div className="text-[10.5px] font-bold uppercase tracking-wide text-ink-secondary">
               Repeat-Issue Items (≥ 2 cases)
             </div>
           </div>
@@ -440,10 +510,10 @@ export function ServiceMetrics() {
         </div>
 
         {/* Repeat customers */}
-        <div className="rounded-lg border border-border bg-surface">
+        <div className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
           <div className="flex items-center gap-2 border-b border-border px-5 py-3">
-            <Clock size={14} className="text-err" />
-            <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+            <Clock size={13} className="text-err" />
+            <div className="text-[10.5px] font-bold uppercase tracking-wide text-ink-secondary">
               Repeat Customers (≥ 2 cases)
             </div>
           </div>
@@ -683,64 +753,127 @@ function Trend({ data }: { data: AssrMetrics["monthly_trend"] }) {
   );
 }
 
-// ── Stage funnel (horizontal bars, breach overlay) ──────────────
+// ── Stage funnel — where open cases sit in the pipeline ─────────
+//
+// Each workflow stage is one row. The bar length is the stage's share
+// of the busiest stage (so the fullest stage anchors the scale); within
+// it the on-track vs SLA-breached split is STACKED (not overlaid) so the
+// red segment reads as "of these, N are late". The busiest stage gets a
+// subtle brass tint as the at-a-glance bottleneck marker.
 
 function StageFunnel({ data }: { data: AssrSummaryV31["stage_funnel"] }) {
   const byStage = new Map(data.map((d) => [d.stage, d]));
-  const max = Math.max(...data.map((d) => d.total), 1);
+  const rows = STAGE_FUNNEL_ORDER.map((stage, idx) => {
+    const row = byStage.get(stage);
+    return {
+      stage,
+      idx,
+      label: STAGE_FUNNEL_LABEL[stage],
+      total: row?.total ?? 0,
+      breached: row?.breached ?? 0,
+    };
+  });
+  const max = Math.max(...rows.map((r) => r.total), 1);
+  const totalOpen = rows.reduce((acc, r) => acc + r.total, 0);
+  const totalBreached = rows.reduce((acc, r) => acc + r.breached, 0);
+
   return (
-    <div className="space-y-2">
-      {STAGE_FUNNEL_ORDER.map((stage, idx) => {
-        const row = byStage.get(stage);
-        const total = row?.total ?? 0;
-        const breached = row?.breached ?? 0;
-        const pct = (total / max) * 100;
-        const breachPct = total > 0 ? (breached / total) * 100 : 0;
-        const fillTone =
-          breachPct >= 50 ? "bg-err/80" : breachPct > 0 ? "bg-amber-500/80" : "bg-accent/70";
-        return (
-          <div
-            key={stage}
-            className="grid grid-cols-[160px_1fr_60px] items-center gap-3 text-[11px]"
-          >
-            <div className="truncate font-semibold text-ink">
-              <span className="mr-1.5 inline-block w-4 text-right font-mono text-ink-muted">
-                {idx + 1}
-              </span>
-              {STAGE_FUNNEL_LABEL[stage]}
-            </div>
-            <div className="relative h-5 overflow-hidden rounded bg-border/40">
-              <div
-                className={cn("absolute inset-y-0 left-0 transition-all", fillTone)}
-                style={{ width: `${pct}%` }}
-              />
-              {breached > 0 && (
-                <div
-                  className="absolute inset-y-0 left-0 bg-err/80"
-                  style={{ width: `${(breached / max) * 100}%` }}
-                  title={`${breached} breached`}
-                />
+    <div>
+      {/* Summary strip — the takeaway before scanning rows. */}
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <span className="text-[11px] text-ink-muted">
+          <b className="text-[17px] font-bold text-ink">{totalOpen}</b> open in pipeline
+        </span>
+        {totalBreached > 0 && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-err/10 px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-wider text-err">
+            {totalBreached} breached
+          </span>
+        )}
+      </div>
+
+      <div className="space-y-1">
+        {rows.map((r) => {
+          const widthPct = (r.total / max) * 100;
+          const breachShare = r.total > 0 ? (r.breached / r.total) * 100 : 0;
+          const sharePct = totalOpen > 0 ? Math.round((r.total / totalOpen) * 100) : 0;
+          const isPeak = r.total > 0 && r.total === max;
+          return (
+            <div
+              key={r.stage}
+              className={cn(
+                "grid grid-cols-[150px_1fr_44px_38px] items-center gap-3 rounded-md py-1 pl-1.5 pr-1 text-[11px] transition-colors",
+                isPeak ? "bg-[#3f6b53]/[0.08]" : "hover:bg-bg/50"
               )}
+              title={
+                r.total > 0
+                  ? `${r.label}: ${r.total} open (${sharePct}%)${r.breached > 0 ? `, ${r.breached} breached` : ""}`
+                  : `${r.label}: no open cases`
+              }
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-surface-dim font-mono text-[9px] font-bold text-ink-muted">
+                  {r.idx + 1}
+                </span>
+                <span className="truncate font-semibold text-ink">{r.label}</span>
+              </div>
+
+              <div className="relative h-[22px] w-full overflow-hidden rounded bg-border/25">
+                {r.total > 0 && (
+                  <div className="flex h-full" style={{ width: `${widthPct}%` }}>
+                    <div
+                      className="h-full bg-[#3f6b53]/75 transition-all duration-500"
+                      style={{ width: `${100 - breachShare}%` }}
+                    />
+                    <div
+                      className="h-full bg-err/75 transition-all duration-500"
+                      style={{ width: `${breachShare}%` }}
+                    />
+                  </div>
+                )}
+                {isPeak && (
+                  <span className="absolute right-1 top-1/2 -translate-y-1/2 rounded-full bg-surface/90 px-1.5 py-[1px] text-[8px] font-bold uppercase tracking-wider text-[#3f6b53] ring-1 ring-[#3f6b53]/40">
+                    Bottleneck
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-baseline justify-end gap-1 font-mono">
+                <span
+                  className={cn(
+                    "text-[13px] font-bold",
+                    r.total > 0 ? "text-ink" : "text-ink-muted/40"
+                  )}
+                >
+                  {r.total}
+                </span>
+                {r.breached > 0 && (
+                  <span className="text-[10px] font-semibold text-err">·{r.breached}</span>
+                )}
+              </div>
+
+              <div className="text-right font-mono text-[10px] text-ink-muted">
+                {r.total > 0 ? `${sharePct}%` : "—"}
+              </div>
             </div>
-            <div className="text-right font-mono">
-              <span className="font-semibold text-ink">{total}</span>
-              {breached > 0 && (
-                <span className="ml-1 text-[10px] text-err">({breached})</span>
-              )}
-            </div>
-          </div>
-        );
-      })}
-      <div className="mt-2 flex items-center gap-3 text-[10px] text-ink-muted">
-        <span className="inline-flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded bg-accent/70" /> Healthy
+          );
+        })}
+      </div>
+
+      {/* Legend */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] text-ink-muted">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-2 w-2 rounded-sm bg-[#3f6b53]/75" /> On track
         </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded bg-amber-500/80" /> Some breached
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-2 w-2 rounded-sm bg-err/75" /> SLA breached
         </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="inline-block h-2 w-2 rounded bg-err/80" /> Mostly breached
+        <span className="inline-flex items-center gap-1.5">
+          <span className="rounded-full bg-surface px-1 text-[8px] font-bold uppercase tracking-wider text-[#3f6b53] ring-1 ring-[#3f6b53]/40">
+            Bottleneck
+          </span>
+          busiest stage
         </span>
+        <span className="ml-auto">% = share of all open</span>
       </div>
     </div>
   );

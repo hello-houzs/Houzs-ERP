@@ -42,7 +42,6 @@ import {
   HeaderButton,
 } from "../components/DetailLayout";
 import { Button } from "../components/Button";
-import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
 import {
   StatusDot,
@@ -58,7 +57,6 @@ import { Panel, PanelSection, FieldRow } from "../components/Panel";
 import { InlineEdit } from "../components/InlineEdit";
 import { ExpandableText } from "../components/ExpandableText";
 import { StatCard } from "../components/StatCard";
-import { DashboardGrid } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
@@ -218,13 +216,11 @@ function isoLocal(d: Date): string {
 // The metrics used to live at /service-metrics as its own sidebar
 // entry; it's just a report about cases so it belongs here alongside
 // them rather than as a top-level module.
-type ServiceView = "cases" | "by_creditor" | "metrics" | "pnl" | "lead_time" | "settings";
+type ServiceView = "cases" | "metrics" | "lead_time" | "settings";
 
 const SERVICE_VIEWS: ServiceView[] = [
   "cases",
-  "by_creditor",
   "metrics",
-  "pnl",
   "lead_time",
   "settings",
 ];
@@ -239,18 +235,9 @@ const VIEW_HEADER: Record<
     title: "Service Cases",
     description: "After-sales service request workflow.",
   },
-  by_creditor: {
-    title: "By Creditor",
-    description:
-      "Grouped by the AutoCount creditor who supplies the item. Click a row to see their cases.",
-  },
   metrics: {
     title: "Quality Metrics",
     description: "Performance breakdown — SLA, supplier ratings, resolution times.",
-  },
-  pnl: {
-    title: "Finances",
-    description: "Supplier PO payments from closed cases, grouped by month.",
   },
   lead_time: {
     title: "Lead Time Portal",
@@ -316,17 +303,7 @@ export function ServiceCases() {
       {view === "cases" && (
         <CasesView showCreate={showCreate} setShowCreate={setShowCreate} />
       )}
-      {view === "by_creditor" && (
-        <ByCreditorView onPickCreditor={() => navigate("/assr?view=cases")} />
-      )}
       {view === "metrics" && <ServiceMetrics />}
-      {view === "pnl" && (
-        <PnlCalendar
-          scope="service"
-          title="Service Cost — Monthly"
-          subtitle="Supplier PO payments from closed cases, grouped by month."
-        />
-      )}
       {view === "lead_time" && <ServiceLeadTimePortal />}
       {view === "settings" && <ServiceSettingsView />}
     </div>
@@ -5538,238 +5515,5 @@ function StaffLightbox({
       )}
     </div>,
     document.body
-  );
-}
-
-// ── "By Creditor" tab ─────────────────────────────────────────
-// Rollup view over /api/assr/by-creditor. One row per creditor with
-// total / open / closed / breached counts. Row click filters the main
-// Cases tab by `creditor_code` (via URL param). Secondary link opens
-// the creditor's panel in /po.
-
-interface CreditorRow {
-  creditor_code: string;
-  creditor_name: string | null;
-  email: string | null;
-  phone: string | null;
-  total: number;
-  open: number;
-  closed: number;
-  breached: number;
-  last_activity_at: string | null;
-}
-
-interface ByCreditorResponse {
-  rows: CreditorRow[];
-  unassigned: { total: number; open: number };
-}
-
-function ByCreditorView({ onPickCreditor }: { onPickCreditor: () => void }) {
-  const toast = useToast();
-  const [search, setSearch] = useState("");
-  const [, setParams] = useSearchParams();
-  const [refreshing, setRefreshing] = useState(false);
-
-  const q = useQuery<ByCreditorResponse>(
-    () => api.get(`/api/assr/by-creditor${search ? `?search=${encodeURIComponent(search)}` : ""}`),
-    [search]
-  );
-
-  async function refreshAll() {
-    setRefreshing(true);
-    try {
-      const res = await api.post<{
-        fetched: number;
-        upserted: number;
-        cases_updated: number;
-        message: string;
-      }>("/api/stockitems/refresh");
-      toast.success(res.message || "Refreshed");
-      q.reload();
-    } catch (e: any) {
-      toast.error(`Refresh failed: ${e?.message || e}`);
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
-  const columns: Column<CreditorRow>[] = [
-    {
-      key: "creditor_code",
-      label: "Code",
-      alwaysVisible: true,
-      render: (r) => <span className="font-mono text-xs font-medium">{r.creditor_code}</span>,
-      getValue: (r) => r.creditor_code,
-    },
-    {
-      key: "creditor_name",
-      label: "Name",
-      alwaysVisible: true,
-      render: (r) => r.creditor_name || <span className="text-ink-muted">—</span>,
-      getValue: (r) => r.creditor_name,
-    },
-    {
-      key: "contact",
-      label: "Contact",
-      // Single-line — email + phone separated by a middle dot so the
-      // row stays one line per the 2026-05-08 density rule. Full
-      // value lands in the title attr for hover.
-      render: (r) => {
-        if (!r.email && !r.phone) {
-          return <span className="text-ink-muted">—</span>;
-        }
-        const both = [r.email, r.phone].filter(Boolean).join(" · ");
-        return (
-          <span className="text-xs" title={both}>
-            {r.email && <span>{r.email}</span>}
-            {r.email && r.phone && <span className="text-ink-muted"> · </span>}
-            {r.phone && <span className="text-ink-muted">{r.phone}</span>}
-          </span>
-        );
-      },
-      getValue: (r) => `${r.email || ""} ${r.phone || ""}`.trim(),
-    },
-    {
-      key: "total",
-      label: "Total",
-      align: "right",
-      render: (r) => <span className="font-mono text-xs font-semibold">{r.total}</span>,
-      getValue: (r) => r.total,
-    },
-    {
-      key: "open",
-      label: "Open",
-      align: "right",
-      render: (r) => (
-        <span className={cn("font-mono text-xs", r.open > 0 && "font-semibold text-amber-700")}>
-          {r.open}
-        </span>
-      ),
-      getValue: (r) => r.open,
-    },
-    {
-      key: "closed",
-      label: "Closed",
-      align: "right",
-      render: (r) => <span className="font-mono text-xs text-ink-muted">{r.closed}</span>,
-      getValue: (r) => r.closed,
-    },
-    {
-      key: "breached",
-      label: "Breached",
-      align: "right",
-      render: (r) => (
-        <span className={cn("font-mono text-xs", r.breached > 0 && "font-bold text-err")}>
-          {r.breached}
-        </span>
-      ),
-      getValue: (r) => r.breached,
-    },
-    {
-      key: "last_activity_at",
-      label: "Last Activity",
-      render: (r) => formatDate(r.last_activity_at),
-      getValue: (r) => r.last_activity_at,
-    },
-    {
-      key: "actions",
-      label: "",
-      align: "right",
-      render: (r) => (
-        <Link
-          to={`/po?view=creditors&focus=${encodeURIComponent(r.creditor_code)}`}
-          onClick={(e) => e.stopPropagation()}
-          className="text-[11px] font-semibold text-accent hover:underline"
-          title="Open creditor in Purchase Orders"
-        >
-          Open Creditor →
-        </Link>
-      ),
-    },
-  ];
-
-  function pickCreditor(code: string) {
-    // Switch to the Cases tab with a creditor_code filter in the URL.
-    // CasesView reads the `creditor_code` param and applies it.
-    setParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.set("creditor_code", code);
-        return next;
-      },
-      { replace: true }
-    );
-    onPickCreditor();
-  }
-
-  const totalCases = (q.data?.rows ?? []).reduce((s, r) => s + r.total, 0);
-  const openCases = (q.data?.rows ?? []).reduce((s, r) => s + r.open, 0);
-  const breachedCases = (q.data?.rows ?? []).reduce((s, r) => s + r.breached, 0);
-  const unassigned = q.data?.unassigned;
-
-  return (
-    <div>
-      <DashboardGrid cols={4}>
-        <StatCard
-          label="Creditors with Cases"
-          value={q.data ? q.data.rows.length.toLocaleString() : "—"}
-          subtitle="Distinct procurement suppliers"
-        />
-        <StatCard
-          label="Total Cases"
-          value={q.data ? totalCases.toLocaleString() : "—"}
-          subtitle="Across all creditors"
-        />
-        <StatCard
-          label="Open"
-          value={q.data ? openCases.toLocaleString() : "—"}
-          subtitle={q.data ? `${breachedCases} breached` : "Loading…"}
-          tone={breachedCases > 0 ? "error" : "default"}
-        />
-        <StatCard
-          label="Unassigned"
-          value={unassigned ? unassigned.total.toLocaleString() : "—"}
-          subtitle={
-            unassigned
-              ? `${unassigned.open} open · no creditor resolved`
-              : "Loading…"
-          }
-          tone={unassigned && unassigned.total > 0 ? "default" : "default"}
-        />
-      </DashboardGrid>
-
-      <div className="mb-3 flex items-center justify-end">
-        <button
-          onClick={refreshAll}
-          disabled={refreshing}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent disabled:opacity-40"
-          title="Re-pull MainSupplier for every referenced item and re-write creditor_code on cases"
-        >
-          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
-          {refreshing ? "Refreshing…" : "Refresh from AutoCount"}
-        </button>
-      </div>
-
-      <DataTable
-        tableId="assr-by-creditor"
-        exportName="service-cases-by-creditor"
-        search={{
-          value: search,
-          onChange: setSearch,
-          placeholder: "Search creditor code or name…",
-        }}
-        resetFilters={{
-          active: !!search,
-          onReset: () => setSearch(""),
-        }}
-        columns={columns}
-        rows={q.data?.rows ?? null}
-        loading={q.loading}
-        error={q.error}
-        emptyLabel="No cases linked to a creditor yet — run POST /api/stockitems/refresh."
-        getRowKey={(r) => r.creditor_code}
-        onRowClick={(r) => pickCreditor(r.creditor_code)}
-      />
-    </div>
   );
 }

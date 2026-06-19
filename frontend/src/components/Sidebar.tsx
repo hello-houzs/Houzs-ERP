@@ -1,7 +1,6 @@
 import { NavLink, useLocation } from "react-router-dom";
 import {
   ClipboardList,
-  Package,
   Zap,
   Settings as SettingsIcon,
   PanelLeftClose,
@@ -118,25 +117,11 @@ export const NAV_TABS: NavTab[] = [
         pageAccess: "service_cases.cases",
       },
       {
-        to: "/assr?view=by_creditor",
-        label: "By Creditor",
-        icon: Package,
-        perm: "service_cases.read",
-        pageAccess: "service_cases.by_creditor",
-      },
-      {
         to: "/assr?view=metrics",
         label: "Quality Metrics",
         icon: ShieldCheck,
         perm: "service_cases.read",
         pageAccess: "service_cases.metrics",
-      },
-      {
-        to: "/assr?view=pnl",
-        label: "Finances",
-        icon: DollarSign,
-        perm: "service_cases.read",
-        pageAccess: "service_cases.pnl",
       },
       {
         // Lead Time Portal merged into Service Maintenance as a tab.
