@@ -131,6 +131,50 @@ interface Props<T> {
     /** Hide the `<dt>` labels even in "stack" layout. Default false. */
     hideLabels?: boolean;
   };
+  /**
+   * Opt-in drill-down (2990 DataGrid parity). When set, a 32px chevron
+   * column is prepended; clicking the chevron (or the chevron cell)
+   * toggles an inline expanded sub-`<tr>` below the row that spans the
+   * full width and renders `expandable.render(row)`. Expanded ids live in
+   * a transient Set (not persisted — drill-downs reset on reload). Absent
+   * (default) = no chevron column, layout byte-identical to before.
+   */
+  expandable?: {
+    /** Render the expanded sub-row body. */
+    render: (row: T) => ReactNode;
+    /** Stable id for expansion state. Defaults to `getRowKey`. */
+    rowKey?: (row: T) => string;
+  };
+  /**
+   * Opt-in row right-click menu (2990 DataGrid parity). Receives the row
+   * and returns the items to show. Returning an empty array suppresses
+   * the menu for that row (the native menu is still suppressed once the
+   * prop is present). A `divider: true` item renders a rule; `danger`
+   * tints the item with the error token. Absent (default) = the browser's
+   * native context menu, unchanged.
+   */
+  contextMenu?: (
+    row: T
+  ) => Array<{
+    label: string;
+    onClick: () => void;
+    danger?: boolean;
+    divider?: boolean;
+  }>;
+  /**
+   * Opt-in single-level group-by (2990 DataGrid parity). Rows are bucketed
+   * by `groupBy.key` (a column key; the column must expose `getValue` so we
+   * have a stable group value). Each bucket gets a collapsible header row
+   * with a count; collapse state is persisted per table. Grouping applies
+   * to the desktop table only — the mobile card branch is untouched.
+   * Absent (default) = flat rows, render path byte-identical to before.
+   */
+  groupBy?: {
+    /** Column key to group on. Must match a column with `getValue`. */
+    key: string;
+    /** Pretty-print a raw group value for the header. */
+    label?: (val: string) => string;
+  };
 }
 
 type SortDir = "asc" | "desc";
@@ -166,6 +210,9 @@ export function DataTable<T>({
   serverSort,
   onSortChange,
   mobileCard,
+  expandable,
+  contextMenu,
+  groupBy,
 }: Props<T>) {
   const idKey = tableId || "_";
   const [hiddenList, setHiddenList] = useLocalStorage<string[]>(`dt:hidden:${idKey}`, []);
@@ -204,6 +251,55 @@ export function DataTable<T>({
     y: number;
     colKey: string;
   } | null>(null);
+
+  // Expanded drill-down rows (opt-in `expandable`). Transient — a Set of
+  // expansion ids so the chevron toggle is O(1) and reloads start collapsed.
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const expansionId = useCallback(
+    (row: T) =>
+      expandable?.rowKey ? expandable.rowKey(row) : String(getRowKey(row)),
+    [expandable, getRowKey]
+  );
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Row right-click menu (opt-in `contextMenu`). Transient — anchor point
+  // plus the items resolved at open time. null = closed.
+  const [rowMenu, setRowMenu] = useState<{
+    x: number;
+    y: number;
+    items: Array<{
+      label: string;
+      onClick: () => void;
+      danger?: boolean;
+      divider?: boolean;
+    }>;
+  } | null>(null);
+
+  // Collapsed group keys (opt-in `groupBy`). Persisted per table so a
+  // user's collapse choices survive reloads, mirroring the other dt:* prefs.
+  const [collapsedGroups, setCollapsedGroups] = useLocalStorage<string[]>(
+    `dt:groups:${idKey}`,
+    []
+  );
+  const collapsedGroupSet = useMemo(
+    () => new Set(collapsedGroups),
+    [collapsedGroups]
+  );
+  const toggleGroup = useCallback(
+    (val: string) => {
+      setCollapsedGroups((prev) =>
+        prev.includes(val) ? prev.filter((k) => k !== val) : [...prev, val]
+      );
+    },
+    [setCollapsedGroups]
+  );
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -513,6 +609,24 @@ export function DataTable<T>({
     };
   }, [headerMenu]);
 
+  // Close the row context menu on outside click, Escape, or scroll — same
+  // detach-from-anchor reasoning as the header menu (it's fixed-positioned).
+  useEffect(() => {
+    if (!rowMenu) return;
+    const close = () => setRowMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [rowMenu]);
+
   const sortedRows = useMemo(() => {
     if (!rows) return rows;
     if (serverSort) return rows; // backend already ordered
@@ -530,6 +644,73 @@ export function DataTable<T>({
     });
     return copy;
   }, [rows, sort, allColumns, serverSort]);
+
+  // Total column span for full-width body cells (skeleton / error / empty /
+  // expansion). The chevron column (when `expandable`) adds one leading
+  // column that isn't in `displayColumns`. When no chevron, this equals
+  // `displayColumns.length`, so non-expandable callers are unchanged.
+  const expandColCount = expandable ? 1 : 0;
+  const totalColSpan = displayColumns.length + expandColCount;
+
+  // ── Group-by (opt-in) ──────────────────────────────────────
+  // Flatten the sorted rows into a list of render instructions — a group
+  // header followed by its rows (unless collapsed). Single level only (the
+  // prop is a single key). When `groupBy` is unset we keep a plain
+  // `{ kind: "row" }` stream so the tbody map below is identical to the old
+  // flat render. Grouping needs a `getValue` on the target column for a
+  // stable bucket key; if that's missing we silently fall back to flat.
+  type RenderItem =
+    | { kind: "group"; value: string; label: string; count: number; collapsed: boolean }
+    | { kind: "row"; row: T; rowIdx: number };
+  const groupCol = useMemo(
+    () =>
+      groupBy ? allColumns.find((c) => c.key === groupBy.key) ?? null : null,
+    [groupBy, allColumns]
+  );
+  const renderList = useMemo<RenderItem[]>(() => {
+    if (!sortedRows) return [];
+    if (!groupBy || !groupCol || !groupCol.getValue) {
+      return sortedRows.map((row, rowIdx) => ({ kind: "row", row, rowIdx }));
+    }
+    const getter = groupCol.getValue;
+    // Preserve first-seen group order (sortedRows already reflects any active
+    // sort), bucketing rows by their stringified group value.
+    const order: string[] = [];
+    const buckets = new Map<string, T[]>();
+    for (const row of sortedRows) {
+      const raw = getter(row);
+      const val = raw == null || raw === "" ? "" : String(raw);
+      if (!buckets.has(val)) {
+        buckets.set(val, []);
+        order.push(val);
+      }
+      buckets.get(val)!.push(row);
+    }
+    const out: RenderItem[] = [];
+    let rowIdx = 0;
+    for (const val of order) {
+      const bucket = buckets.get(val)!;
+      const collapsed = collapsedGroupSet.has(val);
+      out.push({
+        kind: "group",
+        value: val,
+        label: groupBy.label ? groupBy.label(val) : val || "(blank)",
+        count: bucket.length,
+        collapsed,
+      });
+      if (!collapsed) {
+        for (const row of bucket) {
+          out.push({ kind: "row", row, rowIdx });
+          rowIdx++;
+        }
+      } else {
+        // Keep the zebra index advancing past collapsed rows so re-expanding
+        // doesn't shift the stripe pattern of later rows.
+        rowIdx += bucket.length;
+      }
+    }
+    return out;
+  }, [sortedRows, groupBy, groupCol, collapsedGroupSet]);
 
   // Density-aware cell padding. Tightened on 2026-05-08 — every row
   // is one line of data, full stop. Old comfy (py-3.5) and old
@@ -685,6 +866,16 @@ export function DataTable<T>({
           <table className="w-full border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-10">
               <tr>
+                {expandable && (
+                  <th
+                    aria-hidden
+                    style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+                    className={cn(
+                      "border-b-2 border-border bg-surface-dim pl-5",
+                      headPad
+                    )}
+                  />
+                )}
                 {displayColumns.map((c, i) => {
                   const sortable = !!c.getValue && !c.disableSort;
                   const active = sort?.key === c.key;
@@ -728,7 +919,9 @@ export function DataTable<T>({
                         c.align === "right" && "text-right",
                         c.align === "center" && "text-center",
                         (c.align === "left" || !c.align) && "text-left",
-                        i === 0 && "pl-5",
+                        // First real column owns the left edge gutter only
+                        // when there's no leading chevron column ahead of it.
+                        i === 0 && !expandable && "pl-5",
                         i === displayColumns.length - 1 && "pr-5",
                         sortable && "cursor-pointer select-none hover:text-accent",
                         active && "text-accent",
@@ -788,11 +981,11 @@ export function DataTable<T>({
               </tr>
             </thead>
             <tbody>
-              {loading && <TableSkeleton rows={8} cols={displayColumns.length} />}
+              {loading && <TableSkeleton rows={8} cols={totalColSpan} />}
               {!loading && error && (
                 <tr>
                   <td
-                    colSpan={displayColumns.length}
+                    colSpan={totalColSpan}
                     className="px-3 py-14 text-center text-sm text-err"
                   >
                     <div className="font-semibold">Failed to load</div>
@@ -803,7 +996,7 @@ export function DataTable<T>({
               {!loading && !error && sortedRows && sortedRows.length === 0 && (
                 <tr>
                   <td
-                    colSpan={displayColumns.length}
+                    colSpan={totalColSpan}
                     className="px-3 py-20 text-center text-sm text-ink-muted"
                   >
                     {emptyLabel}
@@ -813,7 +1006,43 @@ export function DataTable<T>({
               {!loading &&
                 !error &&
                 sortedRows &&
-                sortedRows.map((row, rowIdx) => {
+                renderList.map((item) => {
+                  // ── Group header row (opt-in `groupBy`) ──
+                  if (item.kind === "group") {
+                    return (
+                      <tr
+                        key={`grp:${item.value}`}
+                        onClick={() => toggleGroup(item.value)}
+                        className="cursor-pointer select-none bg-surface-dim/70 transition-colors hover:bg-surface-dim"
+                      >
+                        <td
+                          colSpan={totalColSpan}
+                          className={cn(
+                            "border-b border-border-subtle pr-5 text-[11px] font-semibold uppercase tracking-brand text-ink",
+                            cellPad
+                          )}
+                        >
+                          <span className="inline-flex items-center gap-1.5 pl-5">
+                            <ChevronRight
+                              size={12}
+                              className={cn(
+                                "shrink-0 text-ink-muted transition-transform",
+                                !item.collapsed && "rotate-90"
+                              )}
+                              aria-hidden
+                            />
+                            <span>{item.label}</span>
+                            <span className="font-mono text-[10px] font-normal text-ink-muted">
+                              ({item.count})
+                            </span>
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  // ── Data row ──
+                  const { row, rowIdx } = item;
                   const customClass = getRowClassName?.(row);
                   // Opaque zebra background for sticky cells. A sticky cell
                   // must occlude the body content scrolling beneath it, so
@@ -823,69 +1052,129 @@ export function DataTable<T>({
                   // white surface, pre-blended so there's no visible seam.
                   const stickyBg =
                     rowIdx % 2 === 0 ? "#ffffff" : "#f8f8f5";
+                  const expId = expandable ? expansionId(row) : null;
+                  const isExpanded = expId != null && expandedRows.has(expId);
                   return (
-                    <tr
-                      key={getRowKey(row)}
-                      onClick={onRowClick ? () => onRowClick(row) : undefined}
-                      className={cn(
-                        "group transition-colors",
-                        rowIdx % 2 === 0 ? "bg-surface" : "bg-surface-dim/35",
-                        onRowClick && "cursor-pointer",
-                        customClass
-                      )}
-                    >
-                      {displayColumns.map((c, i) => {
-                        const isSticky = i < stickyCount;
-                        const isLastSticky = isSticky && i === stickyCount - 1;
-                        const userW = widths[c.key];
-                        const cellStyle: React.CSSProperties = {};
-                        if (typeof userW === "number") {
-                          cellStyle.width = userW;
-                          cellStyle.minWidth = userW;
-                          cellStyle.maxWidth = userW;
-                        } else if (c.width) {
-                          cellStyle.width = c.width;
+                    <Fragment key={getRowKey(row)}>
+                      <tr
+                        onClick={onRowClick ? () => onRowClick(row) : undefined}
+                        onContextMenu={
+                          contextMenu
+                            ? (e) => {
+                                const items = contextMenu(row);
+                                if (!items || items.length === 0) return;
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setRowMenu({ x: e.clientX, y: e.clientY, items });
+                              }
+                            : undefined
                         }
-                        if (isSticky) {
-                          cellStyle.position = "sticky";
-                          cellStyle.left = stickyLeft[i];
-                          cellStyle.zIndex = 20;
-                          cellStyle.background = stickyBg;
-                        }
-                        return (
+                        className={cn(
+                          "group transition-colors",
+                          rowIdx % 2 === 0 ? "bg-surface" : "bg-surface-dim/35",
+                          onRowClick && "cursor-pointer",
+                          customClass
+                        )}
+                      >
+                        {/* Chevron drill-down cell (opt-in `expandable`).
+                            Stops click propagation so toggling the row's
+                            expansion never also fires onRowClick. */}
+                        {expandable && (
                           <td
-                            key={c.key}
-                            style={cellStyle}
+                            style={{ width: 32, minWidth: 32, maxWidth: 32 }}
                             className={cn(
-                              "border-b border-border-subtle text-[13px] text-ink transition-colors",
-                              cellPad,
-                              // Single-line rule (2026-05-08). Cells stop
-                              // wrapping their text content; long values
-                              // overflow into the next cell visually but
-                              // never push the row to two lines. Render
-                              // functions that genuinely need multi-line
-                              // (rare) can opt back in via `c.className`
-                              // ("whitespace-normal").
-                              "whitespace-nowrap",
-                              // Pine-green tint on hover (matches the
-                              // calendar's "on track" green). Reads clearly
-                              // on both zebra shades. (Was a pale brass
-                              // `accent-soft` wash that looked yellow.)
-                              "group-hover:bg-[#3f6b53]/25",
-                              c.align === "right" && "text-right",
-                              c.align === "center" && "text-center",
-                              i === 0 && "pl-5",
-                              i === displayColumns.length - 1 && "pr-5",
-                              // Freeze line on the last sticky column.
-                              isLastSticky && "border-r border-border",
-                              c.className
+                              "border-b border-border-subtle pl-5 align-middle text-ink transition-colors group-hover:bg-[#3f6b53]/25",
+                              cellPad
                             )}
                           >
-                            {c.render(row)}
+                            <button
+                              type="button"
+                              aria-label={isExpanded ? "Collapse row" : "Expand row"}
+                              aria-expanded={isExpanded}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (expId != null) toggleExpand(expId);
+                              }}
+                              className="inline-flex items-center justify-center rounded text-ink-muted transition-colors hover:text-accent"
+                            >
+                              <ChevronRight
+                                size={14}
+                                className={cn(
+                                  "transition-transform",
+                                  isExpanded && "rotate-90"
+                                )}
+                                aria-hidden
+                              />
+                            </button>
                           </td>
-                        );
-                      })}
-                    </tr>
+                        )}
+                        {displayColumns.map((c, i) => {
+                          const isSticky = i < stickyCount;
+                          const isLastSticky = isSticky && i === stickyCount - 1;
+                          const userW = widths[c.key];
+                          const cellStyle: React.CSSProperties = {};
+                          if (typeof userW === "number") {
+                            cellStyle.width = userW;
+                            cellStyle.minWidth = userW;
+                            cellStyle.maxWidth = userW;
+                          } else if (c.width) {
+                            cellStyle.width = c.width;
+                          }
+                          if (isSticky) {
+                            cellStyle.position = "sticky";
+                            cellStyle.left = stickyLeft[i];
+                            cellStyle.zIndex = 20;
+                            cellStyle.background = stickyBg;
+                          }
+                          return (
+                            <td
+                              key={c.key}
+                              style={cellStyle}
+                              className={cn(
+                                "border-b border-border-subtle text-[13px] text-ink transition-colors",
+                                cellPad,
+                                // Single-line rule (2026-05-08). Cells stop
+                                // wrapping their text content; long values
+                                // overflow into the next cell visually but
+                                // never push the row to two lines. Render
+                                // functions that genuinely need multi-line
+                                // (rare) can opt back in via `c.className`
+                                // ("whitespace-normal").
+                                "whitespace-nowrap",
+                                // Pine-green tint on hover (matches the
+                                // calendar's "on track" green). Reads clearly
+                                // on both zebra shades. (Was a pale brass
+                                // `accent-soft` wash that looked yellow.)
+                                "group-hover:bg-[#3f6b53]/25",
+                                c.align === "right" && "text-right",
+                                c.align === "center" && "text-center",
+                                // Leading gutter belongs to the chevron cell
+                                // when expandable; otherwise the first column.
+                                i === 0 && !expandable && "pl-5",
+                                i === displayColumns.length - 1 && "pr-5",
+                                // Freeze line on the last sticky column.
+                                isLastSticky && "border-r border-border",
+                                c.className
+                              )}
+                            >
+                              {c.render(row)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                      {/* Inline expanded sub-row (opt-in `expandable`). Spans
+                          the full width; renders the caller's drill-down. */}
+                      {isExpanded && expandable && (
+                        <tr className="bg-surface-dim/20">
+                          <td
+                            colSpan={totalColSpan}
+                            className="border-b border-border-subtle px-5 py-3 text-[13px] text-ink"
+                          >
+                            {expandable.render(row)}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
             </tbody>
@@ -1150,6 +1439,54 @@ export function DataTable<T>({
             document.body
           );
         })()}
+
+      {/* ── Row right-click context menu (opt-in `contextMenu`) ──────
+          Portalled to <body> — same escape-the-overflow/stacking reasoning
+          as the header menu, but at a higher z so it clears the sticky
+          <thead>. Items + danger/divider come from `contextMenu(row)`,
+          resolved when the menu opened. Closes on outside click / Esc /
+          scroll (effect above). */}
+      {rowMenu &&
+        createPortal(
+          <div
+            className="fixed z-[130] min-w-[176px] overflow-hidden rounded-md border border-border bg-surface py-1 shadow-slab"
+            style={{ top: rowMenu.y, left: rowMenu.x }}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            {rowMenu.items.map((it, i) => {
+              if (it.divider) {
+                return (
+                  <div
+                    key={`div-${i}`}
+                    className="my-1 border-t border-border-subtle"
+                  />
+                );
+              }
+              return (
+                <button
+                  key={`item-${i}-${it.label}`}
+                  type="button"
+                  className={cn(
+                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors",
+                    it.danger
+                      ? "text-err hover:bg-err/10"
+                      : "text-ink hover:bg-surface-dim"
+                  )}
+                  onClick={() => {
+                    // Close before firing — a handler may navigate or open a
+                    // dialog, and we don't want a stale menu lingering.
+                    setRowMenu(null);
+                    it.onClick();
+                  }}
+                >
+                  {it.label}
+                </button>
+              );
+            })}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
