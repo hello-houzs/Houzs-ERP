@@ -344,7 +344,21 @@ function MenuModal({ onClose }: { onClose: () => void }) {
                   className="col-span-2 contents"
                 >
                   {renderGroupHeader(t.label, t.icon)}
-                  {t.children.map((k) => renderCard(k))}
+                  {t.children.map((k) =>
+                    // Sub-group (e.g. Supply Chain → Procurement): render its
+                    // own section header + leaf cards, one level deeper.
+                    k.children && k.children.length > 0 ? (
+                      <div
+                        key={k.groupId || k.label}
+                        className="col-span-2 contents"
+                      >
+                        {renderGroupHeader(k.label, k.icon)}
+                        {k.children.map((kk) => renderCard(kk))}
+                      </div>
+                    ) : (
+                      renderCard(k)
+                    ),
+                  )}
                 </div>
               );
             }
