@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   Activity,
   Boxes,
+  Package,
   Truck,
   PackageCheck,
   ReceiptText,
