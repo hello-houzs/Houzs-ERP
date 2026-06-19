@@ -222,6 +222,7 @@ export const NAV_TABS: NavTab[] = [
       { to: "/scm/purchase-consignment-orders", label: "Purch. Consign. Orders", icon: HandCoins, perm: "*" },
       { to: "/scm/purchase-consignment-receives", label: "Purch. Consign. Receives", icon: PackageOpen, perm: "*" },
       { to: "/scm/purchase-consignment-returns", label: "Purch. Consign. Returns", icon: Reply, perm: "*" },
+      { to: "/scm/maintenance", label: "Maintenance", icon: Wrench, perm: "*" },
     ],
   },
 

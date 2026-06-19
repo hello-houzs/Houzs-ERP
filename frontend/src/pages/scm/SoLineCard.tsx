@@ -158,6 +158,10 @@ export interface SoLineCardProps {
   maint: ResolvedMaintConfig | null;
   specialDefs: SpecialAddonRow[];
   fabricOptions: FabricOption[];
+  // Master-follower cascade: the variants from the FIRST line of each category
+  // (keyed by lowercase itemGroup). A follower line seeds these on product pick
+  // so a new same-category line inherits the master's fabric/heights/specials.
+  inheritVariantsByCategory?: Record<string, Record<string, unknown> | undefined>;
 }
 
 function SoLineCardInner({
@@ -169,6 +173,7 @@ function SoLineCardInner({
   maint,
   specialDefs,
   fabricOptions,
+  inheritVariantsByCategory,
 }: SoLineCardProps) {
   const category = (draft.itemGroup || "others").toLowerCase();
   const badge = CATEGORY_BADGE[category] ?? CATEGORY_BADGE.others!;
@@ -205,13 +210,20 @@ function SoLineCardInner({
     const sellSen = p.sellPriceSen ?? p.sell_price_sen ?? 0;
     setPickedAllowed(p.allowedOptions ?? p.allowed_options ?? null);
     setPickedSeatPrices(p.seat_height_prices ?? null);
+    // Master-follower inherit: a same-category follower line seeds the master's
+    // variants on pick. Fresh pick otherwise resets the build so a previous
+    // category's variants don't leak. overriddenKeys resets to [] so the
+    // cascade can keep this line in sync until the operator edits a key.
+    const inherited = inheritVariantsByCategory?.[cat];
+    const seedVariants =
+      inherited && Object.keys(inherited).length > 0 ? { ...inherited } : {};
     onChange({
       itemCode: p.code,
       itemGroup: cat,
       description: p.name,
       unitPriceCenti: sellSen ?? 0,
-      // Fresh pick resets the build so a previous category's variants don't leak.
-      variants: {},
+      variants: seedVariants,
+      overriddenKeys: [],
     });
     setSearch(p.name);
     setShowPicker(false);
@@ -234,8 +246,18 @@ function SoLineCardInner({
   );
 
   // ── Variant writers ──────────────────────────────────────────────────────
+  // A manual variant edit records the touched keys in overriddenKeys so the
+  // master-follower cascade leaves this line alone for those keys (the
+  // follower's own pick wins). A fabric pick lands several keys atomically, so
+  // all of them are marked overridden in one patch.
   function setVariants(patch: Record<string, unknown>) {
-    onChange({ variants: { ...draft.variants, ...patch } });
+    const nextOverrides = Array.from(
+      new Set([...(draft.overriddenKeys ?? []), ...Object.keys(patch)]),
+    );
+    onChange({
+      variants: { ...draft.variants, ...patch },
+      overriddenKeys: nextOverrides,
+    });
   }
   function setVariant(k: string, v: string | string[]) {
     setVariants({ [k]: v });

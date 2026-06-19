@@ -9,16 +9,27 @@
 // the verbatim variant build; POST /api/scm/mfg-sales-orders recomputes prices,
 // stamps description2 + price columns, and returns { docNo }.
 //
-// Deferred to a follow-up (see the build notes in the PR): the payments table
-// (we expose an optional inline Deposit only), per-line photos, the master-
-// follower variant cascade, copy-from-SO, and scan-prefill.
+// Ported from 2990 (this batch): a multi-row Payments table (replaces the
+// single inline Deposit), the master-follower variant cascade, and the
+// per-line delivery-date cascade.
+//
+// Still deferred (see the build notes in the PR): per-line photos (the SCM
+// photo endpoint needs a multipart two-step upload + index-match against
+// server-split sofa lines — not clean enough yet), copy-from-SO, and
+// scan-prefill.
+//
+// Payments deviation: the SCM POST books a deposit slip-less ONLY via the
+// legacy header fields (one ledger row). The strict payments[]/per-doc routes
+// require a per-payment slip and SCM mounts no slip-upload endpoint, so the
+// multi-row drafts collapse to the single legacy deposit on submit (method =
+// first row, deposit = Σ rows). See draftsToCreatePayment + the submit guard.
 //
 // v1 simplifications: customer-type / building-type / relationship option
 // arrays are hardcoded (no venues / localities / dropdown-options endpoints
 // exist); salesperson is plain text; sales location is a warehouse picker.
 // ----------------------------------------------------------------------------
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Plus, Save } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
@@ -42,6 +53,11 @@ import {
   type FabricTrackingRow,
   type FabricOption,
 } from "./SoLineCard";
+import {
+  PaymentsTable,
+  draftsToCreatePayment,
+  type PaymentDraft,
+} from "./PaymentsTable";
 
 // ── Hardcoded option arrays (no maintenance endpoints for these in v1) ───────
 const CUSTOMER_TYPES = ["Walk-in", "Repeat", "Referral", "Online", "Corporate", "Dealer"];
@@ -122,8 +138,8 @@ export function ScmMfgSalesOrderNew() {
   const [postcode, setPostcode] = useState("");
   const [buildingType, setBuildingType] = useState("");
 
-  // ── Deposit (inline; full payments table deferred) ────────────────────
-  const [depositText, setDepositText] = useState("");
+  // ── Payments (multi-row draft editor) ─────────────────────────────────
+  const [paymentDrafts, setPaymentDrafts] = useState<PaymentDraft[]>([]);
 
   // ── Lines ─────────────────────────────────────────────────────────────
   const [lines, setLines] = useState<DraftLine[]>(() => [newLine()]);
@@ -227,6 +243,93 @@ export function ScmMfgSalesOrderNew() {
     });
   }
 
+  // ── Per-line delivery-date cascade ────────────────────────────────────
+  // The header Delivery Date flows to every line's lineDeliveryDate unless that
+  // line was manually overridden. Mirrors the server-side cascade the create
+  // route applies (explicit line date wins, else inherit header).
+  useEffect(() => {
+    const target = deliveryDate || null;
+    setLines((prev) => {
+      let changed = false;
+      const next = prev.map((l) => {
+        if (l.lineDeliveryDateOverridden) return l;
+        if ((l.lineDeliveryDate ?? null) === target) return l;
+        changed = true;
+        return { ...l, lineDeliveryDate: target };
+      });
+      return changed ? next : prev;
+    });
+  }, [deliveryDate]);
+
+  // ── Master-follower variant cascade ───────────────────────────────────
+  // The FIRST line of each category (the "master") drives variant values on
+  // later same-category lines, EXCEPT keys a follower has manually overridden
+  // (tracked in overriddenKeys). Pure state — recomputed whenever lines change.
+  useEffect(() => {
+    const masterByCategory: Record<string, Record<string, unknown>> = {};
+    const masterIdx: Record<string, number> = {};
+    lines.forEach((l, idx) => {
+      const cat = l.itemGroup;
+      if (!cat) return;
+      if (masterIdx[cat] !== undefined) return;
+      masterIdx[cat] = idx;
+      if (l.variants) masterByCategory[cat] = l.variants;
+    });
+
+    let changed = false;
+    const next = lines.map((l, idx) => {
+      const cat = l.itemGroup;
+      if (!cat) return l;
+      if (masterIdx[cat] === idx) return l; // this IS the master
+      const masterVariants = masterByCategory[cat];
+      if (!masterVariants) return l;
+      const cur = l.variants ?? {};
+      const overridden = new Set(l.overriddenKeys ?? []);
+      const patch: Record<string, unknown> = {};
+      let hasChange = false;
+      for (const k of Object.keys(masterVariants)) {
+        if (overridden.has(k)) continue;
+        const masterVal = masterVariants[k];
+        if (masterVal === undefined || masterVal === null || masterVal === "")
+          continue;
+        if (cur[k] !== masterVal) {
+          patch[k] = masterVal;
+          hasChange = true;
+        }
+      }
+      if (!hasChange) return l;
+      changed = true;
+      return { ...l, variants: { ...cur, ...patch } };
+    });
+    if (changed) setLines(next);
+  }, [lines]);
+
+  // The variants of the FIRST line of each category that has any set — seeds a
+  // freshly-picked same-category follower line (see SoLineCard.pickProduct).
+  const inheritVariantsByCategory = useMemo(() => {
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const l of lines) {
+      const cat = l.itemGroup;
+      if (!cat || out[cat]) continue;
+      if (l.variants && Object.keys(l.variants).length > 0) out[cat] = l.variants;
+    }
+    return out;
+  }, [lines]);
+
+  async function removePaymentRow(uid: string) {
+    const row = paymentDrafts.find((d) => d.uid === uid);
+    if (row && row.amountCenti > 0) {
+      const ok = await dialog.confirm({
+        title: "Remove this payment?",
+        message: `This payment row of ${fmtCenti(row.amountCenti)} will be discarded.`,
+        confirmLabel: "Remove payment",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    setPaymentDrafts((prev) => prev.filter((d) => d.uid !== uid));
+  }
+
   const subtotalCenti = useMemo(
     () =>
       lines.reduce(
@@ -236,7 +339,11 @@ export function ScmMfgSalesOrderNew() {
     [lines],
   );
 
-  const depositCenti = Math.round(Number(depositText) * 100) || 0;
+  const createPayment = useMemo(
+    () => draftsToCreatePayment(paymentDrafts),
+    [paymentDrafts],
+  );
+  const depositCenti = createPayment?.depositCenti ?? 0;
 
   // Processing/Delivery dates must both be set or both empty (mirrors the
   // server's processing_delivery_must_pair 400).
@@ -294,6 +401,30 @@ export function ScmMfgSalesOrderNew() {
       }
     }
 
+    // Deposit may not exceed the order total (the server rejects overpayment
+    // on the ledger row; fail fast here with a friendlier message).
+    if (depositCenti > subtotalCenti) {
+      toast.error(
+        `Deposit (${fmtCenti(depositCenti)}) exceeds the order total (${fmtCenti(subtotalCenti)})`,
+      );
+      return;
+    }
+    // The slip-less create path books ONE deposit row, so split rows with
+    // differing methods can't all be recorded — warn (don't block) the
+    // operator that only the first row's method is booked on the header.
+    if (createPayment?.mixedMethods) {
+      const ok = await dialog.confirm({
+        title: "Multiple payment methods",
+        message:
+          "Only one payment method can be recorded at create time — the first " +
+          "row's method is used and the amounts are combined into a single " +
+          "deposit. Add the remaining payments individually on the SO detail " +
+          "page after it's created.\n\nCreate the order this way?",
+        confirmLabel: "Create order",
+      });
+      if (!ok) return;
+    }
+
     setSaving(true);
     try {
       const res = await api.post<{ docNo: string }>(
@@ -319,7 +450,15 @@ export function ScmMfgSalesOrderNew() {
           internalExpectedDd: processingDate || undefined,
           customerDeliveryDate: deliveryDate || undefined,
           note: note.trim() || undefined,
-          depositCenti: depositCenti > 0 ? depositCenti : undefined,
+          // Payments — slip-less legacy deposit fields (see PaymentsTable's
+          // draftsToCreatePayment + the file-header deviation note). The server
+          // books a single is_deposit ledger row from these.
+          depositCenti: createPayment ? createPayment.depositCenti : undefined,
+          paymentMethod: createPayment?.paymentMethod,
+          merchantProvider: createPayment?.merchantProvider,
+          installmentMonths: createPayment?.installmentMonths,
+          approvalCode: createPayment?.approvalCode,
+          paymentDate: createPayment?.paymentDate,
           items: validLines.map((l) => ({
             itemGroup: l.itemGroup,
             itemCode: l.itemCode,
@@ -626,6 +765,7 @@ export function ScmMfgSalesOrderNew() {
             maint={maint}
             specialDefs={specialDefs}
             fabricOptions={fabricOptions}
+            inheritVariantsByCategory={inheritVariantsByCategory}
           />
         ))}
 
@@ -638,29 +778,16 @@ export function ScmMfgSalesOrderNew() {
         </button>
       </div>
 
-      {/* ── Deposit + Subtotal ───────────────────────────────────────── */}
+      {/* ── Subtotal ─────────────────────────────────────────────────── */}
       <div className="mt-5 flex justify-end">
         <div className="w-full max-w-sm rounded-lg border border-border bg-surface p-5 shadow-stone">
-          <div className="mb-3">
-            <Field label="Deposit (RM)">
-              <input
-                type="number"
-                step="0.01"
-                min={0}
-                className={`${selectCls} text-right font-mono`}
-                value={depositText}
-                onChange={(e) => setDepositText(e.target.value)}
-                placeholder="0.00"
-              />
-            </Field>
-          </div>
           <div className="flex items-center justify-between text-[13px] text-ink-secondary">
             <span>Subtotal</span>
             <span className="font-mono text-ink">{fmtCenti(subtotalCenti)}</span>
           </div>
           {depositCenti > 0 && (
             <div className="mt-1 flex items-center justify-between text-[13px] text-ink-secondary">
-              <span>Deposit</span>
+              <span>Deposit Paid</span>
               <span className="font-mono text-ink">{fmtCenti(depositCenti)}</span>
             </div>
           )}
@@ -673,6 +800,16 @@ export function ScmMfgSalesOrderNew() {
             when you create the order.
           </p>
         </div>
+      </div>
+
+      {/* ── Payments ─────────────────────────────────────────────────── */}
+      <div className="mt-5">
+        <PaymentsTable
+          drafts={paymentDrafts}
+          onChange={setPaymentDrafts}
+          grandTotalCenti={subtotalCenti}
+          onRemoveRow={removePaymentRow}
+        />
       </div>
 
       {/* Footer save (mirrors the header action on long forms). */}
