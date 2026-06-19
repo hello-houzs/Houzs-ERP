@@ -335,6 +335,13 @@ export interface SoLineDraft {
   remark: string;
   lineDeliveryDate: string | null;
   lineDeliveryDateOverridden: boolean;
+  // Client-only audit set (NOT sent to the API) — the variant keys this line
+  // has been MANUALLY edited for. The master-follower cascade in
+  // MfgSalesOrderNew reads it to decide whether to overwrite a follower's
+  // variant when the category's master (first) line changes:
+  //   key NOT in overriddenKeys → cascade overwrites (follower stays in sync)
+  //   key IN overriddenKeys     → cascade leaves it alone (follower wins)
+  overriddenKeys?: string[];
 }
 
 /** Factory for a fresh empty line draft. */
@@ -352,6 +359,7 @@ export function emptySoLine(): SoLineDraft {
     remark: "",
     lineDeliveryDate: null,
     lineDeliveryDateOverridden: false,
+    overriddenKeys: [],
   };
 }
 

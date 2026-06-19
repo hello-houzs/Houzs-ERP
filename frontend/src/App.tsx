@@ -57,6 +57,7 @@ const ScmStockTakeDetail = lazy(() => import("./pages/scm/StockTakeDetail").then
 const ScmMfgSalesOrders = lazy(() => import("./pages/scm/MfgSalesOrders").then((m) => ({ default: m.ScmMfgSalesOrders })));
 const ScmMfgSalesOrderDetail = lazy(() => import("./pages/scm/MfgSalesOrderDetail").then((m) => ({ default: m.ScmMfgSalesOrderDetail })));
 const ScmMfgSalesOrderNew = lazy(() => import("./pages/scm/MfgSalesOrderNew").then((m) => ({ default: m.ScmMfgSalesOrderNew })));
+const ScmMaintenanceConfig = lazy(() => import("./pages/scm/MaintenanceConfig").then((m) => ({ default: m.ScmMaintenanceConfig })));
 const ScmDeliveryOrders = lazy(() => import("./pages/scm/DeliveryOrders").then((m) => ({ default: m.ScmDeliveryOrders })));
 const ScmDeliveryOrderDetail = lazy(() => import("./pages/scm/DeliveryOrderDetail").then((m) => ({ default: m.ScmDeliveryOrderDetail })));
 const ScmDeliveryReturns = lazy(() => import("./pages/scm/DeliveryReturns").then((m) => ({ default: m.ScmDeliveryReturns })));
@@ -243,6 +244,7 @@ export default function App() {
         <Route path="/scm/purchase-consignment-returns" element={<Guard perm="*"><ScmPurchaseConsignmentReturns /></Guard>} />
         <Route path="/scm/purchase-consignment-returns/new" element={<Guard perm="*"><ScmPurchaseConsignmentReturnNew /></Guard>} />
         <Route path="/scm/purchase-consignment-returns/:id" element={<Guard perm="*"><ScmPurchaseConsignmentReturnDetail /></Guard>} />
+        <Route path="/scm/maintenance" element={<Guard perm="*"><ScmMaintenanceConfig /></Guard>} />
         {/* Legacy /roles → Team page's Roles tab */}
         <Route
           path="/roles"
