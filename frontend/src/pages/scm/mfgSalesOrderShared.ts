@@ -342,6 +342,12 @@ export interface SoLineDraft {
   //   key NOT in overriddenKeys → cascade overwrites (follower stays in sync)
   //   key IN overriddenKeys     → cascade leaves it alone (follower wins)
   overriddenKeys?: string[];
+  // Client-only staged photos (NOT sent in the SO create POST). The create
+  // route has no multipart surface, so photos upload in a SECOND pass after
+  // the SO exists: MfgSalesOrderNew matches each draft's stagedPhotos to the
+  // saved item id(s) and POSTs them to the per-line photo endpoint. Files are
+  // previewed via URL.createObjectURL inside SoLineCard.
+  stagedPhotos?: File[];
 }
 
 /** Factory for a fresh empty line draft. */
@@ -360,6 +366,7 @@ export function emptySoLine(): SoLineDraft {
     lineDeliveryDate: null,
     lineDeliveryDateOverridden: false,
     overriddenKeys: [],
+    stagedPhotos: [],
   };
 }
 

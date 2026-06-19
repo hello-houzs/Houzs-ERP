@@ -30,12 +30,19 @@
 // 2990 field could differ.
 // ----------------------------------------------------------------------------
 
-import { memo, useEffect, useMemo, useState } from "react";
-import { Trash2, ChevronDown, ChevronRight } from "lucide-react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Trash2, ChevronDown, ChevronRight, ImagePlus, X } from "lucide-react";
 import { useQuery } from "../../hooks/useQuery";
+import { useDialog } from "../../hooks/useDialog";
+import { useToast } from "../../hooks/useToast";
 import { api } from "../../api/client";
 import { SCM, fmtCenti } from "../../lib/scm";
 import { cn } from "../../lib/utils";
+
+// Per-line photo staging — mirrors the server's POST /…/photos guard so a
+// staged file that the endpoint would reject is caught before the SO is even
+// created. 10 MB / image-only matches mfg-sales-orders.ts MAX_PHOTO_BYTES.
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 import {
   activeOptions,
   maintPickerValues,
@@ -177,6 +184,53 @@ function SoLineCardInner({
 }: SoLineCardProps) {
   const category = (draft.itemGroup || "others").toLowerCase();
   const badge = CATEGORY_BADGE[category] ?? CATEGORY_BADGE.others!;
+  const dialog = useDialog();
+  const toast = useToast();
+
+  // ── Per-line photo staging ───────────────────────────────────────────────
+  // Files live on the draft (stagedPhotos); they upload AFTER the SO is created
+  // (see MfgSalesOrderNew). Object URLs are derived for preview and revoked on
+  // change/unmount so we don't leak blobs.
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
+  const stagedPhotos = draft.stagedPhotos ?? [];
+  const [photoUrls, setPhotoUrls] = useState<string[]>([]);
+  useEffect(() => {
+    const urls = stagedPhotos.map((f) => URL.createObjectURL(f));
+    setPhotoUrls(urls);
+    return () => urls.forEach((u) => URL.revokeObjectURL(u));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stagedPhotos]);
+
+  function onPickPhotos(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? []);
+    e.target.value = ""; // allow re-picking the same file
+    if (picked.length === 0) return;
+    const accepted: File[] = [];
+    for (const f of picked) {
+      if (!f.type || !f.type.toLowerCase().startsWith("image/")) {
+        toast.error(`"${f.name}" isn't an image — skipped`);
+        continue;
+      }
+      if (f.size > MAX_PHOTO_BYTES) {
+        toast.error(`"${f.name}" is over 10MB — skipped`);
+        continue;
+      }
+      accepted.push(f);
+    }
+    if (accepted.length === 0) return;
+    onChange({ stagedPhotos: [...stagedPhotos, ...accepted] });
+  }
+
+  async function removePhoto(idx: number) {
+    const ok = await dialog.confirm({
+      title: "Remove photo",
+      message: "Remove this staged photo from the line? It hasn't been uploaded yet.",
+      danger: true,
+      confirmLabel: "Remove",
+    });
+    if (!ok) return;
+    onChange({ stagedPhotos: stagedPhotos.filter((_, i) => i !== idx) });
+  }
 
   // ── SKU picker (search-as-you-type) ─────────────────────────────────────
   const [search, setSearch] = useState(draft.description || draft.itemCode || "");
@@ -529,6 +583,64 @@ function SoLineCardInner({
             placeholder="0.00"
             aria-label="Discount"
           />
+        </div>
+      )}
+
+      {/* ── Per-line photos (staged; upload after SO create) ─────────────── */}
+      {draft.itemCode && (
+        <div className="mt-2 pl-7">
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-brand text-ink-muted">
+              Photos
+            </span>
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={onPickPhotos}
+            />
+            <button
+              type="button"
+              onClick={() => photoInputRef.current?.click()}
+              className="inline-flex items-center gap-1 rounded-md border border-dashed border-accent/50 px-2 py-1 text-[11px] font-semibold text-accent transition-colors hover:bg-accent-soft"
+            >
+              <ImagePlus size={13} /> Add Photos
+            </button>
+            {stagedPhotos.length > 0 && (
+              <span className="text-[11px] text-ink-muted">
+                {stagedPhotos.length} staged · uploaded after the order is created
+              </span>
+            )}
+          </div>
+          {stagedPhotos.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {stagedPhotos.map((f, i) => (
+                <div
+                  key={`${f.name}-${f.size}-${i}`}
+                  className="relative h-16 w-16 overflow-hidden rounded-md border border-border bg-surface-dim"
+                >
+                  {photoUrls[i] && (
+                    <img
+                      src={photoUrls[i]}
+                      alt={f.name}
+                      className="h-full w-full object-cover"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void removePhoto(i)}
+                    title="Remove photo"
+                    aria-label="Remove photo"
+                    className="absolute right-0.5 top-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-ink/60 text-white transition-colors hover:bg-err"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

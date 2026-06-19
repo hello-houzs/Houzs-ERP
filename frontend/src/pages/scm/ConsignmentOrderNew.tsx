@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Plus, Save, Trash2 } from "lucide-react";
+import { ArrowLeft, ImagePlus, Plus, Save, Trash2, X } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { Button } from "../../components/Button";
 import { useQuery } from "../../hooks/useQuery";
@@ -40,12 +40,19 @@ interface DraftLine {
   itemGroup: string;
   qty: number;
   unitPriceRm: string;
+  // Client-only staged photos — uploaded after the CO is created (the create
+  // POST carries no multipart). Consignment lines never split server-side, so
+  // positional item_code matching is always unambiguous here.
+  stagedPhotos: File[];
 }
+
+// Server photo guard (consignment-orders.ts): 10 MB, image/* only.
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 
 let ridCounter = 0;
 function newLine(): DraftLine {
   ridCounter += 1;
-  return { rid: `l${ridCounter}`, itemCode: "", description: "", itemGroup: "others", qty: 1, unitPriceRm: "" };
+  return { rid: `l${ridCounter}`, itemCode: "", description: "", itemGroup: "others", qty: 1, unitPriceRm: "", stagedPhotos: [] };
 }
 
 const CURRENCIES = ["MYR", "RMB", "USD", "SGD"];
@@ -169,6 +176,66 @@ export function ScmConsignmentOrderNew() {
           unitPriceCenti: rmToSen(l.unitPriceRm),
         })),
       });
+      // ── Post-create photo upload ─────────────────────────────────────────
+      // Consignment lines never split server-side (1 draft → 1 saved item), so
+      // matching by item_code in document order is unambiguous. Still guard each
+      // upload + soft-warn on any miss; never block the created order.
+      const linesWithPhotos = validLines.filter((l) => l.stagedPhotos.length > 0);
+      if (linesWithPhotos.length > 0) {
+        try {
+          const detail = await api.get<{ items: Array<{ id: string; item_code: string; cancelled?: boolean }> }>(
+            `${SCM}/consignment-orders/${encodeURIComponent(res.docNo)}`,
+          );
+          const savedByCode = new Map<string, string[]>();
+          for (const it of detail.items ?? []) {
+            if (it.cancelled) continue;
+            const arr = savedByCode.get(it.item_code) ?? [];
+            arr.push(it.id);
+            savedByCode.set(it.item_code, arr);
+          }
+          const draftCountByCode = new Map<string, number>();
+          for (const l of linesWithPhotos) {
+            draftCountByCode.set(l.itemCode, (draftCountByCode.get(l.itemCode) ?? 0) + 1);
+          }
+          let uploaded = 0;
+          let skipped = 0;
+          let failed = 0;
+          for (const l of linesWithPhotos) {
+            const queue = savedByCode.get(l.itemCode) ?? [];
+            // One saved row per draft is the norm; >1 with the same code on
+            // multiple photo drafts is the only ambiguity we skip.
+            const ambiguous =
+              queue.length === 0 ||
+              ((draftCountByCode.get(l.itemCode) ?? 0) > 1 && queue.length !== draftCountByCode.get(l.itemCode));
+            if (ambiguous) {
+              skipped += 1;
+              continue;
+            }
+            const itemId = queue.shift()!;
+            for (const file of l.stagedPhotos) {
+              try {
+                await api.uploadFile(
+                  `${SCM}/consignment-orders/${encodeURIComponent(res.docNo)}/items/${encodeURIComponent(itemId)}/photos`,
+                  file,
+                );
+                uploaded += 1;
+              } catch {
+                failed += 1;
+              }
+            }
+          }
+          if (uploaded > 0) toast.success(`Uploaded ${uploaded} photo${uploaded === 1 ? "" : "s"}`);
+          if (skipped > 0)
+            toast.warning(
+              `${skipped} line${skipped === 1 ? "" : "s"} had photos that couldn't be matched — add them on the order detail page.`,
+            );
+          if (failed > 0)
+            toast.error(`${failed} photo${failed === 1 ? "" : "s"} failed to upload — retry on the order detail page.`);
+        } catch {
+          toast.warning("Order created, but photos couldn't be uploaded — add them on the order detail page.");
+        }
+      }
+
       toast.success(`Consignment order ${res.docNo} created`);
       navigate(`/scm/consignment-orders/${encodeURIComponent(res.docNo)}`);
     } catch (e) {
@@ -333,6 +400,14 @@ export function ScmConsignmentOrderNew() {
                 </div>
               </Field>
             </div>
+
+            {l.itemCode.trim() && (
+              <PhotoStrip
+                files={l.stagedPhotos}
+                onAdd={(files) => setLine(l.rid, { stagedPhotos: [...l.stagedPhotos, ...files] })}
+                onRemove={(idx) => setLine(l.rid, { stagedPhotos: l.stagedPhotos.filter((_, i) => i !== idx) })}
+              />
+            )}
           </div>
         ))}
 
@@ -370,6 +445,101 @@ export function ScmConsignmentOrderNew() {
           {saving ? "Saving…" : "Create Order"}
         </Button>
       </div>
+    </div>
+  );
+}
+
+// ── PhotoStrip — staged per-line photos with object-URL previews ─────────────
+// Files upload AFTER the CO is created (the create POST has no multipart). The
+// strip validates against the server guard (image/* + 10MB) up front and
+// confirm-gates removal so there are no naked deletes.
+function PhotoStrip({
+  files,
+  onAdd,
+  onRemove,
+}: {
+  files: File[];
+  onAdd: (files: File[]) => void;
+  onRemove: (idx: number) => void;
+}) {
+  const toast = useToast();
+  const dialog = useDialog();
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [urls, setUrls] = useState<string[]>([]);
+  useEffect(() => {
+    const next = files.map((f) => URL.createObjectURL(f));
+    setUrls(next);
+    return () => next.forEach((u) => URL.revokeObjectURL(u));
+  }, [files]);
+
+  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    if (picked.length === 0) return;
+    const accepted: File[] = [];
+    for (const f of picked) {
+      if (!f.type || !f.type.toLowerCase().startsWith("image/")) {
+        toast.error(`"${f.name}" isn't an image — skipped`);
+        continue;
+      }
+      if (f.size > MAX_PHOTO_BYTES) {
+        toast.error(`"${f.name}" is over 10MB — skipped`);
+        continue;
+      }
+      accepted.push(f);
+    }
+    if (accepted.length > 0) onAdd(accepted);
+  }
+
+  async function remove(idx: number) {
+    const ok = await dialog.confirm({
+      title: "Remove photo",
+      message: "Remove this staged photo? It hasn't been uploaded yet.",
+      danger: true,
+      confirmLabel: "Remove",
+    });
+    if (ok) onRemove(idx);
+  }
+
+  return (
+    <div className="mt-3">
+      <div className="mb-1.5 flex items-center gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-brand text-ink-muted">Photos</span>
+        <input ref={inputRef} type="file" accept="image/*" multiple className="hidden" onChange={onPick} />
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          className="inline-flex items-center gap-1 rounded-md border border-dashed border-accent/50 px-2 py-1 text-[11px] font-semibold text-accent transition-colors hover:bg-accent-soft"
+        >
+          <ImagePlus size={13} /> Add Photos
+        </button>
+        {files.length > 0 && (
+          <span className="text-[11px] text-ink-muted">
+            {files.length} staged · uploaded after the order is created
+          </span>
+        )}
+      </div>
+      {files.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {files.map((f, i) => (
+            <div
+              key={`${f.name}-${f.size}-${i}`}
+              className="relative h-16 w-16 overflow-hidden rounded-md border border-border bg-surface-dim"
+            >
+              {urls[i] && <img src={urls[i]} alt={f.name} className="h-full w-full object-cover" />}
+              <button
+                type="button"
+                onClick={() => void remove(i)}
+                title="Remove photo"
+                aria-label="Remove photo"
+                className="absolute right-0.5 top-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-ink/60 text-white transition-colors hover:bg-err"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
