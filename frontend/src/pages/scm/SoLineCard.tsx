@@ -31,13 +31,14 @@
 // ----------------------------------------------------------------------------
 
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Trash2, ChevronDown, ChevronRight, ImagePlus, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ImagePlus, X } from "lucide-react";
 import { useQuery } from "../../hooks/useQuery";
 import { useDialog } from "../../hooks/useDialog";
 import { useToast } from "../../hooks/useToast";
 import { api } from "../../api/client";
 import { SCM, fmtCenti } from "../../lib/scm";
 import { cn } from "../../lib/utils";
+import { LineCard, LineField, lineInputCls, LineTotalRow } from "./_lineKit";
 
 // Per-line photo staging — mirrors the server's POST /…/photos guard so a
 // staged file that the endpoint would reject is caught before the SO is even
@@ -151,9 +152,6 @@ function restrictStrings(opts: string[], pool?: string[] | null): string[] {
     ? opts.filter((o) => pool.includes(o))
     : opts;
 }
-
-const inputCls =
-  "h-9 w-full rounded-md border border-border bg-surface px-2.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-50";
 
 export interface SoLineCardProps {
   index: number;
@@ -424,17 +422,17 @@ function SoLineCardInner({
   }
 
   return (
-    <div className="rounded-lg border border-border bg-surface p-4 shadow-stone">
-      {/* ── Header row ──────────────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-start gap-2">
-        <span className="mt-2 w-5 shrink-0 text-center text-[12px] font-bold text-ink-muted">
-          {index + 1}
-        </span>
-
-        {/* SKU picker */}
-        <div className="relative min-w-[200px] flex-1">
+    <LineCard
+      index={index + 1}
+      onRemove={onRemove}
+      removeDisabled={!canRemove}
+      removeTitle="Remove this line"
+    >
+      {/* Item — SKU picker (search-as-you-type) */}
+      <LineField label="Item" required>
+        <div className="relative">
           <input
-            className={cn(inputCls, "font-mono")}
+            className={cn(lineInputCls, "font-mono")}
             placeholder="Click to pick or type to filter…"
             value={search}
             onFocus={() => setShowPicker(true)}
@@ -478,121 +476,98 @@ function SoLineCardInner({
             </ul>
           )}
         </div>
+      </LineField>
 
-        {/* Remark */}
+      {/* Remark */}
+      <LineField label="Remark">
         <input
-          className={cn(inputCls, "min-w-[120px] flex-1")}
+          className={lineInputCls}
           placeholder="Remark…"
           value={draft.remark}
           onChange={(e) => onChange({ remark: e.target.value })}
         />
+      </LineField>
 
-        {/* Qty */}
-        <input
-          type="number"
-          min={1}
-          className={cn(inputCls, "w-16 text-right")}
-          value={draft.qty === 0 ? "" : draft.qty}
-          onChange={(e) => {
-            const v = e.target.value;
-            onChange({ qty: v === "" ? 0 : parseInt(v) || 0 });
-          }}
-          onBlur={(e) => {
-            if (!e.target.value || parseInt(e.target.value) <= 0)
-              onChange({ qty: 1 });
-          }}
-          aria-label="Quantity"
-        />
+      {/* Qty / Unit Price / Delivery Date */}
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+        <LineField label="Qty" align="right" required>
+          <input
+            type="number"
+            min={1}
+            className={cn(lineInputCls, "text-right")}
+            value={draft.qty === 0 ? "" : draft.qty}
+            onChange={(e) => {
+              const v = e.target.value;
+              onChange({ qty: v === "" ? 0 : parseInt(v) || 0 });
+            }}
+            onBlur={(e) => {
+              if (!e.target.value || parseInt(e.target.value) <= 0)
+                onChange({ qty: 1 });
+            }}
+            aria-label="Quantity"
+          />
+        </LineField>
 
-        {/* Unit price (RM → sen) */}
-        <input
-          type="number"
-          step="0.01"
-          min={0}
-          className={cn(inputCls, "w-24 text-right font-mono")}
-          value={priceText}
-          onChange={(e) => {
-            const t = e.target.value;
-            setPriceText(t);
-            onChange({ unitPriceCenti: Math.round(Number(t) * 100) || 0 });
-          }}
-          onBlur={() => setPriceText((draft.unitPriceCenti / 100).toFixed(2))}
-          placeholder="0.00"
-          aria-label="Unit price"
-        />
-
-        {/* Per-line delivery date */}
-        <input
-          type="date"
-          className={cn(inputCls, "w-36")}
-          value={draft.lineDeliveryDate ?? ""}
-          onChange={(e) =>
-            onChange({
-              lineDeliveryDate: e.target.value || null,
-              lineDeliveryDateOverridden: true,
-            })
-          }
-          aria-label="Line delivery date"
-        />
-
-        {/* Amount */}
-        <span className="mt-2 w-24 shrink-0 text-right font-mono text-[13px] font-semibold text-ink">
-          {fmtCenti(lineTotal)}
-        </span>
-
-        {/* Category badge */}
-        <span
-          className={cn(
-            "mt-1.5 inline-flex shrink-0 items-center rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-brand",
-            badge.cls,
-          )}
-        >
-          {badge.label}
-        </span>
-
-        {/* Trash */}
-        <button
-          type="button"
-          onClick={onRemove}
-          disabled={!canRemove}
-          title="Remove this line"
-          aria-label="Remove line"
-          className="mt-1 inline-flex shrink-0 items-center justify-center rounded p-1 text-ink-muted transition-colors hover:bg-err/5 hover:text-err disabled:opacity-30"
-        >
-          <Trash2 size={15} />
-        </button>
-      </div>
-
-      {/* ── Discount (second compact row) ───────────────────────────────── */}
-      {draft.itemCode && (
-        <div className="mt-2 flex items-center gap-2 pl-7">
-          <span className="text-[11px] font-semibold uppercase tracking-brand text-ink-muted">
-            Discount (RM)
-          </span>
+        <LineField label="Unit Price (RM)" align="right" required>
           <input
             type="number"
             step="0.01"
             min={0}
-            className={cn(inputCls, "w-28 text-right font-mono")}
-            value={discountText}
+            className={cn(lineInputCls, "text-right font-mono")}
+            value={priceText}
             onChange={(e) => {
               const t = e.target.value;
-              setDiscountText(t);
-              onChange({ discountCenti: Math.round(Number(t) * 100) || 0 });
+              setPriceText(t);
+              onChange({ unitPriceCenti: Math.round(Number(t) * 100) || 0 });
             }}
+            onBlur={() => setPriceText((draft.unitPriceCenti / 100).toFixed(2))}
             placeholder="0.00"
-            aria-label="Discount"
+            aria-label="Unit price"
           />
+        </LineField>
+
+        <LineField label="Delivery Date">
+          <input
+            type="date"
+            className={lineInputCls}
+            value={draft.lineDeliveryDate ?? ""}
+            onChange={(e) =>
+              onChange({
+                lineDeliveryDate: e.target.value || null,
+                lineDeliveryDateOverridden: true,
+              })
+            }
+            aria-label="Line delivery date"
+          />
+        </LineField>
+      </div>
+
+      {/* Discount — only once a SKU is picked */}
+      {draft.itemCode && (
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+          <LineField label="Discount (RM)" align="right">
+            <input
+              type="number"
+              step="0.01"
+              min={0}
+              className={cn(lineInputCls, "text-right font-mono")}
+              value={discountText}
+              onChange={(e) => {
+                const t = e.target.value;
+                setDiscountText(t);
+                onChange({ discountCenti: Math.round(Number(t) * 100) || 0 });
+              }}
+              placeholder="0.00"
+              aria-label="Discount"
+            />
+          </LineField>
         </div>
       )}
 
-      {/* ── Per-line photos (staged; upload after SO create) ─────────────── */}
+      {/* Photos — staged; upload after SO create */}
       {draft.itemCode && (
-        <div className="mt-2 pl-7">
-          <div className="mb-1.5 flex items-center gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-brand text-ink-muted">
-              Photos
-            </span>
+        <LineField label="Photos">
+          <div className="flex items-center gap-2">
             <input
               ref={photoInputRef}
               type="file"
@@ -615,7 +590,7 @@ function SoLineCardInner({
             )}
           </div>
           {stagedPhotos.length > 0 && (
-            <div className="flex flex-wrap gap-2">
+            <div className="mt-1.5 flex flex-wrap gap-2">
               {stagedPhotos.map((f, i) => (
                 <div
                   key={`${f.name}-${f.size}-${i}`}
@@ -641,12 +616,12 @@ function SoLineCardInner({
               ))}
             </div>
           )}
-        </div>
+        </LineField>
       )}
 
       {/* ── Variant body ─────────────────────────────────────────────────── */}
       {showBody && (
-        <div className="mt-3 border-t border-border-subtle pt-3">
+        <div className="border-t border-border-subtle pt-3">
           {hasVariantGrid && category === "bedframe" && maint && (
             <div className="space-y-3">
               <div className="text-[10px] font-bold uppercase tracking-brand text-ink-muted">
@@ -794,7 +769,22 @@ function SoLineCardInner({
           )}
         </div>
       )}
-    </div>
+
+      {/* ── Line total + category pill ───────────────────────────────────── */}
+      <LineTotalRow>
+        <span
+          className={cn(
+            "inline-flex shrink-0 items-center rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-brand",
+            badge.cls,
+          )}
+        >
+          {badge.label}
+        </span>
+        <span className="font-mono text-[13px] font-semibold text-ink">
+          {fmtCenti(lineTotal)}
+        </span>
+      </LineTotalRow>
+    </LineCard>
   );
 }
 
@@ -822,16 +812,9 @@ function VariantSelect({
   const invalid = required && !value;
   const hasCurrent = Boolean(value) && options.some((o) => o.value === value);
   return (
-    <label className="block">
-      <span className="mb-1 block text-[11px] font-semibold uppercase tracking-brand text-ink-muted">
-        {label}
-        {required && <span className="ml-0.5 text-err">*</span>}
-      </span>
+    <LineField label={label} required={required}>
       <select
-        className={cn(
-          "h-9 w-full rounded-md border bg-surface px-2.5 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20",
-          invalid ? "border-err" : "border-border",
-        )}
+        className={cn(lineInputCls, invalid && "border-err")}
         value={value}
         onChange={(e) => onChange(e.target.value)}
       >
@@ -848,7 +831,7 @@ function VariantSelect({
           </option>
         ))}
       </select>
-    </label>
+    </LineField>
   );
 }
 
