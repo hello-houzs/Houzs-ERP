@@ -1,0 +1,258 @@
+/* ──────────────────────────────────────────────────────────────────────
+   Payments — Houzs-pattern transactions table.
+
+   Verbatim port of houzs-erp/src/components/NewSalesOrderForm.tsx
+   payments JSX (lines 1047-1126), translated from Tailwind to CSS
+   modules + 2990 brand tokens.
+
+   Layout:
+
+   $ Payments                                              [+ Add Payment]
+   ──────────────────────────────────────────────────────────────────────
+   Date 🗓  Method 🏷  Amount $  Account Sheet 📝  Approval 📝  By 👤  🗑
+   ─── one row per payment ────────────────────────────────────────────
+                                            Deposit Paid $  0.00
+                                            Balance      $  0.00 (green)
+
+   The header columns gain icons (Lucide); the rows are inline editors
+   so commander can type directly without opening a modal.
+   ────────────────────────────────────────────────────────────────────── */
+
+.section {
+  display: flex;
+  flex-direction: column;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.headLabel {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.addBtn {
+  margin-left: auto;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--c-orange);
+  background: var(--c-cream);
+  color: var(--c-burnt);
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.addBtn:hover { background: var(--c-paper); }
+.addBtn:disabled { cursor: not-allowed; opacity: 0.6; }
+
+/* ── Grid table (CSS-grid-based so input rows align with header) ──── */
+
+.grid {
+  display: grid;
+  grid-template-columns:
+    140px              /* Date */
+    140px              /* Method */
+    minmax(120px, 1fr) /* Amount */
+    minmax(140px, 1.4fr) /* Account Sheet */
+    minmax(140px, 1.4fr) /* Approval Code */
+    160px              /* Collected By */
+    32px;              /* Trash */
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 1100px) {
+  .grid {
+    grid-template-columns: 120px 120px 100px 1fr 1fr 140px 30px;
+  }
+}
+
+.headerCell {
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  color: var(--fg-muted);
+  padding: 6px var(--space-2);
+  border-bottom: 1px solid var(--line);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  letter-spacing: 0.02em;
+}
+
+.headerCellRight {
+  composes: headerCell;
+  justify-content: flex-end;
+}
+
+.row {
+  display: contents;
+}
+
+.cell {
+  padding: 4px var(--space-2);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+}
+
+.cellRight {
+  composes: cell;
+  justify-content: flex-end;
+}
+
+.row:hover .cell,
+.row:hover .cellRight {
+  background: var(--c-cream);
+}
+
+/* ── Inline inputs (borderless, only underline on focus — Houzs style) */
+
+.inlineInput,
+.inlineSelect {
+  width: 100%;
+  height: 24px;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  outline: none;
+  line-height: 1.4;
+}
+
+.inlineInput:focus,
+.inlineSelect:focus {
+  border-bottom-color: var(--c-orange);
+}
+
+.inlineInput:disabled,
+.inlineSelect:disabled {
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+
+.inlineInputRight {
+  composes: inlineInput;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.inlineInputUser {
+  composes: inlineInput;
+  color: var(--c-burnt);
+  font-weight: 500;
+}
+
+.placeholderHint::placeholder {
+  color: rgba(34, 31, 32, 0.30);
+  font-style: italic;
+}
+
+/* ── Empty state ──────────────────────────────────────────────────── */
+
+.emptyRow {
+  padding: var(--space-3);
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--line);
+  font-style: italic;
+}
+
+/* ── Trash button per row ─────────────────────────────────────────── */
+
+.trashBtn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  color: var(--c-festive-b, #B8331F);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.4;
+}
+
+.trashBtn:hover { opacity: 1; background: rgba(184, 51, 31, 0.10); }
+.trashBtn:disabled { cursor: not-allowed; opacity: 0.2; }
+
+/* ── Method dropdown — show pill in display, plain select in edit ──── */
+
+.methodPill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  letter-spacing: 0.02em;
+}
+
+/* ── Summary (Deposit Paid + Balance) ──────────────────────────────── */
+
+.summary {
+  margin-top: var(--space-3);
+  margin-left: auto;
+  max-width: 380px;
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 4px var(--space-3);
+  align-items: center;
+}
+
+.summaryLabel {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  text-align: right;
+}
+
+.summaryValue {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  color: var(--c-ink);
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+}
+
+.summaryValueAccent {
+  composes: summaryValue;
+  color: var(--c-burnt);
+  font-weight: 600;
+}
+
+.balanceClear {
+  composes: summaryValue;
+  color: var(--c-secondary-a, #2F5D4F);
+  font-weight: 700;
+}
+
+.balanceOutstanding {
+  composes: summaryValue;
+  color: var(--c-festive-b, #B8331F);
+  font-weight: 700;
+}

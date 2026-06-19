@@ -30,7 +30,6 @@ import {
   Sofa,
   Layers,
   Calculator,
-  Timer,
   Scissors,
   BookOpen,
   AlertCircle,
@@ -260,7 +259,9 @@ export const NAV_TABS: NavTab[] = [
           { to: "/scm/product-models", label: "Product Models", icon: Layers, perm: "*" },
           { to: "/scm/fabric-tracking", label: "Fabric Tracking", icon: Scissors, perm: "*" },
           { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, perm: "*" },
-          { to: "/scm/mrp-lead-times", label: "Lead Times", icon: Timer, perm: "*" },
+          // Lead Times has no standalone vendored page — the capability moved into
+          // the vendored MRP page's "Lead Times" dialog. Nav item removed in the
+          // 2990-vendoring cutover; reach it via MRP · Stock Status → Lead Times.
         ],
       },
       {

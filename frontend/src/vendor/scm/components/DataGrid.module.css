@@ -1,0 +1,514 @@
+/* DataGrid — AutoCount-style ledger grid.
+   Used by SO list (PR-G) and any future high-density list view.
+   Density target: ~28px row height, fs-12 body, fs-10 uppercase header. */
+
+.root {
+  /* De-boxed (Wei Siang 2026-06-04): a flat, full-width table surface — NOT a
+     floating brochure card. Dropped the drop-shadow + big radius that made every
+     list look "boxed-in"; kept a hairline border + small radius just for edge
+     definition. Reads like a standard enterprise data grid. */
+  display: flex;
+  flex-direction: column;
+  background: var(--c-paper);
+  /* Outer frame fully removed (Wei Siang 2026-06-04, round 2): no border, no
+     radius — the grid is a flat full-bleed panel that flows with the page
+     instead of sitting in a "框框". The toolbar's cream bar + the header rule
+     give all the structure needed; the paper background still sets it apart
+     from the cream page. */
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: hidden;
+  font-family: var(--font-sans);
+}
+
+/* Embedded (drill-down) mode — no card chrome. The grid sits inside a
+   parent expansion row and must read as a plain inline nested table that
+   flows with the whole page, like the Daily Breakdown view. Strip the
+   border/shadow/radius/background so there is no "外框", and let it grow
+   to its natural height. */
+.rootEmbedded {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--c-cream);
+  flex-wrap: wrap;
+}
+.toolbarSpacer { flex: 1; }
+.searchWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 4px 8px;
+  min-width: 240px;
+}
+.searchInput {
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  width: 100%;
+}
+.searchInput::placeholder { color: var(--fg-muted); }
+
+/* HOUZS-parity Columns popover button + dropdown
+   ────────────────────────────────────────────────
+   Commander 2026-05-27: "为什么不是跟houzs的一样" — the right-click header
+   menu was undiscoverable. This adds a visible pill in the toolbar matching
+   the houzs-erp pattern (Columns3 icon + label + N/M badge + popover with a
+   checkbox per column + Reset link). */
+.columnsAnchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.toolbarPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-button);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--c-ink);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  height: 28px;
+}
+.toolbarPill:hover { background: var(--c-cream); }
+.toolbarPillOn {
+  background: var(--c-ink);
+  color: var(--c-paper);
+  border-color: var(--c-ink);
+}
+.toolbarPillOn:hover { background: var(--c-ink); }
+.toolbarPillBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--c-cream);
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.toolbarPillOn .toolbarPillBadge {
+  background: rgba(255, 255, 255, 0.25);
+  color: var(--c-paper);
+}
+.columnsMenuBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+  background: rgba(0, 0, 0, 0.08);
+}
+.columnsMenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  width: 220px;
+  max-height: 320px;
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3, 0 8px 24px rgba(0, 0, 0, 0.16));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.columnsMenuHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--c-cream);
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-ink);
+}
+.columnsMenuReset {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  cursor: pointer;
+  font-family: var(--font-button);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--c-burnt);
+}
+.columnsMenuReset:hover { text-decoration: underline; }
+.columnsMenuBody {
+  overflow-y: auto;
+  max-height: 320px;
+  padding: 4px 0;
+}
+.columnsMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  cursor: pointer;
+}
+.columnsMenuItem:hover { background: var(--c-cream); }
+.columnsMenuItem input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--c-burnt);
+  cursor: pointer;
+}
+
+.tbarBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--c-ink);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 4px);
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tbarBtn:hover:not(:disabled) { background: var(--c-cream); }
+.tbarBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+.tbarBtnDanger { color: var(--c-festive-b, #B8331F); }
+
+/* ── Group-by zone ───────────────────────────────────────────────── */
+.groupZone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px var(--space-3);
+  background: rgba(34, 31, 32, 0.04);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  color: var(--fg-muted);
+  min-height: 28px;
+}
+.groupZoneActive {
+  background: rgba(232, 107, 58, 0.08);
+  color: var(--c-burnt);
+}
+.groupChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 2px 6px 2px 8px;
+  font-size: var(--fs-11);
+  color: var(--c-ink);
+}
+.groupChipRemove {
+  background: transparent;
+  border: 0;
+  color: var(--fg-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+.groupChipRemove:hover { color: var(--c-festive-b, #B8331F); }
+
+/* ── Table ───────────────────────────────────────────────────────── */
+/* Issue #2 fix (so-list-pixel-perfect-houzs) — force the horizontal
+   scrollbar to be always visible (overflow-x: scroll vs auto) and make
+   the WebKit scrollbar track thicker so commander can grab it. The grid
+   sits inside <section> wrappers with their own overflow rules; forcing
+   our own scroll wins because this is the inner-most scrollable
+   container. */
+.scroll {
+  overflow-x: scroll;
+  overflow-y: auto;
+  /* Commander 2026-05-29 — the grid sat in a short box with dead space below.
+     Reserve only the topbar + page header + toolbar (~150px) so the grid
+     stretches to nearly the full viewport height like the rest of the system. */
+  max-height: calc(100vh - 150px);
+}
+
+/* Embedded (drill-down) mode — no independent scrollbar, no height cap.
+   The drill-down must scroll with the whole page, not trap a separate
+   horizontal/vertical scrollbar inside a card. */
+.scrollEmbedded {
+  overflow: visible;
+  max-height: none;
+}
+.scroll::-webkit-scrollbar {
+  height: 12px;
+  width: 12px;
+}
+.scroll::-webkit-scrollbar-track {
+  background: var(--c-cream);
+  border-top: 1px solid var(--line);
+}
+.scroll::-webkit-scrollbar-thumb {
+  background: rgba(34, 31, 32, 0.32);
+  border-radius: 6px;
+  border: 2px solid var(--c-cream);
+}
+.scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--c-burnt);
+}
+.scroll {
+  /* Firefox */
+  scrollbar-width: auto;
+  scrollbar-color: rgba(34, 31, 32, 0.32) var(--c-cream);
+}
+.table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+}
+.thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--c-cream);
+}
+/* Embedded (drill-down) mode — the grid flows with the page, so there is
+   no inner scroll container for a sticky header to anchor to. Make the
+   header a plain non-sticky row like the Daily Breakdown view. */
+.theadEmbedded {
+  position: static;
+}
+.th {
+  font-family: var(--font-button);
+  font-size: var(--fs-10, 10px);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  background: var(--c-cream);
+  position: relative;
+  user-select: none;
+  white-space: nowrap;
+  cursor: grab;
+}
+.th:last-child { border-right: 0; }
+.thAlignRight { text-align: right; }
+.thDragOver { background: rgba(232, 107, 58, 0.12); }
+.thInner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.sortBtn {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+}
+.sortArrow { font-size: 10px; color: var(--c-burnt); margin-left: 2px; }
+.resizeHandle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 3;
+}
+.resizeHandle:hover { background: var(--c-orange); opacity: 0.4; }
+
+.tbody { background: var(--c-paper); }
+
+.tr {
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.tr:hover { background: var(--c-cream); }
+.trSelected { background: rgba(232, 107, 58, 0.10) !important; font-weight: 600; }
+.tr:last-child { border-bottom: 0; }
+
+.td {
+  padding: 4px 8px;
+  border-right: 1px solid rgba(34, 31, 32, 0.04);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--c-ink);
+  height: 28px;
+  vertical-align: middle;
+}
+.td:last-child { border-right: 0; }
+/* Figures = one font system-wide (owner 2026-06-18: Mono). --font-mono is the
+   readable system stack + the table already sets tabular-nums, so numeric
+   columns line up regardless of which page renders them. */
+.tdAlignRight { text-align: right; font-family: var(--font-mono); }
+.tdMuted { color: var(--fg-muted); }
+.tdNumeric { font-variant-numeric: tabular-nums; }
+
+/* ── Group rows ──────────────────────────────────────────────────── */
+.groupRow {
+  background: rgba(34, 31, 32, 0.06);
+  font-weight: 600;
+  cursor: pointer;
+}
+.groupRow:hover { background: rgba(34, 31, 32, 0.10); }
+.groupRowCell {
+  padding: 4px 8px;
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  letter-spacing: 0.04em;
+  color: var(--c-ink);
+}
+.groupCaret {
+  display: inline-block;
+  width: 12px;
+  color: var(--c-burnt);
+}
+.groupCount {
+  margin-left: 8px;
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+
+/* ── Empty + loading ─────────────────────────────────────────────── */
+.empty {
+  padding: var(--space-7) var(--space-4);
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: var(--fs-13);
+}
+
+/* ── Context menu ────────────────────────────────────────────────── */
+.ctxMenu {
+  position: fixed;
+  z-index: 999;
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3, 0 8px 24px rgba(0,0,0,0.16));
+  padding: 4px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  min-width: 160px;
+}
+.ctxItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--c-ink);
+  border-radius: var(--radius-sm, 4px);
+}
+.ctxItem:hover { background: var(--c-cream); }
+.ctxDivider {
+  height: 1px;
+  background: var(--line);
+  margin: 4px 0;
+}
+
+/* ── Row context menu (right-click) ─────────────────────────────────
+   AutoCount-style: New / Edit / View / Convert to DO / Delete.
+   z-index sits above sticky <thead> and the header ctx menu so the
+   floating menu always clears chrome. */
+.contextMenu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3, 0 8px 24px rgba(0, 0, 0, 0.16));
+  padding: 4px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  min-width: 200px;
+}
+.contextMenuItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--c-ink);
+  border-radius: var(--radius-sm, 4px);
+  font-family: inherit;
+  font-size: inherit;
+}
+.contextMenuItem:hover { background: var(--c-cream); }
+.contextMenuDivider {
+  height: 1px;
+  background: var(--line);
+  margin: 4px 6px;
+}
+.contextMenuDanger { color: var(--c-festive-b, #B8331F); }
+.contextMenuDanger:hover { background: rgba(184, 51, 31, 0.06); }
+
+/* ── Footer / status line ────────────────────────────────────────── */
+.statusLine {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--c-cream);
+  font-family: var(--font-button);
+  font-size: var(--fs-10, 10px);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  min-height: 22px;
+}

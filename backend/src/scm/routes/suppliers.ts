@@ -23,6 +23,7 @@
 import { Hono } from 'hono';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizePhone } from '../shared/phone';
+import { effectiveDelivery } from '../shared/effective-delivery';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { bindingToProductPatch } from '../lib/cost-anchor-sync';
@@ -682,7 +683,7 @@ suppliers.get('/:id/scorecard', async (c) => {
 
   const { data: pos, error: posErr } = await supabase
     .from('purchase_orders')
-    .select('id, po_number, status, po_date, expected_at, received_at, total_centi')
+    .select('id, po_number, status, po_date, expected_at, supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4, received_at, total_centi')
     .eq('supplier_id', id)
     .order('po_date', { ascending: false });
 
@@ -695,9 +696,19 @@ suppliers.get('/:id/scorecard', async (c) => {
   let onTimeCount = 0;
   let leadDaysSum = 0;
   for (const p of receivedRows) {
-    if (p.expected_at && p.received_at) {
+    /* Migration 0180 — on-time is measured against the EFFECTIVE (LATEST revised)
+       delivery date, per owner decision: MAX over non-null of [expected_at,
+       _2, _3, _4]. camelCase trap — dual-read snake_case off the raw row. */
+    const pr = p as Record<string, string | null | undefined>;
+    const effExpected = effectiveDelivery(
+      p.expected_at,
+      pr.supplierDeliveryDate2 ?? pr.supplier_delivery_date_2,
+      pr.supplierDeliveryDate3 ?? pr.supplier_delivery_date_3,
+      pr.supplierDeliveryDate4 ?? pr.supplier_delivery_date_4,
+    );
+    if (effExpected && p.received_at) {
       const rec = new Date(p.received_at).getTime();
-      const exp = new Date(p.expected_at).getTime();
+      const exp = new Date(effExpected).getTime();
       if (Number.isFinite(rec) && Number.isFinite(exp) && rec <= exp) onTimeCount += 1;
     }
     if (p.received_at && p.po_date) {

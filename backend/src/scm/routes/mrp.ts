@@ -41,7 +41,7 @@
 // ----------------------------------------------------------------------------
 
 import { Hono } from 'hono';
-import { computeVariantKey, buildVariantSummary, isServiceLine, splitSofaCode, type VariantAttrs } from '../shared';
+import { computeVariantKey, buildVariantSummary, isServiceLine, splitSofaCode, effectiveDelivery, type VariantAttrs } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
 import type { Env, Variables } from '../env';
@@ -81,9 +81,22 @@ type PoLineRow = {
   qty: number;
   received_qty: number | null;
   delivery_date: string | null;
+  // Migration 0180 — per-line supplier-revised delivery dates. The effective
+  // line ETA = MAX over non-null of [delivery_date, _2, _3, _4].
+  supplier_delivery_date_2: string | null;
+  supplier_delivery_date_3: string | null;
+  supplier_delivery_date_4: string | null;
   warehouse_id: string | null;        // per-line ship-to warehouse (overrides header)
   so_item_id: string | null;          // SO line this PO line was raised from (informational only now)
-  po: { po_number: string; status: string; expected_at: string | null; purchase_location_id: string | null; supplier_id: string | null } | null;
+  po: {
+    po_number: string; status: string; expected_at: string | null;
+    // Migration 0180 — header revised dates, used as the fallback ETA when the
+    // line carries no delivery date of its own.
+    supplier_delivery_date_2: string | null;
+    supplier_delivery_date_3: string | null;
+    supplier_delivery_date_4: string | null;
+    purchase_location_id: string | null; supplier_id: string | null;
+  } | null;
 };
 
 type ProductRow = { code: string; name: string | null; category: string | null };
@@ -339,8 +352,10 @@ export async function computeMrp(
   const { data: poRaw } = await sb
     .from('purchase_order_items')
     .select(`
-      material_code, item_group, variants, qty, received_qty, delivery_date, warehouse_id, so_item_id,
-      po:purchase_orders!inner ( po_number, status, expected_at, purchase_location_id, supplier_id )
+      material_code, item_group, variants, qty, received_qty, delivery_date,
+      supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4,
+      warehouse_id, so_item_id,
+      po:purchase_orders!inner ( po_number, status, expected_at, supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4, purchase_location_id, supplier_id )
     `)
     .limit(5000);
   // Commander 2026-05-31 — carry the covering PO's supplier so a covered line
@@ -352,7 +367,25 @@ export async function computeMrp(
   const poSupplierIds = new Set<string>();
   for (const r of (poRaw ?? []) as unknown as PoLineRow[]) {
     if (!r.po || PO_DEAD.has(r.po.status)) continue;
-    const eta = r.delivery_date ?? r.po.expected_at ?? null;
+    /* Migration 0180 — ETA is the EFFECTIVE (latest revised) delivery date: the
+       line's own effective date (MAX over its delivery_date + revisions), else
+       the header's effective date (MAX over expected_at + revisions). camelCase
+       trap: the pg driver camelCases result cols, so dual-read snake_case. */
+    const rr = r as unknown as Record<string, string | null | undefined>;
+    const poh = r.po as unknown as Record<string, string | null | undefined>;
+    const lineEta = effectiveDelivery(
+      r.delivery_date,
+      rr.supplierDeliveryDate2 ?? r.supplier_delivery_date_2,
+      rr.supplierDeliveryDate3 ?? r.supplier_delivery_date_3,
+      rr.supplierDeliveryDate4 ?? r.supplier_delivery_date_4,
+    );
+    const headerEta = effectiveDelivery(
+      r.po.expected_at,
+      poh.supplierDeliveryDate2 ?? r.po.supplier_delivery_date_2,
+      poh.supplierDeliveryDate3 ?? r.po.supplier_delivery_date_3,
+      poh.supplierDeliveryDate4 ?? r.po.supplier_delivery_date_4,
+    );
+    const eta = lineEta ?? headerEta ?? null;
     const left = (r.qty ?? 0) - (r.received_qty ?? 0);
     if (left <= 0) continue;
     const poWh = r.warehouse_id ?? r.po.purchase_location_id ?? null;

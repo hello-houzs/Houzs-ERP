@@ -1,0 +1,1417 @@
+// ----------------------------------------------------------------------------
+// SoLineCard — Houzs-pattern single-row line item editor.
+//
+// Commander 2026-05-27: "我要 Hookka 的 LineCard 排版". Verbatim port of
+// houzs-erp/src/components/NewSalesOrderForm.tsx LineCard (lines 208-487)
+// translated from Tailwind to CSS Modules + 2990 brand tokens.
+//
+// Layout (single row, collapsed):
+//   [No #] [Item ▼] [Remarks input] [Qty] [Unit Price] [Delivery Date] [Amount $] [Group badge] [🗑]
+//
+// Below row, per-category variants (only when SKU picked + has variants):
+//   BEDFRAME → Fabrics / Gaps / Divan Heights / Leg Heights · Specials accordion
+//   SOFA     → Fabrics / Seat Heights / Leg Heights        · Specials accordion
+//   MATTRESS / ACCESSORY / OTHERS → no variants section
+//
+// Wired to:
+//   - useMfgProducts (SKU picker, search-as-you-type)
+//   - useMaintenanceConfig (variant option lists + per-option surcharges)
+//   - useFabricTrackings (fabric dropdown)
+//   - useUploadSoItemPhoto / useDeleteSoItemPhoto (per-line photos, PR-F)
+//
+// State contract unchanged from PR #125: same SoLineDraft shape, same
+// onChange(patch) callback. SalesOrderNew + SalesOrderDetail can drop
+// this in without touching the parent.
+// ----------------------------------------------------------------------------
+
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Trash2, ImagePlus, X, ChevronDown, ChevronRight } from 'lucide-react';
+import {
+  computeMfgLinePrice,
+  buildSpecialsPoolFromAddons,
+  type MfgPricingProduct,
+  type MfgFabricTier,
+} from '@2990s/shared/mfg-pricing';
+import { missingVariantAxes } from '@2990s/shared/so-variant-rule';
+import { activeOptions, maintPickerValues } from '@2990s/shared';
+import {
+  useMfgProducts,
+  useMaintenanceConfig,
+  useSpecialAddons,
+  useModelAllowedOptionsByCode,
+  type MfgProductRow,
+  type SpecialAddonRow,
+} from '../lib/mfg-products-queries';
+import { useFabricTrackings, useFabricColoursActive, type FabricTrackingRow } from '../lib/fabric-queries';
+import { useFabricLibrary } from '../lib/queries';
+import {
+  useUploadSoItemPhoto,
+  useDeleteSoItemPhoto,
+  fetchSoItemPhotoSignedUrl,
+} from '../lib/sales-order-queries';
+import { useDebouncedValue } from '../lib/hooks';
+import { useAuth, isAdminLevel, isHatchSales } from '../lib/auth';
+import { CATEGORY_BADGE } from '../lib/category-badges';
+import { posRemarkSpecialOf } from '../lib/pos-remark-special';
+import { useNotify } from './NotifyDialog';
+import styles from './SoLineCard.module.css';
+const ICON = { size: 16, strokeWidth: 1.75 } as const;
+const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
+
+const fmtRm = (centi: number, currency = 'MYR'): string =>
+  `${currency} ${(centi / 100).toLocaleString('en-MY', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  })}`;
+
+/** PR #114/#125 — Draft payload for one SO line. Matches the shape POST
+ *  /mfg-sales-orders and PATCH /mfg-sales-orders/:docNo/items both expect.
+ *  PR #147 — `overriddenKeys` is a client-only audit set (not persisted to
+ *  API) that records which variant keys this line has been MANUALLY edited
+ *  for. The master-follower cascade in SalesOrderNew uses it to decide
+ *  whether to overwrite a follower's variant when LINE 1's changes:
+ *    - key NOT in overriddenKeys → cascade overwrites (follower stays in sync)
+ *    - key IN overriddenKeys     → cascade leaves alone (follower wins) */
+export type SoLineDraft = {
+  itemCode:       string;
+  itemGroup:      string;        // 'sofa' | 'bedframe' | 'mattress' | 'accessory' | 'others'
+  description:    string;
+  uom:            string;
+  qty:            number;
+  unitPriceCenti: number;
+  discountCenti:  number;
+  unitCostCenti:  number;
+  variants:       Record<string, unknown>;
+  remark:         string;
+  overriddenKeys?: string[];
+  /* PR-E — Per-item delivery date + cascade override flag. */
+  lineDeliveryDate?:           string | null;
+  lineDeliveryDateOverridden?: boolean;
+  /* PR-F (Task #79) — Per-line photo R2 object keys (already-saved photos). */
+  photoUrls?:                  string[];
+  /* Line-card-redesign (Commander 2026-05-27) — Client-only pending File
+     uploads staged before the line has a DB id. Parent strips this before
+     POST/PATCH and re-uploads each File against the saved itemId after
+     create. NEVER persisted to the API. */
+  pendingPhotoFiles?:          File[];
+};
+
+/** Factory for a fresh empty SO line draft. */
+export const emptySoLine = (): SoLineDraft => ({
+  itemCode: '', itemGroup: 'others', description: '', uom: 'UNIT',
+  qty: 1, unitPriceCenti: 0, discountCenti: 0, unitCostCenti: 0,
+  variants: {}, remark: '',
+  lineDeliveryDate: null,
+  lineDeliveryDateOverridden: false,
+  photoUrls: [],
+  pendingPhotoFiles: [],
+});
+
+/** Strip client-only fields (pendingPhotoFiles, photoUrls) from a draft
+ *  before POST / PATCH. The API doesn't accept File objects and photo
+ *  keys are managed by the dedicated /items/:id/photos endpoints. */
+export const stripClientOnlyFields = (
+  draft: SoLineDraft,
+): Omit<SoLineDraft, 'pendingPhotoFiles' | 'photoUrls'> => {
+  const { pendingPhotoFiles: _f, photoUrls: _p, ...rest } = draft;
+  void _f; void _p;
+  return rest;
+};
+
+/* posRemarkSpecialOf — the POS "special add-on" row (note + folded extra) for
+   the Special Orders accordion — lives in ../lib/pos-remark-special (pure +
+   unit-tested). Loo 2026-06-13: it reads variants.extraAddonNote, NOT the item
+   remark (variants.remark), which is now a separate field. */
+
+/* ── Per-category badge swatches ──────────────────────────────────────
+   2026-05-27: extracted to lib/category-badges.ts so MfgSalesOrdersList +
+   SalesOrderDetailListing can share the same chip palette. Re-import here
+   so the inline references below stay one-line. */
+
+/* ──────────────────────────────────────────────────────────────────────
+   SoLineCard
+   ────────────────────────────────────────────────────────────────────── */
+
+/* Task #103 — Wrap in React.memo at module bottom. The parent (SO Detail)
+   now passes stable per-row callbacks via a useMemo'd Map keyed off
+   editingLineIds, so the memo comparator can rely on shallow-equal props.
+   `inheritVariantsByCategory` from SalesOrderNew is a fresh object on every
+   render but the only state it captures is LINE 1's variants, which change
+   exactly when the user is interacting with LINE 1 anyway — i.e. exactly
+   when we DO want the follower rows to re-render. */
+const SoLineCardInner = ({
+  index,
+  draft,
+  onChange,
+  onRemove,
+  canRemove,
+  inheritVariantsByCategory,
+  docNo,
+  itemId,
+  isEditing = true,
+}: {
+  index:     number;
+  draft:     SoLineDraft;
+  onChange:  (patch: Partial<SoLineDraft>) => void;
+  onRemove:  () => void;
+  canRemove: boolean;
+  inheritVariantsByCategory?: Record<string, Record<string, unknown> | undefined>;
+  docNo?:    string;
+  itemId?:   string;
+  isEditing?: boolean;
+}) => {
+  const notify = useNotify();
+  const maintQ   = useMaintenanceConfig('master');
+  const maint    = maintQ.data?.data ?? null;
+  /* fabric_trackings stays ONLY for the read-only pricing-tier breakdown
+     (pickedFabric below) — the Fabrics DROPDOWN now sources the selling-side
+     fabric_colours, same as POS (SO-parity, Loo 2026-06-06). */
+  const fabricsQ = useFabricTrackings();
+  const fabrics = useMemo(() => fabricsQ.data ?? [], [fabricsQ.data]);
+  const fabricColoursQ = useFabricColoursActive();
+  const fabricLibQ     = useFabricLibrary();
+  /* Special Add-ons (the per-Model system POS sells from + the server prices
+     from). Replaces the legacy maintenance_config specials/sofaSpecials pools. */
+  const specialAddonsQ = useSpecialAddons();
+  const specialDefs    = useMemo(() => specialAddonsQ.data ?? [], [specialAddonsQ.data]);
+
+  /* SO-SKU spec P4 (D4, Loo 2026-06-05) — the unit price is LOCKED to the
+     SKU Master sell price for everyone below admin. It auto-fills on pick and
+     the server recompute is authoritative at save; only admin-level roles can
+     hand-edit (the audited /override route is gated server-side too).
+     TEMPORARY (Loo 2026-06-10, SO emergency hatch) — the POS selling roles
+     creating raw SOs through the hatch may also type the price: their new
+     items often carry no sell_price_sen, so the locked field booked RM 0
+     lines. The server still enforces the catalog price on lines it CAN price
+     (isHatchSales in lib/auth.tsx — remove with the hatch). */
+  const { staff } = useAuth();
+  const canEditPrice = isAdminLevel(staff?.role) || isHatchSales(staff?.role);
+
+  const [search, setSearch] = useState(draft.description || draft.itemCode || '');
+  const [picked, setPicked]         = useState<MfgProductRow | null>(null);
+  const [showPicker, setShowPicker]   = useState(false);
+  // The SKU dropdown is rendered in a portal (document.body) and positioned with
+  // position:fixed from the input's live rect. Without this it lived inside the
+  // section `.card`, whose `overflow:hidden` (rounded corners) clipped it off —
+  // the options got cut at the card's bottom edge on every doc that uses this
+  // card (SO / DO / DR / consignment). Wei Siang 2026-06-06.
+  const pickerWrapRef = useRef<HTMLDivElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  /* Auto-open when the line carries a POS remark/extra special (Loo
+     2026-06-12) so the coordinator sees it without a click. */
+  const [specialsOpen, setSpecialsOpen] = useState(() => posRemarkSpecialOf(draft.variants) != null);
+  /* Commander 2026-05-30 — Unit Price is a free-typed field. Keep the raw
+     typed text in local state so multi-digit entry (e.g. 1000) and
+     clear-then-retype work without the value being reformatted to "x.00" on
+     every keystroke (which jumps the cursor and blocks typing). Synced back
+     from the canonical centi only when it changes from outside, e.g. a
+     product pick resets it to 0. */
+  const [priceText, setPriceText] = useState((draft.unitPriceCenti / 100).toFixed(2));
+  /* Task #102 — Same gate the debtor autocomplete got in PR #99. Without
+     this the product picker fired one /mfg-products?search=… request per
+     keystroke even when the picker wasn't open (every render of an
+     already-saved line re-issued the query for the description text). The
+     200 ms debounce smooths fast typists; the length>=2 + showPicker
+     enabled-flag guards the closed-picker + single-character cases. */
+  const debouncedSearch = useDebouncedValue(search, 200);
+  const trimmedSearch   = debouncedSearch.trim();
+  const productsQuery = useMfgProducts({
+    search:  trimmedSearch || undefined,
+    enabled: showPicker && trimmedSearch.length >= 2,
+  });
+  const candidates = productsQuery.data ?? [];
+
+  /* PR-F (Task #79) — Per-line photo state.
+     Line-card-redesign (Commander 2026-05-27): also support DRAFT mode
+     where the line hasn't been saved yet. In draft mode we stage File
+     objects in `draft.pendingPhotoFiles` and preview them via
+     URL.createObjectURL(). The parent (SalesOrderNew / SalesOrderDetail
+     Add Line flow) drains pendingPhotoFiles after save and uploads each
+     file against the freshly-minted itemId. */
+  const uploadPhoto = useUploadSoItemPhoto();
+  const deletePhoto = useDeleteSoItemPhoto();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const photoUrls = draft.photoUrls ?? [];
+  const pendingFiles = useMemo(() => draft.pendingPhotoFiles ?? [], [draft.pendingPhotoFiles]);
+  const isSaved = Boolean(docNo) && Boolean(itemId);
+  const canShowPhotos = Boolean(draft.itemCode);
+  const canMutatePhotos = canShowPhotos && isSaved && isEditing;
+  const canStagePhotos = canShowPhotos && !isSaved && isEditing;
+
+  /* Object URL lifecycle: mint a URL per pending File and revoke when
+     the file changes or the component unmounts. Keyed by index because
+     File objects don't have stable IDs and the Array reference shifts
+     on every patch. */
+  const pendingPreviews = useMemo(
+    () => pendingFiles.map((f) => ({ name: f.name, url: URL.createObjectURL(f) })),
+    [pendingFiles],
+  );
+  useEffect(() => () => {
+    pendingPreviews.forEach((p) => URL.revokeObjectURL(p.url));
+  }, [pendingPreviews]);
+
+  // Sync picker search box to the description after picking.
+  useEffect(() => { setSearch(draft.description ?? ''); }, [draft.description]);
+
+  // Reflect external Unit Price changes (e.g. product pick → 0) into the
+  // local text box, but leave the operator's in-progress typing untouched.
+  useEffect(() => {
+    const parsed = Math.round(Number(priceText) * 100) || 0;
+    if (parsed !== draft.unitPriceCenti) setPriceText((draft.unitPriceCenti / 100).toFixed(2));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.unitPriceCenti]);
+
+  const pickProduct = (p: MfgProductRow) => {
+    setPicked(p);
+    const category = p.category.toLowerCase();
+    /* PR #141 — Sofa-set inherit: same-category follower lines copy the
+       master's variants on pick. PR #147 — reset overriddenKeys on a fresh
+       pick so cascade can repopulate everything cleanly. */
+    const inherited = inheritVariantsByCategory?.[category];
+    const seedVariants: Record<string, unknown> =
+      inherited && Object.keys(inherited).length > 0 ? { ...inherited } : {};
+    onChange({
+      itemCode:       p.code,
+      itemGroup:      category,
+      description:    p.name,
+      /* SO-SKU spec P4 (D4, Loo 2026-06-05) — the SELLING unit price defaults
+         from the SKU Master's sell_price_sen (POS Master / Main Account
+         authored), replacing the manual-0 default (Commander 2026-05-29 — that
+         predates the cost/sell split; base_price_sen remains COST and still
+         never auto-populates). The server recompute stays authoritative at
+         save; sofa module / seat-height pools land their exact figure there. */
+      unitPriceCenti: p.sell_price_sen ?? 0,
+      variants:       seedVariants,
+      overriddenKeys: [],
+    });
+    setSearch(p.name);
+  };
+
+  /* PR #136 — Auto-compute bedframe Total Height = Divan + Leg + Gap. */
+  const parseInches = (s: unknown): number => {
+    if (s === null || s === undefined) return 0;
+    const m = String(s).match(/(-?\d+(?:\.\d+)?)/);
+    return m && m[1] ? Number(m[1]) : 0;
+  };
+  const computedTotalHeight = useMemo(() => {
+    if (draft.itemGroup !== 'bedframe') return '';
+    const d = parseInches(draft.variants.divanHeight);
+    const l = parseInches(draft.variants.legHeight);
+    const g = parseInches(draft.variants.gap);
+    if (d === 0 && l === 0 && g === 0) return '';
+    return `${d + l + g}"`;
+  }, [draft.itemGroup, draft.variants.divanHeight, draft.variants.legHeight, draft.variants.gap]);
+
+  useEffect(() => {
+    if (draft.itemGroup !== 'bedframe') return;
+    if (!computedTotalHeight) return;
+    if (String(draft.variants.totalHeight ?? '') === computedTotalHeight) return;
+    onChange({ variants: { ...draft.variants, totalHeight: computedTotalHeight } });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [computedTotalHeight, draft.itemGroup]);
+
+  /* PR #147 — Variant edits add the key to overriddenKeys so cascade
+     leaves this line alone when LINE 1 changes.
+     SO-parity (Loo 2026-06-06) — setVariants writes several keys atomically
+     (a fabric pick lands fabricCode + colourId + fabricId + labels in ONE
+     patch, mirroring what the POS handover payload sends per line). */
+  const setVariants = (patch: Record<string, unknown>) => {
+    const nextOverrides = Array.from(new Set([...(draft.overriddenKeys ?? []), ...Object.keys(patch)]));
+    onChange({
+      variants: { ...draft.variants, ...patch },
+      overriddenKeys: nextOverrides,
+    });
+  };
+  const setVariant = (k: string, v: string | number | string[]) => setVariants({ [k]: v });
+
+  /* PR #127 — HOOKKA multi-select Special Orders. */
+  const specialsList = (v: unknown): string[] => {
+    if (Array.isArray(v)) return v.map(String).filter(Boolean);
+    if (typeof v === 'string' && v) return [v];
+    return [];
+  };
+
+  /* MFG-PRICING-ENGINE — Build pricing inputs from the picked product +
+     the fabric tracking row whose code matches the line's fabricCode
+     variant. Pull the per-context tier (sofa_price_tier vs
+     bedframe_price_tier) so the shared compute function can switch
+     basePriceSen ↔ price1Sen exactly the same way the server does. */
+  const pickedFabric: FabricTrackingRow | null = useMemo(() => {
+    const code = String(draft.variants.fabricCode ?? '');
+    if (!code) return null;
+    return fabrics.find((f) => f.fabric_code === code) ?? null;
+  }, [fabrics, draft.variants.fabricCode]);
+
+  const pricingBreakdown = useMemo(() => {
+    if (!picked) return null;
+    const category = draft.itemGroup.toUpperCase() as MfgPricingProduct['category'];
+    const tier: MfgFabricTier | null = pickedFabric
+      ? (category === 'SOFA'
+          ? pickedFabric.sofa_price_tier ?? pickedFabric.price_tier ?? null
+          : category === 'BEDFRAME'
+            ? pickedFabric.bedframe_price_tier ?? pickedFabric.price_tier ?? null
+            : null)
+      : null;
+    const product: MfgPricingProduct = {
+      category:         (picked.category as MfgPricingProduct['category']) ?? 'ACCESSORY',
+      basePriceSen:     picked.base_price_sen ?? null,
+      price1Sen:        picked.price1_sen ?? null,
+      seatHeightPrices: picked.seat_height_prices ?? null,
+    };
+    const specs = specialsList(draft.variants.specials ?? draft.variants.special);
+    /* SO-parity (Loo 2026-06-06) — price the picked specials from the
+       special_addons defs via the SAME pure pool builder the server recompute
+       uses (base sellingPriceSen + chosen-choice extras), instead of the
+       legacy maintenance string pools. Keeps this preview honest with what
+       POST /mfg-sales-orders will actually charge. */
+    const choices = (draft.variants.specialChoices && typeof draft.variants.specialChoices === 'object')
+      ? (draft.variants.specialChoices as Record<string, string[]>)
+      : null;
+    const specialsPool = buildSpecialsPoolFromAddons(specialDefs, specs, choices);
+    const effMaint = maint ? { ...maint, specials: specialsPool, sofaSpecials: specialsPool } : maint;
+    return computeMfgLinePrice(
+      {
+        product,
+        fabric:        pickedFabric ? { tier, surchargeSen: 0 } : null,
+        qty:           draft.qty,
+        divanHeight:   (draft.variants.divanHeight as string | undefined) ?? null,
+        legHeight:     (draft.variants.legHeight as string | undefined) ?? null,
+        totalHeight:   (draft.variants.totalHeight as string | undefined) ?? null,
+        specials:      specs,
+        seatSize:      (draft.variants.seatHeight as string | undefined) ?? null,
+        sofaLegHeight: (draft.variants.sofaLegHeight as string | undefined) ?? null,
+      },
+      effMaint,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picked, pickedFabric, draft.variants, draft.itemGroup, draft.qty, maint, specialDefs]);
+
+  /* Commander 2026-05-29 — the SELLING unit price is operator-authored. It
+     defaults to 0 on product pick (see pickProduct) and is typed manually;
+     it must NEVER be auto-overwritten from a computed value. The previous
+     auto-recompute effect (which wrote computeMfgLinePrice's selling total
+     into the Unit Price field) is intentionally removed. `pricingBreakdown`
+     is kept ONLY to drive the read-only variant-surcharge display in the
+     right rail — it does not write the editable Unit Price. */
+
+  /* Commander 2026-05-29 — only show variant choices the SKU's Model allows
+     (allowed_options). An empty/absent pool = no restriction. Stops the editor
+     offering e.g. a leg height the SKU rejects on save (variant_not_allowed).
+     SO-parity (Loo 2026-06-06) — `picked` only exists for a freshly-picked
+     product; EDITING a saved line on SO Detail used to render unrestricted.
+     Resolve the pools by item code too so saved lines filter identically. */
+  const allowedByCodeQ = useModelAllowedOptionsByCode(draft.itemCode || undefined);
+  const allowOpts = picked?.allowed_options ?? allowedByCodeQ.data ?? null;
+  const restrictP = (opts: Array<{ value: string; priceSen: number }>, pool?: string[] | null) =>
+    (Array.isArray(pool) && pool.length > 0) ? opts.filter((o) => pool.includes(o.value)) : opts;
+  const restrictS = (opts: string[], pool?: string[] | null) =>
+    (Array.isArray(pool) && pool.length > 0) ? opts.filter((o) => pool.includes(o)) : opts;
+
+  /* ── Fabrics dropdown (SO-parity, Loo 2026-06-06) ─────────────────────
+     Source: selling-side fabric_colours (what POS offers), filtered by the
+     Model's allowed_options.fabrics (colour codes — the Modular ON/OFF
+     authority). Non-empty pool = filter (same as the server gate); empty/null
+     = show all active colours. A saved line whose code fell out of the live
+     list still renders as "(current)" so the select doesn't blank out. */
+  const fabricOptions = useMemo(() => {
+    const seriesLabel = new Map((fabricLibQ.data ?? []).map((f) => [f.id, f.label]));
+    /* Dual-code display (owner 2026-06-12): "CG-015 · DC-151-03 — description".
+       The supplier's EXTERNAL code lives on fabric_trackings.supplier_code
+       (colourId == fabric_code). Display-only — the stored value stays the
+       internal colourId/fabric_code. */
+    const supplierCodeByFabric = new Map(
+      fabrics.map((f) => [f.fabric_code, f.supplier_code?.trim() || null] as const),
+    );
+    const pool = allowOpts?.fabrics;
+    /* Migration 0167 — fabric_trackings.is_active gates pickers for NEW
+       entries. A saved line whose fabric was deactivated still renders via
+       the "(current)" unshift below. */
+    const inactiveCodes = new Set(
+      fabrics.filter((f) => f.is_active === false).map((f) => f.fabric_code),
+    );
+    const colours = ((Array.isArray(pool) && pool.length > 0)
+      ? (fabricColoursQ.data ?? []).filter((c) => pool.includes(c.colourId))
+      : (fabricColoursQ.data ?? [])
+    ).filter((c) => !inactiveCodes.has(c.colourId));
+    const opts = colours.map((c) => {
+      const series = seriesLabel.get(c.fabricId) ?? c.fabricId;
+      /* Drop the "· <series>" segment when the series name is just the code's
+         prefix (e.g. "BF-13 · BF") — it's redundant. A meaningful series label
+         (e.g. "Charcoal Grey") still shows. */
+      const seriesRedundant =
+        !series || c.colourId === series || c.colourId.startsWith(`${series}-`);
+      const colourSuffix = c.label && c.label !== c.colourId ? ` (${c.label})` : '';
+      const ext = supplierCodeByFabric.get(c.colourId);
+      const codePart = ext ? `${c.colourId} · ${ext}` : c.colourId;
+      const descPart = seriesRedundant
+        ? colourSuffix.trim()
+        : `${series}${colourSuffix}`;
+      return {
+        value: c.colourId,
+        priceSen: 0,
+        display: descPart ? `${codePart} — ${descPart}` : codePart,
+      };
+    });
+    const current = String(draft.variants.fabricCode ?? '');
+    if (current && !opts.some((o) => o.value === current)) {
+      const ext = supplierCodeByFabric.get(current);
+      opts.unshift({
+        value: current,
+        priceSen: 0,
+        display: `${ext ? `${current} · ${ext}` : current} (current)`,
+      });
+    }
+    return opts;
+  }, [fabricColoursQ.data, fabricLibQ.data, fabrics, allowOpts, draft.variants.fabricCode]);
+
+  /* Picking a colour writes the SAME variant keys the POS handover payload
+     sends (pos-handover-so.ts buildVariants): fabricCode + colourId satisfy
+     the server's allowed-fabric gate + cost lookup; fabricId (the SERIES,
+     fabric_library.id) is what the selling fabric-tier add-on keys on — the
+     Backend never sent it before, so a configured tier Δ silently priced
+     RM 0 on Backend-keyed lines. */
+  const pickFabricColour = (colourId: string) => {
+    const c = (fabricColoursQ.data ?? []).find((x) => x.colourId === colourId);
+    const seriesLabel = (fabricLibQ.data ?? []).find((f) => f.id === c?.fabricId)?.label ?? null;
+    setVariants({
+      fabricCode: colourId,
+      colourId,
+      ...(c ? { fabricId: c.fabricId } : {}),
+      ...(seriesLabel ? { fabricLabel: seriesLabel } : {}),
+      ...(c?.label ? { colourLabel: c.label } : {}),
+      ...(c?.swatchHex ? { colourHex: c.swatchHex } : {}),
+    });
+  };
+
+  /* ── Special Add-ons (SO-parity, Loo 2026-06-06) ──────────────────────
+     Mirror the POS configurator exactly: active special_addons rows for this
+     line's category ∩ the Model's allowed_options.specials ticks. POS
+     semantics — no ticks = nothing offered (Modular is the ON/OFF authority),
+     unlike the height pools where empty = unrestricted. */
+  const catUpper = draft.itemGroup.toUpperCase();
+  const specialOptions = useMemo(() => {
+    const allowed = new Set(allowOpts?.specials ?? []);
+    return specialDefs.filter(
+      (a) => a.active && a.categories.includes(catUpper) && allowed.has(a.code),
+    );
+  }, [specialDefs, catUpper, allowOpts]);
+  const specialChoicesMap: Record<string, string[]> =
+    (draft.variants.specialChoices && typeof draft.variants.specialChoices === 'object'
+      ? (draft.variants.specialChoices as Record<string, string[]>)
+      : {});
+
+  /* Tick/untick writes specials (codes) + specialChoices (per-code chosen
+     option-group labels; required groups default to their first choice, like
+     the POS picker) + specialLabels (display snapshot) in one patch. */
+  const toggleSpecial = (code: string) => {
+    const current = specialsList(draft.variants.specials ?? draft.variants.special);
+    const has = current.includes(code);
+    const nextPicked = has ? current.filter((c) => c !== code) : [...current, code];
+    const nextChoices: Record<string, string[]> = { ...specialChoicesMap };
+    if (has) {
+      delete nextChoices[code];
+    } else {
+      const def = specialDefs.find((d) => d.code === code);
+      if (def && def.optionGroups.length > 0) {
+        nextChoices[code] = def.optionGroups.map((g) => (g.required && g.choices[0] ? g.choices[0].label : ''));
+      }
+    }
+    setVariants({
+      specials: nextPicked,
+      specialChoices: nextChoices,
+      specialLabels: nextPicked.map((c) => specialDefs.find((d) => d.code === c)?.label ?? c),
+    });
+  };
+  const changeSpecialChoice = (code: string, groupIdx: number, label: string) => {
+    const def = specialDefs.find((d) => d.code === code);
+    const entry = [...(specialChoicesMap[code] ?? (def?.optionGroups ?? []).map(() => ''))];
+    entry[groupIdx] = label;
+    setVariants({ specialChoices: { ...specialChoicesMap, [code]: entry } });
+  };
+
+  /* Commander 2026-05-29 — the right-rail "Pricing" summary reflects the
+     operator-authored SELLING unit price, not a computed cost base. extraSen
+     collapses the SELLING variant surcharges (sellingPriceSen via
+     computeMfgLinePrice) — 0 today, non-zero only once a Sales Director sets
+     a selling surcharge. The product's cost base is never shown here as the
+     selling base. */
+  const extraSen = pricingBreakdown
+    ? pricingBreakdown.divanSurchargeSen
+    + pricingBreakdown.legSurchargeSen
+    + pricingBreakdown.totalHeightSurchargeSen
+    + pricingBreakdown.specialsSurchargeSen
+    + pricingBreakdown.fabricSurchargeSen
+    : 0;
+
+  const lineTotal = useMemo(
+    () => Math.max(0, draft.qty * draft.unitPriceCenti - draft.discountCenti),
+    [draft.qty, draft.unitPriceCenti, draft.discountCenti],
+  );
+
+  const category = draft.itemGroup.toLowerCase();
+  const badge = CATEGORY_BADGE[category] ?? CATEGORY_BADGE.others!;
+  const hasVariants = Boolean(draft.itemCode) && Boolean(maint) && (category === 'bedframe' || category === 'sofa');
+  const specials = specialsList(draft.variants.specials ?? draft.variants.special);
+  const posRemarkSpecial = posRemarkSpecialOf(draft.variants);
+  /* SO-parity (Loo 2026-06-06) — mattress lines can carry Special Add-ons too
+     (POS prices MATTRESS specials since PR #456). Render JUST the accordion
+     for them — no fabric/height grid. Hidden until a mattress Model has
+     specials ticked in Modular (none today) or the line already carries one
+     (a configured pick OR the POS remark/extra special). */
+  const hasMattressSpecials = Boolean(draft.itemCode) && category === 'mattress'
+    && (specialOptions.length > 0 || specials.length > 0 || posRemarkSpecial != null);
+
+  /* ── Render ─────────────────────────────────────────────────────── */
+
+  // Keep the portal'd SKU dropdown pinned under its input while open; reposition
+  // on scroll/resize so it tracks the page.
+  useEffect(() => {
+    if (!showPicker || !isEditing) { setMenuPos(null); return; }
+    const update = () => {
+      const el = pickerWrapRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setMenuPos({ top: r.bottom + 4, left: r.left, width: r.width });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [showPicker, isEditing]);
+
+  return (
+    <div className={styles.card}>
+      {/* ── Main single row ────────────────────────────────────────── */}
+      <div className={styles.row}>
+        {/* 1. No # */}
+        <span className={styles.lineNo}>{index + 1}</span>
+
+        {/* 2. Item picker (SKU search → code on top, description below) */}
+        <div className={styles.pickerWrap} ref={pickerWrapRef}>
+          {draft.itemCode && search === draft.description && !showPicker ? (
+            <button
+              type="button"
+              className={styles.input}
+              style={{ textAlign: 'left', cursor: isEditing ? 'pointer' : 'not-allowed', padding: '2px 8px', height: 'auto', minHeight: 28 }}
+              disabled={!isEditing}
+              onClick={() => { setShowPicker(true); setSearch(''); }}
+              title="Click to change product"
+            >
+              <div className={styles.pickerInputCol}>
+                <span className={styles.pickerCode}>{draft.itemCode}</span>
+                <span className={styles.pickerDesc}>{draft.description}</span>
+              </div>
+            </button>
+          ) : (
+            <input
+              className={styles.input}
+              placeholder="Click to pick or type to filter…"
+              value={search}
+              disabled={!isEditing}
+              onFocus={() => setShowPicker(true)}
+              onBlur={() => setTimeout(() => setShowPicker(false), 150)}
+              onChange={(e) => { setSearch(e.target.value); setShowPicker(true); }}
+            />
+          )}
+          {showPicker && isEditing && menuPos && createPortal(
+            /* Portal to body + position:fixed so the dropdown escapes the
+               section card's overflow:hidden clip and floats over whatever is
+               below (e.g. the next card). Inline top/left/width override the
+               class's absolute top:100%/left/right. */
+            <ul
+              className={styles.suggestList}
+              style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, width: menuPos.width, right: 'auto', marginTop: 0, zIndex: 1000 }}
+            >
+              {candidates.length > 0 ? (
+                /* Commander 2026-05-27: picker rows show description only — one
+                   scannable line per SKU. The code still binds on click. */
+                candidates.slice(0, 50).map((p) => (
+                  <li
+                    key={p.id}
+                    className={styles.suggestItem}
+                    onMouseDown={() => { pickProduct(p); setShowPicker(false); }}
+                  >
+                    <div className={styles.suggestItemMeta}>
+                      {p.name}
+                    </div>
+                  </li>
+                ))
+              ) : (
+                <li className={styles.suggestItem} style={{ color: 'var(--fg-muted)', cursor: 'default' }}>
+                  {/* Task #102 — Distinguish "type more" (gate hasn't tripped)
+                      from "no matches" (server returned []). */}
+                  {trimmedSearch.length < 2
+                    ? 'Type at least 2 characters to search…'
+                    : productsQuery.isFetching
+                      ? 'Searching…'
+                      : `No products match "${trimmedSearch}".`}
+                </li>
+              )}
+            </ul>,
+            document.body,
+          )}
+        </div>
+
+        {/* 3. Remarks */}
+        <input
+          className={styles.input}
+          placeholder="Type remarks…"
+          value={draft.remark}
+          disabled={!isEditing}
+          onChange={(e) => onChange({ remark: e.target.value })}
+        />
+
+        {/* 4. Qty */}
+        <input
+          type="number"
+          min={1}
+          className={styles.numericInput}
+          value={draft.qty === 0 ? '' : draft.qty}
+          disabled={!isEditing}
+          onChange={(e) => {
+            const v = e.target.value;
+            onChange({ qty: v === '' ? 0 : (parseInt(v) || 0) });
+          }}
+          onBlur={(e) => {
+            if (!e.target.value || parseInt(e.target.value) <= 0) onChange({ qty: 1 });
+          }}
+        />
+
+        {/* 5. Unit Price — D4: locked to the SKU Master sell price below admin. */}
+        <input
+          type="number"
+          step="0.01"
+          className={styles.numericInput}
+          value={priceText}
+          disabled={!isEditing || !canEditPrice}
+          title={!canEditPrice ? 'Price follows the SKU Master sell price — admin can override' : undefined}
+          onChange={(e) => {
+            const t = e.target.value;
+            setPriceText(t);
+            onChange({ unitPriceCenti: Math.round(Number(t) * 100) || 0 });
+          }}
+          onBlur={() => setPriceText((draft.unitPriceCenti / 100).toFixed(2))}
+        />
+
+        {/* 6. Delivery Date (2990 addition between Unit Price and Amount) */}
+        <input
+          type="date"
+          className={styles.input}
+          value={draft.lineDeliveryDate ?? ''}
+          disabled={!isEditing}
+          title={!draft.lineDeliveryDateOverridden && draft.lineDeliveryDate ? 'Auto-inherited from SO header' : undefined}
+          onChange={(e) => onChange({
+            lineDeliveryDate: e.target.value || null,
+            lineDeliveryDateOverridden: true,
+          })}
+          style={
+            !draft.lineDeliveryDateOverridden && draft.lineDeliveryDate
+              ? { borderColor: 'var(--c-orange)', background: 'var(--c-cream)' }
+              : undefined
+          }
+        />
+
+        {/* 7. Amount */}
+        <span className={styles.amount}>{fmtRm(lineTotal)}</span>
+
+        {/* 8. Group badge */}
+        <span className={styles.badge} style={{ background: badge.bg, color: badge.fg }}>
+          {badge.label}
+        </span>
+
+        {/* 9. Trash — hidden when not editing */}
+        {isEditing ? (
+          <button
+            type="button"
+            title="Remove this line"
+            onClick={onRemove}
+            disabled={!canRemove}
+            className={styles.trashBtn}
+          >
+            <Trash2 {...SM_ICON} />
+          </button>
+        ) : <span />}
+      </div>
+
+      {/* ── Two-column body (Commander 2026-05-27 redesign) ──────────
+          LEFT  = variants + specials (the "fat" content)
+          RIGHT = price summary + photos (the always-visible context)
+          The body only renders when there's something to show on either
+          side, i.e. picked a product OR have variants. On a fresh empty
+          card with no SKU picked yet we collapse to just the header row.
+
+          Commander 2026-05-27 (Fix 2): mattress / accessory / others have no
+          per-line variants — render only the right rail (pricing + photos)
+          so the row stays compact. We collapse the grid by skipping bodyLeft
+          when there's no variant UI to show. */}
+      {(picked || hasVariants || hasMattressSpecials || canShowPhotos) && (
+      <div
+        className={styles.body}
+        style={(hasVariants || hasMattressSpecials) ? undefined : { gridTemplateColumns: '1fr' }}
+      >
+        {(hasVariants || hasMattressSpecials) && <div className={styles.bodyLeft}>
+      {hasVariants && category === 'bedframe' && (
+        <div className={styles.variants}>
+          <div className={styles.variantsHead}>BEDFRAME VARIANTS</div>
+          <div className={styles.variantsGrid}>
+            <VariantSelect
+              label="Fabrics" required
+              value={String(draft.variants.fabricCode ?? '')}
+              disabled={!isEditing}
+              options={fabricOptions}
+              onChange={pickFabricColour}
+            />
+            <VariantSelect
+              label="Gaps" required
+              value={String(draft.variants.gap ?? '')}
+              disabled={!isEditing}
+              options={restrictS(maintPickerValues(maint!.gaps, String(draft.variants.gap ?? '')), allowOpts?.gaps).map((g) => ({ value: g, priceSen: 0 }))}
+              onChange={(v) => setVariant('gap', v)}
+            />
+            <VariantSelect
+              label="Divan Heights" required
+              value={String(draft.variants.divanHeight ?? '')}
+              disabled={!isEditing}
+              options={restrictP(activeOptions(maint!.divanHeights, String(draft.variants.divanHeight ?? '')), allowOpts?.divan_heights)}
+              onChange={(v) => setVariant('divanHeight', v)}
+            />
+            <VariantSelect
+              label="Leg Heights" required
+              value={String(draft.variants.legHeight ?? '')}
+              disabled={!isEditing}
+              options={restrictP(activeOptions(maint!.legHeights, String(draft.variants.legHeight ?? '')), allowOpts?.leg_heights)}
+              onChange={(v) => setVariant('legHeight', v)}
+            />
+          </div>
+          {/* Computed Total Height marker — Houzs shows this read-only;
+              we surface it as a small inline hint instead of a 5th cell. */}
+          {computedTotalHeight && (
+            <div style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
+              Total height (auto):{' '}
+              <strong style={{ color: 'var(--c-ink)', fontVariantNumeric: 'tabular-nums' }}>
+                {computedTotalHeight}
+              </strong>{' '}
+              (Divan + Leg + Gap)
+            </div>
+          )}
+          <SpecialsAccordion
+            open={specialsOpen}
+            onToggle={() => setSpecialsOpen((o) => !o)}
+            picked={specials}
+            choices={specialChoicesMap}
+            options={specialOptions}
+            disabled={!isEditing}
+            posRemark={posRemarkSpecial}
+            onToggleCode={toggleSpecial}
+            onChoice={changeSpecialChoice}
+          />
+        </div>
+      )}
+
+      {hasVariants && category === 'sofa' && (
+        <div className={styles.variants}>
+          <div className={styles.variantsHead}>SOFA VARIANTS</div>
+          <div className={styles.variantsGrid}>
+            <VariantSelect
+              label="Fabrics" required
+              value={String(draft.variants.fabricCode ?? '')}
+              disabled={!isEditing}
+              options={fabricOptions}
+              onChange={pickFabricColour}
+            />
+            <VariantSelect
+              label="Seat Heights" required
+              value={String(draft.variants.seatHeight ?? '')}
+              disabled={!isEditing}
+              options={restrictS(maintPickerValues(maint!.sofaSizes, String(draft.variants.seatHeight ?? '')), allowOpts?.sizes).map((s) => {
+                const sh = picked?.seat_height_prices && Array.isArray(picked.seat_height_prices)
+                  ? (picked.seat_height_prices as Array<{ height: string; tier: string; priceSen: number }>)
+                      .find((p) => p.height === s && p.tier === 'PRICE_2')
+                  : null;
+                return { value: s, priceSen: sh?.priceSen ?? 0 };
+              })}
+              onChange={(v) => setVariant('seatHeight', v)}
+            />
+            <VariantSelect
+              label="Leg Heights" required
+              value={String(draft.variants.legHeight ?? '')}
+              disabled={!isEditing}
+              options={restrictP(activeOptions(maint!.sofaLegHeights, String(draft.variants.legHeight ?? '')), allowOpts?.leg_heights)}
+              onChange={(v) => setVariant('legHeight', v)}
+            />
+            {/* Empty cell so the 4-col grid stays balanced */}
+            <span />
+          </div>
+          <SpecialsAccordion
+            open={specialsOpen}
+            onToggle={() => setSpecialsOpen((o) => !o)}
+            picked={specials}
+            choices={specialChoicesMap}
+            options={specialOptions}
+            disabled={!isEditing}
+            posRemark={posRemarkSpecial}
+            onToggleCode={toggleSpecial}
+            onChoice={changeSpecialChoice}
+          />
+        </div>
+      )}
+
+      {hasMattressSpecials && (
+        <div className={styles.variants}>
+          <div className={styles.variantsHead}>MATTRESS ADD-ONS</div>
+          <SpecialsAccordion
+            open={specialsOpen}
+            onToggle={() => setSpecialsOpen((o) => !o)}
+            picked={specials}
+            choices={specialChoicesMap}
+            options={specialOptions}
+            disabled={!isEditing}
+            posRemark={posRemarkSpecial}
+            onToggleCode={toggleSpecial}
+            onChoice={changeSpecialChoice}
+          />
+        </div>
+      )}
+
+        </div>}
+        {/* /bodyLeft */}
+
+        {/* ── Right rail (price summary + photos) ───────────────── */}
+        <div className={styles.bodyRight}>
+          {/* Price summary — only meaningful once a SKU is picked. */}
+          {picked && (
+            <div className={styles.priceSummary}>
+              <div className={styles.priceSummaryHead}>
+                <span>Pricing</span>
+              </div>
+              {/* Commander 2026-05-29 — selling unit price is operator-typed.
+                  Show the manually-entered Unit Price (not a computed cost
+                  base). Variant selling surcharges only surface once a Sales
+                  Director sets them (sellingPriceSen) — 0 today. */}
+              {extraSen > 0 && (
+                <div className={styles.priceRow}>
+                  <span className={styles.priceLabel}>+ Variants</span>
+                  <span className={styles.priceValue}>{fmtRm(extraSen)}</span>
+                </div>
+              )}
+              <div className={styles.priceRow}>
+                <span className={styles.priceLabel}>
+                  Unit × {draft.qty}
+                </span>
+                <span className={styles.priceValue}>{fmtRm(draft.unitPriceCenti)}</span>
+              </div>
+              {draft.discountCenti > 0 && (
+                <div className={styles.priceRow}>
+                  <span className={styles.priceLabel}>− Discount</span>
+                  <span className={styles.priceValue}>{fmtRm(draft.discountCenti)}</span>
+                </div>
+              )}
+              <div className={styles.priceTotalRow}>
+                <span className={styles.priceLabel}>Subtotal</span>
+                <span className={styles.priceTotalValue}>{fmtRm(lineTotal)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Photos — saved mode (R2 thumbs) + draft mode (object-URL
+              previews staged on the draft). canStagePhotos === !isSaved
+              && isEditing; canMutatePhotos === isSaved && isEditing. */}
+          {canShowPhotos && (
+            <div className={styles.photosCard}>
+              <div className={styles.photosHead}>
+                PHOTOS
+                {(photoUrls.length > 0 || pendingFiles.length > 0) && (
+                  <span style={{ marginLeft: 6, color: 'var(--c-ink)', fontWeight: 600 }}>
+                    · {photoUrls.length + pendingFiles.length}
+                  </span>
+                )}
+              </div>
+              <div className={styles.photosStrip}>
+                {/* Saved photos (R2 signed URL thumbs) */}
+                {photoUrls.map((key) => (
+                  <PhotoThumb
+                    key={key}
+                    photoKey={key}
+                    docNo={docNo}
+                    itemId={itemId}
+                    canDelete={canMutatePhotos && !deletePhoto.isPending}
+                    onDelete={() => {
+                      if (!docNo || !itemId) return;
+                      deletePhoto.mutate({ docNo, itemId, photoKey: key }, {
+                        onSuccess: () => {
+                          onChange({ photoUrls: photoUrls.filter((k) => k !== key) });
+                        },
+                      });
+                    }}
+                  />
+                ))}
+
+                {/* Pending (DRAFT) photos — preview from object URL with
+                    a small "pending" stripe + a delete X that removes
+                    the File from the staged array. */}
+                {pendingPreviews.map((p, i) => (
+                  <div key={`pending-${i}`} className={styles.photoTile}>
+                    <img src={p.url} alt={p.name} />
+                    <span className={styles.photoPendingMark}>pending</span>
+                    {canStagePhotos && (
+                      <button
+                        type="button"
+                        className={styles.photoDelete}
+                        title="Remove (not uploaded yet)"
+                        onClick={() => {
+                          const next = pendingFiles.filter((_, idx) => idx !== i);
+                          onChange({ pendingPhotoFiles: next });
+                        }}
+                      >
+                        <X size={12} strokeWidth={2.5} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+
+                {/* Hidden file input + Add button. The same input is used
+                    for both saved (immediate upload) and draft (stage in
+                    component-state) modes. */}
+                {(canMutatePhotos || canStagePhotos) && (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      style={{ display: 'none' }}
+                      onChange={async (e) => {
+                        const files = Array.from(e.target.files ?? []);
+                        if (files.length === 0) return;
+
+                        if (canStagePhotos) {
+                          // DRAFT mode — stage Files on the draft. Parent
+                          // drains pendingPhotoFiles after the line saves.
+                          onChange({ pendingPhotoFiles: [...pendingFiles, ...files] });
+                          if (fileInputRef.current) fileInputRef.current.value = '';
+                          return;
+                        }
+
+                        // SAVED mode — upload immediately to R2.
+                        if (!docNo || !itemId) return;
+                        const newKeys: string[] = [];
+                        for (const f of files) {
+                          try {
+                            const res = await uploadPhoto.mutateAsync({ docNo, itemId, file: f });
+                            newKeys.push(res.photoKey);
+                            // Task #92 — seed the signed-URL cache with
+                            // the URL the API just minted so PhotoThumb
+                            // doesn't do a redundant /signed round-trip
+                            // on first render of the just-uploaded photo.
+                            if (res.expiresAt && res.photoUrl?.startsWith('http')) {
+                              signedUrlCache.set(res.photoKey, {
+                                signedUrl: res.photoUrl,
+                                expiresAt: new Date(res.expiresAt).getTime(),
+                              });
+                            }
+                          } catch (err) {
+                            // eslint-disable-next-line no-console
+                            console.error('[so-line-photo] upload failed:', err);
+                            notify({ title: `Photo upload failed for ${f.name}`, body: err instanceof Error ? err.message : String(err), tone: 'error' });
+                          }
+                        }
+                        if (newKeys.length > 0) {
+                          onChange({ photoUrls: [...photoUrls, ...newKeys] });
+                        }
+                        if (fileInputRef.current) fileInputRef.current.value = '';
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className={styles.photoAddBtn}
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadPhoto.isPending}
+                      title={
+                        uploadPhoto.isPending
+                          ? 'Uploading…'
+                          : canStagePhotos
+                            ? 'Stage photo (uploads on save)'
+                            : 'Add photo'
+                      }
+                    >
+                      <ImagePlus {...ICON} />
+                    </button>
+                  </>
+                )}
+
+                {!canMutatePhotos && !canStagePhotos
+                  && photoUrls.length === 0 && pendingFiles.length === 0 && (
+                  <span className={styles.photoHint}>
+                    Read-only — photos can be edited in edit mode.
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        {/* /bodyRight */}
+      </div>
+      )}
+      {/* /body */}
+    </div>
+  );
+};
+SoLineCardInner.displayName = 'SoLineCard';
+
+/* Task #103 — Wrapped in React.memo with the default shallow comparator.
+   With the SO Detail page now passing stable per-row callbacks
+   (rowCallbacks Map + patchAddingDraft useCallback), the memo skips
+   re-renders when an unrelated row's draft state, an unrelated parent
+   state (History drawer toggle, Edit-mode flip, payment table activity),
+   or the routinely-stable header useQuery cache result changes. */
+export const SoLineCard = memo(SoLineCardInner);
+
+/* ──────────────────────────────────────────────────────────────────────
+   VariantSelect — uniform <select> with label + optional "+RM x.xx" suffix
+   ────────────────────────────────────────────────────────────────────── */
+
+const VariantSelect = ({
+  label, options, value, onChange, disabled = false, required = false,
+}: {
+  label:    string;
+  /* Commander 2026-05-28: `priceSen` is COST and must NOT surface in the SO
+     create/edit flow. The option label shows the SELLING surcharge only
+     (`sellingPriceSen`), and only when a Sales Director has set one (> 0).
+     Today sellingPriceSen is unset, so dropdowns render clean ("10"`, `16"`)
+     with no MYR cost numbers — exactly what the commander asked for. */
+  options:  Array<{ value: string; priceSen: number; sellingPriceSen?: number; display?: string }>;
+  value:    string;
+  disabled?: boolean;
+  /* Commander 2026-05-28: variants are mandatory — a salesperson must NOT be
+     able to proceed without picking. When required + empty, the field shows a
+     red ring and Save is blocked upstream (SO New / SO Detail). */
+  required?: boolean;
+  onChange: (v: string) => void;
+}) => {
+  const invalid = required && !value;
+  /* SO-parity (Loo 2026-06-06) — saved lines can hold a value the Model's
+     allowed_options pool no longer offers (now that pools also filter on SO
+     Detail). Render it as "(current)" instead of blanking the select — the
+     coordinator can see what's on the line and re-pick a live option. */
+  const hasCurrent = Boolean(value) && options.some((o) => o.value === value);
+  return (
+    <label className={styles.variantField}>
+      <span className={styles.variantLabel}>{label}{required ? ' *' : ''}</span>
+      <select
+        className={styles.select}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        style={invalid && !disabled ? { borderColor: 'var(--c-festive-b, #B8331F)' } : undefined}
+      >
+        {/* Commander 2026-05-28: no selectable blank "—" — the placeholder is
+            disabled so it can't be chosen to "proceed without selecting". */}
+        <option value="" disabled>Select…</option>
+        {value && !hasCurrent && <option value={value}>{value} (current)</option>}
+        {options.map((o) => {
+          const sell = o.sellingPriceSen ?? 0;
+          return (
+            <option key={o.value} value={o.value}>
+              {o.display ?? o.value}{sell > 0 ? ` (+${fmtRm(sell)})` : ''}
+            </option>
+          );
+        })}
+      </select>
+    </label>
+  );
+};
+
+/* ──────────────────────────────────────────────────────────────────────
+   Required-variant validation (Commander 2026-05-28: "一定要选东西才能
+   proceed"). Given a line's itemGroup + variants, returns the labels of the
+   mandatory variants that are still empty. Only sofa / bedframe lines carry
+   variants; everything else returns []. Callers (SO New + SO Detail Save)
+   block the save when any line reports a non-empty list.
+
+   2026-06-04 — delegates to the shared so-variant-rule so the rule matches
+   the server 409 gate AND recognises the POS vocabulary: a POS-created sofa
+   line carries depth + sofaLegHeight for the same physical picks coordinators
+   key in as seatHeight + legHeight. The old hand-copied key list flagged
+   every POS sofa SO "missing Seat Height / Leg Height" and blocked Save.
+   ────────────────────────────────────────────────────────────────────── */
+export function missingRequiredVariants(
+  itemGroup: string | null | undefined,
+  variants: Record<string, unknown> | null | undefined,
+): string[] {
+  return missingVariantAxes(itemGroup, variants).map((a) => a.label);
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   SpecialsAccordion — collapsible checkbox grid (Houzs <details>)
+   ────────────────────────────────────────────────────────────────────── */
+
+const SpecialsAccordion = ({
+  open, onToggle, picked, choices, options, onToggleCode, onChoice, disabled = false, posRemark = null,
+}: {
+  open:     boolean;
+  onToggle: () => void;
+  /** Picked special_addons CODES (variants.specials). */
+  picked:   string[];
+  /** variants.specialChoices — per-code chosen option-group labels, indexed
+      by optionGroups position (the POS storage convention). */
+  choices:  Record<string, string[]>;
+  /* SO-parity (Loo 2026-06-06): options are live special_addons rows (already
+     filtered to this line's category ∩ the Model's allowed_options.specials),
+     replacing the legacy maintenance string pool. Shows the SELLING surcharge
+     (base + chosen-choice extras), the same figure the server recompute
+     charges via buildSpecialsPoolFromAddons. */
+  options:  SpecialAddonRow[];
+  disabled?: boolean;
+  /** Loo 2026-06-12 — the POS product-page remark + extra charge, shown as a
+      checked, read-only special row. The amount is already folded into the
+      line's unit price, so it renders "incl." and can't be unticked here. */
+  posRemark?: { label: string; amountSen: number } | null;
+  onToggleCode: (code: string) => void;
+  onChoice: (code: string, groupIdx: number, label: string) => void;
+}) => {
+  /* Effective selling surcharge for one add-on = base + Σ chosen extras. */
+  const effectiveSen = (o: SpecialAddonRow): number => {
+    let sen = o.sellingPriceSen;
+    (choices[o.code] ?? []).forEach((label, i) => {
+      const hit = label ? o.optionGroups[i]?.choices.find((c) => c.label === label) : undefined;
+      if (hit) sen += hit.extraSen;
+    });
+    return sen;
+  };
+  /* A saved line can carry codes that have since been retired/renamed in the
+     Special Add-ons tab (or pre-takeover legacy strings). Surface them as
+     removable rows — invisible-but-stuck picks were how the old editor leaked
+     RM 0 specials onto orders. */
+  const retired = picked.filter((c) => !options.some((o) => o.code === c));
+  return (
+    <div className={styles.specials}>
+      <div
+        className={styles.specialsHead}
+        onClick={onToggle}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onToggle(); }}
+      >
+        {open ? <ChevronDown {...SM_ICON} /> : <ChevronRight {...SM_ICON} />}
+        <span>Special Orders</span>
+        <span className={styles.specialsCount}>({picked.length + (posRemark ? 1 : 0)} selected)</span>
+      </div>
+      {open && (
+        <div className={styles.specialsBody}>
+          {options.length === 0 && retired.length === 0 && !posRemark && (
+            <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
+              No specials configured.
+            </span>
+          )}
+          {/* POS special add-on (note + extra charge) keyed on the POS product
+              page (variants.extraAddonNote). Always checked + locked: the amount
+              is already inside the unit price (POS fold + server recompute), so
+              unticking here would misstate the line total. This is separate from
+              the line's Remarks field, which is the item remark. */}
+          {posRemark && (
+            <label
+              className={styles.specialsItem}
+              title="From the POS product page — amount already included in the unit price"
+            >
+              <input
+                type="checkbox"
+                className={styles.specialsCheckbox}
+                checked
+                disabled
+              />
+              <div>
+                <div className={styles.specialsLabel}>{posRemark.label}</div>
+                <div className={styles.specialsSurcharge}>
+                  {posRemark.amountSen > 0 ? `+${fmtRm(posRemark.amountSen)} incl.` : 'RM 0'}
+                </div>
+              </div>
+            </label>
+          )}
+          {options.map((o) => {
+            const on = picked.includes(o.code);
+            const sen = on ? effectiveSen(o) : o.sellingPriceSen;
+            return (
+              <label key={o.code} className={styles.specialsItem}>
+                <input
+                  type="checkbox"
+                  className={styles.specialsCheckbox}
+                  checked={on}
+                  disabled={disabled}
+                  onChange={() => { if (!disabled) onToggleCode(o.code); }}
+                />
+                <div>
+                  <div className={styles.specialsLabel}>{o.label}</div>
+                  <div className={styles.specialsSurcharge}>
+                    {sen > 0 ? `+${fmtRm(sen)}` : sen < 0 ? `−${fmtRm(Math.abs(sen))}` : 'RM 0'}
+                  </div>
+                </div>
+              </label>
+            );
+          })}
+          {retired.map((code) => (
+            <label key={`retired-${code}`} className={styles.specialsItem}>
+              <input
+                type="checkbox"
+                className={styles.specialsCheckbox}
+                checked
+                disabled={disabled}
+                onChange={() => { if (!disabled) onToggleCode(code); }}
+              />
+              <div>
+                <div className={styles.specialsLabel}>{code}</div>
+                <div className={styles.specialsSurcharge} style={{ color: 'var(--c-festive-b, #B8331F)' }}>
+                  retired — prices RM 0, untick to remove
+                </div>
+              </div>
+            </label>
+          ))}
+          {/* Follow-up choice pickers (追问) for ticked add-ons with option
+              groups — mirrors the POS SpecialAddonsPicker. */}
+          {options.filter((o) => picked.includes(o.code) && o.optionGroups.length > 0).map((o) =>
+            o.optionGroups.map((g, gi) => (
+              <label key={`${o.code}-${gi}`} className={styles.variantField} style={{ gridColumn: '1 / -1' }}>
+                <span className={styles.variantLabel}>
+                  {o.label} · {g.label}{g.required ? ' *' : ''}
+                </span>
+                <select
+                  className={styles.select}
+                  value={(choices[o.code] ?? [])[gi] ?? ''}
+                  disabled={disabled}
+                  onChange={(e) => onChoice(o.code, gi, e.target.value)}
+                >
+                  {!g.required && <option value="">None</option>}
+                  {g.required && <option value="" disabled>Select…</option>}
+                  {g.choices.map((c) => (
+                    <option key={c.label} value={c.label}>
+                      {c.label}{c.extraSen !== 0 ? ` (${c.extraSen > 0 ? '+' : '−'}${fmtRm(Math.abs(c.extraSen))})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )),
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/* ──────────────────────────────────────────────────────────────────────
+   PhotoThumb — Task #92 signed-URL flow
+   ──────────────────────────────────────────────────────────────────────
+   Previously this fetched bytes through an authed Worker proxy on every
+   thumbnail render (N photos × N renders = N² Worker invocations). Now
+   each photoKey has a short-lived signed R2 GET URL we use directly as
+   <img src>. Cache layout:
+     - Module-level Map<photoKey, { signedUrl, expiresAt }> — survives
+       component unmounts (e.g. drawer open/close) within a single page
+       load, so reopening a SO doesn't re-sign every thumb.
+     - SKEW_BUFFER_MS — treat URLs within 30s of expiry as already
+       expired. Avoids the race where a URL passes our check, then 401s
+       at the browser because the clock drifted or R2's check fires
+       slightly later.
+     - On <img onError>, retry once with a fresh URL. The signed URL
+       MIGHT have expired between cache check and HTTP fetch, or the
+       cached entry pre-dated some R2 token-rotation event. One retry
+       is enough; a second failure means the photo is genuinely gone.
+   ────────────────────────────────────────────────────────────────────── */
+
+const SIGNED_URL_SKEW_BUFFER_MS = 30_000;
+const signedUrlCache = new Map<string, { signedUrl: string; expiresAt: number }>();
+
+const isCachedUrlFresh = (entry: { expiresAt: number } | undefined): boolean =>
+  !!entry && entry.expiresAt - SIGNED_URL_SKEW_BUFFER_MS > Date.now();
+
+const PhotoThumb = ({
+  photoKey, docNo, itemId, canDelete, onDelete,
+}: {
+  photoKey:  string;
+  docNo?:    string;
+  itemId?:   string;
+  canDelete: boolean;
+  onDelete:  () => void;
+}) => {
+  const [src, setSrc]     = useState<string | null>(() => {
+    const cached = signedUrlCache.get(photoKey);
+    return isCachedUrlFresh(cached) ? cached!.signedUrl : null;
+  });
+  const [error, setError] = useState<string | null>(null);
+  // Tracks whether we've already retried after a 403/error. Prevents
+  // a permanently-broken key from looping forever.
+  const retriedRef = useRef(false);
+
+  const loadSignedUrl = async (cancelled: () => boolean) => {
+    if (!docNo || !itemId) return;
+    try {
+      const { signedUrl, expiresAt } = await fetchSoItemPhotoSignedUrl(docNo, itemId, photoKey);
+      if (cancelled()) return;
+      signedUrlCache.set(photoKey, {
+        signedUrl,
+        expiresAt: new Date(expiresAt).getTime(),
+      });
+      setSrc(signedUrl);
+      setError(null);
+    } catch (e) {
+      if (!cancelled()) setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const cached = signedUrlCache.get(photoKey);
+    if (isCachedUrlFresh(cached)) {
+      setSrc(cached!.signedUrl);
+      return;
+    }
+    // Cache miss or stale entry — fetch a fresh signed URL.
+    loadSignedUrl(() => cancelled);
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docNo, itemId, photoKey]);
+
+  const handleImgError = () => {
+    // The signed URL we handed to <img src> didn't load. Most likely
+    // it expired (cache survived a tab being suspended for >1 hour);
+    // could also be an R2 transient. Drop the cache entry and refetch
+    // once. retriedRef prevents an infinite onError → setState loop
+    // if the new URL also fails.
+    if (retriedRef.current) {
+      setError('image_load_failed');
+      return;
+    }
+    retriedRef.current = true;
+    signedUrlCache.delete(photoKey);
+    setSrc(null);
+    const cancelled = false;
+    loadSignedUrl(() => cancelled);
+    // No cleanup return — this isn't an effect; the cancelled flag
+    // is only meaningful if the component unmounts mid-fetch, which
+    // would also blow away the setState calls harmlessly.
+    void cancelled;
+  };
+
+  return (
+    <div className={styles.photoTile}>
+      {src ? (
+        <img src={src} alt="Line photo" onError={handleImgError} />
+      ) : error ? (
+        <span className={styles.photoError} title={error}>err</span>
+      ) : (
+        <span className={styles.photoPlaceholder}>…</span>
+      )}
+      {canDelete && (
+        <button
+          type="button"
+          className={styles.photoDelete}
+          onClick={onDelete}
+          title="Remove photo"
+        >
+          <X size={12} strokeWidth={2.5} />
+        </button>
+      )}
+    </div>
+  );
+};

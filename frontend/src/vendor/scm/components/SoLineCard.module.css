@@ -1,0 +1,577 @@
+/* ──────────────────────────────────────────────────────────────────────
+   SoLineCard — Houzs-pattern single-row line item editor.
+
+   Layout (verbatim port from houzs-erp/src/components/NewSalesOrderForm.tsx
+   LineCard, lines 208-487):
+
+   ┌─────────────────────────────────────────────────────────────────────┐
+   │ [#] [Item ▼            ] [Remarks…       ] [Qty] [Unit] [Date] $RM [G] [🗑] │
+   ├─────────────────────────────────────────────────────────────────────┤
+   │  BEDFRAME / SOFA variants grid (only if category has variants)       │
+   │  ▸ Special Orders (N selected)   accordion                            │
+   │  PHOTOS · 2  [▢][▢][+]                                                │
+   └─────────────────────────────────────────────────────────────────────┘
+
+   All Tailwind classes from the Houzs reference are translated to CSS
+   modules using the 2990 brand tokens (`var(--c-burnt)` / `var(--c-cream)`
+   / `var(--space-N)` / `var(--fs-N)`). No raw hex colours except the
+   per-category badge swatches (those map to brand tokens too).
+   ────────────────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* ── Main single-row layout ───────────────────────────────────────── */
+
+/* Houzs: [No #] [Item] [Remarks] [Qty] [Unit Price] [Delivery Date] [Amount] [Group] [Trash]
+   2990 adds Delivery Date as a 5th input between Unit Price and Amount. */
+.row {
+  display: grid;
+  grid-template-columns:
+    32px              /* No # */
+    minmax(220px, 2fr)  /* Item picker */
+    minmax(160px, 1.5fr) /* Remarks */
+    72px              /* Qty */
+    96px              /* Unit Price */
+    132px             /* Delivery Date */
+    auto              /* Amount (RM 9,999.99) */
+    auto              /* Group badge */
+    28px;             /* Trash */
+  align-items: center;
+  gap: var(--space-2);
+}
+
+@media (max-width: 1100px) {
+  .row {
+    grid-template-columns: 32px minmax(180px, 1.5fr) minmax(120px, 1fr) 60px 84px 120px auto auto 28px;
+  }
+}
+
+.lineNo {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  font-weight: 700;
+  color: var(--fg-muted);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Inputs (compact Houzs h-8 style → 28px tall) ─────────────────── */
+
+.input,
+.select {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  outline: none;
+  line-height: 1.4;
+}
+
+.input:focus,
+.select:focus {
+  border-color: var(--c-orange);
+  background: var(--c-cream);
+}
+
+.input:disabled,
+.select:disabled {
+  background: var(--c-cream);
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+
+.numericInput {
+  composes: input;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Item picker (the SKU search dropdown) ────────────────────────── */
+
+.pickerWrap {
+  position: relative;
+}
+
+.pickerInputCol {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.2;
+}
+
+.pickerCode {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--c-burnt);
+}
+
+.pickerDesc {
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.suggestList {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: var(--c-paper);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  max-height: 460px;
+  overflow-y: auto;
+  z-index: 30;
+  list-style: none;
+  padding: 0;
+}
+
+.suggestItem {
+  padding: 6px var(--space-2);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  border-bottom: 1px solid var(--line);
+}
+
+.suggestItem:last-child { border-bottom: none; }
+.suggestItem:hover { background: var(--c-cream); }
+
+.suggestItemCode {
+  font-weight: 600;
+  color: var(--c-burnt);
+}
+
+.suggestItemMeta {
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+/* ── Amount + badge + trash ───────────────────────────────────────── */
+
+.amount {
+  font-family: var(--font-mark);
+  font-size: var(--fs-14);
+  font-weight: 800;
+  font-stretch: 80%;
+  color: var(--c-burnt);
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.trashBtn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  color: var(--c-festive-b, #B8331F);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.trashBtn:hover { background: rgba(184, 51, 31, 0.10); }
+.trashBtn:disabled { color: var(--fg-muted); cursor: not-allowed; opacity: 0.4; }
+
+/* ── Auto-hint (cascade inheritance marker) ───────────────────────── */
+
+.autoHint {
+  margin-left: 4px;
+  color: var(--c-orange);
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  font-weight: 500;
+}
+
+/* ── Two-column body (Commander 2026-05-27) ──────────────────────────
+   Below the single-line header row, the card splits into a left column
+   (variants + special orders) and a right column (price summary +
+   photos). On narrow viewports the columns stack vertically again. */
+
+.body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.bodyLeft,
+.bodyRight {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Variants section ─────────────────────────────────────────────── */
+
+.variants {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--c-cream);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.variantsHead {
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.variantsGrid {
+  display: grid;
+  /* Auto-fit: each variant cell wants at least 140px; the grid hands out
+     however many columns will fit. With the new right-rail price/photos
+     column eating ~280px the variants block typically ends up with 3
+     columns at desktop and 2 at narrower widths without a fixed breakpoint. */
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-2);
+}
+
+.variantField {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: relative;
+}
+
+.variantLabel {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+/* ── Special Orders accordion ─────────────────────────────────────── */
+
+.specials {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--c-paper);
+}
+
+.specialsHead {
+  cursor: pointer;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.specialsHead:hover { background: var(--c-cream); }
+
+.specialsCount {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  color: var(--c-burnt);
+}
+
+.specialsBody {
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--line);
+  background: var(--c-cream);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+}
+
+@media (max-width: 900px) {
+  .specialsBody { grid-template-columns: repeat(2, 1fr); }
+}
+
+.specialsItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+}
+
+.specialsItem:hover { background: var(--c-paper); }
+
+.specialsCheckbox {
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  accent-color: var(--c-orange);
+  cursor: pointer;
+}
+
+.specialsLabel {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  line-height: 1.3;
+}
+
+.specialsSurcharge {
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  color: var(--c-festive-a, #C77F3E);
+}
+
+/* ── Photos strip (carried over from PR-F) ─────────────────────────── */
+
+.photos {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.photosHead {
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  color: var(--fg-muted);
+}
+
+.photosStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.photoTile {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--c-cream);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.photoTile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.photoPlaceholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+.photoError {
+  color: var(--c-festive-b, #B8331F);
+  font-size: 9px;
+  text-align: center;
+  padding: 2px;
+}
+
+.photoDelete {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--c-festive-b, #B8331F);
+  color: var(--c-paper);
+  border: 1px solid var(--c-paper);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+}
+
+.photoAddBtn {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--c-orange);
+  background: transparent;
+  color: var(--c-orange);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.photoAddBtn:disabled { cursor: wait; opacity: 0.6; }
+
+.photoHint {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--fg-muted);
+}
+
+/* ── Pricing breakdown summary (right rail) ────────────────────────
+   Commander 2026-05-27: "3 prices makes the line very thick". The
+   summary now lives in the right column, vertically stacked, smaller
+   font, so the line height stays bounded by the variants on the left. */
+
+.priceSummary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--c-cream);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--fg-muted);
+}
+
+.priceSummaryHead {
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.priceRow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.priceLabel {
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+}
+
+.priceValue {
+  color: var(--c-ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.priceTotalRow {
+  composes: priceRow;
+  padding-top: 4px;
+  margin-top: 2px;
+  border-top: 1px solid var(--line);
+}
+
+.priceTotalValue {
+  composes: priceValue;
+  color: var(--c-burnt);
+  font-family: var(--font-mark);
+  font-size: var(--fs-14);
+  font-weight: 800;
+  font-stretch: 80%;
+}
+
+.autoBadge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-button);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(199, 127, 62, 0.16);
+  color: var(--c-festive-a, #C77F3E);
+  margin-left: auto;
+}
+
+/* ── Photos block (right rail) ──────────────────────────────────────
+   In DRAFT mode (no docNo/itemId yet) the photos are staged client-side
+   as File objects and previewed via URL.createObjectURL(). The parent
+   pulls them off `draft.pendingPhotoFiles` after save and uploads them
+   to R2 against the freshly-minted item IDs. */
+
+.photosCard {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--c-paper);
+}
+
+.photoPendingMark {
+  position: absolute;
+  bottom: -1px;
+  left: -1px;
+  right: -1px;
+  background: var(--c-orange);
+  color: var(--c-paper);
+  font-family: var(--font-button);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 1px 0;
+  line-height: 1;
+}

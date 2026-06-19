@@ -1,0 +1,466 @@
+// ----------------------------------------------------------------------------
+// Purchase Order PDF — AutoCount/DSL-style layout (PR #102 + 2026-06-12
+// rebuild to the owner's DSL reference printout).
+//
+// Layout:
+//
+//   ┌──────────────────────────────────────────────────────────────────┐
+//   │              2990 HOME SDN. BHD.   (centered letterhead)         │
+//   │              SSM 202501060667                                    │
+//   │              E-28-02 & E-28-03, Menara SUEZCAP 2, KL Gateway,    │
+//   │              No. 2, Jalan Kerinchi, …  59200 Kuala Lumpur …      │
+//   ├──────────────────────────────────────────────────────────────────┤
+//   │                       PURCHASE ORDER                             │
+//   ├──────────────────────────────────────────────────────────────────┤
+//   │  SUPPLIER NAME                  PO No.       : PO-2606-001       │
+//   │  Address line 1                 Your Ref No. : SO-2605-014 (S/O) │
+//   │  Address line 2                 Terms        : NET 30            │
+//   │  TEL : …       FAX : …          Date         : 2026/06/12        │
+//   │  Attn: …                        Delivery Date: 2026/06/19        │
+//   │                                 Purchase Loc.: WH-KL · Main WH   │
+//   │                                 Page         : 1 of N            │
+//   ├──────────────────────────────────────────────────────────────────┤
+//   │ Transf. SO | Supplier Code | Description | UOM | Qty | U/Price │
+//   │            |               |             |     |     | Disc | Total
+//   │  (Supplier Code = SUPPLIER code, bold. Description = model +
+//   │   composition + supplier colour (our code) + variant attrs +
+//   │   remark + per-line delivery date.)
+//   ├──────────────────────────────────────────────────────────────────┤
+//   │ RINGGIT MALAYSIA … ONLY                          TOTAL  9,999.00 │
+//   │ E. & O.E.                                                        │
+//   │ Authorised Signature          Supplier Acknowledgement           │
+//   └──────────────────────────────────────────────────────────────────┘
+//
+// Letterhead comes from pdf-common COMPANY (= apps/pos legal.ts, the real
+// registered entity). Page number prints on EVERY page header via the
+// autotable didDrawPage hook + jsPDF putTotalPages.
+// ----------------------------------------------------------------------------
+
+import { effectiveDelivery } from '@2990s/shared';
+import {
+  orderSofaModuleRowsWithinBuilds,
+  sortSoLinesByGroupRank,
+} from '@2990s/shared/so-line-display';
+import { COMPANY, amountInWordsMyr, drawInfoColumns, fmtDocDate, fmtDocStamp } from './pdf-common';
+import {
+  loadSupplierDocData,
+  supplierCodeFor,
+  specsLine,
+  type SupplierRecord,
+} from './supplier-doc-data';
+
+type PoHeader = {
+  po_number:     string;
+  /** Supplier id — drives the print-time binding lookup for lines that never
+      snapshotted a supplier_sku AND the full supplier-master top-up (fax /
+      attention / payment terms). Optional: missing id → '—' fallback. */
+  supplier_id?:  string | null;
+  status:        string;
+  po_date:       string;
+  expected_at:   string | null;
+  /* Migration 0180 — supplier-revised header delivery dates. The printed
+     "Delivery Date" uses the EFFECTIVE (latest) of these + expected_at. */
+  supplier_delivery_date_2?: string | null;
+  supplier_delivery_date_3?: string | null;
+  supplier_delivery_date_4?: string | null;
+  currency:      string;
+  subtotal_centi: number;
+  tax_centi:     number;
+  total_centi:   number;
+  notes:         string | null;
+  /** PR #102 — header extras for the AutoCount layout. All optional; the PDF
+      renders dashes when blank so old POs without these fields still print. */
+  your_ref_no?:           string | null;
+  source_so_doc_no?:      string | null;
+  purchase_location_name?: string | null;
+  /** #1 (Commander 2026-06-18) — deliver-to address (the bound warehouse's
+      location). Printed in the meta block so the supplier knows where to ship. */
+  delivery_address?: string | null;
+  supplier?: {
+    code:           string;
+    name:           string;
+    contact_person?: string | null;
+    phone?:         string | null;
+    fax?:           string | null;
+    email?:         string | null;
+    address?:       string | null;
+    area?:          string | null;
+    postcode?:      string | null;
+    state?:         string | null;
+    country?:       string | null;
+    attention?:     string | null;
+    payment_terms?: string | null;
+  } | null;
+};
+
+type PoItem = {
+  material_code: string;
+  material_name: string;
+  supplier_sku:  string | null;
+  qty:           number;
+  unit_price_centi: number;
+  line_total_centi: number;
+  /** PR #102 — AutoCount layout extras. All optional. */
+  uom?:           string | null;
+  discount_centi?: number | null;
+  delivery_date?: string | null;
+  /* Migration 0180 — per-line supplier-revised dates; the printed per-line
+     "Delivery:" uses the EFFECTIVE (latest) of these + delivery_date. */
+  supplier_delivery_date_2?: string | null;
+  supplier_delivery_date_3?: string | null;
+  supplier_delivery_date_4?: string | null;
+  notes?:         string | null;
+  /** Supplier-facing dual-code layout — variants drive the Specs segment
+      (fabric shows the SUPPLIER's colour code with ours alongside, plus
+      divan/leg/seat heights and D1-style specials via buildVariantSummary). */
+  item_group?:    string | null;
+  description?:   string | null;
+  description2?:  string | null;
+  variants?:      Record<string, unknown> | null;
+  /** 2026-06-12 — "Transferred SO" column. GET /mfg-purchase-orders/:id
+      stamps each line's source SO doc_no (so_item_id → mfg_sales_order_items
+      → doc_no). Null for manually-added / MRP / consignment lines. */
+  so_doc_no?:     string | null;
+};
+
+const fmtMoney = (centi: number, currency: string): string =>
+  `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const fmtAmount = (centi: number): string =>
+  (centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+type JsPdf = import('jspdf').jsPDF;
+type AutoTableFn = (typeof import('jspdf-autotable'))['default'];
+
+/* Draw ONE purchase order's content into `doc` (letterhead → meta → items →
+   totals → notes → signature). Does NOT number pages / resolve total-pages /
+   save — the caller finalizes ONCE, so several POs can share one doc (batch
+   "Print documentation"). Returns what the finalizer needs. */
+async function renderPurchaseOrderInto(
+  doc: JsPdf,
+  autoTable: AutoTableFn,
+  header: PoHeader,
+  items: PoItem[],
+  opts?: { docTitle?: string },
+): Promise<{ supplierName: string }> {
+  const pageW = doc.internal.pageSize.getWidth();
+  const margin = 10; // tighter left/right than the SO's 14 (owner 2026-06-19)
+  const docTitle = opts?.docTitle ?? 'PURCHASE ORDER';
+
+  /* Print-time lookups (all fail-soft): supplier SKU bindings + Fabric
+     Converter colour map + the FULL supplier master record (the PO detail
+     endpoint embeds only 7 fields — no fax / attention / payment_terms). */
+  const { skuMap, fabricMap, supplier: fullSupplier } = await loadSupplierDocData(header.supplier_id, items);
+
+  // ── Company letterhead (centered, AutoCount style) ────────────────
+  let y = margin;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
+  doc.text(COMPANY.name, pageW / 2, y, { align: 'center' });
+  y += 5;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  doc.text(COMPANY.reg, pageW / 2, y, { align: 'center' });
+  y += 4;
+  for (const line of COMPANY.addressLines) {
+    doc.text(line, pageW / 2, y, { align: 'center' });
+    y += 4;
+  }
+  y += 2;
+
+  doc.setDrawColor(0); doc.setLineWidth(0.4);
+  doc.line(margin, y, pageW - margin, y);
+  y += 6;
+
+  // ── Title bar ─────────────────────────────────────────────────────
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15);
+  doc.text(docTitle, pageW / 2, y, { align: 'center' });
+  y += 8;
+
+  // ── Supplier (left) + PO details (right) — borderless, like the SO ──
+  /* Embedded 7-field supplier first, full master record as the top-up for
+     anything the embed omits (fax / attention / payment_terms / area /
+     postcode / state / country). */
+  const s: Partial<SupplierRecord> = { ...(fullSupplier ?? {}), ...(header.supplier ?? {}) };
+  const sFull = fullSupplier ?? {};
+  const supplierAddressLines = [
+    s.address,
+    sFull.area,
+    [sFull.postcode, sFull.state].filter(Boolean).join(' ').trim() || null,
+    sFull.country,
+  ].filter(Boolean) as string[];
+
+  /* "Your Ref No." = the source S/O No.; falls back to the per-line so_doc_no roll-up. */
+  const lineSoDocs = [...new Set(items.map((it) => (it.so_doc_no ?? '').trim()).filter(Boolean))];
+  const yourRef = header.your_ref_no
+    ?? header.source_so_doc_no
+    ?? (lineSoDocs.length > 0 ? lineSoDocs.join(', ') : '');
+
+  y = drawInfoColumns(doc, y,
+    {
+      title: 'SUPPLIER',
+      rows: [
+        ['Company', s.name],
+        ['Address', supplierAddressLines.join(', ')],
+        ['Tel', s.phone ?? sFull.mobile],
+        ['Fax', sFull.fax],
+        ['Attn', sFull.attention ?? s.contact_person],
+      ],
+    },
+    {
+      title: 'PO DETAILS',
+      rows: [
+        ['PO No', header.po_number],
+        ['Your Ref No', yourRef],
+        ['Terms', sFull.payment_terms ?? header.supplier?.payment_terms ?? ''],
+        ['Date', fmtDocDate(header.po_date)],
+        /* Migration 0180 — print the EFFECTIVE (latest revised) delivery date. */
+        ['Delivery Date', (() => {
+          const eff = effectiveDelivery(
+            header.expected_at,
+            header.supplier_delivery_date_2,
+            header.supplier_delivery_date_3,
+            header.supplier_delivery_date_4,
+          );
+          return eff ? fmtDocDate(eff) : '';
+        })()],
+      ],
+    },
+    margin,
+  );
+
+  /* Deliver To — the purchase-location warehouse + its FULL address, wrapped
+     full-width so the supplier sees exactly where to ship (owner 2026-06-19;
+     the address is the warehouse `location` field). */
+  const deliverToName = (header.purchase_location_name ?? '').trim();
+  const deliverToAddr = (header.delivery_address ?? '').trim();
+  if (deliverToName || deliverToAddr) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(110);
+    doc.text('DELIVER TO', margin, y); doc.setTextColor(0);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+    const dtW = pageW - margin * 2 - 26;
+    const dtLines: string[] = [];
+    if (deliverToName) dtLines.push(...(doc.splitTextToSize(deliverToName, dtW) as string[]));
+    if (deliverToAddr) dtLines.push(...(doc.splitTextToSize(deliverToAddr, dtW) as string[]));
+    doc.text(dtLines, margin + 26, y);
+    y += Math.max(1, dtLines.length) * 4 + 2;
+  }
+  y += 2;
+
+  // Owner's rule — supplier acts on THEIR codes; ours stay printed alongside.
+  doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(80);
+  doc.text('Item codes shown are SUPPLIER codes; our model & reference appear in the Description.', margin, y + 2);
+  doc.setFont('helvetica', 'normal'); doc.setTextColor(0);
+  y += 6;
+
+  // ── Items table ──────────────────────────────────────────────────
+  // Supplier-facing layout (Commander 2026-06-16 — dropped the standalone "Our
+  // Code" column: our model already reads inside the Description, and the SO
+  // this PO serves now leads the row):
+  //   Transf. SO    = the source S/O this line fulfils, FIRST column
+  //   Supplier Code = SUPPLIER's code, bold (the code they act on)
+  //   Description   = name/model + composition (description2) + Specs
+  //                   (supplier colour (our fabric code) via Fabric Converter +
+  //                   divan/leg/seat heights + D1 specials via
+  //                   buildVariantSummary inside specsLine) + line remark +
+  //                   per-line delivery date
+  //   UOM | Qty | U/Price | Disc | Total
+  /* Canonical SKU/build order (sofa modules LHF→NA→RHF, mains→accessories→
+     services) — mirror the sales side. The shared helper keys on `item_code`,
+     but PO lines expose `material_code`; sort a shimmed view that carries the
+     original row back unchanged (render-time only, no persistence touched). */
+  const orderedItems = orderSofaModuleRowsWithinBuilds(
+    sortSoLinesByGroupRank(
+      items.map((it) => ({ ...it, item_code: it.material_code, __row: it })),
+      (r) => r.item_group as string | null | undefined,
+    ),
+  ).map((r) => r.__row);
+
+  type Row = [string, string, string, string, string, string, string, string];
+  const rows: Row[] = orderedItems.map((it) => {
+    // ONE variant line only: the recomputed specs (fabric-mapped) when present,
+    // else the stored description2 — never BOTH. They are the same summary with
+    // only the fabric segment differing (e.g. "CG-001 …" vs "KN390-1 (CG-001) …"),
+    // which slipped past the Set-dedup and printed the variant twice. Matches
+    // how the SO / GRN / PI PDFs already compose their description.
+    const specs = specsLine(it, fabricMap) || (it.description2 ?? '').trim();
+    /* Migration 0180 — per-line "Delivery:" prints the EFFECTIVE (latest
+       revised) line date: MAX over non-null of [delivery_date, _2, _3, _4]. */
+    const lineEff = effectiveDelivery(
+      it.delivery_date,
+      it.supplier_delivery_date_2,
+      it.supplier_delivery_date_3,
+      it.supplier_delivery_date_4,
+    );
+    const descParts = [
+      it.description ?? it.material_name,
+      specs || null,
+      (it.notes ?? '').trim() ? `Remark: ${(it.notes ?? '').trim()}` : null,
+      lineEff ? `Delivery: ${fmtDocDate(lineEff)}` : null,
+    ].filter(Boolean) as string[];
+    return [
+      it.so_doc_no ?? '—',
+      supplierCodeFor(it, skuMap),
+      // Dedupe consecutive identical segments (description2 often equals the
+      // live specs line) so the cell doesn't read the same string twice.
+      [...new Set(descParts)].join('\n'),
+      (it.uom ?? 'UNIT').toUpperCase(),
+      String(it.qty),
+      fmtAmount(it.unit_price_centi),
+      it.discount_centi ? fmtAmount(it.discount_centi) : '',
+      fmtAmount(it.line_total_centi),
+    ];
+  });
+
+  /* Page-number on EVERY page header (didDrawPage) using the jsPDF
+     total-pages placeholder, resolved by putTotalPages below. */
+  const totalPagesExp = '{total_pages}';
+  const drawPageHeader = (pageNumber: number) => {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(80);
+    doc.text(
+      `${header.po_number} · Page ${pageNumber} of ${totalPagesExp}`,
+      pageW - margin, 10, { align: 'right' },
+    );
+    doc.setTextColor(0);
+  };
+
+  autoTable(doc, {
+    startY: y,
+    head: [[
+      'Transf. SO', 'Supplier Code', 'Description', 'UOM', 'Qty',
+      `U/Price ${header.currency}`, 'Disc.', `Total ${header.currency}`,
+    ]],
+    body: rows,
+    theme: 'plain',
+    styles: { fontSize: 8.5, cellPadding: { top: 1.5, right: 1.5, bottom: 1.5, left: 1.5 }, lineColor: [120, 120, 120], lineWidth: 0.1 },
+    headStyles: { fontStyle: 'bold', halign: 'left', valign: 'middle', lineWidth: { top: 0.4, bottom: 0.4 } as never },
+    bodyStyles: { valign: 'top' },
+    // Widths sum to 180mm — fits the A4 printable width (210 − 14×2 = 182).
+    columnStyles: {
+      0: { cellWidth: 25 },                    // Transf. SO — fits "SO-2606-001" on one line
+      1: { cellWidth: 27, fontStyle: 'bold' }, // Supplier Code (the code they act on)
+      2: { cellWidth: 'auto' },                // Description — auto-fills (≈68mm with margin 10)
+      3: { cellWidth: 11 },                    // UOM
+      4: { cellWidth: 10, halign: 'right' },   // Qty
+      5: { cellWidth: 19, halign: 'right' },   // U/Price
+      6: { cellWidth: 11, halign: 'right' },   // Disc.
+      7: { cellWidth: 19, halign: 'right' },   // Total
+    },
+    margin: { left: margin, right: margin, top: 16 },
+    didDrawPage: (data) => drawPageHeader(data.pageNumber),
+  });
+
+  let lastY = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y) + 5;
+
+  // ── Totals (right) + amount in words (left, AutoCount footer) ─────
+  if (lastY > 250) { doc.addPage(); drawPageHeader(doc.getNumberOfPages()); lastY = 20; }
+  const totalsX = pageW - margin - 70;
+  const drawRow = (label: string, val: string, ry: number, bold = false, ruled = false) => {
+    if (ruled) { doc.setDrawColor(0); doc.line(totalsX, ry - 3, pageW - margin, ry - 3); }
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.text(label, totalsX,        ry);
+    doc.text(val,   pageW - margin, ry, { align: 'right' });
+  };
+  doc.setFontSize(9);
+  let totY = lastY;
+  drawRow('Subtotal', fmtMoney(header.subtotal_centi, header.currency), totY); totY += 4;
+  if (header.tax_centi > 0) {
+    drawRow('Tax',    fmtMoney(header.tax_centi,      header.currency), totY); totY += 4;
+  }
+  doc.setFontSize(11);
+  drawRow('TOTAL',    fmtMoney(header.total_centi,    header.currency), totY + 2, true, true);
+
+  /* Amount in words — wrapped to the left half so a long amount never
+     collides with the totals column. */
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5);
+  const words = doc.splitTextToSize(amountInWordsMyr(header.total_centi), totalsX - margin - 6) as string[];
+  doc.text(words, margin, lastY);
+  doc.setFont('helvetica', 'normal');
+  const wordsY = lastY + words.length * 3.6 + 2;
+  doc.setFontSize(8); doc.setTextColor(110);
+  doc.text('E. & O.E.', margin, wordsY);
+  doc.setTextColor(0);
+  lastY = Math.max(totY + 8, wordsY + 6);
+
+  // ── Notes / Remarks block (if present) ───────────────────────────
+  if (header.notes) {
+    doc.setFont('helvetica', 'bold');  doc.setFontSize(9);
+    doc.text('Remarks:', margin, lastY);
+    doc.setFont('helvetica', 'normal');
+    lastY += 4;
+    header.notes.split('\n').forEach((line) => {
+      doc.text(line, margin, lastY);
+      lastY += 4;
+    });
+    lastY += 4;
+  }
+
+  // ── Signature block ──────────────────────────────────────────────
+  if (lastY > 240) { doc.addPage(); drawPageHeader(doc.getNumberOfPages()); lastY = 20; }
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
+  doc.setDrawColor(120); doc.setLineWidth(0.2);
+  const sigW = (pageW - margin * 2) / 2 - 4;
+  doc.rect(margin,            lastY, sigW, 24);
+  doc.rect(margin + sigW + 8, lastY, sigW, 24);
+  doc.text(`Authorised Signature (${COMPANY.name})`, margin + 2,            lastY + 21);
+  doc.text('Supplier Acknowledgement',               margin + sigW + 8 + 2, lastY + 21);
+  lastY += 28;
+
+  return { supplierName: s.name ?? 'supplier' };
+}
+
+const PO_TOTAL_PAGES_EXP = '{total_pages}';
+
+/* Footer page numbers on every page + resolve the {total_pages} placeholder.
+   Runs ONCE after all POs are rendered. `pageOnePatch` (single-PO only) writes
+   "1 of N" into the meta block's reserved Page row. */
+function finalizePoPdf(doc: JsPdf): void {
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageCount = doc.getNumberOfPages();
+  for (let p = 1; p <= pageCount; p += 1) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(110);
+    doc.text(
+      `Page ${p} of ${pageCount}    ·    Generated ${fmtDocStamp()}`,
+      pageW / 2, 287, { align: 'center' },
+    );
+    doc.setTextColor(0);
+  }
+  const docWithTotals = doc as unknown as { putTotalPages?: (exp: string) => unknown };
+  if (typeof docWithTotals.putTotalPages === 'function') {
+    docWithTotals.putTotalPages(PO_TOTAL_PAGES_EXP);
+  }
+}
+
+/* Single PO → its own file (unchanged behaviour). */
+export async function generatePurchaseOrderPdf(
+  header: PoHeader,
+  items: PoItem[],
+  opts?: { docTitle?: string },
+): Promise<void> {
+  const { jsPDF } = await import('jspdf');
+  const autoTable = (await import('jspdf-autotable')).default;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const { supplierName } = await renderPurchaseOrderInto(doc, autoTable, header, items, opts);
+  finalizePoPdf(doc);
+  const safeName = supplierName.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 32);
+  doc.save(`${header.po_number}-${safeName}.pdf`);
+}
+
+/* Several POs → ONE combined file, each PO starting on a new page. For the
+   batch "Print documentation" action (send a supplier all their POs in one
+   attachment). The per-PO "1 of N" meta patch is skipped (cosmetic in a
+   multi-PO doc); each page still carries its own PO number header + a global
+   "Page p of N" footer. */
+export async function generateCombinedPurchaseOrderPdf(
+  pos: Array<{ header: PoHeader; items: PoItem[] }>,
+  opts?: { docTitle?: string; fileName?: string },
+): Promise<void> {
+  const { jsPDF } = await import('jspdf');
+  const autoTable = (await import('jspdf-autotable')).default;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  for (let i = 0; i < pos.length; i += 1) {
+    if (i > 0) doc.addPage();
+    await renderPurchaseOrderInto(doc, autoTable, pos[i]!.header, pos[i]!.items, opts);
+  }
+  finalizePoPdf(doc);
+  doc.save(opts?.fileName ?? 'purchase-orders.pdf');
+}

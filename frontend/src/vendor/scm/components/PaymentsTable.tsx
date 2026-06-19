@@ -1,0 +1,887 @@
+// ----------------------------------------------------------------------------
+// PaymentsTable — shared Houzs-pattern payments ledger.
+//
+// Task #105 — Commander 2026-05-27: "Edit SO 和 New SO 界面一定要一样的啊"
+// New SO and Edit SO must render an IDENTICAL Payments section. This component
+// was extracted verbatim from SalesOrderDetail.tsx's PaymentCard so both pages
+// can reuse it without drift.
+//
+// Two modes:
+//   - SAVED mode  (docNo: string)
+//       Uses useSalesOrderPayments / useAddSalesOrderPayment /
+//       useDeleteSalesOrderPayment. Each row commit POSTs to
+//       /mfg-sales-orders/:docNo/payments.
+//   - DRAFT mode  (docNo: null + payments + onChange)
+//       Holds payments in caller-supplied local state. No API calls. Used
+//       on the New SO page where the docNo doesn't exist until the SO has
+//       been created. After the parent POSTs the SO, it replays each draft
+//       through POST /:docNo/payments before navigating to the Detail page.
+//
+// Visuals + columns + method options + label→API enum mapping are identical
+// across both modes.
+// ----------------------------------------------------------------------------
+
+import { memo, useEffect, useState, type CSSProperties } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import {
+  DollarSign, Plus, Trash2, Save, FileText, Image as ImageIcon,
+  Calendar as CalIcon, User as UserIcon, Tag,
+} from 'lucide-react';
+import { fetchPaymentSlipUrl, type SlipUrlResponse } from '../lib/slip';
+import { SlipUploadField } from './SlipUploadField';
+import { MoneyInput } from './MoneyInput';
+import { useNotify } from './NotifyDialog';
+import { useConfirm } from './ConfirmDialog';
+import { todayMyt } from '../lib/dates';
+import {
+  PAYMENT_METHOD_CODE_TO_VALUE,
+  PAYMENT_METHOD_DEFAULT_LABELS,
+  paymentMethodCodeForValue,
+  type PaymentMethodCode,
+} from '@2990s/shared/payment-methods';
+import { useAuth } from '../lib/auth';
+import { useStaff } from '../lib/admin-queries';
+import {
+  useSalesOrderPayments,
+  useAddSalesOrderPayment,
+  useDeleteSalesOrderPayment,
+  type SoPayment,
+} from '../lib/sales-order-queries';
+import {
+  useSoDropdownOptions, optionsOrFallback,
+} from '../lib/so-dropdown-options-queries';
+import detailStyles from '../../../pages/scm-v2/SalesOrderDetail.module.css';
+import paymentsStyles from '../../../pages/scm-v2/Payments.module.css';
+
+const fmtRm = (centi: number, currency = 'MYR'): string =>
+  `${currency} ${(centi / 100).toLocaleString('en-MY', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  })}`;
+
+/* ════════════════════════════════════════════════════════════════════════
+   API enum + Houzs friendly-label mapping (kept verbatim from PaymentCard
+   so the Detail page's ledger semantics don't change).
+   ════════════════════════════════════════════════════════════════════════ */
+
+export type PaymentMethod = PaymentMethodCode;
+/* Bank provider name (now open-ended — sourced from
+   so_dropdown_options('payment_merchant'), no longer constrained to the
+   legacy 4-bank enum). */
+export type MerchantProvider = string;
+
+/* 2026-06-06 payment-method unify (Loo) — the L1 cascade and the POS
+   handover cards now share ONE maintenance list (payment_method category,
+   locked to four rows whose VALUE is the immutable key):
+     Method (L1)    → Merchant | Online | Installment | Cash
+       Merchant     → pick Merchant bank + Installment plan
+       Online       → pick Online sub-type (Bank Transfer / TNG / Cheque / DuitNow)
+       Installment  → pick Installment plan (term in months)
+       Cash         → done
+   Routing keys off the row VALUE via the shared map — labels are freely
+   renameable in SO Maintenance and never affect booking. The cash fallback
+   below can only fire on data that predates the API lock. */
+export type PaymentMethodLabel = string;
+
+export const labelToApi = (label: PaymentMethodLabel): {
+  method: PaymentMethod;
+  merchantProvider: MerchantProvider | null;
+} => {
+  const method = paymentMethodCodeForValue(label);
+  if (method) return { method, merchantProvider: null };
+  // The payment_method category is locked server-side to the four core
+  // values, so an unknown value here means pre-lock drifted data — surface
+  // it and fall back to cash so we don't book a card payment as transfer.
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[PaymentsTable] Unknown payment method value "${label}" — falling ` +
+    `back to method=cash. Values are locked to Merchant / Online / ` +
+    `Installment / Cash (see @2990s/shared/payment-methods).`,
+  );
+  return { method: 'cash', merchantProvider: null };
+};
+
+/* Persisted method code → the maintenance row VALUE (for select rehydrate
+   + the locked-set keys). Display labels resolve live from methodOpts. */
+const apiToValue = (p: SoPayment): string =>
+  PAYMENT_METHOD_CODE_TO_VALUE[p.method] ?? 'Cash';
+
+const methodPillStyle = (m: PaymentMethod): CSSProperties => {
+  const bg =
+    m === 'merchant'    ? 'rgba(232, 107, 58, 0.12)' :
+    m === 'transfer'    ? 'rgba(47, 93, 79, 0.12)'   :
+    m === 'installment' ? 'rgba(34, 31, 32, 0.08)'   :
+                          'rgba(0, 0, 0, 0.06)';
+  const fg =
+    m === 'merchant'    ? 'var(--c-burnt)' :
+    m === 'transfer'    ? 'var(--c-secondary-a, #2F5D4F)' :
+    m === 'installment' ? 'var(--c-ink)' :
+                          'var(--fg-muted)';
+  return {
+    display: 'inline-block',
+    fontFamily: 'var(--font-sans)',
+    fontSize: 'var(--fs-11)',
+    fontWeight: 600,
+    padding: '1px 8px',
+    borderRadius: 'var(--radius-pill)',
+    background: bg,
+    color: fg,
+    letterSpacing: '0.02em',
+  };
+};
+
+/* ════════════════════════════════════════════════════════════════════════
+   Shared draft row shape — what the inline-editor renders.
+
+   In SAVED mode this is internal state; rows promote to API rows on commit.
+   In DRAFT mode the parent owns the array (PaymentDraft[]) so we expose the
+   same shape minus the `uid` (parent can derive a key per row).
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Task #122 (cascade) — methodLabel is the L1 pick (Merchant / Online /
+   Cash). The three optional sub-fields below carry the L2 picks; only the
+   field(s) relevant to the current methodLabel are populated.
+     methodLabel = Merchant → merchantProvider + installmentMonthsLabel
+     methodLabel = Online   → onlineType
+     methodLabel = Cash     → all three sub-fields stay ''
+   installmentMonthsLabel is stored verbatim from the dropdown (e.g.
+   'One-off', '3 months', '12 months') and parsed to an integer on
+   persist (One-off → null/0; 'N months' → N). */
+export type PaymentDraft = {
+  uid:                      string;
+  paidAt:                   string;             // YYYY-MM-DD
+  methodLabel:              PaymentMethodLabel;
+  merchantProvider:         string;             // L2 bank pick (Merchant only)
+  installmentMonthsLabel:   string;             // L2 plan pick (Merchant only)
+  onlineType:               string;             // L2 sub-type (Online only)
+  amountCenti:              number;
+  accountSheet:             string;
+  approvalCode:             string;
+  collectedBy:              string;             // staff.id (uuid) | ''
+  /* Spec D4 (2026-06-06) — committed slip upload session for this row. In
+     SAVED mode (SO route) it is REQUIRED before commit; in DRAFT mode it is
+     optional and the batching pages (DO / SI / consignment) ignore it. */
+  slipUploadSessionId:      string | null;
+};
+
+export const newPaymentDraft = (defaultStaffId = ''): PaymentDraft => ({
+  uid: Math.random().toString(36).slice(2, 10),
+  paidAt: todayMyt(),
+  methodLabel: 'Cash',
+  merchantProvider:       '',
+  installmentMonthsLabel: '',
+  onlineType:             '',
+  amountCenti: 0,
+  accountSheet: '',
+  approvalCode: '',
+  collectedBy: defaultStaffId,
+  slipUploadSessionId: null,
+});
+
+/* Parse an installment-plan label like 'One-off' / '3 months' / '12 months'
+   into an integer term in months. 'One-off' and unrecognised strings return
+   null (= no installment); otherwise the leading number. */
+export const parseInstallmentMonths = (label: string): number | null => {
+  if (!label || label === 'One-off') return null;
+  const m = /^(\d+)\s*month/i.exec(label.trim());
+  return m ? Number(m[1]) : null;
+};
+
+/* Method-scoped L2 fields for a draft row — shared by commitDraft below and
+   every page that batches PaymentDraft[] to a payments endpoint (New SO /
+   DO / SI / consignment flows), so the installment branch lives in exactly
+   one place. */
+export const draftMethodFields = (
+  method: PaymentMethod,
+  d: Pick<PaymentDraft, 'merchantProvider' | 'installmentMonthsLabel' | 'onlineType'>,
+): Record<string, unknown> => {
+  if (method === 'merchant') {
+    return {
+      merchantProvider:  d.merchantProvider || null,
+      installmentMonths: parseInstallmentMonths(d.installmentMonthsLabel),
+    };
+  }
+  if (method === 'installment') {
+    return { installmentMonths: parseInstallmentMonths(d.installmentMonthsLabel) };
+  }
+  if (method === 'transfer') {
+    return { onlineType: d.onlineType || null };
+  }
+  return {};
+};
+
+/* ════════════════════════════════════════════════════════════════════════
+   Props — discriminated union on `docNo`.
+   - docNo: string   → SAVED mode (mutations + remote fetch)
+   - docNo: null     → DRAFT mode (caller-owned state)
+   ════════════════════════════════════════════════════════════════════════ */
+
+type SavedModeProps = {
+  docNo: string;
+  /** Grand total used to compute the Balance summary at the bottom. */
+  grandTotalCenti: number;
+  currency?: string;
+  /** When true, hides Add Payment + per-row trash/save controls. */
+  locked?: boolean;
+  /** Optional payment-slip column (Wei Siang 2026-06-06). When provided, a
+   *  "Slip" column is rendered immediately LEFT of "Collected By", showing the
+   *  order's POS-handover payment slip thumbnail (one slip per order — the same
+   *  proof backs each payment row). Only the Sales Order detail passes this; the
+   *  DO / SI tables that also use PaymentsTable leave it unset and are unchanged. */
+  slip?: { slipKey: string | null; fetcher: (id: string) => Promise<SlipUrlResponse> };
+};
+
+type DraftModeProps = {
+  docNo: null;
+  payments: PaymentDraft[];
+  onChange: (next: PaymentDraft[]) => void;
+  grandTotalCenti: number;
+  currency?: string;
+  locked?: boolean;
+  /** Render the per-draft slip uploader (SO-route batching only — the SO payments
+   *  endpoint requires a slip per payment; DO/SI endpoints don't accept one). */
+  slipUpload?: boolean;
+};
+
+export type PaymentsTableProps = SavedModeProps | DraftModeProps;
+
+/* ════════════════════════════════════════════════════════════════════════
+   Per-payment slip thumbnail (Spec D4, migration 0159).
+
+   Per-payment slip (0159) first; legacy rows fall back to the order slip
+   (Wei Siang's 2026-06-06 column semantics). The per-row presigned URL is
+   fetched lazily and only when the row actually carries a slip_key.
+   ════════════════════════════════════════════════════════════════════════ */
+const PaymentSlipThumb = ({ docNo, payment, orderSlipUrl, orderSlipType }: {
+  docNo: string;
+  payment: SoPayment;
+  orderSlipUrl: string | null;
+  orderSlipType: string;
+}) => {
+  const perRowQ = useQuery({
+    queryKey: ['payment-slip', payment.id],
+    enabled: Boolean(payment.slip_key),
+    staleTime: 4 * 60 * 1000,   // presigned URLs live 5 min
+    queryFn: () => fetchPaymentSlipUrl(docNo, payment.id),
+  });
+  const url = payment.slip_key ? (perRowQ.data?.url ?? null) : orderSlipUrl;
+  const contentType = payment.slip_key ? (perRowQ.data?.contentType ?? 'image/jpeg') : orderSlipType;
+  if (!url) return <span className={detailStyles.muted}>—</span>;
+  if (contentType.startsWith('image/')) {
+    return (
+      <a href={url} target="_blank" rel="noreferrer" title="Open payment slip">
+        <img src={url} alt="Slip" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--line)', display: 'block' }} />
+      </a>
+    );
+  }
+  return <a href={url} target="_blank" rel="noreferrer" style={{ fontSize: 'var(--fs-11)', color: 'var(--c-burnt)' }}>PDF</a>;
+};
+
+/* ════════════════════════════════════════════════════════════════════════
+   Component.
+   ════════════════════════════════════════════════════════════════════════ */
+
+const PaymentsTableInner = (props: PaymentsTableProps) => {
+  const notify = useNotify();
+  const askConfirm = useConfirm();
+  const currency = props.currency ?? 'MYR';
+  const grandTotal = props.grandTotalCenti ?? 0;
+  const locked = props.locked ?? false;
+
+  const staffQ = useStaff();
+  const staff  = staffQ.data ?? [];
+  const auth   = useAuth();
+
+  /* Task #118 — methods are DB-backed (so_dropdown_options 'payment_method',
+     locked to the four core rows since the 2026-06-06 unify). Falls back to
+     FALLBACK_OPTIONS during loading + when the DB has zero rows so the user
+     never sees an empty select.
+
+     Task #122 (cascade) — three additional categories for the L2 picks
+     under Merchant / Online / Installment. */
+  const methodOptsQ      = useSoDropdownOptions('payment_method');
+  const methodOpts       = optionsOrFallback('payment_method', methodOptsQ.data);
+  const merchantOptsQ    = useSoDropdownOptions('payment_merchant');
+  const merchantOpts     = optionsOrFallback('payment_merchant', merchantOptsQ.data);
+  const onlineOptsQ      = useSoDropdownOptions('online_type');
+  const onlineOpts       = optionsOrFallback('online_type', onlineOptsQ.data);
+  const installmentOptsQ = useSoDropdownOptions('installment_plan');
+  const installmentOpts  = optionsOrFallback('installment_plan', installmentOptsQ.data);
+
+  /* ── SAVED MODE hooks (always called — TanStack Query lazily skips
+        when enabled=false). docNo is non-null in SAVED mode. ──────────── */
+  const isSaved = props.docNo !== null;
+  const paymentsQ     = useSalesOrderPayments(isSaved ? props.docNo : null);
+  const addPayment    = useAddSalesOrderPayment();
+  const deletePayment = useDeleteSalesOrderPayment();
+
+  /* SAVED-mode local drafts (pre-commit rows). DRAFT mode uses parent's
+     `payments` array directly. */
+  const [savedDrafts, setSavedDrafts] = useState<PaymentDraft[]>([]);
+
+  const persistedPayments: SoPayment[] = isSaved ? (paymentsQ.data ?? []) : [];
+  const drafts: PaymentDraft[] = isSaved ? savedDrafts : (props as DraftModeProps).payments;
+
+  /* Default Collected By → current logged-in staff (2026-05-27 audit pass).
+     Commander's screenshot showed new payment rows defaulting to '—' / first
+     dropdown entry instead of the staff who's actually entering the
+     payment. Resolves auth.staff?.id and validates that the id exists in
+     the active staff dropdown before applying — guards against the race
+     where the user clicks Add Payment before useStaff() resolves, and the
+     edge case where the auth'd user's staff row is inactive (rare; happens
+     when an admin disables themselves). Falls back to '' (= '—' option)
+     so the dropdown doesn't lie about who collected the cash. Existing
+     persisted payments retain their saved `collected_by` value — this
+     default only seeds NEW draft rows. */
+  const defaultStaffId = (() => {
+    const id = auth.staff?.id ?? '';
+    if (!id) return '';
+    // Validate the staff id is in the active list. If staff hasn't loaded
+    // yet (staffQ.isLoading) the filter is empty — still return the id
+    // so the dropdown gets the right initial value once the option lands.
+    if (staff.length === 0) return id;
+    const hit = staff.find((s) => s.id === id && s.active);
+    return hit ? id : '';
+  })();
+
+  const addDraft = () => {
+    /* Loo 2026-06-09 — seed the new row's amount with the OUTSTANDING balance
+       (grand total − already paid − amounts on other in-flight rows) so a full
+       balance payment is one click. On SO create the first row defaults to the
+       full total; a split second row defaults to the remainder. Mirrors the POS
+       Record-payment drawer + handover default. */
+    const paidNow =
+      persistedPayments.reduce((s, p) => s + (p.amount_centi || 0), 0) +
+      drafts.reduce((s, dr) => s + (dr.amountCenti || 0), 0);
+    const outstanding = Math.max(0, grandTotal - paidNow);
+    const d = { ...newPaymentDraft(defaultStaffId), amountCenti: outstanding };
+    if (isSaved) {
+      setSavedDrafts((prev) => [...prev, d]);
+    } else {
+      (props as DraftModeProps).onChange([...(props as DraftModeProps).payments, d]);
+    }
+  };
+
+  const patchDraft = (uid: string, patch: Partial<PaymentDraft>) => {
+    if (isSaved) {
+      setSavedDrafts((prev) => prev.map((d) => d.uid === uid ? { ...d, ...patch } : d));
+    } else {
+      const cur = (props as DraftModeProps).payments;
+      (props as DraftModeProps).onChange(
+        cur.map((d) => d.uid === uid ? { ...d, ...patch } : d),
+      );
+    }
+  };
+
+  const removeDraft = (uid: string) => {
+    if (isSaved) {
+      setSavedDrafts((prev) => prev.filter((d) => d.uid !== uid));
+    } else {
+      const cur = (props as DraftModeProps).payments;
+      (props as DraftModeProps).onChange(cur.filter((d) => d.uid !== uid));
+    }
+  };
+
+  /* SAVED mode commit — fire POST /:docNo/payments. DRAFT mode has no
+     commit affordance; the parent batches them at SO-create time. */
+  const commitDraft = (d: PaymentDraft) => {
+    if (!isSaved) return;
+    /* Spec D4 — a SAVED-mode (SO route) payment is rejected by the API
+       without a slip; gate the commit on both the amount and a confirmed
+       slip upload session so the user never round-trips a 400. */
+    if (d.amountCenti <= 0 || !d.slipUploadSessionId) return;
+    const { method } = labelToApi(d.methodLabel);
+    /* Cascade payload — populate sub-fields by the L1 method only
+       (draftMethodFields). The API mirrors the same guard and will scrub any
+       irrelevant sub-fields (e.g. a stale onlineType left over from a
+       Merchant→Online toggle). */
+    const body: Record<string, unknown> = {
+      docNo:           (props as SavedModeProps).docNo,
+      paidAt:          d.paidAt,
+      method,
+      amountCenti:     d.amountCenti,
+      accountSheet:    d.accountSheet || null,
+      approvalCode:    d.approvalCode || null,
+      collectedBy:     d.collectedBy  || null,
+      uploadSessionId: d.slipUploadSessionId,
+      ...draftMethodFields(method, d),
+    };
+    addPayment.mutate(body as { docNo: string } & Record<string, unknown>, {
+      onSuccess: () => removeDraft(d.uid),
+      onError: (e) => {
+        // eslint-disable-next-line no-console
+        console.error('[payment] add failed:', e);
+        notify({ title: 'Failed to save payment', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+      },
+    });
+  };
+
+  /* Summary maths — identical across modes. In DRAFT mode there are no
+     persisted rows yet, so paid is just Σ drafts. In SAVED mode paid is
+     Σ persisted (drafts only enter the total once committed via API). */
+  const paidCenti = isSaved
+    ? persistedPayments.reduce((sum, p) => sum + (p.amount_centi || 0), 0)
+    : drafts.reduce((sum, d) => sum + (d.amountCenti || 0), 0);
+  const balanceCenti = Math.max(0, grandTotal - paidCenti);
+
+  const staffNameById = (id: string | null): string | null => {
+    if (!id) return null;
+    return staff.find((s) => s.id === id)?.name ?? null;
+  };
+
+  /* Persisted row → display label. Resolves the live maintenance label for
+     the row's method (so a rename in SO Maintenance re-labels history too);
+     falls back to the shared defaults. */
+  const methodDisplay = (p: SoPayment): string => {
+    const value = apiToValue(p);
+    return methodOpts.find((m) => m.value === value)?.label
+      ?? PAYMENT_METHOD_DEFAULT_LABELS[p.method as PaymentMethodCode]
+      ?? value;
+  };
+
+  const totalRowCount = persistedPayments.length + drafts.length;
+
+  /* Optional payment-slip column. One slip per order, so we fetch it once and
+     render the same proof thumbnail on each persisted row, in a "Slip" column
+     immediately left of Collected By. */
+  const slipProp = isSaved ? (props as SavedModeProps).slip : undefined;
+  /* Show the Slip column when the order prop is passed (SO detail) OR when any
+     persisted row carries its own per-payment slip (Spec D4). DO/SI tables
+     pass no prop and their payments have no slip_key, so they stay unchanged. */
+  const showSlip = Boolean(slipProp) || persistedPayments.some((p) => p.slip_key);
+  const [slipUrl, setSlipUrl] = useState<string | null>(null);
+  const [slipType, setSlipType] = useState<string>('image/jpeg');
+  useEffect(() => {
+    if (!isSaved || !slipProp?.slipKey) { setSlipUrl(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await slipProp.fetcher((props as SavedModeProps).docNo);
+        if (!cancelled) { setSlipUrl(r.url); setSlipType(r.contentType); }
+      } catch { if (!cancelled) setSlipUrl(null); }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSaved, slipProp?.slipKey]);
+
+  /* 8-column override when the Slip column is shown (inserts a 64px slip column
+     just before Collected By). Leaves the shared 7-column CSS untouched. */
+  const gridStyle: CSSProperties | undefined = showSlip
+    ? { gridTemplateColumns: '140px 140px minmax(120px, 1fr) minmax(140px, 1.4fr) minmax(140px, 1.4fr) 64px 160px 32px' }
+    : undefined;
+
+  return (
+    <section className={detailStyles.card}>
+      <header className={detailStyles.cardHeader}>
+        <h2 className={detailStyles.cardTitle}>
+          <DollarSign size={14} strokeWidth={1.75} /> Payments
+        </h2>
+      </header>
+      <div className={detailStyles.cardBody}>
+        <div className={paymentsStyles.section}>
+          {/* Top bar with + Add Payment trigger ─────────────────────── */}
+          <div className={paymentsStyles.head}>
+            <span className={paymentsStyles.headLabel}>
+              {totalRowCount} transaction{totalRowCount === 1 ? '' : 's'}
+            </span>
+            {!locked && (
+              <button
+                type="button"
+                className={paymentsStyles.addBtn}
+                onClick={addDraft}
+                disabled={isSaved && addPayment.isPending}
+              >
+                <Plus size={14} strokeWidth={1.75} />
+                Add Payment
+              </button>
+            )}
+          </div>
+
+          {/* Transactions table ──────────────────────────────────────── */}
+          <div className={paymentsStyles.grid} style={gridStyle}>
+            {/* Header row */}
+            <span className={paymentsStyles.headerCell}>
+              Date <CalIcon size={12} strokeWidth={1.75} />
+            </span>
+            <span className={paymentsStyles.headerCell}>
+              Payment Method <Tag size={12} strokeWidth={1.75} />
+            </span>
+            <span className={paymentsStyles.headerCellRight}>
+              Amount <DollarSign size={12} strokeWidth={1.75} />
+            </span>
+            <span className={paymentsStyles.headerCell}>
+              Account Sheet <FileText size={12} strokeWidth={1.75} />
+            </span>
+            <span className={paymentsStyles.headerCell}>
+              Approval Code <FileText size={12} strokeWidth={1.75} />
+            </span>
+            {showSlip && (
+              <span className={paymentsStyles.headerCell}>
+                Slip <ImageIcon size={12} strokeWidth={1.75} />
+              </span>
+            )}
+            <span className={paymentsStyles.headerCell}>
+              Collected By <UserIcon size={12} strokeWidth={1.75} />
+            </span>
+            <span className={paymentsStyles.headerCell} />
+
+            {/* Empty + loading states */}
+            {isSaved && paymentsQ.isLoading && (
+              <span className={paymentsStyles.emptyRow} style={{ gridColumn: '1 / -1' }}>
+                Loading…
+              </span>
+            )}
+            {(!isSaved || !paymentsQ.isLoading) &&
+              persistedPayments.length === 0 &&
+              drafts.length === 0 && (
+              <span className={paymentsStyles.emptyRow} style={{ gridColumn: '1 / -1' }}>
+                No payments recorded yet · click "Add Payment" to log a deposit
+              </span>
+            )}
+
+            {/* Persisted payment rows (SAVED mode only) */}
+            {persistedPayments.map((p) => (
+              <div className={paymentsStyles.row} key={p.id}>
+                <span className={paymentsStyles.cell} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                  {p.paid_at}
+                </span>
+                <span className={paymentsStyles.cell} style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+                  <span className={paymentsStyles.methodPill} style={methodPillStyle(p.method)}>
+                    {methodDisplay(p)}
+                  </span>
+                  {/* Task #122 (cascade) — surface the L2 picks below the
+                      pill so a Merchant row reads as "Merchant · MBB · 12
+                      months", an Online row as "Online · TNG", an
+                      Installment row as "Installment · 12m". */}
+                  {p.method === 'merchant' && (p.merchant_provider || p.installment_months) && (
+                    <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
+                      {p.merchant_provider ?? '—'}
+                      {p.installment_months ? ` · ${p.installment_months}m` : ''}
+                    </span>
+                  )}
+                  {p.method === 'transfer' && p.online_type && (
+                    <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
+                      {p.online_type}
+                    </span>
+                  )}
+                  {p.method === 'installment' && (p.merchant_provider || p.installment_months) && (
+                    <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
+                      {p.merchant_provider ? `${p.merchant_provider} · ` : ''}
+                      {p.installment_months ? `${p.installment_months}m` : ''}
+                    </span>
+                  )}
+                </span>
+                <span className={paymentsStyles.cellRight}
+                      style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                  {fmtRm(p.amount_centi, currency)}
+                </span>
+                <span className={paymentsStyles.cell}>
+                  {p.account_sheet ?? <span className={detailStyles.muted}>—</span>}
+                </span>
+                <span className={paymentsStyles.cell} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                  {p.approval_code ?? <span className={detailStyles.muted}>—</span>}
+                </span>
+                {showSlip && (
+                  <span className={paymentsStyles.cell}>
+                    {isSaved ? (
+                      <PaymentSlipThumb
+                        docNo={(props as SavedModeProps).docNo}
+                        payment={p}
+                        orderSlipUrl={slipUrl}
+                        orderSlipType={slipType}
+                      />
+                    ) : (
+                      <span className={detailStyles.muted}>—</span>
+                    )}
+                  </span>
+                )}
+                <span className={paymentsStyles.cell}>
+                  {p.collected_by_name ?? staffNameById(p.collected_by) ?? <span className={detailStyles.muted}>—</span>}
+                </span>
+                <span className={paymentsStyles.cell}>
+                  {!locked && (
+                    <button
+                      type="button"
+                      className={paymentsStyles.trashBtn}
+                      disabled={deletePayment.isPending}
+                      onClick={async () => {
+                        if (await askConfirm({
+                          title: `Delete this ${methodDisplay(p)} payment of ${fmtRm(p.amount_centi, currency)}?`,
+                          confirmLabel: 'Delete',
+                          danger: true,
+                        })) {
+                          deletePayment.mutate({ docNo: (props as SavedModeProps).docNo, id: p.id });
+                        }
+                      }}
+                      title="Remove payment"
+                    >
+                      <Trash2 size={14} strokeWidth={1.75} />
+                    </button>
+                  )}
+                </span>
+              </div>
+            ))}
+
+            {/* In-flight draft rows (SAVED + DRAFT) */}
+            {drafts.map((d) => (
+              <div className={paymentsStyles.row} key={d.uid}>
+                <span className={paymentsStyles.cell}>
+                  <input
+                    type="date"
+                    className={paymentsStyles.inlineInput}
+                    value={d.paidAt}
+                    disabled={locked}
+                    onChange={(e) => patchDraft(d.uid, { paidAt: e.target.value })}
+                  />
+                </span>
+                <span className={paymentsStyles.cell} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+                  {/* L1 — Method (always visible) */}
+                  <select
+                    className={paymentsStyles.inlineSelect}
+                    value={d.methodLabel}
+                    disabled={locked}
+                    onChange={(e) => {
+                      /* When Method changes, clear the L2 fields that
+                         don't apply to the new pick. Keeps stale data
+                         out of the API call + the audit log. */
+                      const next = e.target.value;
+                      patchDraft(d.uid, {
+                        methodLabel: next,
+                        merchantProvider:       next === 'Merchant' ? d.merchantProvider : '',
+                        installmentMonthsLabel: next === 'Merchant' || next === 'Installment'
+                          ? d.installmentMonthsLabel : '',
+                        onlineType:             next === 'Online'   ? d.onlineType       : '',
+                      });
+                    }}
+                  >
+                    {methodOpts.map((m) => (
+                      <option key={m.id} value={m.value}>{m.label}</option>
+                    ))}
+                    {/* Persist labels that are no longer active in the
+                        list so existing drafts (rehydrated from
+                        somewhere) still render their selection. */}
+                    {d.methodLabel && !methodOpts.some((m) => m.value === d.methodLabel) && (
+                      <option value={d.methodLabel}>{d.methodLabel}</option>
+                    )}
+                  </select>
+
+                  {/* L2 — Merchant cascade: pick the Bank + Installment plan. */}
+                  {d.methodLabel === 'Merchant' && (
+                    <>
+                      <select
+                        className={paymentsStyles.inlineSelect}
+                        style={{ fontSize: 'var(--fs-11)' }}
+                        value={d.merchantProvider}
+                        disabled={locked}
+                        onChange={(e) => patchDraft(d.uid, { merchantProvider: e.target.value })}
+                        aria-label="Merchant bank"
+                      >
+                        <option value="">— Bank —</option>
+                        {merchantOpts.map((m) => (
+                          <option key={m.id} value={m.value}>{m.label}</option>
+                        ))}
+                        {d.merchantProvider && !merchantOpts.some((m) => m.value === d.merchantProvider) && (
+                          <option value={d.merchantProvider}>{d.merchantProvider}</option>
+                        )}
+                      </select>
+                      <select
+                        className={paymentsStyles.inlineSelect}
+                        style={{ fontSize: 'var(--fs-11)' }}
+                        value={d.installmentMonthsLabel}
+                        disabled={locked}
+                        onChange={(e) => patchDraft(d.uid, { installmentMonthsLabel: e.target.value })}
+                        aria-label="Installment plan"
+                      >
+                        <option value="">— Plan —</option>
+                        {installmentOpts.map((m) => (
+                          <option key={m.id} value={m.value}>{m.label}</option>
+                        ))}
+                        {d.installmentMonthsLabel && !installmentOpts.some((m) => m.value === d.installmentMonthsLabel) && (
+                          <option value={d.installmentMonthsLabel}>{d.installmentMonthsLabel}</option>
+                        )}
+                      </select>
+                    </>
+                  )}
+
+                  {/* L2 — Online cascade: pick the sub-type. */}
+                  {d.methodLabel === 'Online' && (
+                    <select
+                      className={paymentsStyles.inlineSelect}
+                      style={{ fontSize: 'var(--fs-11)' }}
+                      value={d.onlineType}
+                      disabled={locked}
+                      onChange={(e) => patchDraft(d.uid, { onlineType: e.target.value })}
+                      aria-label="Online sub-type"
+                    >
+                      <option value="">— Type —</option>
+                      {onlineOpts.map((o) => (
+                        <option key={o.id} value={o.value}>{o.label}</option>
+                      ))}
+                      {d.onlineType && !onlineOpts.some((o) => o.value === d.onlineType) && (
+                        <option value={d.onlineType}>{d.onlineType}</option>
+                      )}
+                    </select>
+                  )}
+
+                  {/* L2 — Installment cascade: pick the plan (term). */}
+                  {d.methodLabel === 'Installment' && (
+                    <select
+                      className={paymentsStyles.inlineSelect}
+                      style={{ fontSize: 'var(--fs-11)' }}
+                      value={d.installmentMonthsLabel}
+                      disabled={locked}
+                      onChange={(e) => patchDraft(d.uid, { installmentMonthsLabel: e.target.value })}
+                      aria-label="Installment plan"
+                    >
+                      <option value="">— Plan —</option>
+                      {installmentOpts.map((m) => (
+                        <option key={m.id} value={m.value}>{m.label}</option>
+                      ))}
+                      {d.installmentMonthsLabel && !installmentOpts.some((m) => m.value === d.installmentMonthsLabel) && (
+                        <option value={d.installmentMonthsLabel}>{d.installmentMonthsLabel}</option>
+                      )}
+                    </select>
+                  )}
+
+                  {/* L2 — Cash: no extra fields */}
+                </span>
+                <span className={paymentsStyles.cellRight}>
+                  <MoneyInput
+                    bare allowBlank
+                    valueSen={d.amountCenti === 0 ? null : d.amountCenti}
+                    inputClassName={paymentsStyles.inlineInputRight}
+                    placeholder="0"
+                    disabled={locked}
+                    onCommit={(sen) => patchDraft(d.uid, { amountCenti: sen ?? 0 })}
+                  />
+                </span>
+                <span className={paymentsStyles.cell}>
+                  <input
+                    type="text"
+                    className={`${paymentsStyles.inlineInput} ${paymentsStyles.placeholderHint}`}
+                    placeholder="e.g. AKHC 3809"
+                    value={d.accountSheet}
+                    disabled={locked}
+                    onChange={(e) => patchDraft(d.uid, { accountSheet: e.target.value })}
+                  />
+                </span>
+                <span className={paymentsStyles.cell}>
+                  <input
+                    type="text"
+                    className={paymentsStyles.inlineInput}
+                    value={d.approvalCode}
+                    disabled={locked}
+                    onChange={(e) => patchDraft(d.uid, { approvalCode: e.target.value })}
+                  />
+                </span>
+                {showSlip && (
+                  <span className={paymentsStyles.cell}>
+                    {/* Spec D4 — per-payment slip uploader. SAVED mode (SO
+                        route) REQUIRES it; the commit button stays disabled
+                        until a slip is confirmed. */}
+                    <SlipUploadField
+                      required={isSaved}
+                      disabled={locked}
+                      onConfirmed={(sid) => patchDraft(d.uid, { slipUploadSessionId: sid })}
+                      onCleared={() => patchDraft(d.uid, { slipUploadSessionId: null })}
+                    />
+                  </span>
+                )}
+                <span className={paymentsStyles.cell}>
+                  <select
+                    className={paymentsStyles.inlineInputUser}
+                    value={d.collectedBy}
+                    disabled={locked}
+                    onChange={(e) => patchDraft(d.uid, { collectedBy: e.target.value })}
+                  >
+                    <option value="">—</option>
+                    {staff.filter((s) => s.active).map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                </span>
+                <span className={paymentsStyles.cell}>
+                  <div style={{ display: 'flex', gap: 2, justifyContent: 'flex-end', alignItems: 'center' }}>
+                    {/* DRAFT mode slip uploader — opt-in via slipUpload prop.
+                        Only the SO-route batching page (SalesOrderNew) sets
+                        slipUpload; DO / SI / consignment pages do NOT, so their
+                        tables render no uploader (the endpoint doesn't accept
+                        one). Required-marked ("Slip *") when rendered here. */}
+                    {!isSaved && (props as DraftModeProps).slipUpload && (
+                      <SlipUploadField
+                        required
+                        disabled={locked}
+                        onConfirmed={(sid) => patchDraft(d.uid, { slipUploadSessionId: sid })}
+                        onCleared={() => patchDraft(d.uid, { slipUploadSessionId: null })}
+                      />
+                    )}
+                    {/* SAVED mode shows the Save (commit) button next to
+                        Discard. DRAFT mode has no Save — the parent batches
+                        all drafts on SO-create. We still show Discard so the
+                        user can drop a half-typed row. */}
+                    {isSaved && (() => {
+                      /* Spec D4 — commit needs an amount AND a confirmed slip
+                         (the SO route 400s without one). */
+                      const noAmount = d.amountCenti <= 0;
+                      const noSlip   = !d.slipUploadSessionId;
+                      const blocked  = noAmount || noSlip;
+                      const title = noAmount
+                        ? 'Enter an amount > 0 first'
+                        : noSlip
+                          ? 'Upload the payment slip first'
+                          : 'Save payment';
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => commitDraft(d)}
+                          disabled={locked || addPayment.isPending || blocked}
+                          title={title}
+                          style={{
+                            background: 'transparent', border: 'none', padding: 4,
+                            cursor: blocked ? 'not-allowed' : 'pointer',
+                            color: blocked ? 'var(--fg-muted)' : 'var(--c-secondary-a, #2F5D4F)',
+                          }}
+                        >
+                          <Save size={14} strokeWidth={1.75} />
+                        </button>
+                      );
+                    })()}
+                    <button
+                      type="button"
+                      className={paymentsStyles.trashBtn}
+                      onClick={() => removeDraft(d.uid)}
+                      title="Discard"
+                      disabled={locked}
+                    >
+                      <Trash2 size={14} strokeWidth={1.75} />
+                    </button>
+                  </div>
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* ── Summary (Deposit Paid + Balance) ────────────────────── */}
+          <div className={paymentsStyles.summary}>
+            <span className={paymentsStyles.summaryLabel}>
+              Deposit Paid <DollarSign size={12} strokeWidth={1.75} />
+            </span>
+            <span className={paymentsStyles.summaryValueAccent}>
+              {fmtRm(paidCenti, currency)}
+            </span>
+            <span className={paymentsStyles.summaryLabel}>
+              Balance <DollarSign size={12} strokeWidth={1.75} />
+            </span>
+            <span className={balanceCenti > 0 ? paymentsStyles.balanceOutstanding : paymentsStyles.balanceClear}>
+              {fmtRm(balanceCenti, currency)}
+              {grandTotal > 0 && paidCenti >= grandTotal && (
+                <span style={{ marginLeft: 8, fontSize: 'var(--fs-11)' }}>· PAID</span>
+              )}
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+};
+
+export const PaymentsTable = memo(PaymentsTableInner) as typeof PaymentsTableInner;

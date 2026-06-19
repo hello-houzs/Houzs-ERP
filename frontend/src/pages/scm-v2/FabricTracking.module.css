@@ -1,0 +1,354 @@
+/* Fabric Tracking page — follows 2990s design tokens. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-6) var(--space-7);
+  background: var(--c-cream);
+  min-height: 100%;
+}
+
+.titleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.title {
+  font-family: var(--font-title);
+  font-size: var(--fs-32);
+  font-weight: 900;
+  color: var(--c-ink);
+  margin: 0;
+}
+
+.subtitle {
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+/* ── Stat cards ────────────────────────────────────────────────────── */
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-4);
+}
+
+.statCard {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-6);
+  box-shadow: var(--shadow-2);
+}
+
+.statIcon {
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(166, 71, 30, 0.10);
+  color: var(--c-burnt);
+  border-radius: var(--radius-md);
+}
+
+.statBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.statLabel {
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.statValue {
+  font-family: var(--font-mark);
+  font-size: var(--fs-24);
+  font-weight: 800;
+  color: var(--c-ink);
+  font-stretch: 80%;
+}
+
+/* ── Filter row ─────────────────────────────────────────────────────── */
+
+.filterRow {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.searchBox {
+  position: relative;
+  flex: 1;
+  min-width: 320px;
+}
+
+.searchIcon {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-7);
+  color: var(--c-ink);
+  outline: none;
+}
+
+.searchInput::placeholder { color: var(--fg-soft); }
+.searchInput:focus { border-color: var(--line-strong); background: var(--c-cream); }
+
+.categorySelect {
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  color: var(--c-ink);
+  cursor: pointer;
+  min-width: 200px;
+}
+
+/* ── Table card ─────────────────────────────────────────────────────── */
+
+.tableCard {
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+
+.recordCount {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-button);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table thead th {
+  font-family: var(--font-button);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.table tbody td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  color: var(--c-ink);
+  vertical-align: middle;
+}
+
+.table tbody tr:last-child td { border-bottom: none; }
+.table tbody tr:hover { background: var(--c-cream); }
+
+.codeChip {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  background: var(--c-cream);
+  color: var(--c-ink);
+  border: 1px solid var(--line);
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+}
+
+/* Category chips — distinct hue per fabric category. Kept muted to honour
+   the 60/30/10 brand rule. */
+.catBM { background: rgba(31, 58, 138, 0.10); color: var(--c-secondary-b); }
+.catS  { background: rgba(166, 71, 30, 0.10); color: var(--c-burnt); }
+.catSM { background: rgba(47, 93, 79, 0.12); color: var(--c-secondary-a); }
+.catLN { background: rgba(227, 208, 166, 0.40); color: var(--c-ink); }
+.catWB { background: rgba(34, 31, 32, 0.06); color: var(--c-ink); }
+
+.catChip {
+  display: inline-block;
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+}
+
+/* Tier picker pill — orange-tinged so the user can see which rows have
+   non-default settings. */
+.tierPicker {
+  font-family: var(--font-button);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  background: rgba(232, 107, 58, 0.10);
+  color: var(--c-burnt);
+  border: 1px solid rgba(232, 107, 58, 0.30);
+  border-radius: var(--radius-pill);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.tierPicker:hover {
+  background: rgba(232, 107, 58, 0.18);
+}
+
+.numCell {
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  text-align: right;
+}
+
+.numCellMuted {
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  text-align: right;
+  color: var(--fg-muted);
+}
+
+.price {
+  font-family: var(--font-mark);
+  font-size: var(--fs-14);
+  color: var(--c-burnt);
+  font-weight: 800;
+  font-stretch: 80%;
+  text-align: right;
+}
+
+.priceEmpty {
+  color: var(--fg-soft);
+  text-align: right;
+}
+
+.bannerWarn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(232, 107, 58, 0.08);
+  border: 1px solid var(--c-orange);
+  color: var(--c-burnt);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-13);
+}
+
+.emptyRow {
+  text-align: center;
+  color: var(--fg-muted);
+  padding: var(--space-7);
+}
+
+/* ── Supplier code inline editor ────────────────────────────────────── */
+
+.supplierCodeChip {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  background: var(--c-paper);
+  color: var(--c-ink);
+  border: 1px dashed var(--line);
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.supplierCodeChip:hover {
+  background: var(--c-cream);
+  border-color: var(--c-orange);
+}
+
+.supplierCodeEmpty {
+  display: inline-block;
+  font-family: var(--font-button);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: transparent;
+  color: var(--fg-soft);
+  border: 1px dashed var(--line);
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.supplierCodeEmpty:hover {
+  color: var(--c-burnt);
+  border-color: var(--c-orange);
+  background: rgba(232, 107, 58, 0.06);
+}
+
+.supplierCodeEditor {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.supplierCodeInput {
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  background: var(--c-cream);
+  border: 1px solid var(--c-orange);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  color: var(--c-ink);
+  outline: none;
+  width: 140px;
+}
+
+.iconBtn {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 3px 5px;
+  display: inline-flex;
+}
+
+.iconBtn:hover {
+  background: var(--c-cream);
+  color: var(--c-ink);
+}

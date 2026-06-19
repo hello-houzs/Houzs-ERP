@@ -1,0 +1,169 @@
+// Sales Invoice PDF — issued to the customer.
+//
+// 2026-06-19 — unified "Hookka-tidy" layout shared with SO/PO/DO: real
+// letterhead header, the drawInfoColumns info block (BILL TO label-gutter +
+// INVOICE DETAILS colon-aligned), and the consistent footer (doc no · portal ·
+// page n of m). A4 portrait, pure B&W. Totals + signatures unchanged.
+import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, fmtRm, safeName, fmtDocDate } from './pdf-common';
+import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
+
+type SiHeader = {
+  invoice_number: string; status: string;
+  so_doc_no: string | null; debtor_code: string | null; debtor_name: string;
+  invoice_date: string; due_date: string | null; currency: string;
+  subtotal_centi: number; discount_centi: number; tax_centi: number;
+  total_centi: number; paid_centi: number; notes: string | null;
+};
+type SiItem = {
+  item_code: string; description: string | null;
+  qty: number; unit_price_centi: number;
+  // Older items table rows in 2990s may omit these — keep optional so the
+  // detail-page items shape is assignable without forcing a schema-wide
+  // type widening.
+  discount_centi?: number; tax_centi?: number;
+  line_total_centi: number;
+  item_group?: string | null;
+  variants?: Record<string, unknown> | null;
+};
+
+/* Draw ONE sales invoice's content into `doc` (letterhead → info block → items →
+   totals → signature → footer). Does NOT create the jsPDF or save — the caller
+   finalizes ONCE, so several SIs can share one doc (batch "Export PDF"). The
+   footer loop starts at this SI's first page so a combined doc numbers each
+   invoice's own pages without re-stamping earlier ones. */
+export async function renderSalesInvoiceInto(
+  doc: import('jspdf').jsPDF,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  autoTable: any,
+  header: SiHeader,
+  items: SiItem[],
+): Promise<void> {
+  const startPage = doc.getNumberOfPages();
+  const pageW = doc.internal.pageSize.getWidth();
+  const margin = 14;
+
+  let y = drawHeader(doc, {
+    docTitle: 'SALES INVOICE',
+    rightMeta: [
+      { label: 'Invoice No', value: header.invoice_number },
+      { label: 'Date',       value: fmtDocDate(header.invoice_date) },
+    ],
+  });
+
+  const statusText = header.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  y = drawInfoColumns(doc, y,
+    {
+      title: 'BILL TO',
+      rows: [
+        ['Company', header.debtor_name],
+        ['Code', header.debtor_code],
+        ['Note', header.notes],
+      ],
+    },
+    {
+      title: 'INVOICE DETAILS',
+      rows: [
+        ['Invoice No', header.invoice_number],
+        ['SO Ref', header.so_doc_no],
+        ['Date', fmtDocDate(header.invoice_date)],
+        ['Due', header.due_date ? fmtDocDate(header.due_date) : null],
+        ['Status', statusText],
+      ],
+    },
+  );
+
+  const fabric = await loadCustomerFabricMaps(items);
+  const rows = items.map((it, idx) => [
+    String(idx + 1),
+    it.item_code,
+    [it.description, docVariantLine(it, fabric.ext, fabric.desc)].filter(Boolean).join('\n') || '—',
+    String(it.qty),
+    fmtRm(it.unit_price_centi, header.currency),
+    (it.discount_centi ?? 0) > 0 ? fmtRm(it.discount_centi ?? 0, header.currency) : '—',
+    fmtRm(it.line_total_centi, header.currency),
+  ]);
+  autoTable(doc, {
+    startY: y,
+    head: [['#', 'Item', 'Description', 'Qty', 'Unit Price', 'Disc', 'Total']],
+    body: rows,
+    theme: 'striped',
+    styles: { fontSize: 8.5, cellPadding: 2, valign: 'top' },
+    headStyles: { fillColor: [34, 31, 32], textColor: 250, fontStyle: 'bold' },
+    columnStyles: {
+      0: { cellWidth: 8, halign: 'right' },
+      1: { cellWidth: 24 },
+      2: { cellWidth: 68 },
+      3: { cellWidth: 14, halign: 'right' },
+      4: { cellWidth: 24, halign: 'right' },
+      5: { cellWidth: 18, halign: 'right' },
+      6: { cellWidth: 26, halign: 'right' },
+    },
+    margin: { left: margin, right: margin },
+  });
+  const lastY = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y) + 6;
+
+  // Totals + payment
+  const totalsX = pageW - margin - 70;
+  const drawRow = (label: string, val: string, ty: number, bold = false) => {
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.text(label, totalsX, ty);
+    doc.text(val, pageW - margin, ty, { align: 'right' });
+  };
+  doc.setFontSize(9);
+  let ty = lastY;
+  drawRow('Subtotal', fmtRm(header.subtotal_centi, header.currency), ty); ty += 4;
+  drawRow('Discount', fmtRm(header.discount_centi, header.currency), ty); ty += 4;
+  drawRow('Tax',      fmtRm(header.tax_centi,      header.currency), ty); ty += 5;
+  doc.setDrawColor(0); doc.line(totalsX, ty - 2, pageW - margin, ty - 2);
+  doc.setFontSize(11);
+  drawRow('GRAND TOTAL', fmtRm(header.total_centi, header.currency), ty + 2, true);
+  ty += 6;
+  doc.setFontSize(9);
+  drawRow('Paid',        fmtRm(header.paid_centi, header.currency), ty + 4); ty += 4;
+  drawRow('Outstanding', fmtRm(header.total_centi - header.paid_centi, header.currency), ty + 4, true);
+  ty += 12;
+
+  ty = drawSignatureBoxes(doc, ty, 'Customer Acknowledgement', `${COMPANY.name} Authorised Signature`);
+
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(110);
+  doc.text('Terms: Payment due as per invoice. Late payments may incur a service charge.', margin, ty);
+  doc.setTextColor(0);
+
+  // Footer: doc no · portal · page n of m on every page of THIS invoice
+  const pageCount = doc.getNumberOfPages();
+  for (let p = startPage; p <= pageCount; p += 1) {
+    doc.setPage(p);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(110);
+    doc.text(header.invoice_number, margin, 290);
+    doc.text(`${COMPANY.portalLabel} · ${fmtDocDate(header.invoice_date)}`, pageW / 2, 290, { align: 'center' });
+    doc.text(`Page ${p} of ${pageCount}`, pageW - margin, 290, { align: 'right' });
+    doc.setTextColor(0);
+  }
+}
+
+/* Single SI → its own file (unchanged behaviour). */
+export async function generateSalesInvoicePdf(header: SiHeader, items: SiItem[]): Promise<void> {
+  const { jsPDF } = await import('jspdf');
+  const autoTable = (await import('jspdf-autotable')).default;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  await renderSalesInvoiceInto(doc, autoTable, header, items);
+  doc.save(`${header.invoice_number}-${safeName(header.debtor_name)}.pdf`);
+}
+
+/* Several SIs → ONE combined file, each invoice starting on a new page. For the
+   batch "Export PDF" action (download a customer all their invoices in one
+   attachment). Each invoice numbers its own pages via renderSalesInvoiceInto's
+   startPage-based footer loop. */
+export async function generateCombinedSalesInvoicePdf(
+  docs: Array<{ header: SiHeader; items: SiItem[] }>,
+  opts?: { fileName?: string },
+): Promise<void> {
+  const { jsPDF } = await import('jspdf');
+  const autoTable = (await import('jspdf-autotable')).default;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  for (let i = 0; i < docs.length; i += 1) {
+    if (i > 0) doc.addPage();
+    await renderSalesInvoiceInto(doc, autoTable, docs[i]!.header, docs[i]!.items);
+  }
+  doc.save(opts?.fileName ?? 'sales-invoices.pdf');
+}

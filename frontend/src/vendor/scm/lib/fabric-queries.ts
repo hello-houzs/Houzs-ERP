@@ -1,0 +1,272 @@
+// Vendored SLICE of apps/backend/src/lib/fabric-queries.ts — only the pieces
+// the PO New form reads: the FabricTrackingRow type, the dual-code display
+// helpers (fabricDualCode / fabricOptionLabel) and useFabricTrackings() (the
+// fabric dropdown source for sofa/bedframe variant pricing).
+//
+// HOUZS VENDOR NOTE: the source module's `import { supabase }` (used only by
+// useFabricColoursActive, a POS-side colour-library read the PO pages don't
+// use) and `import { serviceNotify }` (used only by the tier-update mutation)
+// are DROPPED along with those functions. Everything kept here is copied
+// verbatim and goes through the vendored authedFetch (→ /api/scm).
+
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { authedFetch } from './authed-fetch';
+import { serviceNotify } from './dialog-service';
+
+export type FabricCategoryValue = 'B.M-FABR' | 'S-FABR' | 'S.M-FABR' | 'LINING' | 'WEBBING';
+export type FabricTier = 'PRICE_1' | 'PRICE_2' | 'PRICE_3';
+export type FabricTierField = 'sofaPriceTier' | 'bedframePriceTier';
+
+export type FabricTrackingRow = {
+  id: string;
+  fabric_code: string;
+  fabric_description: string | null;
+  fabric_category: FabricCategoryValue | null;
+  price_tier: FabricTier | null;
+  sofa_price_tier: FabricTier | null;
+  bedframe_price_tier: FabricTier | null;
+  price_centi: number;
+  soh_centi: number;
+  po_outstanding_centi: number;
+  last_month_usage_centi: number;
+  one_week_usage_centi: number;
+  two_weeks_usage_centi: number;
+  one_month_usage_centi: number;
+  shortage_centi: number;
+  reorder_point_centi: number;
+  supplier: string | null;
+  supplier_code: string | null;
+  lead_time_days: number;
+  /* Migration 0063 — collection name (free text, e.g. "KOONA VELVET H2O"). */
+  series: string | null;
+  /* Migration 0167 — Fabric Converter ACTIVE toggle (owner spec 2026-06-12).
+     Inactive fabrics hide from NEW-entry pickers; existing docs keep their
+     code. Optional so the UI tolerates an API that predates the migration. */
+  is_active?: boolean | null;
+};
+
+/* ─── Fabric dual-code display (owner request 2026-06-12) ──────────────────
+ * Wherever a fabric is picked or displayed, show BOTH codes:
+ *   "CG-015 · DC-151-03 — description"
+ * internal fabric_code first, then the supplier's EXTERNAL code
+ * (fabric_trackings.supplier_code) when present. DISPLAY-ONLY — stored values
+ * remain the internal fabric_code everywhere. */
+export function fabricDualCode(internal: string, supplierCode?: string | null): string {
+  const ext = supplierCode?.trim();
+  return ext ? `${internal} · ${ext}` : internal;
+}
+
+/** Full dropdown label: dual code + " — description" (falls back to series). */
+export function fabricOptionLabel(
+  f: Pick<FabricTrackingRow, 'fabric_code' | 'supplier_code' | 'fabric_description' | 'series'>,
+): string {
+  const code = fabricDualCode(f.fabric_code, f.supplier_code);
+  const desc = f.fabric_description?.trim() || f.series?.trim() || '';
+  return desc ? `${code} — ${desc}` : code;
+}
+
+export function useFabricTrackings(opts?: {
+  category?: FabricCategoryValue;
+  search?: string;
+}) {
+  return useQuery({
+    queryKey: ['fabric-tracking', opts?.category ?? 'all', opts?.search ?? ''],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (opts?.category) params.set('category', opts.category);
+      if (opts?.search) params.set('search', opts.search);
+      const res = await authedFetch<{ fabrics: FabricTrackingRow[] }>(
+        `/fabric-tracking${params.toString() ? `?${params.toString()}` : ''}`,
+      );
+      return res.fabrics;
+    },
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HOUZS VENDOR — Fabric Converter page mutations. Copied verbatim from
+   apps/backend/src/lib/fabric-queries.ts; all go through the vendored
+   authedFetch (→ /api/scm/fabric-tracking…). The source module's supabase
+   colour-library reads are NOT vendored (the FabricTracking page never calls
+   them). serviceNotify lands the tier-update toast in the in-app NotifyDialog.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+export function useUpdateFabricTier() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { id: string; field: FabricTierField; tier: FabricTier }) => {
+      return authedFetch<{ ok: true; affectedProducts: number; fabricCode: string | null }>(
+        `/fabric-tracking/${args.id}/tier`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ field: args.field, tier: args.tier }),
+        },
+      );
+    },
+    onSuccess: (res, vars) => {
+      qc.invalidateQueries({ queryKey: ['fabric-tracking'] });
+      qc.invalidateQueries({ queryKey: ['mfg-products'] });  // price display might shift
+      if (res.affectedProducts > 0) {
+        const tierLabel = vars.tier.replace('PRICE_', 'P');
+        const fieldLabel = vars.field === 'bedframePriceTier' ? 'bedframe' : 'sofa';
+        // Light-touch in-app toast via the app-wide NotifyDialog (serviceNotify bridge).
+        serviceNotify({
+          title: `Tier updated → ${tierLabel}`,
+          body:
+            `${res.affectedProducts} ${fieldLabel} product${res.affectedProducts === 1 ? '' : 's'} ` +
+            `tagged with fabric ${res.fabricCode ?? ''} now reflect the new tier when read.`,
+        });
+      }
+    },
+  });
+}
+
+export function useUpdateFabricSupplierCode() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { id: string; supplierCode: string | null }) => {
+      return authedFetch<{ ok: true; supplierCode: string | null }>(
+        `/fabric-tracking/${args.id}/supplier-code`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ supplierCode: args.supplierCode }),
+        },
+      );
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['fabric-tracking'] }),
+  });
+}
+
+/* Migration 0063 — Inline-edit Series cell from the Fabric Converter table. */
+export function useUpdateFabricSeries() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { id: string; series: string | null }) => {
+      return authedFetch<{ ok: true; series: string | null }>(
+        `/fabric-tracking/${args.id}/series`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ series: args.series }),
+        },
+      );
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['fabric-tracking'] }),
+  });
+}
+
+/* Migration 0167 — Active toggle on the Fabric Converter (owner spec
+   2026-06-12). Inactive = hidden from NEW-entry fabric pickers (SO/CO variant
+   selects, scan-SO catalog); rows stay on the converter + old docs keep
+   displaying the code. */
+export function useUpdateFabricActive() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { id: string; isActive: boolean }) => {
+      return authedFetch<{ ok: true; isActive: boolean }>(
+        `/fabric-tracking/${args.id}/active`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ isActive: args.isActive }),
+        },
+      );
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['fabric-tracking'] }),
+  });
+}
+
+/* PR #38 — Make fabric description editable from the converter table. */
+export function useUpdateFabricDescription() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { id: string; description: string | null }) => {
+      return authedFetch<{ ok: true; description: string | null }>(
+        `/fabric-tracking/${args.id}/description`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ description: args.description }),
+        },
+      );
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['fabric-tracking'] }),
+  });
+}
+
+/* PR #43 — Create new fabric (Commander 2026-05-26) */
+export type NewFabric = {
+  id?: string;
+  fabricCode: string;
+  fabricDescription?: string;
+  fabricCategory?: FabricCategoryValue;
+  sofaPriceTier?: FabricTier;
+  bedframePriceTier?: FabricTier;
+  supplierCode?: string;
+  series?: string;
+  priceCenti?: number;
+  // Migration 0124/0125 — also create the customer-pickable fabric_library entry.
+  label?: string;
+  colours?: Array<{ colourId?: string; label: string; swatchHex?: string }>;
+};
+export function useCreateFabric() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: NewFabric) =>
+      authedFetch<{ fabric: FabricTrackingRow; fabricLibraryId?: string; libraryWarning?: string | null }>(`/fabric-tracking`, {
+        method: 'POST', body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['fabric-tracking'] }),
+  });
+}
+
+/* Commander 2026-05-26 — Bulk upsert for CSV Import. One HTTP call to the
+   server's /bulk-upsert endpoint (which does a single Postgres upsert).
+   `rows` is the camelCase shape parsed from CSV — see fabric-csv.parseCsv. */
+export type BulkUpsertResult = {
+  upserted: number;
+  errors:   Array<{ index: number; reason: string }>;
+};
+export function useBulkUpsertFabrics() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (rows: Array<Record<string, unknown>>) =>
+      authedFetch<BulkUpsertResult>(`/fabric-tracking/bulk-upsert`, {
+        method: 'POST',
+        body: JSON.stringify({ rows }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['fabric-tracking'] }),
+  });
+}
+
+export function useDeleteFabric() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      authedFetch<void>(`/fabric-tracking/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['fabric-tracking'] }),
+  });
+}
+
+/* HOUZS VENDOR — SO line editor (SoLineCard) read. The source
+   useFabricColoursActive selects the selling-side fabric_colours library via a
+   DIRECT supabase read (the colour vocabulary POS offers), which the vendored
+   layer has no supabase client for. It returns an EMPTY list here, so the
+   SoLineCard Fabrics dropdown falls back to its "(current)" rehydrate for saved
+   lines and offers no colour picks for new lines — the verbatim empty-pool
+   behaviour. When a Houzs /api/scm endpoint exposes the colour library, swap
+   this to an authedFetch read returning the same FabricColourRow[] shape. */
+export type FabricColourRow = {
+  fabricId: string;
+  colourId: string;
+  label: string | null;
+  swatchHex: string | null;
+  sortOrder: number;
+};
+
+export const useFabricColoursActive = () =>
+  useQuery({
+    queryKey: ['fabric-colours', 'active'],
+    staleTime: 60_000,
+    queryFn: async (): Promise<FabricColourRow[]> => [],
+  });
