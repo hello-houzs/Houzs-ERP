@@ -2,9 +2,13 @@
 // CategoriesEditor — Maintenance tab body for product-category hero images.
 //
 // API — backend/src/scm/routes/categories.ts, mounted /api/scm/admin/categories:
+//   GET    /:id/hero-image   -> image bytes (Content-Type from R2), 404 if unset
 //   POST   /:id/hero-image   raw image body (image/jpeg | image/png, <= 4MB)
 //                            -> { ok: true, key }   (admin / coordinator only)
 //   DELETE /:id/hero-image   -> { ok: true }        (admin / coordinator only)
+//
+// The GET is auth-gated (<img src> can't carry the bearer), so the current hero
+// is pulled through api.fetchBlobUrl and shown as a preview for the entered id.
 //
 // EDIT-ONLY ROUTE: this API exposes ONLY hero-image upload + clear, both keyed
 // by a category id. There is NO list/GET, no create, edit, or delete of the
@@ -18,7 +22,7 @@
 // bucket must be provisioned for upload to succeed (see the route's TODO note).
 // ----------------------------------------------------------------------------
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Upload, Trash2 } from "lucide-react";
 import { Button } from "../../../components/Button";
 import { useToast } from "../../../hooks/useToast";
@@ -36,6 +40,50 @@ export function CategoriesEditor() {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [categoryId, setCategoryId] = useState("");
   const [busy, setBusy] = useState(false);
+  // Current-hero preview for the entered id. `reload` is bumped after an
+  // upload / clear so the preview re-fetches. "missing" = GET returned 404
+  // (no hero set yet), distinct from "still loading".
+  const [heroUrl, setHeroUrl] = useState<string | null>(null);
+  const [heroState, setHeroState] = useState<"idle" | "loading" | "ready" | "missing">("idle");
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    const id = categoryId.trim();
+    if (!id) {
+      setHeroUrl(null);
+      setHeroState("idle");
+      return;
+    }
+    let revoked = false;
+    let createdUrl: string | null = null;
+    setHeroState("loading");
+    setHeroUrl(null);
+    // Debounce so we don't fetch on every keystroke.
+    const t = window.setTimeout(() => {
+      api
+        .fetchBlobUrl(`${SCM}/admin/categories/${encodeURIComponent(id)}/hero-image`)
+        .then((url) => {
+          if (revoked) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          createdUrl = url;
+          setHeroUrl(url);
+          setHeroState("ready");
+        })
+        .catch(() => {
+          if (!revoked) {
+            setHeroUrl(null);
+            setHeroState("missing");
+          }
+        });
+    }, 350);
+    return () => {
+      revoked = true;
+      window.clearTimeout(t);
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [categoryId, reload]);
 
   function pickFile() {
     if (!categoryId.trim()) {
@@ -66,6 +114,7 @@ export function CategoriesEditor() {
     try {
       await api.putBinary(`${SCM}/admin/categories/${encodeURIComponent(id)}/hero-image`, await file.arrayBuffer(), file.type);
       toast.success("Hero image uploaded");
+      setReload((n) => n + 1);
     } catch (err) {
       const msg = String((err as Error)?.message ?? "");
       if (msg.includes("403") || msg.includes("forbidden")) {
@@ -97,6 +146,7 @@ export function CategoriesEditor() {
     try {
       await api.del(`${SCM}/admin/categories/${encodeURIComponent(id)}/hero-image`);
       toast.success("Hero image cleared");
+      setReload((n) => n + 1);
     } catch (err) {
       const msg = String((err as Error)?.message ?? "");
       toast.error(msg.includes("403") || msg.includes("forbidden") ? "You don't have permission to manage category images" : "Failed to clear hero image");
@@ -117,6 +167,23 @@ export function CategoriesEditor() {
         <Field label="Category ID" required>
           <Input value={categoryId} onChange={setCategoryId} placeholder="categories.id" />
         </Field>
+
+        {categoryId.trim() && (
+          <div>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Current Hero
+            </div>
+            <div className="flex h-40 w-full items-center justify-center overflow-hidden rounded-md border border-border bg-surface-dim">
+              {heroState === "loading" ? (
+                <span className="text-[12px] text-ink-muted">Loading…</span>
+              ) : heroState === "ready" && heroUrl ? (
+                <img src={heroUrl} alt="Category hero" className="h-full w-full object-contain" />
+              ) : (
+                <span className="text-[12px] text-ink-muted">No hero image uploaded</span>
+              )}
+            </div>
+          </div>
+        )}
 
         <input ref={fileRef} type="file" accept="image/jpeg,image/png" className="hidden" onChange={onFile} />
 

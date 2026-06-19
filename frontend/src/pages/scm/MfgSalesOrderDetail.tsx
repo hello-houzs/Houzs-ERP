@@ -7,6 +7,7 @@ import { useQuery } from "../../hooks/useQuery";
 import { api } from "../../api/client";
 import { SCM, fmtCenti, scmStatusClasses } from "../../lib/scm";
 import { cn } from "../../lib/utils";
+import { ScmLinePhotos, readPhotoKeys } from "./ScmLinePhotos";
 import {
   soStatusDisplay,
   soStatusLabel,
@@ -113,6 +114,22 @@ export function ScmMfgSalesOrderDetail() {
         );
       },
       getValue: (it) => lineSpecSummary(it),
+    },
+    {
+      key: "photos",
+      label: "Photos",
+      disableSort: true,
+      render: (it) => {
+        const keys = readPhotoKeys(it);
+        if (keys.length === 0) return <span className="text-ink-muted">—</span>;
+        return (
+          <ScmLinePhotos
+            basePath={`${SCM}/mfg-sales-orders/${encodeURIComponent(it.doc_no)}/items/${encodeURIComponent(it.id)}`}
+            photoKeys={keys}
+          />
+        );
+      },
+      getValue: (it) => String(readPhotoKeys(it).length),
     },
     {
       key: "qty",
