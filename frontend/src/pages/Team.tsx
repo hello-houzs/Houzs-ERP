@@ -2678,53 +2678,33 @@ function OrgTreeNode({
       />
 
       {hasKids && (
-        <div className="flex flex-col items-stretch">
-          {/* Parent's vertical stub */}
-          <div className="flex h-4 justify-center">
-            <div className="w-px bg-border" />
-          </div>
-
-          {/* Children row: each wrapper owns its segment of the horizontal
-              bar (via absolute top-0 div); segments visually merge into
-              one continuous connector between the outermost centres. */}
-          <div className="flex items-start">
-            {kids.map((k, i) => {
-              const only = kids.length === 1;
-              const first = i === 0;
-              const last = i === kids.length - 1;
-              return (
-                <div
-                  key={k.id}
-                  className="relative flex flex-1 flex-col items-center px-3"
-                >
-                  {!only && (
-                    <div
-                      className={cn(
-                        "absolute top-0 h-px bg-border",
-                        first && "left-1/2 right-0",
-                        last && "left-0 right-1/2",
-                        !first && !last && "left-0 right-0"
-                      )}
-                    />
-                  )}
-                  <div className="h-4 w-px bg-border" />
-                  <OrgTreeNode
-                    user={k}
-                    childrenOf={childrenOf}
-                    canManage={canManage}
-                    users={users}
-                    departments={departments}
-                    onChangeDept={onChangeDept}
-                    draggingId={draggingId}
-                    setDraggingId={setDraggingId}
-                    onDrop={onDrop}
-                    editingId={editingId}
-                    setEditingId={setEditingId}
-                    onPickManager={onPickManager}
-                  />
-                </div>
-              );
-            })}
+        <div className="flex flex-col items-center">
+          {/* Single stub from the parent down to the reports group. */}
+          <div className="h-4 w-px bg-border" />
+          {/* Reports wrap into ~2 rows instead of one ever-widening row, so a
+              manager with many reports stays compact. The light bordered box
+              groups "this person's reports" (disambiguates when wrapping). */}
+          <div
+            className="flex flex-wrap content-start justify-center gap-x-3 gap-y-3 rounded-xl border border-border-subtle p-3"
+            style={{ maxWidth: Math.min(6, Math.ceil(kids.length / 2)) * 266 }}
+          >
+            {kids.map((k) => (
+              <OrgTreeNode
+                key={k.id}
+                user={k}
+                childrenOf={childrenOf}
+                canManage={canManage}
+                users={users}
+                departments={departments}
+                onChangeDept={onChangeDept}
+                draggingId={draggingId}
+                setDraggingId={setDraggingId}
+                onDrop={onDrop}
+                editingId={editingId}
+                setEditingId={setEditingId}
+                onPickManager={onPickManager}
+              />
+            ))}
           </div>
         </div>
       )}
