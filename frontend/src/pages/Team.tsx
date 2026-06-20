@@ -42,6 +42,46 @@ const QUICK_SEGMENTS = [
   ["no_photo", "No photo"],
 ] as const;
 
+// Full department set for a member (mig 0020) — primary first, falling back to
+// the single primary on older backends that don't send department_ids.
+function deptIdsOf(u: TeamMember): number[] {
+  if (u.department_ids && u.department_ids.length) return u.department_ids;
+  return u.department_id != null ? [u.department_id] : [];
+}
+
+// Departments a member belongs to BESIDES the primary — drives the "+N" chips.
+function extraDeptIdsOf(u: TeamMember): number[] {
+  return deptIdsOf(u).filter((d) => d !== u.department_id);
+}
+
+// True when the member belongs to `deptId` through any of their departments.
+function inDept(u: TeamMember, deptId: number): boolean {
+  return deptIdsOf(u).includes(deptId);
+}
+
+// Compact "+N" pill for departments a member has beyond the primary; the
+// tooltip names them. Renders nothing when there are no extras.
+function ExtraDeptCount({
+  user,
+  deptById,
+}: {
+  user: TeamMember;
+  deptById: Map<number, Department>;
+}) {
+  const names = extraDeptIdsOf(user)
+    .map((id) => deptById.get(id)?.name)
+    .filter((n): n is string => !!n);
+  if (names.length === 0) return null;
+  return (
+    <span
+      className="shrink-0 rounded-full bg-surface-dim px-1.5 py-px text-[10px] font-semibold text-ink-muted"
+      title={`Also in ${names.join(", ")}`}
+    >
+      +{names.length}
+    </span>
+  );
+}
+
 /**
  * Unified Team page — two tabs (Members, Roles) sharing a single header.
  * Members lists users + pending invitations and lets admins invite /
@@ -228,6 +268,12 @@ function MembersTab({
     () => new Set((presence.data?.active ?? []).map((a) => a.id)),
     [presence.data],
   );
+  // Lookup for resolving a member's extra department ids → name/colour.
+  const deptById = useMemo(() => {
+    const m = new Map<number, Department>();
+    for (const d of depts.data?.departments ?? []) m.set(d.id, d);
+    return m;
+  }, [depts.data]);
 
   // Members-list filters (owner ask: filter/sort by department and/or position).
   const [filterDept, setFilterDept] = useState<number | "">("");
@@ -462,7 +508,7 @@ function MembersTab({
     const segs = [...quickFilters];
     return (members.data?.users ?? []).filter(
       (u) =>
-        (filterDept === "" || u.department_id === filterDept) &&
+        (filterDept === "" || inDept(u, filterDept as number)) &&
         (filterPos === "" || u.position_id === filterPos) &&
         (filterStatus === "" || u.status === filterStatus) &&
         (filterRole === "" || u.role_id === filterRole) &&
@@ -715,6 +761,7 @@ function MembersTab({
               />
             )}
             <span className="truncate">{u.department_name}</span>
+            <ExtraDeptCount user={u} deptById={deptById} />
           </span>
         ) : (
           <span className="text-[12px] text-ink-muted">—</span>
@@ -782,6 +829,7 @@ function MembersTab({
         <MemberDetail
           user={viewing}
           members={members.data?.users ?? []}
+          departments={depts.data?.departments ?? []}
           posName={
             viewing.position_id != null ? posNameById.get(viewing.position_id) : undefined
           }
@@ -1394,6 +1442,7 @@ function DetailKV({ label, children }: { label: string; children: ReactNode }) {
 function MemberDetail({
   user,
   members,
+  departments,
   posName,
   canManage,
   online,
@@ -1407,6 +1456,7 @@ function MemberDetail({
 }: {
   user: TeamMember;
   members: TeamMember[];
+  departments: Department[];
   posName?: string;
   canManage: boolean;
   online?: boolean;
@@ -1422,6 +1472,12 @@ function MemberDetail({
     .filter((m) => m.manager_id === user.id)
     .slice()
     .sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+
+  // Departments this member belongs to beyond the primary (mig 0020).
+  const deptById = new Map(departments.map((d) => [d.id, d]));
+  const extraDepts = extraDeptIdsOf(user)
+    .map((id) => deptById.get(id))
+    .filter((d): d is Department => !!d);
 
   // Pages this member can reach, via their position's access matrix.
   const pageAccessQ = useQuery<{ page_access: { page_key: string; level: string }[] }>(
@@ -1551,15 +1607,31 @@ function MemberDetail({
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           <DetailCol title="Organisation">
             <DetailKV label="Department">
-              {user.department_name ? (
-                <span className="inline-flex items-center gap-1.5">
-                  {user.department_color && (
-                    <span
-                      className="h-2 w-2 shrink-0 rounded-full"
-                      style={{ backgroundColor: `#${user.department_color}` }}
-                    />
+              {user.department_name || extraDepts.length > 0 ? (
+                <span className="inline-flex flex-wrap items-center gap-1.5">
+                  {user.department_name && (
+                    <span className="inline-flex items-center gap-1.5">
+                      {user.department_color && (
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ backgroundColor: `#${user.department_color}` }}
+                        />
+                      )}
+                      {user.department_name}
+                    </span>
                   )}
-                  {user.department_name}
+                  {extraDepts.map((d) => (
+                    <span
+                      key={d.id}
+                      className="inline-flex items-center gap-1 rounded-full bg-surface-dim px-1.5 py-px text-[11px] text-ink-secondary"
+                    >
+                      <span
+                        className="h-1.5 w-1.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: `#${d.color}` }}
+                      />
+                      {d.name}
+                    </span>
+                  ))}
                 </span>
               ) : (
                 <span className="text-ink-muted">—</span>
@@ -1820,6 +1892,9 @@ function EditMemberPanel({
   const [email, setEmail] = useState(user.email || "");
   const [phone, setPhone] = useState(user.phone || "");
   const [deptId, setDeptId] = useState<number | "">(user.department_id ?? "");
+  // Full department membership (mig 0020). Primary (deptId) is always part of
+  // this set; extra chips add/remove the others.
+  const [deptIds, setDeptIds] = useState<number[]>(() => deptIdsOf(user));
   const [positionId, setPositionId] = useState<number | "">(user.position_id ?? "");
   const [managerId, setManagerId] = useState<number | "">(user.manager_id ?? "");
   const [busy, setBusy] = useState(false);
@@ -1872,6 +1947,17 @@ function EditMemberPanel({
     if (em !== (user.email || "")) patch.email = em;
     if (phone.trim() !== (user.phone || "")) patch.phone = phone.trim() || null;
     if ((deptId || null) !== (user.department_id ?? null)) patch.department_id = deptId || null;
+    // Full membership set — always carry the primary; send only when changed.
+    const finalDeptIds = (() => {
+      const s = new Set(deptIds);
+      if (deptId !== "") s.add(deptId);
+      return [...s];
+    })();
+    const initialDeptIds = deptIdsOf(user);
+    const sameDeptSet =
+      finalDeptIds.length === initialDeptIds.length &&
+      finalDeptIds.every((d) => initialDeptIds.includes(d));
+    if (!sameDeptSet) patch.department_ids = finalDeptIds;
     if ((positionId || null) !== (user.position_id ?? null)) patch.position_id = positionId || null;
     if ((managerId || null) !== (user.manager_id ?? null)) patch.manager_id = managerId || null;
 
@@ -1968,12 +2054,16 @@ function EditMemberPanel({
 
       <PanelSection title="Organisation">
         <div>
-          <label className={labelCls}>Department</label>
+          <label className={labelCls}>Primary department</label>
           <select
             value={deptId}
             onChange={(e) => {
-              setDeptId(e.target.value ? Number(e.target.value) : "");
+              const next = e.target.value ? Number(e.target.value) : "";
+              setDeptId(next);
               setPositionId(""); // positions are department-scoped — reset
+              // The primary is always part of the membership set.
+              if (next !== "")
+                setDeptIds((prev) => (prev.includes(next) ? prev : [...prev, next]));
             }}
             className={inputCls}
           >
@@ -1984,6 +2074,62 @@ function EditMemberPanel({
               </option>
             ))}
           </select>
+          <div className="mt-1 text-[10px] text-ink-muted">
+            Drives the member's colour and position scope.
+          </div>
+        </div>
+        <div>
+          <label className={labelCls}>Also in</label>
+          <div className="flex flex-wrap gap-1.5">
+            {departments.length === 0 && (
+              <span className="text-[11px] text-ink-muted">No departments defined.</span>
+            )}
+            {departments.map((d) => {
+              const isPrimary = deptId === d.id;
+              const on = isPrimary || deptIds.includes(d.id);
+              return (
+                <button
+                  key={d.id}
+                  type="button"
+                  // The primary can't be removed here — change it above first.
+                  disabled={isPrimary}
+                  onClick={() =>
+                    setDeptIds((prev) =>
+                      prev.includes(d.id)
+                        ? prev.filter((x) => x !== d.id)
+                        : [...prev, d.id],
+                    )
+                  }
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors",
+                    on
+                      ? "border-transparent text-white"
+                      : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
+                    isPrimary && "cursor-default opacity-90",
+                  )}
+                  style={on ? { backgroundColor: `#${d.color}` } : undefined}
+                  title={isPrimary ? "Primary department" : undefined}
+                >
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 shrink-0 rounded-full",
+                      on ? "bg-white/80" : "",
+                    )}
+                    style={on ? undefined : { backgroundColor: `#${d.color}` }}
+                  />
+                  {d.name}
+                  {isPrimary && (
+                    <span className="ml-0.5 text-[9px] font-bold uppercase tracking-wider opacity-80">
+                      primary
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-1 text-[10px] text-ink-muted">
+            A member can belong to several departments. The primary is set above.
+          </div>
         </div>
         <div>
           <label className={labelCls}>Position</label>
@@ -2263,7 +2409,8 @@ function OrgChartTab() {
   );
   const users = useMemo(() => {
     if (filterDeptId == null) return allActive;
-    return allActive.filter((u) => u.department_id === filterDeptId);
+    // Match ANY of the member's departments, not just the primary (mig 0020).
+    return allActive.filter((u) => inDept(u, filterDeptId));
   }, [allActive, filterDeptId]);
 
   // Any user whose manager_id points at an inactive/missing/out-of-
@@ -2342,6 +2489,20 @@ function OrgChartTab() {
     }
   }
 
+  // Replace-set the member's full department list (mig 0020). The backend keeps
+  // the primary in the set, so this is safe to call with any selection.
+  async function changeDepts(userId: number, departmentIds: number[]) {
+    const current = byId.get(userId);
+    if (!current) return;
+    try {
+      await api.patch(`/api/users/${userId}`, { department_ids: departmentIds });
+      toast.success(`Updated ${current.name || current.email}'s departments`);
+      members.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update departments");
+    }
+  }
+
   if (members.loading && users.length === 0) {
     return <ListSkeleton rows={4} />;
   }
@@ -2381,9 +2542,7 @@ function OrgChartTab() {
           </button>
           {deptList.map((d) => {
             const on = filterDeptId === d.id;
-            const count = allActive.filter(
-              (u) => u.department_id === d.id
-            ).length;
+            const count = allActive.filter((u) => inDept(u, d.id)).length;
             return (
               <button
                 key={d.id}
@@ -2548,6 +2707,7 @@ function OrgChartTab() {
                     users={users}
                     departments={deptList}
                     onChangeDept={changeDept}
+                    onChangeDepts={changeDepts}
                     draggingId={draggingId}
                     setDraggingId={setDraggingId}
                     onDrop={reassign}
@@ -2571,6 +2731,7 @@ function OrgChartTab() {
                     users={users}
                     departments={deptList}
                     onChangeDept={changeDept}
+                    onChangeDepts={changeDepts}
                     draggingId={draggingId}
                     setDraggingId={setDraggingId}
                     onDrop={reassign}
@@ -2637,6 +2798,7 @@ function OrgTreeNode({
   users,
   departments,
   onChangeDept,
+  onChangeDepts,
   draggingId,
   setDraggingId,
   onDrop,
@@ -2650,6 +2812,7 @@ function OrgTreeNode({
   users: TeamMember[];
   departments: Department[];
   onChangeDept: (userId: number, departmentId: number | null) => void;
+  onChangeDepts: (userId: number, departmentIds: number[]) => void;
   draggingId: number | null;
   setDraggingId: (id: number | null) => void;
   onDrop: (userId: number, managerId: number | null) => void;
@@ -2678,6 +2841,7 @@ function OrgTreeNode({
       users={users}
       departments={departments}
       onChangeDept={onChangeDept}
+      onChangeDepts={onChangeDepts}
       draggingId={draggingId}
       setDraggingId={setDraggingId}
       onDrop={onDrop}
@@ -2700,6 +2864,7 @@ function OrgTreeNode({
       users={users}
       departments={departments}
       onChangeDept={onChangeDept}
+      onChangeDepts={onChangeDepts}
       onPickManager={onPickManager}
     />
   );
@@ -2752,6 +2917,60 @@ function OrgTreeNode({
   );
 }
 
+// Chip multi-select for a member's extra departments, used in both org-chart
+// edit popovers. Toggling applies immediately (replace-set via onChangeDepts),
+// matching the popover's other always-live controls. The primary chip is shown
+// but locked — change the primary with the Department select above it.
+function DeptChipsEditor({
+  user,
+  departments,
+  onChangeDepts,
+}: {
+  user: TeamMember;
+  departments: Department[];
+  onChangeDepts: (userId: number, departmentIds: number[]) => void;
+}) {
+  if (departments.length === 0) return null;
+  return (
+    <div>
+      <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+        Also in
+      </label>
+      <div className="flex flex-wrap gap-1">
+        {departments.map((d) => {
+          const isPrimary = user.department_id === d.id;
+          const on = inDept(user, d.id);
+          return (
+            <button
+              key={d.id}
+              type="button"
+              disabled={isPrimary}
+              onClick={() => {
+                const cur = deptIdsOf(user);
+                const next = cur.includes(d.id)
+                  ? cur.filter((x) => x !== d.id)
+                  : [...cur, d.id];
+                onChangeDepts(user.id, next);
+              }}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors",
+                on
+                  ? "border-transparent text-white"
+                  : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
+                isPrimary && "cursor-default opacity-90",
+              )}
+              style={on ? { backgroundColor: `#${d.color}` } : undefined}
+              title={isPrimary ? "Primary department" : undefined}
+            >
+              {d.name}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function OrgCard({
   user,
   accent,
@@ -2764,6 +2983,7 @@ function OrgCard({
   users,
   departments,
   onChangeDept,
+  onChangeDepts,
   onPickManager,
 }: {
   user: TeamMember;
@@ -2778,6 +2998,7 @@ function OrgCard({
   users: TeamMember[];
   departments: Department[];
   onChangeDept: (userId: number, departmentId: number | null) => void;
+  onChangeDepts: (userId: number, departmentIds: number[]) => void;
   onPickManager: (userId: number, managerId: number | null) => void;
 }) {
   const [dropHover, setDropHover] = useState(false);
@@ -2847,6 +3068,7 @@ function OrgCard({
             >
               {user.name || user.email}
             </span>
+            <ExtraDeptCount user={user} deptById={new Map(departments.map((d) => [d.id, d]))} />
             {user.status !== "active" && (
               <span className="shrink-0 rounded bg-bg px-1 py-px font-mono text-[9px] font-semibold uppercase text-ink-muted">
                 {user.status}
@@ -2899,10 +3121,10 @@ function OrgCard({
           </div>
           <div>
             <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
-              Department
+              Primary department
             </label>
             <select
-              defaultValue={user.department_id ?? ""}
+              value={user.department_id ?? ""}
               onChange={(e) => {
                 const v = e.target.value;
                 onChangeDept(user.id, v ? Number(v) : null);
@@ -2917,6 +3139,11 @@ function OrgCard({
               ))}
             </select>
           </div>
+          <DeptChipsEditor
+            user={user}
+            departments={departments}
+            onChangeDepts={onChangeDepts}
+          />
           <button
             type="button"
             onClick={() => setEditing(false)}
@@ -2942,6 +3169,7 @@ function OrgListNode({
   users,
   departments,
   onChangeDept,
+  onChangeDepts,
   draggingId,
   setDraggingId,
   onDrop,
@@ -2958,6 +3186,7 @@ function OrgListNode({
   users: TeamMember[];
   departments: Department[];
   onChangeDept: (userId: number, departmentId: number | null) => void;
+  onChangeDepts: (userId: number, departmentIds: number[]) => void;
   draggingId: number | null;
   setDraggingId: (id: number | null) => void;
   onDrop: (userId: number, managerId: number | null) => void;
@@ -3044,9 +3273,15 @@ function OrgListNode({
               </span>
             )}
           </div>
-          <div className="truncate text-[10.5px] text-ink-muted">
-            {user.position_name || user.role_name}
-            {user.department_name ? ` · ${user.department_name}` : ""}
+          <div className="flex items-center gap-1 text-[10.5px] text-ink-muted">
+            <span className="truncate">
+              {user.position_name || user.role_name}
+              {user.department_name ? ` · ${user.department_name}` : ""}
+            </span>
+            <ExtraDeptCount
+              user={user}
+              deptById={new Map(departments.map((d) => [d.id, d]))}
+            />
           </div>
         </div>
         {hasKids && (
@@ -3097,10 +3332,10 @@ function OrgListNode({
           </div>
           <div>
             <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
-              Department
+              Primary department
             </label>
             <select
-              defaultValue={user.department_id ?? ""}
+              value={user.department_id ?? ""}
               onChange={(e) => {
                 const v = e.target.value;
                 onChangeDept(user.id, v ? Number(v) : null);
@@ -3115,6 +3350,11 @@ function OrgListNode({
               ))}
             </select>
           </div>
+          <DeptChipsEditor
+            user={user}
+            departments={departments}
+            onChangeDepts={onChangeDepts}
+          />
           <button
             type="button"
             onClick={() => setEditingId(null)}
@@ -3139,6 +3379,7 @@ function OrgListNode({
               users={users}
               departments={departments}
               onChangeDept={onChangeDept}
+              onChangeDepts={onChangeDepts}
               draggingId={draggingId}
               setDraggingId={setDraggingId}
               onDrop={onDrop}

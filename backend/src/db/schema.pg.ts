@@ -173,6 +173,20 @@ export const user_brands = pgTable(
   (t) => ({ pk: primaryKey({ columns: [t.user_id, t.brand] }) }),
 );
 
+// ── user_departments (mig 0020) ────────────────────────────
+// Full set of departments a user belongs to. users.department_id stays the
+// PRIMARY; this carries the primary plus any extras (the primary is one row
+// here too). Replace-set on PATCH /api/users/:id, same shape as user_brands.
+export const user_departments = pgTable(
+  "user_departments",
+  {
+    user_id: integer("user_id").notNull(),
+    department_id: integer("department_id").notNull(),
+    created_at: text("created_at").default(nowText),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.user_id, t.department_id] }) }),
+);
+
 // ── project_activity ───────────────────────────────────────
 export const project_activity = pgTable("project_activity", {
   id: serial("id").primaryKey(),
