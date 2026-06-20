@@ -2660,61 +2660,101 @@ function OrgTreeNode({
   const kids = childrenOf.get(user.id) ?? [];
   const hasKids = kids.length > 0;
 
+  // Children that are themselves managers (have reports of their own). When
+  // EVERY child is a manager we lay the children out HORIZONTALLY — this keeps
+  // the upper org levels (C-suite → directors) readable like a classic chart.
+  // As soon as a level contains individual contributors (any leaf child) we
+  // switch to a VERTICAL stacked list with a connector spine: compact, grows
+  // downward, no ever-widening rows and no nested boxes (the "太乱" problem).
+  const horizontal =
+    hasKids && kids.every((k) => (childrenOf.get(k.id)?.length ?? 0) > 0);
+
+  const renderChild = (k: TeamMember) => (
+    <OrgTreeNode
+      key={k.id}
+      user={k}
+      childrenOf={childrenOf}
+      canManage={canManage}
+      users={users}
+      departments={departments}
+      onChangeDept={onChangeDept}
+      draggingId={draggingId}
+      setDraggingId={setDraggingId}
+      onDrop={onDrop}
+      editingId={editingId}
+      setEditingId={setEditingId}
+      onPickManager={onPickManager}
+    />
+  );
+
+  const card = (
+    <OrgCard
+      user={user}
+      accent={hasKids}
+      canManage={canManage}
+      draggingId={draggingId}
+      setDraggingId={setDraggingId}
+      onDrop={onDrop}
+      editing={editingId === user.id}
+      setEditing={(on) => setEditingId(on ? user.id : null)}
+      users={users}
+      departments={departments}
+      onChangeDept={onChangeDept}
+      onPickManager={onPickManager}
+    />
+  );
+
+  // Leaf — just the card.
+  if (!hasKids) return card;
+
+  // Upper levels — horizontal bracket of manager children.
+  if (horizontal) {
+    return (
+      <div className="flex flex-col items-center">
+        {card}
+        <div className="h-4 w-px bg-border" />
+        <div className="flex items-start justify-center gap-5">
+          {kids.map((k, i) => (
+            <div key={k.id} className="relative flex flex-col items-center px-1">
+              {/* Sibling connector: a thin horizontal bar across the top,
+                  clipped to half-width at the two ends so it reads as a bracket. */}
+              {kids.length > 1 && (
+                <span
+                  aria-hidden
+                  className="absolute top-0 h-px bg-border"
+                  style={{
+                    left: i === 0 ? "50%" : 0,
+                    right: i === kids.length - 1 ? "50%" : 0,
+                  }}
+                />
+              )}
+              <div className="h-4 w-px bg-border" />
+              {renderChild(k)}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Leaf level — reports hang in a 2-column grid below the manager, grouped on
+  // a very faint tinted panel (no border box, so nothing reads as cluttered).
+  // A single short stub connects the manager to the group; the grid itself has
+  // no per-card connectors. Grows downward, never widens into a long row.
   return (
     <div className="flex flex-col items-center">
-      <OrgCard
-        user={user}
-        reportsCount={kids.length}
-        canManage={canManage}
-        draggingId={draggingId}
-        setDraggingId={setDraggingId}
-        onDrop={onDrop}
-        editing={editingId === user.id}
-        setEditing={(on) => setEditingId(on ? user.id : null)}
-        users={users}
-        departments={departments}
-        onChangeDept={onChangeDept}
-        onPickManager={onPickManager}
-      />
-
-      {hasKids && (
-        <div className="flex flex-col items-center">
-          {/* Single stub from the parent down to the reports group. */}
-          <div className="h-4 w-px bg-border" />
-          {/* Reports wrap into ~2 rows instead of one ever-widening row, so a
-              manager with many reports stays compact. The light bordered box
-              groups "this person's reports" (disambiguates when wrapping). */}
-          <div
-            className="flex flex-wrap content-start justify-center gap-x-3 gap-y-3 rounded-xl border border-border-subtle p-3"
-            style={{ maxWidth: Math.min(6, Math.ceil(kids.length / 2)) * 266 }}
-          >
-            {kids.map((k) => (
-              <OrgTreeNode
-                key={k.id}
-                user={k}
-                childrenOf={childrenOf}
-                canManage={canManage}
-                users={users}
-                departments={departments}
-                onChangeDept={onChangeDept}
-                draggingId={draggingId}
-                setDraggingId={setDraggingId}
-                onDrop={onDrop}
-                editingId={editingId}
-                setEditingId={setEditingId}
-                onPickManager={onPickManager}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+      {card}
+      <div className="h-4 w-px bg-border" />
+      <div className="grid grid-cols-2 items-start gap-2 rounded-lg bg-bg/40 p-2">
+        {kids.map((k) => renderChild(k))}
+      </div>
     </div>
   );
 }
 
 function OrgCard({
   user,
-  reportsCount,
+  accent,
   canManage,
   draggingId,
   setDraggingId,
@@ -2727,7 +2767,8 @@ function OrgCard({
   onPickManager,
 }: {
   user: TeamMember;
-  reportsCount: number;
+  /** Manager cards get the top department-colour bar; leaf report cards don't. */
+  accent: boolean;
   canManage: boolean;
   draggingId: number | null;
   setDraggingId: (id: number | null) => void;
@@ -2772,27 +2813,31 @@ function OrgCard({
         if (!isNaN(id) && id !== user.id) onDrop(id, user.id);
       }}
       className={cn(
-        "relative w-[250px] shrink-0 overflow-hidden rounded-lg border bg-surface shadow-stone transition-all",
+        "relative shrink-0 overflow-hidden rounded-lg border bg-surface shadow-stone transition-all",
+        accent ? "w-[196px]" : "w-[160px]",
         isDragSource && "opacity-50",
         dropHover && isValidDropTarget ? "border-accent ring-2 ring-accent/30" : "border-border",
         canManage && "cursor-grab active:cursor-grabbing",
       )}
     >
-      {/* Department colour accent bar across the top (reference look). */}
-      <span
-        aria-hidden
-        className="block h-1.5 w-full"
-        style={{
-          backgroundColor: user.department_color ? `#${user.department_color}` : "transparent",
-        }}
-      />
-      <div className="flex items-start gap-2.5 p-2.5">
+      {/* Department colour bar — only on manager cards, so the report grid
+          below stays clean (reference look). */}
+      {accent && (
+        <span
+          aria-hidden
+          className="block h-1 w-full"
+          style={{
+            backgroundColor: user.department_color ? `#${user.department_color}` : "transparent",
+          }}
+        />
+      )}
+      <div className="flex items-start gap-2 p-2">
         <Avatar
           userId={user.id}
           hasImage={user.profile_pic_r2_key}
           name={user.name}
           email={user.email}
-          size={42}
+          size={32}
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-1.5">
@@ -2819,33 +2864,10 @@ function OrgCard({
             )}
           </div>
           <div className="mt-0.5 truncate text-[11px] font-medium text-ink-secondary">
-            {user.position_name || user.role_name}
-          </div>
-          {user.phone && (
-            <div className="mt-1 flex items-center gap-1 text-[10px] text-ink-muted">
-              <Phone size={9} className="shrink-0" />
-              <span className="truncate">{user.phone}</span>
-            </div>
-          )}
-          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-ink-muted">
-            {user.department_name ? (
-              <span className="inline-flex min-w-0 items-center gap-1">
-                {user.department_color && (
-                  <span
-                    className="h-1.5 w-1.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: `#${user.department_color}` }}
-                  />
-                )}
-                <span className="truncate">{user.department_name}</span>
-              </span>
-            ) : (
-              <span className="text-ink-muted/70">No department</span>
-            )}
-            {reportsCount > 0 && (
-              <span className="shrink-0">
-                · {reportsCount} report{reportsCount === 1 ? "" : "s"}
-              </span>
-            )}
+            {user.position_name || user.role_name || "—"}
+            {accent && user.department_name ? (
+              <span className="text-ink-muted"> · {user.department_name}</span>
+            ) : null}
           </div>
         </div>
       </div>
