@@ -46,6 +46,7 @@ import { outstanding } from "./routes/outstanding";
 import { localities } from "./routes/localities";
 import { staff } from "./routes/staff";
 import { fabricColours } from "./routes/fabric-colours";
+import { addons } from "./routes/addons";
 
 export const scm = new Hono<{ Bindings: Env }>();
 
@@ -99,5 +100,8 @@ scm.route("/localities", localities);
 // GET /by-code/:code for the SoLineCard saved-line allowed_options resolve.
 scm.route("/staff", staff);
 scm.route("/fabric-colours", fabricColours);
+// Wired 2026-06-20 — Order Add-ons tab (Products page). CRUD over scm.addons,
+// replacing the supabase-direct read/write the 2990 UI used.
+scm.route("/addons", addons);
 
 export default scm;

@@ -299,10 +299,9 @@ export const useModelAllowedOptionsByCode = (itemCode: string | undefined) =>
      • useUpdateMfgProductPrices routes verified-save through the vendored
        verified-save (localStorage token, /api/scm base) — see verified-save.ts.
      • The `addons` (Order Add-ons) hooks in the source hit a supabase `addons`
-       table directly; the vendor layer has no supabase client and there is no
-       /api/scm addons endpoint, so they are STUBBED (read = empty, write =
-       friendly "not enabled" notify). FLAG: to light up Order Add-ons, add an
-       /api/scm/addons route + swap these stubs for authedFetch reads/writes.
+       table directly; here they route through GET/POST/PATCH/DELETE
+       /api/scm/addons (backend/src/scm/routes/addons.ts → scm.addons), wired
+       2026-06-20 in the SCM stub-wiring sweep.
    ════════════════════════════════════════════════════════════════════════════ */
 
 export function useUpdateMfgProductPrices() {
@@ -629,12 +628,11 @@ export function useDeleteSofaCompartmentPhoto() {
   });
 }
 
-/* ─── Order Add-ons (whole-order one-time fees: Dispose, Lift) — STUBBED.
-   The source reads/writes the supabase `addons` table directly under RLS; the
-   vendor layer has no supabase client and there is no /api/scm addons endpoint.
-   The read hook returns an empty list (the Order Add-ons grid shows its empty
-   state) and the write hooks raise a friendly in-app notify instead of a 裸奔
-   error. FLAG: add /api/scm/addons + swap these for authedFetch to enable. */
+/* ─── Order Add-ons (whole-order one-time fees: Dispose, Lift).
+   Wired 2026-06-20 — the source read/wrote the supabase `addons` table directly
+   under RLS; here the same CRUD routes through GET/POST/PATCH/DELETE
+   /api/scm/addons (backend/src/scm/routes/addons.ts → scm.addons). The API
+   returns AdminAddonRow verbatim (category has no DB column → always null). */
 export interface AdminAddonRow {
   id: string;
   label: string;
@@ -653,42 +651,51 @@ export interface AdminAddonRow {
   sortOrder: number;
 }
 
-const ORDER_ADDONS_UNAVAILABLE =
-  'Order Add-ons are not enabled in this build yet. (No /api/scm addons endpoint is wired for the SCM module.)';
-
 export const useAllAddons = () =>
   useQuery({
     queryKey: ['addons-all'],
     staleTime: 60_000,
-    queryFn: async (): Promise<AdminAddonRow[]> => [],
-  });
-
-export const useUpdateAddon = () =>
-  useMutation({
-    mutationFn: async (_args: { id: string; patch: { price?: number; perFloorItem?: number | null; enabled?: boolean; showAtHandover?: boolean; serviceSku?: string | null } }): Promise<void> => {
-      await serviceNotify({ title: 'Not available', body: ORDER_ADDONS_UNAVAILABLE, tone: 'error' });
-      throw new Error(ORDER_ADDONS_UNAVAILABLE);
+    queryFn: async (): Promise<AdminAddonRow[]> => {
+      const body = await authedFetch<{ addons: AdminAddonRow[] }>('/addons');
+      return body.addons ?? [];
     },
   });
 
-export const useCreateAddon = () =>
-  useMutation({
-    mutationFn: async (_row: {
+export const useUpdateAddon = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { id: string; patch: { price?: number; perFloorItem?: number | null; enabled?: boolean; showAtHandover?: boolean; serviceSku?: string | null } }): Promise<{ addon: AdminAddonRow }> =>
+      authedFetch<{ addon: AdminAddonRow }>(`/addons/${encodeURIComponent(args.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(args.patch),
+      }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['addons-all'] }); },
+  });
+};
+
+export const useCreateAddon = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (row: {
       id: string; label: string; description: string | null; icon: string;
       kind: 'qty' | 'floors_items' | 'flat'; category: string | null;
       price: number; perFloorItem: number | null; unit: string | null;
       stock: number | null; enabled: boolean; showAtHandover: boolean;
       serviceSku: string | null; sortOrder: number;
-    }): Promise<void> => {
-      await serviceNotify({ title: 'Not available', body: ORDER_ADDONS_UNAVAILABLE, tone: 'error' });
-      throw new Error(ORDER_ADDONS_UNAVAILABLE);
-    },
+    }): Promise<{ addon: AdminAddonRow }> =>
+      authedFetch<{ addon: AdminAddonRow }>('/addons', {
+        method: 'POST',
+        body: JSON.stringify(row),
+      }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['addons-all'] }); },
   });
+};
 
-export const useDeleteAddon = () =>
-  useMutation({
-    mutationFn: async (_id: string): Promise<void> => {
-      await serviceNotify({ title: 'Not available', body: ORDER_ADDONS_UNAVAILABLE, tone: 'error' });
-      throw new Error(ORDER_ADDONS_UNAVAILABLE);
-    },
+export const useDeleteAddon = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string): Promise<{ ok: true }> =>
+      authedFetch<{ ok: true }>(`/addons/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['addons-all'] }); },
   });
+};
