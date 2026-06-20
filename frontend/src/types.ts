@@ -451,6 +451,13 @@ export interface TeamMember {
   department_name: string | null;
   /** 6-char hex without the leading '#'. */
   department_color: string | null;
+  /**
+   * Full department membership set (mig 0020). Includes the primary
+   * `department_id` (listed first) plus any additional departments. The
+   * colour stripe/dot still follows the primary. Older deployed backends omit
+   * this — fall back to `[department_id]` when absent.
+   */
+  department_ids?: number[];
   /** Position = department×position org unit (mig 094). Drives the page matrix. */
   position_id: number | null;
   position_name: string | null;

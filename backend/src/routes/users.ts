@@ -110,8 +110,10 @@ app.get("/", requirePermission("users.read"), async (c) => {
 
   const out = rows.map((r) => {
     // Primary first, then any extra departments sorted — drives the "+N" UI.
-    const extra = (r.department_ids_arr ?? [])
-      .filter((d) => d !== r.department_id)
+    const arr = Array.isArray(r.department_ids_arr) ? r.department_ids_arr : [];
+    const extra = arr
+      .map((d) => Number(d))
+      .filter((d) => Number.isFinite(d) && d !== r.department_id)
       .sort((a, b) => a - b);
     const department_ids =
       r.department_id != null ? [r.department_id, ...extra] : extra;
