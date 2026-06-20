@@ -234,17 +234,15 @@ function MembersTab({
   const [filterPos, setFilterPos] = useState<number | "">("");
   const [filterStatus, setFilterStatus] = useState<"" | "active" | "invited" | "disabled">("");
   // One-click segments to surface misconfigured / stale accounts.
-  const [quickFilter, setQuickFilter] = useState<
-    | ""
-    | "no_login"
-    | "no_dept"
-    | "no_pos"
-    | "no_mgr"
-    | "stale"
-    | "online"
-    | "joined7d"
-    | "no_photo"
-  >("");
+  // Multi-select: any number of segments can be active; each adds a
+  // constraint (AND), the same way the dropdown filters compose.
+  const [quickFilters, setQuickFilters] = useState<Set<string>>(new Set());
+  const toggleQuick = (key: string) =>
+    setQuickFilters((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
   const [filterRole, setFilterRole] = useState<number | "">("");
   const [filterBrand, setFilterBrand] = useState<string>("");
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -439,8 +437,8 @@ function MembersTab({
     const q = searchQ.trim().toLowerCase();
     const DAY = 24 * 60 * 60 * 1000;
     const now = Date.now();
-    const matchesQuick = (u: TeamMember) => {
-      switch (quickFilter) {
+    const segMatch = (key: string, u: TeamMember) => {
+      switch (key) {
         case "no_login":
           return !u.last_login_at;
         case "no_dept":
@@ -461,6 +459,7 @@ function MembersTab({
           return true;
       }
     };
+    const segs = [...quickFilters];
     return (members.data?.users ?? []).filter(
       (u) =>
         (filterDept === "" || u.department_id === filterDept) &&
@@ -468,7 +467,7 @@ function MembersTab({
         (filterStatus === "" || u.status === filterStatus) &&
         (filterRole === "" || u.role_id === filterRole) &&
         (filterBrand === "" || (u.brands ?? []).includes(filterBrand)) &&
-        matchesQuick(u) &&
+        segs.every((k) => segMatch(k, u)) &&
         (q === "" ||
           (u.name || "").toLowerCase().includes(q) ||
           (u.email || "").toLowerCase().includes(q)),
@@ -480,7 +479,7 @@ function MembersTab({
     filterStatus,
     filterRole,
     filterBrand,
-    quickFilter,
+    quickFilters,
     onlineIds,
     searchQ,
   ]);
@@ -518,10 +517,10 @@ function MembersTab({
     });
   if (filterBrand)
     activeFilters.push({ label: filterBrand, clear: () => setFilterBrand("") });
-  if (quickFilter)
+  for (const key of quickFilters)
     activeFilters.push({
-      label: QUICK_SEGMENTS.find(([k]) => k === quickFilter)?.[1] ?? "Segment",
-      clear: () => setQuickFilter(""),
+      label: QUICK_SEGMENTS.find(([k]) => k === key)?.[1] ?? "Segment",
+      clear: () => toggleQuick(key),
     });
 
   function clearAllFilters() {
@@ -530,7 +529,7 @@ function MembersTab({
     setFilterPos("");
     setFilterRole("");
     setFilterBrand("");
-    setQuickFilter("");
+    setQuickFilters(new Set());
   }
 
   // Grid ordering (table view keeps its own column sort).
@@ -978,21 +977,25 @@ function MembersTab({
                         Quick segments
                       </div>
                       <div className="flex flex-wrap gap-1.5">
-                        {QUICK_SEGMENTS.map(([key, label]) => (
-                          <button
-                            key={key}
-                            type="button"
-                            onClick={() => setQuickFilter((cur) => (cur === key ? "" : key))}
-                            className={cn(
-                              "rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors",
-                              quickFilter === key
-                                ? "border-accent/50 bg-accent-soft text-accent"
-                                : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
-                            )}
-                          >
-                            {label}
-                          </button>
-                        ))}
+                        {QUICK_SEGMENTS.map(([key, label]) => {
+                          const on = quickFilters.has(key);
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              onClick={() => toggleQuick(key)}
+                              className={cn(
+                                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors",
+                                on
+                                  ? "border-accent/50 bg-accent-soft text-accent"
+                                  : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
+                              )}
+                            >
+                              {on && <Check size={10} className="-ml-0.5" />}
+                              {label}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -1054,16 +1057,20 @@ function MembersTab({
         {/* Active filters — removable pills so applied filters are visible. */}
         {activeFilters.length > 0 && (
           <div className="mb-3 flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+              Filtered by
+            </span>
             {activeFilters.map((f, i) => (
               <span
                 key={i}
-                className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent-soft py-0.5 pl-2 pr-1 text-[10.5px] font-medium text-accent"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-surface py-0.5 pl-2 pr-1 text-[10.5px] font-medium text-ink-secondary shadow-stone"
               >
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
                 {f.label}
                 <button
                   type="button"
                   onClick={f.clear}
-                  className="rounded-full p-0.5 transition-colors hover:bg-accent/20 hover:text-err"
+                  className="rounded-full p-0.5 text-ink-muted transition-colors hover:bg-err/10 hover:text-err"
                   aria-label={`Remove ${f.label} filter`}
                 >
                   <X size={11} />
