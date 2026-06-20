@@ -56,6 +56,7 @@ export const users = pgTable("users", {
   password_hash: text("password_hash"),
   role_id: integer("role_id").notNull(),
   status: text("status").notNull().default("invited"),
+  status_reason: text("status_reason"),
   invited_by: integer("invited_by"),
   invited_at: text("invited_at"),
   joined_at: text("joined_at"),

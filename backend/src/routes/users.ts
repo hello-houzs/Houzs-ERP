@@ -42,6 +42,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
   const brand = (c.req.query("brand") || "").trim();
   const db = getDb(c.env);
   const manager = alias(users, "m");
+  const inviter = alias(users, "ib");
 
   const conds: any[] = [];
   if (brand) {
@@ -60,6 +61,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
       email: users.email,
       name: users.name,
       status: users.status,
+      status_reason: users.status_reason,
       role_id: users.role_id,
       role_name: roles.name,
       manager_id: users.manager_id,
@@ -71,6 +73,9 @@ app.get("/", requirePermission("users.read"), async (c) => {
       position_id: users.position_id,
       position_name: positions.name,
       invited_at: users.invited_at,
+      invited_by: users.invited_by,
+      invited_by_name: inviter.name,
+      invited_by_email: inviter.email,
       joined_at: users.joined_at,
       last_login_at: users.last_login_at,
       created_at: users.created_at,
@@ -90,6 +95,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
     .leftJoin(manager, eq(manager.id, users.manager_id))
     .leftJoin(departments, eq(departments.id, users.department_id))
     .leftJoin(positions, eq(positions.id, users.position_id))
+    .leftJoin(inviter, eq(inviter.id, users.invited_by))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(users.created_at));
 
@@ -244,6 +250,32 @@ app.get("/:id/profile-pic", async (c) => {
   obj.writeHttpMetadata(headers);
   headers.set("cache-control", "private, max-age=300");
   return new Response(obj.body, { headers });
+});
+
+/**
+ * PUT /api/users/:id/profile-pic  (admin)
+ * Upload/replace another member's avatar. Mirrors /me/profile-pic but is
+ * keyed on the path id and gated on users.manage.
+ */
+app.put("/:id/profile-pic", requirePermission("users.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!Number.isFinite(id)) return c.json({ error: "Bad id" }, 400);
+  const filename = c.req.query("name") || `profile-${Date.now()}.bin`;
+  const contentType = c.req.header("content-type") || "application/octet-stream";
+  const buf = await c.req.arrayBuffer();
+  if (!buf.byteLength) return c.json({ error: "Empty body" }, 400);
+  if (buf.byteLength > 5 * 1024 * 1024) {
+    return c.json({ error: "Image must be under 5 MB" }, 413);
+  }
+  const key = `user/${id}/${Date.now()}-${filename.replace(/[^\w.\-]+/g, "_")}`;
+  await c.env.POD_BUCKET.put(key, buf, { httpMetadata: { contentType } });
+  const res = await c.env.DB.prepare(
+    `UPDATE users SET profile_pic_r2_key = ? WHERE id = ?`,
+  )
+    .bind(key, id)
+    .run();
+  if (!res.meta.changes) return c.json({ error: "User not found" }, 404);
+  return c.json({ ok: true, profile_pic_r2_key: key });
 });
 
 /**
@@ -496,6 +528,10 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     manager_id?: number | null;
     department_id?: number | null;
     position_id?: number | null;
+    name?: string | null;
+    phone?: string | null;
+    email?: string;
+    status_reason?: string | null;
   }>();
 
   const db = getDb(c.env);
@@ -516,6 +552,14 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
       return c.json({ error: "status must be active or disabled" }, 400);
     }
     set.status = body.status;
+  }
+
+  // Reason note tracks WHY an account was disabled. Re-enabling clears it;
+  // otherwise an explicit reason is stored when provided.
+  if (body.status === "active") {
+    set.status_reason = null;
+  } else if (body.status_reason !== undefined) {
+    set.status_reason = body.status_reason?.trim() || null;
   }
 
   if (body.manager_id !== undefined) {
@@ -585,6 +629,29 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
         set.department_id = pos[0].department_id;
       }
     }
+  }
+
+  // Personal info — editable from the Edit Member panel.
+  if (body.name !== undefined) {
+    set.name = body.name?.trim() || null;
+  }
+  if (body.phone !== undefined) {
+    set.phone = body.phone?.trim() || null;
+  }
+  if (body.email !== undefined) {
+    const em = String(body.email).toLowerCase().trim();
+    if (!em || !em.includes("@")) {
+      return c.json({ error: "Invalid email" }, 400);
+    }
+    const clash = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, em))
+      .limit(1);
+    if (clash.length && clash[0].id !== id) {
+      return c.json({ error: "A user with that email already exists" }, 409);
+    }
+    set.email = em;
   }
 
   if (Object.keys(set).length === 0) {
