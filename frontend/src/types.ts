@@ -438,6 +438,8 @@ export interface TeamMember {
   email: string;
   name: string | null;
   status: "invited" | "active" | "disabled";
+  /** Why the account was disabled (cleared on re-enable). */
+  status_reason?: string | null;
   role_id: number;
   role_name: string;
   /** Who this user reports to in the org chart. null = root. */
@@ -460,6 +462,10 @@ export interface TeamMember {
    */
   brands: string[];
   invited_at: string | null;
+  /** Who issued the invite (mig: users.invited_by). */
+  invited_by?: number | null;
+  invited_by_name?: string | null;
+  invited_by_email?: string | null;
   joined_at: string | null;
   last_login_at: string | null;
   created_at: string;
