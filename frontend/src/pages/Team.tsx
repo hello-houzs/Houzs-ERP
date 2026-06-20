@@ -732,7 +732,7 @@ function MembersTab({
       <div className="mb-6">
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <span className="h-px w-5 bg-accent" />
-          <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
+          <h2 className="text-[10px] font-bold uppercase tracking-brand text-accent">
             Members ({filteredMembers.length}/{members.data?.users.length ?? 0})
           </h2>
           <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -971,7 +971,7 @@ function MembersTab({
       <div className="mb-6">
         <div className="mb-3 flex items-center gap-2">
           <span className="h-px w-5 bg-accent" />
-          <h2 className="text-[10px] font-semibold uppercase tracking-brand text-accent">
+          <h2 className="text-[10px] font-bold uppercase tracking-brand text-accent">
             Pending Invitations ({invites.data?.invitations.length ?? 0})
           </h2>
           {canManage && expiredInvites.length > 0 && (
