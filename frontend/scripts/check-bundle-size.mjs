@@ -33,10 +33,14 @@ const BUDGETS = {
   INITIAL_JS_GZIP: 115 * KB,
   // Everything the app can lazy-load (users only fetch the routes they
   // visit). Soft guard against unbounded total growth, not a first-paint
-  // cost — headroom left for in-flight features (User Management, etc.).
-  TOTAL_JS_GZIP: 520 * KB,
+  // cost. Raised for the SCM "2990 cutover" — ~50 new lazy route chunks
+  // plus the xlsx + jspdf export/print libs (now split into on-demand
+  // chunks, but still counted here since this sums every emitted .js).
+  TOTAL_JS_GZIP: 1300 * KB,
   // Any single chunk, raw. A route blowing past this should be split.
-  MAX_CHUNK_RAW: 260 * KB,
+  // Raised to fit the heaviest vendored lib — xlsx (~430 KB raw), pulled
+  // out of the eager `vendor` chunk and loaded only on export.
+  MAX_CHUNK_RAW: 450 * KB,
 };
 
 // The chunks that load on first paint no matter which route you hit.
