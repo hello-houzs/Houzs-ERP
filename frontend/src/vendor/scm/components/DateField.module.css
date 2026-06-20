@@ -1,0 +1,76 @@
+/* DateField — looks like a single bordered field; the text box shows
+   DD/MM/YYYY and the calendar button opens the OS picker. */
+/* Matches the app's standard bordered form control (cf. .filterSelect):
+   --line border, radius-md, fs-13, ~30px tall — so a DateField sits flush
+   next to <select>/<input> siblings on every page it's adopted. */
+.wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 4px 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--c-paper, #fff);
+  box-sizing: border-box;
+}
+.wrap:focus-within {
+  border-color: var(--c-orange);
+  box-shadow: 0 0 0 2px rgba(232, 107, 58, 0.12);
+}
+.fullWidth { display: flex; width: 100%; }
+.fullWidth .textInput { width: auto; }
+.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.textInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 86px;
+  border: 0;
+  outline: 0;
+  padding: 0;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--c-ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+.textInput::placeholder { color: var(--fg-soft, #9a9a9a); }
+
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--c-burnt, var(--c-orange));
+  cursor: pointer;
+}
+.iconBtn:hover { background: var(--c-cream); }
+.iconBtn:disabled { cursor: not-allowed; color: var(--fg-muted); }
+
+/* Hidden native date input — present for the picker + ISO emit, not for
+   display. Kept in the DOM box (1px, opacity 0) so showPicker() anchors near
+   the calendar button. pointer-events:none so the button owns the click. */
+.nativeHidden {
+  position: absolute;
+  right: 4px;
+  top: 0;
+  width: 20px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}

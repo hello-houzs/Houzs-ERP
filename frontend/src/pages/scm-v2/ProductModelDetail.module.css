@@ -1,0 +1,473 @@
+/* ProductModelDetail — matches the visual language of SupplierDetail / SO
+   detail pages: cream page, white cards, chip-style option toggles. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  max-width: 1280px;
+}
+
+.loading {
+  padding: var(--space-6);
+  font-family: var(--font-sans);
+  color: var(--fg-muted);
+}
+
+.errorBanner {
+  padding: var(--space-3) var(--space-4);
+  background: rgba(184, 51, 31, 0.08);
+  color: var(--c-festive-b);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+}
+
+/* ─── Header ──────────────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  text-decoration: none;
+  width: max-content;
+}
+.back:hover { color: var(--fg); }
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.titleRow h1 { margin: 0; }
+.titleName {
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-15);
+}
+
+.catPill, .statusPill {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--c-paper);
+  letter-spacing: 0.04em;
+}
+.statusPill.active {
+  background: rgba(38, 95, 73, 0.12);
+  color: var(--c-evergreen, #265F49);
+  border-color: rgba(38, 95, 73, 0.3);
+}
+.statusPill.inactive {
+  background: rgba(150, 150, 150, 0.12);
+  color: var(--fg-muted);
+}
+
+.headerActions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* ─── Card ────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.cardTitle {
+  /* SECTION HEADER — bring into line with SalesOrderDetail so every detail
+     page's section header reads the same: brand emphasis colour, uppercase,
+     heavy weight. (Wei Siang 2026-06-04 — consistent visual hierarchy.)
+     This card has no separate header bar, so the recipe is applied to the
+     title text only; the surrounding .card / .cardHeadRow layout is unchanged. */
+  margin: 0;
+  font-family: var(--font-button);
+  font-size: var(--fs-13, 13px);
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--c-burnt);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cardTitle svg {
+  width: 15px;
+  height: 15px;
+}
+.cardHeadRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+}
+.cardSub {
+  margin: 0;
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+}
+
+/* ─── Field grid ──────────────────────────────────────────────────────── */
+.fieldGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.fieldSpan2 { grid-column: 1 / -1; }
+.field input, .field textarea {
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--c-paper);
+  color: var(--fg);
+  resize: vertical;
+}
+.field input:focus, .field textarea:focus {
+  outline: none;
+  border-color: var(--c-orange);
+}
+.readonly {
+  background: var(--c-cream) !important;
+  color: var(--fg-muted) !important;
+  cursor: not-allowed;
+}
+
+/* ─── Photo card (PR #97 — Commander: 可以放照片的啊) ─────────────────── */
+.photoRow {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: var(--space-5);
+  align-items: stretch;
+}
+.photoPreview {
+  position: relative;
+  width: 220px;
+  height: 220px;
+  border-radius: var(--radius-md);
+  background: var(--c-cream);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.photoPreview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.photoEmpty {
+  width: 220px;
+  height: 220px;
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--line-strong);
+  background: var(--c-cream);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+  flex-shrink: 0;
+}
+.photoEmpty:hover {
+  border-color: var(--c-orange);
+  color: var(--c-orange);
+}
+.photoSide {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-self: flex-start;
+}
+.photoSideTitle {
+  font-family: var(--font-sans);
+  font-size: var(--fs-15);
+  font-weight: 600;
+  margin: 0;
+}
+.photoSideHint {
+  margin: 0;
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  line-height: 1.5;
+}
+.photoActions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.photoUploading {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  color: var(--fg-muted);
+}
+.photoError {
+  padding: var(--space-2) var(--space-3);
+  background: rgba(184, 51, 31, 0.08);
+  color: var(--c-festive-b);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+}
+.hiddenInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+/* ─── Option groups + chips ───────────────────────────────────────────── */
+.optGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.optHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+.optHint {
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+}
+
+/* PR #87 — "All / None" mini buttons that flank each chip row's header.
+   Commander wanted the default mental model to be "everything's allowed, I
+   just turn off the ones I don't sell" — so empty pools start with all chips
+   lit, and these mini buttons let him bulk-flip both ways. */
+.optBulk {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+}
+.optBulkBtn {
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--c-paper);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: all 120ms ease-out;
+}
+.optBulkBtn:hover {
+  border-color: var(--c-orange);
+  color: var(--c-orange);
+}
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.chip {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--c-paper);
+  color: var(--fg);
+  cursor: pointer;
+  transition: all 120ms ease-out;
+}
+.chip:hover { border-color: var(--c-orange); }
+.chipOn {
+  background: var(--c-orange);
+  color: var(--bg);
+  border-color: var(--c-orange);
+}
+
+/* ─── SKU table ───────────────────────────────────────────────────────── */
+.skuTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+}
+.skuTable th, .skuTable td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.skuTable th {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.skuTable code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  background: var(--c-cream);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+/* ─── + Add codes modal ───────────────────────────────────────────────── */
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: var(--space-4);
+}
+.modal {
+  background: var(--c-cream);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-3);
+  width: min(640px, 100%);
+  max-height: 90vh;
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.modalHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.modalTitle {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-17);
+  font-weight: 600;
+}
+.modalSub {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  color: var(--fg-muted);
+}
+.modalClose {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--fg-muted);
+  padding: 4px;
+}
+.modalClose:hover { color: var(--fg); }
+.modalEmpty {
+  padding: var(--space-5);
+  text-align: center;
+  background: var(--bg);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  color: var(--fg-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+}
+.modalList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 4px;
+}
+.modalRow {
+  display: grid;
+  grid-template-columns: 24px max-content 1fr auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  cursor: pointer;
+}
+.modalRow:hover { border-color: var(--c-orange); }
+.modalRowExisting {
+  opacity: 0.55;
+  background: var(--c-cream);
+  cursor: not-allowed;
+}
+.modalRowExisting:hover { border-color: var(--line); }
+.modalCode {
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  background: var(--c-paper);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+.modalName {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  color: var(--fg);
+}
+.modalExistsPill {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(150, 150, 150, 0.12);
+  color: var(--fg-muted);
+  letter-spacing: 0.04em;
+}
+.modalFoot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+.modalCount {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--fg-muted);
+}

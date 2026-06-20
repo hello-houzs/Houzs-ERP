@@ -28,6 +28,10 @@ import {
   type MaintenanceConfig,
   type PoPriceMatrix,
 } from '../shared/mfg-pricing';
+import {
+  orderSofaModuleRowsWithinBuilds,
+  sortSoLinesByGroupRank,
+} from '../shared/so-line-display';
 import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
@@ -105,7 +109,11 @@ const HEADER_COLS =
   'subtotal_centi, tax_centi, total_centi, notes, submitted_at, received_at, ' +
   'cancelled_at, created_at, created_by, updated_at, ' +
   /* PR #77 — default ship-to warehouse for every line on this PO */
-  'purchase_location_id';
+  'purchase_location_id, ' +
+  /* Migration 0180 — supplier-revised delivery dates (header). The EFFECTIVE
+     delivery date readers use = MAX over non-null of [expected_at, _2, _3, _4]
+     (effectiveDelivery). expected_at keeps meaning the original earliest date. */
+  'supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4';
 
 const ITEM_COLS =
   'id, purchase_order_id, binding_id, material_kind, material_code, material_name, ' +
@@ -116,6 +124,9 @@ const ITEM_COLS =
   'custom_specials, line_suffix, special_order_price_sen, variants, ' +
   /* PR #77 — per-line delivery date + ship-to warehouse */
   'delivery_date, warehouse_id, ' +
+  /* Migration 0180 — supplier-revised per-line delivery dates. Effective line
+     date = MAX over non-null of [delivery_date, _2, _3, _4]. */
+  'supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4, ' +
   /* Migration 0098 — source SO line link. The detail route resolves it to a
      per-line so_doc_no for the PO PDF's "Transferred SO" column. */
   'so_item_id';
@@ -362,7 +373,20 @@ mfgPurchaseOrders.get('/:id', async (c) => {
 
   /* Per-line GR breakdown so the PO list expansion can show a "Received" column
      (which GR took how much) identical to the SO "Delivered" column. */
-  const itemRows = (itemsRes.data ?? []) as unknown as Array<Record<string, unknown> & { id: string }>;
+  /* Rule-order the rows at READ — canonical SKU/build order (sofa modules
+     LHF→NA→RHF, mains→accessories→services), mirroring the SO detail GET
+     (mfg-sales-orders.ts). The shared helper keys on `item_code`; PO lines
+     expose `material_code`, so sort a shimmed view that carries the original
+     row back unchanged. `.order('created_at')` above stays as the stable
+     tiebreaker — pure ordering, no persistence touched. */
+  type PoItemRow = Record<string, unknown> & { id: string; material_code: string; item_code: string };
+  const itemRows = orderSofaModuleRowsWithinBuilds(
+    sortSoLinesByGroupRank(
+      ((itemsRes.data ?? []) as unknown as Array<Record<string, unknown> & { id: string; material_code: string }>)
+        .map((it): PoItemRow => ({ ...it, item_code: it.material_code })),
+      (r) => r.item_group as string | null | undefined,
+    ),
+  );
   const receiptsMap = await poLineReceipts(supabase, itemRows.map((it) => it.id));
 
   /* 2026-06-12 — "Transferred SO" column on the PO PDF (DSL/AutoCount layout):
@@ -481,6 +505,14 @@ mfgPurchaseOrders.post('/', async (c) => {
   const purchaseLocationId = body.purchaseLocationId as string | undefined;
   if (!purchaseLocationId) return c.json({ error: 'purchase_location_id_required' }, 400);
 
+  /* Migration 0180 — supplier-revised header dates (all optional, default NULL).
+     These fan out to each line below the same way expected_at fans to
+     delivery_date, but a line's OWN override survives (mirrors the per-line
+     delivery_date override pattern). */
+  const headerD2 = (body.supplierDeliveryDate2 as string | undefined) ?? null;
+  const headerD3 = (body.supplierDeliveryDate3 as string | undefined) ?? null;
+  const headerD4 = (body.supplierDeliveryDate4 as string | undefined) ?? null;
+
   // PR #41 — allow blank-draft creation (no items). Commander 2026-05-26:
   // PO needs to be "raw" — start with just supplier + date, add items
   // line-by-line on the detail page (matches SO flow).
@@ -545,6 +577,11 @@ mfgPurchaseOrders.post('/', async (c) => {
          when absent so the column default / nullable behaviour kicks in. */
       discount_centi: discountCenti,
       delivery_date: (it.deliveryDate as string | undefined) ?? null,
+      /* Migration 0180 — per-line revised dates: line's own value wins, else
+         fan the header revision down (mirrors expected_at → delivery_date). */
+      supplier_delivery_date_2: (it.supplierDeliveryDate2 as string | undefined) ?? headerD2,
+      supplier_delivery_date_3: (it.supplierDeliveryDate3 as string | undefined) ?? headerD3,
+      supplier_delivery_date_4: (it.supplierDeliveryDate4 as string | undefined) ?? headerD4,
       warehouse_id:  (it.warehouseId  as string | undefined) ?? null,
       /* Commander 2026-05-28 — persist the per-line category + variants the PO
          form now collects (mirroring SO), and auto-generate Description 2 from
@@ -571,6 +608,10 @@ mfgPurchaseOrders.post('/', async (c) => {
     submitted_at: new Date().toISOString(),
     currency,
     expected_at: expectedAt,
+    /* Migration 0180 — supplier-revised header delivery dates (default NULL). */
+    supplier_delivery_date_2: headerD2,
+    supplier_delivery_date_3: headerD3,
+    supplier_delivery_date_4: headerD4,
     notes: (body.notes as string | undefined) ?? null,
     subtotal_centi: subtotal,
     tax_centi: 0,
@@ -1428,11 +1469,37 @@ mfgPurchaseOrders.patch('/:id', async (c) => {
     ['notes', 'notes'], ['supplierId', 'supplier_id'],
     // PR #77 — default ship-to warehouse for every line on this PO
     ['purchaseLocationId', 'purchase_location_id'],
+    // Migration 0180 — supplier-revised header delivery dates.
+    ['supplierDeliveryDate2', 'supplier_delivery_date_2'],
+    ['supplierDeliveryDate3', 'supplier_delivery_date_3'],
+    ['supplierDeliveryDate4', 'supplier_delivery_date_4'],
   ] as const) {
     if (body[from] !== undefined) updates[to] = body[from];
   }
   const { data, error } = await sb.from('purchase_orders').update(updates).eq('id', id).select('*').single();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+
+  /* Migration 0180 — fan a header revised date down to its lines, mirroring the
+     way the create/new flow cascades expected_at → each line's delivery_date.
+     A line's OWN override must survive, so we only stamp lines whose matching
+     per-line column is still NULL. Best-effort: never fail the header save on
+     this. Only runs for the header dates the caller actually sent (non-null). */
+  for (const [bodyKey, col] of [
+    ['supplierDeliveryDate2', 'supplier_delivery_date_2'],
+    ['supplierDeliveryDate3', 'supplier_delivery_date_3'],
+    ['supplierDeliveryDate4', 'supplier_delivery_date_4'],
+  ] as const) {
+    const v = body[bodyKey];
+    if (v === undefined || v === null || v === '') continue;
+    try {
+      await sb.from('purchase_order_items')
+        .update({ [col]: v })
+        .eq('purchase_order_id', id)
+        .is(col, null);
+    } catch (e) {
+      console.error('[mfg-po PATCH] header date cascade failed', { id, col, error: e });
+    }
+  }
   return c.json({ purchaseOrder: data });
 });
 
@@ -1572,6 +1639,10 @@ mfgPurchaseOrders.post('/:id/items', async (c) => {
     unit_cost_centi: Number(it.unitCostCenti ?? 0),
     // PR #77 — per-line ship-to. Both nullable; empty = inherit from header.
     delivery_date: (it.deliveryDate as string) ?? null,
+    // Migration 0180 — per-line supplier-revised dates (nullable, default NULL).
+    supplier_delivery_date_2: (it.supplierDeliveryDate2 as string) ?? null,
+    supplier_delivery_date_3: (it.supplierDeliveryDate3 as string) ?? null,
+    supplier_delivery_date_4: (it.supplierDeliveryDate4 as string) ?? null,
     warehouse_id: (it.warehouseId as string) ?? null,
   };
   const { data, error } = await sb.from('purchase_order_items').insert(row).select('*').single();
@@ -1616,6 +1687,10 @@ mfgPurchaseOrders.patch('/:id/items/:itemId', async (c) => {
     ['variants', 'variants'],
     // PR #77 — per-line delivery + ship-to overrides
     ['deliveryDate', 'delivery_date'], ['warehouseId', 'warehouse_id'],
+    // Migration 0180 — per-line supplier-revised delivery dates.
+    ['supplierDeliveryDate2', 'supplier_delivery_date_2'],
+    ['supplierDeliveryDate3', 'supplier_delivery_date_3'],
+    ['supplierDeliveryDate4', 'supplier_delivery_date_4'],
   ] as const) {
     if (it[from] !== undefined) updates[to] = it[from];
   }

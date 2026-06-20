@@ -4,6 +4,10 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { buildVariantSummary } from '../shared';
+import {
+  orderSofaModuleRowsWithinBuilds,
+  sortSoLinesByGroupRank,
+} from '../shared/so-line-display';
 import { reversePiAccounting, resyncPiAccounting } from './accounting';
 import { recostForPi, recostFromGrn } from '../lib/recost';
 
@@ -263,7 +267,20 @@ purchaseInvoices.get('/:id', async (c) => {
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
   if (!h.data) return c.json({ error: 'not_found' }, 404);
-  return c.json({ purchaseInvoice: h.data, items: i.data ?? [] });
+  /* Canonical SKU/build order at READ (sofa modules LHF→NA→RHF, mains→
+     accessories→services), mirroring the SO detail GET. The shared helper keys
+     on `item_code`; PI lines expose `material_code`, so sort a shimmed view
+     that carries the original row back unchanged. `.order('created_at')` above
+     stays as the stable tiebreaker — pure ordering, no persistence touched. */
+  type PiItemRow = Record<string, unknown> & { id: string; material_code: string; item_code: string };
+  const items = orderSofaModuleRowsWithinBuilds(
+    sortSoLinesByGroupRank(
+      ((i.data ?? []) as unknown as Array<Record<string, unknown> & { id: string; material_code: string }>)
+        .map((it): PiItemRow => ({ ...it, item_code: it.material_code })),
+      (r) => r.item_group as string | null | undefined,
+    ),
+  );
+  return c.json({ purchaseInvoice: h.data, items });
 });
 
 // ── Linked docs (Smart Buttons fan-out) ─────────────────────────────

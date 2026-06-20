@@ -16,6 +16,40 @@ const VALID_TIER_FIELDS = new Set(['sofaTier', 'bedframeTier']);
 const VALID_TIERS = new Set(['PRICE_1', 'PRICE_2', 'PRICE_3']);
 const TIER_FIELD_TO_COL: Record<string, string> = { sofaTier: 'sofa_tier', bedframeTier: 'bedframe_tier' };
 
+// GET /fabric-library — list all customer-pickable fabrics (incl. inactive, so
+// admin can re-enable) for the ProductModelDetail sofa "fabrics offered" picker.
+// In 2990's this read goes DIRECT to supabase from the POS (queries.ts →
+// useFabricLibrary); Houzs has no client-side supabase, so it routes here.
+//
+// HOUZS VENDOR: scm.fabric_library exists (cols id/label/tier/default_surcharge/
+// active/sort_order, verified 2026-06-20) but ships EMPTY until seeded — this
+// returns [] in that case so the picker renders with no options instead of
+// 500ing. Response is camelCased to the shape the frontend FabricLibrary type
+// expects (queries.ts).
+fabricLibrary.get('/', async (c) => {
+  const supabase = c.get('supabase');
+  const { data, error } = await supabase
+    .from('fabric_library')
+    .select('id, label, tier, default_surcharge, active, sort_order')
+    .order('sort_order', { ascending: true });
+  if (error) {
+    // Table missing entirely → degrade to empty so the picker still renders.
+    if (/relation .* does not exist/i.test(error.message)) return c.json({ fabrics: [] });
+    return c.json({ error: 'load_failed', reason: error.message }, 500);
+  }
+  // Dual-read camelCase ?? snake_case — the REST/PostgREST driver may camelCase
+  // result columns; cover both so we never read undefined.
+  const fabrics = (data ?? []).map((r: Record<string, unknown>) => ({
+    id: r.id,
+    label: r.label,
+    tier: r.tier,
+    defaultSurcharge: r.defaultSurcharge ?? r.default_surcharge ?? 0,
+    active: r.active,
+    sortOrder: r.sortOrder ?? r.sort_order ?? 0,
+  }));
+  return c.json({ fabrics });
+});
+
 fabricLibrary.patch('/:id/tier', async (c) => {
   const id       = c.req.param('id');
   const userId   = c.get('user').id;

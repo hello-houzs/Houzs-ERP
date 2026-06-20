@@ -1,0 +1,93 @@
+/* Sales Orders list page wrapper.
+   Mirrors FlowPages.module.css .page pattern for header + banners,
+   but the table is replaced by <DataGrid>.
+   PR — Commander 2026-05-27 ("polish 整个 suppliers module 也是 PO 和 SO 都要
+   polish"): align title typography + page padding with the SO Detail polish
+   from PR #230/#231. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: var(--c-cream);
+  min-height: 100%;
+}
+
+.headerRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.title {
+  /* PR — Commander 2026-05-27: was fs-32/900 — drop to fs-15/600 so the
+     list page reads like an admin tool (matches SO Detail title). */
+  font-family: var(--font-title);
+  font-size: var(--fs-15, 15px);
+  font-weight: 600;
+  color: var(--c-ink);
+  margin: 0;
+}
+
+.subtitle {
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+.bannerWarn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(232, 107, 58, 0.08);
+  border: 1px solid var(--c-orange);
+  color: var(--c-burnt);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-13);
+}
+
+/* Toolbar buttons inside <DataGrid> — match the AutoCount ribbon look:
+   small, square-ish, tight grouping. */
+.tbarBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--c-ink);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 4px);
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tbarBtn:hover:not(:disabled) { background: var(--c-cream); }
+.tbarBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+.tbarBtnDanger { color: var(--c-festive-b, #B8331F); }
+.tbarBtnDanger:hover:not(:disabled) {
+  background: rgba(184, 51, 31, 0.06);
+}
+
+.docNo {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  background: rgba(34, 31, 32, 0.04);
+  border: 1px solid var(--line);
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+}
+
+.money {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--c-burnt);
+}

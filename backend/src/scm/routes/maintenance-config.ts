@@ -63,6 +63,14 @@ function genId(): string {
   return `mch-${rnd}`;
 }
 
+// Editor-only — maintenance pricing config feeds SO/PO cost. Same role set as
+// the sibling pricing editors (fabric-tier-addon / fabric-library / sofa-combos).
+// NOTE (Houzs port): /api/scm/* is owner-gated upstream and the auth bridge maps
+// every caller to ONE super_admin system-staff row, so this gate always passes
+// today. It is kept for parity with 2990 + the sibling sofa-combos gate, as
+// defence-in-depth that turns real once per-user → scm.staff attribution lands.
+const WRITE_ROLES = new Set(['admin', 'super_admin', 'coordinator', 'sales_director']);
+
 // ── GET /resolved ──────────────────────────────────────────────────────
 // Returns the currently-effective config for the given scope (newest row
 // with effective_from <= asOf). asOf defaults to today.
@@ -140,10 +148,16 @@ maintenanceConfig.get('/history', async (c) => {
 
 // ── POST /changes ──────────────────────────────────────────────────────
 // Append a new effective-dated row. body: { scope, config, effectiveFrom, notes? }
-// Admin-gated via RLS on maintenance_config_history (TODO: add the policy
-// in a follow-up migration; for now any authed staff can write — match
-// HOOKKA which gates this via app-layer requirePermission('users','update')).
+// Editor-only (Commander 2026-06-18) — pricing config feeds SO/PO cost and was
+// previously writable by ANY authed staff. Now gated app-side to WRITE_ROLES,
+// matching the sibling pricing editors. (RLS defence-in-depth can follow.)
 maintenanceConfig.post('/changes', async (c) => {
+  {
+    const staffRes = await c.get('supabase').from('staff').select('role, active').eq('id', c.get('user').id).maybeSingle();
+    if (staffRes.error) return c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500);
+    if (!staffRes.data || !staffRes.data.active) return c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403);
+    if (!WRITE_ROLES.has(staffRes.data.role)) return c.json({ error: 'forbidden', reason: 'maintenance_editor_only' }, 403);
+  }
   let body: { scope?: string; config?: unknown; effectiveFrom?: string; notes?: string };
   try {
     body = (await c.req.json()) as typeof body;
@@ -240,6 +254,12 @@ maintenanceConfig.post('/sofa-compartments/rename', async (c) => {
 // delete for the cancel-pending UX. Past-effective rows should not be
 // deleted in practice — the UI hides the trash icon on those.
 maintenanceConfig.delete('/changes/:id', async (c) => {
+  {
+    const staffRes = await c.get('supabase').from('staff').select('role, active').eq('id', c.get('user').id).maybeSingle();
+    if (staffRes.error) return c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500);
+    if (!staffRes.data || !staffRes.data.active) return c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403);
+    if (!WRITE_ROLES.has(staffRes.data.role)) return c.json({ error: 'forbidden', reason: 'maintenance_editor_only' }, 403);
+  }
   const id = c.req.param('id');
   const supabase = c.get('supabase');
 

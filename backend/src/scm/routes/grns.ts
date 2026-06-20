@@ -5,7 +5,11 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
-import { buildVariantSummary, computeVariantKey, type VariantAttrs } from '../shared';
+import { buildVariantSummary, computeVariantKey, effectiveDelivery, type VariantAttrs } from '../shared';
+import {
+  orderSofaModuleRowsWithinBuilds,
+  sortSoLinesByGroupRank,
+} from '../shared/so-line-display';
 import { recostFromGrn } from '../lib/recost';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -439,7 +443,9 @@ grns.get('/outstanding-po-items', async (c) => {
     .select(`
       id, purchase_order_id, material_kind, material_code, material_name, item_group,
       description, qty, received_qty, unit_price_centi, warehouse_id, variants, delivery_date,
+      supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4,
       po:purchase_orders!inner ( id, po_number, supplier_id, status, po_date, expected_at,
+        supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4,
         purchase_location_id, supplier:suppliers ( code, name ) )
     `)
     .order('purchase_order_id', { ascending: false })
@@ -451,9 +457,17 @@ grns.get('/outstanding-po-items', async (c) => {
     material_name: string; item_group: string | null; description: string | null;
     qty: number; received_qty: number; unit_price_centi: number;
     warehouse_id: string | null; variants: unknown; delivery_date: string | null;
+    // Migration 0180 — per-line supplier-revised delivery dates.
+    supplier_delivery_date_2: string | null;
+    supplier_delivery_date_3: string | null;
+    supplier_delivery_date_4: string | null;
     po: {
       id: string; po_number: string; supplier_id: string; status: string;
       po_date: string; expected_at: string | null; purchase_location_id: string | null;
+      // Migration 0180 — header supplier-revised delivery dates.
+      supplier_delivery_date_2: string | null;
+      supplier_delivery_date_3: string | null;
+      supplier_delivery_date_4: string | null;
       supplier: { code: string; name: string } | null;
     };
   };
@@ -500,14 +514,28 @@ grns.get('/outstanding-po-items', async (c) => {
       unitPriceCenti:  r.unit_price_centi,
       warehouseId:     r.warehouse_id,
       variants:        r.variants,
-      /* Delivery-carry — surface the PO line's delivery date so it can ride into
-         the converted GRN line (Deliverable 5). */
-      deliveryDate:    r.delivery_date ?? null,
+      /* Delivery-carry — surface the PO line's EFFECTIVE (latest revised)
+         delivery date so it can ride into the converted GRN line (Deliverable
+         5). Migration 0180: MAX over non-null of [delivery_date, _2, _3, _4].
+         supabase-js returns snake_case, and Row types them, so read directly. */
+      deliveryDate:    effectiveDelivery(
+        r.delivery_date,
+        r.supplier_delivery_date_2,
+        r.supplier_delivery_date_3,
+        r.supplier_delivery_date_4,
+      ),
       supplierId:      r.po.supplier_id,
       supplierCode:    r.po.supplier?.code ?? '',
       supplierName:    r.po.supplier?.name ?? '',
       poDate:          r.po.po_date,
-      expectedAt:      r.po.expected_at,
+      /* Migration 0180 — header EFFECTIVE (latest revised) delivery date for the
+         "Expected" column. MAX over non-null of [expected_at, _2, _3, _4]. */
+      expectedAt:      effectiveDelivery(
+        r.po.expected_at,
+        r.po.supplier_delivery_date_2,
+        r.po.supplier_delivery_date_3,
+        r.po.supplier_delivery_date_4,
+      ),
       /* Warehouse-lock (Deliverable 4) — the line's EFFECTIVE ship-into warehouse
          (per-line warehouse_id, else PO header purchase_location_id). This is the
          GRN's receive-into warehouse. One warehouse per GRN. */
@@ -597,7 +625,19 @@ grns.get('/:id', async (c) => {
      round trip (item → po_item → po). source_po_number is null for manual lines.
      received_at mirrors the GRN header date so the detail/list line table can show
      a per-line column without a separate column on grn_items. */
-  const lineItems = (i.data ?? []) as unknown as Array<Record<string, unknown> & { id: string; purchase_order_item_id: string | null }>;
+  /* Canonical SKU/build order at READ (sofa modules LHF→NA→RHF, mains→
+     accessories→services), mirroring the SO detail GET. The shared helper keys
+     on `item_code`; GRN lines expose `material_code`, so sort a shimmed view
+     that carries the original row back unchanged. `.order('created_at')` above
+     stays as the stable tiebreaker — pure ordering, no persistence touched. */
+  type GrnLineRow = Record<string, unknown> & { id: string; purchase_order_item_id: string | null; material_code: string; item_code: string };
+  const lineItems = orderSofaModuleRowsWithinBuilds(
+    sortSoLinesByGroupRank(
+      ((i.data ?? []) as unknown as Array<Record<string, unknown> & { id: string; purchase_order_item_id: string | null; material_code: string }>)
+        .map((it): GrnLineRow => ({ ...it, item_code: it.material_code })),
+      (r) => r.item_group as string | null | undefined,
+    ),
+  );
   const headerReceivedAt = (h.data as { received_at?: string | null }).received_at ?? null;
   const poItemIds = [...new Set(lineItems.map((it) => it.purchase_order_item_id).filter((x): x is string => Boolean(x)))];
   const poNoByItemId = new Map<string, string>();
@@ -822,7 +862,9 @@ grns.post('/from-pos', async (c) => {
   const { data: items } = await sb.from('purchase_order_items')
     .select('id, purchase_order_id, material_kind, material_code, material_name, qty, received_qty, unit_price_centi, ' +
       'item_group, description, description2, uom, variants, gap_inches, divan_height_inches, divan_price_sen, ' +
-      'leg_height_inches, leg_price_sen, custom_specials, line_suffix, special_order_price_sen, discount_centi, unit_cost_centi, delivery_date')
+      'leg_height_inches, leg_price_sen, custom_specials, line_suffix, special_order_price_sen, discount_centi, unit_cost_centi, delivery_date, ' +
+      // Migration 0180 — revised dates so the GRN line carries the EFFECTIVE date.
+      'supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4')
     .in('purchase_order_id', poIds);
   const itemList = ((items ?? []) as unknown as Array<{
     id: string; purchase_order_id: string; material_kind: string; material_code: string;
@@ -833,6 +875,9 @@ grns.post('/from-pos', async (c) => {
     leg_height_inches?: number | null; leg_price_sen?: number;
     custom_specials?: unknown; line_suffix?: string | null; special_order_price_sen?: number;
     discount_centi?: number; unit_cost_centi?: number; delivery_date?: string | null;
+    supplier_delivery_date_2?: string | null;
+    supplier_delivery_date_3?: string | null;
+    supplier_delivery_date_4?: string | null;
   }>).filter((it) => it.qty - (it.received_qty ?? 0) > 0);
 
   if (itemList.length === 0) return c.json({ error: 'nothing_outstanding', message: 'All PO items are already fully received' }, 400);
@@ -891,8 +936,14 @@ grns.post('/from-pos', async (c) => {
       special_order_price_sen: it.special_order_price_sen ?? 0,
       discount_centi: discountCenti,
       /* Deliverable 5 — carry the PO line's delivery date into the GRN line so a
-         converted GRN line shows the PO's delivery date instead of blank. */
-      delivery_date: it.delivery_date ?? null,
+         converted GRN line shows the PO's delivery date instead of blank.
+         Migration 0180 — use the EFFECTIVE (latest revised) line date. */
+      delivery_date: effectiveDelivery(
+        it.delivery_date,
+        it.supplier_delivery_date_2,
+        it.supplier_delivery_date_3,
+        it.supplier_delivery_date_4,
+      ),
     };
   });
   const { error: iErr } = await sb.from('grn_items').insert(rows);
@@ -962,6 +1013,7 @@ grns.post('/from-po-items', async (c) => {
       unit_price_centi, variants, gap_inches, divan_height_inches, divan_price_sen,
       leg_height_inches, leg_price_sen, custom_specials, line_suffix,
       special_order_price_sen, discount_centi, delivery_date,
+      supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4,
       po:purchase_orders!inner ( id, po_number, supplier_id, status, purchase_location_id )
     `)
     .in('id', ids);
@@ -976,6 +1028,10 @@ grns.post('/from-po-items', async (c) => {
     divan_price_sen: number; leg_height_inches: number | null; leg_price_sen: number;
     custom_specials: unknown; line_suffix: string | null; special_order_price_sen: number;
     discount_centi: number; delivery_date: string | null;
+    // Migration 0180 — per-line revised dates for the effective GRN line date.
+    supplier_delivery_date_2: string | null;
+    supplier_delivery_date_3: string | null;
+    supplier_delivery_date_4: string | null;
     po: { id: string; po_number: string; supplier_id: string; status: string; purchase_location_id: string | null };
   };
 
@@ -1074,8 +1130,14 @@ grns.post('/from-po-items', async (c) => {
         line_suffix: row.line_suffix,
         special_order_price_sen: row.special_order_price_sen ?? 0,
         discount_centi: discountCenti,
-        /* Deliverable 5 — carry the PO line's delivery date into the GRN line. */
-        delivery_date: row.delivery_date ?? null,
+        /* Deliverable 5 — carry the PO line's delivery date into the GRN line.
+           Migration 0180 — use the EFFECTIVE (latest revised) line date. */
+        delivery_date: effectiveDelivery(
+          row.delivery_date,
+          row.supplier_delivery_date_2,
+          row.supplier_delivery_date_3,
+          row.supplier_delivery_date_4,
+        ),
       };
     });
     const { error: iErr } = await sb.from('grn_items').insert(rows);

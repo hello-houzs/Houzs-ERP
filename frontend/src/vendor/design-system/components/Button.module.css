@@ -1,0 +1,76 @@
+.button {
+  font-family: var(--font-button);
+  font-weight: var(--w-semibold);
+  letter-spacing: 0.02em;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 120ms ease-out, color 120ms ease-out,
+              border-color 120ms ease-out, transform 80ms ease-out;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.button:focus-visible {
+  outline: 2px solid var(--c-orange);
+  outline-offset: 2px;
+}
+.button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Variants */
+.variant-primary {
+  background: var(--c-ink);
+  color: var(--fg-on-ink);
+}
+.variant-primary:hover:not(:disabled) {
+  background: var(--c-burnt);
+}
+
+.variant-secondary {
+  background: #fff;
+  color: var(--c-ink);
+  border-color: var(--line);
+}
+.variant-secondary:hover:not(:disabled) {
+  border-color: var(--c-burnt);
+  color: var(--c-burnt);
+}
+
+.variant-ghost {
+  background: transparent;
+  color: var(--c-ink);
+}
+.variant-ghost:hover:not(:disabled) {
+  background: rgba(34, 31, 32, 0.06);
+}
+
+/* Sizes — POS is tablet-first; touch targets must be >=44px */
+.size-sm {
+  height: 36px;
+  padding: 0 var(--space-4);
+  font-size: var(--fs-13);
+}
+.size-md {
+  height: 44px;
+  padding: 0 var(--space-5);
+  font-size: var(--fs-14);
+}
+.size-lg {
+  height: 52px;
+  padding: 0 var(--space-6);
+  font-size: var(--fs-15);
+}
+
+.fullWidth {
+  width: 100%;
+}
