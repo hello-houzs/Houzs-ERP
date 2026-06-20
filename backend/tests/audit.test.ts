@@ -66,4 +66,25 @@ describe("audit trail", () => {
     });
     expect(res.status).toBe(401);
   });
+
+  test("GET /api/users/:id/activity returns what a user did + what was done to them", async () => {
+    // Did: actor_id = 7. Done-to: entity_type='user' AND entity_id='7'.
+    // Unrelated rows (other actor, non-user entity) must be excluded.
+    await writeAudit(env, { action: "role.update", entityType: "role", entityId: 3, summary: "edited a role", actorId: 7 });
+    await writeAudit(env, { action: "user.disable", entityType: "user", entityId: 7, summary: "disabled by admin", actorId: 1 });
+    await writeAudit(env, { action: "role.delete", entityType: "role", entityId: 9, summary: "noise", actorId: 99 });
+
+    const res = await SELF.fetch("https://test.local/api/users/7/activity", { headers: ADMIN });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { activity: any[] };
+    expect(body.activity.length).toBe(2);
+    expect(body.activity.map((e) => e.action).sort()).toEqual(["role.update", "user.disable"]);
+  });
+
+  test("GET /api/users/:id/activity rejects an unauthenticated caller", async () => {
+    const res = await SELF.fetch("https://test.local/api/users/7/activity", {
+      headers: { Authorization: "Bearer not-a-real-token" },
+    });
+    expect(res.status).toBe(401);
+  });
 });

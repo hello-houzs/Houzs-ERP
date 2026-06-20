@@ -172,6 +172,37 @@ app.put("/:id/brands", requirePermission("users.manage"), async (c) => {
   return c.json({ ok: true, brands: valid });
 });
 
+/**
+ * GET /api/users/:id/activity
+ * Recent audit_events touching this member, newest first — powers the
+ * change-history panel on the member detail page. Two angles in one query:
+ * what the user DID (actor_id = id) and what was done TO them
+ * (entity_type='user' AND entity_id = id). Read via raw SQL like routes/audit.ts
+ * — audit_events has no Drizzle table in schema.ts. Never errors on a missing
+ * table: if the ledger isn't there yet the panel just shows no history.
+ */
+app.get("/:id/activity", requirePermission("users.read"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Bad id" }, 400);
+  const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
+
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT id, created_at, actor_id, actor_email, action, entity_type, entity_id, summary, meta, ip, request_id
+         FROM audit_events
+        WHERE actor_id = ? OR (entity_type = 'user' AND entity_id = ?)
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?`,
+    )
+      .bind(id, String(id), limit)
+      .all();
+    return c.json({ activity: rows.results });
+  } catch {
+    // Ledger absent or unreadable — degrade to empty rather than 500.
+    return c.json({ activity: [] });
+  }
+});
+
 // ── Profile pictures (mig 058) ─────────────────────────────────
 // Image bytes live in R2 (POD_BUCKET); the DB row carries the key.
 // Upload writes the user's own pic; GET streams the bytes back through
