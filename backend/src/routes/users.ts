@@ -71,6 +71,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
       department_id: users.department_id,
       department_name: departments.name,
       department_color: departments.color,
+      division: users.division,
       position_id: users.position_id,
       position_name: positions.name,
       invited_at: users.invited_at,
@@ -581,6 +582,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     department_id?: number | null;
     department_ids?: number[];
     position_id?: number | null;
+    division?: string | null;
     name?: string | null;
     phone?: string | null;
     email?: string;
@@ -623,6 +625,11 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     set.status_reason = null;
   } else if (body.status_reason !== undefined) {
     set.status_reason = body.status_reason?.trim() || null;
+  }
+
+  // Org-chart division — free-text sub-grouping within a department (mig 0021).
+  if (body.division !== undefined) {
+    set.division = body.division?.trim() || null;
   }
 
   if (body.manager_id !== undefined) {
