@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, ArrowLeft, SlidersHorizontal, ListTree, Network, ChevronRight, ChevronDown, Users as UsersIcon } from "lucide-react";
 import { PageHeader } from "../components/Layout";
@@ -1479,15 +1479,20 @@ function MemberDetail({
     .map((id) => deptById.get(id))
     .filter((d): d is Department => !!d);
 
-  // Pages this member can reach, via their position's access matrix.
-  const pageAccessQ = useQuery<{ page_access: { page_key: string; level: string }[] }>(
+  // Pages this member can reach, via their position's access matrix. The
+  // endpoint returns a { page_key: { explicit, level } } MAP (not an array),
+  // so flatten it to a sorted list of the pages actually granted.
+  const pageAccessQ = useQuery<{
+    page_access: Record<string, { explicit?: boolean; level: string }>;
+  }>(
     () =>
       user.position_id != null
         ? api.get(`/api/positions/${user.position_id}/page-access`)
-        : Promise.resolve({ page_access: [] }),
+        : Promise.resolve({ page_access: {} }),
     [user.position_id],
   );
-  const grantedPages = (pageAccessQ.data?.page_access ?? [])
+  const grantedPages = Object.entries(pageAccessQ.data?.page_access ?? {})
+    .map(([page_key, v]) => ({ page_key, level: v?.level ?? "none" }))
     .filter((p) => p.level && p.level !== "none")
     .sort((a, b) => a.page_key.localeCompare(b.page_key));
 
@@ -1511,8 +1516,16 @@ function MemberDetail({
   const actionCls =
     "inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-border bg-surface px-3 py-2 text-[12px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent";
 
+  // When the detail opens (or switches member) the grid it replaced may have
+  // been scrolled down — bring the detail into view so it doesn't render above
+  // the viewport and look like nothing happened.
+  const topRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    topRef.current?.scrollIntoView({ block: "start", behavior: "auto" });
+  }, [user.id]);
+
   return (
-    <div>
+    <div ref={topRef}>
       <button
         type="button"
         onClick={onBack}
@@ -1638,6 +1651,7 @@ function MemberDetail({
               )}
             </DetailKV>
             <DetailKV label="Position">{posName || <span className="text-ink-muted">—</span>}</DetailKV>
+            <DetailKV label="Division">{user.division || <span className="text-ink-muted">—</span>}</DetailKV>
             <DetailKV label="Role">{user.role_name || <span className="text-ink-muted">—</span>}</DetailKV>
             <DetailKV label="Reports to">
               {user.manager_name || user.manager_email || <span className="text-ink-muted">—</span>}
@@ -1897,6 +1911,7 @@ function EditMemberPanel({
   const [deptIds, setDeptIds] = useState<number[]>(() => deptIdsOf(user));
   const [positionId, setPositionId] = useState<number | "">(user.position_id ?? "");
   const [managerId, setManagerId] = useState<number | "">(user.manager_id ?? "");
+  const [division, setDivision] = useState(user.division || "");
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const [picBusy, setPicBusy] = useState(false);
@@ -1960,6 +1975,8 @@ function EditMemberPanel({
     if (!sameDeptSet) patch.department_ids = finalDeptIds;
     if ((positionId || null) !== (user.position_id ?? null)) patch.position_id = positionId || null;
     if ((managerId || null) !== (user.manager_id ?? null)) patch.manager_id = managerId || null;
+    if ((division.trim() || null) !== (user.division ?? null))
+      patch.division = division.trim() || null;
 
     if (Object.keys(patch).length === 0) {
       onClose();
@@ -2149,6 +2166,32 @@ function EditMemberPanel({
           </select>
           <div className="mt-1 text-[10px] text-ink-muted">
             Controls which pages this member can see (least-privilege per position).
+          </div>
+        </div>
+        <div>
+          <label className={labelCls}>Division</label>
+          <input
+            list="member-division-options"
+            value={division}
+            onChange={(e) => setDivision(e.target.value)}
+            placeholder="e.g. Team Peter (optional)"
+            className={inputCls}
+          />
+          <datalist id="member-division-options">
+            {Array.from(
+              new Set(
+                members
+                  .map((m) => m.division?.trim())
+                  .filter((d): d is string => !!d),
+              ),
+            )
+              .sort((a, b) => a.localeCompare(b))
+              .map((d) => (
+                <option key={d} value={d} />
+              ))}
+          </datalist>
+          <div className="mt-1 text-[10px] text-ink-muted">
+            Sub-group within the department — becomes a column in the org chart.
           </div>
         </div>
         <div>
