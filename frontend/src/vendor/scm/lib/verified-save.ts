@@ -28,7 +28,7 @@
 // ---------------------------------------------------------------------------
 
 const API_URL =
-  (import.meta.env.VITE_API_URL ?? 'https://autocount-sync-api.houzs-erp.workers.dev') +
+  (import.meta.env.VITE_API_URL || 'https://autocount-sync-api.houzs-erp.workers.dev') +
   '/api/scm';
 
 export type SaveDiff = { field: string; expected: unknown; actual: unknown };
