@@ -29,7 +29,10 @@
 // stale shell after a burst of same-day deploys (the SCM port). The
 // activate step deletes the old v3 caches so every client rebuilds from
 // the live build on its next load — no manual hard-refresh needed.
-const VERSION = "houzs-erp-v4";
+// v5 (2026-06-20): SCM cutover — the 2990-vendored pages replace the
+// native SCM (new chunks, system-font rebrand, real document PDFs). Purge
+// so every client picks up the new shell + assets on next load.
+const VERSION = "houzs-erp-v5";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

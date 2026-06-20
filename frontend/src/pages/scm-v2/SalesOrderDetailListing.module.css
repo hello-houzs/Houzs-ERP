@@ -1,0 +1,405 @@
+/* Sales Order Detail Listing report page — AutoCount-style filter card +
+   wide horizontally-scrolling result table. Density mirrors PR #163 SO
+   Detail (labels fs-10, inputs fs-13, table cells fs-12). */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5) var(--space-6);
+  background: var(--c-cream);
+  min-height: 100%;
+}
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.titleBlock {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.title {
+  font-family: var(--font-title);
+  font-size: var(--fs-18);
+  font-weight: 700;
+  color: var(--c-ink);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.subtitle {
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  color: var(--fg-muted);
+  margin: 2px 0 0;
+}
+
+/* ── Two-card filter row ──────────────────────────────────────────── */
+
+.filterRow {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: var(--space-3);
+}
+
+@media (max-width: 1100px) {
+  .filterRow { grid-template-columns: 1fr; }
+}
+
+.card {
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.cardTitle {
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+.cardBody {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Filter grid (Basic Filter card) */
+
+.filterGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-2);
+}
+
+@media (max-width: 900px) {
+  .filterGrid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.filterGridSpan2 { grid-column: span 2; }
+.filterGridSpanAll { grid-column: 1 / -1; }
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fieldLabel {
+  font-family: var(--font-sans);
+  font-size: var(--fs-10);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-soft);
+}
+
+.fieldInput,
+.fieldSelect {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 4px var(--space-2);
+  color: var(--c-ink);
+  outline: none;
+  width: 100%;
+  line-height: 1.4;
+}
+.fieldInput:focus,
+.fieldSelect:focus { border-color: var(--line-strong); background: var(--c-cream); }
+
+.dateRangeRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+  align-items: end;
+}
+
+/* Options card (right) */
+
+.optionsBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.checkboxRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  color: var(--c-ink);
+}
+
+.optionsButtonRow {
+  display: inline-flex;
+  gap: var(--space-2);
+  margin-top: 6px;
+}
+
+/* ── Action bar ───────────────────────────────────────────────────── */
+
+.actionBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+/* ── Criteria summary ─────────────────────────────────────────────── */
+
+.criteriaBox {
+  padding: var(--space-2) var(--space-3);
+  background: var(--c-paper);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px var(--space-3);
+}
+
+.criteriaKey {
+  font-size: var(--fs-10);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-soft);
+}
+
+/* ── Search Result panel ──────────────────────────────────────────── */
+
+.resultCard {
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  display: flex;
+  flex-direction: column;
+}
+
+.resultHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.resultTitle {
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.checkboxButtonRow {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.searchInput {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  background: var(--c-cream);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 4px var(--space-2);
+  color: var(--c-ink);
+  outline: none;
+  width: 240px;
+  line-height: 1.4;
+}
+
+/* DnD-style group-by zone — above the table */
+.groupZone {
+  padding: var(--space-2) var(--space-3);
+  background: var(--c-cream);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 30px;
+}
+
+.groupChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--c-paper);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  padding: 1px 8px;
+  font-size: var(--fs-11);
+  color: var(--c-ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.groupChip button {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--fg-muted);
+  display: inline-flex;
+  padding: 0;
+}
+
+/* ── Wide table ──────────────────────────────────────────────────── */
+
+.tableScroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--c-cream);
+  z-index: 1;
+  font-family: var(--font-sans);
+  font-size: var(--fs-10);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  text-align: left;
+  padding: 4px var(--space-2);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  user-select: none;
+  cursor: grab;
+}
+.table thead th:active { cursor: grabbing; }
+
+.table tbody td {
+  padding: 4px var(--space-2);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.tableRight { text-align: right; }
+.tableCenter { text-align: center; }
+
+.codeCell {
+  font-weight: 600;
+  color: var(--c-burnt);
+}
+
+.muted { color: var(--fg-muted); }
+
+.groupRow td {
+  background: var(--c-cream);
+  font-weight: 700;
+  color: var(--c-ink);
+  font-size: var(--fs-12);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.caret {
+  display: inline-flex;
+  margin-right: 6px;
+  color: var(--fg-muted);
+  transition: transform 80ms ease;
+}
+.caretOpen { transform: rotate(90deg); }
+
+.emptyRow {
+  text-align: center;
+  color: var(--fg-muted);
+  padding: var(--space-6);
+  font-style: italic;
+}
+
+.footerRow td {
+  font-weight: 700;
+  color: var(--c-ink);
+  background: var(--c-cream);
+}
+
+/* Hidden options state — show only the action bar + Search Result */
+.optionsHidden .filterRow { display: none; }
+
+/* Print: only show the result table */
+@media print {
+  .filterRow, .actionBar, .resultHeader, .groupZone, .backBtn { display: none; }
+  .page { background: white; padding: 0; }
+  .resultCard { border: none; box-shadow: none; }
+  .tableScroll { overflow: visible; }
+}
+
+.backBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: var(--space-2) var(--space-3);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--c-ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+.backBtn:hover { background: var(--c-cream); }

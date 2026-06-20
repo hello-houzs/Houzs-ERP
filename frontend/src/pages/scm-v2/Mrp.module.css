@@ -1,0 +1,523 @@
+/* MRP · Stock Status Report — uses the shared 2990s density tokens. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6) var(--space-7);
+  background: var(--c-cream);
+  min-height: 100%;
+}
+
+.headerRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.title {
+  font-family: var(--font-title);
+  font-weight: 700;
+  color: var(--c-ink);
+  margin: 0;
+}
+
+.subtitle {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--fg-muted);
+  margin: 4px 0 0;
+  max-width: 60ch;
+}
+
+/* Toolbar reads as three clusters: [view toggle] · [utilities] · [primary CTA].
+   align-items:center keeps the segmented toggle, ghost group and CTA on one
+   baseline; the CTA is pushed to the far right by the trailing divider + the
+   header row's space-between. */
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* Cluster 2 — utilities kept tight together so they read as one group, set
+   apart from the view toggle and the primary CTA by the dividers around them. */
+.utilityGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Thin vertical rule separating the three toolbar clusters. */
+.toolbarDivider {
+  width: 1px;
+  align-self: stretch;
+  min-height: 22px;
+  background: var(--line);
+}
+
+/* Secondary / ghost utilities — intentionally lighter than the CTA: subtle
+   outline on a transparent fill, muted label that only firms up on hover. */
+.ghostBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.ghostBtn:hover { border-color: var(--line-strong); color: var(--c-ink); background: var(--c-paper); }
+.ghostBtn:disabled { opacity: 0.5; cursor: default; }
+
+/* Primary CTA — the strongest control: filled burnt orange, heavier weight and
+   a touch more horizontal padding so it clearly out-weights the ghost group. */
+.primaryBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 700;
+  padding: var(--space-2) var(--space-5);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--c-orange);
+  background: var(--c-orange);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(166, 71, 30, 0.25);
+  cursor: pointer;
+}
+.primaryBtn:hover:not(:disabled) { filter: brightness(0.95); }
+.primaryBtn:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+
+/* PO generation mode toggle */
+.modeToggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: var(--c-paper);
+}
+.modeBtn {
+  font-family: var(--font-button);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  padding: 6px var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.modeBtn + .modeBtn { border-left: 1px solid var(--line); }
+.modeBtn:hover { color: var(--c-ink); }
+.modeBtn[data-active='true'] { background: var(--c-ink); color: var(--c-cream); }
+
+.spin { animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Tabs — General (non-sofa) vs Sofa. */
+.tabBar {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--line);
+}
+.tab {
+  font-family: var(--font-button);
+  font-size: var(--fs-14, 14px);
+  font-weight: 700;
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+.tab:hover { color: var(--c-ink); }
+.tab[data-active='true'] { color: var(--c-ink); border-bottom-color: var(--c-orange); }
+.tabHint {
+  font-weight: 500;
+  font-size: var(--fs-11);
+  color: var(--fg-muted);
+}
+
+/* Sofa stop-gap note. */
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  background: rgba(60, 110, 200, 0.06);
+  border: 1px solid rgba(60, 110, 200, 0.25);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  line-height: 1.45;
+}
+.note svg { flex: none; margin-top: 2px; color: #2f5fb3; }
+
+/* Summary badges */
+.summaryRow {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.summaryChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--c-paper);
+  color: var(--c-ink);
+}
+.summaryChipWarn {
+  border-color: var(--c-orange);
+  background: rgba(232, 107, 58, 0.08);
+  color: var(--c-orange);
+}
+
+/* Filters — compact dropdowns, aligned right (Commander 2026-05-29). */
+.filterRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.filterSpacer { flex: 1 1 auto; }
+/* Warehouse-over-Category vertical stack on the right. */
+.filterStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+.filterStack .filterField { justify-content: flex-end; }
+.filterStack .filterSelect { min-width: 200px; }
+.filterField {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.filterLabel {
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.filterSelect {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--c-ink);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 6px var(--space-3);
+  cursor: pointer;
+  min-width: 160px;
+}
+.filterSelect:hover { border-color: var(--line-strong); }
+.filterSelect:focus { outline: none; border-color: var(--c-ink); }
+.chip {
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  padding: 4px var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--c-paper);
+  color: var(--c-ink);
+  cursor: pointer;
+}
+.chip[data-active='true'] {
+  border-color: var(--c-ink);
+  background: var(--c-ink);
+  color: var(--c-cream);
+}
+
+/* Table */
+.tableWrap {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--c-paper);
+  /* Commander 2026-05-29 — "右边卡到了": the table is wider than the page on
+     smaller screens, and overflow:hidden cut off the right columns (Main
+     Supplier) + made the expanded SO/date rows unreachable. Scroll instead. */
+  overflow-x: auto;
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+}
+/* Commander 2026-05-29 — the "order-by date" cell is the headline number
+   (最迟下单日); highlight it so it reads at a glance. */
+.orderByCell {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--c-burnt);
+  white-space: nowrap;
+}
+.table thead th {
+  text-align: left;
+  font-size: var(--fs-11);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  padding: var(--space-3) var(--space-3);
+  border-bottom: 1px solid var(--line-strong);
+  background: var(--c-cream);
+  white-space: nowrap;
+}
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.colCaret { width: 30px; text-align: center; }
+.colSelect { width: 34px; text-align: center; }
+
+.skuRow {
+  cursor: pointer;
+  border-bottom: 1px solid var(--line);
+}
+.skuRow:hover { background: var(--c-cream); }
+.skuRow > td {
+  padding: var(--space-2) var(--space-3);
+  color: var(--c-ink);
+  vertical-align: middle;
+}
+.skuRowShort {
+  background: rgba(232, 107, 58, 0.05);
+  box-shadow: inset 3px 0 0 var(--c-orange);
+}
+.skuRowShort:hover { background: rgba(232, 107, 58, 0.1); }
+
+.codeCell { font-weight: 700; white-space: nowrap; }
+.descCell { color: var(--fg-muted); }
+
+/* Per-warehouse MRP (Commander 2026-05-31) — each Model row is scoped to one
+   warehouse; the tag makes the binding visible at a glance. */
+.whCell { white-space: nowrap; }
+.whTag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--c-cream);
+  border: 1px solid var(--line);
+  color: var(--c-ink);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.whNone { color: var(--fg-muted); }
+
+/* Variant sub-rows (3-level General view: Model → Variant → orders). */
+.variantRow {
+  cursor: pointer;
+  border-bottom: 1px solid var(--line);
+  background: var(--c-cream);
+}
+.variantRow:hover { background: rgba(0, 0, 0, 0.03); }
+.variantRow > td {
+  padding: var(--space-1) var(--space-3);
+  color: var(--c-ink);
+  vertical-align: middle;
+}
+.variantRowShort {
+  background: rgba(232, 107, 58, 0.06);
+  box-shadow: inset 3px 0 0 rgba(232, 107, 58, 0.45);
+}
+.variantRowShort:hover { background: rgba(232, 107, 58, 0.11); }
+.variantDescCell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.variantBranch { color: var(--fg-muted); font-weight: 700; }
+
+/* Single-variant model — spec label shown above the SO orders (2-level). */
+.singleSpec {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+}
+
+/* "N variants" count pill on a Model row. */
+.countTag {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--c-cream);
+  border: 1px solid var(--line);
+  color: var(--fg-muted);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.variantTag {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(60, 110, 200, 0.10);
+  color: #2f5fb3;
+  font-size: var(--fs-11);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.shortNum { color: var(--c-orange); font-weight: 800; }
+
+.supplierCell span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.noSupplier { color: var(--c-orange); font-weight: 600; }
+/* Read-only supplier on a covered (already-PO'd) SO line — a raised PO's
+   supplier can't change, so it's shown as plain text, not a dropdown. */
+.poSupplierRO {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.supplierSelect {
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--c-ink);
+  background: var(--c-cream);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 3px var(--space-2);
+  cursor: pointer;
+  max-width: 160px;
+}
+.supplierSelect:hover { border-color: var(--c-orange); }
+
+/* Child detail */
+.detailRow > td { padding: 0 0 var(--space-3) 0; background: var(--c-cream); }
+.childTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-12);
+  margin: 0 var(--space-3) 0 var(--space-3);
+}
+.childTable thead th {
+  text-align: left;
+  font-size: var(--fs-10, 10px);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  padding: var(--space-2) var(--space-3);
+}
+.childTable tbody td {
+  padding: 5px var(--space-3);
+  border-top: 1px solid var(--line);
+  color: var(--c-ink);
+}
+.childShort { background: rgba(232, 107, 58, 0.07); }
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+/* Soft, low-saturation pills (Commander 2026-05-29: solid-orange wall was
+   ugly). A small leading dot carries the colour; text stays calm. */
+.tag::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.tagStock { background: rgba(34, 139, 94, 0.08); color: #1f7a52; border-color: rgba(34, 139, 94, 0.25); }
+.tagPo    { background: rgba(60, 110, 200, 0.08); color: #2f5fb3; border-color: rgba(60, 110, 200, 0.25); }
+.tagShort { background: rgba(232, 107, 58, 0.10); color: var(--c-orange); border-color: rgba(232, 107, 58, 0.35); }
+
+.stateCell {
+  text-align: center;
+  color: var(--fg-muted);
+  padding: var(--space-6);
+}
+
+/* In-app result dialog (replaces browser alert/confirm). */
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 80;
+  padding: var(--space-4);
+}
+.dialog {
+  background: var(--c-paper);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-3);
+  width: min(440px, 95vw);
+  padding: var(--space-5);
+}
+.dialogTitle {
+  font-family: var(--font-title);
+  font-weight: 700;
+  font-size: var(--fs-18, 18px);
+  color: var(--c-ink);
+  margin: 0 0 var(--space-2);
+}
+.dialogBody {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  color: var(--c-ink);
+  margin: 0 0 var(--space-4);
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+/* Proceed-PO confirm — optional Expected Delivery date, label stacked over
+   the input so the long hint wraps cleanly. */
+.dialogField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  margin: 0 0 var(--space-4);
+}
+.dialogField .filterSelect { min-width: 0; width: 100%; cursor: text; }
+.dialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}

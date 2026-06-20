@@ -18,6 +18,10 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { buildVariantSummary, computeVariantKey, type VariantAttrs } from '../shared';
+import {
+  orderSofaModuleRowsWithinBuilds,
+  sortSoLinesByGroupRank,
+} from '../shared/so-line-display';
 import { recomputePoReceived, resolvePoBatchByItem } from './grns';
 
 export const purchaseReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -29,7 +33,11 @@ const HEADER =
   'notes, created_at, created_by, updated_at';
 const ITEM =
   'id, purchase_return_id, grn_item_id, material_kind, material_code, ' +
-  'material_name, qty_returned, unit_price_centi, line_refund_centi, reason, notes, created_at';
+  'material_name, qty_returned, unit_price_centi, line_refund_centi, reason, notes, ' +
+  /* item_group + variants drive the canonical SKU/build read-order sort (the
+     sofa module walk + category rank); selected here so the PR detail + PDF
+     order matches the sales side. */
+  'item_group, variants, created_at';
 
 const nextNum = async (sb: any): Promise<string> => {
   const d = new Date();
@@ -125,7 +133,19 @@ purchaseReturns.get('/:id', async (c) => {
      the return OUT pulls stock from (grn_item → GRN warehouse → header GRN →
      default) so the operator sees which warehouse each line ships back from.
      Display-only. */
-  const rawItems = (i.data ?? []) as unknown as Array<{ id: string; grn_item_id?: string | null } & Record<string, unknown>>;
+  /* Canonical SKU/build order at READ (sofa modules LHF→NA→RHF, mains→
+     accessories→services), mirroring the SO detail GET. The shared helper keys
+     on `item_code`; PR lines expose `material_code`, so sort a shimmed view
+     that carries the original row back unchanged. `.order('created_at')` above
+     stays as the stable tiebreaker — pure ordering, no persistence touched. */
+  type PrItemRow = Record<string, unknown> & { id: string; grn_item_id?: string | null; material_code: string; item_code: string };
+  const rawItems = orderSofaModuleRowsWithinBuilds(
+    sortSoLinesByGroupRank(
+      ((i.data ?? []) as unknown as Array<{ id: string; grn_item_id?: string | null; material_code: string } & Record<string, unknown>>)
+        .map((it): PrItemRow => ({ ...it, item_code: it.material_code })),
+      (r) => r.item_group as string | null | undefined,
+    ),
+  );
   const headerGrnId = (h.data as { grn_id?: string | null }).grn_id ?? null;
   const lineWh = await resolvePrLineWarehouses(sb, rawItems, headerGrnId);
   const codeMap = await warehouseCodeMap(sb, [...lineWh.values()]);

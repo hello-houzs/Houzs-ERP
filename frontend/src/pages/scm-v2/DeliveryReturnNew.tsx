@@ -1,0 +1,519 @@
+// ----------------------------------------------------------------------------
+// DeliveryReturnNew — full-page Create Delivery Return at /delivery-returns/new.
+//
+// DO-style editable Create form (clone of DeliveryOrderNew): the same Customer /
+// Return Info / Emergency / Delivery Address cards + SoLineCard list. There is
+// no payments ledger on a return (unlike the DO), so PaymentsTable is omitted.
+//
+// Prefill: when navigated with ?fromDo=<DO id>, it fetches the DO header +
+// items and seeds every field (debtor, salesperson, address, phone, line items
+// with variants + prices/costs) so the operator can review/edit before Saving.
+// Without ?fromDo it is a blank Create-Return form (free-entry lines).
+//
+// On Save: POST /delivery-returns (header + items). The server INCREASES stock
+// on create (idempotent) and lands us on the new return's Detail page.
+//
+// NOTE: the primary "from a DO" path is the dedicated picker
+// (/delivery-returns/from-do). This page is the blank form + the ?fromDo
+// prefill convenience (mirrors DeliveryOrderNew's ?fromSo).
+// ----------------------------------------------------------------------------
+
+import { todayMyt } from '../../vendor/scm/lib/dates';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowRightLeft, ArrowLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
+import { Button } from '@2990s/design-system';
+import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
+import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import {
+  useCreateDeliveryReturn, useMfgDeliveryOrderDetail,
+} from '../../vendor/scm/lib/delivery-return-queries';
+import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import {
+  useLocalities, distinctStates, citiesInState, postcodesInCity,
+} from '../../vendor/scm/lib/localities-queries';
+import {
+  useSoDropdownOptions, optionsOrFallback,
+} from '../../vendor/scm/lib/so-dropdown-options-queries';
+import { SoLineCard, emptySoLine, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
+import styles from './SalesOrderDetail.module.css';
+
+const ICON = { size: 16, strokeWidth: 1.75 } as const;
+
+type DraftLine = SoLineDraft & { rid: string; doItemId?: string; condition?: string };
+
+const newLine = (): DraftLine => ({
+  ...emptySoLine(),
+  rid: `l${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+});
+
+const fmtRm = (centi: number, currency = 'MYR'): string =>
+  `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+export const DeliveryReturnNew = () => {
+  const navigate = useNavigate();
+  const notify = useNotify();
+  const [searchParams] = useSearchParams();
+  const fromDo = searchParams.get('fromDo');
+  const fromPicks = searchParams.get('fromPicks') === '1';
+
+  const create = useCreateDeliveryReturn();
+  const staffQ = useStaff();
+  const loc = useLocalities();
+
+  // Prefill source — the DO this return is being issued from (if any).
+  const doDetail = useMfgDeliveryOrderDetail(fromDo);
+
+  const customerTypeOptsQ = useSoDropdownOptions('customer_type');
+  const buildingTypeOptsQ = useSoDropdownOptions('building_type');
+  const relationshipOptsQ = useSoDropdownOptions('relationship');
+  const customerTypeOpts = optionsOrFallback('customer_type', customerTypeOptsQ.data);
+  const buildingTypeOpts = optionsOrFallback('building_type', buildingTypeOptsQ.data);
+  const relationshipOpts = optionsOrFallback('relationship', relationshipOptsQ.data);
+
+  // ── Customer ──
+  const [debtorCode, setDebtorCode] = useState('');
+  const [debtorName, setDebtorName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [salespersonId, setSalespersonId] = useState('');
+  const [customerType, setCustomerType] = useState('');
+  const [customerSoNo, setCustomerSoNo] = useState('');
+
+  // ── Return info ──
+  const [buildingType, setBuildingType] = useState('');
+  const [venue, setVenue] = useState('');
+  const [venueId, setVenueId] = useState('');
+  const [returnDate, setReturnDate] = useState(() => todayMyt());
+  const [reason, setReason] = useState('');
+  const [note, setNote] = useState('');
+
+  // ── Address ──
+  const [address1, setAddress1] = useState('');
+  const [address2, setAddress2] = useState('');
+  const [state, setState] = useState('');
+  const [city, setCity] = useState('');
+  const [postcode, setPostcode] = useState('');
+  const [salesLocation, setSalesLocation] = useState('');
+  const [branding, setBranding] = useState('');
+
+  // ── Emergency ──
+  const [emergencyName, setEmergencyName] = useState('');
+  const [emergencyRel, setEmergencyRel] = useState('');
+  const [emergencyPhone, setEmergencyPhone] = useState('');
+
+  // ── Source DO snapshot (carried through to the API) ──
+  const [doDocNo, setDoDocNo] = useState('');
+
+  // ── Items ──
+  const [lines, setLines] = useState<DraftLine[]>(() => [newLine()]);
+
+  /* Prefill from the DO once its detail loads. Guarded so we only seed once
+     (when the form is still pristine) — re-fetches don't clobber edits. */
+  const [prefilled, setPrefilled] = useState(false);
+  useEffect(() => {
+    if (!fromDo || prefilled) return;
+    const dval = doDetail.data?.deliveryOrder as Record<string, unknown> | undefined;
+    const doItems = (doDetail.data?.items as Array<Record<string, unknown>> | undefined) ?? [];
+    if (!dval) return;
+
+    setDebtorCode((dval.debtor_code as string) ?? '');
+    setDebtorName((dval.debtor_name as string) ?? '');
+    setPhone((dval.phone as string) ?? '');
+    setEmail((dval.email as string) ?? '');
+    setSalespersonId((dval.salesperson_id as string) ?? '');
+    setCustomerType((dval.customer_type as string) ?? '');
+    setCustomerSoNo((dval.customer_so_no as string) ?? '');
+    setBuildingType((dval.building_type as string) ?? '');
+    setVenue((dval.venue as string) ?? '');
+    setVenueId((dval.venue_id as string) ?? '');
+    setNote((dval.note as string) ?? '');
+    setAddress1((dval.address1 as string) ?? '');
+    setAddress2((dval.address2 as string) ?? '');
+    setState((dval.customer_state as string) ?? (dval.state as string) ?? '');
+    setCity((dval.city as string) ?? '');
+    setPostcode((dval.postcode as string) ?? '');
+    setSalesLocation((dval.sales_location as string) ?? '');
+    setBranding((dval.branding as string) ?? '');
+    setEmergencyName((dval.emergency_contact_name as string) ?? '');
+    setEmergencyRel((dval.emergency_contact_relationship as string) ?? '');
+    setEmergencyPhone((dval.emergency_contact_phone as string) ?? '');
+    setDoDocNo((dval.do_number as string) ?? '');
+    setReason(`Return from DO ${(dval.do_number as string) ?? ''}`);
+
+    // When we arrived from the DO→Return picker (fromPicks) the operator already
+    // chose specific lines, quantities and conditions — build from that stash,
+    // carrying each line's doItemId (the server's remaining-to-return tracking
+    // depends on it) and its condition. Otherwise (plain ?fromDo) seed every DO
+    // line at full quantity, condition NEW.
+    type Stash = {
+      doItemId: string; itemCode: string; itemGroup: string | null;
+      description: string | null; uom: string | null; qty: number; condition: string;
+      unitPriceCenti: number; discountCenti: number; unitCostCenti: number; variants: unknown;
+    };
+    let stash: Stash[] | null = null;
+    if (fromPicks) {
+      try { stash = JSON.parse(sessionStorage.getItem('drFromDoPicks') ?? 'null'); }
+      catch { stash = null; }
+    }
+
+    if (stash && stash.length > 0) {
+      setLines(stash.map((s, i) => ({
+        ...emptySoLine(),
+        rid: `l${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${i}`,
+        itemCode: s.itemCode ?? '',
+        itemGroup: (s.itemGroup as string) ?? 'others',
+        description: s.description ?? '',
+        uom: s.uom ?? 'UNIT',
+        qty: Number(s.qty ?? 1),
+        unitPriceCenti: Number(s.unitPriceCenti ?? 0),
+        discountCenti: Number(s.discountCenti ?? 0),
+        unitCostCenti: Number(s.unitCostCenti ?? 0),
+        variants: (s.variants as Record<string, unknown>) ?? {},
+        remark: '',
+        doItemId: s.doItemId,
+        condition: s.condition || 'NEW',
+      })));
+      sessionStorage.removeItem('drFromDoPicks');
+    } else if (doItems.length > 0) {
+      setLines(doItems.map((it) => ({
+        ...emptySoLine(),
+        rid: `l${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${String(it.id)}`,
+        itemCode: (it.item_code as string) ?? '',
+        itemGroup: (it.item_group as string) ?? 'others',
+        description: (it.description as string) ?? '',
+        uom: (it.uom as string) ?? 'UNIT',
+        qty: Number(it.qty ?? 1),
+        unitPriceCenti: Number(it.unit_price_centi ?? 0),
+        discountCenti: 0,
+        unitCostCenti: Number(it.unit_cost_centi ?? 0),
+        variants: (it.variants as Record<string, unknown>) ?? {},
+        remark: '',
+        doItemId: (it.id as string) ?? undefined,
+        condition: 'NEW',
+      })));
+    }
+
+    setPrefilled(true);
+  }, [fromDo, fromPicks, prefilled, doDetail.data]);
+
+  const staffList = useMemo(() => (staffQ.data ?? []).filter((s) => s.active), [staffQ.data]);
+
+  const locRows = useMemo(() => loc.data ?? [], [loc.data]);
+  const states = useMemo(() => distinctStates(locRows), [locRows]);
+  const cities = useMemo(() => (state ? citiesInState(locRows, state) : []), [locRows, state]);
+  const postcodes = useMemo(() => ((state && city) ? postcodesInCity(locRows, state, city) : []), [locRows, state, city]);
+
+  const updateLine = (rid: string, patch: Partial<SoLineDraft>) =>
+    setLines((prev) => prev.map((l) => (l.rid === rid ? { ...l, ...patch } : l)));
+  const addLine = () => setLines((prev) => [...prev, newLine()]);
+  const dropLine = (rid: string) => setLines((prev) => prev.filter((l) => l.rid !== rid));
+
+  const subtotalCenti = useMemo(
+    () => lines.reduce((s, l) => s + Math.max(0, l.qty * l.unitPriceCenti - l.discountCenti), 0),
+    [lines],
+  );
+
+  const canSave = debtorName.trim().length > 0;
+
+  const onSave = () => {
+    if (loadingPrefill) { notify({ title: 'Still loading the Delivery Order', body: 'please wait a moment.' }); return; }
+    if (!canSave) { notify({ title: 'Customer name is required.', tone: 'error' }); return; }
+    const validLines = lines.filter((l) => l.itemCode.trim() && l.qty > 0);
+    if (validLines.length === 0) {
+      notify({ title: 'Add at least one item via "+ Add Line Item".', tone: 'error' });
+      return;
+    }
+
+    create.mutate(
+      {
+        doDocNo: doDocNo || undefined,
+        deliveryOrderId: fromDo || undefined,
+        debtorName,
+        debtorCode: debtorCode || undefined,
+        phone: phone || undefined,
+        email: email || undefined,
+        salespersonId: salespersonId || undefined,
+        customerType: customerType || undefined,
+        customerSoNo: customerSoNo || undefined,
+        buildingType: buildingType || undefined,
+        venue: venue || undefined,
+        venueId: venueId || undefined,
+        branding: branding || undefined,
+        address1: address1 || undefined,
+        address2: address2 || undefined,
+        customerState: state || undefined,
+        state: state || undefined,
+        city: city || undefined,
+        postcode: postcode || undefined,
+        salesLocation: salesLocation || undefined,
+        returnDate: returnDate || undefined,
+        reason: reason || undefined,
+        emergencyContactName: emergencyName || undefined,
+        emergencyContactRelationship: emergencyRel || undefined,
+        emergencyContactPhone: emergencyPhone || undefined,
+        note: note || undefined,
+        items: validLines.map((l) => ({
+          itemGroup: l.itemGroup,
+          itemCode: l.itemCode,
+          description: l.description,
+          uom: l.uom,
+          qtyReturned: l.qty,
+          condition: l.condition || 'NEW',
+          unitPriceCenti: l.unitPriceCenti,
+          discountCenti: l.discountCenti,
+          unitCostCenti: l.unitCostCenti,
+          variants: l.variants,
+          doItemId: l.doItemId,
+        })),
+      },
+      {
+        onSuccess: (res: { id: string; returnNumber: string }) => {
+          navigate(`/scm/delivery-returns/${res.id}`);
+        },
+        onError: (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+      },
+    );
+  };
+
+  const loadingPrefill = Boolean(fromDo) && !prefilled && doDetail.isLoading;
+
+  return (
+    <div className={styles.page}>
+      <div className={styles.headerRow}>
+        <div className={styles.titleBlock}>
+          <Link to="/scm/delivery-returns" className={styles.backBtn}>
+            <ArrowLeft {...ICON} /> <span>Delivery Returns</span>
+          </Link>
+          <h1 className={styles.title}>
+            New Delivery Return{doDocNo ? ` — from ${doDocNo}` : ''}
+          </h1>
+        </div>
+        <div className={styles.actions}>
+          {/* Pull lines from a Delivery Order — mirrors New GRN's "From Purchase Order". */}
+          <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-returns/from-do')}>
+            <ArrowRightLeft {...ICON} /> From Delivery Order
+          </Button>
+          <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-returns')}>
+            <X {...ICON} /> Cancel
+          </Button>
+          <Button variant="primary" size="md" onClick={onSave} disabled={create.isPending || !canSave || loadingPrefill}>
+            <Save {...ICON} />
+            {create.isPending ? 'Saving…' : 'Create Delivery Return'}
+          </Button>
+        </div>
+      </div>
+
+      {loadingPrefill && (
+        <div className={styles.bannerWarn} style={{ background: 'var(--c-cream)', border: '1px solid var(--line)', color: 'var(--fg-muted)' }}>
+          Loading DO…
+        </div>
+      )}
+
+      {/* ── CUSTOMER ── */}
+      <section className={styles.card}>
+        <header className={styles.cardHeader}><h2 className={styles.cardTitle}>Customer</h2></header>
+        <div className={styles.cardBody}>
+          <div className={styles.formGrid4}>
+            <label className={styles.field} style={{ gridColumn: 'span 3' }}>
+              <span className={styles.fieldLabel}>Customer Name *</span>
+              <input className={styles.fieldInput} value={debtorName}
+                onChange={(e) => setDebtorName(e.target.value)} placeholder="e.g. Lim Mei Hua" required />
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Customer SO Ref</span>
+              <input className={styles.fieldInput} value={customerSoNo}
+                placeholder="Their PO / SO number" onChange={(e) => setCustomerSoNo(e.target.value)} />
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Phone *</span>
+              <PhoneInput className={styles.fieldInput} value={phone} onChange={setPhone} />
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Email</span>
+              <input type="email" className={styles.fieldInput} value={email}
+                onChange={(e) => setEmail(e.target.value)} placeholder="customer@example.com" />
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Customer Type</span>
+              <span className={styles.selectWrap}>
+                <select className={styles.fieldSelect} value={customerType} onChange={(e) => setCustomerType(e.target.value)}>
+                  <option value="">—</option>
+                  {customerTypeOpts.map((t) => <option key={t.id} value={t.value}>{t.label}</option>)}
+                  {customerType && !customerTypeOpts.some((t) => t.value === customerType) && <option value={customerType}>{customerType}</option>}
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+              </span>
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Salesperson</span>
+              <span className={styles.selectWrap}>
+                <select className={styles.fieldSelect} value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
+                  <option value="">— Pick staff —</option>
+                  {staffList.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>)}
+                  {salespersonId && !staffList.some((s) => s.id === salespersonId) && <option value={salespersonId}>(former staff)</option>}
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+              </span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      {/* ── RETURN INFO ── */}
+      <section className={styles.card}>
+        <header className={styles.cardHeader}><h2 className={styles.cardTitle}>Return Info</h2></header>
+        <div className={styles.cardBody}>
+          <div className={styles.formGrid4}>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Return Date</span>
+              <input type="date" className={styles.fieldInput} value={returnDate} onChange={(e) => setReturnDate(e.target.value)} />
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Building Type</span>
+              <span className={styles.selectWrap}>
+                <select className={styles.fieldSelect} value={buildingType} onChange={(e) => setBuildingType(e.target.value)}>
+                  <option value="">—</option>
+                  {buildingTypeOpts.map((b) => <option key={b.id} value={b.value}>{b.label}</option>)}
+                  {buildingType && !buildingTypeOpts.some((b) => b.value === buildingType) && <option value={buildingType}>{buildingType}</option>}
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+              </span>
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Venue</span>
+              <input className={styles.fieldInput} value={venue} onChange={(e) => setVenue(e.target.value)} />
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Reason</span>
+              <input className={styles.fieldInput} value={reason} onChange={(e) => setReason(e.target.value)}
+                placeholder="Why is this being returned?" />
+            </label>
+            <label className={styles.field} style={{ gridColumn: 'span 2' }}>
+              <span className={styles.fieldLabel}>Note</span>
+              <input className={styles.fieldInput} value={note} onChange={(e) => setNote(e.target.value)}
+                placeholder="Internal notes — visible on the return detail page only" />
+            </label>
+          </div>
+        </div>
+      </section>
+
+      {/* ── EMERGENCY CONTACT ── */}
+      <section className={styles.card}>
+        <header className={styles.cardHeader}>
+          <h2 className={styles.cardTitle}>Emergency Contact</h2>
+          <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
+            Used only if we cannot reach the customer on collection day
+          </span>
+        </header>
+        <div className={styles.cardBody}>
+          <div className={styles.formGrid4}>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Contact Name</span>
+              <input className={styles.fieldInput} value={emergencyName} placeholder="e.g. Lim Mei Hua"
+                onChange={(e) => setEmergencyName(e.target.value)} />
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Relationship</span>
+              <span className={styles.selectWrap}>
+                <select className={styles.fieldSelect} value={emergencyRel} onChange={(e) => setEmergencyRel(e.target.value)}>
+                  <option value="">—</option>
+                  {relationshipOpts.map((r) => <option key={r.id} value={r.value}>{r.label}</option>)}
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+              </span>
+            </label>
+            <label className={styles.field} style={{ gridColumn: 'span 2' }}>
+              <span className={styles.fieldLabel}>Phone</span>
+              <PhoneInput className={styles.fieldInput} value={emergencyPhone} onChange={setEmergencyPhone} />
+            </label>
+          </div>
+        </div>
+      </section>
+
+      {/* ── DELIVERY ADDRESS ── */}
+      <section className={styles.card}>
+        <header className={styles.cardHeader}><h2 className={styles.cardTitle}>Delivery Address</h2></header>
+        <div className={styles.cardBody}>
+          <div className={styles.formGrid4}>
+            <label className={styles.field} style={{ gridColumn: 'span 4' }}>
+              <span className={styles.fieldLabel}>Address Line 1</span>
+              <input className={styles.fieldInput} value={address1} onChange={(e) => setAddress1(e.target.value)} placeholder="Unit, street, area" />
+            </label>
+            <label className={styles.field} style={{ gridColumn: 'span 4' }}>
+              <span className={styles.fieldLabel}>Address Line 2</span>
+              <input className={styles.fieldInput} value={address2} onChange={(e) => setAddress2(e.target.value)} placeholder="Apt, floor, building (optional)" />
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>State</span>
+              <span className={styles.selectWrap}>
+                <select className={styles.fieldSelect} value={state}
+                  onChange={(e) => { setState(e.target.value); setCity(''); setPostcode(''); }}
+                  disabled={loc.isLoading}>
+                  <option value="">{loc.isLoading ? 'Loading…' : 'Pick state'}</option>
+                  {states.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+              </span>
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>City</span>
+              <span className={styles.selectWrap}>
+                <select className={styles.fieldSelect} value={city}
+                  onChange={(e) => { setCity(e.target.value); setPostcode(''); }} disabled={!state}>
+                  <option value="">{state ? 'Pick city' : '— pick state first'}</option>
+                  {cities.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+              </span>
+            </label>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Postcode</span>
+              <span className={styles.selectWrap}>
+                <select className={styles.fieldSelect} value={postcode}
+                  onChange={(e) => setPostcode(e.target.value)} disabled={!state || !city}>
+                  <option value="">{(state && city) ? 'Pick postcode' : '— pick city first'}</option>
+                  {postcodes.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+              </span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      {/* ── RETURNED ITEMS ── */}
+      <section className={styles.card}>
+        <header className={styles.cardHeader}><h2 className={styles.cardTitle}>Returned Items ({lines.length})</h2></header>
+        <div className={styles.cardBody} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          {lines.map((line, idx) => (
+            <SoLineCard
+              key={line.rid}
+              index={idx}
+              draft={line}
+              onChange={(patch) => updateLine(line.rid, patch)}
+              onRemove={() => dropLine(line.rid)}
+              canRemove={lines.length > 1}
+            />
+          ))}
+          <button type="button" onClick={addLine}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, width: '100%',
+              padding: '12px 14px', background: 'transparent', border: '1px dashed var(--c-orange)',
+              borderRadius: 'var(--radius-md)', color: 'var(--c-orange)', fontFamily: 'var(--font-sans)',
+              fontSize: 'var(--fs-13)', fontWeight: 600, cursor: 'pointer',
+            }}>
+            <Plus {...ICON} /> Add Line Item
+          </button>
+          <div style={{
+            display: 'flex', justifyContent: 'flex-end', marginTop: 'var(--space-2)', paddingTop: 'var(--space-3)',
+            borderTop: '1px solid var(--line)', fontFamily: 'var(--font-mark)', fontSize: 'var(--fs-20)',
+            fontWeight: 800, color: 'var(--c-burnt)',
+          }}>
+            Returned Value: {fmtRm(subtotalCenti)}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+};

@@ -1,0 +1,73 @@
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 120ms ease-out, color 120ms ease-out,
+              border-color 120ms ease-out, transform 80ms ease-out;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  flex-shrink: 0;
+}
+.iconButton:focus-visible {
+  outline: 2px solid var(--c-orange);
+  outline-offset: 2px;
+}
+.iconButton:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Variants */
+.variant-primary {
+  background: var(--c-ink);
+  color: var(--fg-on-ink);
+}
+.variant-primary:hover:not(:disabled) {
+  background: var(--c-burnt);
+}
+
+.variant-secondary {
+  background: var(--c-cream);
+  color: var(--c-ink);
+  border-color: var(--line-strong);
+}
+.variant-secondary:hover:not(:disabled) {
+  background: var(--c-beige);
+}
+
+.variant-ghost {
+  background: transparent;
+  color: var(--c-ink);
+}
+.variant-ghost:hover:not(:disabled) {
+  background: rgba(34, 31, 32, 0.06);
+}
+
+/* Sizes — square; >=44px on md/lg for tablet touch */
+.size-sm {
+  width: 36px;
+  height: 36px;
+}
+.size-md {
+  width: 44px;
+  height: 44px;
+}
+.size-lg {
+  width: 52px;
+  height: 52px;
+}
+
+/* Lucide icons sized via stroke-based sizing inherited from parent */
+.iconButton > :global(svg) {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.75;
+}
+.size-sm > :global(svg) { width: 16px; height: 16px; }
+.size-lg > :global(svg) { width: 24px; height: 24px; }

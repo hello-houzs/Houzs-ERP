@@ -42,6 +42,8 @@ import { stockTakes } from "./routes/stock-takes";
 import { accounting } from "./routes/accounting";
 import { mrp } from "./routes/mrp";
 import { mrpLeadTimes } from "./routes/mrp-lead-times";
+import { outstanding } from "./routes/outstanding";
+import { localities } from "./routes/localities";
 
 export const scm = new Hono<{ Bindings: Env }>();
 
@@ -85,5 +87,10 @@ scm.route("/stock-takes", stockTakes);
 scm.route("/accounting", accounting);
 scm.route("/mrp", mrp);
 scm.route("/mrp-lead-times", mrpLeadTimes);
+// Ported 2026-06-20 — Outstanding dashboard (v_*_outstanding views), MY
+// State/City/Postcode reference (my_localities). /fabric-library already
+// mounted above — its GET list was added to the existing route, not remounted.
+scm.route("/outstanding", outstanding);
+scm.route("/localities", localities);
 
 export default scm;

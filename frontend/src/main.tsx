@@ -3,6 +3,11 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import App from "./App";
 import "./index.css";
+// Vendored 2990's brand tokens (CSS custom properties only — the global
+// body/h1/table element resets from 2990's main.css are deliberately NOT
+// imported, so the rest of Houzs is unaffected). Scopes via :root variables
+// that the vendored /scm/* pages + design-system read from.
+import "./vendor/design-system/tokens.css";
 import { ToastProvider } from "./hooks/useToast";
 import { DialogProvider } from "./hooks/useDialog";
 import { AuthProvider } from "./auth/AuthContext";

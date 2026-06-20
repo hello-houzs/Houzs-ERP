@@ -60,18 +60,18 @@ export default {
         warning: { bg: "#f6efd9", text: "#6e4d12" },
       },
       fontFamily: {
-        // Manrope = closest open analog to Acumin Variable Concept.
-        // Geometric, variable, same workhorse character the brand book
-        // describes, with a slightly friendlier humanist edge.
-        body: ['"Manrope"', "system-ui", "sans-serif"],
-        display: ['"Manrope"', "system-ui", "sans-serif"],
+        // Unified to the native system font (Segoe UI on Windows, SF on macOS)
+        // per owner request — matches the vendored SCM's --font-system so the
+        // whole ERP reads as one normal system typeface. No web fonts.
+        body: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
+        display: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
         // Was JetBrains Mono — replaced with Plus Jakarta Sans for the
         // small uppercase eyebrow labels and numeric chips. Tabular
         // alignment of figures is restored via a `font-variant-numeric:
         // tabular-nums` rule on `.font-mono` in index.css. The alias
         // name stays `mono` to avoid touching 440 call sites; the
         // *meaning* is now "data / labels / numbers".
-        mono: ['"Plus Jakarta Sans"', "system-ui", "sans-serif"],
+        mono: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
       },
       letterSpacing: {
         brand: "0.18em",

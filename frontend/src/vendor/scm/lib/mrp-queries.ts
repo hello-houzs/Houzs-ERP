@@ -1,0 +1,146 @@
+// Vendored from apps/backend/src/lib/mrp-queries.ts — the TanStack Query hooks
+// for /mrp (the trading-company Stock Status Report) + per-category lead times.
+//
+// HOUZS VENDOR NOTE: the source module's lead-time PUT mutation hand-rolled a
+// fetch with a supabase.auth.getSession() bearer token. Here the same write
+// goes through the vendored authedFetch (→ /api/scm/mrp-lead-times), which
+// reads the token from localStorage['auth:token']; the supabase import and the
+// raw fetch are dropped. Everything else (the MRP read hooks + types) is copied
+// verbatim.
+
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { authedFetch } from './authed-fetch';
+
+export type MrpAllocSource = 'stock' | 'po' | 'shortage';
+
+export type MrpLine = {
+  soItemId: string;
+  soDocNo: string;
+  debtorName: string | null;
+  soDate: string | null;
+  deliveryDate: string | null;
+  processingDate: string | null;
+  /* Commander 2026-05-29 — order-by date = delivery − category lead days. */
+  orderByDate: string | null;
+  qty: number;
+  source: MrpAllocSource;
+  poNumber: string | null;
+  poEta: string | null;
+  shortageQty: number;
+  /* Commander 2026-05-31 — when source==='po', the covering PO's supplier so a
+     covered line shows it READ-ONLY (a raised PO's supplier can't change).
+     NULL on stock / shortage lines. */
+  poSupplierId: string | null;
+  poSupplierName: string | null;
+};
+
+export type MrpSku = {
+  /* Commander 2026-05-31 — each row is scoped to ONE warehouse (per-WH MRP);
+     the same SKU+variant in two warehouses produces two rows. NULL when the
+     demand line has no warehouse bound yet. */
+  warehouseId: string | null;
+  warehouseCode: string | null;
+  warehouseName: string | null;
+  itemCode: string;
+  variantKey: string;
+  variantLabel: string | null;
+  description: string | null;
+  category: string | null;
+  qtyNeeded: number;
+  stock: number;
+  poOutstanding: number;
+  shortage: number;
+  mainSupplierCode: string | null;
+  mainSupplierName: string | null;
+  suppliers: Array<{ supplierId: string; code: string; name: string; isMain: boolean }>;
+  lines: MrpLine[];
+};
+
+export type MrpWarehouse = { id: string; code: string; name: string };
+
+/* Sofa is ordered as a colour-matched SET, one per SO line ("每张 SO 一套"). */
+export type SofaSet = {
+  warehouseId: string | null;
+  warehouseCode: string | null;
+  warehouseName: string | null;
+  soItemId: string;
+  soDocNo: string;
+  debtorName: string | null;
+  soDate: string | null;
+  deliveryDate: string | null;
+  processingDate: string | null;
+  orderByDate: string | null; // delivery − category lead days
+  itemCode: string;
+  description: string | null;
+  variantLabel: string | null;
+  modules: string[];
+  colour: string | null;
+  qty: number;
+  orderedQty: number;
+  shortageQty: number;
+  poNumber: string | null; // PO(s) this set's units were raised into
+  poEta: string | null;    // earliest PO-line delivery date (when goods arrive)
+  poSupplierId: string | null;   // covering PO's supplier (read-only on covered sets)
+  poSupplierName: string | null; // …resolved name; null for stock/shortage sets
+  suppliers: Array<{ supplierId: string; code: string; name: string; isMain: boolean }>;
+};
+
+export type MrpResponse = {
+  asOf: string;
+  categories: string[];
+  warehouses: MrpWarehouse[];
+  skus: MrpSku[];
+  sofaSets: SofaSet[];
+  totals: {
+    skuCount: number;
+    shortageSkuCount: number;
+    shortageUnits: number;
+    sofaSetCount: number;
+    sofaSetShortageCount: number;
+  };
+};
+
+/** Stock Status Report / MRP — recomputed server-side on every call. */
+export function useMrp(params: { category: string; warehouseId: string; includeUndated?: boolean }) {
+  const { category, warehouseId, includeUndated } = params;
+  return useQuery({
+    queryKey: ['mrp', category, warehouseId, includeUndated ?? false],
+    queryFn: () => {
+      const q = new URLSearchParams();
+      if (category && category !== 'all') q.set('category', category);
+      if (warehouseId && warehouseId !== 'all') q.set('warehouseId', warehouseId);
+      if (includeUndated) q.set('includeUndated', 'true');
+      const qs = q.toString();
+      return authedFetch<MrpResponse>(`/mrp${qs ? `?${qs}` : ''}`);
+    },
+    staleTime: 30_000,
+  });
+}
+
+/* ── Per-category lead times (Commander 2026-05-29) ──────────────────────── */
+export type LeadCategory = 'sofa' | 'bedframe' | 'mattress' | 'accessory' | 'service';
+export type CategoryLeadTimes = Record<LeadCategory, number>;
+export const LEAD_CATEGORIES: LeadCategory[] = ['sofa', 'bedframe', 'mattress', 'accessory', 'service'];
+
+export function useCategoryLeadTimes() {
+  return useQuery({
+    queryKey: ['mrp-lead-times'],
+    queryFn: () => authedFetch<{ leadTimes: CategoryLeadTimes }>(`/mrp-lead-times`),
+    staleTime: 60_000,
+  });
+}
+
+export function useUpdateCategoryLeadTime() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { category: LeadCategory; leadDays: number }) =>
+      authedFetch<{ ok: true; category: LeadCategory; leadDays: number }>(`/mrp-lead-times`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mrp-lead-times'] });
+      qc.invalidateQueries({ queryKey: ['mrp'] }); // order-by dates recompute
+    },
+  });
+}

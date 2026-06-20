@@ -30,6 +30,10 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { buildVariantSummary, computeVariantKey, type VariantAttrs } from '../shared';
+import {
+  orderSofaModuleRowsWithinBuilds,
+  sortSoLinesByGroupRank,
+} from '../shared/so-line-display';
 import { writeMovements, defaultWarehouseId, resolveWarehouseLotBatches } from '../lib/inventory-movements';
 import { recomputePcoReceived } from './purchase-consignment-receives';
 
@@ -189,7 +193,11 @@ const HEADER =
   'notes, created_at, created_by, updated_at';
 const ITEM =
   'id, purchase_consignment_return_id, pc_receive_item_id, material_kind, material_code, ' +
-  'material_name, qty_returned, unit_price_centi, line_refund_centi, reason, notes, created_at';
+  'material_name, qty_returned, unit_price_centi, line_refund_centi, reason, notes, ' +
+  /* item_group + variants drive the canonical SKU/build read-order sort (the
+     sofa module walk + category rank); selected here so the PC Return detail +
+     PDF order matches the sales side. */
+  'item_group, variants, created_at';
 
 const nextNum = async (sb: any): Promise<string> => {
   const d = new Date();
@@ -328,7 +336,19 @@ purchaseConsignmentReturns.get('/:id', async (c) => {
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
   if (!h.data) return c.json({ error: 'not_found' }, 404);
-  const items = (i.data ?? []) as unknown as Array<Record<string, unknown>>;
+  /* Canonical SKU/build order at READ (sofa modules LHF→NA→RHF, mains→
+     accessories→services), mirroring the SO detail GET. The shared helper keys
+     on `item_code`; PC return lines expose `material_code`, so sort a shimmed
+     view that carries the original row back unchanged. `.order('created_at')`
+     above stays as the stable tiebreaker — pure ordering, no persistence touched. */
+  type PctItemRow = Record<string, unknown> & { id: string; material_code: string; item_code: string };
+  const items = orderSofaModuleRowsWithinBuilds(
+    sortSoLinesByGroupRank(
+      ((i.data ?? []) as unknown as Array<Record<string, unknown> & { id: string; material_code: string }>)
+        .map((it): PctItemRow => ({ ...it, item_code: it.material_code })),
+      (r) => r.item_group as string | null | undefined,
+    ),
+  );
   return c.json({ purchaseReturn: h.data, items });
 });
 

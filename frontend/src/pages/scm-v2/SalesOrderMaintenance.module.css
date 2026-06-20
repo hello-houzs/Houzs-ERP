@@ -1,0 +1,212 @@
+/* Sales Order Maintenance page — State → Warehouse mapping +
+   States/Cities/Postcodes CRUD. Density and chrome mirror
+   MfgSalesOrdersList + SalesOrderDetail for visual consistency. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6) var(--space-7);
+  background: var(--c-cream);
+  min-height: 100%;
+}
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.titleBlock {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.backBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-family: var(--font-button);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: var(--space-2) var(--space-3);
+  background: var(--c-paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--c-ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+.backBtn:hover { background: var(--c-cream); }
+
+.title {
+  font-family: var(--font-title);
+  font-size: var(--fs-32);
+  font-weight: 900;
+  color: var(--c-ink);
+  margin: 0;
+}
+
+.subtitle {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  color: var(--fg-muted);
+  margin-top: 4px;
+}
+
+.sectionHead {
+  font-family: var(--font-button);
+  font-weight: var(--w-bold);
+  font-size: var(--fs-12);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+.banner {
+  background: var(--bg-alt);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-13);
+  color: var(--fg-muted);
+  margin-bottom: var(--space-3);
+}
+.banner strong { color: var(--fg); font-weight: var(--w-semibold); }
+
+.tableCard {
+  background: var(--c-cream);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.addRowCard {
+  background: var(--c-cream);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.addRowGrid {
+  display: grid;
+  grid-template-columns: 1fr 100px 1fr 110px auto;
+  gap: var(--space-2);
+}
+
+.addRowEyebrow {
+  font-family: var(--font-button);
+  font-weight: var(--w-semibold);
+  font-size: var(--fs-12);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin-bottom: var(--space-2);
+}
+
+.filterBar {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.filterLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-13);
+}
+
+.filterSelect { width: 240px; }
+
+.empty {
+  padding: var(--space-6) var(--space-5);
+  text-align: center;
+  color: var(--fg-muted);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table thead th {
+  font-family: var(--font-button);
+  font-weight: var(--w-semibold);
+  font-size: var(--fs-12);
+  letter-spacing: var(--tk-loud);
+  text-transform: uppercase;
+  color: var(--fg-soft);
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--line);
+}
+.table tbody td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-14);
+  vertical-align: middle;
+}
+.table tbody tr:last-child td { border-bottom: none; }
+
+.code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+
+.muted { color: var(--fg-muted); }
+
+.input {
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--c-cream);
+  color: var(--fg);
+  outline: none;
+  width: 100%;
+  transition: border-color 120ms;
+}
+.input:focus { border-color: var(--c-orange); }
+.input:disabled { background: var(--bg-alt); color: var(--fg-muted); }
+
+.editBtn {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-family: var(--font-button);
+  font-size: var(--fs-12);
+  font-weight: var(--w-semibold);
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+.editBtn:hover {
+  background: var(--bg-alt);
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+
+.readOnlyBanner {
+  background: rgba(232, 107, 58, 0.08);
+  border: 1px solid rgba(232, 107, 58, 0.3);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-13);
+  margin-bottom: var(--space-3);
+  color: var(--fg);
+}
+.readOnlyBanner strong { color: var(--c-burnt, #A6471E); font-weight: var(--w-semibold); }

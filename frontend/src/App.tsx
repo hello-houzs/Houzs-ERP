@@ -25,63 +25,97 @@ const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m
 const Team = lazy(() => import("./pages/Team").then((m) => ({ default: m.Team })));
 const SystemHealth = lazy(() => import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealth })));
 // Ported 2990's SCM (furniture supply chain) — owner-gated under /scm/*.
-const ScmSuppliers = lazy(() => import("./pages/scm/Suppliers").then((m) => ({ default: m.ScmSuppliers })));
-const ScmSupplierDetail = lazy(() => import("./pages/scm/SupplierDetail").then((m) => ({ default: m.ScmSupplierDetail })));
-const ScmPurchaseOrders = lazy(() => import("./pages/scm/PurchaseOrders").then((m) => ({ default: m.ScmPurchaseOrders })));
-const ScmPurchaseOrderDetail = lazy(() => import("./pages/scm/PurchaseOrderDetail").then((m) => ({ default: m.ScmPurchaseOrderDetail })));
-const ScmGoodsReceived = lazy(() => import("./pages/scm/GoodsReceived").then((m) => ({ default: m.ScmGoodsReceived })));
-const ScmGoodsReceivedDetail = lazy(() => import("./pages/scm/GoodsReceivedDetail").then((m) => ({ default: m.ScmGoodsReceivedDetail })));
-const ScmPurchaseInvoices = lazy(() => import("./pages/scm/PurchaseInvoices").then((m) => ({ default: m.ScmPurchaseInvoices })));
-const ScmPurchaseInvoiceDetail = lazy(() => import("./pages/scm/PurchaseInvoiceDetail").then((m) => ({ default: m.ScmPurchaseInvoiceDetail })));
-const ScmPurchaseReturns = lazy(() => import("./pages/scm/PurchaseReturns").then((m) => ({ default: m.ScmPurchaseReturns })));
-const ScmPurchaseReturnDetail = lazy(() => import("./pages/scm/PurchaseReturnDetail").then((m) => ({ default: m.ScmPurchaseReturnDetail })));
-const ScmPurchaseOrderNew = lazy(() => import("./pages/scm/PurchaseOrderNew").then((m) => ({ default: m.ScmPurchaseOrderNew })));
-const ScmPurchaseInvoiceNew = lazy(() => import("./pages/scm/PurchaseInvoiceNew").then((m) => ({ default: m.ScmPurchaseInvoiceNew })));
-const ScmPurchaseReturnNew = lazy(() => import("./pages/scm/PurchaseReturnNew").then((m) => ({ default: m.ScmPurchaseReturnNew })));
-const ScmStockTransferNew = lazy(() => import("./pages/scm/StockTransferNew").then((m) => ({ default: m.ScmStockTransferNew })));
-const ScmStockTakeNew = lazy(() => import("./pages/scm/StockTakeNew").then((m) => ({ default: m.ScmStockTakeNew })));
-const ScmDeliveryOrderNew = lazy(() => import("./pages/scm/DeliveryOrderNew").then((m) => ({ default: m.ScmDeliveryOrderNew })));
-const ScmDeliveryReturnNew = lazy(() => import("./pages/scm/DeliveryReturnNew").then((m) => ({ default: m.ScmDeliveryReturnNew })));
-const ScmConsignmentOrderNew = lazy(() => import("./pages/scm/ConsignmentOrderNew").then((m) => ({ default: m.ScmConsignmentOrderNew })));
-const ScmConsignmentNoteNew = lazy(() => import("./pages/scm/ConsignmentNoteNew").then((m) => ({ default: m.ScmConsignmentNoteNew })));
-const ScmConsignmentReturnNew = lazy(() => import("./pages/scm/ConsignmentReturnNew").then((m) => ({ default: m.ScmConsignmentReturnNew })));
-const ScmPurchaseConsignmentOrderNew = lazy(() => import("./pages/scm/PurchaseConsignmentOrderNew").then((m) => ({ default: m.ScmPurchaseConsignmentOrderNew })));
-const ScmPurchaseConsignmentReceiveNew = lazy(() => import("./pages/scm/PurchaseConsignmentReceiveNew").then((m) => ({ default: m.ScmPurchaseConsignmentReceiveNew })));
-const ScmPurchaseConsignmentReturnNew = lazy(() => import("./pages/scm/PurchaseConsignmentReturnNew").then((m) => ({ default: m.ScmPurchaseConsignmentReturnNew })));
-const ScmInventory = lazy(() => import("./pages/scm/Inventory").then((m) => ({ default: m.ScmInventory })));
-const ScmWarehouses = lazy(() => import("./pages/scm/Warehouses").then((m) => ({ default: m.ScmWarehouses })));
-const ScmStockTransfers = lazy(() => import("./pages/scm/StockTransfers").then((m) => ({ default: m.ScmStockTransfers })));
-const ScmStockTransferDetail = lazy(() => import("./pages/scm/StockTransferDetail").then((m) => ({ default: m.ScmStockTransferDetail })));
-const ScmStockTakes = lazy(() => import("./pages/scm/StockTakes").then((m) => ({ default: m.ScmStockTakes })));
-const ScmStockTakeDetail = lazy(() => import("./pages/scm/StockTakeDetail").then((m) => ({ default: m.ScmStockTakeDetail })));
-const ScmMfgSalesOrders = lazy(() => import("./pages/scm/MfgSalesOrders").then((m) => ({ default: m.ScmMfgSalesOrders })));
-const ScmMfgSalesOrderDetail = lazy(() => import("./pages/scm/MfgSalesOrderDetail").then((m) => ({ default: m.ScmMfgSalesOrderDetail })));
-const ScmMfgSalesOrderNew = lazy(() => import("./pages/scm/MfgSalesOrderNew").then((m) => ({ default: m.ScmMfgSalesOrderNew })));
-const ScmMaintenanceConfig = lazy(() => import("./pages/scm/MaintenanceConfig").then((m) => ({ default: m.ScmMaintenanceConfig })));
-const ScmDeliveryOrders = lazy(() => import("./pages/scm/DeliveryOrders").then((m) => ({ default: m.ScmDeliveryOrders })));
-const ScmDeliveryOrderDetail = lazy(() => import("./pages/scm/DeliveryOrderDetail").then((m) => ({ default: m.ScmDeliveryOrderDetail })));
-const ScmDeliveryReturns = lazy(() => import("./pages/scm/DeliveryReturns").then((m) => ({ default: m.ScmDeliveryReturns })));
-const ScmDeliveryReturnDetail = lazy(() => import("./pages/scm/DeliveryReturnDetail").then((m) => ({ default: m.ScmDeliveryReturnDetail })));
-const ScmProducts = lazy(() => import("./pages/scm/Products").then((m) => ({ default: m.ScmProducts })));
-const ScmProductModels = lazy(() => import("./pages/scm/ProductModels").then((m) => ({ default: m.ScmProductModels })));
-const ScmProductModelDetail = lazy(() => import("./pages/scm/ProductModelDetail").then((m) => ({ default: m.ScmProductModelDetail })));
-const ScmMrp = lazy(() => import("./pages/scm/Mrp").then((m) => ({ default: m.ScmMrp })));
-const ScmMrpLeadTimes = lazy(() => import("./pages/scm/MrpLeadTimes").then((m) => ({ default: m.ScmMrpLeadTimes })));
-const ScmFabricTracking = lazy(() => import("./pages/scm/FabricTracking").then((m) => ({ default: m.ScmFabricTracking })));
-const ScmAccounting = lazy(() => import("./pages/scm/Accounting").then((m) => ({ default: m.ScmAccounting })));
-const ScmOutstanding = lazy(() => import("./pages/scm/Outstanding").then((m) => ({ default: m.ScmOutstanding })));
-const ScmConsignmentOrders = lazy(() => import("./pages/scm/ConsignmentOrders").then((m) => ({ default: m.ScmConsignmentOrders })));
-const ScmConsignmentOrderDetail = lazy(() => import("./pages/scm/ConsignmentOrderDetail").then((m) => ({ default: m.ScmConsignmentOrderDetail })));
-const ScmConsignmentNotes = lazy(() => import("./pages/scm/ConsignmentNotes").then((m) => ({ default: m.ScmConsignmentNotes })));
-const ScmConsignmentNoteDetail = lazy(() => import("./pages/scm/ConsignmentNoteDetail").then((m) => ({ default: m.ScmConsignmentNoteDetail })));
-const ScmConsignmentReturns = lazy(() => import("./pages/scm/ConsignmentReturns").then((m) => ({ default: m.ScmConsignmentReturns })));
-const ScmConsignmentReturnDetail = lazy(() => import("./pages/scm/ConsignmentReturnDetail").then((m) => ({ default: m.ScmConsignmentReturnDetail })));
-const ScmPurchaseConsignmentOrders = lazy(() => import("./pages/scm/PurchaseConsignmentOrders").then((m) => ({ default: m.ScmPurchaseConsignmentOrders })));
-const ScmPurchaseConsignmentOrderDetail = lazy(() => import("./pages/scm/PurchaseConsignmentOrderDetail").then((m) => ({ default: m.ScmPurchaseConsignmentOrderDetail })));
-const ScmPurchaseConsignmentReceives = lazy(() => import("./pages/scm/PurchaseConsignmentReceives").then((m) => ({ default: m.ScmPurchaseConsignmentReceives })));
-const ScmPurchaseConsignmentReceiveDetail = lazy(() => import("./pages/scm/PurchaseConsignmentReceiveDetail").then((m) => ({ default: m.ScmPurchaseConsignmentReceiveDetail })));
-const ScmPurchaseConsignmentReturns = lazy(() => import("./pages/scm/PurchaseConsignmentReturns").then((m) => ({ default: m.ScmPurchaseConsignmentReturns })));
-const ScmPurchaseConsignmentReturnDetail = lazy(() => import("./pages/scm/PurchaseConsignmentReturnDetail").then((m) => ({ default: m.ScmPurchaseConsignmentReturnDetail })));
+// These are the VENDORED (wholesale-copied) 2990 pages, now the canonical /scm/*
+// surface. The native pages/scm/* set was retired in the cutover.
+const ScmSuppliersV2 = lazy(() => import("./pages/scm-v2/SuppliersV2Route"));
+// Each list/detail page is a NAMED export wrapped at the route in <Scm2990Shell>
+// (the Notify/Confirm/dialog-service providers).
+const Scm2990Shell = lazy(() => import("./pages/scm-v2/Scm2990Shell"));
+const ScmPurchaseOrdersV2 = lazy(() => import("./pages/scm-v2/PurchaseOrders").then((m) => ({ default: m.PurchaseOrders })));
+const ScmPurchaseOrderNewV2 = lazy(() => import("./pages/scm-v2/PurchaseOrderNew").then((m) => ({ default: m.PurchaseOrderNew })));
+const ScmPurchaseOrderFromSoV2 = lazy(() => import("./pages/scm-v2/PurchaseOrderFromSo").then((m) => ({ default: m.PurchaseOrderFromSo })));
+const ScmPurchaseOrderDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseOrderDetail").then((m) => ({ default: m.PurchaseOrderDetail })));
+// TEMP — vendored 2990's MRP + read/list pages (wave 2), parallel to native.
+const ScmMrpV2 = lazy(() => import("./pages/scm-v2/Mrp").then((m) => ({ default: m.Mrp })));
+const ScmAccountingV2 = lazy(() => import("./pages/scm-v2/Accounting").then((m) => ({ default: m.Accounting })));
+const ScmOutstandingV2 = lazy(() => import("./pages/scm-v2/Outstanding").then((m) => ({ default: m.Outstanding })));
+const ScmFabricTrackingV2 = lazy(() => import("./pages/scm-v2/FabricTracking").then((m) => ({ default: m.FabricTracking })));
+const ScmWarehousesV2 = lazy(() => import("./pages/scm-v2/Warehouses").then((m) => ({ default: m.Warehouses })));
+const ScmProductsV2 = lazy(() => import("./pages/scm-v2/Products").then((m) => ({ default: m.Products })));
+const ScmProductModelsV2 = lazy(() => import("./pages/scm-v2/ProductModels").then((m) => ({ default: m.ProductModels })));
+const ScmProductModelDetailV2 = lazy(() => import("./pages/scm-v2/ProductModelDetail").then((m) => ({ default: m.ProductModelDetail })));
+const ScmGoodsReceivedV2 = lazy(() => import("./pages/scm-v2/GoodsReceived").then((m) => ({ default: m.GoodsReceived })));
+const ScmGrnNewV2 = lazy(() => import("./pages/scm-v2/GrnNew").then((m) => ({ default: m.GrnNew })));
+const ScmGrnFromPoV2 = lazy(() => import("./pages/scm-v2/GrnFromPo").then((m) => ({ default: m.GrnFromPo })));
+const ScmGoodsReceivedDetailV2 = lazy(() => import("./pages/scm-v2/GoodsReceivedDetail").then((m) => ({ default: m.GoodsReceivedDetail })));
+const ScmPurchaseInvoicesV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoices").then((m) => ({ default: m.PurchaseInvoices })));
+const ScmPurchaseInvoiceNewV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceNew").then((m) => ({ default: m.PurchaseInvoiceNew })));
+const ScmPurchaseInvoiceFromGrnV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceFromGrn").then((m) => ({ default: m.PurchaseInvoiceFromGrn })));
+const ScmPurchaseInvoiceDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceDetail").then((m) => ({ default: m.PurchaseInvoiceDetail })));
+const ScmStockAdjustmentsV2 = lazy(() => import("./pages/scm-v2/StockAdjustments").then((m) => ({ default: m.StockAdjustments })));
+const ScmStockAdjustmentNewV2 = lazy(() => import("./pages/scm-v2/StockAdjustmentNew").then((m) => ({ default: m.StockAdjustmentNew })));
+const ScmStockTransfersV2 = lazy(() => import("./pages/scm-v2/StockTransfers").then((m) => ({ default: m.StockTransfers })));
+const ScmStockTransferNewV2 = lazy(() => import("./pages/scm-v2/StockTransferNew").then((m) => ({ default: m.StockTransferNew })));
+const ScmStockTransferDetailV2 = lazy(() => import("./pages/scm-v2/StockTransferDetail").then((m) => ({ default: m.StockTransferDetail })));
+const ScmStockTakesV2 = lazy(() => import("./pages/scm-v2/StockTakes").then((m) => ({ default: m.StockTakes })));
+const ScmStockTakeNewV2 = lazy(() => import("./pages/scm-v2/StockTakeNew").then((m) => ({ default: m.StockTakeNew })));
+const ScmStockTakeDetailV2 = lazy(() => import("./pages/scm-v2/StockTakeDetail").then((m) => ({ default: m.StockTakeDetail })));
+// TEMP — vendored 2990's PR / Inventory / Stock Card / Supplier Detail / Drivers
+// pages (this wave), parallel to the native /scm/* routes below.
+const ScmPurchaseReturnsV2 = lazy(() => import("./pages/scm-v2/PurchaseReturnsList").then((m) => ({ default: m.PurchaseReturns })));
+const ScmPurchaseReturnNewV2 = lazy(() => import("./pages/scm-v2/PurchaseReturnNew").then((m) => ({ default: m.PurchaseReturnNew })));
+const ScmPurchaseReturnDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseReturnDetail").then((m) => ({ default: m.PurchaseReturnDetail })));
+const ScmInventoryV2 = lazy(() => import("./pages/scm-v2/Inventory").then((m) => ({ default: m.Inventory })));
+const ScmStockCardV2 = lazy(() => import("./pages/scm-v2/StockCard").then((m) => ({ default: m.StockCard })));
+const ScmSupplierDetailV2 = lazy(() => import("./pages/scm-v2/SupplierDetail").then((m) => ({ default: m.SupplierDetail })));
+const ScmDriversV2 = lazy(() => import("./pages/scm-v2/Drivers").then((m) => ({ default: m.Drivers })));
+// Sales Order READ side (vendored 2990 list + detail + maintenance). New-SO
+// configurator + SoFromProducts come in a later wave. NOTE: 2990 uses :docNo
+// (not :id) for SO detail, and the literal /maintenance route MUST precede
+// /:docNo so 'maintenance' isn't read as a doc number.
+const ScmSalesOrdersV2 = lazy(() => import("./pages/scm-v2/MfgSalesOrdersList").then((m) => ({ default: m.MfgSalesOrdersList })));
+const ScmSalesOrderMaintenanceV2 = lazy(() => import("./pages/scm-v2/SalesOrderMaintenance").then((m) => ({ default: m.SalesOrderMaintenance })));
+const ScmSalesOrderNewV2 = lazy(() => import("./pages/scm-v2/SalesOrderNew").then((m) => ({ default: m.SalesOrderNew })));
+const ScmSoFromProductsV2 = lazy(() => import("./pages/scm-v2/SoFromProducts").then((m) => ({ default: m.SoFromProducts })));
+const ScmSalesOrderDetailV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetail").then((m) => ({ default: m.SalesOrderDetail })));
+const ScmSoDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetailListing").then((m) => ({ default: m.SalesOrderDetailListing })));
+const ScmDoDetailListingV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderDetailListing").then((m) => ({ default: m.DeliveryOrderDetailListing })));
+const ScmSiDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesInvoiceDetailListing").then((m) => ({ default: m.SalesInvoiceDetailListing })));
+const ScmDrDetailListingV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnDetailListing").then((m) => ({ default: m.DeliveryReturnDetailListing })));
+const ScmDeliveryOrdersV2 = lazy(() => import("./pages/scm-v2/MfgDeliveryOrdersList").then((m) => ({ default: m.MfgDeliveryOrdersList })));
+const ScmDeliveryOrderNewV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderNew").then((m) => ({ default: m.DeliveryOrderNew })));
+const ScmDeliveryOrderFromSoV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderFromSo").then((m) => ({ default: m.DeliveryOrderFromSo })));
+const ScmDeliveryOrderDetailV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderDetail").then((m) => ({ default: m.DeliveryOrderDetail })));
+const ScmSalesInvoicesV2 = lazy(() => import("./pages/scm-v2/SalesInvoicesList").then((m) => ({ default: m.SalesInvoicesList })));
+const ScmSalesInvoiceNewV2 = lazy(() => import("./pages/scm-v2/SalesInvoiceNew").then((m) => ({ default: m.SalesInvoiceNew })));
+const ScmSalesInvoiceFromDoV2 = lazy(() => import("./pages/scm-v2/SalesInvoiceFromDo").then((m) => ({ default: m.SalesInvoiceFromDo })));
+const ScmSalesInvoiceDetailV2 = lazy(() => import("./pages/scm-v2/SalesInvoiceDetail").then((m) => ({ default: m.SalesInvoiceDetail })));
+const ScmDeliveryReturnsV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnsList").then((m) => ({ default: m.DeliveryReturnsList })));
+const ScmDeliveryReturnNewV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnNew").then((m) => ({ default: m.DeliveryReturnNew })));
+const ScmDeliveryReturnFromDoV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnFromDo").then((m) => ({ default: m.DeliveryReturnFromDo })));
+const ScmDeliveryReturnDetailV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnDetail").then((m) => ({ default: m.DeliveryReturnDetail })));
+const ScmConsignmentOrdersV2 = lazy(() => import("./pages/scm-v2/ConsignmentOrders").then((m) => ({ default: m.ConsignmentOrders })));
+const ScmConsignmentOrderNewV2 = lazy(() => import("./pages/scm-v2/ConsignmentOrderNew").then((m) => ({ default: m.ConsignmentOrderNew })));
+const ScmConsignmentOrderDetailV2 = lazy(() => import("./pages/scm-v2/ConsignmentOrderDetail").then((m) => ({ default: m.ConsignmentOrderDetail })));
+const ScmConsignmentNotesV2 = lazy(() => import("./pages/scm-v2/ConsignmentNotes").then((m) => ({ default: m.ConsignmentNotes })));
+const ScmConsignmentNoteNewV2 = lazy(() => import("./pages/scm-v2/ConsignmentNoteNew").then((m) => ({ default: m.ConsignmentNoteNew })));
+const ScmConsignmentNoteFromOrderV2 = lazy(() => import("./pages/scm-v2/ConsignmentNoteFromOrder").then((m) => ({ default: m.ConsignmentNoteFromOrder })));
+const ScmConsignmentNoteDetailV2 = lazy(() => import("./pages/scm-v2/ConsignmentNoteDetail").then((m) => ({ default: m.ConsignmentNoteDetail })));
+const ScmConsignmentReturnsV2 = lazy(() => import("./pages/scm-v2/ConsignmentReturns").then((m) => ({ default: m.ConsignmentReturns })));
+const ScmConsignmentReturnNewV2 = lazy(() => import("./pages/scm-v2/ConsignmentReturnNew").then((m) => ({ default: m.ConsignmentReturnNew })));
+const ScmConsignmentReturnFromNoteV2 = lazy(() => import("./pages/scm-v2/ConsignmentReturnFromNote").then((m) => ({ default: m.ConsignmentReturnFromNote })));
+const ScmConsignmentReturnDetailV2 = lazy(() => import("./pages/scm-v2/ConsignmentReturnDetail").then((m) => ({ default: m.ConsignmentReturnDetail })));
+const ScmPurchaseConsignmentOrdersV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentOrders").then((m) => ({ default: m.PurchaseConsignmentOrders })));
+const ScmPurchaseConsignmentOrderNewV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentOrderNew").then((m) => ({ default: m.PurchaseConsignmentOrderNew })));
+const ScmPurchaseConsignmentOrderDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentOrderDetail").then((m) => ({ default: m.PurchaseConsignmentOrderDetail })));
+const ScmPurchaseConsignmentReceivesV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentReceives").then((m) => ({ default: m.PurchaseConsignmentReceives })));
+const ScmPurchaseConsignmentReceiveNewV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentReceiveNew").then((m) => ({ default: m.PurchaseConsignmentReceiveNew })));
+const ScmPurchaseConsignmentReceiveFromOrderV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentReceiveFromOrder").then((m) => ({ default: m.PurchaseConsignmentReceiveFromOrder })));
+const ScmPurchaseConsignmentReceiveDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentReceiveDetail").then((m) => ({ default: m.PurchaseConsignmentReceiveDetail })));
+const ScmPurchaseConsignmentReturnsV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentReturns").then((m) => ({ default: m.PurchaseConsignmentReturns })));
+const ScmPurchaseConsignmentReturnNewV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentReturnNew").then((m) => ({ default: m.PurchaseConsignmentReturnNew })));
+const ScmPurchaseConsignmentReturnFromReceiveV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentReturnFromReceive").then((m) => ({ default: m.PurchaseConsignmentReturnFromReceive })));
+const ScmPurchaseConsignmentReturnDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseConsignmentReturnDetail").then((m) => ({ default: m.PurchaseConsignmentReturnDetail })));
 
 /**
  * Wraps a route element in a permission check. Failures render the
@@ -173,78 +207,119 @@ export default function App() {
             </PageGuard>
           }
         />
-        {/* ── Supply Chain (ported 2990's SCM) — owner-gated /scm/* ── */}
+        {/* ── Supply Chain (vendored 2990's SCM) — owner-gated /scm/* ── */}
         <Route
           path="/scm/suppliers"
           element={
             <Guard perm="*">
-              <ScmSuppliers />
+              <ScmSuppliersV2 />
             </Guard>
           }
         />
-        <Route
-          path="/scm/suppliers/:id"
-          element={
-            <Guard perm="*">
-              <ScmSupplierDetail />
-            </Guard>
-          }
-        />
-        <Route path="/scm/purchase-orders" element={<Guard perm="*"><ScmPurchaseOrders /></Guard>} />
-        <Route path="/scm/purchase-orders/new" element={<Guard perm="*"><ScmPurchaseOrderNew /></Guard>} />
-        <Route path="/scm/purchase-orders/:id" element={<Guard perm="*"><ScmPurchaseOrderDetail /></Guard>} />
-        <Route path="/scm/grns" element={<Guard perm="*"><ScmGoodsReceived /></Guard>} />
-        <Route path="/scm/grns/:id" element={<Guard perm="*"><ScmGoodsReceivedDetail /></Guard>} />
-        <Route path="/scm/purchase-invoices" element={<Guard perm="*"><ScmPurchaseInvoices /></Guard>} />
-        <Route path="/scm/purchase-invoices/new" element={<Guard perm="*"><ScmPurchaseInvoiceNew /></Guard>} />
-        <Route path="/scm/purchase-invoices/:id" element={<Guard perm="*"><ScmPurchaseInvoiceDetail /></Guard>} />
-        <Route path="/scm/purchase-returns" element={<Guard perm="*"><ScmPurchaseReturns /></Guard>} />
-        <Route path="/scm/purchase-returns/new" element={<Guard perm="*"><ScmPurchaseReturnNew /></Guard>} />
-        <Route path="/scm/purchase-returns/:id" element={<Guard perm="*"><ScmPurchaseReturnDetail /></Guard>} />
-        <Route path="/scm/inventory" element={<Guard perm="*"><ScmInventory /></Guard>} />
-        <Route path="/scm/warehouses" element={<Guard perm="*"><ScmWarehouses /></Guard>} />
-        <Route path="/scm/stock-transfers" element={<Guard perm="*"><ScmStockTransfers /></Guard>} />
-        <Route path="/scm/stock-transfers/new" element={<Guard perm="*"><ScmStockTransferNew /></Guard>} />
-        <Route path="/scm/stock-transfers/:id" element={<Guard perm="*"><ScmStockTransferDetail /></Guard>} />
-        <Route path="/scm/stock-takes" element={<Guard perm="*"><ScmStockTakes /></Guard>} />
-        <Route path="/scm/stock-takes/new" element={<Guard perm="*"><ScmStockTakeNew /></Guard>} />
-        <Route path="/scm/stock-takes/:id" element={<Guard perm="*"><ScmStockTakeDetail /></Guard>} />
-        <Route path="/scm/sales-orders" element={<Guard perm="*"><ScmMfgSalesOrders /></Guard>} />
-        <Route path="/scm/sales-orders/new" element={<Guard perm="*"><ScmMfgSalesOrderNew /></Guard>} />
-        <Route path="/scm/sales-orders/:id" element={<Guard perm="*"><ScmMfgSalesOrderDetail /></Guard>} />
-        <Route path="/scm/delivery-orders" element={<Guard perm="*"><ScmDeliveryOrders /></Guard>} />
-        <Route path="/scm/delivery-orders/new" element={<Guard perm="*"><ScmDeliveryOrderNew /></Guard>} />
-        <Route path="/scm/delivery-orders/:id" element={<Guard perm="*"><ScmDeliveryOrderDetail /></Guard>} />
-        <Route path="/scm/delivery-returns" element={<Guard perm="*"><ScmDeliveryReturns /></Guard>} />
-        <Route path="/scm/delivery-returns/new" element={<Guard perm="*"><ScmDeliveryReturnNew /></Guard>} />
-        <Route path="/scm/delivery-returns/:id" element={<Guard perm="*"><ScmDeliveryReturnDetail /></Guard>} />
-        <Route path="/scm/products" element={<Guard perm="*"><ScmProducts /></Guard>} />
-        <Route path="/scm/product-models" element={<Guard perm="*"><ScmProductModels /></Guard>} />
-        <Route path="/scm/product-models/:id" element={<Guard perm="*"><ScmProductModelDetail /></Guard>} />
-        <Route path="/scm/mrp" element={<Guard perm="*"><ScmMrp /></Guard>} />
-        <Route path="/scm/mrp-lead-times" element={<Guard perm="*"><ScmMrpLeadTimes /></Guard>} />
-        <Route path="/scm/fabric-tracking" element={<Guard perm="*"><ScmFabricTracking /></Guard>} />
-        <Route path="/scm/accounting" element={<Guard perm="*"><ScmAccounting /></Guard>} />
-        <Route path="/scm/outstanding" element={<Guard perm="*"><ScmOutstanding /></Guard>} />
-        <Route path="/scm/consignment-orders" element={<Guard perm="*"><ScmConsignmentOrders /></Guard>} />
-        <Route path="/scm/consignment-orders/new" element={<Guard perm="*"><ScmConsignmentOrderNew /></Guard>} />
-        <Route path="/scm/consignment-orders/:id" element={<Guard perm="*"><ScmConsignmentOrderDetail /></Guard>} />
-        <Route path="/scm/consignment-notes" element={<Guard perm="*"><ScmConsignmentNotes /></Guard>} />
-        <Route path="/scm/consignment-notes/new" element={<Guard perm="*"><ScmConsignmentNoteNew /></Guard>} />
-        <Route path="/scm/consignment-notes/:id" element={<Guard perm="*"><ScmConsignmentNoteDetail /></Guard>} />
-        <Route path="/scm/consignment-returns" element={<Guard perm="*"><ScmConsignmentReturns /></Guard>} />
-        <Route path="/scm/consignment-returns/new" element={<Guard perm="*"><ScmConsignmentReturnNew /></Guard>} />
-        <Route path="/scm/consignment-returns/:id" element={<Guard perm="*"><ScmConsignmentReturnDetail /></Guard>} />
-        <Route path="/scm/purchase-consignment-orders" element={<Guard perm="*"><ScmPurchaseConsignmentOrders /></Guard>} />
-        <Route path="/scm/purchase-consignment-orders/new" element={<Guard perm="*"><ScmPurchaseConsignmentOrderNew /></Guard>} />
-        <Route path="/scm/purchase-consignment-orders/:id" element={<Guard perm="*"><ScmPurchaseConsignmentOrderDetail /></Guard>} />
-        <Route path="/scm/purchase-consignment-receives" element={<Guard perm="*"><ScmPurchaseConsignmentReceives /></Guard>} />
-        <Route path="/scm/purchase-consignment-receives/new" element={<Guard perm="*"><ScmPurchaseConsignmentReceiveNew /></Guard>} />
-        <Route path="/scm/purchase-consignment-receives/:id" element={<Guard perm="*"><ScmPurchaseConsignmentReceiveDetail /></Guard>} />
-        <Route path="/scm/purchase-consignment-returns" element={<Guard perm="*"><ScmPurchaseConsignmentReturns /></Guard>} />
-        <Route path="/scm/purchase-consignment-returns/new" element={<Guard perm="*"><ScmPurchaseConsignmentReturnNew /></Guard>} />
-        <Route path="/scm/purchase-consignment-returns/:id" element={<Guard perm="*"><ScmPurchaseConsignmentReturnDetail /></Guard>} />
-        <Route path="/scm/maintenance" element={<Guard perm="*"><ScmMaintenanceConfig /></Guard>} />
+        {/* Vendored 2990's Purchase Order pages. /new + /from-so precede /:id so
+            the literal segments match before the param route. Each page is wrapped
+            in <Scm2990Shell> for the Notify/Confirm/dialog-service providers. */}
+        <Route path="/scm/purchase-orders" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseOrdersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-orders/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseOrderNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-orders/from-so" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseOrderFromSoV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-orders/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseOrderDetailV2 /></Scm2990Shell></Guard>} />
+        {/* Vendored 2990's MRP + read/list pages. Each wrapped in <Scm2990Shell>.
+            product-models list precedes /:id so the literal segment matches first. */}
+        <Route path="/scm/mrp" element={<Guard perm="*"><Scm2990Shell><ScmMrpV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/accounting" element={<Guard perm="*"><Scm2990Shell><ScmAccountingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/outstanding" element={<Guard perm="*"><Scm2990Shell><ScmOutstandingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/fabric-tracking" element={<Guard perm="*"><Scm2990Shell><ScmFabricTrackingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/warehouses" element={<Guard perm="*"><Scm2990Shell><ScmWarehousesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/products" element={<Guard perm="*"><Scm2990Shell><ScmProductsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/product-models" element={<Guard perm="*"><Scm2990Shell><ScmProductModelsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/product-models/:id" element={<Guard perm="*"><Scm2990Shell><ScmProductModelDetailV2 /></Scm2990Shell></Guard>} />
+        {/* TEMP — vendored 2990's GRN + Purchase Invoice pages (wave 3), parallel
+            to the native /scm/* below. Each wrapped in <Scm2990Shell>. Literal
+            segments (/new, /from-po, /from-grn) precede /:id so they match first. */}
+        <Route path="/scm/grns" element={<Guard perm="*"><Scm2990Shell><ScmGoodsReceivedV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/grns/new" element={<Guard perm="*"><Scm2990Shell><ScmGrnNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/grns/from-po" element={<Guard perm="*"><Scm2990Shell><ScmGrnFromPoV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/grns/:id" element={<Guard perm="*"><Scm2990Shell><ScmGoodsReceivedDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-invoices" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseInvoicesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-invoices/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseInvoiceNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-invoices/from-grn" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseInvoiceFromGrnV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-invoices/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseInvoiceDetailV2 /></Scm2990Shell></Guard>} />
+        {/* TEMP — vendored 2990's stock-movement pages (wave 4: Adjustments /
+            Transfers / Takes), parallel to the native /scm/* below. Each wrapped
+            in <Scm2990Shell>. Literal /new precedes /:id so it matches first. */}
+        <Route path="/scm/stock-adjustments" element={<Guard perm="*"><Scm2990Shell><ScmStockAdjustmentsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-adjustments/new" element={<Guard perm="*"><Scm2990Shell><ScmStockAdjustmentNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-transfers" element={<Guard perm="*"><Scm2990Shell><ScmStockTransfersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-transfers/new" element={<Guard perm="*"><Scm2990Shell><ScmStockTransferNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-transfers/:id" element={<Guard perm="*"><Scm2990Shell><ScmStockTransferDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-takes" element={<Guard perm="*"><Scm2990Shell><ScmStockTakesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-takes/new" element={<Guard perm="*"><Scm2990Shell><ScmStockTakeNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-takes/:id" element={<Guard perm="*"><Scm2990Shell><ScmStockTakeDetailV2 /></Scm2990Shell></Guard>} />
+        {/* TEMP — vendored 2990's PR / Inventory / Stock Card / Supplier Detail /
+            Drivers pages (this wave), parallel to the native /scm/* below. Each
+            wrapped in <Scm2990Shell>. Literal segments (/new, /stock-card)
+            precede the /:id routes so they match first. */}
+        <Route path="/scm/purchase-returns" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseReturnsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-returns/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseReturnNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-returns/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseReturnDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/inventory" element={<Guard perm="*"><Scm2990Shell><ScmInventoryV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/inventory/stock-card/:productCode" element={<Guard perm="*"><Scm2990Shell><ScmStockCardV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/suppliers/:id" element={<Guard perm="*"><Scm2990Shell><ScmSupplierDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/drivers" element={<Guard perm="*"><Scm2990Shell><ScmDriversV2 /></Scm2990Shell></Guard>} />
+        {/* Sales Orders READ side (vendored). The literal /maintenance route
+            MUST precede /:docNo so 'maintenance' isn't caught as a doc number.
+            2990 uses :docNo (not :id) for the SO detail. */}
+        <Route path="/scm/sales-orders" element={<Guard perm="*"><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-orders/maintenance" element={<Guard perm="*"><Scm2990Shell><ScmSalesOrderMaintenanceV2 /></Scm2990Shell></Guard>} />
+        {/* Literal /new + /generate MUST precede /:docNo so they match first. */}
+        <Route path="/scm/sales-orders/new" element={<Guard perm="*"><Scm2990Shell><ScmSalesOrderNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-orders/generate" element={<Guard perm="*"><Scm2990Shell><ScmSoFromProductsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-orders/:docNo" element={<Guard perm="*"><Scm2990Shell><ScmSalesOrderDetailV2 /></Scm2990Shell></Guard>} />
+        {/* SCM Reports v2 — AutoCount-style detail listings. Each wrapped in <Scm2990Shell>. */}
+        <Route path="/scm/reports/sales-order-detail-listing" element={<Guard perm="*"><Scm2990Shell><ScmSoDetailListingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/reports/delivery-order-detail-listing" element={<Guard perm="*"><Scm2990Shell><ScmDoDetailListingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/reports/sales-invoice-detail-listing" element={<Guard perm="*"><Scm2990Shell><ScmSiDetailListingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/reports/delivery-return-detail-listing" element={<Guard perm="*"><Scm2990Shell><ScmDrDetailListingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-orders" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryOrdersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-orders/new" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryOrderNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-orders/from-so" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryOrderFromSoV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-orders/:id" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryOrderDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-invoices" element={<Guard perm="*"><Scm2990Shell><ScmSalesInvoicesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-invoices/new" element={<Guard perm="*"><Scm2990Shell><ScmSalesInvoiceNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-invoices/from-do" element={<Guard perm="*"><Scm2990Shell><ScmSalesInvoiceFromDoV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-invoices/:id" element={<Guard perm="*"><Scm2990Shell><ScmSalesInvoiceDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-returns" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryReturnsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-returns/new" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryReturnNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-returns/from-do" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryReturnFromDoV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-returns/:id" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryReturnDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-orders" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentOrdersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-orders/new" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentOrderNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-orders/:docNo" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentOrderDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-notes" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentNotesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-notes/new" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentNoteNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-notes/from-order" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentNoteFromOrderV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-notes/:id" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentNoteDetailV2 /></Scm2990Shell></Guard>} />
+        {/* Consignment Returns (DR-clone) + Purchase Consignment Orders (PO-clone),
+            vendored 2990 pages wrapped in <Scm2990Shell>. Literal segments
+            (/new, /from-note) precede /:id so they match first. */}
+        <Route path="/scm/consignment-returns" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentReturnsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-returns/new" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentReturnNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-returns/from-note" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentReturnFromNoteV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-returns/:id" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentReturnDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-orders" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentOrdersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-orders/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentOrderNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-orders/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentOrderDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-receives" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReceivesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-receives/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReceiveNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-receives/from-pc-order" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReceiveFromOrderV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-receives/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReceiveDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-returns" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReturnsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-returns/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReturnNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-returns/from-receive" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReturnFromReceiveV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-returns/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReturnDetailV2 /></Scm2990Shell></Guard>} />
+        {/* Maintenance — no standalone vendored page; the vendored Products page
+            hosts the Maintenance tab. The "Maintenance" nav item resolves here. */}
+        <Route path="/scm/maintenance" element={<Guard perm="*"><Scm2990Shell><ScmProductsV2 /></Scm2990Shell></Guard>} />
         {/* Legacy /roles → Team page's Roles tab */}
         <Route
           path="/roles"
