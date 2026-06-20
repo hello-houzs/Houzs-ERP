@@ -21,6 +21,7 @@ import {
   roles,
   sessions,
   user_brands,
+  user_departments,
   users,
 } from "../db/schema";
 import { alias } from "drizzle-orm/pg-core";
@@ -89,6 +90,14 @@ app.get("/", requirePermission("users.read"), async (c) => {
           FROM ${user_brands} ub
          WHERE ub.user_id = ${users.id}
       )`,
+      // Full department membership set (mig 0020). The primary department_id is
+      // one of these; we re-add it below so legacy rows not yet backfilled are
+      // still reported as members of their primary.
+      department_ids_arr: sql<number[] | null>`(
+        SELECT array_agg(ud.department_id)
+          FROM ${user_departments} ud
+         WHERE ud.user_id = ${users.id}
+      )`,
     })
     .from(users)
     .innerJoin(roles, eq(roles.id, users.role_id))
@@ -99,13 +108,23 @@ app.get("/", requirePermission("users.read"), async (c) => {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(users.created_at));
 
-  const out = rows.map((r) => ({
-    ...r,
-    brands: r.brands_concat
-      ? String(r.brands_concat).split("\x1f").filter(Boolean)
-      : [],
-    brands_concat: undefined,
-  }));
+  const out = rows.map((r) => {
+    // Primary first, then any extra departments sorted — drives the "+N" UI.
+    const extra = (r.department_ids_arr ?? [])
+      .filter((d) => d !== r.department_id)
+      .sort((a, b) => a - b);
+    const department_ids =
+      r.department_id != null ? [r.department_id, ...extra] : extra;
+    return {
+      ...r,
+      brands: r.brands_concat
+        ? String(r.brands_concat).split("\x1f").filter(Boolean)
+        : [],
+      brands_concat: undefined,
+      department_ids,
+      department_ids_arr: undefined,
+    };
+  });
   return c.json({ users: out });
 });
 
@@ -558,6 +577,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     status?: string;
     manager_id?: number | null;
     department_id?: number | null;
+    department_ids?: number[];
     position_id?: number | null;
     name?: string | null;
     phone?: string | null;
@@ -566,6 +586,16 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   }>();
 
   const db = getDb(c.env);
+
+  // Current primary department doubles as an existence check (the membership
+  // reconciliation below can run with an otherwise-empty column update).
+  const current = await db
+    .select({ id: users.id, department_id: users.department_id })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (current.length === 0) return c.json({ error: "User not found" }, 404);
+
   const set: Record<string, any> = {};
 
   if (body.role_id != null) {
@@ -685,32 +715,104 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     set.email = em;
   }
 
-  if (Object.keys(set).length === 0) {
+  // Multi-department membership (mig 0020). When department_ids is provided we
+  // replace-set the join table; otherwise we just keep the primary in sync.
+  // Validate each id against departments (silent-drop unknowns, like brands).
+  let finalDeptIds: number[] | null = null;
+  if (Array.isArray(body.department_ids)) {
+    const requested = [
+      ...new Set(
+        body.department_ids
+          .map((x) => parseInt(String(x), 10))
+          .filter((n) => Number.isFinite(n) && n > 0),
+      ),
+    ];
+    if (requested.length > 0) {
+      const found = await db
+        .select({ id: departments.id })
+        .from(departments)
+        .where(inArray(departments.id, requested));
+      const allowed = new Set(found.map((d) => d.id));
+      finalDeptIds = requested.filter((d) => allowed.has(d));
+    } else {
+      finalDeptIds = [];
+    }
+
+    // Reconcile against the primary. If a primary is set (this patch or the
+    // existing one), force it into the set; if the primary was cleared, promote
+    // the first of the set to primary so the two never drift apart.
+    const primaryDept =
+      "department_id" in set
+        ? (set.department_id as number | null)
+        : current[0].department_id;
+    if (primaryDept != null) {
+      if (!finalDeptIds.includes(primaryDept)) finalDeptIds.unshift(primaryDept);
+    } else if (finalDeptIds.length > 0) {
+      set.department_id = finalDeptIds[0];
+    }
+  }
+
+  if (Object.keys(set).length === 0 && finalDeptIds === null) {
     return c.json({ error: "No fields to update" }, 400);
   }
 
-  const result = await db.update(users).set(set).where(eq(users.id, id));
-  if (!(result.count)) return c.json({ error: "User not found" }, 404);
+  if (Object.keys(set).length > 0) {
+    const result = await db.update(users).set(set).where(eq(users.id, id));
+    if (!result.count) return c.json({ error: "User not found" }, 404);
+  }
+
+  // Apply the membership change.
+  if (finalDeptIds !== null) {
+    await db.delete(user_departments).where(eq(user_departments.user_id, id));
+    if (finalDeptIds.length > 0) {
+      await db
+        .insert(user_departments)
+        .values(finalDeptIds.map((d) => ({ user_id: id, department_id: d })));
+    }
+  } else if ("department_id" in set) {
+    if (set.department_id != null) {
+      // Primary changed (directly or via position lockstep) — keep it present
+      // in the membership table, preserving any extras already there.
+      await db
+        .insert(user_departments)
+        .values({ user_id: id, department_id: set.department_id })
+        .onConflictDoNothing();
+    } else if (current[0].department_id != null) {
+      // Primary cleared — drop just that membership, leave extras intact.
+      await db
+        .delete(user_departments)
+        .where(
+          and(
+            eq(user_departments.user_id, id),
+            eq(user_departments.department_id, current[0].department_id),
+          ),
+        );
+    }
+  }
 
   // If we disabled a user, revoke their sessions.
   if (body.status === "disabled") {
     await db.delete(sessions).where(eq(sessions.user_id, id));
   }
 
-  // Keep the Sales Team roster in lockstep with the user's department.
-  // Department change → create / unarchive / archive the linked
-  // sales_reps row. No-op for non-Sales departments and users that
-  // already have the expected sales_reps state.
+  // Keep the Sales Team roster in lockstep with the user's PRIMARY department.
+  // Department change → create / unarchive / archive the linked sales_reps row.
+  // No-op for non-Sales departments and already-consistent users. Multi-dept
+  // membership is orthogonal — sync stays keyed on the single primary.
   if (body.department_id !== undefined || set.department_id !== undefined) {
     await syncSalesRepFromUser(c.env, id, me.id);
   }
 
+  const changedKeys = [
+    ...Object.keys(set),
+    ...(finalDeptIds !== null ? ["department_ids"] : []),
+  ];
   await audit(c, {
     action: "user.update",
     entityType: "user",
     entityId: id,
-    summary: `Updated user #${id} (${Object.keys(set).join(", ")})`,
-    meta: { changed: set },
+    summary: `Updated user #${id} (${changedKeys.join(", ")})`,
+    meta: { changed: set, ...(finalDeptIds !== null ? { department_ids: finalDeptIds } : {}) },
   });
 
   return c.json({ ok: true });
