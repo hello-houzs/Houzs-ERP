@@ -23,6 +23,7 @@ import {
   Undo2,
   Warehouse,
   ArrowLeftRight,
+  SlidersHorizontal,
   ClipboardCheck,
   ShoppingCart,
   Send,
@@ -182,42 +183,21 @@ export const NAV_TABS: NavTab[] = [
     groupId: "scm",
     anyPerm: ["*"],
     children: [
-      // Organised into sections (mirrors 2990's Procurement / Warehouse / etc.
-      // sectioning) instead of one flat 26-item list. Sub-groups default open
-      // (so every item still shows) but each is collapsible per-user.
+      // 1:1 with 2990's backend Sidebar sectioning + order: Sales Order ->
+      // Consignment -> Procurement -> Transportation -> Warehouse (then Finance,
+      // which 2990 keeps top-level; Houzs nests it under Supply Chain). MRP +
+      // Products live under Procurement exactly as in 2990. Product Models +
+      // Fabric Tracking are tabs-in-Products in 2990 but standalone pages here,
+      // so they sit under Procurement next to Products to keep access.
       {
-        label: "Procurement",
-        icon: Package,
-        groupId: "scm-procurement",
-        anyPerm: ["*"],
-        children: [
-          { to: "/scm/suppliers", label: "Suppliers", icon: Truck, perm: "*" },
-          { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
-          { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, perm: "*" },
-          { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, perm: "*" },
-          { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, perm: "*" },
-        ],
-      },
-      {
-        label: "Inventory",
-        icon: Warehouse,
-        groupId: "scm-inventory",
-        anyPerm: ["*"],
-        children: [
-          { to: "/scm/inventory", label: "Inventory", icon: Package, perm: "*" },
-          { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, perm: "*" },
-          { to: "/scm/stock-transfers", label: "Stock Transfers", icon: ArrowLeftRight, perm: "*" },
-          { to: "/scm/stock-takes", label: "Stock Takes", icon: ClipboardCheck, perm: "*" },
-        ],
-      },
-      {
-        label: "Sales & Delivery",
+        label: "Sales Order",
         icon: ShoppingCart,
         groupId: "scm-sales",
         anyPerm: ["*"],
         children: [
           { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, perm: "*" },
           { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, perm: "*" },
+          { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, perm: "*" },
           { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, perm: "*" },
         ],
       },
@@ -236,18 +216,42 @@ export const NAV_TABS: NavTab[] = [
         ],
       },
       {
-        label: "Catalog & Planning",
-        icon: Layers,
-        groupId: "scm-catalog",
+        label: "Procurement",
+        icon: Package,
+        groupId: "scm-procurement",
         anyPerm: ["*"],
         children: [
-          { to: "/scm/products", label: "Products", icon: Sofa, perm: "*" },
+          { to: "/scm/products", label: "Products & Maintenance", icon: Sofa, perm: "*" },
           { to: "/scm/product-models", label: "Product Models", icon: Layers, perm: "*" },
           { to: "/scm/fabric-tracking", label: "Fabric Tracking", icon: Scissors, perm: "*" },
+          { to: "/scm/suppliers", label: "Suppliers", icon: Truck, perm: "*" },
           { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, perm: "*" },
-          // Lead Times has no standalone vendored page — the capability moved into
-          // the vendored MRP page's "Lead Times" dialog. Nav item removed in the
-          // 2990-vendoring cutover; reach it via MRP · Stock Status → Lead Times.
+          { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
+          { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, perm: "*" },
+          { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, perm: "*" },
+          { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, perm: "*" },
+        ],
+      },
+      {
+        label: "Transportation",
+        icon: Truck,
+        groupId: "scm-transportation",
+        anyPerm: ["*"],
+        children: [
+          { to: "/scm/drivers", label: "Drivers", icon: Truck, perm: "*" },
+        ],
+      },
+      {
+        label: "Warehouse",
+        icon: Warehouse,
+        groupId: "scm-warehouse",
+        anyPerm: ["*"],
+        children: [
+          { to: "/scm/inventory", label: "Inventory", icon: Package, perm: "*" },
+          { to: "/scm/stock-adjustments", label: "Adjustments", icon: SlidersHorizontal, perm: "*" },
+          { to: "/scm/stock-transfers", label: "Transfers", icon: ArrowLeftRight, perm: "*" },
+          { to: "/scm/stock-takes", label: "Stock Take", icon: ClipboardCheck, perm: "*" },
+          { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, perm: "*" },
         ],
       },
       {
@@ -260,7 +264,6 @@ export const NAV_TABS: NavTab[] = [
           { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, perm: "*" },
         ],
       },
-      { to: "/scm/maintenance", label: "Maintenance", icon: Wrench, perm: "*" },
     ],
   },
 
