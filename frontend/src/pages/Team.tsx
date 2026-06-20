@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, ArrowLeft } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, ArrowLeft, SlidersHorizontal } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -28,6 +28,19 @@ import { PositionsTab } from "./Positions";
 type TeamTabValue = "members" | "positions" | "roles" | "orgchart" | "departments";
 
 const TEAM_KEYS = ["tab"] as const;
+
+// One-click member segments (label + key). Shared by the Filters popover
+// and the active-filter pill row.
+const QUICK_SEGMENTS = [
+  ["online", "Online now"],
+  ["joined7d", "Joined ≤ 7d"],
+  ["no_login", "Never signed in"],
+  ["stale", "Inactive 30d+"],
+  ["no_dept", "No department"],
+  ["no_pos", "No position"],
+  ["no_mgr", "No manager"],
+  ["no_photo", "No photo"],
+] as const;
 
 /**
  * Unified Team page — two tabs (Members, Roles) sharing a single header.
@@ -234,6 +247,7 @@ function MembersTab({
   >("");
   const [filterRole, setFilterRole] = useState<number | "">("");
   const [filterBrand, setFilterBrand] = useState<string>("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   // Card grid (reference look) vs. dense table. Grid is the default.
   const [view, setView] = useLocalStorage<"grid" | "list">("team:view", "grid");
@@ -477,6 +491,47 @@ function MembersTab({
     for (const u of members.data?.users ?? []) for (const b of u.brands ?? []) s.add(b);
     return [...s].sort();
   }, [members.data]);
+
+  // Active-filter bookkeeping for the Filters popover + removable pills.
+  const statusLabels: Record<string, string> = {
+    active: "Active",
+    invited: "Pending",
+    disabled: "Disabled",
+  };
+  const activeFilters: { label: string; clear: () => void }[] = [];
+  if (filterStatus)
+    activeFilters.push({ label: statusLabels[filterStatus], clear: () => setFilterStatus("") });
+  if (filterDept !== "")
+    activeFilters.push({
+      label: depts.data?.departments.find((d) => d.id === filterDept)?.name ?? "Department",
+      clear: () => setFilterDept(""),
+    });
+  if (filterPos !== "")
+    activeFilters.push({
+      label: posNameById.get(filterPos as number) ?? "Position",
+      clear: () => setFilterPos(""),
+    });
+  if (filterRole !== "")
+    activeFilters.push({
+      label: roles.data?.roles.find((r) => r.id === filterRole)?.name ?? "Role",
+      clear: () => setFilterRole(""),
+    });
+  if (filterBrand)
+    activeFilters.push({ label: filterBrand, clear: () => setFilterBrand("") });
+  if (quickFilter)
+    activeFilters.push({
+      label: QUICK_SEGMENTS.find(([k]) => k === quickFilter)?.[1] ?? "Segment",
+      clear: () => setQuickFilter(""),
+    });
+
+  function clearAllFilters() {
+    setFilterStatus("");
+    setFilterDept("");
+    setFilterPos("");
+    setFilterRole("");
+    setFilterBrand("");
+    setQuickFilter("");
+  }
 
   // Grid ordering (table view keeps its own column sort).
   const gridMembers = useMemo(() => {
@@ -790,7 +845,7 @@ function MembersTab({
           <h2 className="text-[10px] font-bold uppercase tracking-brand text-accent">
             Members ({filteredMembers.length}/{members.data?.users.length ?? 0})
           </h2>
-          <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div className="ml-auto flex items-center gap-2">
             <div className="relative">
               <Search
                 size={12}
@@ -800,70 +855,161 @@ function MembersTab({
                 value={searchQ}
                 onChange={(e) => setSearchQ(e.target.value)}
                 placeholder="Search name or email…"
-                className="h-7 w-44 rounded-md border border-border bg-surface pl-7 pr-2 text-[11px] text-ink outline-none placeholder:text-ink-muted hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="h-7 w-48 rounded-md border border-border bg-surface pl-7 pr-2 text-[11px] text-ink outline-none placeholder:text-ink-muted hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
               />
             </div>
-            <select
-              value={filterDept}
-              onChange={(e) => {
-                setFilterDept(e.target.value ? Number(e.target.value) : "");
-                setFilterPos("");
-              }}
-              title="Filter by department"
-              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
-            >
-              <option value="">All departments</option>
-              {depts.data?.departments.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
-            <select
-              value={filterPos}
-              onChange={(e) => setFilterPos(e.target.value ? Number(e.target.value) : "")}
-              title="Filter by position"
-              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
-            >
-              <option value="">All positions</option>
-              {(positions.data?.positions ?? [])
-                .filter(
-                  (p) => filterDept === "" || !p.department_id || p.department_id === filterDept
-                )
-                .map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-            </select>
-            <select
-              value={filterRole}
-              onChange={(e) => setFilterRole(e.target.value ? Number(e.target.value) : "")}
-              title="Filter by role"
-              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
-            >
-              <option value="">All roles</option>
-              {(roles.data?.roles ?? []).map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-            {allBrands.length > 0 && (
-              <select
-                value={filterBrand}
-                onChange={(e) => setFilterBrand(e.target.value)}
-                title="Filter by brand"
-                className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+
+            {/* Filters — everything tucked into one popover to keep the bar tidy */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setFiltersOpen((o) => !o)}
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 rounded-md border bg-surface px-2.5 text-[11px] font-semibold transition-colors",
+                  activeFilters.length > 0
+                    ? "border-accent/50 text-accent"
+                    : "border-border text-ink-secondary hover:border-accent/40 hover:text-accent",
+                )}
               >
-                <option value="">All brands</option>
-                {allBrands.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-            )}
+                <SlidersHorizontal size={13} /> Filters
+                {activeFilters.length > 0 && (
+                  <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-bold text-white">
+                    {activeFilters.length}
+                  </span>
+                )}
+              </button>
+              {filtersOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-30"
+                    onClick={() => setFiltersOpen(false)}
+                    aria-hidden
+                  />
+                  <div className="absolute right-0 z-40 mt-1.5 w-64 rounded-lg border border-border bg-surface p-3 text-left shadow-slab">
+                    <div className="space-y-2.5">
+                      <div>
+                        <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+                          Department
+                        </label>
+                        <select
+                          value={filterDept}
+                          onChange={(e) => {
+                            setFilterDept(e.target.value ? Number(e.target.value) : "");
+                            setFilterPos("");
+                          }}
+                          className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+                        >
+                          <option value="">All departments</option>
+                          {depts.data?.departments.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+                          Position
+                        </label>
+                        <select
+                          value={filterPos}
+                          onChange={(e) =>
+                            setFilterPos(e.target.value ? Number(e.target.value) : "")
+                          }
+                          className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+                        >
+                          <option value="">All positions</option>
+                          {(positions.data?.positions ?? [])
+                            .filter(
+                              (p) =>
+                                filterDept === "" ||
+                                !p.department_id ||
+                                p.department_id === filterDept,
+                            )
+                            .map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+                          Role
+                        </label>
+                        <select
+                          value={filterRole}
+                          onChange={(e) =>
+                            setFilterRole(e.target.value ? Number(e.target.value) : "")
+                          }
+                          className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+                        >
+                          <option value="">All roles</option>
+                          {(roles.data?.roles ?? []).map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {r.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {allBrands.length > 0 && (
+                        <div>
+                          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+                            Brand
+                          </label>
+                          <select
+                            value={filterBrand}
+                            onChange={(e) => setFilterBrand(e.target.value)}
+                            className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+                          >
+                            <option value="">All brands</option>
+                            {allBrands.map((b) => (
+                              <option key={b} value={b}>
+                                {b}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="mt-3 border-t border-border-subtle pt-3">
+                      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+                        Quick segments
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {QUICK_SEGMENTS.map(([key, label]) => (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => setQuickFilter((cur) => (cur === key ? "" : key))}
+                            className={cn(
+                              "rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors",
+                              quickFilter === key
+                                ? "border-accent/50 bg-accent-soft text-accent"
+                                : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
+                            )}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {activeFilters.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={clearAllFilters}
+                        className="mt-3 w-full rounded-md border border-border px-2 py-1.5 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-err/40 hover:text-err"
+                      >
+                        Clear all filters
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
             {view === "grid" && (
               <select
                 value={gridSort}
@@ -905,44 +1051,34 @@ function MembersTab({
           </div>
         </div>
 
-        {/* Quick segments — surface misconfigured / stale accounts. */}
-        <div className="mb-3 flex flex-wrap items-center gap-1.5">
-          {(
-            [
-              ["online", "Online now"],
-              ["joined7d", "Joined ≤ 7d"],
-              ["no_login", "Never signed in"],
-              ["stale", "Inactive 30d+"],
-              ["no_dept", "No department"],
-              ["no_pos", "No position"],
-              ["no_mgr", "No manager"],
-              ["no_photo", "No photo"],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setQuickFilter((cur) => (cur === key ? "" : key))}
-              className={cn(
-                "rounded-full border px-2.5 py-1 text-[10.5px] font-medium transition-colors",
-                quickFilter === key
-                  ? "border-accent/50 bg-accent-soft text-accent"
-                  : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-          {quickFilter && (
+        {/* Active filters — removable pills so applied filters are visible. */}
+        {activeFilters.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-1.5">
+            {activeFilters.map((f, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent-soft py-0.5 pl-2 pr-1 text-[10.5px] font-medium text-accent"
+              >
+                {f.label}
+                <button
+                  type="button"
+                  onClick={f.clear}
+                  className="rounded-full p-0.5 transition-colors hover:bg-accent/20 hover:text-err"
+                  aria-label={`Remove ${f.label} filter`}
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
             <button
               type="button"
-              onClick={() => setQuickFilter("")}
+              onClick={clearAllFilters}
               className="ml-1 text-[10.5px] text-ink-muted underline-offset-2 transition-colors hover:text-err hover:underline"
             >
-              Clear filter
+              Clear all
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
         {view === "list" ? (
           <DataTable
