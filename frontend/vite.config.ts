@@ -159,6 +159,14 @@ export default defineConfig(({ mode }) => {
               return "react-vendor";
             if (id.includes("leaflet")) return "leaflet";
             if (id.includes("lucide-react")) return "lucide";
+            // xlsx + jspdf are heavy and only ever reached via dynamic
+            // import() (SCM export / print handlers). Leaving them out of the
+            // eager `vendor` chunk lets Rollup split them into on-demand chunks
+            // loaded only when a user actually exports or prints.
+            if (
+              /[\\/]node_modules[\\/](xlsx|jspdf|jspdf-autotable)[\\/]/.test(id)
+            )
+              return;
             return "vendor";
           },
         },
