@@ -40,6 +40,9 @@ export interface Column<T> {
   className?: string;
   /** Render the cell. */
   render: (row: T) => ReactNode;
+  /** Optional custom header content (e.g. a select-all checkbox). When set,
+   *  it replaces the label + sort affordance for this column. */
+  renderHeader?: () => ReactNode;
   /** Provide a raw value for CSV export and client-side sorting. Columns
    *  without this are skipped during export and can't be sorted. */
   getValue?: (row: T) => string | number | boolean | null | undefined;
@@ -931,31 +934,37 @@ export function DataTable<T>({
                       )}
                     >
                       <span className="inline-flex items-center gap-1">
-                        {pinnedSet.has(c.key) && (
-                          <Pin
-                            size={9}
-                            className="shrink-0 text-accent"
-                            aria-label="Pinned"
-                          />
-                        )}
-                        {c.label}
-                        {sortable && (
-                          <span
-                            className={cn(
-                              "inline-flex transition-opacity",
-                              active ? "opacity-100" : "opacity-30"
+                        {c.renderHeader ? (
+                          c.renderHeader()
+                        ) : (
+                          <>
+                            {pinnedSet.has(c.key) && (
+                              <Pin
+                                size={9}
+                                className="shrink-0 text-accent"
+                                aria-label="Pinned"
+                              />
                             )}
-                          >
-                            {active ? (
-                              sort!.dir === "asc" ? (
-                                <ArrowUp size={10} />
-                              ) : (
-                                <ArrowDown size={10} />
-                              )
-                            ) : (
-                              <ChevronsUpDown size={10} />
+                            {c.label}
+                            {sortable && (
+                              <span
+                                className={cn(
+                                  "inline-flex transition-opacity",
+                                  active ? "opacity-100" : "opacity-30"
+                                )}
+                              >
+                                {active ? (
+                                  sort!.dir === "asc" ? (
+                                    <ArrowUp size={10} />
+                                  ) : (
+                                    <ArrowDown size={10} />
+                                  )
+                                ) : (
+                                  <ChevronsUpDown size={10} />
+                                )}
+                              </span>
                             )}
-                          </span>
+                          </>
                         )}
                       </span>
                       {/* Resize handle — a dedicated right-edge strip. It

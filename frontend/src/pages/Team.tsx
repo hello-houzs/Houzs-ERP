@@ -222,8 +222,18 @@ function MembersTab({
   const [filterStatus, setFilterStatus] = useState<"" | "active" | "invited" | "disabled">("");
   // One-click segments to surface misconfigured / stale accounts.
   const [quickFilter, setQuickFilter] = useState<
-    "" | "no_login" | "no_dept" | "no_pos" | "no_mgr" | "stale"
+    | ""
+    | "no_login"
+    | "no_dept"
+    | "no_pos"
+    | "no_mgr"
+    | "stale"
+    | "online"
+    | "joined7d"
+    | "no_photo"
   >("");
+  const [filterRole, setFilterRole] = useState<number | "">("");
+  const [filterBrand, setFilterBrand] = useState<string>("");
   const [searchQ, setSearchQ] = useState("");
   // Card grid (reference look) vs. dense table. Grid is the default.
   const [view, setView] = useLocalStorage<"grid" | "list">("team:view", "grid");
@@ -413,7 +423,7 @@ function MembersTab({
   }, [positions.data]);
   const filteredMembers = useMemo(() => {
     const q = searchQ.trim().toLowerCase();
-    const STALE_MS = 30 * 24 * 60 * 60 * 1000;
+    const DAY = 24 * 60 * 60 * 1000;
     const now = Date.now();
     const matchesQuick = (u: TeamMember) => {
       switch (quickFilter) {
@@ -426,7 +436,13 @@ function MembersTab({
         case "no_mgr":
           return u.manager_id == null;
         case "stale":
-          return !!u.last_login_at && now - new Date(u.last_login_at).getTime() > STALE_MS;
+          return !!u.last_login_at && now - new Date(u.last_login_at).getTime() > 30 * DAY;
+        case "online":
+          return onlineIds.has(u.id);
+        case "joined7d":
+          return !!u.joined_at && now - new Date(u.joined_at).getTime() <= 7 * DAY;
+        case "no_photo":
+          return !u.profile_pic_r2_key;
         default:
           return true;
       }
@@ -436,12 +452,31 @@ function MembersTab({
         (filterDept === "" || u.department_id === filterDept) &&
         (filterPos === "" || u.position_id === filterPos) &&
         (filterStatus === "" || u.status === filterStatus) &&
+        (filterRole === "" || u.role_id === filterRole) &&
+        (filterBrand === "" || (u.brands ?? []).includes(filterBrand)) &&
         matchesQuick(u) &&
         (q === "" ||
           (u.name || "").toLowerCase().includes(q) ||
           (u.email || "").toLowerCase().includes(q)),
     );
-  }, [members.data, filterDept, filterPos, filterStatus, quickFilter, searchQ]);
+  }, [
+    members.data,
+    filterDept,
+    filterPos,
+    filterStatus,
+    filterRole,
+    filterBrand,
+    quickFilter,
+    onlineIds,
+    searchQ,
+  ]);
+
+  // Distinct brands across members — drives the brand filter dropdown.
+  const allBrands = useMemo(() => {
+    const s = new Set<string>();
+    for (const u of members.data?.users ?? []) for (const b of u.brands ?? []) s.add(b);
+    return [...s].sort();
+  }, [members.data]);
 
   // Grid ordering (table view keeps its own column sort).
   const gridMembers = useMemo(() => {
@@ -534,6 +569,26 @@ function MembersTab({
             width: "36px",
             alwaysVisible: true,
             disableSort: true,
+            renderHeader: () => {
+              const all =
+                selectableFiltered.length > 0 &&
+                selectableFiltered.every((u) => selectedIds.has(u.id));
+              const some = selectableFiltered.some((u) => selectedIds.has(u.id));
+              return (
+                <input
+                  type="checkbox"
+                  checked={all}
+                  ref={(el) => {
+                    if (el) el.indeterminate = some && !all;
+                  }}
+                  onChange={() => (all ? clearSelect() : selectAllFiltered())}
+                  onClick={(e) => e.stopPropagation()}
+                  className="h-3.5 w-3.5 cursor-pointer accent-[#a16a2e]"
+                  aria-label="Select all members"
+                  title="Select all"
+                />
+              );
+            },
             render: (u: TeamMember) =>
               u.id === me?.id ? (
                 <span className="block w-3.5" />
@@ -781,6 +836,34 @@ function MembersTab({
                   </option>
                 ))}
             </select>
+            <select
+              value={filterRole}
+              onChange={(e) => setFilterRole(e.target.value ? Number(e.target.value) : "")}
+              title="Filter by role"
+              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+            >
+              <option value="">All roles</option>
+              {(roles.data?.roles ?? []).map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+            {allBrands.length > 0 && (
+              <select
+                value={filterBrand}
+                onChange={(e) => setFilterBrand(e.target.value)}
+                title="Filter by brand"
+                className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+              >
+                <option value="">All brands</option>
+                {allBrands.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            )}
             {view === "grid" && (
               <select
                 value={gridSort}
@@ -826,11 +909,14 @@ function MembersTab({
         <div className="mb-3 flex flex-wrap items-center gap-1.5">
           {(
             [
+              ["online", "Online now"],
+              ["joined7d", "Joined ≤ 7d"],
               ["no_login", "Never signed in"],
+              ["stale", "Inactive 30d+"],
               ["no_dept", "No department"],
               ["no_pos", "No position"],
               ["no_mgr", "No manager"],
-              ["stale", "Inactive 30d+"],
+              ["no_photo", "No photo"],
             ] as const
           ).map(([key, label]) => (
             <button
