@@ -12,6 +12,9 @@ interface Props {
   className?: string;
   /** Add a thin brass ring around the circle — used in podium / chips. */
   ring?: boolean;
+  /** "circle" (default) or "square" (rounded-rect) — square is used by the
+   *  departmental org chart, which mirrors a photo-ID card layout. */
+  shape?: "circle" | "square";
 }
 
 function initialsFor(name?: string | null, email?: string | null): string {
@@ -31,7 +34,9 @@ export function Avatar({
   size = 32,
   className,
   ring,
+  shape = "circle",
 }: Props) {
+  const shapeCls = shape === "square" ? "rounded-md" : "rounded-full";
   const enabled = !!userId && !!hasImage;
   const [src, setSrc] = useState<string | null>(null);
 
@@ -71,7 +76,7 @@ export function Avatar({
         src={src}
         alt={name || email || "User"}
         style={dim}
-        className={cn("rounded-full object-cover shrink-0", ringCls, className)}
+        className={cn(shapeCls, "object-cover shrink-0", ringCls, className)}
         loading="lazy"
       />
     );
@@ -80,7 +85,8 @@ export function Avatar({
     <div
       style={dim}
       className={cn(
-        "rounded-full grid place-items-center bg-accent/15 text-accent font-semibold uppercase shrink-0 select-none",
+        shapeCls,
+        "grid place-items-center bg-accent/15 text-accent font-semibold uppercase shrink-0 select-none",
         ringCls,
         className,
       )}

@@ -2698,24 +2698,19 @@ function OrgChartTab() {
                 className="org-print-scale mx-auto flex min-w-fit items-start justify-center gap-10 px-4 pt-2"
                 style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}
               >
-                {roots.map((r) => (
-                  <OrgTreeNode
-                    key={r.id}
-                    user={r}
-                    childrenOf={childrenOf}
-                    canManage={canManage}
-                    users={users}
-                    departments={deptList}
-                    onChangeDept={changeDept}
-                    onChangeDepts={changeDepts}
-                    draggingId={draggingId}
-                    setDraggingId={setDraggingId}
-                    onDrop={reassign}
-                    editingId={editingId}
-                    setEditingId={setEditingId}
-                    onPickManager={reassign}
-                  />
-                ))}
+                <OrgDeptChart
+                  users={users}
+                  roots={roots}
+                  departments={deptList}
+                  canManage={canManage}
+                  draggingId={draggingId}
+                  setDraggingId={setDraggingId}
+                  onReassign={reassign}
+                  onChangeDept={changeDept}
+                  onChangeDepts={changeDepts}
+                  editingId={editingId}
+                  setEditingId={setEditingId}
+                />
               </div>
             ) : (
               <div className="org-print-scale mx-auto max-w-3xl rounded-lg border border-border bg-surface p-1.5 shadow-stone">
@@ -2791,127 +2786,197 @@ function TopLevelDropZone({
   );
 }
 
-function OrgTreeNode({
-  user,
-  childrenOf,
-  canManage,
+// ──────────────────────────────────────────────────────────
+// Departmental org chart (Chart view)
+//
+// A root box at the top (people with no manager) over a connector bus into one
+// titled box PER DEPARTMENT — each a dark header bar (white, uppercase dept
+// name) over square-photo cards, sub-grouped by position. Mirrors a classic
+// printed org chart, not a manager→report tree. Editing (reports-to, primary
+// dept, extra depts) stays on each card's pencil popover.
+// ──────────────────────────────────────────────────────────
+
+// Float seniority-sounding positions to the top of a department box so the
+// lead reads first (e.g. Supervisor above the Storekeepers it leads).
+const ORG_RANK = [
+  "owner", "director", "head", "manager", "supervisor", "lead",
+  "executive", "senior", "admin", "officer",
+];
+function orgSeniority(positionName?: string | null): number {
+  const p = (positionName || "").toLowerCase();
+  const i = ORG_RANK.findIndex((k) => p.includes(k));
+  return i < 0 ? ORG_RANK.length : i;
+}
+
+/** Group a department's members by position into clusters, most-senior first.
+ *  A cluster of 2+ gets a small label (e.g. "Storekeepers"); lone members
+ *  render label-less so the box doesn't become a wall of headings. */
+function clusterByPosition(
+  members: TeamMember[],
+): { label: string | null; members: TeamMember[] }[] {
+  const byPos = new Map<string, TeamMember[]>();
+  for (const m of members) {
+    const key = m.position_name || m.role_name || "—";
+    const arr = byPos.get(key) ?? [];
+    arr.push(m);
+    byPos.set(key, arr);
+  }
+  const clusters = [...byPos.entries()].map(([label, ms]) => ({
+    label,
+    members: ms.sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email)),
+  }));
+  clusters.sort(
+    (a, b) =>
+      orgSeniority(a.label) - orgSeniority(b.label) ||
+      b.members.length - a.members.length ||
+      a.label.localeCompare(b.label),
+  );
+  return clusters.map((c) => ({
+    label: c.members.length >= 2 ? c.label : null,
+    members: c.members,
+  }));
+}
+
+function OrgDeptChart({
   users,
+  roots,
   departments,
-  onChangeDept,
-  onChangeDepts,
+  canManage,
   draggingId,
   setDraggingId,
-  onDrop,
+  onReassign,
+  onChangeDept,
+  onChangeDepts,
   editingId,
   setEditingId,
-  onPickManager,
 }: {
-  user: TeamMember;
-  childrenOf: Map<number | null, TeamMember[]>;
-  canManage: boolean;
   users: TeamMember[];
+  roots: TeamMember[];
   departments: Department[];
-  onChangeDept: (userId: number, departmentId: number | null) => void;
-  onChangeDepts: (userId: number, departmentIds: number[]) => void;
+  canManage: boolean;
   draggingId: number | null;
   setDraggingId: (id: number | null) => void;
-  onDrop: (userId: number, managerId: number | null) => void;
+  onReassign: (userId: number, managerId: number | null) => void;
+  onChangeDept: (userId: number, departmentId: number | null) => void;
+  onChangeDepts: (userId: number, departmentIds: number[]) => void;
   editingId: number | null;
   setEditingId: (id: number | null) => void;
-  onPickManager: (userId: number, managerId: number | null) => void;
 }) {
-  const kids = childrenOf.get(user.id) ?? [];
-  const hasKids = kids.length > 0;
-
-  // Children that are themselves managers (have reports of their own). When
-  // EVERY child is a manager we lay the children out HORIZONTALLY — this keeps
-  // the upper org levels (C-suite → directors) readable like a classic chart.
-  // As soon as a level contains individual contributors (any leaf child) we
-  // switch to a VERTICAL stacked list with a connector spine: compact, grows
-  // downward, no ever-widening rows and no nested boxes (the "太乱" problem).
-  const horizontal =
-    hasKids && kids.every((k) => (childrenOf.get(k.id)?.length ?? 0) > 0);
-
-  const renderChild = (k: TeamMember) => (
-    <OrgTreeNode
-      key={k.id}
-      user={k}
-      childrenOf={childrenOf}
-      canManage={canManage}
-      users={users}
-      departments={departments}
-      onChangeDept={onChangeDept}
-      onChangeDepts={onChangeDepts}
-      draggingId={draggingId}
-      setDraggingId={setDraggingId}
-      onDrop={onDrop}
-      editingId={editingId}
-      setEditingId={setEditingId}
-      onPickManager={onPickManager}
-    />
-  );
-
-  const card = (
+  const renderCard = (u: TeamMember) => (
     <OrgCard
-      user={user}
-      accent={hasKids}
+      key={u.id}
+      user={u}
+      accent={false}
+      square
       canManage={canManage}
       draggingId={draggingId}
       setDraggingId={setDraggingId}
-      onDrop={onDrop}
-      editing={editingId === user.id}
-      setEditing={(on) => setEditingId(on ? user.id : null)}
+      onDrop={onReassign}
+      editing={editingId === u.id}
+      setEditing={(on) => setEditingId(on ? u.id : null)}
       users={users}
       departments={departments}
       onChangeDept={onChangeDept}
       onChangeDepts={onChangeDepts}
-      onPickManager={onPickManager}
+      onPickManager={onReassign}
     />
   );
 
-  // Leaf — just the card.
-  if (!hasKids) return card;
+  // One titled box per department (in department order), matching ANY of a
+  // member's departments (mig 0020), then a catch-all for the unassigned.
+  // Root people are pulled into the top row.
+  const rootIds = new Set(roots.map((r) => r.id));
+  const rest = users.filter((u) => !rootIds.has(u.id));
+  const groups: {
+    key: string;
+    name: string;
+    color: string | null;
+    members: TeamMember[];
+  }[] = [];
+  for (const d of departments) {
+    const ms = rest.filter((u) => inDept(u, d.id));
+    if (ms.length)
+      groups.push({ key: `d${d.id}`, name: d.name, color: d.color, members: ms });
+  }
+  const placed = new Set(groups.flatMap((g) => g.members.map((m) => m.id)));
+  const noDept = rest.filter((u) => !placed.has(u.id));
+  if (noDept.length)
+    groups.push({ key: "none", name: "Unassigned", color: null, members: noDept });
 
-  // Upper levels — horizontal bracket of manager children.
-  if (horizontal) {
-    return (
-      <div className="flex flex-col items-center">
-        {card}
-        <div className="h-4 w-px bg-border" />
-        <div className="flex items-start justify-center gap-5">
-          {kids.map((k, i) => (
-            <div key={k.id} className="relative flex flex-col items-center px-1">
-              {/* Sibling connector: a thin horizontal bar across the top,
-                  clipped to half-width at the two ends so it reads as a bracket. */}
-              {kids.length > 1 && (
-                <span
-                  aria-hidden
-                  className="absolute top-0 h-px bg-border"
-                  style={{
-                    left: i === 0 ? "50%" : 0,
-                    right: i === kids.length - 1 ? "50%" : 0,
-                  }}
-                />
-              )}
-              <div className="h-4 w-px bg-border" />
-              {renderChild(k)}
+  const hasRoots = roots.length > 0;
+
+  return (
+    <div className="flex flex-col items-center">
+      {hasRoots && (
+        <div className="flex flex-wrap items-start justify-center gap-4">
+          {roots.map((r) => (
+            <div
+              key={r.id}
+              className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone"
+            >
+              <div className="bg-[#33404e] px-3 py-1.5 text-center text-[10.5px] font-semibold uppercase tracking-wide text-white/95">
+                {r.position_name || r.role_name || "Leadership"}
+              </div>
+              <div className="p-2">{renderCard(r)}</div>
             </div>
           ))}
         </div>
-      </div>
-    );
-  }
+      )}
 
-  // Leaf level — reports hang in a 2-column grid below the manager, grouped on
-  // a very faint tinted panel (no border box, so nothing reads as cluttered).
-  // A single short stub connects the manager to the group; the grid itself has
-  // no per-card connectors. Grows downward, never widens into a long row.
+      {hasRoots && groups.length > 0 && <div className="h-5 w-px bg-border" />}
+
+      <div className="flex items-start justify-center gap-5">
+        {groups.map((g, i) => (
+          <div key={g.key} className="relative flex flex-col items-center">
+            {/* Connector bus across the department boxes (only when there's a
+                root above to hang them from). */}
+            {hasRoots && groups.length > 1 && (
+              <span
+                aria-hidden
+                className="absolute top-0 h-px bg-border"
+                style={{ left: i === 0 ? "50%" : 0, right: i === groups.length - 1 ? "50%" : 0 }}
+              />
+            )}
+            {hasRoots && <div className="h-5 w-px bg-border" />}
+            <DeptGroupBox group={g} renderCard={renderCard} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DeptGroupBox({
+  group,
+  renderCard,
+}: {
+  group: { name: string; color: string | null; members: TeamMember[] };
+  renderCard: (u: TeamMember) => ReactNode;
+}) {
+  const clusters = clusterByPosition(group.members);
   return (
-    <div className="flex flex-col items-center">
-      {card}
-      <div className="h-4 w-px bg-border" />
-      <div className="grid grid-cols-2 items-start gap-2 rounded-lg bg-bg/40 p-2">
-        {kids.map((k) => renderChild(k))}
+    <div className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
+      <div
+        className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-white/95"
+        style={{
+          backgroundColor: "#33404e",
+          borderLeft: group.color ? `4px solid #${group.color}` : undefined,
+        }}
+      >
+        {group.name}
+        <span className="ml-1.5 font-normal text-white/55">{group.members.length}</span>
+      </div>
+      <div className="flex flex-col gap-2 p-2.5">
+        {clusters.map((c, ci) => (
+          <div key={ci} className="flex flex-col gap-2">
+            {c.label && (
+              <div className="px-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-ink-muted">
+                {c.label}
+              </div>
+            )}
+            {c.members.map(renderCard)}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -2974,6 +3039,7 @@ function DeptChipsEditor({
 function OrgCard({
   user,
   accent,
+  square,
   canManage,
   draggingId,
   setDraggingId,
@@ -2989,6 +3055,8 @@ function OrgCard({
   user: TeamMember;
   /** Manager cards get the top department-colour bar; leaf report cards don't. */
   accent: boolean;
+  /** Departmental chart cards use a square photo + a wider body (ID-card look). */
+  square?: boolean;
   canManage: boolean;
   draggingId: number | null;
   setDraggingId: (id: number | null) => void;
@@ -3035,15 +3103,16 @@ function OrgCard({
       }}
       className={cn(
         "relative shrink-0 overflow-hidden rounded-lg border bg-surface shadow-stone transition-all",
-        accent ? "w-[196px]" : "w-[160px]",
+        square ? "w-[190px]" : accent ? "w-[196px]" : "w-[160px]",
         isDragSource && "opacity-50",
         dropHover && isValidDropTarget ? "border-accent ring-2 ring-accent/30" : "border-border",
         canManage && "cursor-grab active:cursor-grabbing",
       )}
     >
       {/* Department colour bar — only on manager cards, so the report grid
-          below stays clean (reference look). */}
-      {accent && (
+          below stays clean (reference look). In the departmental chart the
+          dept colour lives on the group header instead, so square cards skip it. */}
+      {accent && !square && (
         <span
           aria-hidden
           className="block h-1 w-full"
@@ -3052,13 +3121,14 @@ function OrgCard({
           }}
         />
       )}
-      <div className="flex items-start gap-2 p-2">
+      <div className="flex items-center gap-2.5 p-2">
         <Avatar
           userId={user.id}
           hasImage={user.profile_pic_r2_key}
           name={user.name}
           email={user.email}
-          size={32}
+          size={square ? 42 : 32}
+          shape={square ? "square" : "circle"}
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-1.5">
