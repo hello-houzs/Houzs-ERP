@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, ArrowLeft, SlidersHorizontal } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, ArrowLeft, SlidersHorizontal, ListTree, Network, ChevronRight, ChevronDown, Users as UsersIcon } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -2287,6 +2287,16 @@ function OrgChartTab() {
   const [draggingId, setDraggingId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [zoom, setZoom] = useState(1);
+  // "list" = vertical indented collapsible tree (default) · "chart" = the
+  // classic horizontal org chart. Choice persists per user.
+  const [orgView, setOrgView] = useLocalStorage<"list" | "chart">("team:orgView", "list");
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const toggleCollapse = (id: number) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
 
   async function reassign(userId: number, managerId: number | null) {
     if (userId === managerId) return;
@@ -2401,85 +2411,161 @@ function OrgChartTab() {
         </div>
       ) : (
         <>
-          {/* Zoom + export controls */}
-          <div className="flex items-center justify-end gap-1.5">
-            <button
-              type="button"
-              onClick={() => {
-                // Shrink the tree to fit one landscape page so a wide chart
-                // isn't clipped (see the @media print rule in index.css).
-                const el = document.querySelector(
-                  ".org-print-scale"
-                ) as HTMLElement | null;
-                if (el)
-                  el.style.setProperty(
-                    "--print-zoom",
-                    String(Math.min(1, 1000 / (el.scrollWidth || 1)))
-                  );
-                window.print();
-              }}
-              className="mr-1 inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
-              title="Export the chart as PDF or print (opens your browser's print dialog)"
-            >
-              <Printer size={13} strokeWidth={2} />
-              Export
-            </button>
-            <button
-              type="button"
-              onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface text-[15px] leading-none text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
-              title="Zoom out"
-              aria-label="Zoom out"
-            >
-              −
-            </button>
-            <button
-              type="button"
-              onClick={() => setZoom(1)}
-              className="inline-flex h-7 min-w-[3.25rem] items-center justify-center rounded-md border border-border bg-surface text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
-              title="Reset zoom to 100%"
-            >
-              {Math.round(zoom * 100)}%
-            </button>
-            <button
-              type="button"
-              onClick={() => setZoom((z) => Math.min(1.6, +(z + 0.1).toFixed(2)))}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface text-[15px] leading-none text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
-              title="Zoom in"
-              aria-label="Zoom in"
-            >
-              +
-            </button>
-          </div>
-          <div className="org-print-area thin-scroll overflow-auto pb-6">
-            <div
-              className="org-print-scale mx-auto flex min-w-fit items-start justify-center gap-10 px-4 pt-2"
-              style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}
-            >
-              {roots.map((r) => (
-                <OrgTreeNode
-                  key={r.id}
-                  user={r}
-                  childrenOf={childrenOf}
-                  canManage={canManage}
-                  users={users}
-                  draggingId={draggingId}
-                  setDraggingId={setDraggingId}
-                  onDrop={reassign}
-                  editingId={editingId}
-                  setEditingId={setEditingId}
-                  onPickManager={reassign}
-                />
-              ))}
+          {/* Controls: view toggle · export · (zoom | collapse) */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <div className="flex items-center rounded-md border border-border bg-surface p-0.5">
+              <button
+                type="button"
+                onClick={() => setOrgView("list")}
+                className={cn(
+                  "inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-semibold transition-colors",
+                  orgView === "list" ? "bg-accent-soft text-accent" : "text-ink-muted hover:text-ink",
+                )}
+              >
+                <ListTree size={12} /> Tree
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrgView("chart")}
+                className={cn(
+                  "inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-semibold transition-colors",
+                  orgView === "chart" ? "bg-accent-soft text-accent" : "text-ink-muted hover:text-ink",
+                )}
+              >
+                <Network size={12} /> Chart
+              </button>
             </div>
+
+            <div className="ml-auto flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  // Shrink the tree to fit one landscape page so a wide chart
+                  // isn't clipped (see the @media print rule in index.css).
+                  const el = document.querySelector(".org-print-scale") as HTMLElement | null;
+                  if (el)
+                    el.style.setProperty(
+                      "--print-zoom",
+                      String(Math.min(1, 1000 / (el.scrollWidth || 1))),
+                    );
+                  window.print();
+                }}
+                className="mr-1 inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                title="Export as PDF or print"
+              >
+                <Printer size={13} strokeWidth={2} />
+                Export
+              </button>
+              {orgView === "chart" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface text-[15px] leading-none text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                    title="Zoom out"
+                    aria-label="Zoom out"
+                  >
+                    −
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setZoom(1)}
+                    className="inline-flex h-7 min-w-[3.25rem] items-center justify-center rounded-md border border-border bg-surface text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                    title="Reset zoom to 100%"
+                  >
+                    {Math.round(zoom * 100)}%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setZoom((z) => Math.min(1.6, +(z + 0.1).toFixed(2)))}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface text-[15px] leading-none text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                    title="Zoom in"
+                    aria-label="Zoom in"
+                  >
+                    +
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCollapsed(
+                        new Set(
+                          users
+                            .filter((u) => (childrenOf.get(u.id) ?? []).length > 0)
+                            .map((u) => u.id),
+                        ),
+                      )
+                    }
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                  >
+                    Collapse all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCollapsed(new Set())}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                  >
+                    Expand all
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="org-print-area thin-scroll overflow-auto pb-6">
+            {orgView === "chart" ? (
+              <div
+                className="org-print-scale mx-auto flex min-w-fit items-start justify-center gap-10 px-4 pt-2"
+                style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}
+              >
+                {roots.map((r) => (
+                  <OrgTreeNode
+                    key={r.id}
+                    user={r}
+                    childrenOf={childrenOf}
+                    canManage={canManage}
+                    users={users}
+                    draggingId={draggingId}
+                    setDraggingId={setDraggingId}
+                    onDrop={reassign}
+                    editingId={editingId}
+                    setEditingId={setEditingId}
+                    onPickManager={reassign}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="org-print-scale mx-auto max-w-3xl rounded-lg border border-border bg-surface p-1.5 shadow-stone">
+                {roots.map((r) => (
+                  <OrgListNode
+                    key={r.id}
+                    user={r}
+                    depth={0}
+                    childrenOf={childrenOf}
+                    collapsed={collapsed}
+                    toggleCollapse={toggleCollapse}
+                    canManage={canManage}
+                    users={users}
+                    draggingId={draggingId}
+                    setDraggingId={setDraggingId}
+                    onDrop={reassign}
+                    editingId={editingId}
+                    setEditingId={setEditingId}
+                    onPickManager={reassign}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </>
       )}
 
       <div className="text-[10.5px] text-ink-muted">
-        <span className="font-semibold">Tip:</span> drag any card onto another
-        to reassign reporting. Drop on the strip at the top to make them
-        top-level. Or click the pencil icon for a dropdown.
+        <span className="font-semibold">Tip:</span> drag any row/card onto another
+        to reassign reporting; drop on the strip at the top to make them top-level.
+        In Tree view, use the chevrons to fold a branch.
       </div>
     </div>
   );
@@ -2800,6 +2886,201 @@ function OrgCard({
           >
             Cancel
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Vertical indented row in the "Tree" org view — compact + collapsible,
+// shares the drag-to-reassign + manager-picker behaviour with OrgCard.
+function OrgListNode({
+  user,
+  depth,
+  childrenOf,
+  collapsed,
+  toggleCollapse,
+  canManage,
+  users,
+  draggingId,
+  setDraggingId,
+  onDrop,
+  editingId,
+  setEditingId,
+  onPickManager,
+}: {
+  user: TeamMember;
+  depth: number;
+  childrenOf: Map<number | null, TeamMember[]>;
+  collapsed: Set<number>;
+  toggleCollapse: (id: number) => void;
+  canManage: boolean;
+  users: TeamMember[];
+  draggingId: number | null;
+  setDraggingId: (id: number | null) => void;
+  onDrop: (userId: number, managerId: number | null) => void;
+  editingId: number | null;
+  setEditingId: (id: number | null) => void;
+  onPickManager: (userId: number, managerId: number | null) => void;
+}) {
+  const kids = childrenOf.get(user.id) ?? [];
+  const hasKids = kids.length > 0;
+  const isCollapsed = collapsed.has(user.id);
+  const editing = editingId === user.id;
+  const [dropHover, setDropHover] = useState(false);
+  const isDragSource = draggingId === user.id;
+  const isValidDropTarget =
+    draggingId != null && draggingId !== user.id && !isDescendantOf(user.id, draggingId, users);
+
+  return (
+    <div>
+      <div
+        draggable={canManage}
+        onDragStart={(e) => {
+          if (!canManage) return;
+          e.dataTransfer.setData("user-id", String(user.id));
+          e.dataTransfer.effectAllowed = "move";
+          setDraggingId(user.id);
+        }}
+        onDragEnd={() => setDraggingId(null)}
+        onDragOver={(e) => {
+          if (!canManage || !isValidDropTarget) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          setDropHover(true);
+        }}
+        onDragLeave={() => setDropHover(false)}
+        onDrop={(e) => {
+          if (!canManage) return;
+          e.preventDefault();
+          setDropHover(false);
+          const id = parseInt(e.dataTransfer.getData("user-id"), 10);
+          if (!isNaN(id) && id !== user.id) onDrop(id, user.id);
+        }}
+        className={cn(
+          "group flex items-center gap-2 rounded-md py-1 pl-1 pr-2 transition-colors",
+          isDragSource && "opacity-50",
+          dropHover && isValidDropTarget ? "bg-accent-soft ring-1 ring-accent/30" : "hover:bg-bg/50",
+          canManage && "cursor-grab active:cursor-grabbing",
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => hasKids && toggleCollapse(user.id)}
+          className={cn(
+            "flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-muted",
+            hasKids ? "hover:bg-surface-dim hover:text-accent" : "invisible",
+          )}
+          aria-label={isCollapsed ? "Expand" : "Collapse"}
+          tabIndex={hasKids ? 0 : -1}
+        >
+          {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+        </button>
+        <span className="relative shrink-0">
+          {user.department_color && (
+            <span
+              className="absolute -left-1 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded"
+              style={{ backgroundColor: `#${user.department_color}` }}
+            />
+          )}
+          <Avatar
+            userId={user.id}
+            hasImage={user.profile_pic_r2_key}
+            name={user.name}
+            email={user.email}
+            size={28}
+          />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[12.5px] font-semibold text-ink">
+              {user.name || user.email}
+            </span>
+            {user.status !== "active" && (
+              <span className="shrink-0 rounded bg-bg px-1 py-px font-mono text-[8.5px] font-semibold uppercase text-ink-muted">
+                {user.status}
+              </span>
+            )}
+          </div>
+          <div className="truncate text-[10.5px] text-ink-muted">
+            {user.position_name || user.role_name}
+            {user.department_name ? ` · ${user.department_name}` : ""}
+          </div>
+        </div>
+        {hasKids && (
+          <span
+            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-dim px-2 py-0.5 text-[10px] text-ink-muted"
+            title={`${kids.length} direct report${kids.length === 1 ? "" : "s"}`}
+          >
+            <UsersIcon size={11} /> {kids.length}
+          </span>
+        )}
+        {canManage && !editing && (
+          <button
+            type="button"
+            onClick={() => setEditingId(user.id)}
+            className="shrink-0 rounded p-1 text-ink-muted opacity-0 transition-opacity hover:bg-surface-dim hover:text-accent group-hover:opacity-100"
+            aria-label="Change manager"
+            title="Change manager"
+          >
+            <Pencil size={11} />
+          </button>
+        )}
+      </div>
+
+      {editing && (
+        <div className="mb-1 ml-7 rounded-md border border-border bg-bg/60 px-2 py-1.5">
+          <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+            Reports to
+          </label>
+          <select
+            autoFocus
+            defaultValue={user.manager_id ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              onPickManager(user.id, v ? Number(v) : null);
+            }}
+            className="h-8 w-full max-w-xs cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent"
+          >
+            <option value="">— No manager —</option>
+            {users
+              .filter((m) => m.id !== user.id && !isDescendantOf(m.id, user.id, users))
+              .map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name || m.email}
+                </option>
+              ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setEditingId(null)}
+            className="mt-1 block text-[10px] text-ink-muted hover:text-ink"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {hasKids && !isCollapsed && (
+        <div className="ml-[15px] border-l border-border-subtle pl-2">
+          {kids.map((k) => (
+            <OrgListNode
+              key={k.id}
+              user={k}
+              depth={depth + 1}
+              childrenOf={childrenOf}
+              collapsed={collapsed}
+              toggleCollapse={toggleCollapse}
+              canManage={canManage}
+              users={users}
+              draggingId={draggingId}
+              setDraggingId={setDraggingId}
+              onDrop={onDrop}
+              editingId={editingId}
+              setEditingId={setEditingId}
+              onPickManager={onPickManager}
+            />
+          ))}
         </div>
       )}
     </div>
