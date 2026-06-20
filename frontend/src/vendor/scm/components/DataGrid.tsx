@@ -33,7 +33,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Search, Columns3, RotateCcw, Filter } from 'lucide-react';
+import { Search, Columns3, RotateCcw, Filter, Download } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useDebouncedValue } from '../lib/hooks';
 import { SkeletonRows } from './Skeleton';
@@ -57,6 +57,12 @@ export type DataGridColumn<T> = {
   groupValue?: (row: T) => string;
   /** value used by global search (defaults to String(accessor(row))) */
   searchValue?: (row: T) => string;
+  /** Text value written to Excel by the toolbar "Export Excel" button. Lets a
+      caller override the exported cell when the cell renders JSX or when the
+      search/filter value bundles extra tokens. Falls back, in order, to
+      searchValue → filterValue → groupValue → '' (cells are ReactNode, so we
+      never read the rendered node). */
+  exportValue?: (row: T) => string | number;
   /** Clean single value shown in (and matched by) the per-column filter
       dropdown. Use this when `searchValue` deliberately bundles several
       tokens (e.g. "SO-2605-001 CONFIRMED") so the funnel still lists the one
@@ -103,6 +109,11 @@ export type DataGridProps<T> = {
   /** row id accessor — required for selection + key */
   rowKey: (row: T) => string;
   searchPlaceholder?: string;
+  /** Human filename stem for the "Export Excel" button, e.g. "Purchase Orders".
+      Falls back to a cleaned storageKey when omitted. A YYYY-MM-DD date is
+      appended automatically. (Wei Siang 2026-06-20 — storageKey filenames like
+      "pr-g-so-list-layout-v1" read like junk.) */
+  exportName?: string;
   onRowDoubleClick?: (row: T) => void;
   /** Commander 2026-05-28 — single-click anywhere on a row fires this (in
       addition to the highlight). Cells that stopPropagation (checkboxes,
@@ -262,6 +273,7 @@ function DataGridInner<T>({
   storageKey,
   rowKey,
   searchPlaceholder = 'Search…',
+  exportName,
   onRowDoubleClick,
   onRowClick,
   rowStyle,
@@ -856,6 +868,67 @@ function DataGridInner<T>({
   };
   const resetLayout = () => setLayout(() => DEFAULT_LAYOUT);
 
+  /* ── Export to Excel (system-wide via DataGrid) ───────────────────────
+     Exports exactly what the operator sees: the post-filter + post-search +
+     post-sort `sortedRows`, across the visible DATA columns in their on-screen
+     order (the synthetic __select__ / __expand__ columns are skipped). Cells
+     render ReactNode, so we derive a text value per cell. xlsx is dynamic-
+     imported (mirrors the jspdf generators) to keep it out of the main bundle. */
+  const exportRows = useCallback(async () => {
+    if (sortedRows.length === 0) return;
+    const cols = visibleColumns.filter((c) => !c.key.startsWith('__'));
+    if (cols.length === 0) return;
+    const cellText = (c: DataGridColumn<T>, row: T): string | number => {
+      // Export the CLEAN display value — NOT the global-search blob. searchValue
+      // is built for the search box and often concatenates several
+      // representations of one cell (doc-no + status, raw + formatted phone,
+      // label + value); dumping it made every cell look duplicated/merged
+      // ("SO-2606-031 CONFIRMED", "Installment installment", doubled phone —
+      // Wei Siang 2026-06-20). Prefer an explicit exportValue, then the single
+      // filterValue, then the text the cell actually renders. searchValue is
+      // NEVER exported.
+      if (c.exportValue) return c.exportValue(row);
+      if (c.filterValue) return c.filterValue(row);
+      const rendered = coerceSearchString(c.accessor(row)).trim();
+      if (rendered) return rendered;
+      if (c.groupValue) return c.groupValue(row);
+      return '';
+    };
+    const data = sortedRows.map((row) => {
+      const o: Record<string, string | number> = {};
+      for (const c of cols) o[c.label] = cellText(c, row);
+      return o;
+    });
+    const XLSX = await import('xlsx');
+    const ws = XLSX.utils.json_to_sheet(data, { header: cols.map((c) => c.label) });
+    // Auto-size each column to its widest cell (header included) so the sheet is
+    // legible instead of squished into one default width (Wei Siang 2026-06-20
+    // "很乱很难看"). Capped so a stray long value can't blow a column out.
+    ws['!cols'] = cols.map((c) => {
+      let w = c.label.length;
+      for (const o of data) w = Math.max(w, String(o[c.label] ?? '').length);
+      return { wch: Math.min(60, Math.max(8, w + 2)) };
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    // Filename: prefer the caller's human exportName ("Purchase Orders"); else
+    // clean the storageKey down to something legible (strip dg-/pr-g- prefixes,
+    // -v1 / layout suffixes, dashes→spaces). A YYYY-MM-DD date is appended so
+    // repeated exports are self-dating and don't silently overwrite.
+    const stem = (exportName && exportName.trim())
+      || (storageKey || 'export')
+        .replace(/[:.]/g, '-')
+        .replace(/-?v\d+$/i, '')
+        .replace(/-?(grid|layout|columns|list|table|datagrid)$/i, '')
+        .replace(/^(dg|pr-g)-/i, '')
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      || `export-${sortedRows.length}`;
+    const stamp = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `${stem} ${stamp}.xlsx`);
+  }, [sortedRows, visibleColumns, storageKey, exportName]);
+
   // ── Sort handlers ─────────────────────────────────────────────────
   const toggleSort = (key: string) => {
     setLayout((l) => {
@@ -1042,6 +1115,19 @@ function DataGridInner<T>({
             </span>
           </button>
         )}
+        {/* Export Excel — exports the currently visible rows (post search +
+            filter + sort) across the visible data columns. System-wide: every
+            list rendered through DataGrid gets it for free. Wei Siang 2026-06-19. */}
+        <button
+          type="button"
+          className={styles.toolbarPill}
+          onClick={() => { void exportRows(); }}
+          disabled={sortedRows.length === 0}
+          title={sortedRows.length === 0 ? 'No rows to export' : 'Export the visible rows to Excel'}
+        >
+          <Download size={14} strokeWidth={1.75} aria-hidden />
+          <span>Export Excel</span>
+        </button>
         <div className={styles.columnsAnchor}>
           <button
             ref={columnsBtnRef}

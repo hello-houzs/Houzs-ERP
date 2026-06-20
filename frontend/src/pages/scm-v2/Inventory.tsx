@@ -363,6 +363,7 @@ const BalancesTab = ({
         rows={rows}
         columns={BALANCE_COLUMNS}
         storageKey="dg-inventory-balances"
+        exportName="Inventory Balances"
         rowKey={(r) => r.product_code}
         searchPlaceholder="Search SKUs…"
         groupBanner={false}
@@ -706,6 +707,7 @@ const BatchesTab = ({
         rows={batches}
         columns={BATCH_COLUMNS}
         storageKey="dg-inventory-batches"
+        exportName="Inventory Batches"
         rowKey={(b) => `${b.warehouseId}|${b.batchNo}`}
         searchPlaceholder="Search batches…"
         groupBanner={false}
