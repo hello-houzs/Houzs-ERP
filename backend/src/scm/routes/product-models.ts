@@ -114,6 +114,53 @@ productModels.get('/', async (c) => {
   return c.json({ models: data ?? [] });
 });
 
+// ── GET /by-code/:code ───────────────────────────────────────────────────────
+// Resolve a SKU's Model allowed_options pools by the SKU's item code, mirroring
+// 2990's useModelAllowedOptionsByCode (a direct supabase join
+// mfg_products → product_models.allowed_options). The SO line editor (SoLineCard)
+// reads this so EDITING an already-saved line filters its variant dropdowns by
+// the picked Model's pools, not just freshly-picked lines.
+//
+// Returns { allowedOptions: null } for legacy/unknown codes (no Model link) so
+// the caller falls back to UNRESTRICTED dropdowns — the verbatim 2990's
+// behaviour. NOTE: static `/by-code/...` MUST be declared before `/:id` so the
+// param route doesn't swallow it.
+productModels.get('/by-code/:code', async (c) => {
+  const code = c.req.param('code');
+  const supabase = c.get('supabase');
+
+  // Resolve the SKU's model_id, then the Model's allowed_options. A two-step
+  // read avoids relying on PostgREST embedded-resource shaping (which the
+  // service client may camelCase / array-wrap inconsistently).
+  const { data: sku, error: skuErr } = await supabase
+    .from('mfg_products')
+    .select('model_id')
+    .eq('code', code)
+    .limit(1)
+    .maybeSingle();
+  if (skuErr) {
+    if (/relation .* does not exist/i.test(skuErr.message)) return c.json({ allowedOptions: null });
+    return c.json({ error: 'load_failed', reason: skuErr.message }, 500);
+  }
+  // Dual-read camelCase ?? snake_case for the FK column.
+  const modelId = (sku as Record<string, unknown> | null)?.modelId
+    ?? (sku as Record<string, unknown> | null)?.model_id
+    ?? null;
+  if (!modelId) return c.json({ allowedOptions: null });
+
+  const { data: model, error: modelErr } = await supabase
+    .from('product_models')
+    .select('allowed_options')
+    .eq('id', modelId)
+    .maybeSingle();
+  if (modelErr) return c.json({ error: 'load_failed', reason: modelErr.message }, 500);
+  const allowedOptions =
+    (model as Record<string, unknown> | null)?.allowedOptions
+    ?? (model as Record<string, unknown> | null)?.allowed_options
+    ?? null;
+  return c.json({ allowedOptions });
+});
+
 // ── GET /:id ───────────────────────────────────────────────────────────────
 productModels.get('/:id', async (c) => {
   const id = c.req.param('id');

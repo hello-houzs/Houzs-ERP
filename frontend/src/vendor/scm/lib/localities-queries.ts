@@ -31,9 +31,11 @@ export interface LocalityRow {
   warehouseId?: string | null;
 }
 
-/* HOUZS VENDOR — see header. No Supabase client / GET endpoint in the vendor
-   layer, so this resolves to an empty dataset. Same shape + query key as the
-   source so callers (and any future repoint) stay unchanged. */
+/* HOUZS VENDOR — routes through GET /api/scm/localities (returns scm.my_localities
+   camelCased). Same shape + query key as the source. When the table is empty the
+   endpoint returns [], so distinctStates/citiesInState below collapse to [] and
+   the StateSelect falls back to a free-text State input (the verbatim no-data
+   behaviour). Seed real MY data with seed-my-localities.mjs. */
 export const useLocalities = () =>
   useQuery({
     queryKey: ['my_localities'],
@@ -41,7 +43,10 @@ export const useLocalities = () =>
     gcTime: 24 * 60 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-    queryFn: async (): Promise<LocalityRow[]> => [],
+    queryFn: async (): Promise<LocalityRow[]> => {
+      const res = await authedFetch<{ localities: LocalityRow[] }>('/localities');
+      return res.localities ?? [];
+    },
   });
 
 /* Derive distinct states — used by SupplierDetail's StateSelect for the

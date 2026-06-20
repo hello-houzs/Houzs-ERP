@@ -248,14 +248,13 @@ export function useDeleteFabric() {
   });
 }
 
-/* HOUZS VENDOR — SO line editor (SoLineCard) read. The source
-   useFabricColoursActive selects the selling-side fabric_colours library via a
-   DIRECT supabase read (the colour vocabulary POS offers), which the vendored
-   layer has no supabase client for. It returns an EMPTY list here, so the
-   SoLineCard Fabrics dropdown falls back to its "(current)" rehydrate for saved
-   lines and offers no colour picks for new lines — the verbatim empty-pool
-   behaviour. When a Houzs /api/scm endpoint exposes the colour library, swap
-   this to an authedFetch read returning the same FabricColourRow[] shape. */
+/* HOUZS VENDOR — SO line editor (SoLineCard) read. Routes through GET
+   /api/scm/fabric-colours (backend/src/scm/routes/fabric-colours.ts), which
+   lists ACTIVE scm.fabric_colours rows camelCased to FabricColourRow. Empty
+   table → endpoint returns [], so the SoLineCard Fabrics dropdown falls back to
+   its "(current)" rehydrate for saved lines and offers no colour picks for new
+   lines (the verbatim empty-pool behaviour). Seed sample colours with
+   seed-fabric-colours.mjs. */
 export type FabricColourRow = {
   fabricId: string;
   colourId: string;
@@ -268,5 +267,8 @@ export const useFabricColoursActive = () =>
   useQuery({
     queryKey: ['fabric-colours', 'active'],
     staleTime: 60_000,
-    queryFn: async (): Promise<FabricColourRow[]> => [],
+    queryFn: async (): Promise<FabricColourRow[]> => {
+      const res = await authedFetch<{ colours: FabricColourRow[] }>('/fabric-colours');
+      return res.colours ?? [];
+    },
   });
