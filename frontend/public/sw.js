@@ -35,7 +35,10 @@
 // v6 (2026-06-21): hotfix — mount PromptProvider in Scm2990Shell so the
 // SCM pages that call usePrompt (Sales Order detail, pricing Maintenance
 // editor) stop crashing with "usePrompt must be used within PromptProvider".
-const VERSION = "houzs-erp-v6";
+// v7 (2026-06-21): SCM sidebar re-sectioned 1:1 with 2990 (Sales Order /
+// Consignment / Procurement [MRP+Products here] / Transportation / Warehouse);
+// added the missing Sales Invoices, Drivers, Adjustments nav items.
+const VERSION = "houzs-erp-v7";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
