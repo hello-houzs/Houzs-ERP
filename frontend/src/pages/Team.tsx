@@ -2323,6 +2323,25 @@ function OrgChartTab() {
     }
   }
 
+  async function changeDept(userId: number, departmentId: number | null) {
+    const current = byId.get(userId);
+    if (!current || (current.department_id ?? null) === departmentId) return;
+    try {
+      await api.patch(`/api/users/${userId}`, { department_id: departmentId });
+      const name = departmentId
+        ? (depts.data?.departments.find((d) => d.id === departmentId)?.name ?? "department")
+        : null;
+      toast.success(
+        name
+          ? `${current.name || current.email} → ${name}`
+          : `${current.name || current.email} removed from department`,
+      );
+      members.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update department");
+    }
+  }
+
   if (members.loading && users.length === 0) {
     return <ListSkeleton rows={4} />;
   }
@@ -2527,6 +2546,8 @@ function OrgChartTab() {
                     childrenOf={childrenOf}
                     canManage={canManage}
                     users={users}
+                    departments={deptList}
+                    onChangeDept={changeDept}
                     draggingId={draggingId}
                     setDraggingId={setDraggingId}
                     onDrop={reassign}
@@ -2548,6 +2569,8 @@ function OrgChartTab() {
                     toggleCollapse={toggleCollapse}
                     canManage={canManage}
                     users={users}
+                    departments={deptList}
+                    onChangeDept={changeDept}
                     draggingId={draggingId}
                     setDraggingId={setDraggingId}
                     onDrop={reassign}
@@ -2612,6 +2635,8 @@ function OrgTreeNode({
   childrenOf,
   canManage,
   users,
+  departments,
+  onChangeDept,
   draggingId,
   setDraggingId,
   onDrop,
@@ -2623,6 +2648,8 @@ function OrgTreeNode({
   childrenOf: Map<number | null, TeamMember[]>;
   canManage: boolean;
   users: TeamMember[];
+  departments: Department[];
+  onChangeDept: (userId: number, departmentId: number | null) => void;
   draggingId: number | null;
   setDraggingId: (id: number | null) => void;
   onDrop: (userId: number, managerId: number | null) => void;
@@ -2645,6 +2672,8 @@ function OrgTreeNode({
         editing={editingId === user.id}
         setEditing={(on) => setEditingId(on ? user.id : null)}
         users={users}
+        departments={departments}
+        onChangeDept={onChangeDept}
         onPickManager={onPickManager}
       />
 
@@ -2684,6 +2713,8 @@ function OrgTreeNode({
                     childrenOf={childrenOf}
                     canManage={canManage}
                     users={users}
+                    departments={departments}
+                    onChangeDept={onChangeDept}
                     draggingId={draggingId}
                     setDraggingId={setDraggingId}
                     onDrop={onDrop}
@@ -2711,6 +2742,8 @@ function OrgCard({
   editing,
   setEditing,
   users,
+  departments,
+  onChangeDept,
   onPickManager,
 }: {
   user: TeamMember;
@@ -2722,6 +2755,8 @@ function OrgCard({
   editing: boolean;
   setEditing: (on: boolean) => void;
   users: TeamMember[];
+  departments: Department[];
+  onChangeDept: (userId: number, departmentId: number | null) => void;
   onPickManager: (userId: number, managerId: number | null) => void;
 }) {
   const [dropHover, setDropHover] = useState(false);
@@ -2757,35 +2792,33 @@ function OrgCard({
         if (!isNaN(id) && id !== user.id) onDrop(id, user.id);
       }}
       className={cn(
-        "relative min-h-[96px] w-[240px] shrink-0 overflow-hidden rounded-md border bg-surface shadow-stone transition-all",
+        "relative w-[250px] shrink-0 overflow-hidden rounded-lg border bg-surface shadow-stone transition-all",
         isDragSource && "opacity-50",
-        dropHover && isValidDropTarget && "border-accent bg-accent-soft/40 ring-2 ring-accent/30",
-        !dropHover && "border-border",
-        canManage && "cursor-grab active:cursor-grabbing"
+        dropHover && isValidDropTarget ? "border-accent ring-2 ring-accent/30" : "border-border",
+        canManage && "cursor-grab active:cursor-grabbing",
       )}
     >
-      {/* Department colour stripe on the left edge. Transparent when no
-          department assigned so the card still reads as bordered. */}
-      {user.department_color && (
-        <span
-          aria-hidden
-          className="absolute inset-y-0 left-0 w-[3px]"
-          style={{ backgroundColor: `#${user.department_color}` }}
-        />
-      )}
-      <div className="flex items-start gap-2.5 px-3 py-2.5">
+      {/* Department colour accent bar across the top (reference look). */}
+      <span
+        aria-hidden
+        className="block h-1.5 w-full"
+        style={{
+          backgroundColor: user.department_color ? `#${user.department_color}` : "transparent",
+        }}
+      />
+      <div className="flex items-start gap-2.5 p-2.5">
         <Avatar
           userId={user.id}
           hasImage={user.profile_pic_r2_key}
           name={user.name}
           email={user.email}
-          size={36}
+          size={42}
         />
         <div className="min-w-0 flex-1">
-          <div className="flex min-h-[34px] items-start gap-1.5">
+          <div className="flex items-start gap-1.5">
             <span
               title={user.name || user.email}
-              className="line-clamp-2 min-w-0 flex-1 break-words text-[12.5px] font-semibold leading-snug text-ink"
+              className="line-clamp-2 min-w-0 flex-1 break-words text-[12.5px] font-bold leading-snug text-ink"
             >
               {user.name || user.email}
             </span>
@@ -2794,97 +2827,100 @@ function OrgCard({
                 {user.status}
               </span>
             )}
-          </div>
-          <div className="mt-0.5 truncate text-[10.5px] text-ink-muted">
-            {user.email}
-          </div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-1">
-            <span className="rounded bg-accent-soft px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-accent-ink">
-              {user.role_name}
-            </span>
-            {user.department_name && (
-              <span
-                className="rounded px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider"
-                style={
-                  user.department_color
-                    ? {
-                        backgroundColor: `#${user.department_color}22`,
-                        color: `#${user.department_color}`,
-                      }
-                    : undefined
-                }
+            {canManage && !editing && (
+              <button
+                onClick={() => setEditing(true)}
+                className="-mr-0.5 -mt-0.5 shrink-0 rounded p-0.5 text-ink-muted transition-colors hover:bg-surface-dim hover:text-accent"
+                aria-label="Edit reporting & department"
+                title="Edit reporting & department"
               >
-                {user.department_name}
-              </span>
-            )}
-            {reportsCount > 0 && (
-              <span
-                className="font-mono text-[9.5px] text-ink-muted"
-                title={`${reportsCount} direct report${reportsCount === 1 ? "" : "s"}`}
-              >
-                {reportsCount} report{reportsCount === 1 ? "" : "s"}
-              </span>
+                <Pencil size={11} />
+              </button>
             )}
           </div>
-          {user.brands && user.brands.length > 0 && (
-            <div
-              className="mt-1 flex flex-wrap items-center gap-0.5"
-              title={`Brand allow-list: ${user.brands.join(", ")}`}
-            >
-              {user.brands.map((b) => (
-                <span
-                  key={b}
-                  className="rounded bg-bg px-1 py-px font-mono text-[8.5px] font-semibold uppercase tracking-wider text-ink-secondary"
-                >
-                  {b}
-                </span>
-              ))}
+          <div className="mt-0.5 truncate text-[11px] font-medium text-ink-secondary">
+            {user.position_name || user.role_name}
+          </div>
+          {user.phone && (
+            <div className="mt-1 flex items-center gap-1 text-[10px] text-ink-muted">
+              <Phone size={9} className="shrink-0" />
+              <span className="truncate">{user.phone}</span>
             </div>
           )}
+          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-ink-muted">
+            {user.department_name ? (
+              <span className="inline-flex min-w-0 items-center gap-1">
+                {user.department_color && (
+                  <span
+                    className="h-1.5 w-1.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: `#${user.department_color}` }}
+                  />
+                )}
+                <span className="truncate">{user.department_name}</span>
+              </span>
+            ) : (
+              <span className="text-ink-muted/70">No department</span>
+            )}
+            {reportsCount > 0 && (
+              <span className="shrink-0">
+                · {reportsCount} report{reportsCount === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
         </div>
-        {canManage && !editing && (
-          <button
-            onClick={() => setEditing(true)}
-            className="rounded p-1 text-ink-muted transition-colors hover:bg-surface-dim hover:text-accent"
-            aria-label="Change manager"
-            title="Change manager"
-          >
-            <Pencil size={11} />
-          </button>
-        )}
       </div>
 
       {editing && (
-        <div className="border-t border-border-subtle bg-bg/60 px-3 py-2">
-          <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
-            Reports to
-          </label>
-          <select
-            autoFocus
-            defaultValue={user.manager_id ?? ""}
-            onChange={(e) => {
-              const v = e.target.value;
-              onPickManager(user.id, v ? Number(v) : null);
-            }}
-            className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-          >
-            <option value="">— No manager —</option>
-            {users
-              .filter(
-                (m) =>
-                  m.id !== user.id && !isDescendantOf(m.id, user.id, users)
-              )
-              .map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name || m.email}
+        <div className="space-y-2 border-t border-border-subtle bg-bg/60 px-3 py-2.5">
+          <div>
+            <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+              Reports to
+            </label>
+            <select
+              autoFocus
+              defaultValue={user.manager_id ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                onPickManager(user.id, v ? Number(v) : null);
+              }}
+              className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent"
+            >
+              <option value="">— No manager —</option>
+              {users
+                .filter((m) => m.id !== user.id && !isDescendantOf(m.id, user.id, users))
+                .map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.email}
+                  </option>
+                ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+              Department
+            </label>
+            <select
+              defaultValue={user.department_id ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                onChangeDept(user.id, v ? Number(v) : null);
+              }}
+              className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent"
+            >
+              <option value="">— No department —</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
                 </option>
               ))}
-          </select>
+            </select>
+          </div>
           <button
+            type="button"
             onClick={() => setEditing(false)}
-            className="mt-1.5 text-[10px] text-ink-muted hover:text-ink"
+            className="text-[10px] text-ink-muted hover:text-ink"
           >
-            Cancel
+            Done
           </button>
         </div>
       )}
@@ -2902,6 +2938,8 @@ function OrgListNode({
   toggleCollapse,
   canManage,
   users,
+  departments,
+  onChangeDept,
   draggingId,
   setDraggingId,
   onDrop,
@@ -2916,6 +2954,8 @@ function OrgListNode({
   toggleCollapse: (id: number) => void;
   canManage: boolean;
   users: TeamMember[];
+  departments: Department[];
+  onChangeDept: (userId: number, departmentId: number | null) => void;
   draggingId: number | null;
   setDraggingId: (id: number | null) => void;
   onDrop: (userId: number, managerId: number | null) => void;
@@ -3020,8 +3060,8 @@ function OrgListNode({
             type="button"
             onClick={() => setEditingId(user.id)}
             className="shrink-0 rounded p-1 text-ink-muted opacity-0 transition-opacity hover:bg-surface-dim hover:text-accent group-hover:opacity-100"
-            aria-label="Change manager"
-            title="Change manager"
+            aria-label="Edit reporting & department"
+            title="Edit reporting & department"
           >
             <Pencil size={11} />
           </button>
@@ -3029,34 +3069,56 @@ function OrgListNode({
       </div>
 
       {editing && (
-        <div className="mb-1 ml-7 rounded-md border border-border bg-bg/60 px-2 py-1.5">
-          <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
-            Reports to
-          </label>
-          <select
-            autoFocus
-            defaultValue={user.manager_id ?? ""}
-            onChange={(e) => {
-              const v = e.target.value;
-              onPickManager(user.id, v ? Number(v) : null);
-            }}
-            className="h-8 w-full max-w-xs cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent"
-          >
-            <option value="">— No manager —</option>
-            {users
-              .filter((m) => m.id !== user.id && !isDescendantOf(m.id, user.id, users))
-              .map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name || m.email}
+        <div className="mb-1 ml-7 max-w-xs space-y-2 rounded-md border border-border bg-bg/60 px-2 py-2">
+          <div>
+            <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+              Reports to
+            </label>
+            <select
+              autoFocus
+              defaultValue={user.manager_id ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                onPickManager(user.id, v ? Number(v) : null);
+              }}
+              className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent"
+            >
+              <option value="">— No manager —</option>
+              {users
+                .filter((m) => m.id !== user.id && !isDescendantOf(m.id, user.id, users))
+                .map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.email}
+                  </option>
+                ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+              Department
+            </label>
+            <select
+              defaultValue={user.department_id ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                onChangeDept(user.id, v ? Number(v) : null);
+              }}
+              className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent"
+            >
+              <option value="">— No department —</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
                 </option>
               ))}
-          </select>
+            </select>
+          </div>
           <button
             type="button"
             onClick={() => setEditingId(null)}
-            className="mt-1 block text-[10px] text-ink-muted hover:text-ink"
+            className="block text-[10px] text-ink-muted hover:text-ink"
           >
-            Cancel
+            Done
           </button>
         </div>
       )}
@@ -3073,6 +3135,8 @@ function OrgListNode({
               toggleCollapse={toggleCollapse}
               canManage={canManage}
               users={users}
+              departments={departments}
+              onChangeDept={onChangeDept}
               draggingId={draggingId}
               setDraggingId={setDraggingId}
               onDrop={onDrop}
