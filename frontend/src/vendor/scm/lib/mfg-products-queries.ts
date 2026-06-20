@@ -271,21 +271,25 @@ export function useUpdateMfgProductStatus() {
   });
 }
 
-/* HOUZS VENDOR — SO line editor (SoLineCard) read. The source
-   useModelAllowedOptionsByCode resolves a saved line's allowed_options pools
-   via a DIRECT supabase join (mfg_products → product_models.allowed_options),
-   which the vendored layer has no supabase client for. It returns null here, so
-   the SO variant dropdowns render UNRESTRICTED (no pool filter) for saved lines
-   — the exact verbatim fallback the source already takes for legacy/unknown
-   codes. Freshly-picked products still carry allowed_options inline off
-   useMfgProducts, so that path is unaffected. When a Houzs /api/scm endpoint
-   exposes a SKU's Model allowed_options, swap this to an authedFetch read. */
+/* HOUZS VENDOR — SO line editor (SoLineCard) read. Routes through GET
+   /api/scm/product-models/by-code/:code (backend/src/scm/routes/product-models.ts),
+   which resolves the SKU's model_id → product_models.allowed_options. Returns
+   null for legacy/unknown codes (no Model link) or when no models are seeded yet
+   — so the SO variant dropdowns render UNRESTRICTED for those lines (the exact
+   verbatim fallback the source already takes). Freshly-picked products still
+   carry allowed_options inline off useMfgProducts, so that path is unaffected. */
 export const useModelAllowedOptionsByCode = (itemCode: string | undefined) =>
   useQuery({
     enabled: Boolean(itemCode),
     queryKey: ['model-allowed-options-by-code', itemCode],
     staleTime: 60_000,
-    queryFn: async (): Promise<ModelAllowedOptions | null> => null,
+    queryFn: async (): Promise<ModelAllowedOptions | null> => {
+      if (!itemCode) return null;
+      const res = await authedFetch<{ allowedOptions: ModelAllowedOptions | null }>(
+        `/product-models/by-code/${encodeURIComponent(itemCode)}`,
+      );
+      return res.allowedOptions ?? null;
+    },
   });
 
 /* ════════════════════════════════════════════════════════════════════════════
