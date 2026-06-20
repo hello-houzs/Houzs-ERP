@@ -32,7 +32,10 @@
 // v5 (2026-06-20): SCM cutover — the 2990-vendored pages replace the
 // native SCM (new chunks, system-font rebrand, real document PDFs). Purge
 // so every client picks up the new shell + assets on next load.
-const VERSION = "houzs-erp-v5";
+// v6 (2026-06-21): hotfix — mount PromptProvider in Scm2990Shell so the
+// SCM pages that call usePrompt (Sales Order detail, pricing Maintenance
+// editor) stop crashing with "usePrompt must be used within PromptProvider".
+const VERSION = "houzs-erp-v6";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
