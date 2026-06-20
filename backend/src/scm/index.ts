@@ -27,6 +27,7 @@ import { purchaseInvoices } from "./routes/purchase-invoices";
 import { mfgSalesOrders } from "./routes/mfg-sales-orders";
 import { stateWarehouseMappings } from "./routes/state-warehouse-mappings";
 import { deliveryOrdersMfg } from "./routes/delivery-orders-mfg";
+import { salesInvoices } from "./routes/sales-invoices";
 import { deliveryReturns } from "./routes/delivery-returns";
 import { purchaseReturns } from "./routes/purchase-returns";
 import { consignmentOrders } from "./routes/consignment-orders";
@@ -73,6 +74,11 @@ scm.route("/purchase-invoices", purchaseInvoices);
 scm.route("/mfg-sales-orders", mfgSalesOrders);
 scm.route("/state-warehouse-mappings", stateWarehouseMappings);
 scm.route("/delivery-orders-mfg", deliveryOrdersMfg);
+// Ported 2026-06-20 — SI backend (skipped in the earlier sync; the vendored SI
+// pages 404'd on /sales-invoices). NEEDS scm.sales_invoice_payments +
+// scm.customer_credits applied (scripts/scm-schema/0103-0110-si-payments-and-credits.sql)
+// and scm.accounts seeded (codes 1100/4000) for GL posting.
+scm.route("/sales-invoices", salesInvoices);
 scm.route("/delivery-returns", deliveryReturns);
 scm.route("/purchase-returns", purchaseReturns);
 scm.route("/consignment-orders", consignmentOrders);
