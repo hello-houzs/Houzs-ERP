@@ -2503,6 +2503,55 @@ function OrgChartTab() {
     }
   }
 
+  // Set a member's division (org-chart column) — free text, mig 0021.
+  async function changeDivision(userId: number, division: string | null) {
+    const current = byId.get(userId);
+    if (!current) return;
+    const next = division?.trim() || null;
+    if ((current.division ?? null) === next) return; // no-op
+    try {
+      await api.patch(`/api/users/${userId}`, { division: next });
+      members.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update division");
+    }
+  }
+
+  // Drag-drop target: move a member into a department column. Sets both the
+  // primary department and the division in one shot.
+  async function moveMember(
+    userId: number,
+    departmentId: number | null,
+    division: string | null,
+  ) {
+    const current = byId.get(userId);
+    if (!current) return;
+    const next = division?.trim() || null;
+    if (
+      (current.department_id ?? null) === departmentId &&
+      (current.division ?? null) === next
+    )
+      return; // no-op
+    try {
+      await api.patch(`/api/users/${userId}`, {
+        department_id: departmentId,
+        division: next,
+      });
+      const where = [
+        departmentId
+          ? depts.data?.departments.find((d) => d.id === departmentId)?.name
+          : "No department",
+        next,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      toast.success(`${current.name || current.email} → ${where}`);
+      members.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to move member");
+    }
+  }
+
   if (members.loading && users.length === 0) {
     return <ListSkeleton rows={4} />;
   }
@@ -2514,6 +2563,14 @@ function OrgChartTab() {
   const filterDept = filterDeptId
     ? deptList.find((d) => d.id === filterDeptId)
     : null;
+  // Existing division names (for the editor's autocomplete) — deduped, sorted.
+  const divisionOptions = Array.from(
+    new Set(
+      allActive
+        .map((u) => u.division?.trim())
+        .filter((d): d is string => !!d),
+    ),
+  ).sort((a, b) => a.localeCompare(b));
 
   return (
     <div className="space-y-4">
@@ -2702,12 +2759,15 @@ function OrgChartTab() {
                   users={users}
                   roots={roots}
                   departments={deptList}
+                  divisionOptions={divisionOptions}
                   canManage={canManage}
                   draggingId={draggingId}
                   setDraggingId={setDraggingId}
                   onReassign={reassign}
                   onChangeDept={changeDept}
                   onChangeDepts={changeDepts}
+                  onChangeDivision={changeDivision}
+                  onMoveMember={moveMember}
                   editingId={editingId}
                   setEditingId={setEditingId}
                 />
@@ -2841,24 +2901,30 @@ function OrgDeptChart({
   users,
   roots,
   departments,
+  divisionOptions,
   canManage,
   draggingId,
   setDraggingId,
   onReassign,
   onChangeDept,
   onChangeDepts,
+  onChangeDivision,
+  onMoveMember,
   editingId,
   setEditingId,
 }: {
   users: TeamMember[];
   roots: TeamMember[];
   departments: Department[];
+  divisionOptions: string[];
   canManage: boolean;
   draggingId: number | null;
   setDraggingId: (id: number | null) => void;
   onReassign: (userId: number, managerId: number | null) => void;
   onChangeDept: (userId: number, departmentId: number | null) => void;
   onChangeDepts: (userId: number, departmentIds: number[]) => void;
+  onChangeDivision: (userId: number, division: string | null) => void;
+  onMoveMember: (userId: number, departmentId: number | null, division: string | null) => void;
   editingId: number | null;
   setEditingId: (id: number | null) => void;
 }) {
@@ -2868,6 +2934,7 @@ function OrgDeptChart({
       user={u}
       accent={false}
       square
+      noReportDrop
       canManage={canManage}
       draggingId={draggingId}
       setDraggingId={setDraggingId}
@@ -2876,8 +2943,10 @@ function OrgDeptChart({
       setEditing={(on) => setEditingId(on ? u.id : null)}
       users={users}
       departments={departments}
+      divisionOptions={divisionOptions}
       onChangeDept={onChangeDept}
       onChangeDepts={onChangeDepts}
+      onChangeDivision={onChangeDivision}
       onPickManager={onReassign}
     />
   );
@@ -2889,6 +2958,7 @@ function OrgDeptChart({
   const rest = users.filter((u) => !rootIds.has(u.id));
   const groups: {
     key: string;
+    deptId: number | null;
     name: string;
     color: string | null;
     members: TeamMember[];
@@ -2896,12 +2966,12 @@ function OrgDeptChart({
   for (const d of departments) {
     const ms = rest.filter((u) => inDept(u, d.id));
     if (ms.length)
-      groups.push({ key: `d${d.id}`, name: d.name, color: d.color, members: ms });
+      groups.push({ key: `d${d.id}`, deptId: d.id, name: d.name, color: d.color, members: ms });
   }
   const placed = new Set(groups.flatMap((g) => g.members.map((m) => m.id)));
   const noDept = rest.filter((u) => !placed.has(u.id));
   if (noDept.length)
-    groups.push({ key: "none", name: "Unassigned", color: null, members: noDept });
+    groups.push({ key: "none", deptId: null, name: "Unassigned", color: null, members: noDept });
 
   const hasRoots = roots.length > 0;
 
@@ -2938,7 +3008,13 @@ function OrgDeptChart({
               />
             )}
             {hasRoots && <div className="h-5 w-px bg-border" />}
-            <DeptGroupBox group={g} renderCard={renderCard} />
+            <DeptGroupBox
+              group={g}
+              renderCard={renderCard}
+              canManage={canManage}
+              draggingId={draggingId}
+              onMoveMember={onMoveMember}
+            />
           </div>
         ))}
       </div>
@@ -2949,11 +3025,37 @@ function OrgDeptChart({
 function DeptGroupBox({
   group,
   renderCard,
+  canManage,
+  draggingId,
+  onMoveMember,
 }: {
-  group: { name: string; color: string | null; members: TeamMember[] };
+  group: {
+    deptId: number | null;
+    name: string;
+    color: string | null;
+    members: TeamMember[];
+  };
   renderCard: (u: TeamMember) => ReactNode;
+  canManage: boolean;
+  draggingId: number | null;
+  onMoveMember: (userId: number, departmentId: number | null, division: string | null) => void;
 }) {
-  const clusters = clusterByPosition(group.members);
+  // Columns = divisions within the department. Members with no division fall
+  // into a leading default column ("" key); named divisions sort alpha after.
+  const byDiv = new Map<string, TeamMember[]>();
+  for (const m of group.members) {
+    const key = m.division?.trim() || "";
+    const arr = byDiv.get(key) ?? [];
+    arr.push(m);
+    byDiv.set(key, arr);
+  }
+  const columns = [...byDiv.entries()].sort((a, b) => {
+    if (a[0] === "") return -1;
+    if (b[0] === "") return 1;
+    return a[0].localeCompare(b[0]);
+  });
+  const multiCol = columns.length > 1;
+
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
       <div
@@ -2966,18 +3068,95 @@ function DeptGroupBox({
         {group.name}
         <span className="ml-1.5 font-normal text-white/55">{group.members.length}</span>
       </div>
-      <div className="flex flex-col gap-2 p-2.5">
-        {clusters.map((c, ci) => (
-          <div key={ci} className="flex flex-col gap-2">
-            {c.label && (
-              <div className="px-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-ink-muted">
-                {c.label}
-              </div>
-            )}
-            {c.members.map(renderCard)}
-          </div>
+      <div className="flex items-start gap-2 p-2.5">
+        {columns.map(([div, ms]) => (
+          <DivisionColumn
+            key={div || "_default"}
+            deptId={group.deptId}
+            division={div || null}
+            members={ms}
+            showLabel={multiCol || div !== ""}
+            renderCard={renderCard}
+            canManage={canManage}
+            draggingId={draggingId}
+            onMoveMember={onMoveMember}
+          />
         ))}
       </div>
+    </div>
+  );
+}
+
+// One division = one column inside a department box, and a drop target: drag a
+// card onto it to set that member's department + division in one move.
+function DivisionColumn({
+  deptId,
+  division,
+  members,
+  showLabel,
+  renderCard,
+  canManage,
+  draggingId,
+  onMoveMember,
+}: {
+  deptId: number | null;
+  division: string | null;
+  members: TeamMember[];
+  showLabel: boolean;
+  renderCard: (u: TeamMember) => ReactNode;
+  canManage: boolean;
+  draggingId: number | null;
+  onMoveMember: (userId: number, departmentId: number | null, division: string | null) => void;
+}) {
+  const [hover, setHover] = useState(false);
+  const isDropZone = canManage && draggingId != null;
+  const clusters = clusterByPosition(members);
+  return (
+    <div
+      onDragOver={
+        isDropZone
+          ? (e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              setHover(true);
+            }
+          : undefined
+      }
+      onDragLeave={() => setHover(false)}
+      onDrop={
+        isDropZone
+          ? (e) => {
+              e.preventDefault();
+              setHover(false);
+              const id = parseInt(e.dataTransfer.getData("user-id"), 10);
+              if (!isNaN(id)) onMoveMember(id, deptId, division);
+            }
+          : undefined
+      }
+      className={cn(
+        "flex w-[202px] shrink-0 flex-col gap-2 rounded-md p-1.5 transition-colors",
+        isDropZone && "outline-dashed outline-1 -outline-offset-2 outline-border",
+        hover && "bg-accent-soft/40 outline-accent",
+      )}
+    >
+      {showLabel && (
+        <div className="flex items-center gap-1 px-0.5">
+          <span className="truncate text-[9.5px] font-semibold uppercase tracking-wide text-ink-muted">
+            {division || "—"}
+          </span>
+          <span className="text-[9px] text-ink-muted/60">{members.length}</span>
+        </div>
+      )}
+      {clusters.map((c, ci) => (
+        <div key={ci} className="flex flex-col gap-2">
+          {c.label && (
+            <div className="px-0.5 text-[9px] font-medium uppercase tracking-wide text-ink-muted/80">
+              {c.label}
+            </div>
+          )}
+          {c.members.map(renderCard)}
+        </div>
+      ))}
     </div>
   );
 }
@@ -3040,6 +3219,7 @@ function OrgCard({
   user,
   accent,
   square,
+  noReportDrop,
   canManage,
   draggingId,
   setDraggingId,
@@ -3048,8 +3228,10 @@ function OrgCard({
   setEditing,
   users,
   departments,
+  divisionOptions,
   onChangeDept,
   onChangeDepts,
+  onChangeDivision,
   onPickManager,
 }: {
   user: TeamMember;
@@ -3057,6 +3239,9 @@ function OrgCard({
   accent: boolean;
   /** Departmental chart cards use a square photo + a wider body (ID-card look). */
   square?: boolean;
+  /** In the departmental chart the division COLUMN is the drop target, so the
+   *  card opts out of being a reporting drop target (it stays a drag source). */
+  noReportDrop?: boolean;
   canManage: boolean;
   draggingId: number | null;
   setDraggingId: (id: number | null) => void;
@@ -3065,8 +3250,11 @@ function OrgCard({
   setEditing: (on: boolean) => void;
   users: TeamMember[];
   departments: Department[];
+  /** Existing division names for the editor's autocomplete. */
+  divisionOptions?: string[];
   onChangeDept: (userId: number, departmentId: number | null) => void;
   onChangeDepts: (userId: number, departmentIds: number[]) => void;
+  onChangeDivision?: (userId: number, division: string | null) => void;
   onPickManager: (userId: number, managerId: number | null) => void;
 }) {
   const [dropHover, setDropHover] = useState(false);
@@ -3087,20 +3275,28 @@ function OrgCard({
         setDraggingId(user.id);
       }}
       onDragEnd={() => setDraggingId(null)}
-      onDragOver={(e) => {
-        if (!canManage || !isValidDropTarget) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        setDropHover(true);
-      }}
-      onDragLeave={() => setDropHover(false)}
-      onDrop={(e) => {
-        if (!canManage) return;
-        e.preventDefault();
-        setDropHover(false);
-        const id = parseInt(e.dataTransfer.getData("user-id"), 10);
-        if (!isNaN(id) && id !== user.id) onDrop(id, user.id);
-      }}
+      onDragOver={
+        noReportDrop
+          ? undefined
+          : (e) => {
+              if (!canManage || !isValidDropTarget) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              setDropHover(true);
+            }
+      }
+      onDragLeave={noReportDrop ? undefined : () => setDropHover(false)}
+      onDrop={
+        noReportDrop
+          ? undefined
+          : (e) => {
+              if (!canManage) return;
+              e.preventDefault();
+              setDropHover(false);
+              const id = parseInt(e.dataTransfer.getData("user-id"), 10);
+              if (!isNaN(id) && id !== user.id) onDrop(id, user.id);
+            }
+      }
       className={cn(
         "relative shrink-0 overflow-hidden rounded-lg border bg-surface shadow-stone transition-all",
         square ? "w-[190px]" : accent ? "w-[196px]" : "w-[160px]",
@@ -3209,6 +3405,30 @@ function OrgCard({
               ))}
             </select>
           </div>
+          {onChangeDivision && (
+            <div>
+              <label className="mb-1 block font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+                Division (org-chart column)
+              </label>
+              <input
+                list="org-division-options"
+                defaultValue={user.division ?? ""}
+                placeholder="e.g. Penang Team"
+                onBlur={(e) => onChangeDivision(user.id, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                }}
+                className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent"
+              />
+              {divisionOptions && divisionOptions.length > 0 && (
+                <datalist id="org-division-options">
+                  {divisionOptions.map((d) => (
+                    <option key={d} value={d} />
+                  ))}
+                </datalist>
+              )}
+            </div>
+          )}
           <DeptChipsEditor
             user={user}
             departments={departments}

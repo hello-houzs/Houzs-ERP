@@ -64,6 +64,9 @@ export const users = pgTable("users", {
   created_at: text("created_at").default(nowText),
   manager_id: integer("manager_id"),
   department_id: integer("department_id"),
+  // Free-text sub-grouping within a department — drives the org chart's
+  // columns ("divisions"). Super-admin editable (mig 0021).
+  division: text("division"),
   position_id: integer("position_id"),
   points_balance: integer("points_balance").notNull().default(0),
   gifting_balance: integer("gifting_balance").notNull().default(0),

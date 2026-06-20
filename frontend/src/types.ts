@@ -458,6 +458,9 @@ export interface TeamMember {
    * this — fall back to `[department_id]` when absent.
    */
   department_ids?: number[];
+  /** Free-text sub-grouping within a department (mig 0021) — drives the org
+   *  chart's columns. Null = the department's default column. */
+  division?: string | null;
   /** Position = department×position org unit (mig 094). Drives the page matrix. */
   position_id: number | null;
   position_name: string | null;
