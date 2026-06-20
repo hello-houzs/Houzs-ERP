@@ -914,7 +914,7 @@ export function DataTable<T>({
                         setHeaderMenu({ x: e.clientX, y: e.clientY, colKey: c.key });
                       }}
                       className={cn(
-                        "group/th relative border-b-2 border-border bg-surface-dim text-[10px] font-semibold uppercase tracking-brand text-ink",
+                        "group/th relative border-b-2 border-border bg-surface-dim text-[10px] font-bold uppercase tracking-brand text-ink",
                         headPad,
                         c.align === "right" && "text-right",
                         c.align === "center" && "text-center",
