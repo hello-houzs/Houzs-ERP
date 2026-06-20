@@ -21,8 +21,12 @@
 
 import { serviceConfirm } from './dialog-service';
 
+// `||` not `??`: the CI build inlines VITE_API_URL as an EMPTY STRING when the
+// repo var is unset, and `'' ?? default` keeps `''` → the base collapses to a
+// relative `/api/scm` that hits the Pages origin (index.html) on prod, where
+// there is no dev proxy. `||` falls back on the empty string too.
 const API_URL =
-  (import.meta.env.VITE_API_URL ?? 'https://autocount-sync-api.houzs-erp.workers.dev') +
+  (import.meta.env.VITE_API_URL || 'https://autocount-sync-api.houzs-erp.workers.dev') +
   '/api/scm';
 
 /* Edge #J — render the shortage detail out of a 409 short_stock body and ask

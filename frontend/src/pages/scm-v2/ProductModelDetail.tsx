@@ -46,7 +46,9 @@ const ICON = { size: 14, strokeWidth: 1.75 } as const;
    · legacy Supabase-Storage upload → a full https:// public URL → use as-is.
    (Commander 2026-05-28: Model photo rendered as a broken image because the
    relative R2 path resolved against the backend origin → 404.) */
-const API_URL = import.meta.env.VITE_API_URL as string | undefined;
+const API_URL =
+  ((import.meta.env.VITE_API_URL || 'https://autocount-sync-api.houzs-erp.workers.dev') as string) +
+  '/api/scm';
 const resolveModelPhotoUrl = (u: string | null | undefined): string | undefined => {
   if (!u) return undefined;
   if (/^https?:\/\//i.test(u) || u.startsWith('data:')) return u;

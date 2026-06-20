@@ -462,7 +462,9 @@ function FilterChip({
    photo_url). Errors surface as a small red caption under the thumb so
    we don't block the table layout. */
 
-const API_URL = import.meta.env.VITE_API_URL as string | undefined;
+const API_URL =
+  ((import.meta.env.VITE_API_URL || 'https://autocount-sync-api.houzs-erp.workers.dev') as string) +
+  '/api/scm';
 const PHOTO_MAX_BYTES_CLIENT = 2 * 1024 * 1024;
 
 /** Mirror of the POS catalog's resolvePhotoUrl(): photo_url is stored as
