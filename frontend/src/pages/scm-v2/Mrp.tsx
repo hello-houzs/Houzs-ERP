@@ -219,7 +219,11 @@ function sofaSetsToSkus(sets: SofaSet[]): MrpSku[] {
     sku.poOutstanding += s.orderedQty;
     sku.shortage += s.shortageQty;
     sku.lines.push({
-      soItemId: s.soItemId, soDocNo: s.soDocNo, debtorName: s.debtorName,
+      soItemId: s.soItemId, soDocNo: s.soDocNo,
+      // Carry the SO line's canonical stored sequence so groupBySo can order
+      // an SO's module rows LHF → NA → RHF (same order as the SO PDF/detail).
+      lineNo: s.lineNo, createdAt: s.createdAt,
+      debtorName: s.debtorName,
       soDate: s.soDate, deliveryDate: s.deliveryDate, processingDate: s.processingDate,
       orderByDate: s.orderByDate, qty: s.qty,
       source: s.shortageQty > 0 ? 'shortage' : 'po', poNumber: s.poNumber, poEta: s.poEta,
@@ -244,6 +248,20 @@ function sofaComposition(codes: string[]): string {
   if (bases.size === 1) return `${[...bases][0]}: ${parts.map((p) => p.mod).join(' + ')}`;
   return codes.join(' + ');
 }
+
+/* Canonical stored-sequence comparator for two SO lines (migration 0165): order
+   by line_no (NULLS LAST), then created_at, then leave equal. Mirrors the
+   backend read order `(line_no NULLS LAST, created_at)` that the SO detail + SO
+   PDF derive their LHF → NA → RHF order from, so the Sofa tab matches them. */
+const soLineSeqCmp = (a: MrpLine | undefined, b: MrpLine | undefined): number => {
+  const an = a?.lineNo, bn = b?.lineNo;
+  const aHas = typeof an === 'number', bHas = typeof bn === 'number';
+  if (aHas && bHas && an !== bn) return an! - bn!;
+  if (aHas !== bHas) return aHas ? -1 : 1;          // numbered lines first (NULLS LAST)
+  const ac = a?.createdAt ?? '', bc = b?.createdAt ?? '';
+  if (ac !== bc) return ac < bc ? -1 : 1;
+  return 0;
+};
 
 /* F5 — group the per-SO sofa module SKUs into ONE parent row per SO (the SO doc
    no is the "serial"); the modules become the variant sub-rows. Mirrors
@@ -272,7 +290,13 @@ function groupBySo(skus: MrpSku[]): ModelGroup[] {
   }
   const groups = [...map.values()];
   for (const g of groups) {
-    g.variants.sort((a, b) => (a.itemCode < b.itemCode ? -1 : 1));
+    /* Order each SO's module rows by the CANONICAL stored sequence (line_no,
+       migration 0165) so they read LHF → NA → RHF exactly as the SO detail +
+       SO PDF do — NOT an alphabetical item_code sort (which listed XAMMAR-L /
+       1NA / 2A as 1NA → 2A → L). Each sofa variant is one module = one SO line,
+       so we sort by that line's stored sequence: line_no (NULLS LAST), then
+       created_at, then item_code, mirroring the backend's read order. */
+    g.variants.sort((a, b) => soLineSeqCmp(a.lines[0], b.lines[0]) || (a.itemCode < b.itemCode ? -1 : a.itemCode > b.itemCode ? 1 : 0));
     // Composition only — no customer name on the parent row (Wei Siang
     // 2026-06-16); the customer still shows in the expanded child order lines.
     g.description = sofaComposition(g.variants.map((v) => v.itemCode));

@@ -48,6 +48,8 @@ import { localities } from "./routes/localities";
 import { staff } from "./routes/staff";
 import { fabricColours } from "./routes/fabric-colours";
 import { addons } from "./routes/addons";
+import { documentFlow } from "./routes/document-flow";
+import { drivers } from "./routes/drivers";
 
 export const scm = new Hono<{ Bindings: Env }>();
 
@@ -109,5 +111,11 @@ scm.route("/fabric-colours", fabricColours);
 // Wired 2026-06-20 — Order Add-ons tab (Products page). CRUD over scm.addons,
 // replacing the supabase-direct read/write the 2990 UI used.
 scm.route("/addons", addons);
+// Ported 2026-06-21 — vendored SCM consumers already shipped (404'd at runtime).
+// document-flow: read-only SAP-B1 relationship graph GET /document-flow/:type/:id
+// (SO/DO/SI/Payment/PO/GRN/PI/DR/PR + consignment family). drivers: CRUD over
+// scm.drivers (DO driver picker). All referenced tables exist in the scm schema.
+scm.route("/document-flow", documentFlow);
+scm.route("/drivers", drivers);
 
 export default scm;

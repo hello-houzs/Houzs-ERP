@@ -16,6 +16,11 @@ export type MrpAllocSource = 'stock' | 'po' | 'shortage';
 export type MrpLine = {
   soItemId: string;
   soDocNo: string;
+  /* Canonical stored listing order within the SO (migration 0165) — the Sofa
+     tab orders an SO's module rows by this so they read LHF → NA → RHF exactly
+     as the SO detail + SO PDF do. NULL on legacy lines (created_at fallback). */
+  lineNo?: number | null;
+  createdAt?: string | null;
   debtorName: string | null;
   soDate: string | null;
   deliveryDate: string | null;
@@ -65,6 +70,10 @@ export type SofaSet = {
   warehouseName: string | null;
   soItemId: string;
   soDocNo: string;
+  /* Canonical stored listing order within the SO (migration 0165). NULL on
+     legacy lines → groupBySo falls back to created_at, then item_code. */
+  lineNo: number | null;
+  createdAt: string | null;
   debtorName: string | null;
   soDate: string | null;
   deliveryDate: string | null;

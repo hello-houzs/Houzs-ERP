@@ -38,7 +38,10 @@
 // v7 (2026-06-21): SCM sidebar re-sectioned 1:1 with 2990 (Sales Order /
 // Consignment / Procurement [MRP+Products here] / Transportation / Warehouse);
 // added the missing Sales Invoices, Drivers, Adjustments nav items.
-const VERSION = "houzs-erp-v7";
+// v8 (2026-06-21): 2990-parity batch — restore DataGrid CSV/Excel export, SO
+// status-label wording, Products bulk inactive/active, MRP sofa line-order;
+// (+ backend /document-flow + /drivers routes, no SW impact).
+const VERSION = "houzs-erp-v8";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

@@ -29,6 +29,7 @@ import {
   History,
   Package,
   Trash2,
+  EyeOff,
   Plus,
   X,
   Truck,
@@ -55,6 +56,7 @@ import {
   useCreateMfgProduct,
   useBatchImportMfgProducts,
   useDeleteMfgProduct,
+  useUpdateMfgProductStatus,
   useMaintenanceConfig,
   useMaintenanceConfigHistory,
   useSaveMaintenanceConfig,
@@ -379,6 +381,8 @@ const SkuMasterTab = () => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
   const deleteMut = useDeleteMfgProduct();
+  const [statusing, setStatusing] = useState(false);
+  const statusMut = useUpdateMfgProductStatus();
   const visibleIds = useMemo(() => rows.map((r) => r.id), [rows]);
   const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
   const someSelected = !allSelected && visibleIds.some((id) => selectedIds.has(id));
@@ -412,6 +416,41 @@ const SkuMasterTab = () => {
       return next.size === prev.size ? prev : next;
     });
   }, [visibleIds]);
+  /* Bulk activate / deactivate selected SKUs (owner 2026-06-19 — "为什么不能
+     inactive 掉"). Inactive SKUs drop out of the POS catalog + new-entry pickers
+     but stay on existing documents; fully reversible. Server: PATCH
+     /mfg-products/:id { status } (useUpdateMfgProductStatus). No usage block —
+     unlike delete, inactivating a used SKU is safe. */
+  const bulkSetStatus = async (status: 'ACTIVE' | 'INACTIVE') => {
+    if (selectedIds.size === 0 || statusing) return;
+    const verb = status === 'INACTIVE' ? 'Deactivate' : 'Activate';
+    if (!(await askConfirm({
+      title: `${verb} ${selectedIds.size} SKU${selectedIds.size === 1 ? '' : 's'}?`,
+      body: status === 'INACTIVE'
+        ? 'Inactive SKUs are hidden from the POS catalog and new-entry pickers; existing documents keep showing them. You can re-activate any time.'
+        : 'The selected SKUs become active again.',
+      confirmLabel: verb,
+    }))) return;
+    setStatusing(true);
+    const ids = Array.from(selectedIds);
+    const results = await Promise.all(ids.map((id) =>
+      statusMut.mutateAsync({ id, status })
+        .then(() => ({ ok: true as const }))
+        .catch((e) => ({ ok: false as const, err: e instanceof Error ? e.message : String(e) })),
+    ));
+    setStatusing(false);
+    setSelectedIds(new Set());
+    const failed = results.filter((r): r is { ok: false; err: string } => !r.ok);
+    if (failed.length === 0) {
+      notify({ title: `${verb}d ${ids.length} SKU${ids.length === 1 ? '' : 's'}.` });
+    } else {
+      notify({
+        title: `${verb}d ${ids.length - failed.length} / ${ids.length}. ${failed.length} failed.`,
+        body: failed.slice(0, 3).map((f) => `· ${f.err.slice(0, 160)}`).join('\n'),
+        tone: 'error',
+      });
+    }
+  };
   const bulkDelete = async () => {
     if (selectedIds.size === 0) return;
     if (!(await askConfirm({
@@ -775,6 +814,19 @@ const SkuMasterTab = () => {
               <span>{deleting ? 'Deleting…' : `Delete ${selectedIds.size}`}</span>
             </Button>
           )}
+          {/* Bulk activate / deactivate (owner 2026-06-19). Inactive = hidden from
+              POS + new-entry pickers, kept on existing docs, reversible. */}
+          {selectedIds.size > 0 && (
+            <>
+              <Button variant="ghost" size="md" onClick={() => bulkSetStatus('INACTIVE')} disabled={statusing}>
+                <EyeOff {...ICON_PROPS} />
+                <span>{statusing ? 'Working…' : `Set inactive (${selectedIds.size})`}</span>
+              </Button>
+              <Button variant="ghost" size="md" onClick={() => bulkSetStatus('ACTIVE')} disabled={statusing}>
+                <span>Set active</span>
+              </Button>
+            </>
+          )}
           {editMode ? (
             <>
               <Button variant="secondary" size="md" onClick={exitEdit} disabled={savingEdits}>
@@ -856,6 +908,7 @@ const SkuMasterTab = () => {
           rows={rows}
           columns={gridColumns}
           storageKey={gridStorageKey}
+          exportName="SKU Master"
           rowKey={(r) => r.id}
           searchPlaceholder="Filter visible products…"
           onRowDoubleClick={(r) => setSuppliersRow(r)}

@@ -345,6 +345,7 @@ export const GoodsReceived = () => {
         rows={rows}
         columns={columns}
         storageKey={GRN_LIST_STORAGE_KEY}
+        exportName="Goods Received"
         rowKey={(g) => g.id}
         searchPlaceholder="Search GRNs…"
         groupBanner={false}

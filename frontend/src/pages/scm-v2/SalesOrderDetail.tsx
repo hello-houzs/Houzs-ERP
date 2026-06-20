@@ -152,6 +152,22 @@ const STATUS_CLASS: Record<string, string> = {
   RETURNED:       styles.statusReturned ?? '',
 };
 
+// Owner-preferred status wording — kept identical to the SO list pill
+// (MfgSalesOrdersList SO_STATUS_LABEL) so the badge reads the same on the list
+// and here (lifecycle states like Delivered/Invoiced/Delivery Return still come
+// from soStatusDisplay; this is only the stored-status fallback).
+const SO_STATUS_LABEL: Record<string, string> = {
+  CONFIRMED:     'Confirmed',
+  IN_PRODUCTION: 'Proceed',
+  READY_TO_SHIP: 'Stock Ready',
+  SHIPPED:       'Arranged',
+  DELIVERED:     'Delivered',
+  INVOICED:      'Invoiced',
+  CLOSED:        'Closed',
+  ON_HOLD:       'On Hold',
+  CANCELLED:     'Cancelled',
+};
+
 const fmtRm = (centi: number, currency = 'MYR'): string =>
   `${currency} ${(centi / 100).toLocaleString('en-MY', {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
@@ -868,7 +884,7 @@ export const SalesOrderDetail = () => {
             );
             return (
               <span className={`${styles.statusPill} ${STATUS_CLASS[eff.classKey as SoStatus] ?? ''}`}>
-                {eff.label ?? header.status.replace(/_/g, ' ')}
+                {eff.label ?? SO_STATUS_LABEL[header.status] ?? header.status.replace(/_/g, ' ')}
               </span>
             );
           })()}
@@ -2552,7 +2568,7 @@ const HistoryPanel = memo(({
                           className={`${styles.statusPill} ${STATUS_CLASS[statusPillStatus as SoStatus] ?? ''}`}
                           style={{ marginLeft: 6, fontSize: 'var(--fs-10)' }}
                         >
-                          {statusPillStatus.replace(/_/g, ' ')}
+                          {SO_STATUS_LABEL[statusPillStatus] ?? statusPillStatus.replace(/_/g, ' ')}
                         </span>
                       )}
                     </div>
