@@ -44,6 +44,8 @@ import { mrp } from "./routes/mrp";
 import { mrpLeadTimes } from "./routes/mrp-lead-times";
 import { outstanding } from "./routes/outstanding";
 import { localities } from "./routes/localities";
+import { staff } from "./routes/staff";
+import { fabricColours } from "./routes/fabric-colours";
 
 export const scm = new Hono<{ Bindings: Env }>();
 
@@ -92,5 +94,10 @@ scm.route("/mrp-lead-times", mrpLeadTimes);
 // mounted above — its GET list was added to the existing route, not remounted.
 scm.route("/outstanding", outstanding);
 scm.route("/localities", localities);
+// Wired 2026-06-20 — SCM stub-wiring wave: SO Salesperson dropdown (staff),
+// SoLineCard fabric-colour picker (fabric-colours). /product-models gained a
+// GET /by-code/:code for the SoLineCard saved-line allowed_options resolve.
+scm.route("/staff", staff);
+scm.route("/fabric-colours", fabricColours);
 
 export default scm;
