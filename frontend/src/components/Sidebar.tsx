@@ -29,9 +29,7 @@ import {
   Send,
   RotateCcw,
   Sofa,
-  Layers,
   Calculator,
-  Scissors,
   BookOpen,
   AlertCircle,
   Handshake,
@@ -186,9 +184,11 @@ export const NAV_TABS: NavTab[] = [
       // 1:1 with 2990's backend Sidebar sectioning + order: Sales Order ->
       // Consignment -> Procurement -> Transportation -> Warehouse (then Finance,
       // which 2990 keeps top-level; Houzs nests it under Supply Chain). MRP +
-      // Products live under Procurement exactly as in 2990. Product Models +
-      // Fabric Tracking are tabs-in-Products in 2990 but standalone pages here,
-      // so they sit under Procurement next to Products to keep access.
+      // Products & Maintenance live under Procurement exactly as in 2990.
+      // Product Models + Fabric Tracking are tabs-in-Products in 2990 → NOT
+      // separate nav items here either (reach them via Products & Maintenance /
+      // their /scm/* routes). Consignment labels match 2990 verbatim: singular
+      // "Consignment Order/Note/Return" + full "Purchase Consignment ...".
       {
         label: "Sales Order",
         icon: ShoppingCart,
@@ -207,12 +207,12 @@ export const NAV_TABS: NavTab[] = [
         groupId: "scm-consignment",
         anyPerm: ["*"],
         children: [
-          { to: "/scm/consignment-orders", label: "Consignment Orders", icon: Handshake, perm: "*" },
-          { to: "/scm/consignment-notes", label: "Consignment Notes", icon: FileText, perm: "*" },
-          { to: "/scm/consignment-returns", label: "Consignment Returns", icon: CornerUpLeft, perm: "*" },
-          { to: "/scm/purchase-consignment-orders", label: "Purch. Consign. Orders", icon: HandCoins, perm: "*" },
-          { to: "/scm/purchase-consignment-receives", label: "Purch. Consign. Receives", icon: PackageOpen, perm: "*" },
-          { to: "/scm/purchase-consignment-returns", label: "Purch. Consign. Returns", icon: Reply, perm: "*" },
+          { to: "/scm/consignment-orders", label: "Consignment Order", icon: Handshake, perm: "*" },
+          { to: "/scm/consignment-notes", label: "Consignment Note", icon: FileText, perm: "*" },
+          { to: "/scm/consignment-returns", label: "Consignment Return", icon: CornerUpLeft, perm: "*" },
+          { to: "/scm/purchase-consignment-orders", label: "Purchase Consignment Order", icon: HandCoins, perm: "*" },
+          { to: "/scm/purchase-consignment-receives", label: "Purchase Consignment Receive", icon: PackageOpen, perm: "*" },
+          { to: "/scm/purchase-consignment-returns", label: "Purchase Consignment Return", icon: Reply, perm: "*" },
         ],
       },
       {
@@ -222,8 +222,6 @@ export const NAV_TABS: NavTab[] = [
         anyPerm: ["*"],
         children: [
           { to: "/scm/products", label: "Products & Maintenance", icon: Sofa, perm: "*" },
-          { to: "/scm/product-models", label: "Product Models", icon: Layers, perm: "*" },
-          { to: "/scm/fabric-tracking", label: "Fabric Tracking", icon: Scissors, perm: "*" },
           { to: "/scm/suppliers", label: "Suppliers", icon: Truck, perm: "*" },
           { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, perm: "*" },
           { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },

@@ -41,7 +41,10 @@
 // v8 (2026-06-21): 2990-parity batch — restore DataGrid CSV/Excel export, SO
 // status-label wording, Products bulk inactive/active, MRP sofa line-order;
 // (+ backend /document-flow + /drivers routes, no SW impact).
-const VERSION = "houzs-erp-v8";
+// v9 (2026-06-21): nav labels aligned 1:1 with 2990 — Consignment items to
+// singular + full "Purchase Consignment ..." names; dropped Product Models +
+// Fabric Tracking from Procurement (tabs-in-Products in 2990, not nav items).
+const VERSION = "houzs-erp-v9";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
