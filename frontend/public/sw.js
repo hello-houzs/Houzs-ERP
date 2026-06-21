@@ -73,7 +73,11 @@
 // v16 (2026-06-22): supplier extra columns — registration_no, nature_of_business,
 // exemption_no, phone2 (mig 0028) wired into create/edit forms, ahead of seeding
 // the real 36-supplier AutoCount creditor list.
-const VERSION = "houzs-erp-v16";
+// v17 (2026-06-22): Bedframe/Mattress Sizes "add" row now takes all 3 fields
+// (code · label · dimensions) writing sizeLabels; suppliers list view fixed to
+// expose the new columns (mig 0029 view); sofaCompartmentMeta descriptions +
+// default prices seeded into master config (mig 0029).
+const VERSION = "houzs-erp-v17";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
