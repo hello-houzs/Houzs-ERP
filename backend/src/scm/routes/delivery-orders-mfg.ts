@@ -25,6 +25,7 @@ import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-a
 import { findSofaLinesWithoutCompleteBatch, sofaNoCompleteBatchResponse, findIncompleteSofaSets, sofaIncompleteSetResponse } from '../lib/sofa-batch-guard';
 import { loadSofaBatchStock, sofaStockKey } from '../lib/sofa-set-coverage';
 import { currentDocNoByKey, type CurrentEvent } from '../lib/current-doc';
+import { nextMonthlyDocNo } from '../lib/doc-no';
 
 export const deliveryOrdersMfg = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryOrdersMfg.use('*', supabaseAuth);
@@ -67,8 +68,8 @@ const HEADER =
   'salesperson_id, agent, email, customer_type, building_type, branding, venue, venue_id, ref, ' +
   'customer_so_no, po_doc_no, sales_location, customer_state, customer_country, note, ' +
   'emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, ' +
-  'mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, ' +
-  'mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, ' +
+  'mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, service_centi, ' +
+  'mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, service_cost_centi, ' +
   'local_total_centi, total_cost_centi, total_margin_centi, margin_pct_basis, line_count, ' +
   'currency, warehouse_id, ' +
   'pod_r2_key, signature_data, status, notes, created_at, created_by, updated_at';
@@ -93,8 +94,8 @@ const SHIPPED_STATES = ['DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVO
 const nextNum = async (sb: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('delivery_orders').select('id', { head: true, count: 'exact' }).like('do_number', `DO-${yymm}-%`);
-  return `DO-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  const { data: existing } = await sb.from('delivery_orders').select('do_number').like('do_number', `DO-${yymm}-%`);
+  return nextMonthlyDocNo(`DO-${yymm}`, ((existing ?? []) as Array<{ do_number: string }>).map((r) => r.do_number));
 };
 
 /* Re-derive the DO header's per-category revenue/cost totals + grand total
@@ -942,10 +943,13 @@ export async function doLineDownstream(
 
   const [siLinesRes, drLinesRes] = await Promise.all([
     sb.from('sales_invoice_items').select('do_item_id, qty, sales_invoice_id').in('do_item_id', ids),
-    sb.from('delivery_return_items').select('do_item_id, qty, delivery_return_id').in('do_item_id', ids),
+    sb.from('delivery_return_items').select('do_item_id, qty_returned, delivery_return_id').in('do_item_id', ids),
   ]);
   const siLines = (siLinesRes.data ?? []) as Array<{ do_item_id: string | null; qty: number; sales_invoice_id: string }>;
-  const drLines = (drLinesRes.data ?? []) as Array<{ do_item_id: string | null; qty: number; delivery_return_id: string }>;
+  // delivery_return_items has NO `qty` column — it's `qty_returned` (the same
+  // file reads it correctly elsewhere). Selecting `qty` returned 0 qty for every
+  // DR in a DO line's downstream breakdown (bug-hunt 2026-06-20).
+  const drLines = (drLinesRes.data ?? []) as Array<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>;
 
   const siIds = [...new Set(siLines.map((r) => r.sales_invoice_id).filter(Boolean))];
   const drIds = [...new Set(drLines.map((r) => r.delivery_return_id).filter(Boolean))];
@@ -978,7 +982,7 @@ export async function doLineDownstream(
   for (const r of drLines) {
     const meta = drMeta.get(r.delivery_return_id);
     if (!meta) continue; // cancelled DR — excluded
-    push(r.do_item_id, { docNumber: meta.docNumber, docType: 'DR', qty: Number(r.qty ?? 0), status: meta.status });
+    push(r.do_item_id, { docNumber: meta.docNumber, docType: 'DR', qty: Number(r.qty_returned ?? 0), status: meta.status });
   }
   return out;
 }

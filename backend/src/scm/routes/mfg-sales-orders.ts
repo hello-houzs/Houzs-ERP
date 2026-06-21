@@ -379,11 +379,11 @@ function extractSofaComboLookupArgs(
 const HEADER =
   'doc_no, transfer_to, so_date, branding, debtor_code, debtor_name, agent, sales_location, ref, po_doc_no, venue, venue_id, ' +
   'address1, address2, address3, address4, phone, ' +
-  'mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, local_total_centi, balance_centi, ' +
+  'mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, service_centi, local_total_centi, balance_centi, ' +
   /* Task #114 — per-category cost columns (migration 0079). Mirrors the
      four category revenue columns above so the SO list grid + Totals card
      can show category-level margins without per-item rollups. */
-  'mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, ' +
+  'mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, service_cost_centi, ' +
   'total_cost_centi, total_revenue_centi, total_margin_centi, margin_pct_basis, line_count, ' +
   'currency, status, remark2, remark3, remark4, note, processing_date, sales_exemption_expiry, ' +
   /* PR #35 + #46 — extended PO + POS handover fields */

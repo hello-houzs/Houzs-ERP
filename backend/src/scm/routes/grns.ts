@@ -11,6 +11,7 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { recostFromGrn } from '../lib/recost';
+import { nextMonthlyDocNo } from '../lib/doc-no';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
 grns.use('*', supabaseAuth);
@@ -141,8 +142,8 @@ const ITEM =
 const nextNumber = async (sb: ReturnType<Variables['supabase']['valueOf']> extends never ? never : any, prefix: string, table: string, col: string): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from(table).select('id', { head: true, count: 'exact' }).like(col, `${prefix}-${yymm}-%`);
-  return `${prefix}-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  const { data: existing } = await sb.from(table).select(col).like(col, `${prefix}-${yymm}-%`);
+  return nextMonthlyDocNo(`${prefix}-${yymm}`, ((existing ?? []) as Array<Record<string, string>>).map((r) => r[col] as string));
 };
 
 /* ── Recompute GRN header money rollups (migration 0101) ──────────────────
@@ -890,8 +891,8 @@ grns.post('/from-pos', async (c) => {
   // Generate GRN number using same pattern as the single-POST endpoint.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('grns').select('id', { head: true, count: 'exact' }).like('grn_number', `GRN-${yymm}-%`);
-  const grnNumber = `GRN-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  const { data: existingGrnNos } = await sb.from('grns').select('grn_number').like('grn_number', `GRN-${yymm}-%`);
+  const grnNumber = nextMonthlyDocNo(`GRN-${yymm}`, ((existingGrnNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
 
   const poNumbersJoined = poList.map((p) => p.po_number).join(', ');
   const { data: header, error: hErr } = await sb.from('grns').insert({
@@ -1081,8 +1082,12 @@ grns.post('/from-po-items', async (c) => {
   // Generate GRN numbers sequentially within this batch.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('grns').select('id', { head: true, count: 'exact' }).like('grn_number', `GRN-${yymm}-%`);
-  let counter = count ?? 0;
+  // Seed from max(suffix), NOT count — count+1 is non-self-healing (a mid-month
+  // delete re-mints a surviving number → UNIQUE collision). Derive the next
+  // suffix via nextMonthlyDocNo, then counter starts one below it.
+  const { data: existingBatchNos } = await sb.from('grns').select('grn_number').like('grn_number', `GRN-${yymm}-%`);
+  const firstNext = nextMonthlyDocNo(`GRN-${yymm}`, ((existingBatchNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+  let counter = parseInt(firstNext.slice(`GRN-${yymm}-`.length), 10) - 1;
 
   const receivedAt = body.receivedDate ?? new Date().toISOString().slice(0, 10);
   const created: Array<{ id: string; grnNumber: string; purchaseOrderId: string; poNumber: string; lineCount: number }> = [];
@@ -1116,9 +1121,9 @@ grns.post('/from-po-items', async (c) => {
         .select('id, grn_number').single();
       if (!hErr && header) { h = header as unknown as { id: string; grn_number: string }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
-      const { count: live } = await sb.from('grns')
-        .select('id', { head: true, count: 'exact' }).like('grn_number', `GRN-${yymm}-%`);
-      counter = (live ?? counter) + 1;
+      const { data: live } = await sb.from('grns')
+        .select('grn_number').like('grn_number', `GRN-${yymm}-%`);
+      counter = parseInt(nextMonthlyDocNo(`GRN-${yymm}`, ((live ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number)).slice(`GRN-${yymm}-`.length), 10);
     }
     if (!h) continue;
 

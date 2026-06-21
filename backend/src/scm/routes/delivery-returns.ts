@@ -23,6 +23,7 @@ import { doLineRemaining, resolveCandidateDoIds, custKeyOf, type DoRemainingLine
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { isServiceLine } from '../shared';
 import { findServiceLineCodes, serviceLinesNotReturnableResponse } from '../lib/service-line-guard';
+import { nextMonthlyDocNo } from '../lib/doc-no';
 
 export const deliveryReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryReturns.use('*', supabaseAuth);
@@ -53,8 +54,8 @@ const ITEM =
 const nextNum = async (sb: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('delivery_returns').select('id', { head: true, count: 'exact' }).like('return_number', `DR-${yymm}-%`);
-  return `DR-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  const { data: existing } = await sb.from('delivery_returns').select('return_number').like('return_number', `DR-${yymm}-%`);
+  return nextMonthlyDocNo(`DR-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 };
 
 /* Re-derive the DR header's per-category revenue/cost totals + grand total from
@@ -582,7 +583,8 @@ function buildItemRow(deliveryReturnId: string, it: Record<string, unknown>) {
   const unitPrice = Number(it.unitPriceCenti ?? 0);
   const discount = Number(it.discountCenti ?? 0);
   const unitCost = Number(it.unitCostCenti ?? 0);
-  const lineTotal = (qty * unitPrice) - discount;
+  // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
+  const lineTotal = Math.max(0, (qty * unitPrice) - discount);
   const lineCost = qty * unitCost;
   const itemGroup = (it.itemGroup as string) ?? null;
   const variants = (it.variants as unknown) ?? null;
@@ -991,7 +993,9 @@ const convertDoLinesToReturn = async (c: any) => {
     qtyReturned: pickQtyById.get(line.doItemId)!,
     condition: conditionById.get(line.doItemId) ?? 'NEW',
     unitPriceCenti: line.unitPriceCenti,
-    discountCenti: 0,
+    // Carry the DO line's discount (hardcoding 0 overstated the refund);
+    // mirrors the SI convert-from-DO path.
+    discountCenti: line.discountCenti,
     unitCostCenti: line.unitCostCenti,
     variants: line.variants,
   }));
@@ -1172,7 +1176,8 @@ deliveryReturns.patch('/:id/items/:itemId', async (c) => {
   const unitPrice = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
   const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : Number(prev.discount_centi);
   const unitCost = it.unitCostCenti !== undefined ? Number(it.unitCostCenti) : Number(prev.unit_cost_centi);
-  const lineTotal = (qty * unitPrice) - discount;
+  // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
+  const lineTotal = Math.max(0, (qty * unitPrice) - discount);
   const lineCost = qty * unitCost;
 
   const updates: Record<string, unknown> = {

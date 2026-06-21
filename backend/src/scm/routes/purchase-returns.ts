@@ -17,6 +17,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements, defaultWarehouseId } from '../lib/inventory-movements';
+import { nextMonthlyDocNo } from '../lib/doc-no';
 import { buildVariantSummary, computeVariantKey, type VariantAttrs } from '../shared';
 import {
   orderSofaModuleRowsWithinBuilds,
@@ -42,10 +43,10 @@ const ITEM =
 const nextNum = async (sb: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('purchase_returns')
-    .select('id', { head: true, count: 'exact' })
+  const { data: existing } = await sb.from('purchase_returns')
+    .select('return_number')
     .like('return_number', `PRT-${yymm}-%`);
-  return `PRT-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  return nextMonthlyDocNo(`PRT-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 };
 
 /* ── Recompute PR header money rollup (mirror recomputeGrnTotals) ──────────
@@ -566,8 +567,8 @@ purchaseReturns.post('/from-grns', async (c) => {
   // Generate PR number.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('purchase_returns').select('id', { head: true, count: 'exact' }).like('return_number', `PRT-${yymm}-%`);
-  const returnNumber = `PRT-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  const { data: existingPrtNos } = await sb.from('purchase_returns').select('return_number').like('return_number', `PRT-${yymm}-%`);
+  const returnNumber = nextMonthlyDocNo(`PRT-${yymm}`, ((existingPrtNos ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 
   const grnNumbersJoined = grnList.map((g) => g.grn_number).join(', ');
   const totalRefund = rejectedItems.reduce((s, it) => s + (it._qty * it.unit_price_centi), 0);

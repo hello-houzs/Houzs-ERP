@@ -68,6 +68,14 @@ inventory.post('/warehouses', async (c) => {
     if (error.code === '23505') return c.json({ error: 'duplicate_code' }, 409);
     return c.json({ error: 'insert_failed', reason: error.message }, 500);
   }
+  /* Audit 2026-06-20 — enforce a SINGLE default warehouse: clear is_default on
+     every other row when this one is set default. Two defaults make
+     defaultWarehouseId() (maybeSingle) error → null, breaking the warehouse
+     fallback on GRN/DO/return/consignment posts. */
+  if (body.isDefault === true) {
+    await sb.from('warehouses').update({ is_default: false })
+      .eq('is_default', true).neq('id', (data as { id: string }).id);
+  }
   return c.json({ warehouse: data }, 201);
 });
 
@@ -87,6 +95,12 @@ inventory.patch('/warehouses/:id', async (c) => {
   const { data, error } = await sb.from('warehouses').update(updates).eq('id', id)
     .select('id, code, name, location, is_active, is_default').single();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  /* Audit 2026-06-20 — single-default enforcement (see POST): promoting this
+     warehouse to default demotes every other one. */
+  if (updates.is_default === true) {
+    await sb.from('warehouses').update({ is_default: false })
+      .eq('is_default', true).neq('id', id);
+  }
   return c.json({ warehouse: data });
 });
 

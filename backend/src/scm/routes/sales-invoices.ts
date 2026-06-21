@@ -1007,6 +1007,11 @@ salesInvoices.patch('/:id/payment', async (c) => {
   });
   if (error) return c.json({ error: 'payment_failed', reason: error.message }, 500);
   await recomputePaid(sb, id);
+  /* Edge #A — an overpayment via this legacy quick-pay must book the excess as a
+     customer-credit, same as the POST /payments + DELETE paths. Without this the
+     overpaid amount was silently lost (no OVERPAY credit row). */
+  try { await reconcileSiOverpay(sb, id); }
+  catch (e) { /* eslint-disable-next-line no-console */ console.error('[customer-credit] overpay reconcile failed (quick-pay):', e); }
   const { data } = await sb.from('sales_invoices').select('id, paid_centi, status').eq('id', id).maybeSingle();
   return c.json({ salesInvoice: data });
 });

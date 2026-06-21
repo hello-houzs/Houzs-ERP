@@ -111,7 +111,28 @@ productModels.get('/', async (c) => {
   }
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ models: data ?? [] });
+  const rows = (data ?? []) as Array<Record<string, unknown> & { id: string }>;
+
+  // SKU count per Model — surfaces "0 SKUs" orphan/empty models in Modular
+  // (Wei Siang 2026-06-19: a deleted-from-SKU-Master model still showed with
+  // no hint it had nothing under it). ONE grouped count over mfg_products, then
+  // map onto the rows — NOT N+1. PostgREST has no GROUP BY in the REST API, so
+  // we select just the model_id column for the visible models and tally
+  // client-side; mfg_products is small enough (~hundreds of rows) that pulling
+  // a single id column is cheaper than a per-model count roundtrip.
+  const counts = new Map<string, number>();
+  if (rows.length > 0) {
+    let cq = supabase.from('mfg_products').select('model_id').not('model_id', 'is', null);
+    // Scope to the models we're returning so a category filter doesn't pull
+    // the whole table (and so the count query stays bounded).
+    cq = cq.in('model_id', rows.map((m) => m.id));
+    const { data: skuRows } = await cq;
+    for (const r of (skuRows ?? []) as Array<{ model_id: string | null }>) {
+      if (r.model_id) counts.set(r.model_id, (counts.get(r.model_id) ?? 0) + 1);
+    }
+  }
+  const models = rows.map((m) => ({ ...m, sku_count: counts.get(m.id) ?? 0 }));
+  return c.json({ models });
 });
 
 // ── GET /by-code/:code ───────────────────────────────────────────────────────
@@ -683,8 +704,11 @@ productModels.post('/:id/generate-skus', async (c) => {
   if (toInsert.length === 0) {
     return c.json({
       generated: 0,
-      skipped: wanted.length,
-      reason: 'All variant codes already exist — nothing to insert.',
+      skipped: wantedFiltered.length,
+      // Return the (already-existing) codes so the caller can still bind
+      // suppliers to them — an existing SKU is NOT a failure to create the model.
+      codes: wantedFiltered.map((w) => w.code),
+      reason: 'All variant codes already exist — nothing new to insert.',
     });
   }
 
@@ -723,7 +747,9 @@ productModels.post('/:id/generate-skus', async (c) => {
   return c.json({
     generated: rows.length,
     skipped: existingSet.size,
-    codes: rows.map((r) => r.code),
+    // ALL wanted codes (newly-inserted + already-existing) so a partial batch
+    // still lets the caller bind suppliers to every SKU, not only the new ones.
+    codes: wantedFiltered.map((w) => w.code),
   });
 });
 
