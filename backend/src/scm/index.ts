@@ -52,6 +52,7 @@ import { documentFlow } from "./routes/document-flow";
 import { drivers } from "./routes/drivers";
 import { soDropdownOptions } from "./routes/so-dropdown-options";
 import { reports } from "./routes/reports";
+import { scanSo } from "./routes/scan-so";
 
 export const scm = new Hono<{ Bindings: Env }>();
 
@@ -133,5 +134,15 @@ scm.route("/so-dropdown-options", soDropdownOptions);
 // schema. paid_centi on mfg_sales_orders does NOT exist in Houzs (dropped on
 // port) — paid totals derive from the payments ledger.
 scm.route("/reports", reports);
+// Ported 2026-06-21 — Sales Order ICR: photo of a handwritten order slip →
+// Claude vision extract → review → prefill New SO, with self-evolution
+// (per-salesperson learned rules + few-shot + global aliases). Reads/writes
+// scm.so_scan_samples + scm.so_scan_rules (migration 0023) and the scm catalog
+// tables (mfg_products / fabric_trackings / maintenance_config_history /
+// so_dropdown_options). ANTHROPIC_API_KEY optional — /scan-so/extract returns
+// 503 anthropic_key_missing when absent. FOLLOW-UP: weekly distill cron
+// (distillAllSalespersonRules) not yet wired to a scheduled trigger; the
+// per-confirm fire-and-forget distill is the live learning path.
+scm.route("/scan-so", scanSo);
 
 export default scm;
