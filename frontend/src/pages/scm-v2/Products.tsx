@@ -3023,6 +3023,12 @@ const MaintenanceList = ({
   // Empty draft state for the "add new" row at the bottom of the list when
   // edit mode is on. Kept local so toggling tabs cancels in-flight adds.
   const [draftValue, setDraftValue] = useState('');
+  /* PR (Commander 2026-06-22) — Bedframe/Mattress size ADD row now carries
+     the full triple (code · label · dimensions), mirroring the inline-edit
+     block. These two drafts feed sizeLabels on add for size pools; unused
+     by every other string pool (single-input add stays as-is). */
+  const [draftLabel, setDraftLabel] = useState('');
+  const [draftDim, setDraftDim] = useState('');
   const [draftPrice, setDraftPrice] = useState('0.00');
   /* PR #216 — Commander 2026-05-27: parallel cost-side input. Operation
      enters the estimated raw cost alongside the selling price; the value
@@ -3153,8 +3159,26 @@ const MaintenanceList = ({
       const arr = (next[listKey] as MaintPoolEntry[] | undefined) ?? [];
       arr.push(v);
       (next as Record<string, unknown>)[listKey] = arr;
+      // PR (Commander 2026-06-22) — for bedframe/mattress size pools the ADD
+      // row also captures label + dimensions. Mirror updateLabel: write into
+      // sizeLabels keyed by code, storing only non-empty fields so untouched
+      // configs stay byte-identical on save.
+      if (isSizeRow) {
+        const label = draftLabel.trim();
+        const dimensions = draftDim.trim();
+        if (label || dimensions) {
+          const labels = (next.sizeLabels ?? {}) as Record<string, { label?: string; dimensions?: string }>;
+          labels[v] = {
+            ...(label ? { label } : {}),
+            ...(dimensions ? { dimensions } : {}),
+          };
+          next.sizeLabels = labels;
+        }
+      }
       onChange(next);
       setDraftValue('');
+      setDraftLabel('');
+      setDraftDim('');
     };
 
     /* PR #40 — Commander 2026-05-26: existing rows must be editable, not
@@ -3376,22 +3400,86 @@ const MaintenanceList = ({
           >
             <span className={styles.maintRowIcon}><Plus {...ICON_PROPS} /></span>
             <span className={styles.maintRowIdx}>+</span>
-            <input
-              type="text"
-              placeholder="New value (e.g. 28)"
-              value={draftValue}
-              onChange={(e) => setDraftValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }}
-              style={{
-                fontFamily: 'var(--font-sans)',
-                fontSize: 'var(--fs-14)',
-                background: 'var(--c-cream)',
-                border: '1px solid var(--line)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '6px 10px',
-                outline: 'none',
-              }}
-            />
+            {isSizeRow ? (
+              /* PR (Commander 2026-06-22) — Bedframe/Mattress ADD row mirrors
+                 the inline 3-input editor (code · label · dimensions) so a new
+                 size can be created complete in one go, not just the bare code.
+                 Writes both the pool array and sizeLabels via addItem. */
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  placeholder="Code e.g. K"
+                  value={draftValue}
+                  onChange={(e) => setDraftValue(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }}
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--fs-14)',
+                    fontWeight: 600,
+                    background: 'var(--c-cream)',
+                    border: '1px solid var(--c-orange)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '4px 8px',
+                    outline: 'none',
+                    width: 80,
+                  }}
+                  title="Size code (e.g. K)"
+                />
+                <span style={{ color: 'var(--fg-muted)', fontWeight: 700 }}>·</span>
+                <input
+                  type="text"
+                  placeholder="Label e.g. 6FT"
+                  value={draftLabel}
+                  onChange={(e) => setDraftLabel(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }}
+                  style={{
+                    fontFamily: 'var(--font-sans)',
+                    fontSize: 'var(--fs-14)',
+                    background: 'var(--c-cream)',
+                    border: '1px solid var(--line-strong)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '4px 8px',
+                    outline: 'none',
+                    width: 110,
+                  }}
+                />
+                <span style={{ color: 'var(--fg-muted)', fontWeight: 700 }}>·</span>
+                <input
+                  type="text"
+                  placeholder="Dimensions e.g. 183X190CM"
+                  value={draftDim}
+                  onChange={(e) => setDraftDim(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }}
+                  style={{
+                    fontFamily: 'var(--font-sans)',
+                    fontSize: 'var(--fs-14)',
+                    background: 'var(--c-cream)',
+                    border: '1px solid var(--line-strong)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '4px 8px',
+                    outline: 'none',
+                    width: 170,
+                  }}
+                />
+              </div>
+            ) : (
+              <input
+                type="text"
+                placeholder="New value (e.g. 28)"
+                value={draftValue}
+                onChange={(e) => setDraftValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }}
+                style={{
+                  fontFamily: 'var(--font-sans)',
+                  fontSize: 'var(--fs-14)',
+                  background: 'var(--c-cream)',
+                  border: '1px solid var(--line)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '6px 10px',
+                  outline: 'none',
+                }}
+              />
+            )}
             <Button variant="primary" size="sm" onClick={addItem}>
               <Plus {...ICON_PROPS} />
               <span>Add</span>
