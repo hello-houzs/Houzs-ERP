@@ -89,7 +89,7 @@ import { SpecialAddonsManager } from '../../vendor/scm/components/SpecialAddonsT
 import { FabricTracking } from './FabricTracking';
 import { formatSizeRich, formatSizeRichWithCfg, resolveSizeInfo } from '../../vendor/scm/lib/size-info';
 import { ProductModels, NewModelDialog } from './ProductModels';
-import { useBrandingPool } from '../../vendor/scm/lib/product-models-queries';
+import { useBrandingPool, useProjectBrands } from '../../vendor/scm/lib/product-models-queries';
 import { useQueryClient } from '@tanstack/react-query';
 import styles from './Products.module.css';
 
@@ -1753,6 +1753,12 @@ export const MaintenanceTab = ({
   // Edit/Save/History chrome is hidden (special_addons has its own inline CRUD).
   const isSpecials = active?.key === 'specials' || active?.key === 'sofaSpecials';
   const specialsCat = active?.key === 'sofaSpecials' ? 'SOFA' : 'BEDFRAME';
+  // Brandings (Houzs re-sourcing) — branding is maintained CENTRALLY in
+  // Project Maintenance (PMS, project_brands via /api/projects/brands). This
+  // tab is READ-ONLY, mirroring the SO Maintenance "Venues" list: it shows the
+  // PMS brand pool the SCM Branding inputs resolve against, and points editors
+  // at Project Maintenance for add / rename / deactivate. No config draft/Save.
+  const isBrandings = active?.key === 'brandings';
 
   const startEdit = () => {
     // Seed the draft from whichever config we're currently showing — could
@@ -1911,9 +1917,12 @@ export const MaintenanceTab = ({
             {MAINTENANCE_TABS.filter((t) => t.section === section).map((t) => {
               const count = t.key === 'fabrics'
                 ? fabricsCount
-                : (t.key === 'specials' || t.key === 'sofaSpecials')
-                  ? (specialAddonsList.data ?? []).filter((r) => r.categories.includes(t.key === 'sofaSpecials' ? 'SOFA' : 'BEDFRAME')).length
-                  : countItems(config, t.key);
+                : t.key === 'brandings'
+                  // Brandings come from PMS (project_brands), not the config blob.
+                  ? brandingPool.pool.length
+                  : (t.key === 'specials' || t.key === 'sofaSpecials')
+                    ? (specialAddonsList.data ?? []).filter((r) => r.categories.includes(t.key === 'sofaSpecials' ? 'SOFA' : 'BEDFRAME')).length
+                    : countItems(config, t.key);
               return (
                 <button
                   key={t.key}
@@ -1936,7 +1945,7 @@ export const MaintenanceTab = ({
           <div>
             <h2 className={styles.maintTitle}>{active.label}</h2>
             <p className={styles.maintSubtitle}>{active.description}</p>
-            {!isSpecials && resolved.data?.effectiveFrom && (
+            {!isSpecials && !isBrandings && resolved.data?.effectiveFrom && (
               <p className={styles.stateInfo} style={{ marginTop: 8 }}>
                 Effective from {resolved.data.effectiveFrom}
                 {resolved.data.hasPendingPriceChange && (
@@ -1946,14 +1955,14 @@ export const MaintenanceTab = ({
                 )}
               </p>
             )}
-            {!isSpecials && showingMasterFallback && (
+            {!isSpecials && !isBrandings && showingMasterFallback && (
               <p className={styles.stateInfo} style={{ marginTop: 8, color: 'var(--c-burnt)' }}>
                 No supplier-specific pricing yet — showing the master baseline.
                 Hit Edit + Save to override.
               </p>
             )}
           </div>
-          {!isSpecials && (
+          {!isSpecials && !isBrandings && (
           <div className={styles.actionsRow}>
             {!editMode ? (
               <Button variant="ghost" size="sm" onClick={startEdit}>
@@ -1982,6 +1991,11 @@ export const MaintenanceTab = ({
           /* Specials live in the shared special_addons table; the editor has its
              own New/Edit/Delete — no config draft/Save here. (Commander 2026-06-16) */
           <SpecialAddonsManager categoryFilter={specialsCat} />
+        ) : isBrandings ? (
+          /* Brandings are maintained CENTRALLY in Project Maintenance (PMS,
+             project_brands). Read-only here — mirrors the SO Maintenance
+             "Venues" list. (Houzs re-sourcing) */
+          <BrandingsReadOnlyPanel />
         ) : (
           <MaintenanceList
             listKey={active.key}
@@ -2946,6 +2960,42 @@ const SofaQuickPresetsList = ({
             <span>Add preset</span>
           </Button>
         </div>
+      )}
+    </div>
+  );
+};
+
+/* ─── Brandings — read-only PMS pool ───────────────────────────────────
+   Houzs re-sourcing: branding is maintained centrally in Project
+   Maintenance (PMS, project_brands via /api/projects/brands?full=1). This
+   panel shows that pool read-only — the SCM Branding inputs (New SKU, bulk
+   New Models, SKU Master inline edit, Model detail) all resolve against it.
+   Mirrors the SO Maintenance "Venues" read-only list. Active brands only,
+   matching what the Branding datalists offer (useBrandingPool). */
+const BrandingsReadOnlyPanel = () => {
+  const brands = useProjectBrands();
+  const rows = (brands.data ?? []).filter((b) => b.active === 1 || b.active === true);
+
+  return (
+    <div className={styles.maintList}>
+      <p className={styles.stateInfo} style={{ marginBottom: 12 }}>
+        Brandings are maintained in <strong>Project Maintenance</strong>. This
+        list is read-only; add, rename, or deactivate a branding there and it
+        flows to every Branding input here.
+      </p>
+      {brands.isLoading ? (
+        <p className={styles.eyebrow}>Loading brandings…</p>
+      ) : rows.length === 0 ? (
+        <p className={styles.eyebrow}>
+          No brandings yet — add them in Project Maintenance.
+        </p>
+      ) : (
+        rows.map((b, i) => (
+          <div key={b.id} className={styles.maintRow} style={{ gridTemplateColumns: '32px 1fr' }}>
+            <span className={styles.maintRowIdx}>{i + 1}</span>
+            <span className={styles.maintRowValue}>{b.name}</span>
+          </div>
+        ))
       )}
     </div>
   );

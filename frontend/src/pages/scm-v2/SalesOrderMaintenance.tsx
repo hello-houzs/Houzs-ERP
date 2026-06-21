@@ -892,16 +892,13 @@ const DROPDOWN_CARDS: Array<{ category: SoDropdownCategory; title: string; help:
               'installment) / 3 / 6 / 12 / 24 / 36 months. Stored as the term ' +
               'in months on the payment row.',
   },
-  /* Commander 2026-05-27: Venue list — was free-text, now picklist. */
-  {
-    category: 'venue',
-    title:    'Venue',
-    help:     'Shown in the Order Info card on SO Detail / New SO. ' +
-              'Typical entries: roadshow / exhibition venues like ' +
-              'PENANG WATERFRONT CC, PISA SPICE ARENA, SUNWAY PYRAMID CC. ' +
-              'Toggle Active off to hide a venue from new SOs without ' +
-              'breaking SOs that already reference it.',
-  },
+  /* Venues are NOT in this editable so_dropdown_options list. Houzs sources
+     venues centrally from Project Maintenance (PMS, /api/projects/venues) and
+     the SO venue picker is locked to the salesperson's staff.venue_id — the
+     so_dropdown_options category='venue' was never read by any picker. The
+     read-only PMS venue list is rendered above by <VenuesSection>; the
+     duplicate editable "VENUE" card was removed so venues have a single
+     source of truth. */
 ];
 
 const DropdownsSection = ({ canEdit }: { canEdit: boolean }) => {
