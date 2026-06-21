@@ -56,7 +56,11 @@
 // Claude vision extracts it (temperature 0, catalog-validated, per-rep
 // self-evolving rules), review/correct, "Open in New SO" prefills. Needs the
 // ANTHROPIC_API_KEY worker secret; degrades to a friendly error without it.
-const VERSION = "houzs-erp-v12";
+// v13 (2026-06-21): 2990 SCM sync wave 1 — SO/CSO self-scope auth guards
+// (6->13), PI/SI credit race-safe paid_centi, GRN over-receipt cap, combo
+// cost-edit no longer overwrites selling price, dead-table fix, negative-money
+// clamps, SO delivery-fee re-derive, authedFetch timeout, PDF tall-row keep.
+const VERSION = "houzs-erp-v13";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

@@ -453,7 +453,11 @@ productModels.post('/:id/generate-skus', async (c) => {
   let sizeOverrides: Record<string, { label?: string; dimensions?: string }> | null = null;
   try {
     const { data: cfgRow } = await supabase
-      .from('maintenance_config')
+      // Audit (ported from 2990 3e288239) — was `maintenance_config`, a table that
+      // does not exist (real table is maintenance_config_history, seeded by
+      // mig 0022); the dead lookup meant Maintenance size-label relabels silently
+      // never reached generated SKU names.
+      .from('maintenance_config_history')
       .select('config')
       .eq('scope', 'master')
       .lte('effective_from', new Date().toISOString().slice(0, 10))

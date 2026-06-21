@@ -420,6 +420,7 @@ export function DetailListingShell<R extends DetailListingRow>({
           rows={rows}
           columns={columns}
           storageKey={storageKey}
+          exportName={title}
           rowKey={(r) => r.id}
           searchPlaceholder="Search rows…"
           focusSearchNonce={findNonce}

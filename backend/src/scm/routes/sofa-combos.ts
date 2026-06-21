@@ -606,7 +606,7 @@ sofaCombos.put('/:id', async (c) => {
 
   const { data: orig, error: findErr } = await supabase
     .from('sofa_combo_pricing')
-    .select('base_model, modules, tier, customer_id, supplier_id, pwp_prices_by_height, default_free_gifts')
+    .select('base_model, modules, tier, customer_id, supplier_id, selling_prices_by_height, pwp_prices_by_height, default_free_gifts')
     .eq('id', id)
     .maybeSingle();
   if (findErr) return c.json({ error: 'load_failed', reason: findErr.message }, 500);
@@ -631,13 +631,27 @@ sofaCombos.put('/:id', async (c) => {
   const prices = validatePricesByHeight(body.pricesByHeight);
   if (!prices) return c.json({ error: 'prices_by_height_invalid' }, 400);
 
-  // SELLING prices (Master Admin). Default = cost when not supplied, so a
-  // create/edit that only sets the cost keeps selling == cost (no silent
-  // free combo). Validated the same way (per-height centi).
+  // SELLING prices (Master Admin). Audit (ported from 2990 21163bde) — the
+  // Backend Combo Pricing COST editor sends ONLY pricesByHeight (no
+  // sellingPricesByHeight). The old default (sellingPrices = the freshly-
+  // submitted COST map) silently OVERWROTE the customer SELLING price with cost
+  // on every cost edit, collapsing the charged price down to cost downstream
+  // (comboChargedPrices) = silent revenue loss. Carry the ORIGINAL selling map
+  // forward when the body omits it (mirrors the PWP carry-forward below); only an
+  // explicit sellingPricesByHeight changes it. Falls back to the cost map only
+  // for a legacy row that has no selling.
   const sellingPrices = body.sellingPricesByHeight === undefined
-    ? prices
+    ? ((orig as { selling_prices_by_height: Record<string, number | null> | null }).selling_prices_by_height ?? prices)
     : validatePricesByHeight(body.sellingPricesByHeight);
   if (!sellingPrices) return c.json({ error: 'selling_prices_by_height_invalid' }, 400);
+
+  // Audit (ported from 2990 21163bde) — mirror the POST all-null guard: never
+  // persist an all-null combo. An empty / all-null edit would become the newest
+  // effective row and match no height in the lookup, silently disabling the
+  // combo (build reverts to à-la-carte with no error).
+  if (!Object.values(sellingPrices).some((v) => v !== null)) {
+    return c.json({ error: 'selling_prices_all_null', message: 'At least one height needs a selling price' }, 400);
+  }
 
   // PWP (换购) selling price (Phase 2). Append-only edit: carry the existing PWP
   // prices forward unless the body sets new ones, so editing the selling price

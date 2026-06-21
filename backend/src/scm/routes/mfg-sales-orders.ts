@@ -1695,12 +1695,15 @@ mfgSalesOrders.post('/', async (c) => {
     .select('role, venue_id')
     .eq('id', user.id)
     .maybeSingle();
-  /* Loo 2026-06-05 — a `sales` caller can only create orders under their OWN
-     account: whatever salespersonId the client sent is overridden with the
-     caller's id (the POS locks the picker too; this closes the API hole).
-     Leads / managers / backend roles keep the free pick — entering an SO on
-     behalf of a salesperson is their job. */
-  const salespersonIdToStamp = callerStaff?.role === 'sales'
+  /* Loo 2026-06-05 — a self-scoped sales caller (sales / sales_executive) can
+     only create orders under their OWN account: whatever salespersonId the
+     client sent is overridden with the caller's id (the POS locks the picker
+     too; this closes the API hole). Leads / managers / backend roles keep the
+     free pick — entering an SO on behalf of a salesperson is their job.
+     Audit 2026-06-20 — was `=== 'sales'`, which let a sales_executive stamp an
+     arbitrary salesperson (mis-attributing commission); now uses the same
+     read-scope predicate as the list/detail/line guards. */
+  const salespersonIdToStamp = isSelfScopedSales(callerStaff?.role)
     ? user.id
     : ((body.salespersonId as string) ?? null);
 
@@ -3374,6 +3377,12 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
 
+  /* Audit 2026-06-20 — self-scoped sales (sales / sales_executive) must NOT
+     transition or cancel another salesperson's SO by doc_no — a cancel even
+     converts that SO's deposit into a customer credit. Mirror the
+     line-mutation endpoints' self-scope guard. */
+  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+
   const { data: prev } = await sb.from('mfg_sales_orders').select('status').eq('doc_no', docNo).maybeSingle();
   const fromStatus = (prev as { status: string } | null)?.status ?? null;
 
@@ -3412,8 +3421,11 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
     }
   }
   const { data, error } = await sb.from('mfg_sales_orders').update(patch)
-    .eq('doc_no', docNo).select('doc_no, status, proceeded_at').single();
+    .eq('doc_no', docNo).select('doc_no, status, proceeded_at').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  // Stale/missing docNo (deleted, wrong tab) matches 0 rows → a clean 404
+  // ("no longer found, refresh") instead of an opaque 500 (bug-hunt 2026-06-20).
+  if (!data) return c.json({ error: 'not_found' }, 404);
 
   // Audit row — best-effort. We keep writing the legacy mfg_so_status_changes
   // row for now (the existing StatusTimeline panel still reads it) and ALSO
@@ -3611,16 +3623,19 @@ async function repointMintedVouchers(sb: any, docNo: string, newCustomerId: stri
   return ((data ?? []) as Array<{ code: string }>).length;
 }
 
-/* Re-detect the cross-category delivery fee against a (re-resolved) customer.
-   Auto-matches the new customer's eligible source SO with the SAME logic as the
-   handover Auto-match button (pickCrossCategoryMatch), self-excluding THIS SO so
-   changing BACK to the original customer restores the discount. Recomputes the
-   fee on the authoritative computeSoDeliveryFee (preserving the operator's
-   free-form additional fee, recovered from the existing SVC-DELIVERY-ADD line)
-   and rebuilds the SVC-DELIVERY* lines. No eligible source → plain delivery fee.
-   Only runs when the SO already carries a delivery fee. Best-effort. */
-async function redetectCrossCategoryDelivery(
-  sb: any, docNo: string, newName: string, newPhone: string | null,
+/* Core delivery-fee recompute — re-derives the authoritative delivery FEE from
+   the SO's CURRENT items, for a CALLER-SUPPLIED cross-category sourceDocNo. It
+   does NOT auto-match a source: the caller decides whether to re-run the
+   customer auto-match (the customer-change path, redetectCrossCategoryDelivery)
+   or to pass the SO's already-stored source through unchanged (the item-edit
+   path, rederiveDeliveryFee). Preserves the operator's free-form additional fee
+   (recovered from the existing SVC-DELIVERY-ADD line), recomputes on the
+   authoritative computeSoDeliveryFee, and rebuilds the SVC-DELIVERY* lines. Only
+   runs when the SO already carries a delivery fee (else returns null BEFORE
+   recomputeTotals — the caller is responsible for any totals refresh).
+   Best-effort: logs DB errors, never throws. */
+async function recomputeDeliveryFeeCore(
+  sb: any, docNo: string, sourceDocNo: string | null,
 ): Promise<{ isFollowup: boolean; sourceDocNo: string | null; total: number } | null> {
   const { data: lineRows } = await sb.from('mfg_sales_order_items')
     .select('item_code, item_group, total_centi, line_no')
@@ -3674,28 +3689,9 @@ async function redetectCrossCategoryDelivery(
     crossCategoryFee: Number((dcfg as { cross_category_fee?: number } | null)?.cross_category_fee ?? 0) * 100,
   };
 
-  // Auto-match the new customer for an eligible cross-category source SO.
-  let sourceDocNo: string | null = null;
-  const normPhone = newPhone ? (normalizePhone(newPhone) ?? newPhone) : null;
-  if (newName && normPhone) {
-    const { data: candRows } = await sb.from('mfg_sales_orders')
-      .select('doc_no, debtor_name, created_at')
-      .eq('phone', normPhone).neq('status', 'CANCELLED').neq('doc_no', docNo)
-      .order('created_at', { ascending: false }).limit(50);
-    const candidates: AutoMatchCandidate[] = ((candRows ?? []) as Array<{ doc_no: string; debtor_name: string | null }>)
-      .map((r) => ({ docNo: r.doc_no, debtorName: r.debtor_name }));
-    if (candidates.length > 0) {
-      const { data: usedRows } = await sb.from('mfg_sales_orders')
-        .select('cross_category_source_doc_no')
-        .in('cross_category_source_doc_no', candidates.map((x) => x.docNo))
-        .neq('doc_no', docNo); // self-excluded: this SO's own link must not burn its own source
-      const used = ((usedRows ?? []) as Array<{ cross_category_source_doc_no: string | null }>)
-        .map((r) => r.cross_category_source_doc_no).filter((v): v is string => !!v);
-      const match = pickCrossCategoryMatch(candidates, newName, used);
-      if (match) sourceDocNo = match.docNo;
-    }
-  }
-
+  /* sourceDocNo is the caller's responsibility (see the function doc). No
+     auto-match here — the item-edit path MUST pass the SO's stored source
+     through unchanged. */
   const isFollowup = !!sourceDocNo;
   const fee = computeSoDeliveryFee(
     { categoryIds, specialModels, isCrossCategoryFollowup: isFollowup, additionalFee: additionalSen },
@@ -3718,7 +3714,7 @@ async function redetectCrossCategoryDelivery(
       doc_no: docNo,                                    // ⚠️ NOT NULL — omitting it silently dropped the line (the bug)
       line_no: keptMaxLineNo >= 0 ? keptMaxLineNo + 1 + i : null,
       line_date: lineDateToday,
-      debtor_name: h.debtor_name ?? newName,
+      debtor_name: h.debtor_name ?? null,
       item_group: 'service',
       item_code: spec.itemCode,
       description: spec.description,
@@ -3759,10 +3755,69 @@ async function redetectCrossCategoryDelivery(
   return { isFollowup, sourceDocNo, total: fee.total };
 }
 
+/* Re-detect the cross-category delivery fee against a (re-resolved) customer —
+   the CUSTOMER-CHANGE path. Auto-matches the new customer's eligible source SO
+   with the SAME logic as the handover Auto-match button (pickCrossCategoryMatch),
+   self-excluding THIS SO so changing BACK to the original customer restores the
+   discount. The match (or null) is then handed to recomputeDeliveryFeeCore which
+   rebuilds the SVC-DELIVERY* lines + header on the authoritative
+   computeSoDeliveryFee. Only runs when the SO already carries a delivery fee.
+   Best-effort. */
+async function redetectCrossCategoryDelivery(
+  sb: any, docNo: string, newName: string, newPhone: string | null,
+): Promise<{ isFollowup: boolean; sourceDocNo: string | null; total: number } | null> {
+  // Auto-match the new customer for an eligible cross-category source SO.
+  let sourceDocNo: string | null = null;
+  const normPhone = newPhone ? (normalizePhone(newPhone) ?? newPhone) : null;
+  if (newName && normPhone) {
+    const { data: candRows } = await sb.from('mfg_sales_orders')
+      .select('doc_no, debtor_name, created_at')
+      .eq('phone', normPhone).neq('status', 'CANCELLED').neq('doc_no', docNo)
+      .order('created_at', { ascending: false }).limit(50);
+    const candidates: AutoMatchCandidate[] = ((candRows ?? []) as Array<{ doc_no: string; debtor_name: string | null }>)
+      .map((r) => ({ docNo: r.doc_no, debtorName: r.debtor_name }));
+    if (candidates.length > 0) {
+      const { data: usedRows } = await sb.from('mfg_sales_orders')
+        .select('cross_category_source_doc_no')
+        .in('cross_category_source_doc_no', candidates.map((x) => x.docNo))
+        .neq('doc_no', docNo); // self-excluded: this SO's own link must not burn its own source
+      const used = ((usedRows ?? []) as Array<{ cross_category_source_doc_no: string | null }>)
+        .map((r) => r.cross_category_source_doc_no).filter((v): v is string => !!v);
+      const match = pickCrossCategoryMatch(candidates, newName, used);
+      if (match) sourceDocNo = match.docNo;
+    }
+  }
+  return recomputeDeliveryFeeCore(sb, docNo, sourceDocNo);
+}
+
+/* Re-derive the delivery fee from the SO's CURRENT items — the ITEM-EDIT path.
+   Unlike the customer-change path, this MUST NOT re-run the customer auto-match:
+   it reads the SO's already-stored cross_category_source_doc_no and passes it
+   THROUGH unchanged, so a benign item edit never drops or flips an operator-
+   pinned cross-category source link. Only the FEE re-derives (special-delivery
+   triggers + sofa↔mattress cross-category mix follow the current items). When
+   the SO carries no delivery fee, the core early-bails (null) before
+   recomputeTotals, so we still refresh the header totals for the edit.
+   Best-effort. */
+async function rederiveDeliveryFee(sb: any, docNo: string): Promise<void> {
+  let storedSource: string | null = null;
+  const { data: hdr } = await sb.from('mfg_sales_orders')
+    .select('cross_category_source_doc_no').eq('doc_no', docNo).maybeSingle();
+  storedSource = (hdr as { cross_category_source_doc_no?: string | null } | null)?.cross_category_source_doc_no ?? null;
+  const res = await recomputeDeliveryFeeCore(sb, docNo, storedSource);
+  if (res === null) await recomputeTotals(sb, docNo);
+}
+
 mfgSalesOrders.patch('/:docNo', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
+
+  /* Audit 2026-06-20 — self-scoped sales may only edit their OWN SO. Without
+     this a sales/sales_executive reaching the Backend SO detail could PATCH any
+     order by doc_no (customer fields, even salesperson_id reassignment). Mirror
+     the line-mutation endpoints' self-scope guard. */
+  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-03 (migration 0144) — phone is COMPULSORY on every SO. The
      CREATE path blocks an empty phone (phone_required); the EDIT path must too,
@@ -4685,6 +4740,9 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
 
       // Default Free Gift — adding a sofa trigger may grant a gift.
       await reconcileFreeGiftLinesForSo(sb, docNo);
+      // Re-derive the delivery fee — a new sofa can introduce a cross-category
+      // mix or a special-delivery trigger. Stored cross-category source kept.
+      await rederiveDeliveryFee(sb, docNo);
 
       await recordSoAudit(sb, {
         docNo,
@@ -4722,6 +4780,9 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   // Default Free Gift (0170) — adding a trigger line may grant a new accessory
   // gift; reconcile auto-inserts/deletes gift lines, then recomputes totals.
   await reconcileFreeGiftLinesForSo(sb, docNo);
+  // Re-derive the delivery fee — a new goods line can introduce a cross-category
+  // mix or a special-delivery trigger. Stored cross-category source kept.
+  await rederiveDeliveryFee(sb, docNo);
 
   // PR-D — emit ADD_LINE audit row. Capture item code + qty + unit price
   // so the timeline shows the meaningful what-was-added without an explosion
@@ -5032,6 +5093,9 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
   // Default Free Gift (0170) — editing a line (code/qty) may add or drop a
   // trigger; reconcile auto-syncs the gift lines, then recomputes totals.
   await reconcileFreeGiftLinesForSo(sb, docNo);
+  // Re-derive the delivery fee — a line code/qty change can flip a cross-category
+  // mix or a special-delivery trigger. Stored cross-category source kept.
+  await rederiveDeliveryFee(sb, docNo);
 
   // PR-D — diff old vs new and emit one UPDATE_LINE row only if any field
   // moved. Compare across both the derived columns (qty/price/discount)
@@ -5119,6 +5183,9 @@ mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
   // Default Free Gift (0170) — removing a trigger line (e.g. a mattress) must
   // auto-delete its free gift; reconcile drops orphaned gifts, then recomputes.
   await reconcileFreeGiftLinesForSo(sb, docNo);
+  // Re-derive the delivery fee — removing a goods line can drop a cross-category
+  // mix or a special-delivery trigger. Stored cross-category source kept.
+  await rederiveDeliveryFee(sb, docNo);
 
   // Task #93 — orphan cleanup. Loop over the photo keys and best-effort
   // delete each from R2. Failures are swallowed (logged) so a flaky R2
@@ -5353,6 +5420,9 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
   // Default Free Gift (0170) — a sofa/variant build change may newly match (or
   // stop matching) a gifting combo; reconcile syncs the gift lines, then totals.
   await reconcileFreeGiftLinesForSo(sb, docNo);
+  // Re-derive the delivery fee — a TBC variant fill-in can resolve a special-
+  // delivery trigger (model/variant/combo). Stored cross-category source kept.
+  await rederiveDeliveryFee(sb, docNo);
   await recordSoAudit(sb, {
     docNo,
     action: 'UPDATE_LINE',
@@ -5739,6 +5809,9 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
   // of the final recomputeTotals: a product swap can add/drop a trigger, so
   // reconcile syncs the accessory gift lines and then recomputes header totals.
   await reconcileFreeGiftLinesForSo(sb, docNo);
+  // Re-derive the delivery fee — a product swap can flip a cross-category mix or
+  // a special-delivery trigger. Stored cross-category source kept.
+  await rederiveDeliveryFee(sb, docNo);
   await recordSoAudit(sb, {
     docNo,
     action: 'UPDATE_LINE',
@@ -6436,6 +6509,9 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   // stop matching) a gifting combo, so reconcile syncs the accessory gift lines
   // and then recomputes header totals.
   await reconcileFreeGiftLinesForSo(sb, docNo);
+  // Re-derive the delivery fee — a sofa build swap can flip a cross-category mix
+  // or a special-delivery trigger (model/combo/compartment). Source kept.
+  await rederiveDeliveryFee(sb, docNo);
   await recordSoAudit(sb, {
     docNo,
     action: 'UPDATE_LINE',
@@ -6515,6 +6591,8 @@ mfgSalesOrders.post('/:docNo/items/:itemId/photos', async (c) => {
   const docNo = c.req.param('docNo');
   const itemId = c.req.param('itemId');
   const user = c.get('user');
+  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
+  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -6705,6 +6783,8 @@ mfgSalesOrders.delete('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
   const itemId = c.req.param('itemId');
   const photoKey = decodeURIComponent(c.req.param('photoKey'));
   const user = c.get('user');
+  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
+  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -6835,6 +6915,8 @@ const paymentCreateSchema = z.object({
 
 mfgSalesOrders.post('/:docNo/payments', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
+  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
+  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Ensure the SO exists before inserting a child row (gives a cleaner
   // 404 than a deferred FK violation).
@@ -6963,6 +7045,8 @@ mfgSalesOrders.post('/:docNo/payments', async (c) => {
 mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
   const user = c.get('user');
+  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
+  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Guard: only delete if the row belongs to this docNo. Prevents a
   // mis-routed call from nuking another SO's payment.
@@ -7060,6 +7144,8 @@ mfgSalesOrders.patch('/:docNo/items/:itemId/stock-status', async (c) => {
   const docNo = c.req.param('docNo');
   const itemId = c.req.param('itemId');
   const user = c.get('user');
+  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
+  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
 
   let body: { status?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }

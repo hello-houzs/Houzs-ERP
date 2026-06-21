@@ -129,10 +129,20 @@ export async function applyCustomerCreditToSi(
     createdBy: args.createdBy ?? null,
   });
 
-  // 3. Bump SI's paid_centi.
-  const { data: cur } = await sb.from('sales_invoices').select('paid_centi').eq('id', args.siId).maybeSingle();
-  const newPaid = Number((cur as { paid_centi: number } | null)?.paid_centi ?? 0) + apply;
-  await sb.from('sales_invoices').update({ paid_centi: newPaid }).eq('id', args.siId);
+  // 3. Bump SI's paid_centi — optimistic-concurrency loop (Bug#5 class, ported
+  //    from 2990 ce04e468). The old read-modify-write lost a concurrent SI
+  //    payment; gate the UPDATE on the value we read and retry on a 0-row
+  //    (concurrent) result.
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const { data: cur } = await sb.from('sales_invoices').select('paid_centi').eq('id', args.siId).maybeSingle();
+    const prev = Number((cur as { paid_centi: number } | null)?.paid_centi ?? 0);
+    const { data: upd } = await sb.from('sales_invoices')
+      .update({ paid_centi: prev + apply })
+      .eq('id', args.siId)
+      .eq('paid_centi', prev)
+      .select('id');
+    if (upd && upd.length > 0) break; // applied; else a concurrent change → re-read + retry
+  }
 
   return { applied: apply };
 }

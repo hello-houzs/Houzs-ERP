@@ -187,9 +187,9 @@ async function verifyGrnOverReceipt(
     );
     // Live accepted per PO line across all non-cancelled GRN lines.
     const { data: sib } = await sb.from('grn_items')
-      .select('purchase_order_item_id, qty_accepted, grn_id')
+      .select('purchase_order_item_id, qty_accepted, returned_qty, grn_id')
       .in('purchase_order_item_id', ids);
-    const sibRows = (sib ?? []) as Array<{ purchase_order_item_id: string; qty_accepted: number; grn_id: string }>;
+    const sibRows = (sib ?? []) as Array<{ purchase_order_item_id: string; qty_accepted: number; returned_qty: number; grn_id: string }>;
     const grnIds = [...new Set(sibRows.map((r) => r.grn_id).filter(Boolean))];
     const cancelled = new Set<string>();
     if (grnIds.length > 0) {
@@ -203,7 +203,11 @@ async function verifyGrnOverReceipt(
     const thisGrnByPoi = new Map<string, number>();
     for (const r of sibRows) {
       if (cancelled.has(r.grn_id)) continue;
-      const q = Number(r.qty_accepted ?? 0);
+      // Audit (ported from 2990 073cc6d0) — net of returns (qty_accepted −
+      // returned_qty), matching recomputePoReceived, so a legitimate replacement
+      // GRN after a purchase return isn't falsely rejected by a gross-qty
+      // over-receipt cap.
+      const q = Math.max(0, Number(r.qty_accepted ?? 0) - Number(r.returned_qty ?? 0));
       liveByPoi.set(r.purchase_order_item_id, (liveByPoi.get(r.purchase_order_item_id) ?? 0) + q);
       if (r.grn_id === grnId) thisGrnByPoi.set(r.purchase_order_item_id, (thisGrnByPoi.get(r.purchase_order_item_id) ?? 0) + q);
     }
@@ -793,7 +797,8 @@ grns.post('/', async (c) => {
       unit_price_centi: unitPriceCenti,
       discount_centi: discountCenti,
       /* Migration 0101 — GRN line money: qty_received * unit - discount. */
-      line_total_centi: (qtyReceived * unitPriceCenti) - discountCenti,
+      // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
+      line_total_centi: Math.max(0, (qtyReceived * unitPriceCenti) - discountCenti),
       delivery_date: (it.deliveryDate as string | undefined) ?? null,
       unit_cost_centi: Number(it.unitCostCenti ?? 0),
       notes: (it.notes as string | undefined) ?? null,
@@ -918,7 +923,8 @@ grns.post('/from-pos', async (c) => {
       qty_rejected: 0,
       unit_price_centi: it.unit_price_centi,
       /* Migration 0101 — GRN line money: qty_received * unit - discount. */
-      line_total_centi: (qtyReceived * it.unit_price_centi) - discountCenti,
+      // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
+      line_total_centi: Math.max(0, (qtyReceived * it.unit_price_centi) - discountCenti),
       unit_cost_centi: it.unit_cost_centi ?? 0,
       /* PR #44 — preserve variants from PO line */
       item_group: it.item_group ?? null,
@@ -1086,9 +1092,7 @@ grns.post('/from-po-items', async (c) => {
 
   for (const bucket of buckets.values()) {
     counter += 1;
-    const grnNumber = `GRN-${yymm}-${String(counter).padStart(3, '0')}`;
-    const { data: header, error: hErr } = await sb.from('grns').insert({
-      grn_number: grnNumber,
+    const grnPayload = {
       purchase_order_id: bucket.primaryPoId,
       supplier_id: bucket.supplierId,
       received_at: receivedAt,
@@ -1097,9 +1101,26 @@ grns.post('/from-po-items', async (c) => {
         ? `Received from ${[...bucket.poNumbers].join(', ')} · ${body.notes}`
         : `Received from ${[...bucket.poNumbers].join(', ')}`,
       created_by: user.id,
-    }).select('id, grn_number').single();
-    if (hErr) continue;
-    const h = header as unknown as { id: string; grn_number: string };
+    };
+    /* Audit (ported from 2990 b30f0bb1) — the GRN suffix is an in-memory counter
+       off a non-locking COUNT snapshot, so a CONCURRENT multi-GRN receive can
+       mint the same grn_number (UNIQUE). A collision previously hit
+       `if (hErr) continue` and SILENTLY DROPPED the bucket (its inventory-IN
+       lost, caller still got 201). Retry on 23505: re-derive the next free
+       suffix from a fresh live count + bump. */
+    let h: { id: string; grn_number: string } | null = null;
+    for (let attempt = 0; attempt < 8 && !h; attempt += 1) {
+      const grnNumber = `GRN-${yymm}-${String(counter).padStart(3, '0')}`;
+      const { data: header, error: hErr } = await sb.from('grns')
+        .insert({ grn_number: grnNumber, ...grnPayload })
+        .select('id, grn_number').single();
+      if (!hErr && header) { h = header as unknown as { id: string; grn_number: string }; break; }
+      if (!hErr || (hErr as { code?: string }).code !== '23505') break;
+      const { count: live } = await sb.from('grns')
+        .select('id', { head: true, count: 'exact' }).like('grn_number', `GRN-${yymm}-%`);
+      counter = (live ?? counter) + 1;
+    }
+    if (!h) continue;
 
     const rows = bucket.lines.map(({ row, qty }) => {
       const discountCenti = row.discount_centi ?? 0;
@@ -1114,7 +1135,8 @@ grns.post('/from-po-items', async (c) => {
         qty_rejected: 0,
         unit_price_centi: row.unit_price_centi,
         /* Migration 0101 — GRN line money: qty_received * unit - discount. */
-        line_total_centi: (qty * row.unit_price_centi) - discountCenti,
+        // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
+        line_total_centi: Math.max(0, (qty * row.unit_price_centi) - discountCenti),
         // PR #44 — preserve variants from PO line
         item_group: row.item_group,
         description: row.description,
@@ -1429,7 +1451,8 @@ grns.post('/:id/items', async (c) => {
   const qtyReceived = Number(it.qty ?? 1);
   const unitPriceCenti = Number(it.unitPriceCenti ?? 0);
   const discountCenti = Number(it.discountCenti ?? 0);
-  const lineTotal = (qtyReceived * unitPriceCenti) - discountCenti;
+  // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
+  const lineTotal = Math.max(0, (qtyReceived * unitPriceCenti) - discountCenti);
 
   /* Over-receipt guard — a PO-linked added line can't accept more than the PO
      line's remaining (qty - received_qty). received_qty already counts every
@@ -1616,7 +1639,8 @@ grns.patch('/:id/items/:itemId', async (c) => {
 
   const unit = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : (prev as { unit_price_centi: number }).unit_price_centi;
   const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : ((prev as { discount_centi: number }).discount_centi ?? 0);
-  const lineTotal = (qtyReceived * unit) - discount;
+  // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
+  const lineTotal = Math.max(0, (qtyReceived * unit) - discount);
 
   const updates: Record<string, unknown> = {
     qty_received: qtyReceived,

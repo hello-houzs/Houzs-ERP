@@ -29,6 +29,32 @@ const API_URL =
   (import.meta.env.VITE_API_URL || 'https://autocount-sync-api.houzs-erp.workers.dev') +
   '/api/scm';
 
+/* ── Request timeout (ported from 2990 b9d0035c) ───────────────────────────
+   A fetch with no timeout hangs the UI forever on a stalled connection — the
+   operator stares at "Loading…" with no way out (OCR / slow report endpoints
+   are the worst). Apply a default deadline when the caller didn't pass its OWN
+   AbortSignal (uploads / cancellable flows control their own); OCR/scan paths
+   (/scan-so/extract etc.) get a longer one. A timeout becomes a plain-language
+   error; a caller-initiated abort is never rewritten.
+   NB: `path` here is the segment AFTER the /api/scm mount, so the /scan- test
+   still matches the vendored scan endpoints. */
+function timeoutSignal(path: string): AbortSignal | undefined {
+  const ms = /\/scan-/.test(path) ? 120_000 : 30_000;
+  try { return AbortSignal.timeout(ms); } catch { return undefined; } // pre-2022 browsers
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, path: string): Promise<Response> {
+  const callerSignal = init.signal;
+  try {
+    return await fetch(url, { ...init, signal: callerSignal ?? timeoutSignal(path) });
+  } catch (e) {
+    if (!callerSignal && e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      throw new Error('The request took too long — please check your connection and try again.');
+    }
+    throw e;
+  }
+}
+
 /* Edge #J — render the shortage detail out of a 409 short_stock body and ask
    the operator whether to ship anyway (stock goes negative). Returns true on
    confirm; replays the request with confirmShortStock:true. */
@@ -72,7 +98,7 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
     authorization: `Bearer ${token}`,
     ...(typeof init?.body === 'string' ? { 'content-type': 'application/json' } : {}),
   };
-  let res = await fetch(`${API_URL}${path}`, { ...init, headers });
+  let res = await fetchWithTimeout(`${API_URL}${path}`, { ...init, headers }, path);
 
   /* Edge #J (systemic) — every ship path returns 409 short_stock unless the body
      carries confirmShortStock:true. Catch it once: prompt, and on confirm replay
@@ -81,7 +107,7 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
     const text = await res.clone().text();
     if (text.includes('"short_stock"') && await confirmShortStock(text)) {
       const retryBody = JSON.stringify({ ...JSON.parse(init.body), confirmShortStock: true });
-      res = await fetch(`${API_URL}${path}`, { ...init, headers, body: retryBody });
+      res = await fetchWithTimeout(`${API_URL}${path}`, { ...init, headers, body: retryBody }, path);
     }
   }
 
