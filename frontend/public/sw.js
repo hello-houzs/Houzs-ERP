@@ -65,7 +65,12 @@
 // supplier delivery dates 2/3/4 (mig 0026), MRP State column + bind-failure
 // keeps dialog open, Assign-supplier on model edit page, effective-dated history
 // dialog, cross-tab data sync, new-version banner.
-const VERSION = "houzs-erp-v14";
+// v15 (2026-06-22): maintenance single-source cleanup — removed the redundant
+// so_dropdown_options VENUE editor (SO already uses PMS venues), Brandings tab
+// now read-only from PMS /api/projects/brands, and seeded the empty Products
+// Maintenance pools into master config (mig 0027): bedframe/mattress sizes,
+// 15 sofa compartments, 5 supplier categories.
+const VERSION = "houzs-erp-v15";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
