@@ -70,7 +70,10 @@
 // now read-only from PMS /api/projects/brands, and seeded the empty Products
 // Maintenance pools into master config (mig 0027): bedframe/mattress sizes,
 // 15 sofa compartments, 5 supplier categories.
-const VERSION = "houzs-erp-v15";
+// v16 (2026-06-22): supplier extra columns — registration_no, nature_of_business,
+// exemption_no, phone2 (mig 0028) wired into create/edit forms, ahead of seeding
+// the real 36-supplier AutoCount creditor list.
+const VERSION = "houzs-erp-v16";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

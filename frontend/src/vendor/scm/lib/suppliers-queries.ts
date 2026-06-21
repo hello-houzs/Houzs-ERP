@@ -49,6 +49,12 @@ export type SupplierRow = {
   statement_type: StatementType;
   aging_basis: AgingBasis;
   credit_limit_sen: number;
+  /* Mig 0028 — AutoCount creditor-export parity (registration_no /
+     nature_of_business / exemption_no / phone2). */
+  registration_no: string | null;
+  nature_of_business: string | null;
+  exemption_no: string | null;
+  phone2: string | null;
   created_at: string;
   updated_at: string;
   /* PR — Commander 2026-05-27: auto-derived from the supplier's assigned

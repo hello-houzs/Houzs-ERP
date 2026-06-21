@@ -502,9 +502,14 @@ const CreateForm = ({ onClose }: { onClose: () => void }) => {
     category: '',
     tinNumber: '',
     businessRegNo: '',
+    /* Mig 0028 — AutoCount creditor-export parity */
+    registrationNo: '',
+    exemptionNo: '',
+    natureOfBusiness: '',
     contactPerson: '',
     attention: '',
     phone: '',
+    phone2: '',
     mobile: '',
     fax: '',
     whatsappNumber: '',
@@ -575,6 +580,10 @@ const SupplierFields = ({
       </div>
       <Field label="TIN Number" value={(form.tinNumber as string) ?? ''} onChange={(v) => onChange('tinNumber', v)} />
       <Field label="Business Reg No" value={(form.businessRegNo as string) ?? ''} onChange={(v) => onChange('businessRegNo', v)} />
+      {/* Mig 0028 — AutoCount creditor-export parity. */}
+      <Field label="Registration No." value={(form.registrationNo as string) ?? ''} onChange={(v) => onChange('registrationNo', v)} />
+      <Field label="Exemption No." value={(form.exemptionNo as string) ?? ''} onChange={(v) => onChange('exemptionNo', v)} />
+      <Field label="Nature of Business" value={(form.natureOfBusiness as string) ?? ''} onChange={(v) => onChange('natureOfBusiness', v)} />
     </div>
     <p className={styles.eyebrow} style={{ marginTop: 'var(--space-3)' }}>Contact</p>
     <div className={styles.formGrid}>
@@ -582,6 +591,8 @@ const SupplierFields = ({
       <Field label="Attention" value={(form.attention as string) ?? ''} onChange={(v) => onChange('attention', v)} />
       {/* Task #91 — phone fields normalize to E.164 on blur via PhoneInput. */}
       <PhoneField label="Phone" value={(form.phone as string) ?? ''} onChange={(v) => onChange('phone', v)} />
+      {/* Mig 0028 — secondary phone, same E.164 normalization. */}
+      <PhoneField label="Phone 2" value={(form.phone2 as string) ?? ''} onChange={(v) => onChange('phone2', v)} />
       <PhoneField label="Mobile" value={(form.mobile as string) ?? ''} onChange={(v) => onChange('mobile', v)} />
       <PhoneField label="WhatsApp" value={(form.whatsappNumber as string) ?? ''} onChange={(v) => onChange('whatsappNumber', v)} />
       <Field label="Fax" value={(form.fax as string) ?? ''} onChange={(v) => onChange('fax', v)} />
