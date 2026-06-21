@@ -616,7 +616,12 @@ export async function computeMrp(
   type SofaBucket = { whId: string | null; rows: DemandRow[] };
   const sofaByKey = new Map<string, SofaBucket>();
   for (const d of demand) {
-    if ((prodByCode.get(d.item_code)?.category ?? null) !== 'SOFA') continue;
+    /* Audit 2026-06-20 — mirror section 6's catFromGroup fallback (line 468):
+       a sofa SO line whose item_code isn't in mfg_products yet (ordered before
+       it was added to the SKU Master) must still bucket as SOFA via its
+       item_group, or it shows on NO MRP tab and never gets a PO. */
+    const sofaCat = prodByCode.get(d.item_code)?.category ?? catFromGroup(d.item_group);
+    if (sofaCat !== 'SOFA') continue;
     if (whFilter && (d.warehouse_id ?? null) !== whFilter) continue;
     const whId = d.warehouse_id ?? null;
     const k = composite(whId, d.item_code, variantKeyOf(d.item_group, d.variants));

@@ -552,16 +552,26 @@ mfgProducts.patch('/:id', async (c) => {
         return c.json({ error: 'invalid_selling_price' }, 400);
       }
     }
-    updates.seat_height_prices = body.seatHeightPrices;
-
     type Slot = { height: string; priceSen: number; tier?: 'PRICE_1' | 'PRICE_2' | 'PRICE_3'; sellingPriceSen?: number };
     const oldArr = (Array.isArray(current.seat_height_prices)
       ? (current.seat_height_prices as Slot[])
       : []);
-    const newArr = body.seatHeightPrices;
+    const newArr = body.seatHeightPrices as Slot[];
     const keyOf = (s: Slot) => `${s.height}|${s.tier ?? 'PRICE_2'}`;
+
+    /* Audit 2026-06-20 — seat_height_prices JSONB carries TWO independent
+       dimensions per slot: priceSen (COST, Backend "Edit Prices" grid) and
+       sellingPriceSen (SELLING, POS Sales-Director). A cost-only client omits
+       sellingPriceSen, so the old verbatim store wiped the POS selling price on
+       every edited slot — the combo COST-edit-wipes-SELLING bug twinned onto the
+       SKU JSONB. MERGE each incoming slot over the matching current slot so an
+       omitted dimension carries forward (an explicit incoming value still wins). */
+    const oldByKey = new Map(oldArr.map((s) => [keyOf(s), s] as const));
+    const mergedArr: Slot[] = newArr.map((s) => ({ ...oldByKey.get(keyOf(s)), ...s }));
+    updates.seat_height_prices = mergedArr;
+
     const oldMap = new Map(oldArr.map((s) => [keyOf(s), s.priceSen] as const));
-    const newMap = new Map(newArr.map((s) => [keyOf(s), s.priceSen] as const));
+    const newMap = new Map(mergedArr.map((s) => [keyOf(s), s.priceSen] as const));
     const keys = new Set([...oldMap.keys(), ...newMap.keys()]);
     for (const k of keys) {
       const oldVal = oldMap.get(k) ?? null;
@@ -571,11 +581,10 @@ mfgProducts.patch('/:id', async (c) => {
       }
     }
     // SELLING side (POS Edit-Price grid writes sellingPriceSen; Chairman
-    // 2026-06-01). The array is stored verbatim above, so sellingPriceSen
-    // persists with NO migration (JSONB) — here we just diff it for the audit
-    // trail under field `seat_height_selling:<height>|<tier>`.
+    // 2026-06-01). Diffed against the MERGED array so the audit reflects what is
+    // actually stored (an omitted slot now carries its prior selling forward).
     const oldSellMap = new Map(oldArr.map((s) => [keyOf(s), s.sellingPriceSen ?? null] as const));
-    const newSellMap = new Map(newArr.map((s) => [keyOf(s), s.sellingPriceSen ?? null] as const));
+    const newSellMap = new Map(mergedArr.map((s) => [keyOf(s), s.sellingPriceSen ?? null] as const));
     for (const k of new Set([...oldSellMap.keys(), ...newSellMap.keys()])) {
       const oldVal = oldSellMap.get(k) ?? null;
       const newVal = newSellMap.get(k) ?? null;
