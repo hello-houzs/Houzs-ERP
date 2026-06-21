@@ -43,6 +43,10 @@
 
 BEGIN;
 
+-- search_path so unqualified scm enum/type casts (::fabric_category, etc.)
+-- resolve to the scm types regardless of the session default.
+SET search_path = scm, public;
+
 -- ============================================================================
 -- PART A - clean up the ad-hoc back-door stubs
 -- ============================================================================
