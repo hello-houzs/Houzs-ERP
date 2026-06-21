@@ -34,19 +34,29 @@ localities.use("*", supabaseAuth);
 // [] when the table is missing or empty.
 localities.get("/", async (c) => {
   const sb = c.get("supabase");
-  const { data, error } = await sb
-    .from("my_localities")
-    .select("id, postcode, city, state, state_code, country, warehouse_id")
-    .order("state", { ascending: true })
-    .order("city", { ascending: true })
-    .order("postcode", { ascending: true })
-    .limit(20000);
-  if (error) {
-    if (/relation .* does not exist/i.test(error.message)) return c.json({ localities: [] });
-    return c.json({ error: "load_failed", reason: error.message }, 500);
+  // PostgREST caps a single response at max-rows (1000), so `.limit(20000)` was
+  // silently truncating the 2,933-row MY dataset to the first 1000 (≈7 states).
+  // Page through with .range() (each request ≤1000) and concatenate the lot.
+  const PAGE = 1000;
+  const data: Record<string, unknown>[] = [];
+  for (let from = 0; from <= 50000; from += PAGE) {
+    const { data: chunk, error } = await sb
+      .from("my_localities")
+      .select("id, postcode, city, state, state_code, country, warehouse_id")
+      .order("state", { ascending: true })
+      .order("city", { ascending: true })
+      .order("postcode", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) {
+      if (/relation .* does not exist/i.test(error.message)) return c.json({ localities: [] });
+      return c.json({ error: "load_failed", reason: error.message }, 500);
+    }
+    const rows = (chunk ?? []) as Record<string, unknown>[];
+    data.push(...rows);
+    if (rows.length < PAGE) break; // last page
   }
   // Dual-read camelCase ?? snake_case — cover the PostgREST casing either way.
-  const localitiesRows = (data ?? []).map((r: Record<string, unknown>) => ({
+  const localitiesRows = data.map((r: Record<string, unknown>) => ({
     id: r.id,
     postcode: r.postcode,
     city: r.city,
