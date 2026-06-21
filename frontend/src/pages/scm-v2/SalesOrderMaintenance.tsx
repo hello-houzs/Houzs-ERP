@@ -25,11 +25,9 @@ import { useAuth } from '../../vendor/scm/lib/auth';
 import { useToast } from '../../vendor/scm/components/Toast';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
-/* Migration 0086 — Venues CRUD section folded into SO Maintenance. */
-import {
-  useVenues, useCreateVenue, useUpdateVenue, useDeactivateVenue,
-  type VenueRow,
-} from '../../vendor/scm/lib/venues-queries';
+/* Venues are maintained centrally in Project Maintenance; this section is a
+   read-only view sourced from /api/projects/venues. */
+import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import {
   useStateWarehouseMappings,
   useUpsertStateWarehouseMapping,
@@ -1250,59 +1248,13 @@ const DropdownCategoryCard = ({
    historical SO.venue_id keeps resolving when the venue is reactivated.
    ════════════════════════════════════════════════════════════════════════ */
 
-const VenuesSection = ({ canEdit }: { canEdit: boolean }) => {
-  const venues = useVenues({ includeInactive: true });
-  const create = useCreateVenue();
-  const update = useUpdateVenue();
-  const deactivate = useDeactivateVenue();
-  const toast = useToast();
-  const askConfirm = useConfirm();
-
-  const [newName, setNewName] = useState('');
-  const [newAddress, setNewAddress] = useState('');
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ name: '', address: '', active: true });
-
-  const startEdit = (v: VenueRow) => {
-    setEditingId(v.id);
-    setEditForm({ name: v.name, address: v.address ?? '', active: v.active });
-  };
-
-  const saveEdit = () => {
-    if (!editingId) return;
-    if (!editForm.name.trim()) { toast.error('Name required.'); return; }
-    update.mutate(
-      { id: editingId, name: editForm.name.trim(), address: editForm.address.trim() || null, active: editForm.active },
-      {
-        onSuccess: () => { toast.success('Venue updated'); setEditingId(null); },
-        onError: (e) => toast.error(`Update failed: ${(e as Error).message}`),
-      },
-    );
-  };
-
-  const addVenue = () => {
-    if (!newName.trim()) { toast.error('Name required.'); return; }
-    create.mutate(
-      { name: newName.trim(), address: newAddress.trim() || null },
-      {
-        onSuccess: () => { toast.success('Venue added'); setNewName(''); setNewAddress(''); },
-        onError: (e) => toast.error(`Create failed: ${(e as Error).message}`),
-      },
-    );
-  };
-
-  const removeVenue = async (v: VenueRow) => {
-    if (!(await askConfirm({
-      title: `Deactivate venue "${v.name}"?`,
-      body: 'Existing SOs that reference it are kept; the venue just hides from pickers.',
-      confirmLabel: 'Deactivate',
-      danger: true,
-    }))) return;
-    deactivate.mutate(v.id, {
-      onSuccess: () => toast.success(`${v.name} deactivated`),
-      onError: (e) => toast.error(`Deactivate failed: ${(e as Error).message}`),
-    });
-  };
+// Venues are now maintained CENTRALLY in Houzs's Project Maintenance / PMS
+// (sourced via /api/projects/venues). This SCM section is READ-ONLY — it shows
+// the venues the SO/CO pickers resolve against, and points editors at Project
+// Maintenance for any add / rename / deactivate. `canEdit` is unused now (kept
+// in the prop signature so the call site doesn't change).
+const VenuesSection = (_props: { canEdit: boolean }) => {
+  const venues = useVenues();
 
   return (
     <section style={{ marginBottom: 'var(--space-6)' }}>
@@ -1319,9 +1271,8 @@ const VenuesSection = ({ canEdit }: { canEdit: boolean }) => {
         fontSize: 'var(--fs-13)', color: 'var(--fg-muted)',
         marginBottom: 'var(--space-3)',
       }}>
-        Where the sales force operates from. Sales executives / outlet managers
-        sign in to POS scoped to a venue; every POS-created SO carries the venue
-        for reporting.
+        Venues are maintained in Project Maintenance. This list is read-only;
+        add, rename, or deactivate venues there.
       </p>
 
       <div style={{
@@ -1332,99 +1283,38 @@ const VenuesSection = ({ canEdit }: { canEdit: boolean }) => {
           <thead>
             <tr>
               <th style={thStyle}>Name</th>
-              <th style={thStyle}>Address</th>
+              <th style={thStyle}>State</th>
               <th style={thStyle}>Status</th>
-              {canEdit && <th style={thStyle} />}
             </tr>
           </thead>
           <tbody>
             {venues.isLoading && (
-              <tr><td colSpan={4} style={emptyStyle}>Loading…</td></tr>
+              <tr><td colSpan={3} style={emptyStyle}>Loading…</td></tr>
             )}
             {!venues.isLoading && (venues.data ?? []).length === 0 && (
-              <tr><td colSpan={4} style={emptyStyle}>No venues yet — add one below.</td></tr>
+              <tr><td colSpan={3} style={emptyStyle}>No venues yet — add them in Project Maintenance.</td></tr>
             )}
-            {(venues.data ?? []).map((v) => {
-              const isEditing = editingId === v.id;
-              return (
-                <tr key={v.id} style={{ borderTop: '1px solid var(--line)' }}>
-                  <td style={tdStyle}>
-                    {isEditing ? (
-                      <input value={editForm.name}
-                        onChange={(e) => setEditForm((s) => ({ ...s, name: e.target.value }))}
-                        style={inputStyle} />
-                    ) : (
-                      <strong style={{ color: 'var(--c-ink)' }}>{v.name}</strong>
-                    )}
-                  </td>
-                  <td style={tdStyle}>
-                    {isEditing ? (
-                      <input value={editForm.address}
-                        onChange={(e) => setEditForm((s) => ({ ...s, address: e.target.value }))}
-                        style={inputStyle} placeholder="Optional address" />
-                    ) : (v.address ?? '—')}
-                  </td>
-                  <td style={tdStyle}>
-                    {isEditing ? (
-                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <input type="checkbox" checked={editForm.active}
-                          onChange={(e) => setEditForm((s) => ({ ...s, active: e.target.checked }))} />
-                        <span>{editForm.active ? 'Active' : 'Inactive'}</span>
-                      </label>
-                    ) : (
-                      <span style={{
-                        display: 'inline-block', padding: '3px 10px',
-                        borderRadius: 999, fontSize: 'var(--fs-11)', fontWeight: 600,
-                        letterSpacing: '0.08em', textTransform: 'uppercase',
-                        background: v.active ? 'rgba(47, 93, 79, 0.12)' : 'rgba(34, 31, 32, 0.06)',
-                        color: v.active ? 'var(--c-secondary-a)' : 'var(--fg-muted)',
-                      }}>
-                        {v.active ? 'Active' : 'Inactive'}
-                      </span>
-                    )}
-                  </td>
-                  {canEdit && (
-                    <td style={{ ...tdStyle, textAlign: 'right' }}>
-                      {isEditing ? (
-                        <>
-                          <Button variant="ghost" size="sm" onClick={() => setEditingId(null)}>Cancel</Button>
-                          <Button variant="primary" size="sm" onClick={saveEdit} disabled={update.isPending}>Save</Button>
-                        </>
-                      ) : (
-                        <>
-                          <Button variant="ghost" size="sm" onClick={() => startEdit(v)}>Edit</Button>
-                          {v.active && (
-                            <Button variant="ghost" size="sm" onClick={() => removeVenue(v)}>
-                              <Trash2 size={14} strokeWidth={1.75} />
-                            </Button>
-                          )}
-                        </>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
+            {(venues.data ?? []).map((v) => (
+              <tr key={v.id} style={{ borderTop: '1px solid var(--line)' }}>
+                <td style={tdStyle}>
+                  <strong style={{ color: 'var(--c-ink)' }}>{v.name}</strong>
+                </td>
+                <td style={tdStyle}>{v.state ?? '—'}</td>
+                <td style={tdStyle}>
+                  <span style={{
+                    display: 'inline-block', padding: '3px 10px',
+                    borderRadius: 999, fontSize: 'var(--fs-11)', fontWeight: 600,
+                    letterSpacing: '0.08em', textTransform: 'uppercase',
+                    background: v.active ? 'rgba(47, 93, 79, 0.12)' : 'rgba(34, 31, 32, 0.06)',
+                    color: v.active ? 'var(--c-secondary-a)' : 'var(--fg-muted)',
+                  }}>
+                    {v.active ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
-        {canEdit && (
-          <div style={{
-            display: 'flex', gap: 'var(--space-3)', alignItems: 'center',
-            padding: 'var(--space-3) var(--space-4)',
-            borderTop: '1px solid var(--line)', background: 'var(--c-cream)',
-          }}>
-            <input value={newName} placeholder="New venue name"
-              onChange={(e) => setNewName(e.target.value)}
-              style={{ ...inputStyle, flex: '0 0 220px' }} />
-            <input value={newAddress} placeholder="Address (optional)"
-              onChange={(e) => setNewAddress(e.target.value)}
-              style={{ ...inputStyle, flex: 1 }} />
-            <Button variant="primary" size="sm" onClick={addVenue} disabled={create.isPending}>
-              <Plus size={14} strokeWidth={1.75} />
-              <span>{create.isPending ? 'Adding…' : 'Add venue'}</span>
-            </Button>
-          </div>
-        )}
       </div>
     </section>
   );

@@ -11,9 +11,13 @@
 
 import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { maintActiveValues } from '@2990s/shared';
-import { useMaintenanceConfig, useMfgProducts, type MfgCategory } from './mfg-products-queries';
+import { useMfgProducts, type MfgCategory } from './mfg-products-queries';
 import { authedFetch } from './authed-fetch';
+// HOUZS RE-SOURCING (2026-06-21): branding is maintained centrally in Houzs's
+// Project Maintenance / PMS (project_brands). The branding pool sources from
+// /api/projects/brands — which lives OUTSIDE the /api/scm mount, so it uses the
+// Houzs-native `api` client, not the /api/scm-scoped authedFetch.
+import { api } from '../../../api/client';
 
 export type ProductModelRow = {
   id: string;
@@ -85,29 +89,55 @@ export function useProductModels(opts?: { category?: MfgCategory }) {
   });
 }
 
+// Raw row from GET /api/projects/brands (Houzs PMS BrandManager).
+type ProjectBrandRow = {
+  id: number;
+  name: string;
+  active: number | boolean;
+};
+
+/**
+ * Houzs PMS brands — the central brand master maintained in Project
+ * Maintenance > Brands. Only the ACTIVE brand names are offered to the SCM
+ * Branding inputs. (`full=1` returns the full row set; we filter to active.)
+ */
+export function useProjectBrands() {
+  return useQuery({
+    queryKey: ['project-brands'],
+    queryFn: () =>
+      api
+        .get<{ data: ProjectBrandRow[] }>('/api/projects/brands?full=1')
+        .then((r) => r.data ?? []),
+    staleTime: 60_000,
+  });
+}
+
 /**
  * BRANDING pool resolver — single source for every Branding input.
  *
  * Resolution order:
- *   1. Maintenance pool (maintenance_config master row, `brandings: string[]`)
- *      — edited on Products & Maintenance > Maintenance > Products Maintenance
- *      > Brandings.
+ *   1. Houzs PMS brands (project_brands, maintained in Project Maintenance >
+ *      Brands; active brands only).
  *   2. Fallback when the pool is empty/absent: DISTINCT non-null branding
  *      values across mfg_products + product_models (case-insensitive dedupe,
  *      first-seen casing wins, A→Z). Read-only suggestion — nothing is ever
- *      written back to config without an explicit Save.
+ *      written back to the brand master.
  *
  * Consumers feed the result into a <datalist> so free text stays possible
  * (legacy values are never hard-blocked).
  */
 export function useBrandingPool() {
-  const cfg = useMaintenanceConfig('master');
+  const brands = useProjectBrands();
   const products = useMfgProducts();
   const models = useProductModels();
 
   const configPool = useMemo(
-    () => maintActiveValues(cfg.data?.data?.brandings).map((b) => b.trim()).filter((b) => b.length > 0),
-    [cfg.data],
+    () =>
+      (brands.data ?? [])
+        .filter((b) => b.active === 1 || b.active === true)
+        .map((b) => (b.name ?? '').trim())
+        .filter((b) => b.length > 0),
+    [brands.data],
   );
 
   const distinct = useMemo(() => {
