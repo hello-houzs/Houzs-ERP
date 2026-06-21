@@ -44,8 +44,8 @@ const HEADER =
   'customer_so_no, po_doc_no, sales_location, customer_state, customer_country, note, ' +
   'address1, address2, city, state, postcode, phone, ' +
   'emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, ' +
-  'mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, ' +
-  'mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, ' +
+  'mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, service_centi, ' +
+  'mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, service_cost_centi, ' +
   'local_total_centi, total_cost_centi, total_margin_centi, margin_pct_basis, line_count, ' +
   'status, notes, sent_at, paid_at, confirmed_at, created_at, created_by, updated_at';
 

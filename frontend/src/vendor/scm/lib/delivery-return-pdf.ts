@@ -101,6 +101,7 @@ export async function renderDeliveryReturnInto(
     head: [['#', 'Item', 'Description', 'Qty', 'Condition', 'Unit Price', opts?.amountLabel ?? 'Refund']],
     body: rows,
     theme: 'striped',
+    rowPageBreak: 'avoid',
     styles: { fontSize: 8.5, cellPadding: 2, valign: 'top' },
     headStyles: { fillColor: [34, 31, 32], textColor: 250, fontStyle: 'bold' },
     columnStyles: {

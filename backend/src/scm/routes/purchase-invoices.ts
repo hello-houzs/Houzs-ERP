@@ -362,7 +362,8 @@ purchaseInvoices.post('/', async (c) => {
        overstated whenever the form sent one). */
     const qty = Number(it.qty ?? 0); const unit = Number(it.unitPriceCenti ?? 0);
     const discount = Number(it.discountCenti ?? 0) || 0;
-    const total = qty * unit - discount; subtotal += total;
+    // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
+    const total = Math.max(0, qty * unit - discount); subtotal += total;
     return {
       material_kind: it.materialKind,
       material_code: it.materialCode,
@@ -449,21 +450,35 @@ purchaseInvoices.patch('/:id/payment', async (c) => {
   const amount = Number(body.amountCenti ?? 0);
   if (!Number.isFinite(amount) || amount <= 0) return c.json({ error: 'invalid_amount' }, 400);
 
-  const { data: cur } = await sb.from('purchase_invoices').select('paid_centi, total_centi, status').eq('id', id).maybeSingle();
-  if (!cur) return c.json({ error: 'not_found' }, 404);
-  const c0 = cur as { paid_centi: number; total_centi: number; status: string };
-  // DRAFT removed in migration 0078 — only block CANCELLED now.
-  if (c0.status === 'CANCELLED') return c.json({ error: 'not_payable', message: 'PI is cancelled' }, 409);
+  // Optimistic-concurrency loop (Bug#5, ported from 2990 1355332c). The old code
+  // did read-modify-write — two payments hitting the SAME PI at once both read X
+  // and both wrote X+amount, silently LOSING one. PI has no payment ledger to
+  // re-sum (unlike SI's recomputePaid), and PostgREST can't do `col = col + x`,
+  // so we gate the UPDATE on `paid_centi = <the value we just read>`: if a
+  // concurrent payment moved it, the update matches 0 rows and we retry with a
+  // fresh read.
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const { data: cur } = await sb.from('purchase_invoices')
+      .select('paid_centi, total_centi, status').eq('id', id).maybeSingle();
+    if (!cur) return c.json({ error: 'not_found' }, 404);
+    const c0 = cur as { paid_centi: number; total_centi: number; status: string };
+    // DRAFT removed in migration 0078 — only block CANCELLED now.
+    if (c0.status === 'CANCELLED') return c.json({ error: 'not_payable', message: 'PI is cancelled' }, 409);
 
-  const newPaid = c0.paid_centi + amount;
-  const newStatus = newPaid >= c0.total_centi ? 'PAID' : 'PARTIALLY_PAID';
-  const ts: Record<string, string> = { updated_at: new Date().toISOString() };
+    const newPaid = c0.paid_centi + amount;
+    const newStatus = newPaid >= c0.total_centi ? 'PAID' : 'PARTIALLY_PAID';
 
-  const { data, error } = await sb.from('purchase_invoices').update({
-    paid_centi: newPaid, status: newStatus, ...ts,
-  }).eq('id', id).select('id, paid_centi, status').single();
-  if (error) return c.json({ error: 'payment_failed', reason: error.message }, 500);
-  return c.json({ purchaseInvoice: data });
+    const { data, error } = await sb.from('purchase_invoices').update({
+      paid_centi: newPaid, status: newStatus, updated_at: new Date().toISOString(),
+    })
+      .eq('id', id)
+      .eq('paid_centi', c0.paid_centi) // only if nobody else moved it since the read
+      .select('id, paid_centi, status');
+    if (error) return c.json({ error: 'payment_failed', reason: error.message }, 500);
+    if (data && data.length > 0) return c.json({ purchaseInvoice: data[0] });
+    // 0 rows updated → a concurrent payment changed paid_centi; loop re-reads + retries.
+  }
+  return c.json({ error: 'payment_conflict', message: 'Another payment was recorded at the same moment — please check the balance and retry.' }, 409);
 });
 
 purchaseInvoices.patch('/:id/cancel', async (c) => {
@@ -629,11 +644,10 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
 
   for (const bucket of buckets.values()) {
     counter += 1;
-    const invoiceNumber = `PI-${yymm}-${String(counter).padStart(3, '0')}`;
-    const subtotal = bucket.lines.reduce((s, { row, qty }) => s + (qty * row.unit_price_centi - discFor(row, qty)), 0);
-
-    const { data: header, error: hErr } = await sb.from('purchase_invoices').insert({
-      invoice_number: invoiceNumber,
+    // Audit (ported from 2990 b30f0bb1) — clamp each line before summing so a
+    // discount > qty×price can't drive the PI subtotal negative.
+    const subtotal = bucket.lines.reduce((s, { row, qty }) => s + Math.max(0, qty * row.unit_price_centi - discFor(row, qty)), 0);
+    const piPayload = {
       supplier_invoice_ref: body.supplierInvoiceNumber ?? null,
       supplier_id: bucket.supplierId,
       purchase_order_id: bucket.purchaseOrderId,
@@ -649,9 +663,24 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
       posted_at: new Date().toISOString(),
       notes: body.notes ? `Multi-pick from ${bucket.grnNumber} · ${body.notes}` : `Multi-pick from ${bucket.grnNumber}`,
       created_by: user.id,
-    }).select('id, invoice_number').single();
-    if (hErr) continue;
-    const h = header as unknown as { id: string; invoice_number: string };
+    };
+    /* Audit (ported from 2990 b30f0bb1) — concurrent PI creation can collide on
+       invoice_number (UNIQUE); the old `if (hErr) continue` silently dropped the
+       PI (GRN left un-billed, no AP posting). Retry on 23505: re-derive the next
+       free suffix from a fresh live count + bump. */
+    let h: { id: string; invoice_number: string } | null = null;
+    for (let attempt = 0; attempt < 8 && !h; attempt += 1) {
+      const invoiceNumber = `PI-${yymm}-${String(counter).padStart(3, '0')}`;
+      const { data: header, error: hErr } = await sb.from('purchase_invoices')
+        .insert({ invoice_number: invoiceNumber, ...piPayload })
+        .select('id, invoice_number').single();
+      if (!hErr && header) { h = header as unknown as { id: string; invoice_number: string }; break; }
+      if (!hErr || (hErr as { code?: string }).code !== '23505') break;
+      const { count: live } = await sb.from('purchase_invoices')
+        .select('id', { head: true, count: 'exact' }).like('invoice_number', `PI-${yymm}-%`);
+      counter = (live ?? counter) + 1;
+    }
+    if (!h) continue;
 
     const rows = bucket.lines.map(({ row, qty }) => ({
       purchase_invoice_id: h.id,
@@ -661,7 +690,8 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
       material_name: row.material_name,
       qty,
       unit_price_centi: row.unit_price_centi,
-      line_total_centi: qty * row.unit_price_centi - discFor(row, qty),
+      // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
+      line_total_centi: Math.max(0, qty * row.unit_price_centi - discFor(row, qty)),
       item_group: row.item_group,
       description: row.description,
       description2: row.description2,
@@ -786,7 +816,8 @@ purchaseInvoices.post('/from-grn', async (c) => {
     material_name: it.material_name,
     qty: it._remaining,
     unit_price_centi: it.unit_price_centi,
-    line_total_centi: it._remaining * it.unit_price_centi - discFor(it),
+    // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
+    line_total_centi: Math.max(0, it._remaining * it.unit_price_centi - discFor(it)),
     item_group: it.item_group,
     description: it.description,
     description2: it.description2,
@@ -875,7 +906,8 @@ purchaseInvoices.post('/:id/items', async (c) => {
   const qty = Number(it.qty ?? 1);
   const unitPriceCenti = Number(it.unitPriceCenti ?? 0);
   const discountCenti = Number(it.discountCenti ?? 0);
-  const lineTotal = (qty * unitPriceCenti) - discountCenti;
+  // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
+  const lineTotal = Math.max(0, (qty * unitPriceCenti) - discountCenti);
 
   // GRN-linked line: cap qty at that GRN line's remaining
   // (accepted - invoiced - returned).
@@ -991,7 +1023,8 @@ purchaseInvoices.patch('/:id/items/:itemId', async (c) => {
      (line_total_centi = qty × unit − discount, discount stored); all four
      create paths now write the same way, so an edit no longer shifts a line's
      total by a stored-but-previously-unapplied discount. */
-  const lineTotal = (qty * unit) - discount;
+  // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
+  const lineTotal = Math.max(0, (qty * unit) - discount);
 
   const updates: Record<string, unknown> = {
     qty,

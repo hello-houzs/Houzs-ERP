@@ -1607,7 +1607,10 @@ mfgPurchaseOrders.post('/:id/items', async (c) => {
   const qty = Number(it.qty ?? 1);
   const unitPriceCenti = Number(it.unitPriceCenti ?? 0);
   const discountCenti = Number(it.discountCenti ?? 0);
-  const lineTotal = (qty * unitPriceCenti) - discountCenti;
+  // Audit (ported from 2990 21163bde) — clamp like the create path (mfg-purchase-orders POST /):
+  // a per-line discount exceeding qty×price must not persist a negative
+  // line_total_centi (it sums straight into the PO subtotal/total).
+  const lineTotal = Math.max(0, (qty * unitPriceCenti) - discountCenti);
 
   const row: Record<string, unknown> = {
     purchase_order_id: poId,
@@ -1670,7 +1673,8 @@ mfgPurchaseOrders.patch('/:id/items/:itemId', async (c) => {
   const qty = it.qty !== undefined ? Number(it.qty) : prev.qty;
   const unit = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : prev.unit_price_centi;
   const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : prev.discount_centi;
-  const lineTotal = (qty * unit) - discount;
+  // Audit (ported from 2990 21163bde) — clamp like the create path (see POST /:id/items).
+  const lineTotal = Math.max(0, (qty * unit) - discount);
 
   const updates: Record<string, unknown> = {
     qty, unit_price_centi: unit, discount_centi: discount, line_total_centi: lineTotal,

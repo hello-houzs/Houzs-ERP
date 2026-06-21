@@ -87,6 +87,7 @@ export async function renderSalesInvoiceInto(
     head: [['#', 'Item', 'Description', 'Qty', 'Unit Price', 'Disc', 'Total']],
     body: rows,
     theme: 'striped',
+    rowPageBreak: 'avoid',
     styles: { fontSize: 8.5, cellPadding: 2, valign: 'top' },
     headStyles: { fillColor: [34, 31, 32], textColor: 250, fontStyle: 'bold' },
     columnStyles: {

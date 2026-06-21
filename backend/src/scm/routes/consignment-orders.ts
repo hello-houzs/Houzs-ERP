@@ -651,7 +651,8 @@ consignmentOrders.post('/', async (c) => {
        drift rejection (consignment has no POS path). */
     const unit = recomputed ? recomputed.unit_price_sen : Number(it.unitPriceCenti ?? 0);
     const discount = Number(it.discountCenti ?? 0);
-    const lineTotal = (qty * unit) - discount;
+    // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
+    const lineTotal = Math.max(0, (qty * unit) - discount);
     const itemCode = String(it.itemCode ?? '');
     const unitCost = recomputed && recomputed.unit_cost_sen > 0
       ? recomputed.unit_cost_sen
@@ -852,8 +853,10 @@ consignmentOrders.patch('/:docNo/status', async (c) => {
 
   const patch: Record<string, unknown> = { status: body.status, updated_at: new Date().toISOString() };
   const { data, error } = await sb.from('consignment_sales_orders').update(patch)
-    .eq('doc_no', docNo).select('doc_no, status').single();
+    .eq('doc_no', docNo).select('doc_no, status').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  // Stale/missing docNo matches 0 rows → clean 404, not an opaque 500.
+  if (!data) return c.json({ error: 'not_found' }, 404);
 
   await recordSoAudit(sb, {
     docNo,
@@ -898,7 +901,8 @@ consignmentOrders.post('/:docNo/items/:itemId/override', async (c) => {
   const originalPriceSen = i.unit_price_centi;
   const overridePriceSen = newPrice;
 
-  const newLineTotal = (i.qty * newPrice) - i.discount_centi;
+  // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
+  const newLineTotal = Math.max(0, (i.qty * newPrice) - i.discount_centi);
   const { data: costRow } = await sb.from('consignment_sales_order_items')
     .select('line_cost_centi')
     .eq('id', itemId)
@@ -1307,7 +1311,8 @@ consignmentOrders.post('/:docNo/items', async (c) => {
   );
   /* Backend authors the selling price; no drift rejection (no POS path). */
   const unit = recomputed.unit_price_sen;
-  const lineTotal = (qty * unit) - discount;
+  // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
+  const lineTotal = Math.max(0, (qty * unit) - discount);
   const unitCost = recomputed.unit_cost_sen > 0
     ? recomputed.unit_cost_sen
     : await snapshotUnitCostSen(sb, itemCodeStr, Number(it.unitCostCenti ?? 0));
@@ -1470,7 +1475,8 @@ consignmentOrders.patch('/:docNo/items/:itemId', async (c) => {
   } else {
     unitCost = prev.unit_cost_centi;
   }
-  const lineTotal = (qty * unit) - discount;
+  // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
+  const lineTotal = Math.max(0, (qty * unit) - discount);
   const lineCost = unitCost * qty;
 
   const updates: Record<string, unknown> = {

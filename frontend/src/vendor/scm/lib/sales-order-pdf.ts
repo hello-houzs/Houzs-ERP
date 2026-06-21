@@ -481,6 +481,7 @@ export async function renderSalesOrderInto(
     head: [['#', 'Item Code', 'Description', 'Qty', 'Unit Price', 'Discount', 'Amount (RM)']],
     body: bodyRows,
     theme: 'striped',
+    rowPageBreak: 'avoid',
     styles: { fontSize: 8, cellPadding: 2, valign: 'top' },
     headStyles: { fillColor: [34, 31, 32], textColor: 250, fontStyle: 'bold' },
     /* Money cells must stay on ONE line ("MYR 2,990.00", never wrapped):
@@ -531,6 +532,7 @@ export async function renderSalesOrderInto(
       head: [['Date', 'Method', 'Approval Code', 'Collected By', 'Amount']],
       body: payRows,
       theme: 'striped',
+      rowPageBreak: 'avoid',
       styles: { fontSize: 8.5, cellPadding: 2, valign: 'top' },
       headStyles: { fillColor: [34, 31, 32], textColor: 250, fontStyle: 'bold' },
       columnStyles: {

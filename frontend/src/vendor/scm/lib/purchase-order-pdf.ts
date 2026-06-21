@@ -330,6 +330,7 @@ async function renderPurchaseOrderInto(
     ]],
     body: rows,
     theme: 'plain',
+    rowPageBreak: 'avoid',
     styles: { fontSize: 8.5, cellPadding: { top: 1.5, right: 1.5, bottom: 1.5, left: 1.5 }, lineColor: [120, 120, 120], lineWidth: 0.1 },
     headStyles: { fontStyle: 'bold', halign: 'left', valign: 'middle', lineWidth: { top: 0.4, bottom: 0.4 } as never },
     bodyStyles: { valign: 'top' },

@@ -295,7 +295,8 @@ function buildItemRow(noteId: string, it: Record<string, unknown>) {
   const unitPrice = Number(it.unitPriceCenti ?? 0);
   const discount = Number(it.discountCenti ?? 0);
   const unitCost = Number(it.unitCostCenti ?? 0);
-  const lineTotal = (qty * unitPrice) - discount;
+  // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
+  const lineTotal = Math.max(0, (qty * unitPrice) - discount);
   const lineCost = qty * unitCost;
   const itemGroup = (it.itemGroup as string) ?? null;
   const variants = (it.variants as unknown) ?? null;
@@ -635,7 +636,8 @@ consignmentNotes.patch('/:id/items/:itemId', async (c) => {
   const unitPrice = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
   const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : Number(prev.discount_centi);
   const unitCost = it.unitCostCenti !== undefined ? Number(it.unitCostCenti) : Number(prev.unit_cost_centi);
-  const lineTotal = (qty * unitPrice) - discount;
+  // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
+  const lineTotal = Math.max(0, (qty * unitPrice) - discount);
   const lineCost = qty * unitCost;
 
   const updates: Record<string, unknown> = {
