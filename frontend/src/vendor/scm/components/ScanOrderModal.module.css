@@ -1,0 +1,236 @@
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 60px 20px;
+  z-index: 1000;
+}
+
+.panel {
+  background: white;
+  width: 100%;
+  max-width: 760px;
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.3);
+}
+
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--c-line);
+  gap: 16px;
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-burnt);
+}
+
+.title {
+  margin: 4px 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--c-ink);
+}
+
+.sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.closeBtn {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--fg-muted);
+  padding: 4px;
+  border-radius: 4px;
+  display: inline-flex;
+}
+
+.body {
+  padding: 20px 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--c-line);
+}
+
+.dropZone {
+  border: 2px dashed var(--c-line);
+  border-radius: 8px;
+  padding: 36px 20px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.dropZone:hover,
+.dropZoneActive {
+  border-color: var(--c-burnt);
+  background: rgba(232, 107, 58, 0.06);
+}
+
+.fileChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--c-line);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--c-ink);
+  background: #faf8f6;
+}
+
+.sectionLabel {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fieldLabel {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.input {
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--c-ink);
+  font-family: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--c-burnt);
+}
+
+.lineCard {
+  border: 1px solid var(--c-line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rawText {
+  font-size: 13px;
+  color: var(--c-ink);
+  background: #faf8f6;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-style: italic;
+  white-space: pre-wrap;
+}
+
+.lineRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px 120px 28px;
+  gap: 8px;
+  align-items: end;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chipGreen {
+  background: rgba(47, 93, 79, 0.12);
+  color: var(--c-secondary-a, #2f5d4f);
+}
+
+.chipYellow {
+  background: rgba(196, 148, 28, 0.16);
+  color: #8a6914;
+}
+
+.chipGrey {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--fg-muted);
+}
+
+.notes {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.error {
+  border: 1px solid var(--c-festive-b, #b8331f);
+  background: rgba(184, 51, 31, 0.07);
+  color: var(--c-festive-b, #b8331f);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.removeBtn {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--fg-muted);
+  padding: 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-self: center;
+}
+
+.removeBtn:hover {
+  color: var(--c-festive-b, #b8331f);
+}
+
+.spin {
+  animation: scanSpin 1s linear infinite;
+}
+
+@keyframes scanSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}

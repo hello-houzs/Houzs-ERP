@@ -52,7 +52,11 @@
 // v11 (2026-06-21): SCM Venues + Branding now pull from Houzs Project
 // Maintenance / PMS (/api/projects/venues + /api/projects/brands) — the single
 // source the owner maintains centrally; SCM venue editor is read-only.
-const VERSION = "houzs-erp-v11";
+// v12 (2026-06-21): Sales Order ICR — photograph a handwritten order slip,
+// Claude vision extracts it (temperature 0, catalog-validated, per-rep
+// self-evolving rules), review/correct, "Open in New SO" prefills. Needs the
+// ANTHROPIC_API_KEY worker secret; degrades to a friendly error without it.
+const VERSION = "houzs-erp-v12";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

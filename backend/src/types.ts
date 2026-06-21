@@ -16,6 +16,11 @@ export type Env = {
   SUPABASE_URL: string;
   SUPABASE_ANON_KEY: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
+  // Anthropic vision/OCR key for the ported SCM /scan-so route (handwritten
+  // sale-order slip → structured JSON). OPTIONAL: when unset, /scan-so/extract
+  // returns 503 anthropic_key_missing — the worker still boots and tsc passes.
+  // Set via `wrangler secret put ANTHROPIC_API_KEY` (and in .dev.vars locally).
+  ANTHROPIC_API_KEY?: string;
   POD_BUCKET: R2Bucket;
   // R2 buckets used by the ported SCM routes (SO item photos, public assets).
   // Typed required so the ported code compiles; bind in wrangler.toml before the
