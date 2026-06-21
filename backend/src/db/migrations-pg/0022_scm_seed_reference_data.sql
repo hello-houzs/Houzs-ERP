@@ -45,6 +45,15 @@
 
 
 -- ============================================================================
+-- PART 0 - search_path so unqualified scm enum/type casts resolve to scm
+-- pg-migrate connects with a default search_path that excludes scm, so the
+-- seed's unqualified enum casts (::fabric_category, ::fabric_price_tier, ...)
+-- would resolve to the wrong type. Set it for the whole (single) pg-migrate
+-- transaction. Explicit scm.* table qualifications below are unaffected.
+-- ============================================================================
+SET search_path = scm, public;
+
+-- ============================================================================
 -- PART A - clean up the ad-hoc back-door stubs
 -- ============================================================================
 
