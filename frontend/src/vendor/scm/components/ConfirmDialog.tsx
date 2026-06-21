@@ -26,7 +26,11 @@ import {
 const backdrop: CSSProperties = {
   position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.28)',
   display: 'flex', alignItems: 'center', justifyContent: 'center',
-  zIndex: 90, padding: 'var(--space-4)',
+  // 3000 — ABOVE every page modal (which top out ~1000). The confirm is
+  // routinely raised FROM inside a modal (e.g. "Create N SKUs" in the bulk
+  // New-Models dialog); at the old z-index 90 it rendered BEHIND that modal so
+  // the button looked dead ("没反应"). Wei Siang 2026-06-20.
+  zIndex: 3000, padding: 'var(--space-4)',
 };
 const card: CSSProperties = {
   background: 'var(--c-paper)', border: '1px solid var(--line-strong)',

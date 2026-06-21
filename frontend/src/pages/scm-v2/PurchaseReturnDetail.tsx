@@ -25,15 +25,24 @@
 // "Confirmed" (editable). COMPLETED / CANCELLED render their label and lock the
 // page read-only. isLocked = CANCELLED or COMPLETED (mirror GRN's lock logic).
 // Cancel reverses the inventory OUT server-side (writes a reversing IN).
+//
+// HOUZS VENDOR — re-vendored from apps/backend/src/pages/PurchaseReturnDetail.tsx
+// (2990 T12, 2026-06-19). Import boundary only: react-router → react-router-dom;
+// the PR flow hooks resolve from the vendored split module purchase-return-queries
+// (NOT the 2990 flow-queries barrel); suppliers / category-badges / mfg-products
+// + the PDF helper → ../../vendor/scm/*; back links repointed to /scm/*. Carries
+// 2990's T12 in-place variant editor verbatim (editable Description + per-category
+// SOFA/BEDFRAME variant editor + bedframe total-height auto-compute) for existing
+// non-sourced bedframe/sofa lines in Edit mode; from-GRN lines stay read-only.
 // ----------------------------------------------------------------------------
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, Undo2, Pencil, Trash2, Printer, Save, Ban, ChevronDown,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
-import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
+import { activeOptions, buildVariantSummary, fmtDateOrDash, maintPickerValues } from '@2990s/shared';
 import {
   usePurchaseReturnDetail,
   useUpdatePurchaseReturnHeader,
@@ -42,6 +51,8 @@ import {
   useCancelPurchaseReturn,
 } from '../../vendor/scm/lib/purchase-return-queries';
 import { useSuppliers, useSupplierDetail, type SupplierRow } from '../../vendor/scm/lib/suppliers-queries';
+import { useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -60,9 +71,46 @@ const fmtRm = (centi: number | null | undefined): string => {
   })}`;
 };
 
+/* T12 — bedframe Total Height is AUTO-COMPUTED = Divan + Leg + Gap. */
+const parseInches = (s: unknown): number => {
+  if (s == null) return 0;
+  const m = String(s).match(/(-?\d+(?:\.\d+)?)/);
+  return m && m[1] ? Number(m[1]) : 0;
+};
+
+/* T12 — existing PR lines whose product is a bedframe/sofa get the SAME
+   per-category variant editor as New PR. Small local copy of PurchaseReturnNew's
+   VariantSelect (not exported there). */
+const VariantSelect = ({
+  label, options, value, onChange, disabled = false,
+}: {
+  label: string;
+  options: Array<{ value: string; priceSen: number }>;
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+}) => (
+  <label className={styles.field}>
+    <span className={styles.fieldLabel}>{label}</span>
+    <span className={styles.selectWrap}>
+      <select className={styles.fieldSelect} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+        <option value="">—</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.value}{o.priceSen > 0 ? ` (+${fmtRm(o.priceSen)})` : ''}
+          </option>
+        ))}
+      </select>
+      <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+    </span>
+  </label>
+);
+
 /* Draft state shapes (mirror PO #194 / GRN / PI). HeaderDraft mirrors the
-   editable PR header fields; LineDraft holds the two inline-editable per-line
-   fields where qty maps to qty_returned (a return has NO discount / delivery). */
+   editable PR header fields; LineDraft holds the inline-editable per-line fields
+   where qty maps to qty_returned (a return has NO discount / delivery). T12 adds
+   the identity/variant fields so a non-sourced PR line can edit its description +
+   bedframe/sofa variants; from-GRN lines keep their identity read-only. */
 type HeaderDraft = {
   supplierId: string;
   returnDate: string;
@@ -73,6 +121,9 @@ type HeaderDraft = {
 type LineDraft = {
   qty: number;            // maps to qty_returned
   unitPriceCenti: number;
+  materialName: string;
+  itemGroup: string | null;
+  variants: Record<string, unknown> | null;
 };
 
 type PrItemRow = Record<string, unknown> & {
@@ -86,6 +137,10 @@ type PrItemRow = Record<string, unknown> & {
   material_kind?: string | null;
   description?: string | null;
   variants?: Record<string, unknown> | null;
+  /* From-GRN lines carry the source GRN line id; their identity + variants stay
+     read-only to avoid stranding the GRN's returned-qty inventory. Manual /
+     PO-sourced lines (no grn_item_id) get full editing. */
+  grn_item_id?: string | null;
 };
 
 const headerSnapshot = (p: any): HeaderDraft => ({
@@ -99,6 +154,9 @@ const headerSnapshot = (p: any): HeaderDraft => ({
 const lineSnapshot = (it: PrItemRow): LineDraft => ({
   qty:            it.qty_returned,
   unitPriceCenti: it.unit_price_centi,
+  materialName:   it.description ?? it.material_name ?? '',
+  itemGroup:      it.item_group ?? null,
+  variants:       (it.variants as Record<string, unknown> | null) ?? null,
 });
 
 export const PurchaseReturnDetail = () => {
@@ -113,6 +171,21 @@ export const PurchaseReturnDetail = () => {
 
   const pr = detail.data?.purchaseReturn ?? null;
   const items = (detail.data?.items ?? []) as PrItemRow[];
+
+  /* T12 — maintenance config + special-orders pools drive the per-category
+     variant editor on EXISTING bedframe/sofa lines in Edit mode (same dropdown
+     pools as New PR). */
+  const maintQ = useMaintenanceConfig('master');
+  const maint  = maintQ.data?.data ?? null;
+  const specialAddonsQ = useSpecialAddons();
+  const specialsPools = useMemo(() => {
+    const rows = (specialAddonsQ.data ?? [])
+      .filter((r) => r.active)
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
+  }, [specialAddonsQ.data]);
 
   /* View → Edit gate (mirror PO/GRN/PI) — default read-only View; click Edit to
      flip into draft mode. The PR list's right-click "Edit" lands here with
@@ -179,6 +252,21 @@ export const PurchaseReturnDetail = () => {
   const setLine = (it: PrItemRow, patch: Partial<LineDraft>) =>
     setLineDrafts((prev) => ({ ...prev, [it.id]: { ...(prev[it.id] ?? lineSnapshot(it)), ...patch } }));
 
+  /* T12 — patch one variant key on a line + auto-compute bedframe Total Height
+     (= Divan + Leg + Gap), mirroring New PR's setVariant. */
+  const setVariant = (it: PrItemRow, key: string, value: string) =>
+    setLineDrafts((prev) => {
+      const cur = prev[it.id] ?? lineSnapshot(it);
+      const variants: Record<string, unknown> = { ...(cur.variants ?? {}), [key]: value };
+      if (cur.itemGroup === 'bedframe' && (key === 'divanHeight' || key === 'legHeight' || key === 'gap')) {
+        const d = parseInches(variants.divanHeight);
+        const lg = parseInches(variants.legHeight);
+        const g = parseInches(variants.gap);
+        variants.totalHeight = (d === 0 && lg === 0 && g === 0) ? '' : `${d + lg + g}"`;
+      }
+      return { ...prev, [it.id]: { ...cur, variants } };
+    });
+
   const enterEdit = () => {
     setHeaderDraft(null);
     setLineDrafts({});
@@ -198,13 +286,32 @@ export const PurchaseReturnDetail = () => {
       for (const it of items) {
         const d = lineDrafts[it.id];
         if (!d) continue;
+        const snap = lineSnapshot(it);
+        /* Identity/variants are editable only on non-sourced lines (no
+           grn_item_id); from-GRN lines never send those keys (their identity is
+           locked so the GRN's returned-qty inventory can't be stranded). */
+        const editableIdentity = !it.grn_item_id;
+        const identityChanged = editableIdentity && (
+          d.materialName !== snap.materialName ||
+          (d.itemGroup ?? '') !== (snap.itemGroup ?? '') ||
+          JSON.stringify(d.variants ?? {}) !== JSON.stringify(snap.variants ?? {})
+        );
         const changed =
           d.qty !== it.qty_returned ||
-          d.unitPriceCenti !== it.unit_price_centi;
+          d.unitPriceCenti !== it.unit_price_centi ||
+          identityChanged;
         if (changed) {
           await updateItem.mutateAsync({
             id: pr.id, itemId: it.id,
             qty: d.qty, unitPriceCenti: d.unitPriceCenti,
+            /* T12 — only non-sourced lines send identity/variants; the server
+               recomputes description2 + writes inventory with the new identity. */
+            ...(editableIdentity ? {
+              materialName: d.materialName,
+              description:  d.materialName,
+              itemGroup:    d.itemGroup ?? undefined,
+              variants:     d.variants ?? {},
+            } : {}),
           });
         }
       }
@@ -331,8 +438,15 @@ export const PurchaseReturnDetail = () => {
             <tbody>
               {visibleItems.map((it) => {
                 const d = lineOf(it);
+                /* T12 — identity + variants are editable only on non-sourced lines
+                   (no grn_item_id); from-GRN lines stay read-only. */
+                const editableIdentity = !it.grn_item_id;
+                const showVariantEditor =
+                  isEditing && editableIdentity && !isLocked &&
+                  (d.itemGroup === 'bedframe' || d.itemGroup === 'sofa') && !!maint;
                 return (
-                  <tr key={it.id}>
+                  <Fragment key={it.id}>
+                  <tr>
                     <td>
                       <div className={styles.codeCell}>{it.material_code}</div>
                       {(() => {
@@ -401,6 +515,61 @@ export const PurchaseReturnDetail = () => {
                       </>
                     )}
                   </tr>
+                  {/* T12 — expanded editor row (Edit mode, non-sourced lines): an
+                      editable Description + the per-category variant editor. A
+                      from-GRN line gets no editor — its identity stays read-only. */}
+                  {isEditing && editableIdentity && (
+                    <tr>
+                      <td colSpan={7} style={{ background: 'var(--c-paper)', borderTop: 'none' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', padding: 'var(--space-2) 0' }}>
+                          <label className={styles.field} style={{ maxWidth: 480 }}>
+                            <span className={styles.fieldLabel}>Description</span>
+                            <input
+                              type="text" value={d.materialName} disabled={isLocked}
+                              onChange={(e) => setLine(it, { materialName: e.target.value })}
+                              className={styles.fieldInput}
+                            />
+                          </label>
+                          {showVariantEditor && (
+                            <div style={{ background: 'var(--c-cream)', border: '1px solid var(--line)', borderRadius: 'var(--radius-md)', padding: 'var(--space-3)' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
+                                {d.itemGroup && <ItemGroupPill group={d.itemGroup} />}
+                                <span style={{ fontFamily: 'var(--font-button)', fontSize: 'var(--fs-11)', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>{d.itemGroup} Variants</span>
+                              </div>
+                              {d.itemGroup === 'bedframe' ? (
+                                <div className={styles.formGrid4}>
+                                  <VariantSelect label="Divan Height" disabled={isLocked} options={activeOptions(maint!.divanHeights, String(d.variants?.divanHeight ?? ''))}
+                                    value={String(d.variants?.divanHeight ?? '')} onChange={(v) => setVariant(it, 'divanHeight', v)} />
+                                  <VariantSelect label="Gap" disabled={isLocked} options={maintPickerValues(maint!.gaps, String(d.variants?.gap ?? '')).map((g) => ({ value: g, priceSen: 0 }))}
+                                    value={String(d.variants?.gap ?? '')} onChange={(v) => setVariant(it, 'gap', v)} />
+                                  <VariantSelect label="Leg Height" disabled={isLocked} options={activeOptions(maint!.legHeights, String(d.variants?.legHeight ?? ''))}
+                                    value={String(d.variants?.legHeight ?? '')} onChange={(v) => setVariant(it, 'legHeight', v)} />
+                                  {/* Total Height auto-computed (see setVariant). */}
+                                  <VariantSelect label="Special" disabled={isLocked} options={specialsPools.bedframe}
+                                    value={String(d.variants?.special ?? '')} onChange={(v) => setVariant(it, 'special', v)} />
+                                </div>
+                              ) : (
+                                <div className={styles.formGrid4}>
+                                  <VariantSelect label="Seat Size" disabled={isLocked} options={maintPickerValues(maint!.sofaSizes, String(d.variants?.seatHeight ?? '')).map((s) => ({ value: s, priceSen: 0 }))}
+                                    value={String(d.variants?.seatHeight ?? '')} onChange={(v) => setVariant(it, 'seatHeight', v)} />
+                                  <VariantSelect label="Leg Height" disabled={isLocked} options={activeOptions(maint!.sofaLegHeights, String(d.variants?.legHeight ?? ''))}
+                                    value={String(d.variants?.legHeight ?? '')} onChange={(v) => setVariant(it, 'legHeight', v)} />
+                                  <VariantSelect label="Special" disabled={isLocked} options={specialsPools.sofa}
+                                    value={String(d.variants?.special ?? '')} onChange={(v) => setVariant(it, 'special', v)} />
+                                  <label className={styles.field}>
+                                    <span className={styles.fieldLabel}>Fabrics (free text)</span>
+                                    <input className={styles.fieldInput} disabled={isLocked} value={String(d.variants?.fabricColor ?? '')}
+                                      onChange={(e) => setVariant(it, 'fabricColor', e.target.value)} />
+                                  </label>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>

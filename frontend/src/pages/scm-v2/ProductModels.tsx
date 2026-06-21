@@ -209,6 +209,37 @@ export const ProductModels = () => {
         sortFn: (a, b) => Number(b.active) - Number(a.active),
       },
       {
+        // PR — Wei Siang 2026-06-19: surface SKU count so a 0-SKU orphan Model
+        // (all its SKUs deleted from SKU Master) is visibly flagged. Subtle for
+        // count > 0 (plain muted number); amber "0 SKUs" badge when empty.
+        key: 'sku_count',
+        label: 'SKUs',
+        width: 96,
+        accessor: (m) => {
+          const n = m.sku_count ?? 0;
+          if (n === 0) {
+            return (
+              <span
+                className={styles.statusPill}
+                title="No SKUs under this Model — likely an orphan left behind after its SKUs were deleted from SKU Master."
+                style={{
+                  background: 'rgba(232, 107, 58, 0.12)',
+                  color: 'var(--c-burnt)',
+                  borderColor: 'var(--c-orange)',
+                  fontWeight: 600,
+                }}
+              >
+                0 SKUs
+              </span>
+            );
+          }
+          return <span style={{ color: 'var(--fg-muted)' }}>{n}</span>;
+        },
+        searchValue: (m) => String(m.sku_count ?? 0),
+        filterValue: (m) => ((m.sku_count ?? 0) === 0 ? '0 SKUs' : String(m.sku_count ?? 0)),
+        sortFn: (a, b) => (a.sku_count ?? 0) - (b.sku_count ?? 0),
+      },
+      {
         key: 'description',
         label: 'Description',
         width: 240,
@@ -363,6 +394,7 @@ export const ProductModels = () => {
         rows={filtered}
         columns={gridColumns}
         storageKey={PM_GRID_KEY}
+        exportName="Product Models"
         rowKey={(m) => m.id}
         searchPlaceholder="Filter visible models…"
         onRowDoubleClick={(m) => setOpenModelId(m.id)}
@@ -873,9 +905,9 @@ export function NewModelDialog({
         const results = await Promise.all(createdModels.map(async (m) => {
           try {
             const r = await generateMut.mutateAsync({ id: m.id });
-            return { model: m, generated: r.generated ?? 0, codes: r.codes ?? [], error: null as string | null };
+            return { model: m, generated: r.generated ?? 0, skipped: r.skipped ?? 0, codes: r.codes ?? [], error: null as string | null, reason: r.reason ?? null };
           } catch (err) {
-            return { model: m, generated: 0, codes: [] as string[], error: err instanceof Error ? err.message : String(err) };
+            return { model: m, generated: 0, skipped: 0, codes: [] as string[], error: err instanceof Error ? err.message : String(err), reason: null as string | null };
           }
         }));
         totalGenerated = results.reduce((sum, r) => sum + r.generated, 0);
@@ -884,14 +916,21 @@ export function NewModelDialog({
         // SKUs (generation errored, or produced nothing) is deleted so it can't
         // linger as an empty shell that blocks the next attempt with a
         // duplicate-code 409. The failure is surfaced, never swallowed.
-        const failed = results.filter((r) => r.generated === 0);
+        // A model is a REAL failure only if generation errored, or it produced
+        // no SKU at all (none generated AND none pre-existing). "Skipped because
+        // the SKU code already exists" (skipped > 0) is NOT a failure — the SKU
+        // is already in the catalog, so keep the model and still bind its
+        // suppliers to it (Commander 2026-06-19: an ACCESSORY whose code already
+        // existed was stuck in an un-saveable loop because generated:0 was
+        // treated as fatal, and the real reason was hidden).
+        const failed = results.filter((r) => r.error != null || (r.generated === 0 && r.skipped === 0));
         if (failed.length > 0) {
           await Promise.all(failed.map((r) => deleteMut.mutateAsync(r.model.id).catch(() => {})));
           const codesFailed = failed.map((r) => r.model.model_code).join(', ');
+          const why = failed.map((r) => r.reason || r.error).filter(Boolean).join(' ');
           throw new Error(
-            `Could not create the SKUs for ${codesFailed}. ` +
-            `The empty model${failed.length === 1 ? ' was' : 's were'} removed so nothing was left behind. ` +
-            `Please check the sizes and press Create again.`,
+            `Could not create the SKUs for ${codesFailed}. ${why ? `${why} ` : ''}` +
+            `The empty model${failed.length === 1 ? ' was' : 's were'} removed so nothing was left behind.`,
           );
         }
 

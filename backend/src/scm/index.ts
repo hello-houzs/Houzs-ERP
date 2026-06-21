@@ -50,6 +50,8 @@ import { fabricColours } from "./routes/fabric-colours";
 import { addons } from "./routes/addons";
 import { documentFlow } from "./routes/document-flow";
 import { drivers } from "./routes/drivers";
+import { soDropdownOptions } from "./routes/so-dropdown-options";
+import { reports } from "./routes/reports";
 
 export const scm = new Hono<{ Bindings: Env }>();
 
@@ -117,5 +119,19 @@ scm.route("/addons", addons);
 // scm.drivers (DO driver picker). All referenced tables exist in the scm schema.
 scm.route("/document-flow", documentFlow);
 scm.route("/drivers", drivers);
+// Ported 2026-06-21 — SO Maintenance picklists (so_dropdown_options). Backs the
+// vendored SO Maintenance mini-tables (customer_type / building_type /
+// relationship / payment_method cascade / venue). Seeded by
+// scripts/scm-schema/seed-scm-reference-data.sql.
+scm.route("/so-dropdown-options", soDropdownOptions);
+// Ported 2026-06-21 — AutoCount-style Detail Listing reports. The vendored
+// report pages (reports-queries.ts) call GET /reports/{sales-order,delivery-order,
+// sales-invoice,delivery-return}-detail-listing; never mounted before, so all
+// four 404'd. Read-only nested-join reads over mfg_sales_order_items /
+// delivery_order_items / sales_invoice_items / delivery_return_items (+ headers
+// + mfg_sales_order_payments + staff). All referenced tables exist in the scm
+// schema. paid_centi on mfg_sales_orders does NOT exist in Houzs (dropped on
+// port) — paid totals derive from the payments ledger.
+scm.route("/reports", reports);
 
 export default scm;

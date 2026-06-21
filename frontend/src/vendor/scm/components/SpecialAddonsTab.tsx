@@ -399,6 +399,7 @@ export const SpecialAddonsManager = ({ categoryFilter }: { categoryFilter?: stri
             rows={list.data ?? []}
             columns={saColumns}
             storageKey="dg-special-addons-product"
+            exportName="Product Add-ons"
             rowKey={(r) => r.id}
             searchPlaceholder="Filter add-ons…"
             groupBanner={false}
@@ -705,6 +706,7 @@ const OrderAddonsManager = () => {
             rows={list.data ?? []}
             columns={oaColumns}
             storageKey="dg-special-addons-order"
+            exportName="Order Add-ons"
             rowKey={(r) => r.id}
             searchPlaceholder="Filter order add-ons…"
             groupBanner={false}

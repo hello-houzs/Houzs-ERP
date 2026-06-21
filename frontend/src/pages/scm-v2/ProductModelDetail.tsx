@@ -624,18 +624,7 @@ export const ProductModelDetail = ({
               {data.skus.map((sku) => (
                 <tr key={sku.id}>
                   <td>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <code>{sku.code}</code>
-                      {sku.one_shot && (
-                        <span
-                          className={styles.catPill}
-                          title={sku.source_doc_no ? `One-shot from ${sku.source_doc_no}` : 'One-shot SKU'}
-                          style={{ fontSize: 'var(--fs-11)' }}
-                        >
-                          one-shot
-                        </span>
-                      )}
-                    </span>
+                    <code>{sku.code}</code>
                   </td>
                   <td>{sku.name}</td>
                   <td>{sku.size_label ?? sku.size_code ?? '—'}</td>

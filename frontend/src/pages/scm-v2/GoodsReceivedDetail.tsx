@@ -23,10 +23,14 @@
 // grn_status: POSTED → "Confirmed" (editable). CANCELLED → "Cancelled" (locked).
 // CLOSED → "Closed" (locked). isLocked = CANCELLED or CLOSED.
 //
-// HOUZS VENDOR — verbatim from apps/backend/src/pages/GoodsReceivedDetail.tsx.
-// Import boundary only: react-router → react-router-dom; flow-queries GRN hooks →
-// vendored grn-queries; suppliers/inventory/warehouse/category-badges + the PDF
-// helper → ../../vendor/scm/*; back / from-PO links repointed to /scm/*.
+// HOUZS VENDOR — re-vendored from apps/backend/src/pages/GoodsReceivedDetail.tsx
+// (2990 T12, 2026-06-19). Import boundary only: react-router → react-router-dom;
+// the GRN flow hooks resolve from the vendored split module grn-queries (NOT the
+// 2990 flow-queries barrel); suppliers / inventory / warehouse / category-badges
+// / mfg-products + the PDF helper → ../../vendor/scm/*; back / from-PO links
+// repointed to /scm/*. Carries 2990's T12 in-place variant editor verbatim
+// (editable Description + per-category SOFA/BEDFRAME variant editor + bedframe
+// total-height auto-compute) for existing bedframe/sofa lines in Edit mode.
 // ----------------------------------------------------------------------------
 
 import { useEffect, useMemo, useState } from 'react';
@@ -35,7 +39,7 @@ import {
   ArrowLeft, FileText, Pencil, Trash2, Printer, Save, Ban, ChevronDown, ArrowRightLeft,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
-import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
+import { activeOptions, buildVariantSummary, fmtDateOrDash, maintPickerValues } from '@2990s/shared';
 import {
   useGrnDetail,
   useUpdateGrnHeader,
@@ -49,6 +53,7 @@ import {
 } from '../../vendor/scm/lib/suppliers-queries';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import { useRacks } from '../../vendor/scm/lib/warehouse-queries';
+import { useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
@@ -67,9 +72,48 @@ const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string => {
   })}`;
 };
 
+/* T12 — bedframe Total Height is AUTO-COMPUTED = Divan + Leg + Gap (mirrors
+   GrnNew / SoLineCard); it is NOT a manual pick. */
+const parseInches = (s: unknown): number => {
+  if (s == null) return 0;
+  const m = String(s).match(/(-?\d+(?:\.\d+)?)/);
+  return m && m[1] ? Number(m[1]) : 0;
+};
+
+/* T12 — existing GRN lines whose product is a bedframe/sofa get the SAME
+   per-category variant editor as New GRN. Small local copy of GrnNew's
+   VariantSelect (not exported there). */
+const VariantSelect = ({
+  label, options, value, onChange, disabled = false,
+}: {
+  label: string;
+  options: Array<{ value: string; priceSen: number }>;
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+}) => (
+  <label className={styles.field}>
+    <span className={styles.fieldLabel}>{label}</span>
+    <span className={styles.selectWrap}>
+      <select className={styles.fieldSelect} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+        <option value="">—</option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.value}{o.priceSen > 0 ? ` (+${fmtRm(o.priceSen)})` : ''}
+          </option>
+        ))}
+      </select>
+      <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+    </span>
+  </label>
+);
+
 /* Draft state shapes (mirror PO #194). HeaderDraft mirrors the editable GRN
-   header fields; LineDraft holds the four inline-editable per-line fields where
-   qty maps to qty_received. */
+   header fields; LineDraft holds the inline-editable per-line fields where qty
+   maps to qty_received. T12 widens it with the line's identity/variant fields
+   (materialName / itemGroup / variants) so an EXISTING GRN line can edit its
+   description + bedframe/sofa variants in Edit mode; the server re-buckets
+   inventory on save. */
 type HeaderDraft = {
   supplierId: string;
   receivedAt: string;
@@ -83,6 +127,9 @@ type LineDraft = {
   unitPriceCenti: number;
   discountCenti: number;
   deliveryDate: string | null;
+  materialName: string;
+  itemGroup: string | null;
+  variants: Record<string, unknown> | null;
 };
 
 type GrnItemRow = Record<string, unknown> & {
@@ -127,6 +174,9 @@ const lineSnapshot = (it: GrnItemRow): LineDraft => ({
   unitPriceCenti: it.unit_price_centi,
   discountCenti:  it.discount_centi ?? 0,
   deliveryDate:   it.delivery_date ?? null,
+  materialName:   it.description ?? it.material_name ?? '',
+  itemGroup:      it.item_group ?? null,
+  variants:       (it.variants as Record<string, unknown> | null) ?? null,
 });
 
 export const GoodsReceivedDetail = () => {
@@ -152,6 +202,21 @@ export const GoodsReceivedDetail = () => {
     for (const r of racksQ.data?.racks ?? []) m.set(r.id, r.rack);
     return m;
   }, [racksQ.data?.racks]);
+
+  /* T12 — maintenance config + special-orders pools drive the per-category
+     variant editor on EXISTING bedframe/sofa lines in Edit mode (same dropdown
+     pools as New GRN). */
+  const maintQ = useMaintenanceConfig('master');
+  const maint  = maintQ.data?.data ?? null;
+  const specialAddonsQ = useSpecialAddons();
+  const specialsPools = useMemo(() => {
+    const rows = (specialAddonsQ.data ?? [])
+      .filter((r) => r.active)
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
+  }, [specialAddonsQ.data]);
 
   /* View → Edit gate (mirror PO) — default read-only View; click Edit to flip
      into draft mode. The GRN list's right-click "Edit" lands here with ?edit=1. */
@@ -233,6 +298,21 @@ export const GoodsReceivedDetail = () => {
   const setLine = (it: GrnItemRow, patch: Partial<LineDraft>) =>
     setLineDrafts((prev) => ({ ...prev, [it.id]: { ...(prev[it.id] ?? lineSnapshot(it)), ...patch } }));
 
+  /* T12 — patch one variant key on a line + auto-compute bedframe Total Height
+     (= Divan + Leg + Gap), mirroring New GRN's setVariant. */
+  const setVariant = (it: GrnItemRow, key: string, value: string) =>
+    setLineDrafts((prev) => {
+      const cur = prev[it.id] ?? lineSnapshot(it);
+      const variants: Record<string, unknown> = { ...(cur.variants ?? {}), [key]: value };
+      if (cur.itemGroup === 'bedframe' && (key === 'divanHeight' || key === 'legHeight' || key === 'gap')) {
+        const d = parseInches(variants.divanHeight);
+        const lg = parseInches(variants.legHeight);
+        const g = parseInches(variants.gap);
+        variants.totalHeight = (d === 0 && lg === 0 && g === 0) ? '' : `${d + lg + g}"`;
+      }
+      return { ...prev, [it.id]: { ...cur, variants } };
+    });
+
   const enterEdit = () => {
     setHeaderDraft(null);
     setLineDrafts({});
@@ -252,16 +332,28 @@ export const GoodsReceivedDetail = () => {
       for (const it of items) {
         const d = lineDrafts[it.id];
         if (!d) continue;
+        const snap = lineSnapshot(it);
         const changed =
           d.qty !== it.qty_received ||
           d.unitPriceCenti !== it.unit_price_centi ||
           d.discountCenti !== (it.discount_centi ?? 0) ||
-          (d.deliveryDate ?? null) !== (it.delivery_date ?? null);
+          (d.deliveryDate ?? null) !== (it.delivery_date ?? null) ||
+          /* T12 — identity/variant edits participate in the dirty check. */
+          d.materialName !== snap.materialName ||
+          (d.itemGroup ?? '') !== (snap.itemGroup ?? '') ||
+          JSON.stringify(d.variants ?? {}) !== JSON.stringify(snap.variants ?? {});
         if (changed) {
           await updateItem.mutateAsync({
             grnId: grn.id, itemId: it.id,
             qty: d.qty, unitPriceCenti: d.unitPriceCenti,
             discountCenti: d.discountCenti, deliveryDate: d.deliveryDate,
+            /* T12 — send the line's identity + variants; useUpdateGrnItem
+               forwards them and the server re-buckets inventory + recomputes
+               description2. materialName maps to both description + name. */
+            materialName: d.materialName,
+            description:  d.materialName,
+            itemGroup:    d.itemGroup ?? undefined,
+            variants:     d.variants ?? {},
           });
         }
       }
@@ -473,8 +565,9 @@ export const GoodsReceivedDetail = () => {
                     </div>
                   </div>
 
-                  {/* Identity row — Item Code + Description (read-only; a GRN line's
-                      identity comes from the PO / SKU and isn't edited here). */}
+                  {/* Identity row — Item Code (always read-only; a GRN line's
+                      code comes from the source PO / SKU). T12: Description is now
+                      EDITABLE in Edit mode (read-only in View). */}
                   <div className={styles.formGrid2}>
                     <label className={styles.field}>
                       <span className={styles.fieldLabel}>Item Code (Internal)</span>
@@ -494,16 +587,60 @@ export const GoodsReceivedDetail = () => {
                     </label>
                     <label className={styles.field}>
                       <span className={styles.fieldLabel}>Description</span>
-                      <input
-                        type="text" readOnly value={it.description ?? it.material_name}
-                        className={styles.fieldInput}
-                        style={{ background: 'var(--c-cream)', color: 'var(--fg-muted)' }}
-                      />
+                      {isEditing ? (
+                        <input
+                          type="text" value={d.materialName} disabled={isLocked}
+                          onChange={(e) => setLine(it, { materialName: e.target.value })}
+                          className={styles.fieldInput}
+                        />
+                      ) : (
+                        <input
+                          type="text" readOnly value={it.description ?? it.material_name}
+                          className={styles.fieldInput}
+                          style={{ background: 'var(--c-cream)', color: 'var(--fg-muted)' }}
+                        />
+                      )}
                     </label>
                   </div>
 
-                  {variantSummary && (
-                    <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>{variantSummary}</div>
+                  {/* T12 — variants. View shows the read-only summary; Edit shows
+                      the per-category editor (bedframe / sofa) for EXISTING lines,
+                      mirroring New GRN. The server re-buckets inventory on save. */}
+                  {isEditing && (d.itemGroup === 'bedframe' || d.itemGroup === 'sofa') && maint ? (
+                    <div style={{ background: 'var(--c-cream)', border: '1px solid var(--line)', borderRadius: 'var(--radius-md)', padding: 'var(--space-3)' }}>
+                      <div style={{ fontFamily: 'var(--font-button)', fontSize: 'var(--fs-11)', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 'var(--space-2)' }}>{d.itemGroup} Variants</div>
+                      {d.itemGroup === 'bedframe' ? (
+                        <div className={styles.formGrid4}>
+                          <VariantSelect label="Divan Height" disabled={isLocked} options={activeOptions(maint.divanHeights, String(d.variants?.divanHeight ?? ''))}
+                            value={String(d.variants?.divanHeight ?? '')} onChange={(v) => setVariant(it, 'divanHeight', v)} />
+                          <VariantSelect label="Gap" disabled={isLocked} options={maintPickerValues(maint.gaps, String(d.variants?.gap ?? '')).map((g) => ({ value: g, priceSen: 0 }))}
+                            value={String(d.variants?.gap ?? '')} onChange={(v) => setVariant(it, 'gap', v)} />
+                          <VariantSelect label="Leg Height" disabled={isLocked} options={activeOptions(maint.legHeights, String(d.variants?.legHeight ?? ''))}
+                            value={String(d.variants?.legHeight ?? '')} onChange={(v) => setVariant(it, 'legHeight', v)} />
+                          {/* Total Height auto-computed (see setVariant). */}
+                          <VariantSelect label="Special" disabled={isLocked} options={specialsPools.bedframe}
+                            value={String(d.variants?.special ?? '')} onChange={(v) => setVariant(it, 'special', v)} />
+                        </div>
+                      ) : (
+                        <div className={styles.formGrid4}>
+                          <VariantSelect label="Seat Size" disabled={isLocked} options={maintPickerValues(maint.sofaSizes, String(d.variants?.seatHeight ?? '')).map((s) => ({ value: s, priceSen: 0 }))}
+                            value={String(d.variants?.seatHeight ?? '')} onChange={(v) => setVariant(it, 'seatHeight', v)} />
+                          <VariantSelect label="Leg Height" disabled={isLocked} options={activeOptions(maint.sofaLegHeights, String(d.variants?.legHeight ?? ''))}
+                            value={String(d.variants?.legHeight ?? '')} onChange={(v) => setVariant(it, 'legHeight', v)} />
+                          <VariantSelect label="Special" disabled={isLocked} options={specialsPools.sofa}
+                            value={String(d.variants?.special ?? '')} onChange={(v) => setVariant(it, 'special', v)} />
+                          <label className={styles.field}>
+                            <span className={styles.fieldLabel}>Fabrics (free text)</span>
+                            <input className={styles.fieldInput} disabled={isLocked} value={String(d.variants?.fabricColor ?? '')}
+                              onChange={(e) => setVariant(it, 'fabricColor', e.target.value)} />
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    variantSummary && (
+                      <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>{variantSummary}</div>
+                    )
                   )}
 
                   {/* Bug #2 (2026-05-31) — "received from which PO" + "receive date"

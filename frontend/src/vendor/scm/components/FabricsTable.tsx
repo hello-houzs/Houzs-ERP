@@ -242,6 +242,7 @@ export const FabricsTable = ({
       rows={rows}
       columns={FABRIC_COLUMNS}
       storageKey="dg-fabrics-converter"
+      exportName="Fabrics"
       rowKey={(r) => r.id}
       searchPlaceholder="Filter visible fabrics…"
       groupBanner={false}

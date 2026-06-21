@@ -27,7 +27,9 @@ import {
 const backdrop: CSSProperties = {
   position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.28)',
   display: 'flex', alignItems: 'center', justifyContent: 'center',
-  zIndex: 92, padding: 'var(--space-4)',
+  // 3001 — above every page modal (~1000), matching the other system dialogs
+  // so a prompt raised from inside a modal isn't hidden behind it. 2026-06-20.
+  zIndex: 3001, padding: 'var(--space-4)',
 };
 const card: CSSProperties = {
   background: 'var(--c-paper)', border: '1px solid var(--line-strong)',

@@ -122,3 +122,22 @@ export const useDeletePurchaseInvoiceItem = () => {
     },
   });
 };
+
+/* T12 — free-add a NEW line to an existing PI (PI is free-entry, grnId:null is
+   first-class). POST /purchase-invoices/:id/items already accepts the full line
+   payload (materialCode/materialName/itemGroup/variants + qty/price) and
+   server-recomputes description2. Mirrors useAddGrnItem; invalidates the same
+   keys usePurchaseInvoiceDetail + usePurchaseInvoices read. */
+export const useAddPurchaseInvoiceItem = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string } & Record<string, unknown>) =>
+      authedFetch<{ item: unknown }>(`/purchase-invoices/${id}/items`, {
+        method: 'POST', body: JSON.stringify(body),
+      }),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['purchase-invoice-detail', vars.id] });
+      qc.invalidateQueries({ queryKey: ['purchase-invoices'] });
+    },
+  });
+};

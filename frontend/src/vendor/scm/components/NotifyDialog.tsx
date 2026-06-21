@@ -23,7 +23,9 @@ import {
 const backdrop: CSSProperties = {
   position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.28)',
   display: 'flex', alignItems: 'center', justifyContent: 'center',
-  zIndex: 92, padding: 'var(--space-4)',
+  // 3001 — above every page modal (~1000) AND just above the confirm (3000),
+  // so a notify raised over a confirm still shows on top. Wei Siang 2026-06-20.
+  zIndex: 3001, padding: 'var(--space-4)',
 };
 const card: CSSProperties = {
   background: 'var(--c-paper)', border: '1px solid var(--line-strong)',

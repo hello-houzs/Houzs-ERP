@@ -552,8 +552,13 @@ export const SalesInvoiceDetail = () => {
                     <div className={styles.codeCell}>{it.item_code}</div>
                     {it.description && <div className={styles.muted}>{it.description}</div>}
                     {(() => {
-                      const summary = buildVariantSummary(it.item_group, it.variants);
-                      return summary ? <div className={styles.muted}>{summary}</div> : null;
+                      // Live variant summary, falling back to the stored
+                      // description2 so a line with no live variants still shows
+                      // its saved spec instead of a blank cell (mirrors DO
+                      // detail — the SI version dropped description2).
+                      const desc2 = buildVariantSummary(it.item_group, it.variants)
+                        || (it.description2 && it.description2.trim()) || '';
+                      return desc2 ? <div className={styles.muted}>{desc2}</div> : null;
                     })()}
                   </td>
                   <td className={styles.tableRight}>{it.qty}</td>

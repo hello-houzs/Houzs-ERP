@@ -9,8 +9,11 @@ SupplierDetail postcode cascade.
 | Route                | Backing object(s)                | Exists? | Rows |
 |----------------------|----------------------------------|---------|------|
 | `/outstanding/*`     | `scm.v_*_outstanding` (7 views)  | YES     | live (driven by SO/PO/DO/etc. docs) |
-| `/fabric-library` GET| `scm.fabric_library`             | YES     | **0 — EMPTY** |
-| `/localities` GET    | `scm.my_localities`              | YES     | **0 — EMPTY** |
+| `/fabric-library` GET| `scm.fabric_library`             | YES     | **0 — EMPTY** (seed authored, see below) |
+| `/localities` GET    | `scm.my_localities`              | YES     | **0 — EMPTY** (seed authored, see below) |
+
+> Update 2026-06-21: both empties are now covered by the canonical seed
+> `scripts/scm-schema/seed-scm-reference-data.sql` (NOT yet applied to prod).
 
 All three backing objects ALREADY EXIST in the `scm` schema (DDL lives in
 `2990s-full-schema.sql`). **No CREATE TABLE migration is needed.** Columns match
@@ -27,17 +30,36 @@ The routes DEGRADE GRACEFULLY — empty table → `{ fabrics: [] }` / `{ localit
 1. **`/fabric-library` GET** → `[]`. Effect: ProductModelDetail's sofa
    "fabrics offered" picker renders with no options. Seeds when the Fabric
    Converter (`POST /fabric-tracking`, which upserts `fabric_library`) is used,
-   or via a direct seed.
+   or via the reference seed below.
 
 2. **`/localities` GET** → `[]`. Effect: SupplierDetail's StateSelect falls
    back to a free-text State input (the source's verbatim no-data behaviour).
 
-## SEPARATE TASK — MY postcode dataset seed (FLAGGED, not done)
+## RESOLVED — canonical reference seed authored (2026-06-21)
 
-The full Malaysia State→City→Postcode dataset is a large seed and is **out of
-scope** for this route-porting wave. 2990's carries NO canonical INSERT seed for
-`my_localities` in its migrations (rows are user-maintained / CSV-imported at
-runtime), so there was nothing to port. To light up the postcode cascade:
-load the MY locality dataset into `scm.my_localities` (state/state_code/city/
-postcode/country='Malaysia') as a dedicated data-import task. Until then the
-free-text fallback applies. NOT APPLIED here.
+**Correction:** an earlier draft of this note claimed 2990 carries no
+`my_localities` seed. That was wrong. 2990 ships
+`packages/db/seeds/my-localities.sql` — a **2,933-row** Malaysia
+State→City→Postcode dataset (source: AsyrafHussin/malaysia-postcodes, MIT). It
+was simply not ported in the earlier route wave.
+
+It is now ported, alongside the other empty reference tables, in the proper
+versioned seed:
+
+> `scripts/scm-schema/seed-scm-reference-data.sql`
+
+That file is the LEGITIMATE, idempotent, data-only seed — the OWNER pastes it
+into the Supabase SQL editor (PROD DB access is restricted here; same posture as
+the sibling `sync-*.sql`). It cleans up the ad-hoc back-door stubs first, then
+seeds `scm.my_localities` (2933), `scm.fabric_library` (3) + `scm.fabric_colours`
+(15) + `scm.fabric_trackings` (46), `scm.so_dropdown_options` (49),
+`scm.accounts` (12), `scm.categories`/`series`/`compartment_library`/
+`bundle_library`/`size_library`/`addons`, and the singletons
+(`delivery_fee_config`, `maintenance_config_history` baseline, `so_settings`).
+
+Once that seed is applied:
+- `/localities` GET surfaces the full postcode cascade (StateSelect leaves the
+  free-text fallback).
+- `/fabric-library` GET surfaces the 3 trial fabrics.
+
+**NOT APPLIED here** — owner runs it on prod.
