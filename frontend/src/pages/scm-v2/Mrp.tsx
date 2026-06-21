@@ -224,6 +224,7 @@ function sofaSetsToSkus(sets: SofaSet[]): MrpSku[] {
       // an SO's module rows LHF → NA → RHF (same order as the SO PDF/detail).
       lineNo: s.lineNo, createdAt: s.createdAt,
       debtorName: s.debtorName,
+      customerState: s.customerState,
       soDate: s.soDate, deliveryDate: s.deliveryDate, processingDate: s.processingDate,
       orderByDate: s.orderByDate, qty: s.qty,
       source: s.shortageQty > 0 ? 'shortage' : 'po', poNumber: s.poNumber, poEta: s.poEta,
@@ -1235,6 +1236,7 @@ const OrderLines = ({ sku, selected, onToggleLine, lineSupplier, onLineSupplierC
         <th>SO No</th>
         <th>Warehouse</th>
         <th>Customer</th>
+        <th>State</th>
         <th>Processing Date</th>
         <th>Delivery Date</th>
         <th className={styles.num}>Qty</th>
@@ -1290,6 +1292,7 @@ const ChildLine = ({ ln, suppliers, whCode, whName, selected, onToggleLine, chos
           : <span className={styles.whNone}>—</span>}
       </td>
       <td>{ln.debtorName ?? '—'}</td>
+      <td>{ln.customerState ?? '—'}</td>
       <td>{fmtDate(ln.processingDate)}</td>
       <td>{fmtDate(ln.deliveryDate)}</td>
       <td className={styles.num}>{ln.qty}</td>
@@ -1344,6 +1347,7 @@ const SofaSoTable = ({ group, selected, onToggleLine, lineSupplier, onLineSuppli
         <th>Warehouse</th>
         <th>Module</th>
         <th>Customer</th>
+        <th>State</th>
         <th>Processing Date</th>
         <th>Delivery Date</th>
         <th className={styles.num}>Qty</th>
@@ -1374,6 +1378,7 @@ const SofaSoTable = ({ group, selected, onToggleLine, lineSupplier, onLineSuppli
             </td>
             <td><span className={styles.variantTag}>{v.variantLabel ?? v.itemCode}</span></td>
             <td>{ln.debtorName ?? '—'}</td>
+            <td>{ln.customerState ?? '—'}</td>
             <td>{fmtDate(ln.processingDate)}</td>
             <td>{fmtDate(ln.deliveryDate)}</td>
             <td className={styles.num}>{ln.qty}</td>

@@ -60,7 +60,12 @@
 // (6->13), PI/SI credit race-safe paid_centi, GRN over-receipt cap, combo
 // cost-edit no longer overwrites selling price, dead-table fix, negative-money
 // clamps, SO delivery-fee re-derive, authedFetch timeout, PDF tall-row keep.
-const VERSION = "houzs-erp-v13";
+// v14 (2026-06-21): 2990 SCM sync wave 2 (features) — RuleTarget special
+// delivery fees + per-compartment fabric-tier overrides (migs 0024/0025), PO/PC
+// supplier delivery dates 2/3/4 (mig 0026), MRP State column + bind-failure
+// keeps dialog open, Assign-supplier on model edit page, effective-dated history
+// dialog, cross-tab data sync, new-version banner.
+const VERSION = "houzs-erp-v14";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

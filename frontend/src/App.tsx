@@ -10,6 +10,7 @@ import { BrowserPushSink } from "./components/BrowserPushSink";
 import { QuickActionsFAB } from "./components/QuickActionsFAB";
 import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
 import { PageSkeleton, ChunkReloadBoundary } from "./components/RouteFallback";
+import { NewVersionBanner } from "./components/NewVersionBanner";
 
 // Route-level code splitting: every page becomes its own chunk, fetched on
 // first visit, so the initial bundle carries only the shell. The .then()
@@ -145,6 +146,7 @@ export default function App() {
       <BreadcrumbsProvider>
       <BrowserPushSink />
       <QuickActionsFAB />
+      <NewVersionBanner />
       <Layout>
         <ChunkReloadBoundary>
         <Suspense fallback={<PageSkeleton />}>

@@ -2439,13 +2439,21 @@ const SkuFormDialog = ({
       notify({ title: 'Internal code, description and supplier SKU are required.', tone: 'error' });
       return;
     }
+    // Staff #7 — on a FAILED bind, keep the dialog OPEN and surface the error
+    // (it used to fail silently → the operator re-typed everything). onClose
+    // fires on success only, so the draft is never lost on error.
+    const onError = (err: unknown) => notify({
+      title: 'Save failed',
+      body: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    });
     if (editing) {
       update.mutate(
         { supplierId, bindingId: editing.id, ...draft },
-        { onSuccess: onClose },
+        { onSuccess: onClose, onError },
       );
     } else {
-      create.mutate({ supplierId, ...draft }, { onSuccess: onClose });
+      create.mutate({ supplierId, ...draft }, { onSuccess: onClose, onError });
     }
   };
 
@@ -3079,6 +3087,12 @@ const ModelSkuPickerDialog = ({
         }
         onClose();
       },
+      // Staff #7 — keep the dialog open + show the error on a failed bind.
+      onError: (err: unknown) => notify({
+        title: 'Binding failed',
+        body: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      }),
     });
   };
 

@@ -14,8 +14,17 @@ import {
   type FreeGiftLineClaim, type TriggerLine,
   campaignsCoveringLine,
   isFreeItemLine,
+  resolveFabricTierOverride,
+  type RuleLineInput,
 } from '../shared';
 import { computeSoDeliveryFee, type SoDeliveryFeeResult } from '../shared/pricing';
+/* Special delivery fee rules (migration 0024, #691 RuleTarget) — the model |
+   variant | compartment | combo matcher shared with the POS, used at BOTH
+   recompute sites (create + cross-category re-detect). */
+import { specialDeliveryFeesForLines, reconstructDeliveryRuleLines } from '../lib/special-delivery';
+/* Per-compartment fabric-tier Δ (migration 0025) — reconstruct a split sofa
+   build's compartment codes from its persisted module lines for the TBC path. */
+import { buildCompartmentsFromModuleLines } from '../lib/compartments-from-module-lines';
 /* POS auto-Proceed (Loo 2026-06-09) — when a handover arrives already complete
    (customer + address + delivery date + ≥50% paid) we stamp proceeded_at at
    create so the order lands in Proceed without a manual click. Same gate the
@@ -68,6 +77,7 @@ import {
   loadFabricSellingTiersByIds,
   loadFabricTierAddonConfig,
   loadModelFabricTierOverrides,
+  loadCompartmentFabricTierOverrides,
   loadModelDefaultGifts,
   loadModelSofaModulePrices,
   loadModelSofaModuleCostRows,
@@ -1795,6 +1805,7 @@ mfgSalesOrders.post('/', async (c) => {
   const cachedCombos = await loadActiveSofaCombos(sb);  // Phase 4b — sofa selling recompute
   const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb);  // migration 0124 — fabric-tier Δ
   const cachedModelOverrides = await loadModelFabricTierOverrides(sb);  // migration 0172 — per-Model Δ
+  const cachedCompartmentOverrides = await loadCompartmentFabricTierOverrides(sb);  // migration 0025 — per-compartment Δ
 
   /* Loo 2026-06-05 — maintained-dropdown 409 gate. Runs BEFORE any side
      effect (customer upsert, PWP claims) so a rejected request leaves
@@ -2240,7 +2251,7 @@ mfgSalesOrders.post('/', async (c) => {
     // change. PWP always wins if both somehow apply (a gift is non-sofa, no code).
     const pwpBaseSen = pwpBaseByIdx.get(idx) ?? freeGiftBaseByIdx.get(idx) ?? null;
     const pwpSofaComboIds = pwpSofaByIdx.get(idx) ?? null;
-    return recomputeFromSnapshot(draft, product, fabric, cachedConfig, cachedCombos, sofaModulePrices, sellingTiers, cachedFabricAddonConfig, pwpBaseSen, pwpSofaComboIds, cachedSpecialAddons, sofaModuleCostRows, cachedModelOverrides);
+    return recomputeFromSnapshot(draft, product, fabric, cachedConfig, cachedCombos, sofaModulePrices, sellingTiers, cachedFabricAddonConfig, pwpBaseSen, pwpSofaComboIds, cachedSpecialAddons, sofaModuleCostRows, cachedModelOverrides, cachedCompartmentOverrides);
   }));
   /* Commander 2026-05-29 (system-wide) — the SELLING unit price is now
      operator-authored on every SO line. The product price tables are COST,
@@ -2628,29 +2639,37 @@ mfgSalesOrders.post('/', async (c) => {
       crossCategoryFee: Number((dcfg as { cross_category_fee?: number } | null)?.cross_category_fee ?? 0) * 100,
     };
 
-    /* Phase 1 — special-model fees. Any cart line whose Model is tagged in
-       model_special_delivery_fees contributes a special fee; the highest
-       standalone fee overrides the base, and on a follow-up the special
-       cross fee applies. lineProducts (loaded above) carries each line's
-       model_id. */
-    const specialModels: { standaloneFee: number; crossCategoryFollowupFee: number }[] = [];
-    const lineModelIds = [...new Set(
-      lineProducts
-        .map((p) => (p as { model_id?: string | null } | null)?.model_id)
-        .filter((m): m is string => Boolean(m)),
-    )];
-    if (lineModelIds.length > 0) {
-      const { data: specialRows } = await sb
-        .from('model_special_delivery_fees')
-        .select('model_id, standalone_fee, cross_cat_followup_fee')
-        .in('model_id', lineModelIds);
-      for (const r of (specialRows ?? []) as Array<{ standalone_fee?: number; cross_cat_followup_fee?: number }>) {
-        specialModels.push({
-          standaloneFee:            Number(r.standalone_fee ?? 0) * 100,
-          crossCategoryFollowupFee: Number(r.cross_cat_followup_fee ?? 0) * 100,
-        });
-      }
+    /* Phase 1 — special delivery fee rules (migration 0024). Generalises the old
+       model-only model_special_delivery_fees lookup onto the #691 RuleTarget
+       abstraction: any cart line a rule's target covers (model | variant |
+       compartment | combo) contributes a special fee; computeSoDeliveryFee folds
+       in the highest standalone (overriding base) + the cross-followup. Lines are
+       flattened to RuleLineInput[] and matched by the SAME shared matcher the POS
+       runs — no drift. Free-item lines are skipped (a free giveaway carries no
+       special transport fee). */
+    const comboModulesById = new Map<string, string[][]>(
+      cachedCombos.map((cb) => [cb.id, cb.modules]),
+    );
+    const deliveryRuleLines: RuleLineInput[] = [];
+    for (let idx = 0; idx < items.length; idx++) {
+      if (freeItemByIdx.has(idx)) continue;
+      const product = lineProducts[idx] ?? null;
+      if (!product) continue;
+      const variants = (items[idx]?.variants as Record<string, unknown> | null) ?? null;
+      const cells = (variants?.cells as Array<{ moduleId?: unknown }> | undefined) ?? [];
+      const built = Array.isArray(cells)
+        ? cells.map((cl) => String(cl?.moduleId ?? '')).filter(Boolean)
+        : [];
+      deliveryRuleLines.push({
+        category: String((product as { category?: string | null }).category ?? ''),
+        modelId: (product as { model_id?: string | null }).model_id ?? null,
+        sizeCode: (product as { size_code?: string | null }).size_code
+          ? String((product as { size_code?: string | null }).size_code).toUpperCase()
+          : null,
+        builtCompartments: built,
+      });
     }
+    const specialModels = await specialDeliveryFeesForLines(sb, deliveryRuleLines, comboModulesById);
 
     /* Phase 2 — cross-order link. Sales typed the earlier SO's doc_no at
        handover. Validate it (exists, not cancelled, same customer by phone
@@ -3638,9 +3657,9 @@ async function recomputeDeliveryFeeCore(
   sb: any, docNo: string, sourceDocNo: string | null,
 ): Promise<{ isFollowup: boolean; sourceDocNo: string | null; total: number } | null> {
   const { data: lineRows } = await sb.from('mfg_sales_order_items')
-    .select('item_code, item_group, total_centi, line_no')
+    .select('item_code, item_group, total_centi, line_no, variants')
     .eq('doc_no', docNo).eq('cancelled', false);
-  const lines = (lineRows ?? []) as Array<{ item_code: string; item_group: string | null; total_centi: number | null; line_no: number | null }>;
+  const lines = (lineRows ?? []) as Array<{ item_code: string; item_group: string | null; total_centi: number | null; line_no: number | null; variants: Record<string, unknown> | null }>;
   const deliveryLines = lines.filter((l) => isDeliveryFeeServiceCode(l.item_code));
   if (deliveryLines.length === 0) return null; // no delivery fee → nothing to re-detect
 
@@ -3662,25 +3681,42 @@ async function recomputeDeliveryFeeCore(
   const categoryIds = lines
     .map((l) => String(l.item_group ?? '').toLowerCase())
     .filter((g) => DELIVERABLE.has(g));
-  const goodsCodes = [...new Set(
-    lines.filter((l) => DELIVERABLE.has(String(l.item_group ?? '').toLowerCase())).map((l) => l.item_code),
-  )];
-  const specialModels: { standaloneFee: number; crossCategoryFollowupFee: number }[] = [];
+  const goodsLines = lines.filter((l) => DELIVERABLE.has(String(l.item_group ?? '').toLowerCase()));
+  const goodsCodes = [...new Set(goodsLines.map((l) => l.item_code))];
+  /* Phase 1 — special delivery fee rules (migration 0024, #691 RuleTarget).
+     The persisted SO carries the split sofa as one row PER module SKU (cells
+     stripped, buildKey kept). A sofa module's compartment code lives in its
+     item_code SUFFIX (every sofa SKU has size_code = NULL); size_code is the
+     real variant code ONLY for mattress/bedframe. Sofa rows are regrouped by
+     buildKey so combo matching sees the WHOLE build's modules together. The
+     reconstruction is a pure helper (reconstructDeliveryRuleLines) and the
+     result is matched by the SAME shared matcher the create path runs. */
+  let specialModels: { standaloneFee: number; crossCategoryFollowupFee: number }[] = [];
   if (goodsCodes.length > 0) {
-    const { data: prodRows } = await sb.from('mfg_products').select('code, model_id').in('code', goodsCodes);
-    const modelIds = [...new Set(
-      ((prodRows ?? []) as Array<{ model_id: string | null }>).map((p) => p.model_id).filter((m): m is string => Boolean(m)),
-    )];
-    if (modelIds.length > 0) {
-      const { data: specialRows } = await sb.from('model_special_delivery_fees')
-        .select('standalone_fee, cross_cat_followup_fee').in('model_id', modelIds);
-      for (const r of (specialRows ?? []) as Array<{ standalone_fee?: number; cross_cat_followup_fee?: number }>) {
-        specialModels.push({
-          standaloneFee: Number(r.standalone_fee ?? 0) * 100,
-          crossCategoryFollowupFee: Number(r.cross_cat_followup_fee ?? 0) * 100,
-        });
-      }
-    }
+    const { data: prodRows } = await sb.from('mfg_products')
+      .select('code, category, model_id, size_code').in('code', goodsCodes);
+    const prodByCode = new Map(
+      ((prodRows ?? []) as Array<{ code: string; category: string | null; model_id: string | null; size_code: string | null }>)
+        .map((p) => [p.code, p]),
+    );
+    const deliveryRuleLines = reconstructDeliveryRuleLines(
+      goodsLines.map((l) => {
+        const prod = prodByCode.get(l.item_code) ?? null;
+        return {
+          itemCode: l.item_code,
+          category: prod?.category ?? l.item_group ?? null,
+          modelId: prod?.model_id ?? null,
+          sizeCode: prod?.size_code ?? null, // NULL for sofa; the helper reads the item_code suffix
+          buildKey: ((l.variants as { buildKey?: unknown } | null)?.buildKey as string | null) ?? null,
+        };
+      }),
+    );
+    const { data: comboRows } = await sb.from('sofa_combo_pricing').select('id, modules');
+    const comboModulesById = new Map<string, string[][]>(
+      ((comboRows ?? []) as Array<{ id: string; modules: string[][] | null }>)
+        .map((cb) => [cb.id, cb.modules ?? []]),
+    );
+    specialModels = await specialDeliveryFeesForLines(sb, deliveryRuleLines, comboModulesById);
   }
 
   const { data: dcfg } = await sb.from('delivery_fee_config').select('base_fee, cross_category_fee').eq('id', 1).single();
@@ -4400,7 +4436,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
     );
     if (aoErr) return c.json({ ...aoErr, itemCode: itemCodeStr }, 400);
   }
-  const [cachedConfig, productLite, fabricLite, sofaCombosLite, sellingTiersLite, fabricAddonConfigLite, specialAddonsLite, modelOverridesLite] = await Promise.all([
+  const [cachedConfig, productLite, fabricLite, sofaCombosLite, sellingTiersLite, fabricAddonConfigLite, specialAddonsLite, modelOverridesLite, compartmentOverridesLite] = await Promise.all([
     loadMaintenanceConfig(sb),
     loadProductByCode(sb, itemCodeStr),
     loadFabricByCode(sb, variantsObj?.fabricCode ?? null),
@@ -4409,6 +4445,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
     loadFabricTierAddonConfig(sb),
     loadSpecialAddons(sb),
     loadModelFabricTierOverrides(sb),
+    loadCompartmentFabricTierOverrides(sb),
   ]);
   // SOFA-SELLING-PLAN — per-Model module SELLING prices for the sofa drift gate.
   // Audit 2026-06-11 C2 — module COST rows so a build's cost = Σ module costs.
@@ -4536,6 +4573,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
     specialAddonsLite,
     sofaModuleCostRowsLite,
     modelOverridesLite,      // migration 0172 — per-Model Δ
+    compartmentOverridesLite, // migration 0025 — per-compartment Δ
   );
   /* Pricing trust boundary (Owner 2026-05-31, see isPosTabletCaller). POS tablet
      roles are drift-rejected + take the server price; Backend / office authors
@@ -4904,7 +4942,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
     if (aoErr) return c.json({ ...aoErr, itemCode: itemCodeAfter }, 400);
   }
   if (shouldRecompute && itemCodeAfter) {
-    const [cfg, prodLite, fabLite, sofaCombosPatch, sellingTiersPatch, fabricAddonConfigPatch, specialAddonsPatch, modelOverridesPatch] = await Promise.all([
+    const [cfg, prodLite, fabLite, sofaCombosPatch, sellingTiersPatch, fabricAddonConfigPatch, specialAddonsPatch, modelOverridesPatch, compartmentOverridesPatch] = await Promise.all([
       loadMaintenanceConfig(sb),
       loadProductByCode(sb, itemCodeAfter),
       loadFabricByCode(sb, variantsAfter?.fabricCode ?? null),
@@ -4913,6 +4951,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
       loadFabricTierAddonConfig(sb),
       loadSpecialAddons(sb),
       loadModelFabricTierOverrides(sb),
+      loadCompartmentFabricTierOverrides(sb),
     ]);
     // SOFA-SELLING-PLAN — per-Model module SELLING prices for the sofa drift gate.
     // Audit 2026-06-11 C2 — module COST rows so a build's cost = Σ module costs.
@@ -4946,6 +4985,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
       specialAddonsPatch,
       sofaModuleCostRowsPatch,
       modelOverridesPatch, // migration 0172 — per-Model Δ
+      compartmentOverridesPatch, // migration 0025 — per-compartment Δ
     );
     /* Task 6 — grandfathering: a line already carrying variants.freeItem was
        made free at create time and must STAY at RM 0 on edit recompute, even
@@ -5318,7 +5358,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
     if (aoErr) return c.json({ ...aoErr, itemCode: prev.item_code }, 400);
   }
 
-  const [cfg, prodLite, fabPrev, fabNext, tiersPrev, tiersNext, addonCfg, specialDefs, modelOverrides] = await Promise.all([
+  const [cfg, prodLite, fabPrev, fabNext, tiersPrev, tiersNext, addonCfg, specialDefs, modelOverrides, compartmentOverrides] = await Promise.all([
     loadMaintenanceConfig(sb),
     loadProductByCode(sb, prev.item_code),
     loadFabricByCode(sb, (prevVariants.fabricCode as string | undefined) ?? null),
@@ -5328,6 +5368,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
     loadFabricTierAddonConfig(sb),
     loadSpecialAddons(sb),
     loadModelFabricTierOverrides(sb),
+    loadCompartmentFabricTierOverrides(sb),
   ]);
   /* Two snapshots, identical base inputs — only `variants` (and its fabric
      row) differ, so base / combo / PWP terms cancel in the difference. The
@@ -5349,7 +5390,37 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
   const category = String(prodLite?.category ?? '').toUpperCase();
   // migration 0172 — per-Model Δ override (same for prev/next; the Model doesn't
   // change on a TBC fill-in). Resolved by the line's model_id, replaces global.
-  const tbcOverride = (modelOverrides && prodLite?.model_id) ? (modelOverrides.get(prodLite.model_id) ?? null) : null;
+  // migration 0025 — folded with any matching per-compartment Δ (MAX per tier)
+  // over the build's cells; cells don't change on a TBC fill-in (fabric only).
+  const tbcBaseOverride = (modelOverrides && prodLite?.model_id) ? (modelOverrides.get(prodLite.model_id) ?? null) : null;
+  /* A persisted split-sofa module line STRIPS `variants.cells`, so the build's
+     compartment codes can't be read off `nextVariants` — that yielded `[]` and
+     resolved model-only, under-charging a build that carries a per-compartment
+     Δ (the POS preview showed the higher Δ but the server billed less; no drift
+     gate here). Reconstruct them from the SIBLING module lines' item_code suffix,
+     the same way the create path does. */
+  let tbcCells: string[] = [];
+  if (category === 'SOFA') {
+    const buildKeyForCells = (prevVariants.buildKey as string | undefined) ?? null;
+    if (buildKeyForCells) {
+      const { data: cellRows } = await sb.from('mfg_sales_order_items')
+        .select('item_code, variants')
+        .eq('doc_no', docNo).eq('cancelled', false)
+        .filter('variants->>buildKey', 'eq', buildKeyForCells);
+      tbcCells = buildCompartmentsFromModuleLines(
+        ((cellRows ?? []) as Array<{ item_code: string; variants: Record<string, unknown> | null }>)
+          .map((r) => ({ item_code: r.item_code, buildKey: String((r.variants ?? {}).buildKey ?? '') })),
+        buildKeyForCells,
+      );
+    } else {
+      // Not a split build (whole-unit code carries cells inline) — fall back to
+      // the inline cells if present.
+      tbcCells = Array.isArray((nextVariants as { cells?: unknown }).cells)
+        ? ((nextVariants as { cells?: Array<{ moduleId?: unknown }> }).cells ?? []).map((cl) => String(cl?.moduleId ?? '')).filter(Boolean)
+        : [];
+    }
+  }
+  const tbcOverride = resolveFabricTierOverride(tbcCells, tbcBaseOverride, compartmentOverrides ?? new Map());
   const tierDeltaCenti = (addonCfg && (category === 'SOFA' || category === 'BEDFRAME'))
     ? (fabricTierAddon(category, (category === 'SOFA' ? tiersNext?.sofaTier : tiersNext?.bedframeTier) ?? null, addonCfg, tbcOverride)
      - fabricTierAddon(category, (category === 'SOFA' ? tiersPrev?.sofaTier : tiersPrev?.bedframeTier) ?? null, addonCfg, tbcOverride)) * 100
@@ -5718,11 +5789,12 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
   }
   if (rewardLinesToRevert.length > 0 || pwpDeleteCodes.length > 0 || pwpRevertCodes.length > 0 || pwpNewlyTriggered.length > 0) {
     // Loaders only when the re-evaluation actually has work to do.
-    const [cfgX, addonCfgX, specialDefsX, modelOverridesX] = await Promise.all([
+    const [cfgX, addonCfgX, specialDefsX, modelOverridesX, compartmentOverridesX] = await Promise.all([
       loadMaintenanceConfig(sb),
       loadFabricTierAddonConfig(sb),
       loadSpecialAddons(sb),
       loadModelFabricTierOverrides(sb),
+      loadCompartmentFabricTierOverrides(sb),
     ]);
     // 1. Rewards whose trigger is gone revert to their normal price (picks +
     //    surcharges survive; pwp markers stripped). clientUnit 0 lets the
@@ -5737,7 +5809,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
       ]);
       const rec = recomputeFromSnapshot(
         { itemCode: line.item_code, itemGroup: String(line.item_group ?? 'others'), qty: Number(line.qty), unitPriceCenti: 0, variants: v as MfgItemForRecompute['variants'] },
-        rp, rfab, cfgX, null, null, rtiers, addonCfgX, null, null, specialDefsX, null, modelOverridesX,
+        rp, rfab, cfgX, null, null, rtiers, addonCfgX, null, null, specialDefsX, null, modelOverridesX, compartmentOverridesX,
       );
       const revertUnit = rec.unit_price_sen > 0 ? rec.unit_price_sen : Number(line.unit_price_centi);
       const lqty = Number(line.qty);
@@ -5906,7 +5978,7 @@ async function planSofaRewardRevert(
     };
   });
   const depth = String(leadV.depth ?? '24');
-  const [cfg, prodLite, fabLite, combos, sellingTiers, addonCfg, specialDefs, modulePrices, modelOverridesLead] = await Promise.all([
+  const [cfg, prodLite, fabLite, combos, sellingTiers, addonCfg, specialDefs, modulePrices, modelOverridesLead, compartmentOverridesLead] = await Promise.all([
     loadMaintenanceConfig(sb),
     loadProductByCode(sb, lead.item_code),
     loadFabricByCode(sb, (leadV.fabricCode as string | undefined) ?? null),
@@ -5916,6 +5988,7 @@ async function planSofaRewardRevert(
     loadSpecialAddons(sb),
     loadModelSofaModulePrices(sb, splitSofaCode(lead.item_code).baseModel, depth),
     loadModelFabricTierOverrides(sb),
+    loadCompartmentFabricTierOverrides(sb),
   ]);
   if (!prodLite || !modulePrices) return { ok: false };
   const pricingVariants: Record<string, unknown> = { ...leadV, cells };
