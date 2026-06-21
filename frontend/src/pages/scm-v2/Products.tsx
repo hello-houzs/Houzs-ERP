@@ -85,7 +85,7 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { FabricsTable } from '../../vendor/scm/components/FabricsTable';
 import { SofaComboTab } from '../../vendor/scm/components/SofaComboTab';
-import { SpecialAddonsTab, SpecialAddonsManager } from '../../vendor/scm/components/SpecialAddonsTab';
+import { SpecialAddonsManager } from '../../vendor/scm/components/SpecialAddonsTab';
 import { FabricTracking } from './FabricTracking';
 import { formatSizeRich, formatSizeRichWithCfg, resolveSizeInfo } from '../../vendor/scm/lib/size-info';
 import { ProductModels, NewModelDialog } from './ProductModels';
@@ -95,7 +95,7 @@ import styles from './Products.module.css';
 
 const ICON_PROPS = { size: 16, strokeWidth: 1.75 } as const;
 
-type TopTab = 'sku' | 'modular' | 'special-addons' | 'maintenance' | 'combos' | 'fabric';
+type TopTab = 'sku' | 'modular' | 'maintenance' | 'combos' | 'fabric';
 
 
 export const Products = () => {
@@ -131,18 +131,6 @@ export const Products = () => {
               onClick={() => setTopTab('modular')}
             >
               Modular
-            </button>
-            {/* Order Add-ons — whole-order fees (Dispose / Lift). Specials
-                (Product Add-ons) moved into Maintenance > BEDFRAME / SOFA
-                (Commander 2026-06-16), so this tab keeps ONLY Order Add-ons. */}
-            <button
-              type="button"
-              role="tab"
-              data-active={topTab === 'special-addons'}
-              className={styles.tabSwitchBtn}
-              onClick={() => setTopTab('special-addons')}
-            >
-              Order Add-ons
             </button>
             <button
               type="button"
@@ -184,7 +172,6 @@ export const Products = () => {
 
       {topTab === 'sku' && <SkuMasterTab />}
       {topTab === 'modular' && <ProductModels />}
-      {topTab === 'special-addons' && <SpecialAddonsTab orderOnly />}
       {topTab === 'maintenance' && <MaintenanceTab />}
       {topTab === 'combos' && <SofaComboTab />}
       {topTab === 'fabric' && <FabricTracking />}

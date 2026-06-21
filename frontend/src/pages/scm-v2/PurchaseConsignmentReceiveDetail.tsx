@@ -1,19 +1,23 @@
 // ----------------------------------------------------------------------------
 // PurchaseConsignmentReceiveDetail — full-page route at
-// /purchase-consignment-receive/:id.
+// /scm/purchase-consignment-receives/:id.
 //
 // Faithful clone of GoodsReceivedDetail.tsx: a draft-style View → Edit →
 // Save/Back machine. It reuses the SAME shared components UNCHANGED —
 // MoneyInput, ItemGroupPill, the supplier picker + supplier / warehouse data
 // hooks. Only the queries are repointed at `/purchase-consignment-receives`
-// (the pc-receive hooks) and links go back to /purchase-consignment-receive.
+// (the pc-receive hooks) and links go back to /scm/purchase-consignment-receives.
+//
+// T12 (owner 2026-06-19) — Edit mode on a MANUAL receive line (no
+// pc_order_item_id) now gains an editable Description + the shared PcVariantEditor
+// for bedframe/sofa, the SAME rich variant editing as New. PCO-sourced lines keep
+// identity + variants read-only.
 //
 // Dropped from the GRN clone (per scope): the per-line Rack column (racks place
 // owned inventory, not off-ledger consignment), the From-PO header convert
-// button (consignment receives don't append from real POs), Print PDF +
-// Relationship Map (the PDF + flow-graph engines don't model the consignment
-// doc types). The "Received from PO" line label is relabelled to the source
-// Purchase Consignment Order.
+// button (consignment receives don't append from real POs). Print PDF +
+// Relationship Map stay (vendored). The "Received from PO" line label is
+// relabelled to the source Purchase Consignment Order.
 // ----------------------------------------------------------------------------
 
 import { useEffect, useState } from 'react';
@@ -37,7 +41,10 @@ import {
   type SupplierRow,
 } from '../../vendor/scm/lib/suppliers-queries';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
+import { useMaintenanceConfig } from '../../vendor/scm/lib/mfg-products-queries';
+import { useFabricTrackings } from '../../vendor/scm/lib/fabric-queries';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
+import { PcVariantEditor } from '../../vendor/scm/components/PcVariantEditor';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -53,6 +60,13 @@ const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string => {
   })}`;
 };
 
+/* T12 — bedframe Total Height is AUTO-COMPUTED = Divan + Leg + Gap. */
+const parseInches = (s: unknown): number => {
+  if (s == null) return 0;
+  const m = String(s).match(/(-?\d+(?:\.\d+)?)/);
+  return m && m[1] ? Number(m[1]) : 0;
+};
+
 type HeaderDraft = {
   supplierId: string;
   receivedAt: string;
@@ -61,11 +75,17 @@ type HeaderDraft = {
   currency: string;
   notes: string;
 };
+/* T12 — widened with the line's identity/variant fields so a MANUAL receive line
+   (pc_order_item_id == null) can edit its description + bedframe/sofa variants in
+   Edit mode; PCO-sourced lines keep them read-only. */
 type LineDraft = {
   qty: number;            // maps to qty_received
   unitPriceCenti: number;
   discountCenti: number;
   deliveryDate: string | null;
+  materialName: string;
+  itemGroup: string | null;
+  variants: Record<string, unknown> | null;
 };
 
 type GrnItemRow = Record<string, unknown> & {
@@ -83,6 +103,9 @@ type GrnItemRow = Record<string, unknown> & {
   variants?: Record<string, unknown> | null;
   source_po_number?: string | null;
   received_at?: string | null;
+  /* PCO-sourced lines carry the source order line id; identity + variants stay
+     read-only on those. Manual lines have it null → full editing. */
+  pc_order_item_id?: string | null;
   downstream?: { docNumber: string; docType: string; qty: number; status: string }[];
 };
 
@@ -101,6 +124,9 @@ const lineSnapshot = (it: GrnItemRow): LineDraft => ({
   unitPriceCenti: it.unit_price_centi,
   discountCenti:  it.discount_centi ?? 0,
   deliveryDate:   it.delivery_date ?? null,
+  materialName:   it.description ?? it.material_name ?? '',
+  itemGroup:      it.item_group ?? null,
+  variants:       (it.variants as Record<string, unknown> | null) ?? null,
 });
 
 export const PurchaseConsignmentReceiveDetail = () => {
@@ -116,6 +142,12 @@ export const PurchaseConsignmentReceiveDetail = () => {
 
   const grn = detail.data?.grn ?? null;
   const items = (detail.data?.items ?? []) as GrnItemRow[];
+
+  /* T12 — maintenance config + fabrics drive the per-category variant editor on
+     MANUAL bedframe/sofa lines in Edit mode (shared PcVariantEditor). */
+  const maintQ = useMaintenanceConfig('master');
+  const maint  = maintQ.data?.data ?? null;
+  const fabrics = useFabricTrackings().data ?? [];
 
   const [searchParams] = useSearchParams();
   const [isEditing, setIsEditing] = useState(() => searchParams.get('edit') === '1');
@@ -209,6 +241,21 @@ export const PurchaseConsignmentReceiveDetail = () => {
   const setLine = (it: GrnItemRow, patch: Partial<LineDraft>) =>
     setLineDrafts((prev) => ({ ...prev, [it.id]: { ...(prev[it.id] ?? lineSnapshot(it)), ...patch } }));
 
+  /* T12 — patch one variant key on a line + auto-compute bedframe Total Height
+     (= Divan + Leg + Gap), mirroring New consignment receive's setVariant. */
+  const setVariant = (it: GrnItemRow, key: string, value: unknown) =>
+    setLineDrafts((prev) => {
+      const cur = prev[it.id] ?? lineSnapshot(it);
+      const variants: Record<string, unknown> = { ...(cur.variants ?? {}), [key]: value };
+      if (cur.itemGroup === 'bedframe' && (key === 'divanHeight' || key === 'legHeight' || key === 'gap')) {
+        const d = parseInches(variants.divanHeight);
+        const lg = parseInches(variants.legHeight);
+        const g = parseInches(variants.gap);
+        variants.totalHeight = (d === 0 && lg === 0 && g === 0) ? '' : `${d + lg + g}"`;
+      }
+      return { ...prev, [it.id]: { ...cur, variants } };
+    });
+
   const enterEdit = () => {
     setHeaderDraft(null);
     setLineDrafts({});
@@ -225,16 +272,34 @@ export const PurchaseConsignmentReceiveDetail = () => {
       for (const it of items) {
         const d = lineDrafts[it.id];
         if (!d) continue;
+        const snap = lineSnapshot(it);
+        /* Identity/variants are only editable on MANUAL lines (no
+           pc_order_item_id); PCO-sourced lines never send those keys. */
+        const manual = !it.pc_order_item_id;
+        const identityChanged = manual && (
+          d.materialName !== snap.materialName ||
+          (d.itemGroup ?? '') !== (snap.itemGroup ?? '') ||
+          JSON.stringify(d.variants ?? {}) !== JSON.stringify(snap.variants ?? {})
+        );
         const changed =
           d.qty !== it.qty_received ||
           d.unitPriceCenti !== it.unit_price_centi ||
           d.discountCenti !== (it.discount_centi ?? 0) ||
-          (d.deliveryDate ?? null) !== (it.delivery_date ?? null);
+          (d.deliveryDate ?? null) !== (it.delivery_date ?? null) ||
+          identityChanged;
         if (changed) {
           await updateItem.mutateAsync({
             grnId: grn.id, itemId: it.id,
             qty: d.qty, unitPriceCenti: d.unitPriceCenti,
             discountCenti: d.discountCenti, deliveryDate: d.deliveryDate,
+            /* T12 — only manual lines send identity/variants; the server
+               recomputes description2 + resyncs inventory. */
+            ...(manual ? {
+              materialName: d.materialName,
+              description:  d.materialName,
+              itemGroup:    d.itemGroup ?? undefined,
+              variants:     d.variants ?? {},
+            } : {}),
           });
         }
       }
@@ -344,6 +409,12 @@ export const PurchaseConsignmentReceiveDetail = () => {
               const variantSummary = buildVariantSummary(it.item_group ?? null, it.variants as Record<string, unknown> | null)
                 || it.description
                 || it.material_name;
+              /* T12 — identity + variants are editable only on MANUAL lines
+                 (no pc_order_item_id); PCO-sourced lines stay read-only. */
+              const isManualLine = !it.pc_order_item_id;
+              const showVariantEditor =
+                isEditing && isManualLine && !isLocked &&
+                (d.itemGroup === 'bedframe' || d.itemGroup === 'sofa') && !!maint;
               return (
                 <div
                   key={it.id}
@@ -416,16 +487,42 @@ export const PurchaseConsignmentReceiveDetail = () => {
                     </label>
                     <label className={styles.field}>
                       <span className={styles.fieldLabel}>Description</span>
-                      <input
-                        type="text" readOnly value={it.description ?? it.material_name}
-                        className={styles.fieldInput}
-                        style={{ background: 'var(--c-cream)', color: 'var(--fg-muted)' }}
-                      />
+                      {/* T12 — Description editable on MANUAL lines in Edit;
+                          read-only on PCO-sourced lines + in View. */}
+                      {isEditing && isManualLine ? (
+                        <input
+                          type="text" value={d.materialName} disabled={isLocked}
+                          onChange={(e) => setLine(it, { materialName: e.target.value })}
+                          className={styles.fieldInput}
+                        />
+                      ) : (
+                        <input
+                          type="text" readOnly value={it.description ?? it.material_name}
+                          className={styles.fieldInput}
+                          style={{ background: 'var(--c-cream)', color: 'var(--fg-muted)' }}
+                        />
+                      )}
                     </label>
                   </div>
 
-                  {variantSummary && (
-                    <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>{variantSummary}</div>
+                  {/* T12 — variants. Edit + MANUAL bedframe/sofa line → the shared
+                      PcVariantEditor; otherwise the read-only summary. PCO-sourced
+                      lines stay locked to the summary. */}
+                  {showVariantEditor ? (
+                    <div style={{ background: 'var(--c-cream)', border: '1px solid var(--line)', borderRadius: 'var(--radius-md)', padding: 'var(--space-3)' }}>
+                      <div style={{ fontFamily: 'var(--font-button)', fontSize: 'var(--fs-11)', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 'var(--space-2)' }}>{d.itemGroup} Variants</div>
+                      <PcVariantEditor
+                        category={d.itemGroup ?? ''}
+                        variants={(d.variants ?? {}) as Record<string, unknown>}
+                        onChange={(k, v) => setVariant(it, k, v)}
+                        fabrics={fabrics}
+                        maint={maint!}
+                      />
+                    </div>
+                  ) : (
+                    variantSummary && (
+                      <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>{variantSummary}</div>
+                    )
                   )}
 
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-4)', fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>

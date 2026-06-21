@@ -1,54 +1,67 @@
 // ----------------------------------------------------------------------------
-// PurchaseInvoiceDetail — full-page route at /purchase-invoices/:id.
+// PurchaseInvoiceDetail — full-page route at /scm/purchase-invoices/:id.
 //
-// EXACT clone of PurchaseOrderDetail / GoodsReceivedDetail (the gold standard):
-// a draft-style View → Edit → Save/Back machine, Print PDF, Cancel. A Purchase
-// Invoice is CONFIRMED the moment it exists (no Draft lifecycle), so POSTED
-// reads as "Confirmed".
+// EXACT clone of PurchaseOrderDetail (the gold standard): a draft-style View →
+// Edit → Save/Back machine, Print PDF, Cancel. A Purchase Invoice is CONFIRMED
+// the moment it exists (no Draft lifecycle), so POSTED reads as "Confirmed".
 //
 //   1. Header: back button + Invoice# · supplier + status pill + actions
 //   2. Supplier card: editable supplier + supplier invoice ref + invoice date +
 //      due date + currency + notes (inputs in Edit, read-only InfoCells in View)
-//   3. Line items table: code + group + variants summary + qty + unit + disc +
-//      total  (a PI has NO per-line delivery date — Delivery column dropped)
+//   3. Line items: in View a read-only table; in Edit a PoLineCard per line — the
+//      SAME rich editor as Create PI — plus a "+ add item" (PI is free-entry,
+//      grnId:null is first-class). The PI card HIDES the PO-only fields
+//      (per-line delivery, supplier-revised dates, ship-to, supplier SKU).
 //   4. Totals card: subtotal (live) + tax (stored) + total + read-only Paid +
 //      Balance (= total - paid). No payment-entry UI here.
 //
-// Draft model (mirrors PO #194 / GRN):
-//   • Edit  → snapshots header + lets you edit Qty / Unit / Disc INLINE per row.
-//             Nothing persists until the single top Save.
-//   • Save  → commits header changes + every changed line's field edits.
-//   • Back  → leaves the page, discarding the field-edit draft (no auto-save).
-//   • Delete (trash) removes the line immediately (no confirm popup). PI is
-//     AP-only (inventory landed at GRN time), so removal is a plain line delete.
+// T12 (owner 2026-06-19) — Edit mode now drives one PoLineCard per line, the SAME
+// rich editor as Create (mirrors PurchaseOrderDetail). A line that descends from
+// a GRN (grn_item_id set) keeps its code + variants READ-ONLY (only qty/price
+// editable); a free-entry line (grn_item_id null) gets full Create-style editing.
+// The single top Save diffs each draft and add/update/deletes. The server 409s
+// over-invoicing past a GRN-linked qty → surfaced via notify.
 //
 // purchase_invoice_status enum: POSTED / PARTIALLY_PAID / PAID / CANCELLED.
-// POSTED → "Confirmed" (editable). PARTIALLY_PAID / PAID render their label but
-// stay editable (commander wants it editable). CANCELLED → "Cancelled" (locked).
-// isLocked = CANCELLED only (mirror GRN's lock-on-cancelled logic).
+// POSTED → "Confirmed" (editable). isLocked = CANCELLED OR any payment recorded
+// (paid_centi > 0) — migration 0106.
 //
 // HOUZS VENDOR — verbatim from apps/backend/src/pages/PurchaseInvoiceDetail.tsx.
-// Import boundary only: react-router → react-router-dom; flow-queries PI hooks →
-// vendored purchase-invoice-queries; suppliers + components + the PDF helper →
-// ../../vendor/scm/*; back link repointed to /scm/purchase-invoices.
+// Import boundary only: react-router → react-router-dom; the PI hooks come from
+// the vendored purchase-invoice-queries (Houzs split them out of flow-queries);
+// suppliers + mfg-products + fabric + inventory queries + components + the
+// @2990s/shared(/mfg-pricing) imports resolve under ../../vendor/scm/* (the
+// @2990s ones verbatim); <Link>/navigate repointed to /scm/*.
 // ----------------------------------------------------------------------------
 
-import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ArrowLeft, FileText, Pencil, Trash2, Printer, Save, Ban, ChevronDown,
+  ArrowLeft, FileText, Pencil, Plus, Printer, Save, Ban, ChevronDown,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
 import {
   usePurchaseInvoiceDetail,
   useUpdatePurchaseInvoiceHeader,
+  useAddPurchaseInvoiceItem,
   useUpdatePurchaseInvoiceItem,
   useDeletePurchaseInvoiceItem,
   useCancelPurchaseInvoice,
 } from '../../vendor/scm/lib/purchase-invoice-queries';
-import { useSuppliers, useSupplierDetail, type SupplierRow } from '../../vendor/scm/lib/suppliers-queries';
-import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
+import {
+  useSuppliers, useSupplierDetail,
+  type BindingRow, type SupplierRow,
+} from '../../vendor/scm/lib/suppliers-queries';
+import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { useFabricTrackings } from '../../vendor/scm/lib/fabric-queries';
+import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
+import {
+  computeMfgPoUnitCost,
+  type MfgFabricTier,
+  type PoPriceMatrix,
+} from '@2990s/shared/mfg-pricing';
+import { PoLineCard, emptyPoLine, type PoLineDraft } from '../../vendor/scm/components/PoLineCard';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
@@ -57,7 +70,6 @@ import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
-const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
 
 const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string => {
   const v = centi ?? 0;
@@ -66,9 +78,8 @@ const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string => {
   })}`;
 };
 
-/* Draft state shapes (mirror PO #194 / GRN). HeaderDraft mirrors the editable PI
-   header fields; LineDraft holds the three inline-editable per-line fields (PI
-   has NO per-line delivery date). */
+/* Draft state shapes (mirror PO #194). HeaderDraft mirrors the editable PI
+   header fields. */
 type HeaderDraft = {
   supplierId: string;
   supplierInvoiceRef: string;
@@ -76,11 +87,6 @@ type HeaderDraft = {
   dueDate: string;
   currency: string;
   notes: string;
-};
-type LineDraft = {
-  qty: number;
-  unitPriceCenti: number;
-  discountCenti: number;
 };
 
 type PiItemRow = Record<string, unknown> & {
@@ -95,7 +101,17 @@ type PiItemRow = Record<string, unknown> & {
   material_kind?: string | null;
   description?: string | null;
   variants?: Record<string, unknown> | null;
+  binding_id?: string | null;
+  supplier_sku?: string | null;
+  /* GRN-sourced lines carry the source GRN line id; identity + variants on those
+     stay read-only (only qty/price editable). Free-entry lines have it null. */
+  grn_item_id?: string | null;
 };
+
+/* Whole-line edit (T12) — Edit mode drives one PoLineCard per line, the SAME rich
+   editor as Create. EditLine = the shared PoLineDraft + the persisted item id
+   (absent on a freshly-added blank card) + whether the line came from a GRN. */
+type EditLine = PoLineDraft & { itemId?: string; grnLinked?: boolean };
 
 const headerSnapshot = (p: any): HeaderDraft => ({
   supplierId:         p.supplier_id ?? '',
@@ -106,17 +122,32 @@ const headerSnapshot = (p: any): HeaderDraft => ({
   notes:              p.notes ?? '',
 });
 
-const lineSnapshot = (it: PiItemRow): LineDraft => ({
+/* Map a persisted PI line → an editable PoLineCard draft. A GRN-sourced line
+   (grn_item_id set) is flagged grnLinked so the card locks its identity. */
+const draftFromItem = (it: PiItemRow): EditLine => ({
+  rid:            `i${it.id}`,
+  itemId:         it.id,
+  grnLinked:      Boolean(it.grn_item_id),
+  bindingId:      it.binding_id ?? undefined,
+  materialKind:   (it.material_kind as PoLineDraft['materialKind']) ?? 'mfg_product',
+  materialCode:   it.material_code,
+  materialName:   it.material_name,
+  supplierSku:    it.supplier_sku ?? undefined,
   qty:            it.qty,
   unitPriceCenti: it.unit_price_centi,
   discountCenti:  it.discount_centi ?? 0,
+  category:       it.item_group ?? undefined,
+  variants:       (it.variants as Record<string, unknown> | null) ?? {},
+  /* An existing line's stored price is authoritative — don't let the cost
+     auto-recompute clobber it on enter-edit. Editing variants re-arms it. */
+  priceTouched:   true,
 });
 
 export const PurchaseInvoiceDetail = () => {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const detail = usePurchaseInvoiceDetail(id ?? null);
   const updateHeader = useUpdatePurchaseInvoiceHeader();
+  const addItem = useAddPurchaseInvoiceItem();
   const updateItem = useUpdatePurchaseInvoiceItem();
   const deleteItem = useDeletePurchaseInvoiceItem();
   const askConfirm = useConfirm();
@@ -124,7 +155,43 @@ export const PurchaseInvoiceDetail = () => {
   const cancel = useCancelPurchaseInvoice();
 
   const pi = detail.data?.purchaseInvoice ?? null;
-  const items = (detail.data?.items ?? []) as PiItemRow[];
+  /* Memoised so the edit-mode seed + cost-recompute effects don't re-fire on
+     every render (detail.data?.items is a fresh array each time otherwise). */
+  const items = useMemo(() => (detail.data?.items ?? []) as PiItemRow[], [detail.data?.items]);
+
+  /* ── Whole-line editor data (T12) — the SAME lookups Create uses so PoLineCard
+     renders identically in Edit. Bindings come from the PI's supplier; allSkus is
+     the catalogue fallback; maint + fabrics drive the variant dropdowns;
+     specialsPools feeds the Special Orders checkboxes. */
+  const piSupplierId = pi?.supplier_id ?? '';
+  const supplierDetailQ = useSupplierDetail(piSupplierId || null);
+  const bindings = useMemo(() => supplierDetailQ.data?.bindings ?? [], [supplierDetailQ.data?.bindings]);
+  const allSkusQ = useMfgProducts();
+  const allSkus = useMemo(() => allSkusQ.data ?? [], [allSkusQ.data]);
+  const warehousesQ = useWarehouses();
+  const warehousesForLines = warehousesQ.data ?? [];
+  const supplierMaintQ = useMaintenanceConfig(
+    piSupplierId ? `supplier:${piSupplierId}` : '',
+    { enabled: Boolean(piSupplierId) },
+  );
+  const masterMaintQ = useMaintenanceConfig('master', {
+    enabled: !piSupplierId || !supplierMaintQ.data?.data,
+  });
+  const maint = supplierMaintQ.data?.data ?? masterMaintQ.data?.data ?? null;
+  const fabrics = useFabricTrackings().data ?? [];
+  const specialAddonsQ = useSpecialAddons();
+  const specialsPools = useMemo(() => {
+    const rows = (specialAddonsQ.data ?? [])
+      .filter((r) => r.active)
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
+  }, [specialAddonsQ.data]);
+
+  /* code → category (lowercased) lookup, mirroring Create's categoryForCode. */
+  const categoryForCode = (code: string): string | undefined =>
+    allSkus.find((p) => p.code === code)?.category.toLowerCase();
 
   /* View → Edit gate (mirror PO/GRN) — default read-only View; click Edit to
      flip into draft mode. The PI list's right-click "Edit" lands here with
@@ -132,12 +199,13 @@ export const PurchaseInvoiceDetail = () => {
   const [searchParams] = useSearchParams();
   const [isEditing, setIsEditing] = useState(() => searchParams.get('edit') === '1');
 
-  /* Draft buffers. headerDraft is null until the first header field is touched
-     (then seeded from the PI). lineDrafts overlays per-line edits keyed by item
-     id; any line without an entry shows its stored values. None of this persists
-     until Save. */
+  /* #194 draft buffers. headerDraft is null until the first header field is
+     touched (then seeded from the PI). Line edits are WHOLE-LINE drafts
+     (editLines), one PoLineCard per line. Existing lines carry their itemId; a
+     freshly-added blank card has none until Save inserts it. None of this
+     persists until the single top Save. */
   const [headerDraft, setHeaderDraft] = useState<HeaderDraft | null>(null);
-  const [lineDrafts, setLineDrafts] = useState<Record<string, LineDraft>>({});
+  const [editLines, setEditLines] = useState<EditLine[]>([]);
   const [savingDraft, setSavingDraft] = useState(false);
 
   // Unified edit-lock (migration 0106): a PI is read-only once it has ANY
@@ -151,9 +219,78 @@ export const PurchaseInvoiceDetail = () => {
     if (isLocked && isEditing) {
       setIsEditing(false);
       setHeaderDraft(null);
-      setLineDrafts({});
+      setEditLines([]);
     }
   }, [isLocked, isEditing]);
+
+  /* Seed/clear the whole-line drafts (T12) — entering Edit populates a PoLineCard
+     draft for EVERY current line; leaving Edit wipes them. Re-seeds whenever the
+     underlying items change (e.g. after a Save re-fetch). */
+  useEffect(() => {
+    if (!isEditing) { setEditLines([]); return; }
+    setEditLines(items.map(draftFromItem));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, items]);
+
+  /* Cost auto-recompute (mirrors Create) — resolve a line's supplier price
+     matrix + maintenance surcharges into a unit cost. A manually-touched line
+     (priceTouched) keeps its typed value; a GRN-linked line keeps its billed
+     price (its identity/variants are locked, so it never re-prices). */
+  const fabricTierForLine = (line: EditLine): MfgFabricTier | null => {
+    const code = String(line.variants.fabricCode ?? '');
+    if (!code) return null;
+    const f = fabrics.find((x) => x.fabric_code === code);
+    if (!f) return null;
+    const cat = line.category?.toLowerCase();
+    if (cat === 'sofa')     return f.sofa_price_tier ?? f.price_tier ?? null;
+    if (cat === 'bedframe') return f.bedframe_price_tier ?? f.price_tier ?? null;
+    return null;
+  };
+  const recomputeLineCost = (line: EditLine): number => {
+    const binding = line.bindingId
+      ? bindings.find((b) => b.id === line.bindingId)
+      : bindings.find((b) => b.material_code === line.materialCode);
+    if (!binding) return line.unitPriceCenti;
+    const category = (line.category?.toUpperCase() ?? '') as
+      'BEDFRAME' | 'SOFA' | 'MATTRESS' | 'ACCESSORY' | 'SERVICE' | '';
+    if (!category) return binding.unit_price_centi;
+    const v = line.variants;
+    const specials = Array.isArray(v.specials) ? (v.specials as string[]) : [];
+    const breakdown = computeMfgPoUnitCost(
+      {
+        category,
+        priceMatrix:    (binding.price_matrix ?? null) as PoPriceMatrix,
+        unitPriceCenti: binding.unit_price_centi,
+        fabricTier:     fabricTierForLine(line),
+        seatSize:       category === 'SOFA' ? (v.seatHeight as string | undefined) ?? null : null,
+        divanHeight:    (v.divanHeight as string | undefined) ?? null,
+        legHeight:      category === 'BEDFRAME' ? (v.legHeight as string | undefined) ?? null : null,
+        sofaLegHeight:  category === 'SOFA' ? (v.legHeight as string | undefined) ?? null : null,
+        totalHeight:    (v.totalHeight as string | undefined) ?? null,
+        specials,
+      },
+      maint,
+    );
+    return breakdown.unitPriceSen;
+  };
+
+  /* Cost auto-recompute effect — re-price every non-touched, non-GRN-linked
+     editLine off the supplier matrix + maintenance surcharges. Gated to Edit. */
+  useEffect(() => {
+    if (!isEditing) return;
+    setEditLines((prev) => {
+      let changed = false;
+      const next = prev.map((l) => {
+        if (l.priceTouched || l.grnLinked) return l;
+        const cost = recomputeLineCost(l);
+        if (cost === l.unitPriceCenti) return l;
+        changed = true;
+        return { ...l, unitPriceCenti: cost };
+      });
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, bindings, fabrics, maint, editLines]);
 
   if (detail.isLoading) {
     return <SkeletonDetailPage />;
@@ -174,14 +311,15 @@ export const PurchaseInvoiceDetail = () => {
   }
 
   /* ── Draft helpers (pi is guaranteed non-null past the guards above) ── */
+  /* View shows the live server items; Edit drives editLines (one PoLineCard per
+     line). Deletes fire immediately server-side; only the field/variant edits
+     are buffered until the single top Save. */
   const visibleItems = items;
-  const lineOf = (it: PiItemRow): LineDraft => lineDrafts[it.id] ?? lineSnapshot(it);
-  const lineTotalOf = (it: PiItemRow): number => {
-    if (!isEditing) return it.line_total_centi ?? (it.qty * it.unit_price_centi - (it.discount_centi ?? 0));
-    const d = lineOf(it);
-    return d.qty * d.unitPriceCenti - d.discountCenti;
-  };
-  const itemsSubtotal = visibleItems.reduce((s, it) => s + lineTotalOf(it), 0);
+  /* Totals — in Edit, sum the live editLines (incl. unsaved edits); in View, the
+     stored line totals. */
+  const itemsSubtotal = isEditing
+    ? editLines.reduce((s, d) => s + Math.max(0, d.qty * d.unitPriceCenti - (d.discountCenti ?? 0)), 0)
+    : visibleItems.reduce((s, it) => s + (it.line_total_centi ?? (it.qty * it.unit_price_centi - (it.discount_centi ?? 0))), 0);
   const taxCenti = pi.tax_centi ?? 0;
   const grandTotal = itemsSubtotal + taxCenti;
   const paidCenti = pi.paid_centi ?? 0;
@@ -193,43 +331,136 @@ export const PurchaseInvoiceDetail = () => {
     setHeaderDraft((h) => ({ ...(h ?? headerSnapshot(pi)), [k]: v }));
   };
 
-  const setLine = (it: PiItemRow, patch: Partial<LineDraft>) =>
-    setLineDrafts((prev) => ({ ...prev, [it.id]: { ...(prev[it.id] ?? lineSnapshot(it)), ...patch } }));
+  /* Patch one editLine by rid (mirrors Create's setLine). */
+  const patchLine = (rid: string, patch: Partial<EditLine>) =>
+    setEditLines((prev) => prev.map((l) => (l.rid === rid ? { ...l, ...patch } : l)));
+
+  /* Adopt a supplier binding into a line (mirrors Create's pickBinding). */
+  const pickBinding = (rid: string, b: BindingRow) =>
+    patchLine(rid, {
+      bindingId:      b.id,
+      materialKind:   b.material_kind,
+      materialCode:   b.material_code,
+      materialName:   b.material_name,
+      supplierSku:    b.supplier_sku,
+      unitPriceCenti: b.unit_price_centi,
+      category:       categoryForCode(b.material_code),
+      priceTouched:   false,
+    });
+
+  /* Patch one variant key + auto-compute bedframe Total Height (= Divan + Leg +
+     Gap), mirroring Create's setVariant. Editing a variant re-arms the cost
+     auto-recompute (priceTouched ← false). */
+  const parseInches = (s: unknown): number => {
+    if (s == null) return 0;
+    const m = String(s).match(/(-?\d+(?:\.\d+)?)/);
+    return m && m[1] ? Number(m[1]) : 0;
+  };
+  const setVariant = (rid: string, k: string, v: unknown) =>
+    setEditLines((prev) => prev.map((l) => {
+      if (l.rid !== rid) return l;
+      const variants: Record<string, unknown> = { ...l.variants, [k]: v };
+      if (l.category === 'bedframe' && (k === 'divanHeight' || k === 'legHeight' || k === 'gap')) {
+        const d = parseInches(variants.divanHeight);
+        const lg = parseInches(variants.legHeight);
+        const g = parseInches(variants.gap);
+        variants.totalHeight = (d === 0 && lg === 0 && g === 0) ? '' : `${d + lg + g}"`;
+      }
+      return { ...l, variants, priceTouched: false };
+    }));
+
+  /* Append a fresh blank PoLineCard (PI is free-entry — grn_item_id null).
+     Committed by the page-level Save. */
+  const startAddLine = () =>
+    setEditLines((prev) => [...prev, { ...emptyPoLine() }]);
+
+  /* Remove a line. A persisted line fires the delete mutation immediately; a
+     never-saved blank card just drops from the draft array. */
+  const removeLine = async (rid: string) => {
+    const l = editLines.find((x) => x.rid === rid);
+    if (!l) return;
+    if (!l.itemId) { setEditLines((prev) => prev.filter((x) => x.rid !== rid)); return; }
+    if (await askConfirm({
+      title: 'Remove this line?',
+      body: 'The line is removed from this invoice.',
+      confirmLabel: 'Remove',
+      danger: true,
+    })) {
+      deleteItem.mutate(
+        { id: pi.id, itemId: l.itemId },
+        { onSuccess: () => setEditLines((prev) => prev.filter((x) => x.rid !== rid)) },
+      );
+    }
+  };
 
   const enterEdit = () => {
     setHeaderDraft(null);
-    setLineDrafts({});
+    setEditLines(items.map(draftFromItem));
     setIsEditing(true);
   };
 
-  /* Single Save — commit header (only if touched) + every changed line's field
-     edits, then drop back to View. Back discards the field-edit draft.
-     (Line delete already committed server-side — see the trash handler.) */
+  /* Single Save (T12) — whole-line diff. For each draft:
+       · no itemId → ADD (full payload incl. variants / materialCode)
+       · itemId + changed any field → UPDATE (full payload)
+     Deletes already fired server-side in removeLine. Then commit the header (if
+     touched) and drop back to View. The server 409s over-invoicing a GRN-linked
+     line → surfaced via notify. */
   const handleSave = async () => {
     if (savingDraft) return;
+    // Guard: every line must reference a product before Save.
+    const blankLine = editLines.find((d) => !d.materialCode.trim());
+    if (blankLine) {
+      notify({ title: 'Every line needs a product', body: 'Pick a product for each line, or remove the empty one before saving.', tone: 'error' });
+      return;
+    }
     setSavingDraft(true);
     try {
       if (headerDraft) {
         await updateHeader.mutateAsync({ id: pi.id, ...(headerDraft as Record<string, unknown>) });
       }
-      for (const it of items) {
-        const d = lineDrafts[it.id];
-        if (!d) continue;
+      const byId = new Map(items.map((it) => [it.id, it]));
+      for (const d of editLines) {
+        if (!d.itemId) {
+          // New free-entry line — full insert payload (grnItemId null).
+          await addItem.mutateAsync({
+            id: pi.id,
+            materialKind:   d.materialKind,
+            materialCode:   d.materialCode,
+            materialName:   d.materialName || d.materialCode,
+            qty:            d.qty,
+            unitPriceCenti: d.unitPriceCenti,
+            discountCenti:  d.discountCenti ?? 0,
+            bindingId:      d.bindingId,
+            itemGroup:      d.category,
+            variants:       Object.keys(d.variants).length ? d.variants : undefined,
+          });
+          continue;
+        }
+        const it = byId.get(d.itemId);
+        if (!it) continue;
         const changed =
+          d.materialCode !== it.material_code ||
+          (d.materialName || d.materialCode) !== it.material_name ||
+          (d.category ?? '') !== (it.item_group ?? '') ||
           d.qty !== it.qty ||
           d.unitPriceCenti !== it.unit_price_centi ||
-          d.discountCenti !== (it.discount_centi ?? 0);
-        if (changed) {
-          await updateItem.mutateAsync({
-            id: pi.id, itemId: it.id,
-            qty: d.qty, unitPriceCenti: d.unitPriceCenti,
-            discountCenti: d.discountCenti,
-          });
-        }
+          (d.discountCenti ?? 0) !== (it.discount_centi ?? 0) ||
+          JSON.stringify(d.variants ?? {}) !== JSON.stringify((it.variants as Record<string, unknown> | null) ?? {});
+        if (!changed) continue;
+        await updateItem.mutateAsync({
+          id: pi.id, itemId: d.itemId,
+          materialCode:   d.materialCode,
+          materialName:   d.materialName || d.materialCode,
+          qty:            d.qty,
+          unitPriceCenti: d.unitPriceCenti,
+          discountCenti:  d.discountCenti ?? 0,
+          itemGroup:      d.category,
+          variants:       d.variants ?? {},
+        });
       }
       setIsEditing(false);
       setHeaderDraft(null);
-      setLineDrafts({});
+      setEditLines([]);
     } catch (e) {
       notify({ title: 'Save failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' });
     } finally {
@@ -276,8 +507,7 @@ export const PurchaseInvoiceDetail = () => {
             <span>Print PDF</span>
           </Button>
           {/* Cancel — only when the PI is not locked (no payment recorded, not
-              already cancelled). Confirm dialog → cancel mutation (PI is AP-only,
-              so this just flips status + releases GRN consumption). */}
+              already cancelled). */}
           {!isLocked && (
             <Button variant="ghost" size="md"
               onClick={async () => {
@@ -327,10 +557,54 @@ export const PurchaseInvoiceDetail = () => {
       {/* ── Line items ──────────────────────────────────────────── */}
       <section className={styles.card}>
         <header className={styles.cardHeader}>
-          <h2 className={styles.cardTitle}>Line Items ({visibleItems.length})</h2>
+          <h2 className={styles.cardTitle}>Line Items ({isEditing ? editLines.length : visibleItems.length})</h2>
+          {/* T12 — Edit mode restores the Create UI: a "+ Add item" that appends a
+              blank PoLineCard (PI is free-entry). Hidden while the PI is locked. */}
+          {isEditing && !isLocked && (
+            <Button variant="primary" size="sm" onClick={startAddLine}>
+              <Plus {...ICON} />
+              <span>Add item</span>
+            </Button>
+          )}
         </header>
 
-        {visibleItems.length === 0 ? (
+        {isEditing ? (
+          /* Whole-line inline edit (T12) — every line is a PoLineCard (the SAME
+             editor as Create), all editable at once. GRN-sourced lines keep their
+             identity + variants read-only (identityReadOnly); free-entry lines get
+             full editing. The PI card hides the PO-only fields (hidePoFields). The
+             ONE page-level Save diffs each draft and add/update/deletes. */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', padding: 'var(--space-3)' }}>
+            {editLines.map((l, idx) => (
+              <PoLineCard
+                key={l.rid}
+                index={idx}
+                line={l}
+                currency={pi.currency}
+                supplierId={piSupplierId}
+                bindings={bindings}
+                allSkus={allSkus}
+                warehouses={warehousesForLines}
+                maint={maint}
+                fabrics={fabrics}
+                specialsPools={specialsPools}
+                onChange={(patch) => patchLine(l.rid, patch)}
+                onPickBinding={(b) => pickBinding(l.rid, b)}
+                onSetVariant={(k, v) => setVariant(l.rid, k, v)}
+                onPendingItemPick={() => {}}
+                onRemove={() => removeLine(l.rid)}
+                disabled={isLocked}
+                hidePoFields
+                identityReadOnly={Boolean(l.grnLinked)}
+              />
+            ))}
+            {editLines.length === 0 && (
+              <p className={styles.emptyRow} style={{ padding: 'var(--space-3)' }}>
+                No items yet — click "Add item" above.
+              </p>
+            )}
+          </div>
+        ) : visibleItems.length === 0 ? (
           <p className={styles.emptyRow}>No items on this invoice.</p>
         ) : (
           <table className={styles.table}>
@@ -342,92 +616,27 @@ export const PurchaseInvoiceDetail = () => {
                 <th className={styles.tableRight}>Unit</th>
                 <th className={styles.tableRight}>Disc</th>
                 <th className={styles.tableRight}>Total</th>
-                {/* Actions column only in Edit mode — View is read-only. A PI
-                    has NO per-line delivery date, so no Delivery column. */}
-                {isEditing && <th className={styles.tableRight}>Actions</th>}
               </tr>
             </thead>
             <tbody>
-              {visibleItems.map((it) => {
-                const d = lineOf(it);
-                return (
-                  <tr key={it.id}>
-                    <td>
-                      <div className={styles.codeCell}>{it.material_code}</div>
-                      {(() => {
-                        const summary = buildVariantSummary(it.item_group ?? null, it.variants as Record<string, unknown> | null)
-                          || it.description
-                          || it.material_name;
-                        return summary ? <div className={styles.muted} style={{ fontSize: 'var(--fs-11)' }}>{summary}</div> : null;
-                      })()}
-                    </td>
-                    <td className={styles.muted}>{it.item_group ?? it.material_kind ?? '—'}</td>
-
-                    {/* Qty / Unit / Disc are inline-editable in Edit mode (no
-                        per-line modal). */}
-                    {isEditing ? (
-                      <>
-                        <td className={styles.tableRight}>
-                          <input
-                            type="number"
-                            min={0}
-                            className={styles.fieldInput}
-                            style={{ width: 70, textAlign: 'right' }}
-                            value={d.qty}
-                            disabled={isLocked}
-                            onChange={(e) => setLine(it, { qty: Number(e.target.value) || 0 })}
-                          />
-                        </td>
-                        <td className={styles.tableRight}>
-                          <MoneyInput bare selectOnFocus inputClassName={styles.fieldInput}
-                            style={{ width: 110, textAlign: 'right' }}
-                            valueSen={d.unitPriceCenti}
-                            disabled={isLocked}
-                            onCommit={(sen) => setLine(it, { unitPriceCenti: sen ?? 0 })} />
-                        </td>
-                        <td className={styles.tableRight}>
-                          <MoneyInput bare selectOnFocus inputClassName={styles.fieldInput}
-                            style={{ width: 100, textAlign: 'right' }}
-                            valueSen={d.discountCenti}
-                            disabled={isLocked}
-                            onCommit={(sen) => setLine(it, { discountCenti: sen ?? 0 })} />
-                        </td>
-                        <td className={styles.priceCell}>{fmtRm(d.qty * d.unitPriceCenti - d.discountCenti, pi.currency)}</td>
-                        <td>
-                          <span className={styles.actionsCell}>
-                            <button type="button"
-                              className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
-                              title="Remove line" disabled={isLocked || deleteItem.isPending}
-                              /* Commander 2026-06-15 — confirm before delete (no
-                                 more 裸奔). PI is AP-only, so removal is a plain line
-                                 delete (inventory landed at GRN time). */
-                              onClick={async () => {
-                                if (isLocked) return;
-                                if (await askConfirm({
-                                  title: 'Remove this line?',
-                                  body: "The line is removed from this invoice.",
-                                  confirmLabel: 'Remove',
-                                  danger: true,
-                                })) {
-                                  deleteItem.mutate({ id: pi.id, itemId: it.id });
-                                }
-                              }}>
-                              <Trash2 {...SM_ICON} />
-                            </button>
-                          </span>
-                        </td>
-                      </>
-                    ) : (
-                      <>
-                        <td className={styles.tableRight}>{it.qty}</td>
-                        <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, pi.currency)}</td>
-                        <td className={styles.tableRight}>{(it.discount_centi ?? 0) > 0 ? fmtRm(it.discount_centi, pi.currency) : '—'}</td>
-                        <td className={styles.priceCell}>{fmtRm(lineTotalOf(it), pi.currency)}</td>
-                      </>
-                    )}
-                  </tr>
-                );
-              })}
+              {visibleItems.map((it) => (
+                <tr key={it.id}>
+                  <td>
+                    <div className={styles.codeCell}>{it.material_code}</div>
+                    {(() => {
+                      const summary = buildVariantSummary(it.item_group ?? null, it.variants as Record<string, unknown> | null)
+                        || it.description
+                        || it.material_name;
+                      return summary ? <div className={styles.muted} style={{ fontSize: 'var(--fs-11)' }}>{summary}</div> : null;
+                    })()}
+                  </td>
+                  <td className={styles.muted}>{it.item_group ?? it.material_kind ?? '—'}</td>
+                  <td className={styles.tableRight}>{it.qty}</td>
+                  <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, pi.currency)}</td>
+                  <td className={styles.tableRight}>{(it.discount_centi ?? 0) > 0 ? fmtRm(it.discount_centi, pi.currency) : '—'}</td>
+                  <td className={styles.priceCell}>{fmtRm(it.line_total_centi ?? (it.qty * it.unit_price_centi - (it.discount_centi ?? 0)), pi.currency)}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}

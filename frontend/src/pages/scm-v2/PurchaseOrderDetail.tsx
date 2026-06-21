@@ -10,28 +10,35 @@
 //   4. Totals card: subtotal + total
 //   5. Status flow: Draft → Submitted → Partially Received → Received | Cancelled
 //
-// Commander 2026-05-29 — PO Edit is a DRAFT (#194). Clicking Edit snapshots the
-// header + lets you edit Qty / Unit Price / Disc / Delivery INLINE in each row
-// (no per-line modal — "多此一举"). Nothing persists until the single top Save:
-//   • Save  → commits header changes + every changed line's field edits
-//   • Back  → leaves the page, discarding the field-edit draft (no auto-save —
-//             "为什么只是点 Back 也会自动 Save 呢")
-//   • Delete (trash) asks an in-app confirm first (Commander 2026-06-15 — no
-//     more 裸奔), then removes the line on confirm. A line's
-//     add (Convert from SO) and remove both move SO quota server-side, so they
+// Commander 2026-05-29 — PO Edit is a DRAFT (#194). Owner 2026-06-19 — Edit mode
+// now drives one PoLineCard per line, the SAME rich editor as Create: per-line
+// item/SKU picker, sofa/bedframe variant selects, Special Orders, +Add item,
+// cost auto-recompute, and the qty/price/disc/delivery/ship-to row. Nothing
+// persists until the single top Save:
+//   • Save  → commits header changes + add/update/deletes every line draft
+//   • Back  → leaves the page, discarding the draft (no auto-save)
+//   • Delete (trash) asks an in-app confirm first, then removes the line on
+//     confirm. A converted line's add/remove move SO quota server-side, so they
 //     are immediate — deleting a converted line releases its SO quota straight
-//     away so it reappears in the From-SO picker ("delete 掉…想再加回去却没看到").
-//     Only the field edits (Qty / Unit / Disc / Delivery) are draft.
+//     away so it reappears in the From-SO picker.
 //   • Changing the header Expected Delivery cascades to every line's delivery.
+//
+// HOUZS VENDOR — verbatim from apps/backend/src/pages/PurchaseOrderDetail.tsx.
+// Import boundary only: react-router → react-router-dom; ../lib/* + ../components/*
+// → ../../vendor/scm/*; the @2990s/shared + @2990s/shared/mfg-pricing imports are
+// verbatim; <Link>/navigate repointed to /scm/*. The migration-0180 supplier-
+// revised header/line delivery-date inputs are DROPPED at the page level (Houzs's
+// PO schema lacks those columns): PoLineCard still renders its Supplier Date 2/3/4
+// inputs but the page never seeds or persists them (display-only, harmless).
 // ----------------------------------------------------------------------------
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 // HOUZS VENDOR — Link + useSearchParams live on 'react-router-dom' in
 // react-router v6 (the version Houzs ships); 2990 used v7 where they're on the
 // unified 'react-router'. Only the import specifier changed.
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ArrowLeft, FileText, Pencil, Trash2, Printer, Save, Ban, ArrowRightLeft,
+  ArrowLeft, FileText, Pencil, Plus, Trash2, Printer, Save, Ban, ArrowRightLeft,
   ChevronDown, RotateCcw,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
@@ -39,6 +46,7 @@ import { buildVariantSummary } from '@2990s/shared'; // Commander 2026-05-28 —
 import {
   usePurchaseOrderDetail,
   useUpdatePurchaseOrderHeader,
+  useAddPurchaseOrderItem,
   useUpdatePurchaseOrderItem,
   useDeletePurchaseOrderItem,
   useCancelPurchaseOrder,
@@ -46,11 +54,19 @@ import {
   useDeletePurchaseOrder,
   useSuppliers,
   useSupplierDetail,
+  type BindingRow,
   type PoItemRow,
   type SupplierRow,
 } from '../../vendor/scm/lib/suppliers-queries';
+import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { useFabricTrackings } from '../../vendor/scm/lib/fabric-queries';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
-import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
+import {
+  computeMfgPoUnitCost,
+  type MfgFabricTier,
+  type PoPriceMatrix,
+} from '@2990s/shared/mfg-pricing';
+import { PoLineCard, emptyPoLine, type PoLineDraft } from '../../vendor/scm/components/PoLineCard';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
@@ -59,7 +75,6 @@ import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
-const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
 
 const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string => {
   const v = centi ?? 0;
@@ -68,8 +83,9 @@ const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string => {
   })}`;
 };
 
-/* Draft state shapes (#194). HeaderDraft mirrors the editable header fields;
-   LineDraft holds the four inline-editable per-line fields. */
+/* Draft state shapes (#194). HeaderDraft mirrors the editable header fields.
+   HOUZS: the migration-0180 supplier-revised header delivery dates are omitted —
+   Houzs's PurchaseOrderRow lacks those columns. */
 type HeaderDraft = {
   supplierId: string;
   poDate: string;
@@ -78,12 +94,12 @@ type HeaderDraft = {
   notes: string;
   purchaseLocationId: string;
 };
-type LineDraft = {
-  qty: number;
-  unitPriceCenti: number;
-  discountCenti: number;
-  deliveryDate: string | null;
-};
+
+/* Whole-line edit (owner 2026-06-19) — Edit mode now drives one PoLineCard per
+   line, the SAME rich editor as Create. EditLine = the shared PoLineDraft +
+   the persisted item id (absent on a freshly-added blank card). The page diffs
+   each draft against the server row on Save and calls add / update / delete. */
+type EditLine = PoLineDraft & { itemId?: string };
 
 const headerSnapshot = (p: any): HeaderDraft => ({
   supplierId:         p.supplier_id ?? '',
@@ -94,11 +110,28 @@ const headerSnapshot = (p: any): HeaderDraft => ({
   purchaseLocationId: p.purchase_location_id ?? '',
 });
 
-const lineSnapshot = (it: PoItemRow): LineDraft => ({
+/* Map a persisted PO line → an editable PoLineCard draft. item_group is the
+   PO's lowercase category convention; variants ride through untouched so the
+   variant editor + Description-2 recompute see the full spec. HOUZS: the
+   migration-0180 per-line supplier-revised dates are not read (no columns). */
+const draftFromItem = (it: PoItemRow): EditLine => ({
+  rid:            `i${it.id}`,
+  itemId:         it.id,
+  bindingId:      it.binding_id ?? undefined,
+  materialKind:   it.material_kind,
+  materialCode:   it.material_code,
+  materialName:   it.material_name,
+  supplierSku:    it.supplier_sku ?? undefined,
   qty:            it.qty,
   unitPriceCenti: it.unit_price_centi,
   discountCenti:  it.discount_centi ?? 0,
-  deliveryDate:   it.delivery_date ?? null,
+  deliveryDate:   it.delivery_date ?? undefined,
+  warehouseId:    it.warehouse_id ?? undefined,
+  category:       it.item_group ?? undefined,
+  variants:       (it.variants as Record<string, unknown> | null) ?? {},
+  /* An existing line's stored price is authoritative — don't let the cost
+     auto-recompute clobber it on enter-edit. Editing the variants re-arms it. */
+  priceTouched:   true,
 });
 
 export const PurchaseOrderDetail = () => {
@@ -110,6 +143,7 @@ export const PurchaseOrderDetail = () => {
   const cancel = useCancelPurchaseOrder();
   const reopen = useReopenPurchaseOrder();
   const deletePo = useDeletePurchaseOrder();
+  const addItem = useAddPurchaseOrderItem();
   const updateItem = useUpdatePurchaseOrderItem();
   const deleteItem = useDeletePurchaseOrderItem();
   const askConfirm = useConfirm();
@@ -120,7 +154,45 @@ export const PurchaseOrderDetail = () => {
   const warehousesQTop = useWarehouses();
 
   const po = detail.data?.purchaseOrder ?? null;
-  const items = detail.data?.items ?? [];
+  /* Memoised so the edit-mode seed + cost-recompute effects don't re-fire on
+     every render (detail.data?.items is a fresh array each time otherwise). */
+  const items = useMemo(() => detail.data?.items ?? [], [detail.data?.items]);
+
+  /* ── Whole-line editor data (owner 2026-06-19) — the SAME lookups Create
+     uses so PoLineCard renders identically in Edit. Bindings come from the PO's
+     supplier; allSkus is the catalogue fallback; maint + fabrics drive the
+     variant dropdowns; specialsPools feeds the Special Orders checkboxes. The
+     supplier-scoped maintenance surcharges feed the cost auto-recompute (same
+     supplier-then-master fallback as Create). */
+  const poSupplierId = po?.supplier_id ?? '';
+  const supplierDetailQ = useSupplierDetail(poSupplierId || null);
+  const bindings = useMemo(() => supplierDetailQ.data?.bindings ?? [], [supplierDetailQ.data?.bindings]);
+  const allSkusQ = useMfgProducts();
+  const allSkus = useMemo(() => allSkusQ.data ?? [], [allSkusQ.data]);
+  const warehousesForLines = warehousesQTop.data ?? [];
+  const supplierMaintQ = useMaintenanceConfig(
+    poSupplierId ? `supplier:${poSupplierId}` : '',
+    { enabled: Boolean(poSupplierId) },
+  );
+  const masterMaintQ = useMaintenanceConfig('master', {
+    enabled: !poSupplierId || !supplierMaintQ.data?.data,
+  });
+  const maint = supplierMaintQ.data?.data ?? masterMaintQ.data?.data ?? null;
+  const fabrics = useFabricTrackings().data ?? [];
+  const specialAddonsQ = useSpecialAddons();
+  const specialsPools = useMemo(() => {
+    const rows = (specialAddonsQ.data ?? [])
+      .filter((r) => r.active)
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
+  }, [specialAddonsQ.data]);
+
+  /* code → category (lowercased) lookup, mirroring Create's categoryForCode.
+     Tags a line with which variant editor to show when a SKU is picked. */
+  const categoryForCode = (code: string): string | undefined =>
+    allSkus.find((p) => p.code === code)?.category.toLowerCase();
 
   /* View → Edit gate (Commander 2026-05-29) — default is read-only View; click
      Edit to flip into draft mode. The PO list's right-click "Edit" lands here
@@ -129,11 +201,13 @@ export const PurchaseOrderDetail = () => {
   const [isEditing, setIsEditing] = useState(() => searchParams.get('edit') === '1');
 
   /* #194 draft buffers. headerDraft is null until the first header field is
-     touched (then seeded from the PO). lineDrafts overlays per-line edits keyed
-     by item id; any line without an entry just shows its stored values.
-     deletedIds stages removals. None of this persists until Save. */
+     touched (then seeded from the PO).
+     Owner 2026-06-19 — line edits are now WHOLE-LINE drafts (editLines), one
+     PoLineCard per line, mirroring Create + SalesOrderDetail. Existing lines
+     carry their itemId; a freshly-added blank card has none until Save inserts
+     it. None of this persists until the single top Save. */
   const [headerDraft, setHeaderDraft] = useState<HeaderDraft | null>(null);
-  const [lineDrafts, setLineDrafts] = useState<Record<string, LineDraft>>({});
+  const [editLines, setEditLines] = useState<EditLine[]>([]);
   const [savingDraft, setSavingDraft] = useState(false);
 
   // PR-DRAFT-removal — POs are always SUBMITTED on create (no DRAFT). Header
@@ -152,9 +226,82 @@ export const PurchaseOrderDetail = () => {
     if (isLocked && isEditing) {
       setIsEditing(false);
       setHeaderDraft(null);
-      setLineDrafts({});
+      setEditLines([]);
     }
   }, [isLocked, isEditing]);
+
+  /* Seed/clear the whole-line drafts (owner 2026-06-19) — entering Edit
+     populates a PoLineCard draft for EVERY current line; leaving Edit wipes
+     them. Re-seeds whenever the underlying items change (e.g. after a Save
+     re-fetch). Mirrors SalesOrderDetail's edit-mode seed effect. */
+  useEffect(() => {
+    if (!isEditing) { setEditLines([]); return; }
+    setEditLines(items.map(draftFromItem));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, items]);
+
+  /* Cost auto-recompute (mirrors Create) — resolve a line's supplier price
+     matrix + maintenance surcharges into a unit cost. Defined above the early
+     returns (rules-of-hooks) since the effect below depends on them; they only
+     close over bindings / fabrics / maint, none of which need `po`. A
+     manually-touched line (priceTouched) keeps its typed value. */
+  const fabricTierForLine = (line: EditLine): MfgFabricTier | null => {
+    const code = String(line.variants.fabricCode ?? '');
+    if (!code) return null;
+    const f = fabrics.find((x) => x.fabric_code === code);
+    if (!f) return null;
+    const cat = line.category?.toLowerCase();
+    if (cat === 'sofa')     return f.sofa_price_tier ?? f.price_tier ?? null;
+    if (cat === 'bedframe') return f.bedframe_price_tier ?? f.price_tier ?? null;
+    return null;
+  };
+  const recomputeLineCost = (line: EditLine): number => {
+    const binding = line.bindingId
+      ? bindings.find((b) => b.id === line.bindingId)
+      : bindings.find((b) => b.material_code === line.materialCode);
+    if (!binding) return line.unitPriceCenti;
+    const category = (line.category?.toUpperCase() ?? '') as
+      'BEDFRAME' | 'SOFA' | 'MATTRESS' | 'ACCESSORY' | 'SERVICE' | '';
+    if (!category) return binding.unit_price_centi;
+    const v = line.variants;
+    const specials = Array.isArray(v.specials) ? (v.specials as string[]) : [];
+    const breakdown = computeMfgPoUnitCost(
+      {
+        category,
+        priceMatrix:    (binding.price_matrix ?? null) as PoPriceMatrix,
+        unitPriceCenti: binding.unit_price_centi,
+        fabricTier:     fabricTierForLine(line),
+        seatSize:       category === 'SOFA' ? (v.seatHeight as string | undefined) ?? null : null,
+        divanHeight:    (v.divanHeight as string | undefined) ?? null,
+        legHeight:      category === 'BEDFRAME' ? (v.legHeight as string | undefined) ?? null : null,
+        sofaLegHeight:  category === 'SOFA' ? (v.legHeight as string | undefined) ?? null : null,
+        totalHeight:    (v.totalHeight as string | undefined) ?? null,
+        specials,
+      },
+      maint,
+    );
+    return breakdown.unitPriceSen;
+  };
+
+  /* Cost auto-recompute effect — re-price every non-touched editLine off the
+     supplier matrix + maintenance surcharges whenever a binding / variant /
+     the maint or fabrics data changes. Only writes lines whose computed cost
+     differs, so it doesn't loop. Gated to Edit mode. */
+  useEffect(() => {
+    if (!isEditing) return;
+    setEditLines((prev) => {
+      let changed = false;
+      const next = prev.map((l) => {
+        if (l.priceTouched) return l;
+        const cost = recomputeLineCost(l);
+        if (cost === l.unitPriceCenti) return l;
+        changed = true;
+        return { ...l, unitPriceCenti: cost };
+      });
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, bindings, fabrics, maint, editLines]);
 
   if (detail.isLoading) {
     return <SkeletonDetailPage />;
@@ -175,9 +322,11 @@ export const PurchaseOrderDetail = () => {
   }
 
   /* ── Draft helpers (po is guaranteed non-null past the guards above) ── */
-  /* Commander 2026-05-29 — line add/remove are immediate server actions (they
-     move SO quota), so the table shows the live items straight from the server;
-     only the per-line field edits are buffered in lineDrafts. */
+  /* Owner 2026-06-19 — View shows the live server items; Edit drives editLines
+     (one PoLineCard per line). Deletes are immediate server actions (they move
+     SO quota), so a removed line's draft is dropped immediately and the delete
+     mutation fires straight away — only the field/variant edits are buffered
+     until the single top Save. */
   const visibleItems = items;
   /* SO→PO drift (Commander 2026-06-16) — lines whose source SO was edited AFTER
      this PO was raised, so the PO no longer matches the live SO. Only actionable
@@ -185,18 +334,16 @@ export const PurchaseOrderDetail = () => {
      re-sent anyway, so we hide the warning there. */
   const driftCount = visibleItems.filter((it) => it.so_drift).length;
   const showDrift = po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED';
-  const lineOf = (it: PoItemRow): LineDraft => lineDrafts[it.id] ?? lineSnapshot(it);
-  const lineTotalOf = (it: PoItemRow): number => {
-    if (!isEditing) return it.line_total_centi ?? 0;
-    const d = lineOf(it);
-    return d.qty * d.unitPriceCenti - d.discountCenti;
-  };
-  const itemsSubtotal = visibleItems.reduce((s, it) => s + lineTotalOf(it), 0);
+  /* Totals — in Edit, sum the live editLines (incl. unsaved variant/qty/price
+     edits) so the rail can't drift; in View, the stored line totals. */
+  const itemsSubtotal = isEditing
+    ? editLines.reduce((s, d) => s + Math.max(0, d.qty * d.unitPriceCenti - (d.discountCenti ?? 0)), 0)
+    : visibleItems.reduce((s, it) => s + (it.line_total_centi ?? 0), 0);
   const grandTotal = itemsSubtotal + (po.tax_centi ?? 0);
 
-  /* Per-line "Received" cell — which Goods Receipt took how much off this line,
-     plus the live balance still outstanding. Mirrors the SO "Delivered" column.
-     Cancelled GRNs are already excluded server-side. */
+  /* Per-line "Received" cell (View only) — which Goods Receipt took how much off
+     this line, plus the live balance still outstanding. Mirrors the SO
+     "Delivered" column. Cancelled GRNs are already excluded server-side. */
   const renderReceived = (it: PoItemRow) => {
     const receipts = it.receipts ?? [];
     if (receipts.length === 0) return <span className={styles.muted}>—</span>;
@@ -226,54 +373,156 @@ export const PurchaseOrderDetail = () => {
     // delivery date ("上面的 Expected Delivery Date 换了之后，下面 Item 的
     // Delivery Date 也要跟着跳").
     if (k === 'expectedAt') {
-      setLineDrafts((prev) => {
-        const next = { ...prev };
-        for (const it of items) {
-          next[it.id] = { ...(prev[it.id] ?? lineSnapshot(it)), deliveryDate: v || null };
-        }
-        return next;
-      });
+      setEditLines((prev) => prev.map((d) => ({ ...d, deliveryDate: v || undefined })));
     }
   };
 
-  const setLine = (it: PoItemRow, patch: Partial<LineDraft>) =>
-    setLineDrafts((prev) => ({ ...prev, [it.id]: { ...(prev[it.id] ?? lineSnapshot(it)), ...patch } }));
+  /* Patch one editLine by rid (mirrors Create's setLine). */
+  const patchLine = (rid: string, patch: Partial<EditLine>) =>
+    setEditLines((prev) => prev.map((l) => (l.rid === rid ? { ...l, ...patch } : l)));
+
+  /* Adopt a supplier binding into a line (mirrors Create's pickBinding) — fills
+     code + name + SKU + price + category and re-arms supplier-price auto-fill. */
+  const pickBinding = (rid: string, b: BindingRow) =>
+    patchLine(rid, {
+      bindingId:      b.id,
+      materialKind:   b.material_kind,
+      materialCode:   b.material_code,
+      materialName:   b.material_name,
+      supplierSku:    b.supplier_sku,
+      unitPriceCenti: b.unit_price_centi,
+      category:       categoryForCode(b.material_code),
+      priceTouched:   false,
+    });
+
+  /* Patch one variant key + auto-compute bedframe Total Height (= Divan + Leg +
+     Gap), mirroring Create's setVariant. Editing a variant re-arms the cost
+     auto-recompute (priceTouched ← false) so the line re-prices off the new spec. */
+  const parseInches = (s: unknown): number => {
+    if (s == null) return 0;
+    const m = String(s).match(/(-?\d+(?:\.\d+)?)/);
+    return m && m[1] ? Number(m[1]) : 0;
+  };
+  const setVariant = (rid: string, k: string, v: unknown) =>
+    setEditLines((prev) => prev.map((l) => {
+      if (l.rid !== rid) return l;
+      const variants: Record<string, unknown> = { ...l.variants, [k]: v };
+      if (l.category === 'bedframe' && (k === 'divanHeight' || k === 'legHeight' || k === 'gap')) {
+        const d = parseInches(variants.divanHeight);
+        const lg = parseInches(variants.legHeight);
+        const g = parseInches(variants.gap);
+        variants.totalHeight = (d === 0 && lg === 0 && g === 0) ? '' : `${d + lg + g}"`;
+      }
+      return { ...l, variants, priceTouched: false };
+    }));
+
+  /* Append a fresh blank PoLineCard (mirrors SalesOrderDetail.startAddLine) —
+     seeded with the PO's default ship-to + expected delivery so the new line
+     inherits the header context. Committed by the page-level Save. */
+  const startAddLine = () =>
+    setEditLines((prev) => [...prev, {
+      ...emptyPoLine(),
+      warehouseId:  po.purchase_location_id ?? undefined,
+      deliveryDate: headerView.expectedAt || undefined,
+    }]);
+
+  /* Remove a line. A persisted line fires the delete mutation immediately (it
+     releases SO quota back to the From-SO picker — same as the old trash
+     handler); a never-saved blank card just drops from the draft array. */
+  const removeLine = async (rid: string) => {
+    const l = editLines.find((x) => x.rid === rid);
+    if (!l) return;
+    if (!l.itemId) { setEditLines((prev) => prev.filter((x) => x.rid !== rid)); return; }
+    if (await askConfirm({
+      title: 'Remove this line?',
+      body: 'The line is deleted and its converted SO quantity is released back to the From-SO picker.',
+      confirmLabel: 'Remove',
+      danger: true,
+    })) {
+      deleteItem.mutate(
+        { poId: po.id, itemId: l.itemId },
+        { onSuccess: () => setEditLines((prev) => prev.filter((x) => x.rid !== rid)) },
+      );
+    }
+  };
 
   const enterEdit = () => {
     setHeaderDraft(null);
-    setLineDrafts({});
+    setEditLines(items.map(draftFromItem));
     setIsEditing(true);
   };
 
-  /* Single Save (#194) — commit header (only if touched) + every changed line's
-     field edits, then drop back to View. Back discards the field-edit draft.
-     (Line add/remove already committed server-side — see the trash handler.) */
+  /* Single Save (owner 2026-06-19) — whole-line diff. For each draft:
+       · no itemId → ADD (full payload incl. variants / materialCode / SKU)
+       · itemId + changed any field → UPDATE (full payload)
+     Deletes already fired server-side in removeLine. Then commit the header (if
+     touched) and drop back to View. */
   const handleSave = async () => {
     if (savingDraft) return;
+    // Guard: every line must reference a product before Save.
+    const blankLine = editLines.find((d) => !d.materialCode.trim());
+    if (blankLine) {
+      notify({ title: 'Every line needs a product', body: 'Pick a product for each line, or remove the empty one before saving.', tone: 'error' });
+      return;
+    }
     setSavingDraft(true);
     try {
       if (headerDraft) {
         await updateHeader.mutateAsync({ id: po.id, ...(headerDraft as Record<string, unknown>) });
       }
-      for (const it of items) {
-        const d = lineDrafts[it.id];
-        if (!d) continue;
+      const byId = new Map(items.map((it) => [it.id, it]));
+      for (const d of editLines) {
+        if (!d.itemId) {
+          // New line — full insert payload.
+          await addItem.mutateAsync({
+            poId: po.id,
+            materialKind:   d.materialKind,
+            materialCode:   d.materialCode,
+            materialName:   d.materialName || d.materialCode,
+            supplierSku:    d.supplierSku,
+            qty:            d.qty,
+            unitPriceCenti: d.unitPriceCenti,
+            bindingId:      d.bindingId,
+            discountCenti:  d.discountCenti,
+            deliveryDate:   d.deliveryDate || undefined,
+            warehouseId:    d.warehouseId  || undefined,
+            itemGroup:      d.category,
+            variants:       Object.keys(d.variants).length ? d.variants : undefined,
+            soItemId:       d.soItemId ?? null,
+          });
+          continue;
+        }
+        const it = byId.get(d.itemId);
+        if (!it) continue;
         const changed =
+          d.materialCode !== it.material_code ||
+          (d.materialName || d.materialCode) !== it.material_name ||
+          (d.supplierSku ?? '') !== (it.supplier_sku ?? '') ||
+          (d.category ?? '') !== (it.item_group ?? '') ||
           d.qty !== it.qty ||
           d.unitPriceCenti !== it.unit_price_centi ||
-          d.discountCenti !== (it.discount_centi ?? 0) ||
-          (d.deliveryDate ?? null) !== (it.delivery_date ?? null);
-        if (changed) {
-          await updateItem.mutateAsync({
-            poId: po.id, itemId: it.id,
-            qty: d.qty, unitPriceCenti: d.unitPriceCenti,
-            discountCenti: d.discountCenti, deliveryDate: d.deliveryDate,
-          });
-        }
+          (d.discountCenti ?? 0) !== (it.discount_centi ?? 0) ||
+          (d.deliveryDate ?? null) !== (it.delivery_date ?? null) ||
+          (d.warehouseId ?? null) !== (it.warehouse_id ?? null) ||
+          JSON.stringify(d.variants ?? {}) !== JSON.stringify((it.variants as Record<string, unknown> | null) ?? {});
+        if (!changed) continue;
+        await updateItem.mutateAsync({
+          poId: po.id, itemId: d.itemId,
+          materialCode:   d.materialCode,
+          materialName:   d.materialName || d.materialCode,
+          supplierSku:    d.supplierSku,
+          qty:            d.qty,
+          unitPriceCenti: d.unitPriceCenti,
+          discountCenti:  d.discountCenti ?? 0,
+          deliveryDate:   d.deliveryDate ?? null,
+          warehouseId:    d.warehouseId ?? null,
+          itemGroup:      d.category,
+          variants:       d.variants ?? {},
+        });
       }
       setIsEditing(false);
       setHeaderDraft(null);
-      setLineDrafts({});
+      setEditLines([]);
     } catch (e) {
       notify({ title: 'Save failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' });
     } finally {
@@ -459,7 +708,16 @@ export const PurchaseOrderDetail = () => {
       {/* ── Line items ──────────────────────────────────────────── */}
       <section className={styles.card}>
         <header className={styles.cardHeader}>
-          <h2 className={styles.cardTitle}>Line Items ({visibleItems.length})</h2>
+          <h2 className={styles.cardTitle}>Line Items ({isEditing ? editLines.length : visibleItems.length})</h2>
+          {/* Owner 2026-06-19 — Edit mode restores the Create UI: a "+ Add item"
+              that appends a blank PoLineCard (committed by the page-level Save).
+              Hidden while the PO is locked. */}
+          {isEditing && !isLocked && (
+            <Button variant="primary" size="sm" onClick={startAddLine}>
+              <Plus {...ICON} />
+              <span>Add item</span>
+            </Button>
+          )}
         </header>
 
         {/* SO→PO drift banner — the source SO changed after this PO was raised.
@@ -471,11 +729,45 @@ export const PurchaseOrderDetail = () => {
           </div>
         )}
 
-        {visibleItems.length === 0 ? (
+        {isEditing ? (
+          /* Whole-line inline edit (owner 2026-06-19) — every line is a
+             PoLineCard (the SAME editor as Create), all editable at once. The
+             card owns the item/SKU picker, variant selects, special orders, cost
+             auto-recompute, and the qty/price/disc/delivery/ship-to row. The ONE
+             page-level Save diffs each draft and add/update/deletes. */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', padding: 'var(--space-3)' }}>
+            {editLines.map((l, idx) => (
+              <PoLineCard
+                key={l.rid}
+                index={idx}
+                line={l}
+                currency={po.currency}
+                supplierId={poSupplierId}
+                bindings={bindings}
+                allSkus={allSkus}
+                warehouses={warehousesForLines}
+                maint={maint}
+                fabrics={fabrics}
+                specialsPools={specialsPools}
+                onChange={(patch) => patchLine(l.rid, patch)}
+                onPickBinding={(b) => pickBinding(l.rid, b)}
+                onSetVariant={(k, v) => setVariant(l.rid, k, v)}
+                /* Item-first reverse lookup is a Create-only affordance (no
+                   supplier to narrow on an existing PO) — no-op here. */
+                onPendingItemPick={() => {}}
+                onRemove={() => removeLine(l.rid)}
+                disabled={isLocked}
+              />
+            ))}
+            {editLines.length === 0 && (
+              <p className={styles.emptyRow} style={{ padding: 'var(--space-3)' }}>
+                No items yet — click "Add item" above, or "From Sales Order" to convert.
+              </p>
+            )}
+          </div>
+        ) : visibleItems.length === 0 ? (
           <p className={styles.emptyRow}>
-            {isEditing
-              ? 'No items yet — click "From Sales Order" above to add lines.'
-              : 'No items yet — click "Edit" then "From Sales Order" to add lines.'}
+            No items yet — click "Edit" then "Add item" (or "From Sales Order") to add lines.
           </p>
         ) : (
           <table className={styles.table}>
@@ -497,115 +789,39 @@ export const PurchaseOrderDetail = () => {
                     columns were dropped ("它的价钱到底是哪一个"). Keep the
                     per-line delivery date. */}
                 <th className={styles.tableRight}>Delivery</th>
-                {/* Actions column only in Edit mode — View is read-only. */}
-                {isEditing && <th className={styles.tableRight}>Actions</th>}
               </tr>
             </thead>
             <tbody>
-              {visibleItems.map((it) => {
-                const d = lineOf(it);
-                return (
-                  <tr key={it.id}>
-                    <td>
-                      {/* Commander 2026-05-29 — show the item CODE only; the
-                          variant summary stays (that's WHAT was ordered). */}
-                      <div className={styles.codeCell}>{it.material_code}</div>
-                      {(() => {
-                        const summary = buildVariantSummary(it.item_group, it.variants as Record<string, unknown> | null)
-                          || it.description
-                          || it.material_name;
-                        return summary ? <div className={styles.muted} style={{ fontSize: 'var(--fs-11)' }}>{summary}</div> : null;
-                      })()}
-                      {showDrift && it.so_drift && (
-                        <div style={{ marginTop: 3, fontSize: 'var(--fs-11)', fontWeight: 700, color: 'var(--c-danger, #b8331f)' }}>
-                          {it.so_drift.itemChanged
-                            ? <>⚠ SO 已换产品 → {it.so_drift.itemSo}(本单仍是 {it.so_drift.itemPo}),建议取消重开</>
-                            : <>⚠ SO 现规格:{it.so_drift.specSo || '—'}(本单仍是 {it.so_drift.specPo || '—'})</>}
-                        </div>
-                      )}
-                    </td>
-                    <td style={{ fontFamily: 'var(--font-mono)' }}>{it.supplier_sku?.trim() || '—'}</td>
-                    <td className={styles.muted}>{it.item_group ?? it.material_kind}</td>
-
-                    {/* Commander 2026-05-29 (#194) — Qty / Unit / Disc / Delivery
-                        are inline-editable in Edit mode (no per-line modal). */}
-                    {isEditing ? (
-                      <>
-                        <td className={styles.tableRight}>
-                          <input
-                            type="number"
-                            min={0}
-                            className={styles.fieldInput}
-                            style={{ width: 70, textAlign: 'right' }}
-                            value={d.qty}
-                            disabled={isLocked}
-                            onChange={(e) => setLine(it, { qty: Number(e.target.value) || 0 })}
-                          />
-                        </td>
-                        <td>{renderReceived(it)}</td>
-                        <td className={styles.tableRight}>
-                          <MoneyInput bare selectOnFocus inputClassName={styles.fieldInput}
-                            style={{ width: 110, textAlign: 'right' }}
-                            valueSen={d.unitPriceCenti}
-                            disabled={isLocked}
-                            onCommit={(sen) => setLine(it, { unitPriceCenti: sen ?? 0 })} />
-                        </td>
-                        <td className={styles.tableRight}>
-                          <MoneyInput bare selectOnFocus inputClassName={styles.fieldInput}
-                            style={{ width: 100, textAlign: 'right' }}
-                            valueSen={d.discountCenti}
-                            disabled={isLocked}
-                            onCommit={(sen) => setLine(it, { discountCenti: sen ?? 0 })} />
-                        </td>
-                        <td className={styles.priceCell}>{fmtRm(d.qty * d.unitPriceCenti - d.discountCenti, po.currency)}</td>
-                        <td className={styles.tableRight}>
-                          <input
-                            type="date"
-                            className={styles.fieldInput}
-                            style={{ width: 150 }}
-                            value={d.deliveryDate ?? ''}
-                            disabled={isLocked}
-                            onChange={(e) => setLine(it, { deliveryDate: e.target.value || null })}
-                          />
-                        </td>
-                        <td>
-                          <span className={styles.actionsCell}>
-                            <button type="button"
-                              className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
-                              title="Remove line" disabled={isLocked || deleteItem.isPending}
-                              /* Commander 2026-06-15 — confirm before delete (no
-                                 more 裸奔). On confirm the line is removed and its
-                                 converted SO quota is released back to the From-SO
-                                 picker. */
-                              onClick={async () => {
-                                if (isLocked) return;
-                                if (await askConfirm({
-                                  title: 'Remove this line?',
-                                  body: "The line is deleted and its converted SO quantity is released back to the From-SO picker.",
-                                  confirmLabel: 'Remove',
-                                  danger: true,
-                                })) {
-                                  deleteItem.mutate({ poId: po.id, itemId: it.id });
-                                }
-                              }}>
-                              <Trash2 {...SM_ICON} />
-                            </button>
-                          </span>
-                        </td>
-                      </>
-                    ) : (
-                      <>
-                        <td className={styles.tableRight}>{it.qty}</td>
-                        <td>{renderReceived(it)}</td>
-                        <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, po.currency)}</td>
-                        <td className={styles.tableRight}>{(it.discount_centi ?? 0) > 0 ? fmtRm(it.discount_centi, po.currency) : '—'}</td>
-                        <td className={styles.priceCell}>{fmtRm(it.line_total_centi, po.currency)}</td>
-                        <td className={styles.tableRight}>{it.delivery_date ?? '—'}</td>
-                      </>
+              {visibleItems.map((it) => (
+                <tr key={it.id}>
+                  <td>
+                    {/* Commander 2026-05-29 — show the item CODE only; the
+                        variant summary stays (that's WHAT was ordered). */}
+                    <div className={styles.codeCell}>{it.material_code}</div>
+                    {(() => {
+                      const summary = buildVariantSummary(it.item_group, it.variants as Record<string, unknown> | null)
+                        || it.description
+                        || it.material_name;
+                      return summary ? <div className={styles.muted} style={{ fontSize: 'var(--fs-11)' }}>{summary}</div> : null;
+                    })()}
+                    {showDrift && it.so_drift && (
+                      <div style={{ marginTop: 3, fontSize: 'var(--fs-11)', fontWeight: 700, color: 'var(--c-danger, #b8331f)' }}>
+                        {it.so_drift.itemChanged
+                          ? <>⚠ SO 已换产品 → {it.so_drift.itemSo}(本单仍是 {it.so_drift.itemPo}),建议取消重开</>
+                          : <>⚠ SO 现规格:{it.so_drift.specSo || '—'}(本单仍是 {it.so_drift.specPo || '—'})</>}
+                      </div>
                     )}
-                  </tr>
-                );
-              })}
+                  </td>
+                  <td style={{ fontFamily: 'var(--font-mono)' }}>{it.supplier_sku?.trim() || '—'}</td>
+                  <td className={styles.muted}>{it.item_group ?? it.material_kind}</td>
+                  <td className={styles.tableRight}>{it.qty}</td>
+                  <td>{renderReceived(it)}</td>
+                  <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, po.currency)}</td>
+                  <td className={styles.tableRight}>{(it.discount_centi ?? 0) > 0 ? fmtRm(it.discount_centi, po.currency) : '—'}</td>
+                  <td className={styles.priceCell}>{fmtRm(it.line_total_centi, po.currency)}</td>
+                  <td className={styles.tableRight}>{it.delivery_date ?? '—'}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}

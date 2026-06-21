@@ -44,7 +44,12 @@
 // v9 (2026-06-21): nav labels aligned 1:1 with 2990 — Consignment items to
 // singular + full "Purchase Consignment ..." names; dropped Product Models +
 // Fabric Tracking from Procurement (tabs-in-Products in 2990, not nav items).
-const VERSION = "houzs-erp-v9";
+// v10 (2026-06-21): T12 detail-page re-vendor (PO/PI/GRN/PR/PCO/PC-recv/PC-ret
+// now edit product/variants + add lines) + PoLineCard/PcLineCard; dialog
+// z-index, SI description2, SofaComboTab bulk/grid, ProductModels SKUs col;
+// removed Order Add-ons tab + One-shot badge (Houzs unused). Backend: reports +
+// so-dropdown-options routes mounted; 0022 seeds 2990 reference data on deploy.
+const VERSION = "houzs-erp-v10";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

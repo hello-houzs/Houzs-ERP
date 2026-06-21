@@ -3,29 +3,39 @@
 //
 // Faithful clone of PurchaseOrderDetail.tsx: a draft-style View → Edit →
 // Save/Back machine. It reuses the SAME shared components UNCHANGED —
-// MoneyInput, the supplier picker + supplier / warehouse data hooks — and the
-// SAME header card + inline line editor. Only the queries are repointed at
-// `/purchase-consignment-orders` (the pc-order hooks) and links go back to
-// /purchase-consignment.
+// MoneyInput, the supplier picker + supplier / warehouse data hooks — and (T12)
+// the SAME rich line editor as Create via the shared PcLineCard.
+//
+// T12 (owner 2026-06-19) — Edit mode now drives one PcLineCard per line, the SAME
+// rich editor as Create (mirrors PurchaseOrderDetail). PCO is the free-entry head
+// of the consignment family, so Edit gets a "+ add item" too. The single top Save
+// diffs each draft and add/update/deletes via the pc-order item hooks. PcLineCard
+// wraps the shared PcVariantEditor (never PoLineCard — that's reserved for PO/PI).
 //
 // Dropped from the PO clone (per scope): the "From Sales Order" picker, the
 // per-line "Received (GRN)" breakdown column (consignment receiving lives on
 // the parallel Purchase Consignment Receive flow), Print PDF + Relationship Map
-// (the flow-graph + PDF engines don't model the consignment doc types). The
-// Receive Goods / Raise Return actions point at the parallel consignment
-// receive / return New pages.
+// stay (vendored). Receive Goods / Raise Return point at the parallel
+// consignment receive / return New pages.
+//
+// HOUZS mig-0181 caveat: Houzs's consignment schema lacks the
+// supplier_delivery_date_2/3/4 columns. PcLineCard's per-line "Supplier Date
+// 2/3/4" inputs ride the draft only (display-only, harmless). At the PAGE level
+// we do NOT read or send those columns — no header 0181 fields, no
+// effectiveDelivery "revised" display; Expected Delivery is plain expected_at.
 // ----------------------------------------------------------------------------
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ArrowLeft, FileText, Pencil, Printer, Trash2, Save, Ban, ChevronDown,
+  ArrowLeft, FileText, Pencil, Plus, Printer, Trash2, Save, Ban, ChevronDown,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { buildVariantSummary } from '@2990s/shared';
 import {
   usePurchaseConsignmentOrderDetail,
   useUpdatePurchaseConsignmentOrderHeader,
+  useAddPurchaseConsignmentOrderItem,
   useUpdatePurchaseConsignmentOrderItem,
   useDeletePurchaseConsignmentOrderItem,
   useCancelPurchaseConsignmentOrder,
@@ -34,11 +44,19 @@ import {
 import {
   useSuppliers,
   useSupplierDetail,
+  type BindingRow,
   type PoItemRow,
   type SupplierRow,
 } from '../../vendor/scm/lib/suppliers-queries';
+import { useMfgProducts, useMaintenanceConfig } from '../../vendor/scm/lib/mfg-products-queries';
+import { useFabricTrackings } from '../../vendor/scm/lib/fabric-queries';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
-import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
+import {
+  computeMfgPoUnitCost,
+  type MfgFabricTier,
+  type PoPriceMatrix,
+} from '@2990s/shared/mfg-pricing';
+import { PcLineCard, emptyPcLine, type PcLineDraft } from '../../vendor/scm/components/PcLineCard';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
@@ -47,7 +65,6 @@ import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
-const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
 
 const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string => {
   const v = centi ?? 0;
@@ -64,28 +81,42 @@ type HeaderDraft = {
   notes: string;
   purchaseLocationId: string;
 };
-type LineDraft = {
-  qty: number;
-  unitPriceCenti: number;
-  discountCenti: number;
-  deliveryDate: string | null;
-};
+
+/* Whole-line edit (T12) — Edit mode drives one PcLineCard per line, the SAME rich
+   editor as Create. EditLine = the shared PcLineDraft + the persisted item id
+   (absent on a freshly-added blank card). */
+type EditLine = PcLineDraft & { itemId?: string };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const headerSnapshot = (p: any): HeaderDraft => ({
-  supplierId:         p.supplier_id ?? '',
-  poDate:             p.po_date ?? '',
-  expectedAt:         p.expected_at ?? '',
-  currency:           p.currency ?? 'MYR',
-  notes:              p.notes ?? '',
-  purchaseLocationId: p.purchase_location_id ?? '',
+  supplierId:            p.supplier_id ?? '',
+  poDate:                p.po_date ?? '',
+  expectedAt:            p.expected_at ?? '',
+  currency:              p.currency ?? 'MYR',
+  notes:                 p.notes ?? '',
+  purchaseLocationId:    p.purchase_location_id ?? '',
 });
 
-const lineSnapshot = (it: PoItemRow): LineDraft => ({
+/* Map a persisted PCO line → an editable PcLineCard draft. mig-0181: Houzs lacks
+   supplier_delivery_date_2/3/4 on the line, so we don't read them here. */
+const draftFromItem = (it: PoItemRow): EditLine => ({
+  rid:            `i${it.id}`,
+  itemId:         it.id,
+  bindingId:      it.binding_id ?? undefined,
+  materialKind:   it.material_kind,
+  materialCode:   it.material_code,
+  materialName:   it.material_name,
+  supplierSku:    it.supplier_sku ?? undefined,
   qty:            it.qty,
   unitPriceCenti: it.unit_price_centi,
   discountCenti:  it.discount_centi ?? 0,
-  deliveryDate:   it.delivery_date ?? null,
+  deliveryDate:   it.delivery_date ?? undefined,
+  warehouseId:    it.warehouse_id ?? undefined,
+  category:       it.item_group ?? undefined,
+  variants:       (it.variants as Record<string, unknown> | null) ?? {},
+  /* An existing line's stored price is authoritative — don't let the cost
+     auto-recompute clobber it on enter-edit. Editing variants re-arms it. */
+  priceTouched:   true,
 });
 
 export const PurchaseConsignmentOrderDetail = () => {
@@ -95,19 +126,45 @@ export const PurchaseConsignmentOrderDetail = () => {
   const updateHeader = useUpdatePurchaseConsignmentOrderHeader();
   const cancel = useCancelPurchaseConsignmentOrder();
   const deletePo = useDeletePurchaseConsignmentOrder();
+  const addItem = useAddPurchaseConsignmentOrderItem();
   const updateItem = useUpdatePurchaseConsignmentOrderItem();
   const deleteItem = useDeletePurchaseConsignmentOrderItem();
   const askConfirm = useConfirm();
   const notify = useNotify();
 
   const po = detail.data?.purchaseOrder ?? null;
-  const items = detail.data?.items ?? [];
+  /* Memoised so the edit-mode seed + cost-recompute effects don't re-fire on
+     every render. */
+  const items = useMemo(() => detail.data?.items ?? [], [detail.data?.items]);
+
+  /* ── Whole-line editor data (T12) — the SAME lookups Create uses so PcLineCard
+     renders identically in Edit. Bindings come from the PCO's supplier; allSkus
+     is the catalogue fallback; maint + fabrics drive the variant dropdowns. */
+  const poSupplierId = po?.supplier_id ?? '';
+  const supplierDetailQ = useSupplierDetail(poSupplierId || null);
+  const bindings = useMemo(() => supplierDetailQ.data?.bindings ?? [], [supplierDetailQ.data?.bindings]);
+  const allSkusQ = useMfgProducts();
+  const allSkus = useMemo(() => allSkusQ.data ?? [], [allSkusQ.data]);
+  const warehousesQ = useWarehouses();
+  const warehousesForLines = warehousesQ.data ?? [];
+  const supplierMaintQ = useMaintenanceConfig(
+    poSupplierId ? `supplier:${poSupplierId}` : '',
+    { enabled: Boolean(poSupplierId) },
+  );
+  const masterMaintQ = useMaintenanceConfig('master', {
+    enabled: !poSupplierId || !supplierMaintQ.data?.data,
+  });
+  const maint = supplierMaintQ.data?.data ?? masterMaintQ.data?.data ?? null;
+  const fabrics = useFabricTrackings().data ?? [];
+
+  const categoryForCode = (code: string): string | undefined =>
+    allSkus.find((p) => p.code === code)?.category.toLowerCase();
 
   const [searchParams] = useSearchParams();
   const [isEditing, setIsEditing] = useState(() => searchParams.get('edit') === '1');
 
   const [headerDraft, setHeaderDraft] = useState<HeaderDraft | null>(null);
-  const [lineDrafts, setLineDrafts] = useState<Record<string, LineDraft>>({});
+  const [editLines, setEditLines] = useState<EditLine[]>([]);
   const [savingDraft, setSavingDraft] = useState(false);
 
   const hasChildren = Boolean(po?.has_children);
@@ -118,9 +175,74 @@ export const PurchaseConsignmentOrderDetail = () => {
     if (isLocked && isEditing) {
       setIsEditing(false);
       setHeaderDraft(null);
-      setLineDrafts({});
+      setEditLines([]);
     }
   }, [isLocked, isEditing]);
+
+  /* Seed/clear the whole-line drafts (T12) — entering Edit populates a PcLineCard
+     draft for EVERY current line; leaving Edit wipes them. */
+  useEffect(() => {
+    if (!isEditing) { setEditLines([]); return; }
+    setEditLines(items.map(draftFromItem));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, items]);
+
+  /* Cost auto-recompute (mirrors Create) — resolve a line's supplier price
+     matrix + maintenance surcharges into a unit cost. A manually-touched line
+     keeps its typed value. */
+  const fabricTierForLine = (line: EditLine): MfgFabricTier | null => {
+    const code = String(line.variants.fabricCode ?? '');
+    if (!code) return null;
+    const f = fabrics.find((x) => x.fabric_code === code);
+    if (!f) return null;
+    const cat = line.category?.toLowerCase();
+    if (cat === 'sofa')     return f.sofa_price_tier ?? f.price_tier ?? null;
+    if (cat === 'bedframe') return f.bedframe_price_tier ?? f.price_tier ?? null;
+    return null;
+  };
+  const recomputeLineCost = (line: EditLine): number => {
+    const binding = line.bindingId
+      ? bindings.find((b) => b.id === line.bindingId)
+      : bindings.find((b) => b.material_code === line.materialCode);
+    if (!binding) return line.unitPriceCenti;
+    const category = (line.category?.toUpperCase() ?? '') as
+      'BEDFRAME' | 'SOFA' | 'MATTRESS' | 'ACCESSORY' | 'SERVICE' | '';
+    if (!category) return binding.unit_price_centi;
+    const v = line.variants;
+    const specials = Array.isArray(v.specials) ? (v.specials as string[]) : [];
+    const breakdown = computeMfgPoUnitCost(
+      {
+        category,
+        priceMatrix:    (binding.price_matrix ?? null) as PoPriceMatrix,
+        unitPriceCenti: binding.unit_price_centi,
+        fabricTier:     fabricTierForLine(line),
+        seatSize:       category === 'SOFA' ? (v.seatHeight as string | undefined) ?? null : null,
+        divanHeight:    (v.divanHeight as string | undefined) ?? null,
+        legHeight:      category === 'BEDFRAME' ? (v.legHeight as string | undefined) ?? null : null,
+        sofaLegHeight:  category === 'SOFA' ? (v.legHeight as string | undefined) ?? null : null,
+        totalHeight:    (v.totalHeight as string | undefined) ?? null,
+        specials,
+      },
+      maint,
+    );
+    return breakdown.unitPriceSen;
+  };
+
+  useEffect(() => {
+    if (!isEditing) return;
+    setEditLines((prev) => {
+      let changed = false;
+      const next = prev.map((l) => {
+        if (l.priceTouched) return l;
+        const cost = recomputeLineCost(l);
+        if (cost === l.unitPriceCenti) return l;
+        changed = true;
+        return { ...l, unitPriceCenti: cost };
+      });
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, bindings, fabrics, maint, editLines]);
 
   if (detail.isLoading) {
     return <SkeletonDetailPage />;
@@ -145,9 +267,6 @@ export const PurchaseConsignmentOrderDetail = () => {
   /* Per-line "Received" drill-down — which PC Receive took how much (backend
      attaches `receipts` per item via pcoLineReceipts). Mirrors the PO detail. */
   const renderReceived = (it: PoItemRow) => {
-    // The PC Order detail backend returns `receipts` keyed by receiveNumber
-    // (PcoLineReceipt), distinct from the shared PoItemRow.receipts (grnNumber) —
-    // cast through unknown to override that field shape.
     const row = it as unknown as {
       qty?: number;
       received_qty?: number;
@@ -173,13 +292,10 @@ export const PurchaseConsignmentOrderDetail = () => {
     );
   };
 
-  const lineOf = (it: PoItemRow): LineDraft => lineDrafts[it.id] ?? lineSnapshot(it);
-  const lineTotalOf = (it: PoItemRow): number => {
-    if (!isEditing) return it.line_total_centi ?? 0;
-    const d = lineOf(it);
-    return d.qty * d.unitPriceCenti - d.discountCenti;
-  };
-  const itemsSubtotal = visibleItems.reduce((s, it) => s + lineTotalOf(it), 0);
+  /* Totals — in Edit, sum the live editLines; in View, the stored line totals. */
+  const itemsSubtotal = isEditing
+    ? editLines.reduce((s, d) => s + Math.max(0, d.qty * d.unitPriceCenti - (d.discountCenti ?? 0)), 0)
+    : visibleItems.reduce((s, it) => s + (it.line_total_centi ?? 0), 0);
   const grandTotal = itemsSubtotal + (po.tax_centi ?? 0);
 
   const headerView = headerDraft ?? headerSnapshot(po);
@@ -193,52 +309,154 @@ export const PurchaseConsignmentOrderDetail = () => {
 
   const setHeaderField = (k: keyof HeaderDraft, v: string) => {
     setHeaderDraft((h) => ({ ...(h ?? headerSnapshot(po)), [k]: v }));
+    // Header Expected Delivery cascades to every line's delivery date.
     if (k === 'expectedAt') {
-      setLineDrafts((prev) => {
-        const next = { ...prev };
-        for (const it of items) {
-          next[it.id] = { ...(prev[it.id] ?? lineSnapshot(it)), deliveryDate: v || null };
-        }
-        return next;
-      });
+      setEditLines((prev) => prev.map((d) => ({ ...d, deliveryDate: v || undefined })));
     }
   };
 
-  const setLine = (it: PoItemRow, patch: Partial<LineDraft>) =>
-    setLineDrafts((prev) => ({ ...prev, [it.id]: { ...(prev[it.id] ?? lineSnapshot(it)), ...patch } }));
+  /* Patch one editLine by rid (mirrors Create's setLine). */
+  const patchLine = (rid: string, patch: Partial<EditLine>) =>
+    setEditLines((prev) => prev.map((l) => (l.rid === rid ? { ...l, ...patch } : l)));
+
+  /* Adopt a supplier binding into a line (mirrors Create's pickBinding). */
+  const pickBinding = (rid: string, b: BindingRow) =>
+    patchLine(rid, {
+      bindingId:      b.id,
+      materialKind:   b.material_kind,
+      materialCode:   b.material_code,
+      materialName:   b.material_name,
+      supplierSku:    b.supplier_sku,
+      unitPriceCenti: b.unit_price_centi,
+      category:       categoryForCode(b.material_code),
+      priceTouched:   false,
+    });
+
+  /* Patch one variant key + auto-compute bedframe Total Height, mirroring
+     Create's setVariant. Editing a variant re-arms the cost auto-recompute. */
+  const parseInches = (s: unknown): number => {
+    if (s == null) return 0;
+    const m = String(s).match(/(-?\d+(?:\.\d+)?)/);
+    return m && m[1] ? Number(m[1]) : 0;
+  };
+  const setVariant = (rid: string, k: string, v: unknown) =>
+    setEditLines((prev) => prev.map((l) => {
+      if (l.rid !== rid) return l;
+      const variants: Record<string, unknown> = { ...l.variants, [k]: v };
+      if (l.category === 'bedframe' && (k === 'divanHeight' || k === 'legHeight' || k === 'gap')) {
+        const d = parseInches(variants.divanHeight);
+        const lg = parseInches(variants.legHeight);
+        const g = parseInches(variants.gap);
+        variants.totalHeight = (d === 0 && lg === 0 && g === 0) ? '' : `${d + lg + g}"`;
+      }
+      return { ...l, variants, priceTouched: false };
+    }));
+
+  /* Append a fresh blank PcLineCard (PCO is the free-entry head) — seeded with
+     the header's default ship-to + expected delivery. Committed by the page Save. */
+  const startAddLine = () =>
+    setEditLines((prev) => [...prev, {
+      ...emptyPcLine(),
+      warehouseId:  po.purchase_location_id ?? undefined,
+      deliveryDate: headerView.expectedAt || undefined,
+    }]);
+
+  /* Remove a line. A persisted line fires the delete mutation immediately; a
+     never-saved blank card just drops from the draft array. */
+  const removeLine = async (rid: string) => {
+    const l = editLines.find((x) => x.rid === rid);
+    if (!l) return;
+    if (!l.itemId) { setEditLines((prev) => prev.filter((x) => x.rid !== rid)); return; }
+    if (await askConfirm({
+      title: 'Remove this line?',
+      body: 'The line is removed from this consignment order.',
+      confirmLabel: 'Remove',
+      danger: true,
+    })) {
+      deleteItem.mutate(
+        { poId: po.id, itemId: l.itemId },
+        { onSuccess: () => setEditLines((prev) => prev.filter((x) => x.rid !== rid)) },
+      );
+    }
+  };
 
   const enterEdit = () => {
     setHeaderDraft(null);
-    setLineDrafts({});
+    setEditLines(items.map(draftFromItem));
     setIsEditing(true);
   };
 
+  /* Single Save (T12) — whole-line diff. For each draft:
+       · no itemId → ADD (full payload incl. variants / materialCode / SKU)
+       · itemId + changed any field → UPDATE (full payload)
+     Deletes already fired server-side in removeLine. Then commit the header (if
+     touched) and drop back to View.
+
+     HOUZS mig-0181: no supplier_delivery_date_2/3/4 in the payload (those
+     columns don't exist on Houzs's consignment schema). */
   const handleSave = async () => {
     if (savingDraft) return;
+    const blankLine = editLines.find((d) => !d.materialCode.trim());
+    if (blankLine) {
+      notify({ title: 'Every line needs a product', body: 'Pick a product for each line, or remove the empty one before saving.', tone: 'error' });
+      return;
+    }
     setSavingDraft(true);
     try {
       if (headerDraft) {
         await updateHeader.mutateAsync({ id: po.id, ...(headerDraft as Record<string, unknown>) });
       }
-      for (const it of items) {
-        const d = lineDrafts[it.id];
-        if (!d) continue;
+      const byId = new Map(items.map((it) => [it.id, it]));
+      for (const d of editLines) {
+        if (!d.itemId) {
+          await addItem.mutateAsync({
+            poId: po.id,
+            materialKind:   d.materialKind,
+            materialCode:   d.materialCode,
+            materialName:   d.materialName || d.materialCode,
+            supplierSku:    d.supplierSku,
+            qty:            d.qty,
+            unitPriceCenti: d.unitPriceCenti,
+            bindingId:      d.bindingId,
+            discountCenti:  d.discountCenti,
+            deliveryDate:   d.deliveryDate || undefined,
+            warehouseId:    d.warehouseId  || undefined,
+            itemGroup:      d.category,
+            variants:       Object.keys(d.variants).length ? d.variants : undefined,
+          });
+          continue;
+        }
+        const it = byId.get(d.itemId);
+        if (!it) continue;
         const changed =
+          d.materialCode !== it.material_code ||
+          (d.materialName || d.materialCode) !== it.material_name ||
+          (d.supplierSku ?? '') !== (it.supplier_sku ?? '') ||
+          (d.category ?? '') !== (it.item_group ?? '') ||
           d.qty !== it.qty ||
           d.unitPriceCenti !== it.unit_price_centi ||
-          d.discountCenti !== (it.discount_centi ?? 0) ||
-          (d.deliveryDate ?? null) !== (it.delivery_date ?? null);
-        if (changed) {
-          await updateItem.mutateAsync({
-            poId: po.id, itemId: it.id,
-            qty: d.qty, unitPriceCenti: d.unitPriceCenti,
-            discountCenti: d.discountCenti, deliveryDate: d.deliveryDate,
-          });
-        }
+          (d.discountCenti ?? 0) !== (it.discount_centi ?? 0) ||
+          (d.deliveryDate ?? null) !== (it.delivery_date ?? null) ||
+          (d.warehouseId ?? null) !== (it.warehouse_id ?? null) ||
+          JSON.stringify(d.variants ?? {}) !== JSON.stringify((it.variants as Record<string, unknown> | null) ?? {});
+        if (!changed) continue;
+        await updateItem.mutateAsync({
+          poId: po.id, itemId: d.itemId,
+          materialCode:   d.materialCode,
+          materialName:   d.materialName || d.materialCode,
+          supplierSku:    d.supplierSku,
+          qty:            d.qty,
+          unitPriceCenti: d.unitPriceCenti,
+          discountCenti:  d.discountCenti ?? 0,
+          deliveryDate:   d.deliveryDate ?? null,
+          warehouseId:    d.warehouseId ?? null,
+          itemGroup:      d.category,
+          variants:       d.variants ?? {},
+        });
       }
       setIsEditing(false);
       setHeaderDraft(null);
-      setLineDrafts({});
+      setEditLines([]);
     } catch (e) {
       notify({ title: 'Save failed', body: e instanceof Error ? e.message : String(e), tone: 'error' });
     } finally {
@@ -356,15 +574,50 @@ export const PurchaseConsignmentOrderDetail = () => {
       {/* ── Line items ──────────────────────────────────────────── */}
       <section className={styles.card}>
         <header className={styles.cardHeader}>
-          <h2 className={styles.cardTitle}>Line Items ({visibleItems.length})</h2>
+          <h2 className={styles.cardTitle}>Line Items ({isEditing ? editLines.length : visibleItems.length})</h2>
+          {/* T12 — Edit mode restores the Create UI: a "+ Add item" that appends a
+              blank PcLineCard (PCO is the free-entry head). Hidden while locked. */}
+          {isEditing && !isLocked && (
+            <Button variant="primary" size="sm" onClick={startAddLine}>
+              <Plus {...ICON} />
+              <span>Add item</span>
+            </Button>
+          )}
         </header>
 
-        {visibleItems.length === 0 ? (
-          <p className={styles.emptyRow}>
-            {isEditing
-              ? 'No items yet — click "Edit" then add items.'
-              : 'No items yet.'}
-          </p>
+        {isEditing ? (
+          /* Whole-line inline edit (T12) — every line is a PcLineCard (the SAME
+             editor as Create). The ONE page-level Save diffs each draft and
+             add/update/deletes. */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', padding: 'var(--space-3)' }}>
+            {editLines.map((l, idx) => (
+              <PcLineCard
+                key={l.rid}
+                index={idx}
+                line={l}
+                currency={po.currency}
+                supplierId={poSupplierId}
+                bindings={bindings}
+                allSkus={allSkus}
+                warehouses={warehousesForLines}
+                maint={maint}
+                fabrics={fabrics}
+                onChange={(patch) => patchLine(l.rid, patch)}
+                onPickBinding={(b) => pickBinding(l.rid, b)}
+                onSetVariant={(k, v) => setVariant(l.rid, k, v)}
+                onPendingItemPick={() => {}}
+                onRemove={() => removeLine(l.rid)}
+                disabled={isLocked}
+              />
+            ))}
+            {editLines.length === 0 && (
+              <p className={styles.emptyRow} style={{ padding: 'var(--space-3)' }}>
+                No items yet — click "Add item" above.
+              </p>
+            )}
+          </div>
+        ) : visibleItems.length === 0 ? (
+          <p className={styles.emptyRow}>No items yet.</p>
         ) : (
           <table className={styles.table}>
             <thead>
@@ -376,100 +629,30 @@ export const PurchaseConsignmentOrderDetail = () => {
                 <th className={styles.tableRight}>Disc</th>
                 <th className={styles.tableRight}>Total</th>
                 <th className={styles.tableRight}>Delivery</th>
-                {!isEditing && <th>Received</th>}
-                {isEditing && <th className={styles.tableRight}>Actions</th>}
+                <th>Received</th>
               </tr>
             </thead>
             <tbody>
-              {visibleItems.map((it) => {
-                const d = lineOf(it);
-                return (
-                  <tr key={it.id}>
-                    <td>
-                      <div className={styles.codeCell}>{it.material_code}</div>
-                      {(() => {
-                        const summary = buildVariantSummary(it.item_group, it.variants as Record<string, unknown> | null)
-                          || it.description
-                          || it.material_name;
-                        return summary ? <div className={styles.muted} style={{ fontSize: 'var(--fs-11)' }}>{summary}</div> : null;
-                      })()}
-                    </td>
-                    <td className={styles.muted}>{it.item_group ?? it.material_kind}</td>
-
-                    {isEditing ? (
-                      <>
-                        <td className={styles.tableRight}>
-                          <input
-                            type="number"
-                            min={0}
-                            className={styles.fieldInput}
-                            style={{ width: 70, textAlign: 'right' }}
-                            value={d.qty}
-                            disabled={isLocked}
-                            onChange={(e) => setLine(it, { qty: Number(e.target.value) || 0 })}
-                          />
-                        </td>
-                        <td className={styles.tableRight}>
-                          <MoneyInput bare selectOnFocus inputClassName={styles.fieldInput}
-                            style={{ width: 110, textAlign: 'right' }}
-                            valueSen={d.unitPriceCenti}
-                            disabled={isLocked}
-                            onCommit={(sen) => setLine(it, { unitPriceCenti: sen ?? 0 })} />
-                        </td>
-                        <td className={styles.tableRight}>
-                          <MoneyInput bare selectOnFocus inputClassName={styles.fieldInput}
-                            style={{ width: 100, textAlign: 'right' }}
-                            valueSen={d.discountCenti}
-                            disabled={isLocked}
-                            onCommit={(sen) => setLine(it, { discountCenti: sen ?? 0 })} />
-                        </td>
-                        <td className={styles.priceCell}>{fmtRm(d.qty * d.unitPriceCenti - d.discountCenti, po.currency)}</td>
-                        <td className={styles.tableRight}>
-                          <input
-                            type="date"
-                            className={styles.fieldInput}
-                            style={{ width: 150 }}
-                            value={d.deliveryDate ?? ''}
-                            disabled={isLocked}
-                            onChange={(e) => setLine(it, { deliveryDate: e.target.value || null })}
-                          />
-                        </td>
-                        <td>
-                          <span className={styles.actionsCell}>
-                            <button type="button"
-                              className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
-                              title="Remove line" disabled={isLocked || deleteItem.isPending}
-                              /* Commander 2026-06-15 — confirm before delete (no
-                                 more 裸奔). */
-                              onClick={async () => {
-                                if (isLocked) return;
-                                if (await askConfirm({
-                                  title: 'Remove this line?',
-                                  body: "The line is removed from this consignment order.",
-                                  confirmLabel: 'Remove',
-                                  danger: true,
-                                })) {
-                                  deleteItem.mutate({ poId: po.id, itemId: it.id });
-                                }
-                              }}>
-                              <Trash2 {...SM_ICON} />
-                            </button>
-                          </span>
-                        </td>
-                      </>
-                    ) : (
-                      <>
-                        <td className={styles.tableRight}>{it.qty}</td>
-                        <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, po.currency)}</td>
-                        <td className={styles.tableRight}>{(it.discount_centi ?? 0) > 0 ? fmtRm(it.discount_centi, po.currency) : '—'}</td>
-                        <td className={styles.priceCell}>{fmtRm(it.line_total_centi, po.currency)}</td>
-                        <td className={styles.tableRight}>{it.delivery_date ?? '—'}</td>
-                        <td>{renderReceived(it)}</td>
-                      </>
-                    )}
-                  </tr>
-                );
-              })}
+              {visibleItems.map((it) => (
+                <tr key={it.id}>
+                  <td>
+                    <div className={styles.codeCell}>{it.material_code}</div>
+                    {(() => {
+                      const summary = buildVariantSummary(it.item_group, it.variants as Record<string, unknown> | null)
+                        || it.description
+                        || it.material_name;
+                      return summary ? <div className={styles.muted} style={{ fontSize: 'var(--fs-11)' }}>{summary}</div> : null;
+                    })()}
+                  </td>
+                  <td className={styles.muted}>{it.item_group ?? it.material_kind}</td>
+                  <td className={styles.tableRight}>{it.qty}</td>
+                  <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, po.currency)}</td>
+                  <td className={styles.tableRight}>{(it.discount_centi ?? 0) > 0 ? fmtRm(it.discount_centi, po.currency) : '—'}</td>
+                  <td className={styles.priceCell}>{fmtRm(it.line_total_centi, po.currency)}</td>
+                  <td className={styles.tableRight}>{it.delivery_date ?? '—'}</td>
+                  <td>{renderReceived(it)}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}
@@ -546,6 +729,8 @@ const SupplierCard = ({
             <InfoCell label="Currency" value={po.currency || null} />
             <div />
             <InfoCell label="Date" value={po.po_date || null} />
+            {/* HOUZS mig-0181: plain expected_at — no effectiveDelivery "revised"
+                display (Houzs lacks the supplier_delivery_date_2/3/4 columns). */}
             <InfoCell label="Expected Delivery" value={po.expected_at || null} />
             <InfoCell label="Purchase Location"
               value={(() => {
