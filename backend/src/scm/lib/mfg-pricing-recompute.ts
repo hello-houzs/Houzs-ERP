@@ -48,6 +48,7 @@ import {
   type FabricTierAddonConfig,
   type FabricTierModelOverride,
 } from '../shared/fabric-tier-addon';
+import { resolveFabricTierOverride } from '../shared/fabric-tier-override-resolve';
 import { type PwpRule } from '../shared/pwp';
 import { parseDefaultFreeGifts, type DefaultFreeGift, type FreeItemCampaign, parseFreeItemEligible } from '../shared';
 
@@ -161,6 +162,10 @@ export type ProductRowLite = {
   /** product_models.id — the route's resolvePwp matches this against a rule's
    *  eligible model lists. Optional for the same reason as pwp_price_sen. */
   model_id?:          string | null;
+  /** mfg_products.size_code — POPULATED for mattress/bedframe, NULL for sofa
+   *  modules. The special-delivery-fee `variant` scope (migration 0024) matches
+   *  on it. Optional: legacy/test snapshots may omit it. */
+  size_code?:         string | null;
   /** SO-SKU spec P5 — free-text brand label (mainly MATTRESS SKUs). Snapshotted
    *  onto each SO line at create so the Detail Listing's Branding column lights
    *  per line. Optional: legacy/test snapshots may omit it. */
@@ -258,6 +263,13 @@ export function recomputeFromSnapshot(
    *  → global (back-compatible). Resolved here so every caller only passes the
    *  map (loaded once). Selling-only; POS resolves the same map by model_id. */
   modelFabricOverrides: Map<string, FabricTierModelOverride> | null = null,
+  /** Per-compartment fabric-tier Δ overrides (migration 0025), keyed by
+   *  compartment_id. For a SOFA custom build, the effective Δ per tier is the
+   *  MAX over the SET special values (the Model override + every override whose
+   *  compartment code is in the build's cells); resolved via the shared
+   *  resolveFabricTierOverride so POS and server agree. null map → model-only
+   *  path (back-compatible). Quick-Pick bundles + non-sofa lines: model only. */
+  compartmentFabricOverrides: Map<string, FabricTierModelOverride> | null = null,
 ): RecomputedLine {
   const category = toMfgCategory(item.itemGroup, product?.category ?? '');
   const variants = item.variants ?? {};
@@ -489,9 +501,20 @@ export function recomputeFromSnapshot(
     : category === 'BEDFRAME'
       ? (sellingFabricTiers?.bedframeTier ?? null)
       : null;
-  const modelOverride = (modelFabricOverrides && product?.model_id)
+  const baseModelOverride = (modelFabricOverrides && product?.model_id)
     ? (modelFabricOverrides.get(product.model_id) ?? null)
     : null;
+  // migration 0025 — fold the Model override with any matching per-compartment
+  // Δ (MAX per tier) over the custom build's cells. Quick-Pick / non-sofa lines
+  // have no cells → empty list → resolve returns the Model override unchanged.
+  const buildCompartments = (category === 'SOFA' && Array.isArray(sofaCells))
+    ? (sofaCells as Array<{ moduleId?: unknown }>).map((cl) => String(cl?.moduleId ?? '')).filter(Boolean)
+    : [];
+  const modelOverride = resolveFabricTierOverride(
+    buildCompartments,
+    baseModelOverride,
+    compartmentFabricOverrides ?? new Map(),
+  );
   const fabricAddonCenti = (fabricAddonConfig && (category === 'SOFA' || category === 'BEDFRAME'))
     ? fabricTierAddon(category, sellingTier, fabricAddonConfig, modelOverride) * 100
     : 0;
@@ -573,7 +596,7 @@ export async function loadProductByCode(sb: any, code: string): Promise<ProductR
   if (!code) return null;
   const { data } = await sb
     .from('mfg_products')
-    .select('code, category, base_price_sen, price1_sen, cost_price_sen, seat_height_prices, sell_price_sen, pwp_price_sen, model_id, base_model, branding, default_free_gifts')
+    .select('code, category, base_price_sen, price1_sen, cost_price_sen, seat_height_prices, sell_price_sen, pwp_price_sen, model_id, size_code, base_model, branding, default_free_gifts')
     .eq('code', code)
     .maybeSingle();
   if (!data) return null;
@@ -590,7 +613,7 @@ export async function loadProductsByCodes(sb: any, codes: Array<string | null | 
   if (uniq.length === 0) return new Map();
   const { data } = await sb
     .from('mfg_products')
-    .select('code, category, base_price_sen, price1_sen, cost_price_sen, seat_height_prices, sell_price_sen, pwp_price_sen, model_id, base_model, branding, default_free_gifts')
+    .select('code, category, base_price_sen, price1_sen, cost_price_sen, seat_height_prices, sell_price_sen, pwp_price_sen, model_id, size_code, base_model, branding, default_free_gifts')
     .in('code', uniq);
   return new Map((((data as ProductRowLite[]) ?? [])).map((r) => [r.code, r]));
 }
@@ -807,6 +830,25 @@ export async function loadModelFabricTierOverrides(
   return new Map(rows.map((r) => [r.model_id, { tier2Delta: r.tier2_delta, tier3Delta: r.tier3_delta }]));
 }
 
+/** Load all per-compartment fabric-tier Δ overrides (migration 0025) keyed by
+ *  compartment_id. Small table (one row per special compartment) → one query.
+ *  resolveFabricTierOverride takes the MAX of these + the Model override per
+ *  tier for a SOFA custom build. Missing / error → empty map (every build falls
+ *  back to the Model-only path; back-compatible if 0025 hasn't landed yet — the
+ *  table may not exist before the migration is applied). */
+export async function loadCompartmentFabricTierOverrides(
+  sb: any,
+): Promise<Map<string, FabricTierModelOverride>> {
+  const { data, error } = await sb
+    .from('compartment_fabric_tier_overrides')
+    .select('compartment_id, tier2_delta, tier3_delta');
+  // Intentional model-only fallback on error (table may not exist pre-0025) —
+  // we DON'T throw, but a real misconfiguration must not be silent.
+  if (error) console.error('loadCompartmentFabricTierOverrides failed (falling back to model-only delta):', error.message ?? error);
+  const rows = (data as Array<{ compartment_id: string; tier2_delta: number | null; tier3_delta: number | null }>) ?? [];
+  return new Map(rows.map((r) => [r.compartment_id, { tier2Delta: r.tier2_delta, tier3Delta: r.tier3_delta }]));
+}
+
 /** Load all per-Model default free gifts (migration 0174) keyed by model_id.
  *  Small table (one row per gifted Model) → one query. Missing/error → empty
  *  map (Models with no row grant no gift). */
@@ -866,12 +908,13 @@ export async function recomputeOneLine(
   cachedConfig?: MaintenanceConfig | null,
 ): Promise<RecomputedLine> {
   const config = cachedConfig ?? await loadMaintenanceConfig(sb);
-  const [product, fabric, sellingTiers, fabricAddonConfig, modelOverrides] = await Promise.all([
+  const [product, fabric, sellingTiers, fabricAddonConfig, modelOverrides, compartmentOverrides] = await Promise.all([
     loadProductByCode(sb, item.itemCode),
     loadFabricByCode(sb, item.variants?.fabricCode ?? null),
     loadFabricSellingTiers(sb, item.variants?.fabricId ?? null),
     loadFabricTierAddonConfig(sb),
     loadModelFabricTierOverrides(sb),
+    loadCompartmentFabricTierOverrides(sb),
   ]);
   const [sofaModulePrices, sofaModuleCostRows] = product?.category === 'SOFA'
     ? await Promise.all([
@@ -883,5 +926,5 @@ export async function recomputeOneLine(
         loadModelSofaModuleCostRows(sb, product.base_model),
       ])
     : [null, null];
-  return recomputeFromSnapshot(item, product, fabric, config, null, sofaModulePrices, sellingTiers, fabricAddonConfig, null, null, null, sofaModuleCostRows, modelOverrides);
+  return recomputeFromSnapshot(item, product, fabric, config, null, sofaModulePrices, sellingTiers, fabricAddonConfig, null, null, null, sofaModuleCostRows, modelOverrides, compartmentOverrides);
 }

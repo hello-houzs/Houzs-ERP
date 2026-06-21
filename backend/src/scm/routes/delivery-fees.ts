@@ -1,5 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
+import { targetRefinementSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 
@@ -12,7 +13,7 @@ deliveryFees.use('*', supabaseAuth);
 // admin + coordinator (legacy) plus sales_director — cost/sell split Phase 2
 // moved the delivery fee onto the POS Master Account surface. Kept in lockstep
 // with the delivery_fee_config UPDATE RLS policy (migration 0112).
-const WRITE_ROLES = new Set(['admin', 'coordinator', 'sales_director']);
+const WRITE_ROLES = new Set(['admin', 'coordinator', 'sales_director', 'super_admin']);
 
 // Same form holds fees + lead days. Each field is independent so the PATCH
 // can partial-update either group without nuking the other.
@@ -87,16 +88,30 @@ deliveryFees.patch('/', async (c) => {
   return c.json({ ok: true });
 });
 
-/* ─── Per-Model special delivery fees (migration 0140) ─────────────────────
-   A row tags a Model as special: standalone_fee overrides the base delivery
-   fee; cross_cat_followup_fee applies when the model's SO is a cross-category
-   follow-up. Read for any staff (the order POST recomputes from it); write for
-   the same fee-editor roles as the config above. Fees are whole MYR. */
+/* ─── Special delivery fee rules (migration 0024) ──────────────────────────
+   Generalises the per-Model 0140 table onto the #691 RuleTarget abstraction. A
+   rule's `target` jsonb is RuleTarget[] (scopes model | variant | combo |
+   compartment). standalone_fee overrides the base delivery fee when the rule
+   matches an SO; cross_cat_followup_fee applies on a cross-category follow-up.
+   Read for any staff (the order POST recomputes from it); write for the same
+   fee-editor roles as the config above. Fees are whole MYR (server scales ×100
+   to sen). combo/compartment are model-agnostic — they allow an empty modelId;
+   model/variant require a real modelId to match a line's Model. */
 
-const specialFeeSchema = z.object({
-  modelId:             z.string().uuid(),
-  standaloneFee:       z.number().int().nonnegative(),
-  crossCatFollowupFee: z.number().int().nonnegative(),
+const deliveryTargetSchema = targetRefinementSchema
+  .and(z.object({ modelId: z.string() }))
+  .superRefine((t, ctx) => {
+    if ((t.scope === 'model' || t.scope === 'variant') && !t.modelId) {
+      ctx.addIssue({ code: 'custom', message: 'modelId required for model/variant', path: ['modelId'] });
+    }
+  });
+
+const specialRuleSchema = z.object({
+  id:                  z.string().uuid().optional(),
+  target:              z.array(deliveryTargetSchema).min(1),
+  standaloneFee:       z.number().int().min(0),
+  crossCatFollowupFee: z.number().int().min(0),
+  label:               z.string().optional(),
 });
 
 // Reused role gate for the special-fee writes.
@@ -110,36 +125,33 @@ const requireFeeEditor = async (c: AppContext) => {
   return { userId, supabase };
 };
 
-// GET — list every special-fee row with its Model's name + category.
+// GET — list every special delivery rule. `target` (jsonb RuleTarget[]) passes
+// through untouched; the matcher (deliveryTargetMatchesAnyLine) coerces on use.
 deliveryFees.get('/special', async (c) => {
   const supabase = c.get('supabase');
   const { data, error } = await supabase
-    .from('model_special_delivery_fees')
-    .select('model_id, standalone_fee, cross_cat_followup_fee, updated_at, product_models(name, model_code, category)');
+    .from('special_delivery_fee_rules')
+    .select('id, target, standalone_fee, cross_cat_followup_fee, label, updated_at');
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
-  const rows = (data ?? []).map((r) => {
-    const pm = (r as { product_models?: { name?: string; model_code?: string; category?: string } | null }).product_models ?? null;
-    return {
-      modelId:             (r as { model_id: string }).model_id,
-      modelName:           pm?.name ?? '(unknown model)',
-      modelCode:           pm?.model_code ?? null,
-      category:            pm?.category ?? null,
-      standaloneFee:       (r as { standalone_fee: number }).standalone_fee,
-      crossCatFollowupFee: (r as { cross_cat_followup_fee: number }).cross_cat_followup_fee,
-      updatedAt:           (r as { updated_at: string }).updated_at,
-    };
-  });
+  const rows = (data ?? []).map((r) => ({
+    id:                  (r as { id: string }).id,
+    target:              (r as { target: unknown }).target ?? [],
+    standaloneFee:       (r as { standalone_fee: number }).standalone_fee,
+    crossCatFollowupFee: (r as { cross_cat_followup_fee: number }).cross_cat_followup_fee,
+    label:               (r as { label: string | null }).label ?? null,
+    updatedAt:           (r as { updated_at: string }).updated_at,
+  }));
   return c.json(rows);
 });
 
-// PUT — upsert one Model's special fees (whole MYR).
+// PUT — upsert one special rule. With `id` → update that row; without → insert.
 deliveryFees.put('/special', async (c) => {
   const gate = await requireFeeEditor(c);
   if ('error' in gate) return gate.error;
 
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
-  const parsed = specialFeeSchema.safeParse(body);
+  const parsed = specialRuleSchema.safeParse(body);
   if (!parsed.success) {
     return c.json({
       error: 'validation_failed',
@@ -147,28 +159,45 @@ deliveryFees.put('/special', async (c) => {
     }, 400);
   }
 
-  const { error } = await gate.supabase
-    .from('model_special_delivery_fees')
-    .upsert({
-      model_id:               parsed.data.modelId,
-      standalone_fee:         parsed.data.standaloneFee,
-      cross_cat_followup_fee: parsed.data.crossCatFollowupFee,
-      updated_at:             new Date().toISOString(),
-      updated_by:             gate.userId,
-    }, { onConflict: 'model_id' });
-  if (error) return c.json({ error: 'upsert_failed', reason: error.message }, 500);
-  return c.json({ ok: true });
+  const fields = {
+    target:                 parsed.data.target,
+    standalone_fee:         parsed.data.standaloneFee,
+    cross_cat_followup_fee: parsed.data.crossCatFollowupFee,
+    label:                  parsed.data.label ?? null,
+    updated_at:             new Date().toISOString(),
+    updated_by:             gate.userId,
+  };
+
+  if (parsed.data.id) {
+    const { data, error } = await gate.supabase
+      .from('special_delivery_fee_rules')
+      .update(fields)
+      .eq('id', parsed.data.id)
+      .select('id');
+    if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+    if (!data || data.length === 0) return c.json({ error: 'update_failed', reason: 'not_found_or_rls' }, 404);
+    return c.json({ ok: true, id: parsed.data.id });
+  }
+
+  const { data, error } = await gate.supabase
+    .from('special_delivery_fee_rules')
+    .insert(fields)
+    .select('id');
+  if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
+  if (!data || data.length === 0) return c.json({ error: 'insert_failed', reason: 'rls_blocked_zero_rows' }, 403);
+  return c.json({ ok: true, id: (data[0] as { id: string }).id });
 });
 
-// DELETE — un-tag a Model (it reverts to the normal base/cross fee).
-deliveryFees.delete('/special/:modelId', async (c) => {
+// DELETE — drop a special rule (delivery reverts to the normal base/cross fee).
+deliveryFees.delete('/special/:id', async (c) => {
   const gate = await requireFeeEditor(c);
   if ('error' in gate) return gate.error;
-  const modelId = c.req.param('modelId');
-  const { error } = await gate.supabase
-    .from('model_special_delivery_fees')
+  const { data, error } = await gate.supabase
+    .from('special_delivery_fee_rules')
     .delete()
-    .eq('model_id', modelId);
+    .eq('id', c.req.param('id'))
+    .select('id');
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  if (!data || data.length === 0) return c.json({ error: 'delete_failed', reason: 'not_found_or_rls' }, 404);
   return c.json({ ok: true });
 });

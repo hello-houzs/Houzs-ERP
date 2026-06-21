@@ -73,6 +73,7 @@ type DemandRow = {
     so_date: string | null;
     customer_delivery_date: string | null;
     internal_expected_dd: string | null; // processing date (drives when to order)
+    customer_state: string | null;       // staff #8 — show the customer's state (info-only)
   } | null;
 };
 
@@ -126,6 +127,7 @@ type MrpLine = {
   soItemId: string;    // mfg_sales_order_items.id — lets the UI one-click PO this line
   soDocNo: string;
   debtorName: string | null;
+  customerState: string | null;  // staff #8 — info-only, from the SO's customer_state
   soDate: string | null;
   deliveryDate: string | null;
   processingDate: string | null;
@@ -184,6 +186,7 @@ type SofaSet = {
   lineNo: number | null;
   createdAt: string | null;
   debtorName: string | null;
+  customerState: string | null;  // staff #8 — info-only, from the SO's customer_state
   soDate: string | null;
   deliveryDate: string | null;
   processingDate: string | null;
@@ -268,7 +271,7 @@ export async function computeMrp(
     .from('mfg_sales_order_items')
     .select(`
       id, doc_no, item_code, description, item_group, variants, qty, warehouse_id, line_delivery_date, line_no, created_at, cancelled,
-      so:mfg_sales_orders!inner ( debtor_name, status, so_date, customer_delivery_date, internal_expected_dd )
+      so:mfg_sales_orders!inner ( debtor_name, status, so_date, customer_delivery_date, internal_expected_dd, customer_state )
     `)
     .eq('cancelled', false)
     .limit(5000);
@@ -546,6 +549,7 @@ export async function computeMrp(
         soItemId: r.id,
         soDocNo: r.doc_no,
         debtorName: r.so?.debtor_name ?? null,
+        customerState: r.so?.customer_state ?? null,
         soDate: r.so?.so_date ?? null,
         deliveryDate: lineDelivery,
         processingDate: r.so?.internal_expected_dd ?? null,
@@ -680,6 +684,7 @@ export async function computeMrp(
         lineNo: d.line_no ?? null,
         createdAt: d.created_at ?? null,
         debtorName: d.so?.debtor_name ?? null,
+        customerState: d.so?.customer_state ?? null,
         soDate: d.so?.so_date ?? null,
         deliveryDate: setDelivery,
         processingDate: d.so?.internal_expected_dd ?? null,

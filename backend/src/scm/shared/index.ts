@@ -23,3 +23,6 @@ export * from './free-gift'; // 2026-06-14 — default free gift pure module (pa
 export * from './free-item-campaign'; // 2026-06-17 — free item campaign matcher (campaignsCoveringLine)
 export * from './hr-commission'; // 2026-06-14 — HR commission math + KPI line matcher
 export * from './effective-delivery'; // 2026-06-19 — PO supplier-revised delivery date (migration 0180): effective = MAX over non-null
+export * from './rule-target'; // 2026-06-21 — unified rule targeting (model/variant/compartment/combo matcher)
+export * from './special-delivery-match'; // 2026-06-21 — model-agnostic delivery trigger matcher (reuses rule-target)
+export * from './fabric-tier-override-resolve'; // 2026-06-21 — effective fabric-tier delta = MAX(model, matching compartments)

@@ -48,6 +48,7 @@ import { useMfgProducts, useMaintenanceConfig } from '../lib/mfg-products-querie
 import { useSupplierDetail, useSuppliers, type SupplierRow } from '../lib/suppliers-queries';
 import { useNotify } from './NotifyDialog';
 import { useConfirm } from './ConfirmDialog';
+import { EffectiveDatedHistory } from './EffectiveDatedHistory';
 import { todayMyt } from '../lib/dates';
 
 // Seat-height columns mirror the live Maintenance pool (Products → Maintenance
@@ -1332,42 +1333,43 @@ function HistoryModal({ rule, supplierId, heights, onClose }: { rule: SofaComboR
 
   return (
     <ModalShell title="Combo history" onClose={onClose}>
-      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-13)', color: 'var(--fg-soft)' }}>
-        {rule.baseModel} · {buildComboLabel(rule.modules)}{rule.tier ? ` · ${rule.tier}` : ''}
-      </div>
-      {historyQ.isLoading ? <p>Loading…</p> : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {(historyQ.data ?? []).map((r) => (
-            <div key={r.id} style={{
-              padding: 10, background: 'var(--c-cream)', borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--line)',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <strong>Effective {fmtDate(r.effectiveFrom)}</strong>
-                {r.deletedAt && <span style={statusPillPending}>Deleted</span>}
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${heights.length}, 1fr)`, gap: 4, marginTop: 6 }}>
-                {heights.map((h) => (
-                  <div key={h} style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>{h}</div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-12)' }}>
-                      {fmtRm(r.pricesByHeight?.[h] ?? null)}
-                    </div>
+      {/* Reusable effective-dated history (A4): newest-first rows each tagged
+          Active / Pending·Nd / Past + the append-only reassurance banner. The
+          per-row body (prices + notes) is supplied below; the component owns the
+          timeline math, badges, banner and empty/loading states. Soft-deleted
+          rows still appear, tagged Deleted (deletedAt). */}
+      <EffectiveDatedHistory<SofaComboRule>
+        rows={historyQ.data ?? []}
+        loading={historyQ.isLoading}
+        rowKey={(r) => r.id}
+        effectiveFrom={(r) => r.effectiveFrom}
+        isDeleted={(r) => !!r.deletedAt}
+        emptyLabel="No history rows."
+        header={
+          <>
+            {rule.baseModel} · {buildComboLabel(rule.modules)}{rule.tier ? ` · ${rule.tier}` : ''}
+          </>
+        }
+        renderRow={(r) => (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${heights.length}, 1fr)`, gap: 4, marginTop: 6 }}>
+              {heights.map((h) => (
+                <div key={h} style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>{h}</div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-12)' }}>
+                    {fmtRm(r.pricesByHeight?.[h] ?? null)}
                   </div>
-                ))}
-              </div>
-              {r.notes && (
-                <div style={{ marginTop: 6, fontSize: 'var(--fs-12)', color: 'var(--fg-soft)' }}>
-                  {r.notes}
                 </div>
-              )}
+              ))}
             </div>
-          ))}
-          {historyQ.data && historyQ.data.length === 0 && (
-            <p style={{ color: 'var(--fg-muted)' }}>No history rows.</p>
-          )}
-        </div>
-      )}
+            {r.notes && (
+              <div style={{ marginTop: 6, fontSize: 'var(--fs-12)', color: 'var(--fg-soft)' }}>
+                {r.notes}
+              </div>
+            )}
+          </>
+        )}
+      />
     </ModalShell>
   );
 }
