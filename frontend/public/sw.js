@@ -49,7 +49,10 @@
 // z-index, SI description2, SofaComboTab bulk/grid, ProductModels SKUs col;
 // removed Order Add-ons tab + One-shot badge (Houzs unused). Backend: reports +
 // so-dropdown-options routes mounted; 0022 seeds 2990 reference data on deploy.
-const VERSION = "houzs-erp-v10";
+// v11 (2026-06-21): SCM Venues + Branding now pull from Houzs Project
+// Maintenance / PMS (/api/projects/venues + /api/projects/brands) — the single
+// source the owner maintains centrally; SCM venue editor is read-only.
+const VERSION = "houzs-erp-v11";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
