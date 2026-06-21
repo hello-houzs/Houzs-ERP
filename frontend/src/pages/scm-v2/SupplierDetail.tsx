@@ -2624,10 +2624,15 @@ const SupplierInfoCard = ({
     category: supplier.category ?? '',                       // 'Bedframe', 'Fabric', ...
     tinNumber: supplier.tin_number ?? '',
     businessRegNo: supplier.business_reg_no ?? '',
+    /* Mig 0028 — AutoCount creditor-export parity */
+    registrationNo: supplier.registration_no ?? '',
+    exemptionNo: supplier.exemption_no ?? '',
+    natureOfBusiness: supplier.nature_of_business ?? '',
     contactPerson: supplier.contact_person ?? '',
     attention: supplier.attention ?? '',
     email: supplier.email ?? '',
     phone: supplier.phone ?? '',
+    phone2: supplier.phone2 ?? '',
     mobile: supplier.mobile ?? '',
     fax: supplier.fax ?? '',
     website: supplier.website ?? '',
@@ -2706,6 +2711,10 @@ const SupplierInfoCard = ({
             />
             <InfoCell label="TIN Number" value={supplier.tin_number ?? '—'} />
             <InfoCell label="Business Reg No" value={supplier.business_reg_no ?? '—'} />
+            {/* Mig 0028 — AutoCount creditor-export parity. */}
+            <InfoCell label="Registration No." value={supplier.registration_no ?? '—'} />
+            <InfoCell label="Exemption No." value={supplier.exemption_no ?? '—'} />
+            <InfoCell label="Nature of Business" value={supplier.nature_of_business ?? '—'} />
             <InfoCell label="Contact Person" value={supplier.contact_person ?? '—'} />
             <InfoCell label="Attention" value={supplier.attention ?? '—'} />
             <InfoCell label="Email" value={supplier.email ?? '—'} />
@@ -2713,6 +2722,8 @@ const SupplierInfoCard = ({
                 Malaysian convention. Fax intentionally left raw (rarely MY-
                 formatted), as does an empty value which renders as "—". */}
             <InfoCell label="Phone" value={supplier.phone ? formatPhone(supplier.phone) : '—'} />
+            {/* Mig 0028 — secondary phone. */}
+            <InfoCell label="Phone 2" value={supplier.phone2 ? formatPhone(supplier.phone2) : '—'} />
             <InfoCell label="Mobile" value={supplier.mobile ? formatPhone(supplier.mobile) : '—'} />
             <InfoCell label="Fax" value={supplier.fax ?? '—'} />
             <InfoCell label="WhatsApp" value={supplier.whatsapp_number ? formatPhone(supplier.whatsapp_number) : '—'} />
@@ -2756,6 +2767,10 @@ const SupplierInfoCard = ({
             />
             <EditField label="TIN Number" value={form.tinNumber} onChange={(v) => setF('tinNumber', v)} />
             <EditField label="Business Reg No" value={form.businessRegNo} onChange={(v) => setF('businessRegNo', v)} />
+            {/* Mig 0028 — AutoCount creditor-export parity. */}
+            <EditField label="Registration No." value={form.registrationNo} onChange={(v) => setF('registrationNo', v)} />
+            <EditField label="Exemption No." value={form.exemptionNo} onChange={(v) => setF('exemptionNo', v)} />
+            <EditField label="Nature of Business" value={form.natureOfBusiness} onChange={(v) => setF('natureOfBusiness', v)} />
             {/* Contact */}
             <EditField label="Contact Person" value={form.contactPerson} onChange={(v) => setF('contactPerson', v)} />
             <EditField label="Attention" value={form.attention} onChange={(v) => setF('attention', v)} />
@@ -2764,6 +2779,8 @@ const SupplierInfoCard = ({
                 they normalize to E.164 on blur. Fax stays plain (non-MY format,
                 edge case). */}
             <PhoneEditField label="Phone" value={form.phone} onChange={(v) => setF('phone', v)} />
+            {/* Mig 0028 — secondary phone, same E.164 normalization. */}
+            <PhoneEditField label="Phone 2" value={form.phone2} onChange={(v) => setF('phone2', v)} />
             <PhoneEditField label="Mobile" value={form.mobile} onChange={(v) => setF('mobile', v)} />
             <EditField label="Fax" value={form.fax} onChange={(v) => setF('fax', v)} />
             <PhoneEditField label="WhatsApp" value={form.whatsappNumber} onChange={(v) => setF('whatsappNumber', v)} />

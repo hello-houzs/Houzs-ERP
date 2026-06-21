@@ -45,11 +45,14 @@ const CURRENCIES = new Set(['MYR', 'RMB', 'USD', 'SGD']);
 const MATERIAL_KINDS = new Set(['mfg_product', 'fabric', 'raw']);
 
 /* PR #40 — full master record (Commander 2026-05-26 AutoCount parity) */
+/* Mig 0028 — registration_no / nature_of_business / exemption_no / phone2
+   (AutoCount creditor-export parity). */
 const SUPPLIER_COLS =
   'id, code, name, whatsapp_number, email, contact_person, phone, address, state, ' +
   'payment_terms, status, rating, notes, supplier_type, category, tin_number, ' +
   'business_reg_no, postcode, area, mobile, fax, website, attention, business_nature, ' +
-  'currency, statement_type, aging_basis, credit_limit_sen, country, created_at, updated_at';
+  'currency, statement_type, aging_basis, credit_limit_sen, country, ' +
+  'registration_no, nature_of_business, exemption_no, phone2, created_at, updated_at';
 
 /* PR — Commander 2026-05-27 ("当 Assign SKU 之后，你就会知道它是什么 Category 了呀"):
    List endpoint queries the `suppliers_with_derived_category` view (migration
@@ -297,6 +300,12 @@ suppliers.post('/', async (c) => {
     statement_type: STATEMENT_TYPES.has(body.statementType as string) ? body.statementType : 'OPEN_ITEM',
     aging_basis: AGING_BASES.has(body.agingBasis as string) ? body.agingBasis : 'INVOICE_DATE',
     credit_limit_sen: typeof body.creditLimitSen === 'number' ? body.creditLimitSen : 0,
+    /* Mig 0028 — AutoCount creditor-export parity. phone2 normalizes to E.164
+       like the other phone fields. */
+    registration_no: (body.registrationNo as string) ?? null,
+    nature_of_business: (body.natureOfBusiness as string) ?? null,
+    exemption_no: (body.exemptionNo as string) ?? null,
+    phone2: normPhone(body.phone2),
   };
 
   const supabase = c.get('supabase');
@@ -329,9 +338,13 @@ suppliers.patch('/:id', async (c) => {
     ['postcode', 'postcode'], ['area', 'area'], ['mobile', 'mobile'],
     ['fax', 'fax'], ['website', 'website'], ['attention', 'attention'],
     ['businessNature', 'business_nature'], ['creditLimitSen', 'credit_limit_sen'],
+    /* Mig 0028 — AutoCount creditor-export parity. */
+    ['registrationNo', 'registration_no'], ['natureOfBusiness', 'nature_of_business'],
+    ['exemptionNo', 'exemption_no'], ['phone2', 'phone2'],
   ];
-  /* Task #91 — normalize phone-like columns to E.164 on PATCH too. */
-  const PHONE_FIELDS = new Set(['phone', 'mobile', 'whatsappNumber']);
+  /* Task #91 — normalize phone-like columns to E.164 on PATCH too.
+     Mig 0028 — phone2 joins the same normalization set. */
+  const PHONE_FIELDS = new Set(['phone', 'mobile', 'whatsappNumber', 'phone2']);
   for (const [from, to] of map) {
     if (body[from] === undefined) continue;
     if (PHONE_FIELDS.has(from as string) && typeof body[from] === 'string') {
