@@ -188,6 +188,17 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     : row.position_id != null
       ? await loadPageAccessForPosition(env, row.position_id)
       : await loadPageAccessForRole(env, row.role_id, permissionsSet);
+  // Supply Chain access: for users WITH a position, `scm.access` is driven by
+  // the `supply_chain` page in their position matrix (configurable in the
+  // Positions screen). Users without a position keep the legacy role-level
+  // `scm.access` permission gate. `*` (Owner / IT Admin) is left untouched.
+  if (row.position_id != null && !permissionsSet.has("*")) {
+    const scmLevel = pageAccess["supply_chain"];
+    if (scmLevel && scmLevel !== "none") permissionsSet.add("scm.access");
+    else permissionsSet.delete("scm.access");
+  }
+  // Return the reconciled set (the array mirrors it for non-Set consumers).
+  const effectivePermissions = Array.from(permissionsSet);
   return {
     id: row.id,
     email: row.email,
@@ -197,7 +208,7 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     position_id: row.position_id ?? null,
     position_name: row.position_name ?? null,
     status: row.status,
-    permissions,
+    permissions: effectivePermissions,
     permissions_set: permissionsSet,
     manager_id: managerId,
     scope_to_pic: scoped,

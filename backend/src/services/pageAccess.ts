@@ -109,6 +109,19 @@ export const PAGES: PageDef[] = [
     supportsPartial: false,
     backfill: (p) => (isOwner(p) || has(p, "settings.manage") ? "full" : "none"),
   },
+  {
+    // Supply Chain (furniture SCM, /scm/*). A single coarse page so the gate
+    // is configurable per position in the Positions screen. The route/menu
+    // guards still check the `scm.access` permission; for users WITH a
+    // position that permission is now derived from this page's level (see
+    // services/auth.ts::hydrateAuthUser). Backfill keeps the legacy
+    // role-permission gate for users without a position.
+    key: "supply_chain",
+    label: "Supply Chain",
+    partialMeaning: "(not used; any access unlocks the SCM modules)",
+    supportsPartial: false,
+    backfill: (p) => (isOwner(p) || has(p, "scm.access") ? "full" : "none"),
+  },
 
   // ── Service Cases / ASSR (parent + sub-tabs) ────────────────
   {
