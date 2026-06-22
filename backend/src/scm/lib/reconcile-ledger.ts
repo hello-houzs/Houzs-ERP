@@ -1,0 +1,110 @@
+// ----------------------------------------------------------------------------
+// reconcile-ledger — read-only inventory-ledger integrity sweep.
+//
+// Inventory writes across the SCM are best-effort: a failed movement insert
+// does NOT roll back the parent document (see every routes/*.ts resync/write
+// helper — they return errors rather than throwing). So a document can be
+// POSTED / shipped / received while its stock movement silently never landed.
+//
+// This sweep flags every non-cancelled document that, in its current status,
+// ALWAYS moves stock but has ZERO matching inventory_movements rows — a silent
+// partial-write the operator can then re-post or investigate.
+//
+// Pure read-only + bounded (.limit on every read). Shared by:
+//   • scm/routes/inventory.ts  GET /reconcile        (operator-facing detail)
+//   • routes/systemHealth.ts   "Inventory ledger integrity" check (count only)
+//
+// Match key = `${source_doc_type}::${source_doc_id}` where source_doc_id is the
+// document HEADER's own id. The source_doc_type for each flow is the PRIMARY
+// label the write path stamps on the FIRST movement of a fresh document (later
+// resync deltas reuse 'STOCK_TRANSFER', but a document that moved stock at all
+// always has at least its primary-label row, so matching on the primary label
+// alone never false-flags a doc that did move).
+// ----------------------------------------------------------------------------
+
+/** One flagged document — a posted/shipped doc with no matching movement. */
+export type LedgerIssue = { docType: string; id: string; docNo: string; status: string };
+
+/** Full reconcile result; same shape the /reconcile route has always returned. */
+export type ReconcileResult = { asOf: string; issueCount: number; issues: LedgerIssue[] };
+
+// Delivery-Order shipped states that mean the DO has deducted stock (OUT).
+// Identical to consignment-notes' SHIPPED_STATES — a dispatched/in-transit/
+// signed/delivered/invoiced doc has shipped, so it must have an OUT movement.
+const DO_SHIPPED = ['DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVOICED'];
+
+// A row from any document header read below: id + a doc-number col + status.
+type DocRow = Record<string, string | null | undefined>;
+
+/**
+ * Run the read-only ledger reconcile sweep against the scm-schema supabase
+ * client. `sb` is a supabase-js client already scoped to the `scm` schema
+ * (getSupabaseService(env) — db.schema='scm'), the same one the route uses.
+ */
+export async function reconcileLedger(sb: any): Promise<ReconcileResult> {
+  // All movements, indexed by `${type}::${doc_id}` so the per-doc check is O(1).
+  const { data: movRows, error: movErr } = await sb.from('inventory_movements')
+    .select('source_doc_type, source_doc_id').limit(200_000);
+  if (movErr) throw new Error(movErr.message);
+  const hasMov = new Set<string>();
+  for (const m of (movRows ?? []) as Array<{ source_doc_type: string | null; source_doc_id: string | null }>) {
+    if (m.source_doc_id) hasMov.add(`${m.source_doc_type}::${m.source_doc_id}`);
+  }
+
+  const issues: LedgerIssue[] = [];
+  // flag(docType, movType, rows, numCol): a doc with id X but no `${movType}::X`
+  // movement row is flagged. numCol is the header's human doc-number column.
+  const flag = (docType: string, movType: string, rows: DocRow[], numCol: string) => {
+    for (const r of rows) {
+      const id = (r.id as string) ?? '';
+      if (id && !hasMov.has(`${movType}::${id}`)) {
+        issues.push({ docType, id, docNo: (r[numCol] as string) ?? id, status: (r.status as string) ?? '' });
+      }
+    }
+  };
+
+  const [
+    grnsR, dosR, prsR, drsR,
+    transfersR, csNotesR, csReturnsR, pcReceivesR, pcReturnsR,
+  ] = await Promise.all([
+    // ── existing coverage (unchanged) ──────────────────────────────────────
+    sb.from('grns').select('id, grn_number, status').eq('status', 'POSTED').limit(10_000),
+    sb.from('delivery_orders').select('id, do_number, status').in('status', DO_SHIPPED).limit(10_000),
+    sb.from('purchase_returns').select('id, return_number, status').neq('status', 'CANCELLED').limit(10_000),
+    sb.from('delivery_returns').select('id, return_number, status').neq('status', 'CANCELLED').limit(10_000),
+    // ── new coverage (all stock-moving SCM document types) ─────────────────
+    // Stock Transfer: only ever POSTED or CANCELLED (DRAFT removed in mig 0078);
+    // a POSTED transfer with qty>0 lines always writes paired OUT/IN movements
+    // labelled STOCK_TRANSFER on the header id.
+    sb.from('stock_transfers').select('id, transfer_no, status').eq('status', 'POSTED').limit(10_000),
+    // Consignment Note (dispatch, stock OUT): created directly at DISPATCHED and
+    // only moves among DO_SHIPPED states or CANCELLED. The first ship-out writes
+    // a CS_DO OUT on the header id (consignment_delivery_orders).
+    sb.from('consignment_delivery_orders').select('id, do_number, status').in('status', DO_SHIPPED).limit(10_000),
+    // Consignment Return (stock IN): posts immediately on create (no DRAFT),
+    // status RECEIVED; first IN is labelled CS_DR on the header id.
+    sb.from('consignment_delivery_returns').select('id, return_number, status').neq('status', 'CANCELLED').limit(10_000),
+    // Purchase Consignment Receive (stock IN): posts immediately (no DRAFT),
+    // status POSTED; first IN labelled PC_RECEIVE on the header id.
+    sb.from('purchase_consignment_receives').select('id, receive_number, status').neq('status', 'CANCELLED').limit(10_000),
+    // Purchase Consignment Return (stock OUT): posts immediately (no DRAFT);
+    // first OUT labelled PC_RETURN on the header id.
+    sb.from('purchase_consignment_returns').select('id, return_number, status').neq('status', 'CANCELLED').limit(10_000),
+  ]);
+
+  // EXCLUDED — Stock Take (stock_takes): a posted take with NO counted variance
+  // legitimately writes ZERO movements, so flagging zero-movement takes would be
+  // a guaranteed false positive. Intentionally not swept here.
+
+  flag('GRN', 'GRN', (grnsR.data ?? []) as DocRow[], 'grn_number');
+  flag('Delivery Order', 'DO', (dosR.data ?? []) as DocRow[], 'do_number');
+  flag('Purchase Return', 'PURCHASE_RETURN', (prsR.data ?? []) as DocRow[], 'return_number');
+  flag('Delivery Return', 'DR', (drsR.data ?? []) as DocRow[], 'return_number');
+  flag('Stock Transfer', 'STOCK_TRANSFER', (transfersR.data ?? []) as DocRow[], 'transfer_no');
+  flag('Consignment Note', 'CS_DO', (csNotesR.data ?? []) as DocRow[], 'do_number');
+  flag('Consignment Return', 'CS_DR', (csReturnsR.data ?? []) as DocRow[], 'return_number');
+  flag('PC Receive', 'PC_RECEIVE', (pcReceivesR.data ?? []) as DocRow[], 'receive_number');
+  flag('PC Return', 'PC_RETURN', (pcReturnsR.data ?? []) as DocRow[], 'return_number');
+
+  return { asOf: new Date().toISOString(), issueCount: issues.length, issues };
+}
