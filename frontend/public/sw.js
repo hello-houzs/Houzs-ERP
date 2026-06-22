@@ -114,7 +114,9 @@
 // v24 — SP size = made-to-order custom: SIZE_INFO.SP rendered "(CUSTOM)" not a
 // fake 220X220 (real dims captured per-order on the SO/PO line); SP added to
 // the Mattress/Bedframe Sizes maintenance pools.
-const VERSION = "houzs-erp-v24";
+// v25 — New SO Venue is manually selectable (was a 2990 locked field; Houzs
+// picks venue manually, defaults to the salesperson's venue but changeable).
+const VERSION = "houzs-erp-v25";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
