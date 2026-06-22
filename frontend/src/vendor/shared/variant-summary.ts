@@ -68,7 +68,16 @@ export function buildVariantSummary(
   // (Commander 2026-06-19). Exact repeats still drop via the Set.
   const presentFabric = fabricParts.filter(Boolean);
   const dedupedFabric = presentFabric.filter((p, i) =>
-    !presentFabric.some((q, j) => j !== i && q !== p && (q.startsWith(`${p} `) || q.startsWith(`${p}(`))),
+    !presentFabric.some((q, j) => j !== i && q !== p && (
+      // a richer part LEADS with the bare part — "BF-12 (PC151-12)" vs "BF-12"
+      q.startsWith(`${p} `) || q.startsWith(`${p}(`)
+      // Houzs 2026-06-23 — or a richer part already ENDS with it: the fabric code
+      // contains the colour ("A201-7-LIGHT BROWN" + derived colour "BROWN") → drop
+      // the redundant trailing colour so the line shows just the code, not
+      // "A201-7-LIGHT BROWN BROWN". A genuinely separate colour ("BF-01" + "Sand")
+      // is NOT a trailing token of the code, so it still shows.
+      || q.endsWith(` ${p}`)
+    )),
   );
   const fabric = [...new Set(dedupedFabric)].join(' ')
     || str(variants.fabricColor)

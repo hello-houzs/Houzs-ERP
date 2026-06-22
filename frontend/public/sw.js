@@ -118,7 +118,9 @@
 // picks venue manually, defaults to the salesperson's venue but changeable).
 // v26 — SO fabric picker shows ONLY the fabric code (dropped the supplier-code
 // suffix + derived colour; owner: "你只需要显示 Fabric Code 就可以了").
-const VERSION = "houzs-erp-v26";
+// v27 — variant summary no longer repeats a colour the fabric code already
+// ends with ("A201-7-LIGHT BROWN BROWN" → "A201-7-LIGHT BROWN").
+const VERSION = "houzs-erp-v27";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
