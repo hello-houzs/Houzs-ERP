@@ -1459,7 +1459,7 @@ app.get("/finance/by-project", requirePageAccess("projects.finances"), async (c)
   if (search) {
     const like = `%${search}%`;
     projConds.push(
-      sql`(p.code LIKE ${like} OR p.name LIKE ${like} OR p.venue LIKE ${like} OR p.organizer LIKE ${like})`
+      sql`(p.code ILIKE ${like} OR p.name ILIKE ${like} OR p.venue ILIKE ${like} OR p.organizer ILIKE ${like})`
     );
   }
   if (picScope) {
@@ -1656,7 +1656,7 @@ app.get("/finance/lines", requirePageAccess("projects.finances"), async (c) => {
   if (search) {
     const like = `%${search}%`;
     conds.push(
-      sql`(l.description LIKE ${like} OR l.notes LIKE ${like} OR p.code LIKE ${like} OR p.name LIKE ${like})`
+      sql`(l.description ILIKE ${like} OR l.notes ILIKE ${like} OR p.code ILIKE ${like} OR p.name ILIKE ${like})`
     );
   }
   if (finPicScope) {

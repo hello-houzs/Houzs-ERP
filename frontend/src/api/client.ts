@@ -149,8 +149,18 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       });
       return await handleResponse<T>(res, path);
     } catch (e) {
-      // A real HTTP answer (4xx/5xx) is never retried — surface it as-is.
-      if (e instanceof HttpError) throw e;
+      // A 503 is the server's "transient — try again" contract; retry it for
+      // idempotent GETs (within the GET budget) so a cold-start / connection
+      // blip self-heals instead of surfacing as "Failed to load". Every other
+      // HTTP answer (500, 4xx) is a real result — surfaced as-is so genuine
+      // errors fail fast and are never masked.
+      if (e instanceof HttpError) {
+        if (e.status === 503 && method === "GET" && attempt < retries) {
+          await sleep(600 + attempt * 1200);
+          continue;
+        }
+        throw e;
+      }
       // Network drop or our abort-timeout: retry idempotent GETs, since a
       // cold Hyperdrive connection has usually warmed by the next attempt.
       if (attempt < retries) {

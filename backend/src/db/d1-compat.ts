@@ -200,11 +200,20 @@ const FIRST_ATTEMPT_TIMEOUT_MARKER =
 // contexts) is fixed in middleware/db.ts, but if any residual cross-context use
 // slips through, the retry runs makeSql() to open a FRESH socket in the CURRENT
 // request's context — which resolves it instead of surfacing a generic 500.
+//
+// SINGLE SOURCE OF TRUTH for "transient connection failure" — exported so
+// index.ts humanizeError() classifies the SAME strings as a retryable 503
+// (not a generic 500). The retry layer and the user-facing classifier must
+// never drift apart. Every string here is a PRE-execution connection failure
+// (the query never reached the server), so re-running is safe — no double-write.
+// NEVER add a real SQL/logic error (constraint/syntax/column does not exist) —
+// those must stay non-retryable so genuine bugs surface immediately.
+export const TRANSIENT_CONN_RE =
+  /CONNECTION_CLOSED|Network connection lost|ECONNRESET|ECONNREFUSED|connection closed|terminating connection|server closed the connection|EPIPE|Timed out .*pool|d1-compat first attempt timed out|Cannot perform I\/O on behalf of a different request|too many clients already|remaining connection slots are reserved|Connection terminated|ETIMEDOUT|fetch failed|socket hang up|MaxClientsInSessionMode/i;
+
 function isDeadConnError(e: unknown): boolean {
   const m = String((e as Error)?.message ?? e ?? "");
-  return /CONNECTION_CLOSED|Network connection lost|ECONNRESET|ECONNREFUSED|connection closed|terminating connection|server closed the connection|write EPIPE|Timed out .*pool|d1-compat first attempt timed out|Cannot perform I\/O on behalf of a different request/i.test(
-    m,
-  );
+  return TRANSIENT_CONN_RE.test(m);
 }
 
 export function rewriteDialect(sql: string): string {
