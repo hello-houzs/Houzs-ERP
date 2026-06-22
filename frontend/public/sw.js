@@ -77,7 +77,10 @@
 // (code · label · dimensions) writing sizeLabels; suppliers list view fixed to
 // expose the new columns (mig 0029 view); sofaCompartmentMeta descriptions +
 // default prices seeded into master config (mig 0029).
-const VERSION = "houzs-erp-v17";
+// v18 (2026-06-22): removed the "Reopen SO" button — the backend treats a
+// cancelled SO as final (so_cancelled_final); the button always 409'd with no
+// notice. A cancelled SO is now visibly final; to revive, create a new SO.
+const VERSION = "houzs-erp-v18";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

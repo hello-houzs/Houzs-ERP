@@ -24,7 +24,7 @@ import { createPortal } from 'react-dom';
 import { Link, useParams } from 'react-router-dom';
 import {
   ArrowLeft, FileText, Pencil, Plus, X, Printer, Save,
-  DollarSign, Lock, History, ChevronDown, ChevronRight, Ban, RotateCcw,
+  DollarSign, Lock, History, ChevronDown, ChevronRight, Ban,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
@@ -796,10 +796,6 @@ export const SalesOrderDetail = () => {
     }))) return;
     updateStatus.mutate({ docNo: header.doc_no, status: 'CANCELLED' });
   };
-  const handleReopenSo = async () => {
-    if (!(await askConfirm({ title: `Reopen ${header.doc_no}?`, body: 'Back to CONFIRMED so it can proceed again.', confirmLabel: 'Reopen' }))) return;
-    updateStatus.mutate({ docNo: header.doc_no, status: 'CONFIRMED' });
-  };
   const handlePrint = () => {
     /* Followup #81 — Wait for the payments query before generating; legacy
        header columns (paid_centi, payment_method, …) are deprecated. If
@@ -900,15 +896,11 @@ export const SalesOrderDetail = () => {
             <Printer {...ICON} />
             <span>Print PDF</span>
           </Button>
-          {/* Cancel SO / Reopen SO (Commander 2026-05-29). A cancelled SO
-              stops proceeding (greys out, no MRP/PO/DO). Reopen restores it. */}
-          {isCancelled ? (
-            <Button variant="primary" size="md"
-              onClick={handleReopenSo} disabled={updateStatus.isPending}>
-              <RotateCcw {...ICON} />
-              <span>Reopen SO</span>
-            </Button>
-          ) : canCancel && !isEditing ? (
+          {/* Cancel SO (Commander 2026-05-29). A cancelled SO stops proceeding
+              (greys out, no MRP/PO/DO). Reopen was REMOVED (Commander 2026-06-22)
+              — the backend treats a cancelled SO as final (so_cancelled_final);
+              to revive, create a new SO. */}
+          {!isCancelled && canCancel && !isEditing ? (
             <Button variant="ghost" size="md"
               onClick={handleCancelSo} disabled={updateStatus.isPending}
               style={{ color: 'var(--c-festive-b, #B8331F)' }}>
@@ -963,12 +955,8 @@ export const SalesOrderDetail = () => {
         }}>
           <span style={LOCK_BANNER_INNER_STYLE}>
             <Ban {...ICON} />
-            <span>This SO is <strong>cancelled</strong> — it won't proceed (no MRP / PO / DO / production).
-              Press <em>Reopen SO</em> above to bring it back.</span>
+            <span>This SO is <strong>cancelled</strong> — it won't proceed (no MRP / PO / DO / production).</span>
           </span>
-          <Button variant="primary" size="sm" onClick={handleReopenSo} disabled={updateStatus.isPending}>
-            <RotateCcw {...ICON} /> Reopen
-          </Button>
         </div>
       ) : null}
 
