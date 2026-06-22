@@ -172,14 +172,14 @@ export const NAV_TABS: NavTab[] = [
   },
 
   // ── Supply Chain — ported 2990's furniture SCM (/api/scm) ────
-  // Owner-gated (perm "*") while the port is in progress; the server gates
-  // /api/scm/* with requirePermission("*"). New SCM modules get added here as
-  // they're ported.
+  // Gated on scm.access; Owner / IT Admin pass via their "*" wildcard. The
+  // server gates /api/scm/* with requireAnyPermission(["*","scm.access"]).
+  // New SCM modules get added here as they're ported.
   {
     label: "Supply Chain",
     icon: Boxes,
     groupId: "scm",
-    anyPerm: ["*"],
+    anyPerm: ["*", "scm.access"],
     children: [
       // 1:1 with 2990's backend Sidebar sectioning + order: Sales Order ->
       // Consignment -> Procurement -> Transportation -> Warehouse (then Finance,
@@ -193,73 +193,73 @@ export const NAV_TABS: NavTab[] = [
         label: "Sales Order",
         icon: ShoppingCart,
         groupId: "scm-sales",
-        anyPerm: ["*"],
+        anyPerm: ["*", "scm.access"],
         children: [
-          { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, perm: "*" },
-          { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, perm: "*" },
-          { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, perm: "*" },
-          { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, perm: "*" },
+          { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, anyPerm: ["*", "scm.access"] },
         ],
       },
       {
         label: "Consignment",
         icon: Handshake,
         groupId: "scm-consignment",
-        anyPerm: ["*"],
+        anyPerm: ["*", "scm.access"],
         children: [
-          { to: "/scm/consignment-orders", label: "Consignment Order", icon: Handshake, perm: "*" },
-          { to: "/scm/consignment-notes", label: "Consignment Note", icon: FileText, perm: "*" },
-          { to: "/scm/consignment-returns", label: "Consignment Return", icon: CornerUpLeft, perm: "*" },
-          { to: "/scm/purchase-consignment-orders", label: "Purchase Consignment Order", icon: HandCoins, perm: "*" },
-          { to: "/scm/purchase-consignment-receives", label: "Purchase Consignment Receive", icon: PackageOpen, perm: "*" },
-          { to: "/scm/purchase-consignment-returns", label: "Purchase Consignment Return", icon: Reply, perm: "*" },
+          { to: "/scm/consignment-orders", label: "Consignment Order", icon: Handshake, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/consignment-notes", label: "Consignment Note", icon: FileText, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/consignment-returns", label: "Consignment Return", icon: CornerUpLeft, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/purchase-consignment-orders", label: "Purchase Consignment Order", icon: HandCoins, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/purchase-consignment-receives", label: "Purchase Consignment Receive", icon: PackageOpen, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/purchase-consignment-returns", label: "Purchase Consignment Return", icon: Reply, anyPerm: ["*", "scm.access"] },
         ],
       },
       {
         label: "Procurement",
         icon: Package,
         groupId: "scm-procurement",
-        anyPerm: ["*"],
+        anyPerm: ["*", "scm.access"],
         children: [
-          { to: "/scm/products", label: "Products & Maintenance", icon: Sofa, perm: "*" },
-          { to: "/scm/suppliers", label: "Suppliers", icon: Truck, perm: "*" },
-          { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, perm: "*" },
-          { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, perm: "*" },
-          { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, perm: "*" },
-          { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, perm: "*" },
-          { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, perm: "*" },
+          { to: "/scm/products", label: "Products & Maintenance", icon: Sofa, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/suppliers", label: "Suppliers", icon: Truck, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, anyPerm: ["*", "scm.access"] },
         ],
       },
       {
         label: "Transportation",
         icon: Truck,
         groupId: "scm-transportation",
-        anyPerm: ["*"],
+        anyPerm: ["*", "scm.access"],
         children: [
-          { to: "/scm/drivers", label: "Drivers", icon: Truck, perm: "*" },
+          { to: "/scm/drivers", label: "Drivers", icon: Truck, anyPerm: ["*", "scm.access"] },
         ],
       },
       {
         label: "Warehouse",
         icon: Warehouse,
         groupId: "scm-warehouse",
-        anyPerm: ["*"],
+        anyPerm: ["*", "scm.access"],
         children: [
-          { to: "/scm/inventory", label: "Inventory", icon: Package, perm: "*" },
-          { to: "/scm/stock-adjustments", label: "Adjustments", icon: SlidersHorizontal, perm: "*" },
-          { to: "/scm/stock-transfers", label: "Transfers", icon: ArrowLeftRight, perm: "*" },
-          { to: "/scm/stock-takes", label: "Stock Take", icon: ClipboardCheck, perm: "*" },
-          { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, perm: "*" },
+          { to: "/scm/inventory", label: "Inventory", icon: Package, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/stock-adjustments", label: "Adjustments", icon: SlidersHorizontal, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/stock-transfers", label: "Transfers", icon: ArrowLeftRight, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/stock-takes", label: "Stock Take", icon: ClipboardCheck, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, anyPerm: ["*", "scm.access"] },
         ],
       },
       {
         label: "Finance",
         icon: BookOpen,
         groupId: "scm-finance",
-        anyPerm: ["*"],
+        anyPerm: ["*", "scm.access"],
         children: [
-          { to: "/scm/accounting", label: "Accounting", icon: BookOpen, perm: "*" },
-          { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, perm: "*" },
+          { to: "/scm/accounting", label: "Accounting", icon: BookOpen, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, anyPerm: ["*", "scm.access"] },
         ],
       },
     ],

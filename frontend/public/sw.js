@@ -86,7 +86,11 @@
 // click-to-edit rows; Save skips the effective-date prompt when nothing changed;
 // One-shot filter chip removed; Fabric single Code (supplier code) + green
 // Active. Config data hard-aligned to HOOKKA live values (mig 0030).
-const VERSION = "houzs-erp-v19";
+// v20 (2026-06-22): SCM access opened to non-Owner roles — new scm.access
+// permission; the /api/scm gate + nav + /scm routes now accept ["*","scm.access"]
+// (Owner/IT-Admin keep access via *); granted to Purchaser + Storekeeper roles
+// (mig 0031).
+const VERSION = "houzs-erp-v20";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
