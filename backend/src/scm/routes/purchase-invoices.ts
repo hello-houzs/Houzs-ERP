@@ -164,7 +164,10 @@ purchaseInvoices.get('/', async (c) => {
   const sb = c.get('supabase');
   let q = sb.from('purchase_invoices')
     .select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number)`)
-    .order('invoice_date', { ascending: false });
+    .order('invoice_date', { ascending: false })
+    // Bound the result so PostgREST's default 1000-row cap can't silently
+    // truncate the PI list — match the SO/DO/SI list convention.
+    .limit(500);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);

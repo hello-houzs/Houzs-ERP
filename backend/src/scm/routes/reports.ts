@@ -118,7 +118,11 @@ reports.get('/sales-order-detail-listing', async (c) => {
     const { data: paymentTotals, error: payErr } = await sb
       .from('mfg_sales_order_payments')
       .select('so_doc_no, amount_centi, paid_at, account_sheet, approval_code, collected_by')
-      .in('so_doc_no', docNos);
+      .in('so_doc_no', docNos)
+      // .limit(5000): a doc can have many instalment payments, so rows across the
+      // listed docs can exceed PostgREST's default 1000-row cap — truncation
+      // would UNDERSTATE paid_total_centi (overstate outstanding).
+      .limit(5000);
     if (payErr) return c.json({ error: 'load_failed', reason: payErr.message }, 500);
     for (const p of paymentTotals ?? []) {
       const row = p as {
@@ -161,7 +165,10 @@ reports.get('/sales-order-detail-listing', async (c) => {
     const { data: staffRows, error: staffErr } = await sb
       .from('staff')
       .select('id, name')
-      .in('id', collectorIds);
+      .in('id', collectorIds)
+      // .limit(5000): bound the collector-name resolve so PostgREST's default
+      // 1000-row cap can't drop names (unresolved collector → blank column).
+      .limit(5000);
     if (staffErr) return c.json({ error: 'load_failed', reason: staffErr.message }, 500);
     for (const s of staffRows ?? []) {
       const row = s as { id: string; name: string | null };

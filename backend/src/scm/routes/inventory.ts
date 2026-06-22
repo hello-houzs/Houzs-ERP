@@ -148,7 +148,11 @@ inventory.get('/', async (c) => {
   if (search) { const s = escapeForOr(search); if (s) q = q.or(`product_code.ilike.%${s}%,product_name.ilike.%${s}%`); }
   if (showAll && category && category !== 'all') q = q.eq('category', category);
 
-  const { data, error } = await q.order('product_code');
+  // High bound (5000 ≫ catalog) so PostgREST's default 1000-row cap can't
+  // silently truncate stock balances — partial stock reads like MISSING stock.
+  // The limit caps the absolute max; any ?warehouseId/?search/?category filter
+  // applied above only narrows the set, so filtered views stay correct.
+  const { data, error } = await q.order('product_code').limit(5000);
   if (error) {
     if (/relation .* does not exist/i.test(error.message) || /column .* does not exist/i.test(error.message)) {
       return c.json({ error: 'migration_pending', reason: 'Run migrations 0050 + 0053 against Supabase.' }, 500);
@@ -178,7 +182,11 @@ inventory.get('/products', async (c) => {
   if (search) { const s = escapeForOr(search); if (s) q = q.or(`product_code.ilike.%${s}%,product_name.ilike.%${s}%`); }
   if (category && category !== 'all') q = q.eq('category', category);
 
-  const { data, error } = await q.order('product_code');
+  // High bound (5000 ≫ catalog) so PostgREST's default 1000-row cap can't
+  // silently truncate product totals — partial stock reads like MISSING stock.
+  // The limit caps the absolute max; any ?search/?category filter applied above
+  // only narrows the set, so filtered views stay correct.
+  const { data, error } = await q.order('product_code').limit(5000);
   if (error) {
     if (/relation .* does not exist/i.test(error.message)) {
       return c.json({ error: 'migration_pending', reason: 'Run migrations 0050/0053/0054.' }, 500);

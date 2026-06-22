@@ -61,7 +61,10 @@ stockTransfers.get('/', async (c) => {
       `to_warehouse:warehouses!stock_transfers_to_warehouse_id_fkey(id, code, name)`,
     )
     .order('transfer_date', { ascending: false })
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    // High bound so PostgREST's default 1000-row cap can't silently truncate
+    // the transfer list (filters above only narrow the set).
+    .limit(5000);
 
   if (status && VALID_STATUS.has(status)) q = q.eq('status', status);
   if (fromWarehouseId) q = q.eq('from_warehouse_id', fromWarehouseId);
@@ -82,7 +85,10 @@ stockTransfers.get('/', async (c) => {
   if (ids.length > 0) {
     const { data: lineRows } = await sb.from('stock_transfer_lines')
       .select('stock_transfer_id')
-      .in('stock_transfer_id', ids);
+      .in('stock_transfer_id', ids)
+      // .limit(5000): lines across the listed transfers can exceed PostgREST's
+      // default 1000-row cap; truncation would understate line_count.
+      .limit(5000);
     const lineList = (lineRows as unknown as Array<{ stock_transfer_id: string }>) ?? [];
     for (const l of lineList) {
       countByXfer.set(l.stock_transfer_id, (countByXfer.get(l.stock_transfer_id) ?? 0) + 1);
