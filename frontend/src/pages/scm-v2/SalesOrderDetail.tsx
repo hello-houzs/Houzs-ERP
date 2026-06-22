@@ -1550,13 +1550,16 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
      values differ from the current form to avoid an infinite loop. */
   useEffect(() => {
     if (!form.salespersonId) return;
+    /* Houzs 2026-06-23 (owner): Venue is manually pickable — only auto-fill the
+       DEFAULT when it is still empty; never override a manual or loaded pick. */
+    if (form.venueId) return;
     const picked = staffList.find((s) => s.id === form.salespersonId);
     const resolvedId = picked?.venueId ?? '';
+    if (!resolvedId) return;
     const resolvedName =
       (venuesQ.data ?? []).find((v) => v.id === resolvedId)?.name ?? '';
-    if (resolvedId === form.venueId && resolvedName === form.venue) return;
     setForm((s) => ({ ...s, venueId: resolvedId, venue: resolvedName }));
-  }, [form.salespersonId, staffList, venuesQ.data, form.venueId, form.venue]);
+  }, [form.salespersonId, staffList, venuesQ.data, form.venueId]);
 
   /* Commander 2026-05-27 (Fix 5) — State → Sales Location cascade. When the
      user picks a delivery state, look up state_warehouse_mappings and set
@@ -1899,19 +1902,26 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Venue</span>
-              {/* Commander 2026-05-27: "venue就不能换 自动跳出来". Venue is
-                  derived from the picked salesperson's staff.venue_id and
-                  is read-only on Edit too. The auto-sync effect above
-                  keeps form.venue / form.venueId aligned. */}
-              <input className={styles.fieldInput} value={form.venue || '—'}
-                disabled readOnly
-                aria-label="Venue (auto-set from salesperson)" />
-              <span style={{
-                fontSize: 'var(--fs-11)',
-                color: 'var(--fg-muted)',
-                marginTop: 2,
-              }}>
-                Auto-set from the salesperson's assigned venue. Contact admin to change.
+              {/* Houzs 2026-06-23 (owner): Venue is manually pickable (was a
+                  locked 2990 field). Defaults to the salesperson's venue. */}
+              <span className={styles.selectWrap}>
+                <select
+                  className={styles.fieldSelect}
+                  value={form.venueId || ''}
+                  disabled={inputsDisabled}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    const name = (venuesQ.data ?? []).find((v) => v.id === id)?.name ?? '';
+                    setForm((s) => ({ ...s, venueId: id, venue: name }));
+                  }}
+                  aria-label="Venue"
+                >
+                  <option value="">—</option>
+                  {(venuesQ.data ?? []).map((v) => (
+                    <option key={v.id} value={v.id}>{v.name}</option>
+                  ))}
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
             </label>
             <label className={styles.field}>
