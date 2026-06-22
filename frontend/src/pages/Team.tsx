@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, ArrowLeft, SlidersHorizontal } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, ArrowLeft, SlidersHorizontal, Eye, EyeOff } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -3698,9 +3698,12 @@ export function InvitePanel({
   const [positionId, setPositionId] = useState<number | "">("");
   const [managerId, setManagerId] = useState<number | "">("");
   const [managerQuery, setManagerQuery] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<{
-    token: string;
+    active?: boolean;
+    token?: string;
     email: string;
     invite_url?: string;
     email_sent?: boolean;
@@ -3716,10 +3719,16 @@ export function InvitePanel({
       toast.error("Email is required");
       return;
     }
+    const pw = password.trim();
+    if (pw && pw.length < 12) {
+      toast.error("Password must be at least 12 characters");
+      return;
+    }
     setBusy(true);
     try {
       const res = await api.post<{
-        token: string;
+        active?: boolean;
+        token?: string;
         email: string;
         invite_url?: string;
         email_sent?: boolean;
@@ -3731,10 +3740,13 @@ export function InvitePanel({
         position_id: positionId || undefined,
         manager_id: managerId || undefined,
         phone: phone.trim() || undefined,
+        password: pw || undefined,
       });
       setIssued(res);
       toast.success(
-        res.email_sent
+        res.active
+          ? `${res.email} can sign in now`
+          : res.email_sent
           ? `Invitation emailed to ${res.email}`
           : `Invitation issued for ${res.email}`
       );
@@ -3754,6 +3766,8 @@ export function InvitePanel({
     setPositionId("");
     setManagerId("");
     setManagerQuery("");
+    setPassword("");
+    setShowPassword(false);
     setIssued(null);
     onClose();
   }
@@ -3773,7 +3787,7 @@ export function InvitePanel({
       open={open}
       onClose={reset}
       title="Invite Member"
-      subtitle="Send a one-time invitation link"
+      subtitle="Set a password to create the account now, or send an invite link"
       width={440}
     >
       {!issued ? (
@@ -3802,6 +3816,34 @@ export function InvitePanel({
               placeholder="member@houzscentury.com"
               className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
             />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Password
+            </label>
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Set an initial password (min 12 chars)"
+                autoComplete="new-password"
+                className="h-10 w-full rounded-md border border-border bg-surface px-3 pr-10 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((s) => !s)}
+                className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-ink-muted transition-colors hover:text-accent"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                title={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </div>
+            <div className="mt-1 text-[10px] text-ink-muted">
+              Set a password to create the account now — they sign in with email +
+              this password (changeable later). Leave blank to send an invite link.
+            </div>
           </div>
           <div>
             <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
@@ -3917,9 +3959,24 @@ export function InvitePanel({
           </div>
           <div className="pt-2">
             <Button variant="brass" className="w-full" onClick={submit} disabled={busy}>
-              {busy ? "Issuing…" : "Issue Invitation"}
+              {busy
+                ? "Saving…"
+                : password.trim()
+                ? "Create Account"
+                : "Issue Invitation"}
             </Button>
           </div>
+        </PanelSection>
+      ) : issued.active ? (
+        <PanelSection title="Account Created">
+          <p className="text-[12.5px] text-ink-secondary">
+            <span className="font-semibold text-ink">{issued.email}</span> can sign in
+            now with the password you set. They can change it anytime from their
+            profile.
+          </p>
+          <Button variant="brass" className="w-full" onClick={reset}>
+            Done
+          </Button>
         </PanelSection>
       ) : (
         <PanelSection title="Invitation Issued">

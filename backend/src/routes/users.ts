@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { generateToken, isoIn } from "../services/auth";
+import { generateToken, hashPassword, isoIn } from "../services/auth";
+import { validatePasswordStrength } from "../services/passwordStrength";
 import { requirePermission } from "../middleware/auth";
 import {
   sendEmail,
@@ -347,12 +348,26 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     position_id?: number | null;
     manager_id?: number | null;
     phone?: string | null;
+    // When provided, the admin is setting an initial password and the account
+    // is created ACTIVE — no invite link / accept step. The member signs in
+    // with email + this password and can change it later.
+    password?: string;
   }>();
   if (!body.email || !body.role_id) {
     return c.json({ error: "email and role_id are required" }, 400);
   }
   const email = body.email.toLowerCase().trim();
   const name = body.name?.trim() || null;
+
+  // Direct-provision path: admin sets the password now → active account.
+  const directPassword = body.password?.trim() || null;
+  let passwordHash: string | null = null;
+  if (directPassword) {
+    const strength = validatePasswordStrength(directPassword, email);
+    if (!strength.ok) return c.json({ error: strength.error }, 400);
+    passwordHash = await hashPassword(directPassword);
+  }
+  const activate = !!passwordHash;
 
   const db = getDb(c.env);
 
@@ -406,9 +421,16 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
       position_id: positionId,
       manager_id: managerId,
       phone: body.phone?.trim() || null,
-      status: "invited",
+      status: activate ? "active" : "invited",
       invited_by: me.id || null,
-      invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
+      ...(activate
+        ? {
+            password_hash: passwordHash,
+            joined_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
+          }
+        : {
+            invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
+          }),
     });
   } else {
     // Re-invite — bump role and reset invited_at, drop any old token.
@@ -422,14 +444,40 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
         position_id: positionId,
         manager_id: managerId,
         ...(body.phone !== undefined ? { phone: body.phone?.trim() || null } : {}),
-        status: "invited",
+        status: activate ? "active" : "invited",
         invited_by: me.id || null,
-        invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
+        ...(activate
+          ? {
+              password_hash: passwordHash,
+              joined_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
+            }
+          : {
+              invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
+            }),
       })
       .where(eq(users.email, email));
     await db
       .delete(invitations)
       .where(and(eq(invitations.email, email), isNull(invitations.accepted_at)));
+  }
+
+  // Admin set a password → the account is live now; no invite token/email.
+  if (activate) {
+    await audit(c, {
+      action: "user.create",
+      entityType: "user",
+      entityId: email,
+      summary: `Created ${email} as ${role[0].name} (active — password set by admin)`,
+      meta: {
+        email,
+        role_id: body.role_id,
+        department_id: departmentId,
+        position_id: positionId,
+        manager_id: managerId,
+        activated: true,
+      },
+    });
+    return c.json({ active: true, email });
   }
 
   // Issue a fresh invitation token.
