@@ -22,7 +22,17 @@ export const dbInject = createMiddleware<{ Bindings: Env }>(async (c, next) => {
   // Build per request, do NOT .end() it: the socket is to Hyperdrive's local
   // proxy (cheap) and Hyperdrive owns origin-side pooling. Closing per request
   // caused connection churn/exhaustion on 2026-06-13. Matches Hookka's config.
-  c.env.DB = d1Compat(() => getSql(url)) as unknown as D1Database;
+  //
+  // CRITICAL — assign a NEW per-request env object; do NOT mutate the shared
+  // `c.env` (the old `c.env.DB = ...`). Workers serves many requests
+  // concurrently in ONE isolate that all share the same env object, so mutating
+  // it lets a later request clobber an in-flight request's DB client: a handler
+  // resuming after an await (e.g. the 12s cold-start hang) then touches a socket
+  // opened in ANOTHER request's context -> "Cannot perform I/O on behalf of a
+  // different request" 500s (intermittent, every page, worse the more staff are
+  // online). Spreading into a fresh object — exactly what withPgDb() already
+  // does for the cron path — isolates each request's client to its own context.
+  c.env = { ...c.env, DB: d1Compat(() => getSql(url)) as unknown as D1Database };
   await next();
 });
 

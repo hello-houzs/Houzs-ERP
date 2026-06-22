@@ -194,9 +194,15 @@ const FIRST_ATTEMPT_TIMEOUT_MARKER =
 // A connection error means the query never reached the server, so re-running is
 // safe (no double-write). Real query errors (constraints, syntax) don't match
 // and propagate unchanged.
+//
+// "Cannot perform I/O on behalf of a different request" is also retried here as
+// belt-and-suspenders: the root cause (a DB client shared across request
+// contexts) is fixed in middleware/db.ts, but if any residual cross-context use
+// slips through, the retry runs makeSql() to open a FRESH socket in the CURRENT
+// request's context — which resolves it instead of surfacing a generic 500.
 function isDeadConnError(e: unknown): boolean {
   const m = String((e as Error)?.message ?? e ?? "");
-  return /CONNECTION_CLOSED|Network connection lost|ECONNRESET|ECONNREFUSED|connection closed|terminating connection|server closed the connection|write EPIPE|Timed out .*pool|d1-compat first attempt timed out/i.test(
+  return /CONNECTION_CLOSED|Network connection lost|ECONNRESET|ECONNREFUSED|connection closed|terminating connection|server closed the connection|write EPIPE|Timed out .*pool|d1-compat first attempt timed out|Cannot perform I\/O on behalf of a different request/i.test(
     m,
   );
 }
