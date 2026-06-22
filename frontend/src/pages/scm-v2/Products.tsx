@@ -755,13 +755,6 @@ const SkuMasterTab = () => {
               {c.label}
             </CategoryChip>
           ))}
-          {/* One-shot filter chip — narrows to SKUs minted from a remark. */}
-          <CategoryChip
-            active={oneShotOnly}
-            onClick={() => setOneShotOnly((v) => !v)}
-          >
-            One-shot
-          </CategoryChip>
         </div>
 
         <div className={styles.actionsRow}>
@@ -1664,17 +1657,18 @@ const MAINTENANCE_TABS: {
  *   emptyHint      — optional message rendered when this scope has no row
  *                    yet AND the master fallback also has none. Supplier
  *                    Detail uses this to nudge "Click Edit to seed".
- *   singleCostColumn — when true, hide the redundant costSen "COST RM"
- *                    column and relabel the kept priceSen column "Cost".
- *                    Supplier Detail sets this because on a supplier the
- *                    surcharge IS our cost — a second cost column confuses.
- *                    Defaults false → Products-page behaviour unchanged.
+ *   singleCostColumn — DEPRECATED no-op (owner 2026-06-22). Every priced pool
+ *                    now shows exactly ONE price (the single "RM" surcharge IS
+ *                    the SO cost), so the old two-column / relabel behaviour is
+ *                    gone. The prop is retained so existing callers (Supplier
+ *                    Detail) keep compiling; it has no effect.
  */
 export const MaintenanceTab = ({
   scope = 'master',
   sectionFilter,
   emptyHint,
-  singleCostColumn = false,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  singleCostColumn: _singleCostColumn = false,
 }: {
   scope?: string;
   sectionFilter?: MaintenanceSection[];
@@ -1790,6 +1784,16 @@ export const MaintenanceTab = ({
 
   const handleSave = async () => {
     if (!draft) return;
+    // No-op guard (owner 2026-06-22) — if nothing changed, just close. Don't
+    // prompt for an effective date and don't append a new history version for
+    // an identical config. Compare against the same baseline startEdit seeded
+    // the draft from (supplier-scope row, else master fallback).
+    const baselineConfig = resolved.data?.data ?? masterFallback.data?.data ?? null;
+    if (baselineConfig && JSON.stringify(baselineConfig) === JSON.stringify(draft)) {
+      setDraft(null);
+      setEditMode(false);
+      return;
+    }
     const effectiveFrom = await askPrompt({
       title: 'Effective from (YYYY-MM-DD)?',
       body: 'The new pricing applies from this date onward.',
@@ -2003,7 +2007,6 @@ export const MaintenanceTab = ({
             editMode={editMode}
             onChange={(next) => setDraft(next)}
             priced={active.priced}
-            singleCostColumn={singleCostColumn}
             brandingSuggestions={brandingPool.distinct}
           />
         )}
@@ -3007,7 +3010,6 @@ const MaintenanceList = ({
   editMode,
   onChange,
   priced,
-  singleCostColumn = false,
   brandingSuggestions,
 }: {
   listKey: MaintenanceListKey;
@@ -3015,7 +3017,6 @@ const MaintenanceList = ({
   editMode: boolean;
   onChange: (next: MaintenanceConfig) => void;
   priced: boolean;
-  singleCostColumn?: boolean;
   /** DISTINCT branding values across products + models — rendered as a
       read-only suggestion list when the Brandings pool is empty. */
   brandingSuggestions?: string[];
@@ -3030,10 +3031,6 @@ const MaintenanceList = ({
   const [draftLabel, setDraftLabel] = useState('');
   const [draftDim, setDraftDim] = useState('');
   const [draftPrice, setDraftPrice] = useState('0.00');
-  /* PR #216 — Commander 2026-05-27: parallel cost-side input. Operation
-     enters the estimated raw cost alongside the selling price; the value
-     persists into PricedOption.costSen and feeds computeMfgLineCost(). */
-  const [draftCost, setDraftCost] = useState('0.00');
 
   /* Commander 2026-05-27: "Maintenance 也要有 Sort 的功能" — drag-and-drop
      row reorder when editMode. Uses native HTML5 drag API (no library).
@@ -3507,20 +3504,17 @@ const MaintenanceList = ({
     const v = draftValue.trim();
     if (!v) return;
     const priceSen = Math.round((Number(draftPrice) || 0) * 100);
-    const costSenRaw = Math.round((Number(draftCost) || 0) * 100);
     const next = JSON.parse(JSON.stringify(config)) as MaintenanceConfig;
     const arr = (next[listKey] as PricedOption[] | undefined) ?? [];
-    // costSen is opt-in — store only when commander typed a non-zero value
-    // so old rows stay shape-identical (avoids dirty diffs on save).
-    const row: PricedOption = costSenRaw > 0
-      ? { value: v, priceSen, costSen: costSenRaw }
-      : { value: v, priceSen };
+    // ONE price (owner 2026-06-22) — new rows carry only the single priceSen
+    // surcharge (which IS the SO cost). The legacy costSen field is no longer
+    // authored here.
+    const row: PricedOption = { value: v, priceSen };
     arr.push(row);
     (next as Record<string, unknown>)[listKey] = arr;
     onChange(next);
     setDraftValue('');
     setDraftPrice('0.00');
-    setDraftCost('0.00');
   };
 
   return (
@@ -3567,8 +3561,14 @@ const MaintenanceList = ({
             )}
           </span>
           <span style={{ display: 'inline-flex', gap: 'var(--space-3)', alignItems: 'center', justifyContent: 'flex-end' }}>
+            {/* ONE price only (owner 2026-06-22). The single "RM" value IS the
+                cost used for SO costing — the cost engine reads priceSen first
+                (lookupCost: hit.priceSen ?? hit.costSen). The former parallel
+                "COST RM" (costSen) column was removed so every priced pool shows
+                exactly one surcharge. costSen is left untouched on existing rows
+                (it stays a fallback in the engine) but is no longer editable. */}
             <span className={styles.maintRowPrice}>
-              <span className={styles.maintRowRmPrefix}>{singleCostColumn ? 'Cost' : 'RM'}</span>
+              <span className={styles.maintRowRmPrefix}>RM</span>
               {editMode ? (
                 <MoneyInput
                   bare
@@ -3597,49 +3597,6 @@ const MaintenanceList = ({
                 </span>
               )}
             </span>
-            {/* PR #216 — parallel cost column. Edit mode renders an input;
-                read mode appends "· RM 80.00 cost" when costSen is set,
-                otherwise stays silent so old rows look unchanged.
-                singleCostColumn (Supplier Detail) hides this whole column —
-                there the priceSen "Cost" column already IS our cost. */}
-            {!singleCostColumn && (editMode ? (
-              <span className={styles.maintRowPrice} title="Estimated raw cost (Operation)">
-                <span className={styles.maintRowRmPrefix}>COST RM</span>
-                <MoneyInput
-                  bare
-                  valueSen={opt.costSen ?? 0}
-                  onCommit={(sen) => {
-                    const next = JSON.parse(JSON.stringify(config)) as MaintenanceConfig;
-                    const list = next[listKey] as PricedOption[];
-                    if (sen != null && sen > 0) {
-                      list[i]!.costSen = sen;
-                    } else {
-                      delete list[i]!.costSen;
-                    }
-                    onChange(next);
-                  }}
-                  style={{
-                    width: 90,
-                    textAlign: 'right',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 'var(--fs-14)',
-                    background: 'var(--c-cream)',
-                    border: '1px dashed var(--line-strong)',
-                    borderRadius: 'var(--radius-sm)',
-                    padding: '4px 8px',
-                    outline: 'none',
-                  }}
-                />
-              </span>
-            ) : (
-              opt.costSen != null && opt.costSen > 0 ? (
-                <span className={styles.maintRowPrice} style={{ color: 'var(--fg-muted)' }}>
-                  <span className={styles.maintRowRmPrefix}>RM</span>
-                  {(opt.costSen / 100).toFixed(2)}
-                  <span style={{ marginLeft: 4, fontFamily: 'var(--font-button)', fontSize: 'var(--fs-11)', letterSpacing: '0.08em' }}>COST</span>
-                </span>
-              ) : null
-            ))}
             {/* ACTIVE toggle (owner spec 2026-06-12) — inactive options are
                 hidden from NEW-entry pickers (SO/PO/GRN/PI/PR/adjustment
                 variant selects); price/cost lookups still resolve them so
@@ -3720,7 +3677,9 @@ const MaintenanceList = ({
             }}
           />
           <span style={{ display: 'inline-flex', gap: 'var(--space-2)', alignItems: 'center' }}>
-            <span className={styles.maintRowRmPrefix}>{singleCostColumn ? 'Cost' : 'RM'}</span>
+            {/* ONE price only (owner 2026-06-22) — the single "RM" surcharge IS
+                the SO cost. The former parallel "COST RM" add input was removed. */}
+            <span className={styles.maintRowRmPrefix}>RM</span>
             <input
               type="number"
               step="0.01"
@@ -3739,33 +3698,6 @@ const MaintenanceList = ({
                 outline: 'none',
               }}
             />
-            {/* PR #216 — Operation-side cost input on the add-new row.
-                singleCostColumn (Supplier Detail) hides it for parity with
-                the per-row column. */}
-            {!singleCostColumn && (
-              <>
-                <span className={styles.maintRowRmPrefix}>COST RM</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={draftCost}
-                  onChange={(e) => setDraftCost(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') addItem(); }}
-                  title="Estimated raw cost (Operation)"
-                  style={{
-                    width: 90,
-                    textAlign: 'right',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 'var(--fs-14)',
-                    background: 'var(--c-cream)',
-                    border: '1px dashed var(--line-strong)',
-                    borderRadius: 'var(--radius-sm)',
-                    padding: '6px 8px',
-                    outline: 'none',
-                  }}
-                />
-              </>
-            )}
             <Button variant="primary" size="sm" onClick={addItem}>
               <Plus {...ICON_PROPS} />
               <span>Add</span>

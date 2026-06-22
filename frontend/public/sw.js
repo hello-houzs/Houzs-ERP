@@ -80,7 +80,13 @@
 // v18 (2026-06-22): removed the "Reopen SO" button — the backend treats a
 // cancelled SO as final (so_cancelled_final); the button always 409'd with no
 // notice. A cancelled SO is now visibly final; to revive, create a new SO.
-const VERSION = "houzs-erp-v18";
+// v19 (2026-06-22): Maintenance unified to ONE price — removed the COST RM
+// second field across all pools; Specials tab single-price (the one number now
+// feeds SO costing — fixes special add-ons contributing 0 cost), green Active,
+// click-to-edit rows; Save skips the effective-date prompt when nothing changed;
+// One-shot filter chip removed; Fabric single Code (supplier code) + green
+// Active. Config data hard-aligned to HOOKKA live values (mig 0030).
+const VERSION = "houzs-erp-v19";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

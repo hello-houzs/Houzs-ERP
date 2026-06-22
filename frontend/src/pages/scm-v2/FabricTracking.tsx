@@ -118,7 +118,6 @@ const NewFabricDialog = ({ onClose }: { onClose: () => void }) => {
   const [form, setForm] = useState({
     fabricCode: '',
     fabricDescription: '',
-    supplierCode: '',
     series: '',
     colours: '',
     sofaPriceTier: 'PRICE_2' as FabricTier,
@@ -137,7 +136,10 @@ const NewFabricDialog = ({ onClose }: { onClose: () => void }) => {
     create.mutate({
       fabricCode: form.fabricCode.trim(),
       fabricDescription: form.fabricDescription.trim() || undefined,
-      supplierCode: form.supplierCode.trim() || undefined,
+      // Owner 2026-06-22 — supplier code IS our code; default it to the fabric
+      // code so the column stays populated for CSV round-trip / legacy lookups
+      // without asking the user for a separate value.
+      supplierCode: form.fabricCode.trim() || undefined,
       series: form.series.trim() || undefined,
       sofaPriceTier: form.sofaPriceTier,
       bedframePriceTier: form.bedframePriceTier,
@@ -196,13 +198,6 @@ const NewFabricDialog = ({ onClose }: { onClose: () => void }) => {
           <input className={styles.searchInput} style={{ width: '100%' }}
             value={form.series} placeholder="e.g. KOONA VELVET H2O"
             onChange={(e) => set('series', e.target.value)} />
-        </label>
-
-        <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
-          <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', marginBottom: 4 }}>Supplier Code (their SKU)</div>
-          <input className={styles.searchInput} style={{ width: '100%' }}
-            value={form.supplierCode} placeholder="Optional — supplier's own code"
-            onChange={(e) => set('supplierCode', e.target.value)} />
         </label>
 
         <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
