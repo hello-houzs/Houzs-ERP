@@ -231,7 +231,10 @@ consignmentOrders.get('/', async (c) => {
       .in('doc_no', docNos)
       .eq('cancelled', false)
       .order('doc_no')
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      // .limit(5000): lines across 500 list docs can exceed PostgREST's default
+      // 1000-row cap; truncation would drop per-doc category/branding rollups.
+      .limit(5000);
     const cats = new Map<string, Set<string>>();
     const firstCat = new Map<string, string>();
     const firstBranding = new Map<string, string | null>();

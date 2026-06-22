@@ -114,7 +114,11 @@ stockTakes.get('/', async (c) => {
   if (ids.length > 0) {
     const { data: lineRows } = await sb.from('stock_take_lines')
       .select('stock_take_id, variance, counted_qty')
-      .in('stock_take_id', ids);
+      .in('stock_take_id', ids)
+      // .limit(5000): a full-warehouse stock-take has one line per SKU, so lines
+      // across the listed takes can exceed PostgREST's default 1000-row cap;
+      // truncation would understate line_count + variance_total.
+      .limit(5000);
     const list = (lineRows as unknown as Array<{
       stock_take_id: string; variance: number | null; counted_qty: number | null;
     }>) ?? [];

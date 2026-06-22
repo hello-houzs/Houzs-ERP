@@ -149,7 +149,10 @@ mfgPurchaseOrders.get('/', async (c) => {
       `${HEADER_COLS}, supplier:suppliers(id, code, name), items:purchase_order_items(material_code, material_name, qty)`,
     )
     .order('po_date', { ascending: false })
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    // Bound the result so PostgREST's default 1000-row cap can't silently
+    // truncate the PO list — match the SO/DO/SI list convention.
+    .limit(500);
 
   if (status && VALID_STATUSES.has(status)) q = q.eq('status', status);
   if (supplierId) q = q.eq('supplier_id', supplierId);

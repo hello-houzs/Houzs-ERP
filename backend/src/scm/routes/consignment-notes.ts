@@ -337,8 +337,11 @@ consignmentNotes.get('/', async (c) => {
   const childIds = new Set<string>();
   if (rows.length > 0) {
     const ids = rows.map((r) => r.id);
+    // .limit(5000): child reads across 500 list docs can exceed PostgREST's
+    // default 1000-row cap; truncation would mis-stamp has_children (Edit/Cancel
+    // would wrongly stay enabled on downstream-locked notes).
     const { data: crRes } = await sb.from('consignment_delivery_returns')
-      .select('consignment_do_id').in('consignment_do_id', ids).neq('status', 'CANCELLED');
+      .select('consignment_do_id').in('consignment_do_id', ids).neq('status', 'CANCELLED').limit(5000);
     for (const r of ((crRes ?? []) as Array<{ consignment_do_id: string | null }>)) {
       if (r.consignment_do_id) childIds.add(r.consignment_do_id);
     }

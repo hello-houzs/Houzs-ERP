@@ -86,7 +86,9 @@ warehouse.get('/', async (c) => {
   const sb = c.get('supabase');
   const warehouseId = c.req.query('warehouseId');
 
-  let rackQ = sb.from('warehouse_racks').select(RACK_COLS).order('rack');
+  // High bound so PostgREST's default 1000-row cap can't silently truncate the
+  // rack grid (a large warehouse can exceed 1000 racks).
+  let rackQ = sb.from('warehouse_racks').select(RACK_COLS).order('rack').limit(5000);
   if (warehouseId) rackQ = rackQ.eq('warehouse_id', warehouseId);
   const { data: racks, error: rackErr } = await rackQ;
   if (rackErr) {
@@ -103,7 +105,10 @@ warehouse.get('/', async (c) => {
       .from('warehouse_rack_items')
       .select(ITEM_COLS)
       .in('rack_id', rackIds)
-      .order('stocked_in_date', { ascending: true });
+      .order('stocked_in_date', { ascending: true })
+      // .limit(5000): rack items across all racks can exceed PostgREST's default
+      // 1000-row cap; truncation would hide stock sitting on racks.
+      .limit(5000);
     if (itemErr) return c.json({ error: 'load_failed', reason: itemErr.message }, 500);
     items = (itemRows ?? []) as RackItemRow[];
   }
