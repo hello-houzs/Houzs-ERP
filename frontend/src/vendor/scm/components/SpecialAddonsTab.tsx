@@ -45,6 +45,17 @@ const emptySpecialAddon = (): SpecialAddonInput => ({
   sellingPriceSen: 0, costPriceSen: 0, optionGroups: [], active: true, sortOrder: 0,
 });
 
+/* ONE price (owner 2026-06-22). A special add-on now carries a SINGLE price —
+   the surcharge that feeds SO costing. SO costing reads special_addons
+   .cost_price_sen (buildSpecialsPoolFromAddons → def.costPriceSen → lookupCost),
+   so the one number the owner enters is written to BOTH selling_price_sen and
+   cost_price_sen. Mirrors the other Maintenance pools, where the single
+   priceSen IS the cost (lookupCost: hit.priceSen ?? hit.costSen). Keeping the
+   two columns in sync means the displayed price and the costing price never
+   diverge, and no second "COST RM" field is ever shown. */
+const withSyncedPrice = (priceSen: number): { sellingPriceSen: number; costPriceSen: number } =>
+  ({ sellingPriceSen: priceSen, costPriceSen: priceSen });
+
 // ════════════════════════════════════════════════════════════════════════
 // Sub-nav wrapper (mirrors the POS Product Add-ons / Order Add-ons left rail)
 // ════════════════════════════════════════════════════════════════════════
@@ -305,10 +316,12 @@ export const SpecialAddonsManager = ({ categoryFilter }: { categoryFilter?: stri
               </div>
             </div>
             <label>
-              <span style={{ display: 'block', fontSize: 'var(--fs-13)', fontWeight: 600, marginBottom: 4 }}>Base price (RM, can be −)</span>
+              <span style={{ display: 'block', fontSize: 'var(--fs-13)', fontWeight: 600, marginBottom: 4 }}>Price (RM, can be −)</span>
+              {/* ONE price — the single surcharge that flows to SO costing.
+                  Written to both selling + cost so they never diverge. */}
               <input type="number" step={1} style={{ ...inputStyle, width: 140 }}
                 value={senToRm(editing.draft.sellingPriceSen)}
-                onChange={(e) => patch({ sellingPriceSen: rmToSen(Number(e.target.value) || 0) })} />
+                onChange={(e) => patch(withSyncedPrice(rmToSen(Number(e.target.value) || 0)))} />
             </label>
             <label style={{ display: 'flex', alignItems: 'flex-end', gap: 6, fontSize: 'var(--fs-13)' }}>
               <input type="checkbox" checked={editing.draft.active} onChange={(e) => patch({ active: e.target.checked })} />
@@ -382,7 +395,7 @@ export const SpecialAddonsManager = ({ categoryFilter }: { categoryFilter?: stri
                 {r.label}
               </div>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-15)', color: 'var(--c-ink)', textAlign: 'right', whiteSpace: 'nowrap' }}>{rm(r.sellingPriceSen)}</span>
-              <span style={{ fontSize: 'var(--fs-12)', fontWeight: 600, textAlign: 'right', color: r.active ? 'var(--c-secondary-a, #2F5D4F)' : 'var(--fg-muted)' }}>{r.active ? 'Active' : 'Off'}</span>
+              <span style={{ fontSize: 'var(--fs-12)', fontWeight: 600, textAlign: 'right', color: r.active ? 'var(--c-green, #1a7a3a)' : 'var(--fg-muted)' }}>{r.active ? 'Active' : 'Inactive'}</span>
               <button type="button" title="Delete" onClick={(e) => { e.stopPropagation(); void remove(r); }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-muted)', fontSize: 'var(--fs-14)', lineHeight: 1 }}>✕</button>
             </div>

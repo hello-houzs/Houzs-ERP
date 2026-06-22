@@ -236,6 +236,23 @@
   background: rgba(232, 107, 58, 0.18);
 }
 
+/* Active toggle — plain green "Active" text matching the Maintenance pools'
+   active style (owner 2026-06-22), not an orange Yes/No pill. Colour is set
+   inline (green when active, muted when inactive). */
+.activeToggle {
+  font-family: var(--font-sans);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.activeToggle:hover {
+  text-decoration: underline;
+}
+
 .numCell {
   font-family: var(--font-mono);
   font-size: var(--fs-13);

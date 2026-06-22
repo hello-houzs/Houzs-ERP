@@ -19,7 +19,6 @@ import { useState } from 'react';
 import { Check, X, Trash2 } from 'lucide-react';
 import {
   useUpdateFabricTier,
-  useUpdateFabricSupplierCode,
   useUpdateFabricDescription,
   useUpdateFabricSeries,
   useUpdateFabricActive,
@@ -77,9 +76,11 @@ const TierCell = ({ row, field, tier }: {
   );
 };
 
-/* Migration 0167 — ACTIVE toggle (owner spec 2026-06-12). Yes/No click-to-
-   toggle. Inactive = hidden from NEW-entry fabric pickers (SO/CO variant
-   selects, scan-SO catalog); existing documents keep displaying the code. */
+/* Migration 0167 — ACTIVE toggle (owner spec 2026-06-12). Click-to-toggle.
+   Inactive = hidden from NEW-entry fabric pickers (SO/CO variant selects,
+   scan-SO catalog); existing documents keep displaying the code.
+   Owner 2026-06-22 — render the normal green "Active" style the other lists
+   use (Maintenance pools) instead of an orange Yes/No pill. */
 const ActiveCell = ({ row }: { row: FabricTrackingRow }) => {
   const update = useUpdateFabricActive();
   const askConfirm = useConfirm();
@@ -87,7 +88,7 @@ const ActiveCell = ({ row }: { row: FabricTrackingRow }) => {
   return (
     <button
       type="button"
-      className={styles.tierPicker}
+      className={styles.activeToggle}
       /* Commander 2026-06-15 — confirm before toggling active (no 裸奔). */
       onClick={async () => {
         if (await askConfirm({
@@ -103,9 +104,9 @@ const ActiveCell = ({ row }: { row: FabricTrackingRow }) => {
       }}
       disabled={update.isPending}
       title="Active fabrics show in pickers for new entries (asks to confirm)"
-      style={isActive ? undefined : { color: 'var(--fg-muted)', opacity: 0.7 }}
+      style={{ color: isActive ? 'var(--c-green, #1a7a3a)' : 'var(--fg-muted)' }}
     >
-      {isActive ? 'Yes' : 'No'}
+      {isActive ? 'Active' : 'Inactive'}
     </button>
   );
 };
@@ -144,10 +145,13 @@ const bedTier = (r: FabricTrackingRow): FabricTier | null => r.bedframe_price_ti
 const FABRIC_COLUMNS: DataGridColumn<FabricTrackingRow>[] = [
   {
     key: 'code',
-    label: 'Fabric Code',
+    label: 'Code',
     width: 150,
     accessor: (r) => <span className={styles.codeChip}>{r.fabric_code}</span>,
-    searchValue: (r) => r.fabric_code,
+    // Owner 2026-06-22 — supplier code IS our code; no separate internal/
+    // external code. The dedicated "Supplier Code" column is dropped, but its
+    // value stays searchable here so legacy supplier-code lookups still resolve.
+    searchValue: (r) => `${r.fabric_code} ${r.supplier_code ?? ''}`,
     filterValue: (r) => r.fabric_code,
     sortFn: (a, b) => a.fabric_code.localeCompare(b.fabric_code),
   },
@@ -168,15 +172,6 @@ const FABRIC_COLUMNS: DataGridColumn<FabricTrackingRow>[] = [
     searchValue: (r) => r.fabric_description ?? '',
     filterValue: (r) => r.fabric_description ?? '',
     sortFn: (a, b) => (a.fabric_description ?? '').localeCompare(b.fabric_description ?? ''),
-  },
-  {
-    key: 'supplierCode',
-    label: 'Supplier Code',
-    width: 160,
-    accessor: (r) => <SupplierCodeCell id={r.id} value={r.supplier_code ?? ''} />,
-    searchValue: (r) => r.supplier_code ?? '',
-    filterValue: (r) => r.supplier_code ?? '',
-    sortFn: (a, b) => (a.supplier_code ?? '').localeCompare(b.supplier_code ?? ''),
   },
   {
     key: 'sofaTier',
@@ -252,65 +247,7 @@ export const FabricsTable = ({
   </>
 );
 
-const SupplierCodeCell = ({ id, value }: { id: string; value: string }) => {
-  const update = useUpdateFabricSupplierCode();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-
-  const commit = () => {
-    const trimmed = draft.trim();
-    if (trimmed === value.trim()) {
-      setEditing(false);
-      return;
-    }
-    update.mutate(
-      { id, supplierCode: trimmed.length ? trimmed : null },
-      { onSettled: () => setEditing(false) },
-    );
-  };
-
-  const cancel = () => {
-    setDraft(value);
-    setEditing(false);
-  };
-
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        className={value ? styles.supplierCodeChip : styles.supplierCodeEmpty}
-        onClick={() => { setDraft(value); setEditing(true); }}
-        title="Click to edit the supplier's own code"
-      >
-        {value || '+ Add'}
-      </button>
-    );
-  }
-
-  return (
-    <span className={styles.supplierCodeEditor}>
-      <input
-        autoFocus
-        className={styles.supplierCodeInput}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') commit();
-          else if (e.key === 'Escape') cancel();
-        }}
-        onBlur={cancel}
-      />
-      <button type="button" className={styles.iconBtn} onMouseDown={(e) => e.preventDefault()} onClick={commit} title="Save">
-        <Check size={14} strokeWidth={1.75} />
-      </button>
-      <button type="button" className={styles.iconBtn} onMouseDown={(e) => e.preventDefault()} onClick={cancel} title="Cancel">
-        <X size={14} strokeWidth={1.75} />
-      </button>
-    </span>
-  );
-};
-
-/* PR #38 — Click-to-edit Description cell. Same UX as SupplierCodeCell. */
+/* PR #38 — Click-to-edit Description cell. Same UX as the Series cell. */
 const DescriptionCell = ({ id, value }: { id: string; value: string }) => {
   const update = useUpdateFabricDescription();
   const [editing, setEditing] = useState(false);
