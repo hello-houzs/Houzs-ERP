@@ -29,7 +29,9 @@ export const SIZE_INFO: Record<string, SizeInfo> = {
   S:  { label: '3FT',       dim: '90X190CM',  w: 90,  l: 190 },
   SS: { label: '3.5FT',     dim: '107X190CM', w: 107, l: 190 },
   SK: { label: '200X200CM', dim: '',          w: 200, l: 200 },
-  SP: { label: '220X220CM', dim: '',          w: 220, l: 220 },
+  // SP = made-to-order custom size: no fixed dims, so name renders "(CUSTOM)"
+  // not a fake 220X220; real dims + quoted price captured per-order on the line.
+  SP: { label: 'CUSTOM',    dim: '',          w: 0,   l: 0   },
 };
 
 /** "K" → "K · 6FT · 183x190CM" — for pool list displays where commander
