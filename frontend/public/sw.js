@@ -90,7 +90,13 @@
 // permission; the /api/scm gate + nav + /scm routes now accept ["*","scm.access"]
 // (Owner/IT-Admin keep access via *); granted to Purchaser + Storekeeper roles
 // (mig 0031).
-const VERSION = "houzs-erp-v20";
+// v21 (2026-06-22): Specials/Sofa-Specials tabs now have real Edit/Save
+// (effective-dated) + History like every other Maintenance pool, single price
+// that feeds SO costing (mig 0032 special_addons_history); and the vendored
+// Toast shim now uses the non-blocking corner toast instead of a full-screen
+// modal — fixes the "select a value and it jumps away" interruption on the
+// state->warehouse picker (and everywhere that shim was used).
+const VERSION = "houzs-erp-v21";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

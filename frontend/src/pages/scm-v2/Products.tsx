@@ -61,6 +61,8 @@ import {
   useMaintenanceConfigHistory,
   useSaveMaintenanceConfig,
   useSpecialAddons,
+  useSpecialAddonsHistory,
+  useSaveSpecialAddons,
   useRenameSofaCompartment,
   useMfgProductSuppliers,
   useUploadSofaCompartmentPhoto,
@@ -74,6 +76,10 @@ import {
   type SeatHeightPrice,
   type SofaPriceTier,
   type ProductSupplierRow,
+  type SpecialAddonRow,
+  type SpecialAddonInput,
+  type SpecialAddonGroup,
+  type SpecialAddonsHistoryRow,
 } from '../../vendor/scm/lib/mfg-products-queries';
 import { useFabricTrackings } from '../../vendor/scm/lib/fabric-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
@@ -85,7 +91,6 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { FabricsTable } from '../../vendor/scm/components/FabricsTable';
 import { SofaComboTab } from '../../vendor/scm/components/SofaComboTab';
-import { SpecialAddonsManager } from '../../vendor/scm/components/SpecialAddonsTab';
 import { FabricTracking } from './FabricTracking';
 import { formatSizeRich, formatSizeRichWithCfg, resolveSizeInfo } from '../../vendor/scm/lib/size-info';
 import { ProductModels, NewModelDialog } from './ProductModels';
@@ -1945,11 +1950,24 @@ export const MaintenanceTab = ({
       </aside>
 
       <section className={styles.maintPanel}>
+        {isSpecials ? (
+          /* Specials = the scm.special_addons TABLE, but now with TRUE Edit ->
+             Save(effective-date) + History matching the other pools (owner
+             2026-06-22). The panel owns its own header chrome + effective-dated
+             snapshot Save; SO costing still reads the live special_addons table. */
+          <SpecialsMaintenancePanel
+            key={specialsCat}
+            category={specialsCat}
+            label={active.label}
+            description={active.description}
+          />
+        ) : (
+        <>
         <header className={styles.maintHeader}>
           <div>
             <h2 className={styles.maintTitle}>{active.label}</h2>
             <p className={styles.maintSubtitle}>{active.description}</p>
-            {!isSpecials && !isBrandings && resolved.data?.effectiveFrom && (
+            {!isBrandings && resolved.data?.effectiveFrom && (
               <p className={styles.stateInfo} style={{ marginTop: 8 }}>
                 Effective from {resolved.data.effectiveFrom}
                 {resolved.data.hasPendingPriceChange && (
@@ -1959,14 +1977,14 @@ export const MaintenanceTab = ({
                 )}
               </p>
             )}
-            {!isSpecials && !isBrandings && showingMasterFallback && (
+            {!isBrandings && showingMasterFallback && (
               <p className={styles.stateInfo} style={{ marginTop: 8, color: 'var(--c-burnt)' }}>
                 No supplier-specific pricing yet — showing the master baseline.
                 Hit Edit + Save to override.
               </p>
             )}
           </div>
-          {!isSpecials && !isBrandings && (
+          {!isBrandings && (
           <div className={styles.actionsRow}>
             {!editMode ? (
               <Button variant="ghost" size="sm" onClick={startEdit}>
@@ -1991,11 +2009,7 @@ export const MaintenanceTab = ({
           )}
         </header>
 
-        {isSpecials ? (
-          /* Specials live in the shared special_addons table; the editor has its
-             own New/Edit/Delete — no config draft/Save here. (Commander 2026-06-16) */
-          <SpecialAddonsManager categoryFilter={specialsCat} />
-        ) : isBrandings ? (
+        {isBrandings ? (
           /* Brandings are maintained CENTRALLY in Project Maintenance (PMS,
              project_brands). Read-only here — mirrors the SO Maintenance
              "Venues" list. (Houzs re-sourcing) */
@@ -2009,6 +2023,8 @@ export const MaintenanceTab = ({
             priced={active.priced}
             brandingSuggestions={brandingPool.distinct}
           />
+        )}
+        </>
         )}
       </section>
 
@@ -4301,6 +4317,356 @@ const ProductSuppliersDrawer = ({
   );
 };
 
+
+/* ════════════════════════════════════════════════════════════════════════
+   Specials / Sofa Specials Maintenance panel (owner 2026-06-22)
+   ────────────────────────────────────────────────────────────────────────
+   TRUE Edit -> Save(effective-date) + History for the Specials pools, matching
+   the other Maintenance pools. Specials are the scm.special_addons TABLE (richer
+   than a flat config pool: follow-up questions, multi-category, so-description),
+   so we version the TABLE: Edit mutates a draft of THIS category's whole set,
+   Save prompts for an effective date and appends a full snapshot (POST
+   /special-addons/save), which the backend applies onto the live table. SO
+   costing keeps reading the live table via loadSpecialAddons — unchanged.
+
+   ONE price: each add-on shows a SINGLE "Price (RM)" — the surcharge that feeds
+   SO costing — written to BOTH selling_price_sen and cost_price_sen so the
+   displayed price and the costing price never diverge (mirrors the other priced
+   pools, where the single priceSen IS the cost). Follow-up choice extras stay
+   selling-only, as in the configurator.
+   ════════════════════════════════════════════════════════════════════════ */
+
+const senToRmStr = (sen: number): string =>
+  `${sen < 0 ? '−' : ''}RM ${Math.abs(Math.round(sen) / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const rowToSpecialInput = (r: SpecialAddonRow): SpecialAddonInput => ({
+  code: r.code, label: r.label, soDescription: r.soDescription,
+  categories: [...r.categories], sellingPriceSen: r.sellingPriceSen,
+  costPriceSen: r.costPriceSen, optionGroups: JSON.parse(JSON.stringify(r.optionGroups)),
+  active: r.active, sortOrder: r.sortOrder,
+});
+
+const SpecialsMaintenancePanel = ({
+  category,
+  label,
+  description,
+}: {
+  category: 'BEDFRAME' | 'SOFA';
+  label: string;
+  description: string;
+}) => {
+  const list = useSpecialAddons();
+  const historyQ = useSpecialAddonsHistory();
+  const saveAll = useSaveSpecialAddons();
+  const askPrompt = usePrompt();
+  const askConfirm = useConfirm();
+
+  const [editMode, setEditMode] = useState(false);
+  const [draft, setDraft] = useState<SpecialAddonInput[] | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // The FULL set (every category) is what a snapshot must carry — Save versions
+  // the whole table. The panel only EDITS this category's slice; rows of OTHER
+  // categories ride along untouched so a Sofa Save never drops Bedframe add-ons.
+  const allRows = list.data ?? [];
+  const inCat = (r: { categories: string[] }) => r.categories.includes(category);
+  const viewRows = allRows.filter(inCat);
+  // Latest applied effective date for this set (newest non-pending snapshot).
+  const latestApplied = (historyQ.data ?? []).find((h) => !h.isPending) ?? (historyQ.data ?? [])[0] ?? null;
+
+  const startEdit = () => {
+    setError(null);
+    setDraft(viewRows.map(rowToSpecialInput));
+    setEditMode(true);
+  };
+  const cancelEdit = () => { setDraft(null); setEditMode(false); setError(null); };
+
+  const patchRow = (i: number, p: Partial<SpecialAddonInput>) =>
+    setDraft((d) => (d ? d.map((r, idx) => (idx === i ? { ...r, ...p } : r)) : d));
+  const addRow = () =>
+    setDraft((d) => [
+      ...(d ?? []),
+      { code: '', label: '', soDescription: '', categories: [category], sellingPriceSen: 0, costPriceSen: 0, optionGroups: [], active: true, sortOrder: (d?.length ?? 0) },
+    ]);
+  const removeRow = (i: number) => setDraft((d) => (d ? d.filter((_, idx) => idx !== i) : d));
+
+  // ── follow-up question (追问) editing on a draft row ──────────────────────
+  const setGroups = (i: number, groups: SpecialAddonGroup[]) => patchRow(i, { optionGroups: groups });
+  const addGroup = (i: number) => draft && setGroups(i, [...(draft[i]?.optionGroups ?? []), { label: '', required: true, choices: [{ label: '', extraSen: 0 }] }]);
+  const removeGroup = (i: number, gi: number) => draft && setGroups(i, (draft[i]?.optionGroups ?? []).filter((_, x) => x !== gi));
+  const patchGroup = (i: number, gi: number, p: Partial<SpecialAddonGroup>) =>
+    draft && setGroups(i, (draft[i]?.optionGroups ?? []).map((g, x) => (x === gi ? { ...g, ...p } : g)));
+  const addChoice = (i: number, gi: number) =>
+    draft && patchGroup(i, gi, { choices: [...(draft[i]!.optionGroups[gi]!.choices), { label: '', extraSen: 0 }] });
+  const patchChoice = (i: number, gi: number, ci: number, p: Partial<{ label: string; extraSen: number }>) =>
+    draft && patchGroup(i, gi, { choices: draft[i]!.optionGroups[gi]!.choices.map((c, x) => (x === ci ? { ...c, ...p } : c)) });
+  const removeChoice = (i: number, gi: number, ci: number) =>
+    draft && patchGroup(i, gi, { choices: draft[i]!.optionGroups[gi]!.choices.filter((_, x) => x !== ci) });
+
+  const handleSave = async () => {
+    if (!draft) return;
+    setError(null);
+    // Validate the edited slice.
+    const seen = new Set<string>();
+    for (const r of draft) {
+      if (!r.code.trim() || !r.label.trim()) { setError('Every add-on needs a code and a label.'); return; }
+      const key = r.code.trim();
+      if (seen.has(key)) { setError(`Duplicate code "${key}".`); return; }
+      seen.add(key);
+      for (const g of r.optionGroups) {
+        if (!g.label.trim()) { setError('Every follow-up question needs a label.'); return; }
+        if (g.choices.length === 0 || g.choices.some((c) => !c.label.trim())) { setError(`"${g.label || 'question'}" needs at least one named choice.`); return; }
+      }
+    }
+    // No-op guard — identical slice closes without versioning.
+    const baseline = viewRows.map(rowToSpecialInput);
+    if (JSON.stringify(baseline) === JSON.stringify(draft)) { cancelEdit(); return; }
+
+    const effectiveFrom = await askPrompt({
+      title: 'Effective from (YYYY-MM-DD)?',
+      body: 'The new specials apply from this date onward.',
+      defaultValue: todayMyt(),
+      placeholder: 'YYYY-MM-DD',
+      confirmLabel: 'Save',
+      validate: (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? null : 'Enter a date as YYYY-MM-DD.'),
+    });
+    if (!effectiveFrom) return;
+
+    // Snapshot = the WHOLE table: this category's edited draft + every OTHER
+    // category's rows untouched. Codes can carry multiple categories, so a row
+    // shared across categories is taken from the draft when present (the editor
+    // owns it here), else preserved from the live set.
+    const draftByCode = new Map(draft.map((r) => [r.code.trim(), r]));
+    const otherRows = allRows
+      .filter((r) => !inCat(r) && !draftByCode.has(r.code))
+      .map(rowToSpecialInput);
+    const snapshot: SpecialAddonInput[] = [...otherRows, ...draft.map((r) => ({ ...r, code: r.code.trim() }))];
+
+    try {
+      await saveAll.mutateAsync({ effectiveFrom, addons: snapshot });
+      historyQ.refetch();
+      cancelEdit();
+    } catch (e) {
+      setError(String((e as Error).message ?? e));
+    }
+  };
+
+  const confirmRemove = async (i: number, lbl: string) => {
+    if (!(await askConfirm({ title: `Remove "${lbl || 'this add-on'}"?`, body: 'It will be retired on Save (existing orders keep their saved text).', confirmLabel: 'Remove', danger: true }))) return;
+    removeRow(i);
+  };
+
+  const inputStyle: React.CSSProperties = { width: '100%', padding: '8px 10px', fontSize: 'var(--fs-14)', border: '1px solid var(--line-strong)', borderRadius: 'var(--radius-md)', background: 'var(--c-cream)' };
+
+  return (
+    <>
+      <header className={styles.maintHeader}>
+        <div>
+          <h2 className={styles.maintTitle}>{label}</h2>
+          <p className={styles.maintSubtitle}>{description}</p>
+          {!editMode && latestApplied && (
+            <p className={styles.stateInfo} style={{ marginTop: 8 }}>
+              Effective from {latestApplied.effectiveFrom}
+              {(historyQ.data ?? []).some((h) => h.isPending) && (
+                <span style={{ color: 'var(--c-burnt)', fontWeight: 600 }}> · Pending change scheduled</span>
+              )}
+            </p>
+          )}
+        </div>
+        <div className={styles.actionsRow}>
+          {!editMode ? (
+            <Button variant="ghost" size="sm" onClick={startEdit}>
+              <Edit3 {...ICON_PROPS} />
+              <span>Edit</span>
+            </Button>
+          ) : (
+            <>
+              <Button variant="ghost" size="sm" onClick={cancelEdit}>
+                <span>Cancel</span>
+              </Button>
+              <Button variant="primary" size="sm" onClick={() => void handleSave()} disabled={saveAll.isPending}>
+                <span>{saveAll.isPending ? 'Saving…' : 'Save'}</span>
+              </Button>
+            </>
+          )}
+          <Button variant="ghost" size="sm" onClick={() => setShowHistory(true)}>
+            <History {...ICON_PROPS} />
+            <span>History</span>
+          </Button>
+        </div>
+      </header>
+
+      {error && <div style={{ color: 'var(--c-burnt, #A6471E)', fontSize: 'var(--fs-13)', margin: 'var(--space-3) 0' }} role="alert">{error}</div>}
+
+      {list.error ? (
+        <div style={{ color: 'var(--c-burnt, #A6471E)', marginTop: 'var(--space-3)' }}>Failed to load: {String(list.error)}</div>
+      ) : !editMode ? (
+        /* VIEW — calm card rows matching the other Maintenance pools. */
+        <div style={{ marginTop: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+          {viewRows.map((r, i) => (
+            <div
+              key={r.id}
+              style={{
+                display: 'grid', gridTemplateColumns: '28px 1fr auto 80px',
+                alignItems: 'center', gap: 'var(--space-3)',
+                padding: 'var(--space-3) var(--space-4)',
+                background: 'var(--c-cream)', border: '1px solid var(--line)',
+                borderRadius: 'var(--radius-md)', opacity: r.active ? 1 : 0.55,
+              }}
+            >
+              <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-soft)' }}>{i + 1}</span>
+              <div style={{ minWidth: 0, fontSize: 'var(--fs-16)', fontWeight: 600, color: 'var(--c-ink)' }}>
+                {r.label}
+                {r.optionGroups.length > 0 && (
+                  <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)', marginLeft: 8 }}>
+                    {r.optionGroups.map((g) => `${g.label} (${g.choices.length})`).join(' · ')}
+                  </span>
+                )}
+              </div>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-15)', color: 'var(--c-ink)', textAlign: 'right', whiteSpace: 'nowrap' }}>{senToRmStr(r.sellingPriceSen)}</span>
+              <span style={{ fontSize: 'var(--fs-12)', fontWeight: 600, textAlign: 'right', color: r.active ? 'var(--c-green, #1a7a3a)' : 'var(--fg-muted)' }}>{r.active ? 'Active' : 'Inactive'}</span>
+            </div>
+          ))}
+          {!list.isLoading && viewRows.length === 0 && (
+            <div style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-13)', padding: 'var(--space-3)' }}>
+              No special add-ons in this category yet — click Edit, then “+ Add special”.
+            </div>
+          )}
+        </div>
+      ) : (
+        /* EDIT — draft rows + follow-up-question editors. Save versions the set. */
+        <div style={{ marginTop: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          {(draft ?? []).map((r, i) => (
+            <div key={i} style={{ border: '1px solid var(--line-strong)', borderRadius: 'var(--radius-lg)', padding: 'var(--space-4)', background: 'var(--c-paper, #fff)' }}>
+              <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap', marginBottom: 'var(--space-3)' }}>
+                <label style={{ flex: '1 1 160px' }}>
+                  <span style={{ display: 'block', fontSize: 'var(--fs-13)', fontWeight: 600, marginBottom: 4 }}>Code (stable key)</span>
+                  <input style={inputStyle} value={r.code} onChange={(e) => patchRow(i, { code: e.target.value })} placeholder="Right Drawer" />
+                </label>
+                <label style={{ flex: '1 1 160px' }}>
+                  <span style={{ display: 'block', fontSize: 'var(--fs-13)', fontWeight: 600, marginBottom: 4 }}>Label</span>
+                  <input style={inputStyle} value={r.label} onChange={(e) => patchRow(i, { label: e.target.value })} placeholder="Right Drawer" />
+                </label>
+                <label style={{ width: 140 }}>
+                  <span style={{ display: 'block', fontSize: 'var(--fs-13)', fontWeight: 600, marginBottom: 4 }}>Price (RM, can be −)</span>
+                  {/* ONE price → written to selling + cost so they never diverge. */}
+                  <input type="number" step={1} style={inputStyle}
+                    value={Math.round(r.sellingPriceSen) / 100}
+                    onChange={(e) => { const sen = Math.round((Number(e.target.value) || 0) * 100); patchRow(i, { sellingPriceSen: sen, costPriceSen: sen }); }} />
+                </label>
+                <label style={{ display: 'flex', alignItems: 'flex-end', gap: 6, fontSize: 'var(--fs-13)' }}>
+                  <input type="checkbox" checked={r.active} onChange={(e) => patchRow(i, { active: e.target.checked })} /> Active
+                </label>
+                <button type="button" onClick={() => void confirmRemove(i, r.label)} style={{ alignSelf: 'flex-end', fontSize: 'var(--fs-12)', background: 'none', border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)', padding: '6px 10px', cursor: 'pointer', color: 'var(--c-burnt, #A6471E)' }}>
+                  <Trash2 size={13} strokeWidth={1.75} style={{ verticalAlign: 'middle' }} /> Remove
+                </button>
+              </div>
+              <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
+                <span style={{ display: 'block', fontSize: 'var(--fs-13)', fontWeight: 600, marginBottom: 4 }}>SO description (prints under the product)</span>
+                <input style={inputStyle} value={r.soDescription} onChange={(e) => patchRow(i, { soDescription: e.target.value })} placeholder="Right pull-out drawer" />
+              </label>
+
+              {/* follow-up questions (追问) */}
+              <div style={{ borderTop: '1px solid var(--line)', paddingTop: 'var(--space-3)' }}>
+                <span style={{ display: 'block', fontSize: 'var(--fs-13)', fontWeight: 600, marginBottom: 6 }}>Follow-up questions (optional)</span>
+                {r.optionGroups.map((g, gi) => (
+                  <div key={gi} style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius-md)', padding: 'var(--space-3)', marginBottom: 'var(--space-2)' }}>
+                    <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', marginBottom: 6 }}>
+                      <input style={{ ...inputStyle, flex: '1 1 160px' }} placeholder="Question (e.g. Thickness)" value={g.label} onChange={(e) => patchGroup(i, gi, { label: e.target.value })} />
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-12)' }}>
+                        <input type="checkbox" checked={g.required} onChange={(e) => patchGroup(i, gi, { required: e.target.checked })} /> required
+                      </label>
+                      <button type="button" onClick={() => removeGroup(i, gi)} style={{ fontSize: 'var(--fs-12)', color: 'var(--c-burnt, #A6471E)', background: 'none', border: 'none', cursor: 'pointer' }}>remove ✕</button>
+                    </div>
+                    {g.choices.map((c, ci) => (
+                      <div key={ci} style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 4, paddingLeft: 'var(--space-3)' }}>
+                        <input style={{ ...inputStyle, flex: '1 1 120px' }} placeholder={'Choice (e.g. 10")'} value={c.label} onChange={(e) => patchChoice(i, gi, ci, { label: e.target.value })} />
+                        <input type="number" step={1} style={{ ...inputStyle, width: 120 }} title="Extra RM (can be −)" value={Math.round(c.extraSen) / 100} onChange={(e) => patchChoice(i, gi, ci, { extraSen: Math.round((Number(e.target.value) || 0) * 100) })} />
+                        <button type="button" onClick={() => removeChoice(i, gi, ci)} style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', background: 'none', border: 'none', cursor: 'pointer' }}>✕</button>
+                      </div>
+                    ))}
+                    <button type="button" onClick={() => addChoice(i, gi)} style={{ fontSize: 'var(--fs-12)', marginLeft: 'var(--space-3)', background: 'none', border: '1px dashed var(--line-strong)', borderRadius: 'var(--radius-sm)', padding: '2px 8px', cursor: 'pointer' }}>+ choice</button>
+                  </div>
+                ))}
+                <button type="button" onClick={() => addGroup(i)} style={{ fontSize: 'var(--fs-13)', background: 'none', border: '1px dashed var(--line-strong)', borderRadius: 'var(--radius-md)', padding: '4px 10px', cursor: 'pointer' }}>+ Add question</button>
+              </div>
+            </div>
+          ))}
+          <div>
+            <Button variant="ghost" size="sm" onClick={addRow}>
+              <Plus {...ICON_PROPS} />
+              <span>Add special</span>
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {showHistory && (
+        <SpecialsHistoryDialog
+          activeLabel={label}
+          category={category}
+          history={historyQ.data ?? []}
+          onClose={() => setShowHistory(false)}
+        />
+      )}
+    </>
+  );
+};
+
+/* Specials history dialog — effective-dated snapshots of the special_addons set,
+   filtered to this category. Mirrors MaintenanceHistoryDialog. */
+const SpecialsHistoryDialog = ({
+  activeLabel,
+  category,
+  history,
+  onClose,
+}: {
+  activeLabel: string;
+  category: 'BEDFRAME' | 'SOFA';
+  history: SpecialAddonsHistoryRow[];
+  onClose: () => void;
+}) => (
+  <div className={styles.drawerBackdrop} onClick={onClose}>
+    <div
+      onClick={(e) => e.stopPropagation()}
+      style={{ background: 'var(--c-cream)', border: '1px solid var(--line-strong)', borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-3)', width: 'min(720px, 95vw)', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}
+    >
+      <header className={styles.drawerHeader}>
+        <h2 className={styles.drawerTitle}>Specials history · {activeLabel}</h2>
+        <button type="button" className={styles.iconBtn} onClick={onClose}><X {...ICON_PROPS} /></button>
+      </header>
+      <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-4)' }}>
+        {history.length === 0 && (
+          <p style={{ textAlign: 'center', color: 'var(--fg-muted)' }}>No specials changes yet — the baseline snapshot is the only entry.</p>
+        )}
+        {history.map((entry) => {
+          const slice = (entry.addons ?? []).filter((a) => Array.isArray(a.categories) && a.categories.includes(category));
+          return (
+            <div key={entry.id} style={{ padding: 'var(--space-3)', border: '1px solid var(--line)', borderRadius: 'var(--radius-md)', marginBottom: 'var(--space-3)', background: entry.isPending ? 'rgba(232, 107, 58, 0.06)' : 'var(--c-paper)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span style={{ fontFamily: 'var(--font-mark)', fontSize: 'var(--fs-16)', fontWeight: 700, color: 'var(--c-ink)' }}>Effective from {entry.effectiveFrom}</span>
+                {entry.isPending && (
+                  <span style={{ background: 'rgba(232, 107, 58, 0.20)', color: 'var(--c-burnt)', padding: '2px 8px', borderRadius: 'var(--radius-pill)', fontSize: 'var(--fs-11)', fontWeight: 600 }}>PENDING</span>
+                )}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
+                Created {fmtDateTime(entry.createdAt)}{entry.createdBy ? ` by ${entry.createdBy.slice(0, 8)}` : ''}
+              </div>
+              {entry.notes && <p style={{ marginTop: 6, fontSize: 'var(--fs-13)', color: 'var(--c-ink)' }}>Notes: {entry.notes}</p>}
+              <pre style={{ marginTop: 8, padding: 'var(--space-2)', background: 'var(--c-cream)', border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)', fontSize: 'var(--fs-11)', overflow: 'auto', maxHeight: 200 }}>
+                {JSON.stringify(slice.map((a) => ({ code: a.code, label: a.label, priceRM: Math.round(a.sellingPriceSen) / 100, active: a.active, followUps: (a.optionGroups ?? []).length })), null, 2)}
+              </pre>
+            </div>
+          );
+        })}
+      </div>
+      <footer className={styles.drawerFooter}>
+        <Button variant="ghost" size="md" onClick={onClose}>Close</Button>
+      </footer>
+    </div>
+  </div>
+);
 
 /* ════════════════════════════════════════════════════════════════════════
    Maintenance History dialog — shows config snapshots over time

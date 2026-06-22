@@ -187,3 +187,166 @@ specialAddons.delete('/:id', async (c) => {
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   return c.json({ ok: true });
 });
+
+// ════════════════════════════════════════════════════════════════════════
+// Effective-dated history (owner 2026-06-22) — gives the Specials / Sofa
+// Specials Maintenance tabs TRUE Edit -> Save(effective-date) + History, the
+// same mechanism the other Maintenance pools get via maintenance_config_history.
+//
+// A Save snapshots the WHOLE add-on set into special_addons_history at an
+// effective_from date (audit + version log), then APPLIES that snapshot onto the
+// live special_addons table (upsert by code; codes omitted from the snapshot are
+// deactivated, never deleted, so existing orders keep resolving). SO costing is
+// UNCHANGED — it reads the live special_addons table via loadSpecialAddons.
+// ════════════════════════════════════════════════════════════════════════
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const todayIso = () => new Date().toISOString().slice(0, 10);
+
+function genHistId(): string {
+  const rnd = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  return `sah-${rnd}`;
+}
+
+// One snapshot entry = the full API shape of an add-on, so the history blob is a
+// self-contained record of the set at that effective date (mirrors the maintenance
+// config blob). soDescription/sortOrder default like the table columns.
+const snapshotEntrySchema = z.object({
+  code:            z.string().min(1),
+  label:           z.string().min(1),
+  soDescription:   z.string().default(''),
+  categories:      z.array(CATEGORY).default([]),
+  sellingPriceSen: z.number().int().default(0),
+  costPriceSen:    z.number().int().default(0),
+  optionGroups:    z.array(groupSchema).default([]),
+  active:          z.boolean().default(true),
+  sortOrder:       z.number().int().default(0),
+});
+
+const saveSchema = z.object({
+  effectiveFrom: z.string().regex(ISO_DATE, 'YYYY-MM-DD'),
+  notes:         z.string().optional(),
+  addons:        z.array(snapshotEntrySchema),
+});
+
+type HistoryRow = {
+  id: string;
+  addons: unknown;
+  effective_from: string;
+  notes: string | null;
+  created_at: string;
+  created_by: string | null;
+};
+
+// GET /history — full append-only version log. Each row carries isPending so the
+// UI can colour future-effective snapshots (same convention as maintenance-config).
+specialAddons.get('/history', async (c) => {
+  const supabase = c.get('supabase');
+  const { data, error } = await supabase
+    .from('special_addons_history')
+    .select('id, addons, effective_from, notes, created_at, created_by')
+    .order('effective_from', { ascending: false })
+    .order('created_at', { ascending: false });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+
+  const today = todayIso();
+  const history = ((data as HistoryRow[]) ?? []).map((r) => ({
+    id:            r.id,
+    addons:        Array.isArray(r.addons) ? r.addons : [],
+    effectiveFrom: r.effective_from,
+    notes:         r.notes ?? '',
+    createdAt:     r.created_at,
+    createdBy:     r.created_by,
+    isPending:     r.effective_from > today,
+  }));
+  return c.json({ history });
+});
+
+// POST /save — append an effective-dated snapshot + apply it onto the live table.
+// Editors only.
+specialAddons.post('/save', async (c) => {
+  const gate = await requireWrite(c);
+  if (!gate.ok) return gate.res;
+
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = saveSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'validation_failed', issues: parsed.error.issues.map((i) => ({ path: i.path, message: i.message })) }, 400);
+  }
+  const { effectiveFrom, notes, addons } = parsed.data;
+
+  // Guard duplicate codes inside one save (the unique constraint would catch it
+  // on apply, but a clear 400 beats a half-applied upsert).
+  const codes = addons.map((a) => a.code);
+  if (new Set(codes).size !== codes.length) {
+    return c.json({ error: 'duplicate_code', reason: 'the same add-on code appears twice in this save' }, 400);
+  }
+
+  const supabase = c.get('supabase');
+  const userId = gate.userId;
+
+  // 1) Append the version-log snapshot (audit + apply-source).
+  const histId = genHistId();
+  const { data: hist, error: histErr } = await supabase
+    .from('special_addons_history')
+    .insert({ id: histId, addons, effective_from: effectiveFrom, notes: notes ?? null, created_by: userId })
+    .select('id, addons, effective_from, notes, created_at')
+    .single();
+  if (histErr) return c.json({ error: 'history_insert_failed', reason: histErr.message }, 500);
+
+  // 2) Apply the snapshot onto the LIVE special_addons table (what SO costing
+  //    reads). Upsert by code; codes NOT in the snapshot are deactivated (never
+  //    deleted) so existing orders keep resolving the value.
+  const nowIso = new Date().toISOString();
+  const upsertRows = addons.map((a) => ({
+    code:              a.code,
+    label:             a.label,
+    so_description:    a.soDescription,
+    categories:        a.categories,
+    selling_price_sen: a.sellingPriceSen,
+    cost_price_sen:    a.costPriceSen,
+    option_groups:     a.optionGroups,
+    active:            a.active,
+    sort_order:        a.sortOrder,
+    created_by:        userId,
+    updated_at:        nowIso,
+  }));
+  if (upsertRows.length > 0) {
+    const { error: upErr } = await supabase
+      .from('special_addons')
+      .upsert(upsertRows, { onConflict: 'code' });
+    if (upErr) {
+      if (upErr.code === '42501' || /permission denied/i.test(upErr.message)) {
+        return c.json({ error: 'forbidden', reason: upErr.message }, 403);
+      }
+      return c.json({ error: 'apply_failed', reason: upErr.message }, 500);
+    }
+  }
+  // Deactivate any live code the snapshot dropped (retire, don't delete).
+  {
+    const { data: live, error: liveErr } = await supabase.from('special_addons').select('id, code');
+    if (liveErr) return c.json({ error: 'apply_failed', reason: liveErr.message }, 500);
+    const keep = new Set(codes);
+    const retireIds = ((live as Array<{ id: string; code: string }>) ?? [])
+      .filter((r) => !keep.has(r.code))
+      .map((r) => r.id);
+    if (retireIds.length > 0) {
+      const { error: retErr } = await supabase
+        .from('special_addons')
+        .update({ active: false, updated_at: nowIso })
+        .in('id', retireIds);
+      if (retErr) return c.json({ error: 'apply_failed', reason: retErr.message }, 500);
+    }
+  }
+
+  return c.json(
+    {
+      id:            hist.id,
+      addons:        Array.isArray(hist.addons) ? hist.addons : [],
+      effectiveFrom: hist.effective_from,
+      notes:         hist.notes ?? '',
+    },
+    201,
+  );
+});
