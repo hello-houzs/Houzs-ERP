@@ -415,14 +415,6 @@ const SoLineCardInner = ({
      = show all active colours. A saved line whose code fell out of the live
      list still renders as "(current)" so the select doesn't blank out. */
   const fabricOptions = useMemo(() => {
-    const seriesLabel = new Map((fabricLibQ.data ?? []).map((f) => [f.id, f.label]));
-    /* Dual-code display (owner 2026-06-12): "CG-015 · DC-151-03 — description".
-       The supplier's EXTERNAL code lives on fabric_trackings.supplier_code
-       (colourId == fabric_code). Display-only — the stored value stays the
-       internal colourId/fabric_code. */
-    const supplierCodeByFabric = new Map(
-      fabrics.map((f) => [f.fabric_code, f.supplier_code?.trim() || null] as const),
-    );
     const pool = allowOpts?.fabrics;
     /* Migration 0167 — fabric_trackings.is_active gates pickers for NEW
        entries. A saved line whose fabric was deactivated still renders via
@@ -434,37 +426,21 @@ const SoLineCardInner = ({
       ? (fabricColoursQ.data ?? []).filter((c) => pool.includes(c.colourId))
       : (fabricColoursQ.data ?? [])
     ).filter((c) => !inactiveCodes.has(c.colourId));
-    const opts = colours.map((c) => {
-      const series = seriesLabel.get(c.fabricId) ?? c.fabricId;
-      /* Drop the "· <series>" segment when the series name is just the code's
-         prefix (e.g. "BF-13 · BF") — it's redundant. A meaningful series label
-         (e.g. "Charcoal Grey") still shows. */
-      const seriesRedundant =
-        !series || c.colourId === series || c.colourId.startsWith(`${series}-`);
-      const colourSuffix = c.label && c.label !== c.colourId ? ` (${c.label})` : '';
-      const ext = supplierCodeByFabric.get(c.colourId);
-      const codePart = ext ? `${c.colourId} · ${ext}` : c.colourId;
-      const descPart = seriesRedundant
-        ? colourSuffix.trim()
-        : `${series}${colourSuffix}`;
-      return {
-        value: c.colourId,
-        priceSen: 0,
-        display: descPart ? `${codePart} — ${descPart}` : codePart,
-      };
-    });
+    /* Houzs 2026-06-23 (owner): the fabric picker shows ONLY the fabric code —
+       no supplier-code suffix, no derived colour/series ("你只需要显示 Fabric
+       Code 就可以了"). The code IS the fabric's identity. */
+    const opts = colours.map((c) => ({
+      value: c.colourId,
+      priceSen: 0,
+      display: c.colourId,
+    }));
     opts.sort((a, b) => a.display.localeCompare(b.display, undefined, { sensitivity: 'base' }));
     const current = String(draft.variants.fabricCode ?? '');
     if (current && !opts.some((o) => o.value === current)) {
-      const ext = supplierCodeByFabric.get(current);
-      opts.unshift({
-        value: current,
-        priceSen: 0,
-        display: `${ext ? `${current} · ${ext}` : current} (current)`,
-      });
+      opts.unshift({ value: current, priceSen: 0, display: `${current} (current)` });
     }
     return opts;
-  }, [fabricColoursQ.data, fabricLibQ.data, fabrics, allowOpts, draft.variants.fabricCode]);
+  }, [fabricColoursQ.data, fabrics, allowOpts, draft.variants.fabricCode]);
 
   /* Picking a colour writes the SAME variant keys the POS handover payload
      sends (pos-handover-so.ts buildVariants): fabricCode + colourId satisfy

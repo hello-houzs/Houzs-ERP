@@ -116,7 +116,9 @@
 // the Mattress/Bedframe Sizes maintenance pools.
 // v25 — New SO Venue is manually selectable (was a 2990 locked field; Houzs
 // picks venue manually, defaults to the salesperson's venue but changeable).
-const VERSION = "houzs-erp-v25";
+// v26 — SO fabric picker shows ONLY the fabric code (dropped the supplier-code
+// suffix + derived colour; owner: "你只需要显示 Fabric Code 就可以了").
+const VERSION = "houzs-erp-v26";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
