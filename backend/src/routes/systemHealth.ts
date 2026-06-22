@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
+import { isSupabaseConfigured, getSupabaseService } from "../db/supabase";
+import { reconcileLedger } from "../scm/lib/reconcile-ledger";
 
 // ---------------------------------------------------------------------------
 // /api/admin/health — owner-only ("*") System Health, "real data" phase 1.
@@ -176,6 +178,56 @@ app.get("/audit-feed", requirePermission("*"), async (c) => {
     });
   } catch (e: any) {
     return c.json({ success: false, error: e?.message || "audit-feed failed", data: [], summary: { byAction: [], byResource: [] } });
+  }
+});
+
+// GET /ledger — "Inventory ledger integrity" health check. Runs the same
+// read-only SCM reconcile sweep as /api/scm/inventory/reconcile and reports it
+// as a single OK/WARN indicator: status "ok" (green) when 0 silent partial
+// stock-writes are found, "warn" (red) with the count when any document moved
+// stock on paper but has zero matching inventory_movements rows.
+//
+// SCM lives in the `scm` Postgres schema reached over PostgREST (supabase-js),
+// separate from this route's D1/public-schema c.env.DB — so we build the
+// scm-scoped service client here, the same one the SCM routes use. Read-only +
+// bounded; wrapped so a Supabase stall surfaces as ok:false, never throws.
+app.get("/ledger", requirePermission("*"), async (c) => {
+  if (!isSupabaseConfigured(c.env)) {
+    return c.json({
+      check: "inventory_ledger_integrity",
+      label: "Inventory ledger integrity",
+      ok: false,
+      status: "unknown",
+      configured: false,
+      issueCount: 0,
+      error: "SCM Supabase not configured",
+    });
+  }
+  try {
+    const sb = getSupabaseService(c.env);
+    const { asOf, issueCount, issues } = await reconcileLedger(sb);
+    return c.json({
+      check: "inventory_ledger_integrity",
+      label: "Inventory ledger integrity",
+      ok: issueCount === 0,
+      status: issueCount === 0 ? "ok" : "warn",
+      configured: true,
+      issueCount,
+      // Cap the inline list so an extreme backlog can't bloat the health JSON;
+      // the operator drills into /api/scm/inventory/reconcile for the full set.
+      issues: issues.slice(0, 50),
+      asOf,
+    });
+  } catch (e: any) {
+    return c.json({
+      check: "inventory_ledger_integrity",
+      label: "Inventory ledger integrity",
+      ok: false,
+      status: "unknown",
+      configured: true,
+      issueCount: 0,
+      error: e?.message || "ledger reconcile failed",
+    });
   }
 });
 

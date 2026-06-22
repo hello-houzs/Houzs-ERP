@@ -31,6 +31,7 @@ import {
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
+import { reconcileLedger } from '../lib/reconcile-ledger';
 import type { Env, Variables } from '../env';
 
 export const inventory = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -618,43 +619,19 @@ inventory.get('/analytics', async (c) => {
    Read-only integrity check. Inventory writes are best-effort (a failed
    movement insert does NOT roll back the document), so a doc can be POSTED /
    shipped while its stock movement silently never landed. This flags every
-   non-cancelled GRN / DO / Purchase Return / Delivery Return that should have
-   moved stock but has ZERO movement rows — the operator can then re-post or
-   investigate. (A genuinely zero-qty doc legitimately has none; review each.) */
+   non-cancelled stock-moving document (GRN / DO / Purchase Return / Delivery
+   Return / Stock Transfer / Consignment Note / Consignment Return / PC Receive
+   / PC Return) that should have moved stock but has ZERO movement rows — the
+   operator can then re-post or investigate. Stock Take is intentionally
+   excluded (a zero-variance take legitimately writes no movements). The full
+   sweep lives in scm/lib/reconcile-ledger so System Health can reuse it. */
 inventory.get('/reconcile', async (c) => {
   const sb = c.get('supabase');
-
-  const { data: movRows, error: movErr } = await sb.from('inventory_movements')
-    .select('source_doc_type, source_doc_id').limit(200_000);
-  if (movErr) return c.json({ error: 'load_failed', reason: movErr.message }, 500);
-  const hasMov = new Set<string>();
-  for (const m of (movRows ?? []) as Array<{ source_doc_type: string | null; source_doc_id: string | null }>) {
-    if (m.source_doc_id) hasMov.add(`${m.source_doc_type}::${m.source_doc_id}`);
+  try {
+    return c.json(await reconcileLedger(sb));
+  } catch (e: any) {
+    return c.json({ error: 'load_failed', reason: e?.message ?? 'reconcile failed' }, 500);
   }
-
-  const issues: Array<{ docType: string; id: string; docNo: string; status: string }> = [];
-  const flag = (docType: string, movType: string, rows: Array<Record<string, string>>, numCol: string) => {
-    for (const r of rows) {
-      const id = r.id ?? '';
-      if (id && !hasMov.has(`${movType}::${id}`)) {
-        issues.push({ docType, id, docNo: r[numCol] ?? id, status: r.status ?? '' });
-      }
-    }
-  };
-
-  const SHIPPED = ['DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVOICED'];
-  const [grnsR, dosR, prsR, drsR] = await Promise.all([
-    sb.from('grns').select('id, grn_number, status').eq('status', 'POSTED').limit(10_000),
-    sb.from('delivery_orders').select('id, do_number, status').in('status', SHIPPED).limit(10_000),
-    sb.from('purchase_returns').select('id, return_number, status').neq('status', 'CANCELLED').limit(10_000),
-    sb.from('delivery_returns').select('id, return_number, status').neq('status', 'CANCELLED').limit(10_000),
-  ]);
-  flag('GRN', 'GRN', (grnsR.data ?? []) as Array<Record<string, string>>, 'grn_number');
-  flag('Delivery Order', 'DO', (dosR.data ?? []) as Array<Record<string, string>>, 'do_number');
-  flag('Purchase Return', 'PURCHASE_RETURN', (prsR.data ?? []) as Array<Record<string, string>>, 'return_number');
-  flag('Delivery Return', 'DR', (drsR.data ?? []) as Array<Record<string, string>>, 'return_number');
-
-  return c.json({ asOf: new Date().toISOString(), issueCount: issues.length, issues });
 });
 
 /* ── Manual adjustment ───────────────────────────────────────────────── */
