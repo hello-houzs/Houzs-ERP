@@ -103,7 +103,15 @@
 // gaps/leg+divan heights) sort by leading number so "10\"" follows "9\"" not "1".
 // Placeholder rows ("— Unassigned —") stay pinned first; editable Maintenance
 // lists + document-status workflows left in their deliberate order.
-const VERSION = "houzs-erp-v22";
+// v23 (2026-06-22): foundation resilience batch. (1) Transient DB errors now
+// self-heal end-to-end — one shared TRANSIENT_CONN_RE classifies cold-start /
+// pooler-cap / dropped-socket / cross-context errors as a retryable 503, and
+// the frontend now retries idempotent GETs on 503 (was: never retried any 5xx,
+// so a blip surfaced as "Failed to load"). (2) Two latent SQLite-on-Postgres
+// crashes fixed: date(?,..) -> date+int when shifting a project's checklist due
+// dates; LIKE -> ILIKE in the two raw project-search fragments (case-insensitive
+// search restored). Pairs with the per-request DB isolation fix (PR #102).
+const VERSION = "houzs-erp-v23";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

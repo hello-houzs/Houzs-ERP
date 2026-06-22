@@ -551,7 +551,7 @@ async function redateChecklistFromOffsets(
   // date for audit. Manual tasks without an offset are left alone.
   const r = await env.DB.prepare(
     `UPDATE project_checklist
-        SET due_date = date(?, due_offset_days || ' days'),
+        SET due_date = to_char((?::date + due_offset_days), 'YYYY-MM-DD'),
             updated_at = datetime('now')
       WHERE project_id = ?
         AND due_offset_days IS NOT NULL

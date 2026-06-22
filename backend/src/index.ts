@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./types";
 import { auth, requirePermission, requireAnyPermission } from "./middleware/auth";
+import { TRANSIENT_CONN_RE } from "./db/d1-compat";
 // Ported 2990's SCM modules (furniture supply chain). Talk to the `scm` Postgres
 // schema via supabase-js; namespaced under /api/scm/*, owner-only during the port.
 import scmApp from "./scm";
@@ -141,7 +142,12 @@ app.route("/api/scm", scmApp);
 // through untouched.
 function humanizeError(err: Error): { status: 500 | 503; message: string } {
   const m = String(err?.message ?? err);
-  if (/CONNECTION_CLOSED|Network connection lost|ECONNREFUSED|ECONNRESET|terminating connection|Timed out .*pool|server closed the connection/i.test(m))
+  // Transient connection failures (cold-start hang, pooler connection cap,
+  // dropped/reaped socket, cross-context I/O) -> 503 "try again". Shares ONE
+  // matcher with the retry layer (d1-compat TRANSIENT_CONN_RE) so the two can
+  // never drift apart, and the frontend retries idempotent GETs on 503 — so
+  // these self-heal instead of surfacing as a dead-end "Something went wrong".
+  if (TRANSIENT_CONN_RE.test(m))
     return { status: 503, message: "The database is briefly unavailable. Please try again in a moment." };
   if (/operator does not exist|column .* does not exist|relation .* does not exist|syntax error|invalid input syntax|violates .* constraint|duplicate key/i.test(m))
     return { status: 500, message: "Something went wrong processing that request. Our team has been notified." };
