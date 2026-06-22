@@ -635,6 +635,8 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     phone?: string | null;
     email?: string;
     status_reason?: string | null;
+    // Admin-set/reset password (users.manage). Hashed; never stored plaintext.
+    password?: string;
   }>();
 
   const db = getDb(c.env);
@@ -642,7 +644,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   // Current primary department doubles as an existence check (the membership
   // reconciliation below can run with an otherwise-empty column update).
   const current = await db
-    .select({ id: users.id, department_id: users.department_id })
+    .select({ id: users.id, email: users.email, department_id: users.department_id })
     .from(users)
     .where(eq(users.id, id))
     .limit(1);
@@ -678,6 +680,14 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   // Org-chart division — free-text sub-grouping within a department (mig 0021).
   if (body.division !== undefined) {
     set.division = body.division?.trim() || null;
+  }
+
+  // Admin sets / resets the member's password. Validated + hashed; an empty
+  // value is ignored (so saving the panel without touching it keeps the old one).
+  if (body.password) {
+    const strength = validatePasswordStrength(body.password, current[0].email);
+    if (!strength.ok) return c.json({ error: strength.error }, 400);
+    set.password_hash = await hashPassword(body.password);
   }
 
   if (body.manager_id !== undefined) {
