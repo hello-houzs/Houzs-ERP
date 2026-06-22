@@ -25,6 +25,7 @@ import {
 } from '../lib/mfg-products-queries';
 import { DataGrid, type DataGridColumn } from './DataGrid';
 import { useConfirm } from './ConfirmDialog';
+import { sortByText } from '../lib/sort-options';
 
 /* Stop-propagation wrapper for interactive cells inside the DataGrid —
    keeps clicks on inputs / buttons from also firing the row click. */
@@ -690,7 +691,7 @@ const OrderAddonsManager = () => {
                 onChange={(e) => setD({ serviceSku: e.target.value.toUpperCase() })} placeholder="SVC-… (optional)" /></label>
             <label><span style={{ display: 'block', fontSize: 'var(--fs-13)', fontWeight: 600, marginBottom: 4 }}>Icon</span>
               <select style={{ ...inputStyle, width: 160 }} value={draft.icon} onChange={(e) => setD({ icon: e.target.value })}>
-                {OA_ICONS.map((i) => <option key={i} value={i}>{i}</option>)}
+                {sortByText(OA_ICONS).map((i) => <option key={i} value={i}>{i}</option>)}
               </select></label>
           </div>
           {draft.kind === 'flat' && (

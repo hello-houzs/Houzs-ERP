@@ -12,6 +12,7 @@ import { useMemo } from 'react';
 import { activeOptions, maintPickerValues } from '@2990s/shared';
 import { useSpecialAddons, type MaintenanceConfig } from '../lib/mfg-products-queries';
 import { fabricOptionLabel, type FabricTrackingRow } from '../lib/fabric-queries';
+import { sortByNumeric, byText } from '../lib/sort-options';
 import styles from '../../../pages/scm-v2/SalesOrderDetail.module.css';
 
 const SpecialsCheckboxes = ({
@@ -92,7 +93,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('fabricCode', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {pickableFabrics(fabrics, String(variants.fabricCode ?? '')).map((f) => (
+              {[...pickableFabrics(fabrics, String(variants.fabricCode ?? ''))].sort((a, b) => byText(fabricOptionLabel(a), fabricOptionLabel(b))).map((f) => (
                 <option key={f.id} value={f.fabric_code}>
                   {fabricOptionLabel(f)}
                 </option>
@@ -107,7 +108,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('gap', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {maintPickerValues(maint.gaps, String(variants.gap ?? '')).map((g) => (<option key={g} value={g}>{g}</option>))}
+              {sortByNumeric(maintPickerValues(maint.gaps, String(variants.gap ?? ''))).map((g) => (<option key={g} value={g}>{g}</option>))}
             </select>
           </label>
           <label className={styles.field}>
@@ -118,7 +119,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('divanHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {activeOptions(maint.divanHeights, String(variants.divanHeight ?? '')).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
+              {sortByNumeric(activeOptions(maint.divanHeights, String(variants.divanHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
             </select>
           </label>
           <label className={styles.field}>
@@ -129,7 +130,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('legHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {activeOptions(maint.legHeights, String(variants.legHeight ?? '')).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
+              {sortByNumeric(activeOptions(maint.legHeights, String(variants.legHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
             </select>
           </label>
         </div>
@@ -154,7 +155,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('fabricCode', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {pickableFabrics(fabrics, String(variants.fabricCode ?? '')).map((f) => (
+              {[...pickableFabrics(fabrics, String(variants.fabricCode ?? ''))].sort((a, b) => byText(fabricOptionLabel(a), fabricOptionLabel(b))).map((f) => (
                 <option key={f.id} value={f.fabric_code}>
                   {fabricOptionLabel(f)}
                 </option>
@@ -169,7 +170,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('seatHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {maintPickerValues(maint.sofaSizes, String(variants.seatHeight ?? '')).map((s) => (<option key={s} value={s}>{s}</option>))}
+              {sortByNumeric(maintPickerValues(maint.sofaSizes, String(variants.seatHeight ?? ''))).map((s) => (<option key={s} value={s}>{s}</option>))}
             </select>
           </label>
           <label className={styles.field}>
@@ -180,7 +181,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('legHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {activeOptions(maint.sofaLegHeights, String(variants.legHeight ?? '')).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
+              {sortByNumeric(activeOptions(maint.sofaLegHeights, String(variants.legHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
             </select>
           </label>
           <span />

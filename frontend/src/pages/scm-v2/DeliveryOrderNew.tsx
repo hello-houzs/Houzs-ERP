@@ -29,6 +29,7 @@ import {
 } from '../../vendor/scm/lib/delivery-order-queries';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { useDrivers } from '../../vendor/scm/lib/drivers-queries';
+import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
 } from '../../vendor/scm/lib/localities-queries';
@@ -427,7 +428,7 @@ export const DeliveryOrderNew = () => {
               <span className={styles.selectWrap}>
                 <select className={styles.fieldSelect} value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
                   <option value="">— Pick staff —</option>
-                  {staffList.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>)}
+                  {sortByText(staffList).map((s) => <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>)}
                   {salespersonId && !staffList.some((s) => s.id === salespersonId) && <option value={salespersonId}>(former staff)</option>}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
@@ -458,7 +459,7 @@ export const DeliveryOrderNew = () => {
                     if (d?.vehicle) setVehicle(d.vehicle);
                   }}>
                   <option value="">— Pick driver —</option>
-                  {drivers.map((d) => <option key={d.id} value={d.id}>{d.name}{d.vehicle ? ` · ${d.vehicle}` : ''}</option>)}
+                  {sortByText(drivers).map((d) => <option key={d.id} value={d.id}>{d.name}{d.vehicle ? ` · ${d.vehicle}` : ''}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -552,7 +553,7 @@ export const DeliveryOrderNew = () => {
                   onChange={(e) => { setState(e.target.value); setCity(''); setPostcode(''); }}
                   disabled={loc.isLoading}>
                   <option value="">{loc.isLoading ? 'Loading…' : 'Pick state'}</option>
-                  {states.map((s) => <option key={s} value={s}>{s}</option>)}
+                  {sortByText(states).map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -563,7 +564,7 @@ export const DeliveryOrderNew = () => {
                 <select className={styles.fieldSelect} value={city}
                   onChange={(e) => { setCity(e.target.value); setPostcode(''); }} disabled={!state}>
                   <option value="">{state ? 'Pick city' : '— pick state first'}</option>
-                  {cities.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {sortByText(cities).map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -574,7 +575,7 @@ export const DeliveryOrderNew = () => {
                 <select className={styles.fieldSelect} value={postcode}
                   onChange={(e) => setPostcode(e.target.value)} disabled={!state || !city}>
                   <option value="">{(state && city) ? 'Pick postcode' : '— pick city first'}</option>
-                  {postcodes.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {sortByNumeric(postcodes).map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>

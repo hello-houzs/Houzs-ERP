@@ -22,6 +22,7 @@ import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import { useInventoryBalances } from '../../vendor/scm/lib/stock-queries';
 import { useMfgProducts } from '../../vendor/scm/lib/mfg-products-queries';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import {
   useCreateStockTake,
   type StockTakeScopeType,
@@ -165,7 +166,7 @@ export const StockTakeNew = () => {
                 className={styles.fieldSelect}
               >
                 <option value="">— Pick warehouse —</option>
-                {(warehouses.data ?? []).map((w) => (
+                {sortByText(warehouses.data ?? []).map((w) => (
                   <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
                 ))}
               </select>
@@ -210,7 +211,7 @@ export const StockTakeNew = () => {
                   className={styles.fieldSelect}
                 >
                   <option value="">— Pick category —</option>
-                  {CATEGORIES.map((c) => (
+                  {sortByText(CATEGORIES).map((c) => (
                     <option key={c.value} value={c.value}>{c.label}</option>
                   ))}
                 </select>

@@ -41,6 +41,7 @@ import {
   useSoDropdownOptions, optionsOrFallback,
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
+import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
 import {
   PaymentsTable, labelToApi, draftMethodFields, type PaymentDraft,
@@ -661,7 +662,7 @@ export const ConsignmentOrderNew = () => {
                     </option>
                   )}
                   {canChangeSalesperson && <option value="">— Pick staff —</option>}
-                  {canChangeSalesperson && staffList.map((s) => (
+                  {canChangeSalesperson && sortByText(staffList).map((s) => (
                     <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>
                   ))}
                 </select>
@@ -884,7 +885,7 @@ export const ConsignmentOrderNew = () => {
                   disabled={loc.isLoading}
                 >
                   <option value="">{loc.isLoading ? 'Loading…' : 'Pick state'}</option>
-                  {states.map((s) => <option key={s} value={s}>{s}</option>)}
+                  {sortByText(states).map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -899,7 +900,7 @@ export const ConsignmentOrderNew = () => {
                   disabled={!state}
                 >
                   <option value="">{state ? 'Pick city' : '— pick state first'}</option>
-                  {cities.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {sortByText(cities).map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -914,7 +915,7 @@ export const ConsignmentOrderNew = () => {
                   disabled={!state || !city}
                 >
                   <option value="">{(state && city) ? 'Pick postcode' : '— pick city first'}</option>
-                  {postcodes.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {sortByNumeric(postcodes).map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>

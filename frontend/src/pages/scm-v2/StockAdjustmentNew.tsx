@@ -29,6 +29,7 @@ import {
   useInventoryBuckets,
 } from '../../vendor/scm/lib/stock-queries';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -268,7 +269,7 @@ export const StockAdjustmentNew = () => {
                 className={styles.fieldInput}
               >
                 <option value="">— Pick a warehouse —</option>
-                {(warehouses.data ?? []).map((w) => (
+                {sortByText(warehouses.data ?? []).map((w) => (
                   <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
                 ))}
               </select>
@@ -287,7 +288,7 @@ export const StockAdjustmentNew = () => {
                 style={{ fontFamily: 'var(--font-mono)' }}
               />
               <datalist id="stock-adjustment-skus">
-                {(allSkus.data ?? []).map((p) => (
+                {sortByText(allSkus.data ?? []).map((p) => (
                   <option key={p.id} value={p.code}>{p.name} · {p.category}</option>
                 ))}
               </datalist>
@@ -478,7 +479,7 @@ export const StockAdjustmentNew = () => {
                     className={styles.fieldInput}
                   >
                     <option value="">— Pick which batch / variant —</option>
-                    {buckets.map((b) => (
+                    {sortByText(buckets).map((b) => (
                       <option key={`${b.variant_key} ${b.batch_no ?? ''}`} value={`${b.variant_key} ${b.batch_no ?? ''}`}>
                         {(b.batch_no || 'No batch')} · {(b.variant_key || 'plain')} · {b.qty} PCS
                       </option>
@@ -518,7 +519,7 @@ export const StockAdjustmentNew = () => {
                 className={styles.fieldInput}
               >
                 <option value="">— Pick a reason —</option>
-                {ADJUSTMENT_REASONS.map((r) => (
+                {sortByText(ADJUSTMENT_REASONS).map((r) => (
                   <option key={r.code} value={r.code}>{r.label}</option>
                 ))}
               </select>

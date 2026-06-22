@@ -25,6 +25,7 @@ import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import { buildVariantSummary } from '@2990s/shared'; // Commander 2026-05-28 — Description 2
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import {
   useStockTransferDetail,
   useCancelStockTransfer,
@@ -165,7 +166,7 @@ export const StockTransferDetail = () => {
               <span className={styles.fieldLabel}>From Warehouse</span>
               <select value={fromWarehouseId} className={styles.fieldSelect} disabled>
                 <option value="">—</option>
-                {(warehouses.data ?? []).map((w) => (
+                {sortByText(warehouses.data ?? []).map((w) => (
                   <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
                 ))}
               </select>
@@ -178,7 +179,7 @@ export const StockTransferDetail = () => {
               </span>
               <select value={toWarehouseId} className={styles.fieldSelect} disabled>
                 <option value="">—</option>
-                {(warehouses.data ?? []).map((w) => (
+                {sortByText(warehouses.data ?? []).map((w) => (
                   <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
                 ))}
               </select>

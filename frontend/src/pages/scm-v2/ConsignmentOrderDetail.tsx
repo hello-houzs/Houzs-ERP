@@ -66,6 +66,7 @@ import { useAuth } from '../../vendor/scm/lib/auth';
 import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
 import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
+import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -960,7 +961,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                   disabled={inputsDisabled || !canChangeSalesperson}
                   onChange={(e) => set('salespersonId', e.target.value)}>
                   <option value="">— Pick staff —</option>
-                  {staffList.map((s) => (
+                  {sortByText(staffList).map((s) => (
                     <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>
                   ))}
                   {form.salespersonId
@@ -1125,7 +1126,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                   onChange={(e) => setForm((s) => ({ ...s, state: e.target.value, city: '', postcode: '' }))}
                   disabled={inputsDisabled || localities.isLoading}>
                   <option value="">{localities.isLoading ? 'Loading…' : 'Pick state'}</option>
-                  {states.map((s) => <option key={s} value={s}>{s}</option>)}
+                  {sortByText(states).map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -1137,7 +1138,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                   onChange={(e) => setForm((s) => ({ ...s, city: e.target.value, postcode: '' }))}
                   disabled={inputsDisabled || !form.state}>
                   <option value="">{form.state ? 'Pick city' : '— pick state first'}</option>
-                  {cities.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {sortByText(cities).map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -1149,7 +1150,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                   onChange={(e) => set('postcode', e.target.value)}
                   disabled={inputsDisabled || !form.city}>
                   <option value="">{form.city ? 'Pick postcode' : '— pick city first'}</option>
-                  {postcodes.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {sortByNumeric(postcodes).map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>

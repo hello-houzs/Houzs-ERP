@@ -26,6 +26,7 @@ import {
   type JournalEntry,
 } from '../../vendor/scm/lib/accounting-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
+import { byText } from '../../vendor/scm/lib/sort-options';
 import styles from './Suppliers.module.css';
 import { fmtDateOrDash } from '@2990s/shared';
 
@@ -211,7 +212,9 @@ const GlTab = () => {
           className={styles.searchInput}
           style={{ maxWidth: 320 }}>
           <option value="">All accounts</option>
-          {(accounts.data?.accounts ?? []).map((a) => (
+          {[...(accounts.data?.accounts ?? [])]
+            .sort((a, b) => byText(a.account_code, b.account_code))
+            .map((a) => (
             <option key={a.account_code} value={a.account_code}>
               {a.account_code} — {a.account_name}
             </option>

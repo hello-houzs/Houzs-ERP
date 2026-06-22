@@ -53,6 +53,7 @@ import {
 import { useDebouncedValue } from '../lib/hooks';
 import { useAuth, isAdminLevel, isHatchSales } from '../lib/auth';
 import { CATEGORY_BADGE } from '../lib/category-badges';
+import { sortByNumeric } from '../lib/sort-options';
 import { posRemarkSpecialOf } from '../lib/pos-remark-special';
 import { useNotify } from './NotifyDialog';
 import styles from './SoLineCard.module.css';
@@ -452,6 +453,7 @@ const SoLineCardInner = ({
         display: descPart ? `${codePart} — ${descPart}` : codePart,
       };
     });
+    opts.sort((a, b) => a.display.localeCompare(b.display, undefined, { sensitivity: 'base' }));
     const current = String(draft.variants.fabricCode ?? '');
     if (current && !opts.some((o) => o.value === current)) {
       const ext = supplierCodeByFabric.get(current);
@@ -768,21 +770,21 @@ const SoLineCardInner = ({
               label="Gaps" required
               value={String(draft.variants.gap ?? '')}
               disabled={!isEditing}
-              options={restrictS(maintPickerValues(maint!.gaps, String(draft.variants.gap ?? '')), allowOpts?.gaps).map((g) => ({ value: g, priceSen: 0 }))}
+              options={sortByNumeric(restrictS(maintPickerValues(maint!.gaps, String(draft.variants.gap ?? '')), allowOpts?.gaps).map((g) => ({ value: g, priceSen: 0 })))}
               onChange={(v) => setVariant('gap', v)}
             />
             <VariantSelect
               label="Divan Heights" required
               value={String(draft.variants.divanHeight ?? '')}
               disabled={!isEditing}
-              options={restrictP(activeOptions(maint!.divanHeights, String(draft.variants.divanHeight ?? '')), allowOpts?.divan_heights)}
+              options={sortByNumeric(restrictP(activeOptions(maint!.divanHeights, String(draft.variants.divanHeight ?? '')), allowOpts?.divan_heights))}
               onChange={(v) => setVariant('divanHeight', v)}
             />
             <VariantSelect
               label="Leg Heights" required
               value={String(draft.variants.legHeight ?? '')}
               disabled={!isEditing}
-              options={restrictP(activeOptions(maint!.legHeights, String(draft.variants.legHeight ?? '')), allowOpts?.leg_heights)}
+              options={sortByNumeric(restrictP(activeOptions(maint!.legHeights, String(draft.variants.legHeight ?? '')), allowOpts?.leg_heights))}
               onChange={(v) => setVariant('legHeight', v)}
             />
           </div>
@@ -826,20 +828,20 @@ const SoLineCardInner = ({
               label="Seat Heights" required
               value={String(draft.variants.seatHeight ?? '')}
               disabled={!isEditing}
-              options={restrictS(maintPickerValues(maint!.sofaSizes, String(draft.variants.seatHeight ?? '')), allowOpts?.sizes).map((s) => {
+              options={sortByNumeric(restrictS(maintPickerValues(maint!.sofaSizes, String(draft.variants.seatHeight ?? '')), allowOpts?.sizes).map((s) => {
                 const sh = picked?.seat_height_prices && Array.isArray(picked.seat_height_prices)
                   ? (picked.seat_height_prices as Array<{ height: string; tier: string; priceSen: number }>)
                       .find((p) => p.height === s && p.tier === 'PRICE_2')
                   : null;
                 return { value: s, priceSen: sh?.priceSen ?? 0 };
-              })}
+              }))}
               onChange={(v) => setVariant('seatHeight', v)}
             />
             <VariantSelect
               label="Leg Heights" required
               value={String(draft.variants.legHeight ?? '')}
               disabled={!isEditing}
-              options={restrictP(activeOptions(maint!.sofaLegHeights, String(draft.variants.legHeight ?? '')), allowOpts?.leg_heights)}
+              options={sortByNumeric(restrictP(activeOptions(maint!.sofaLegHeights, String(draft.variants.legHeight ?? '')), allowOpts?.leg_heights))}
               onChange={(v) => setVariant('legHeight', v)}
             />
             {/* Empty cell so the 4-col grid stays balanced */}

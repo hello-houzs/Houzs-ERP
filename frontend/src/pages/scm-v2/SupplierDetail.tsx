@@ -66,6 +66,7 @@ import { SupplyCategoryPicker, useSupplierCategoryPool } from '../../vendor/scm/
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import { formatPhone } from '@2990s/shared/phone';
 import { maintValues } from '@2990s/shared';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
@@ -3872,7 +3873,7 @@ const CountrySelect = ({ value, onChange }: { value: string; onChange: (v: strin
     <span className={styles.fieldLabel}>Country</span>
     <span className={styles.selectWrap}>
       <select className={styles.fieldSelect} value={value || 'Malaysia'} onChange={(e) => onChange(e.target.value)}>
-        {COUNTRIES.map((c) => <option key={c} value={c}>{c}</option>)}
+        {sortByText(COUNTRIES).map((c) => <option key={c} value={c}>{c}</option>)}
       </select>
       <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
     </span>
@@ -3897,7 +3898,7 @@ const StateSelect = ({
           <select className={styles.fieldSelect} value={value} onChange={(e) => onChange(e.target.value)}
             disabled={localities.isLoading}>
             <option value="">{localities.isLoading ? 'Loading…' : '— Pick state —'}</option>
-            {malaysiaStates.map((s) => <option key={s} value={s}>{s}</option>)}
+            {sortByText(malaysiaStates).map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
         </span>

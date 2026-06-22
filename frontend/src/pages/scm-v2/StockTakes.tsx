@@ -16,6 +16,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Plus, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import {
   useStockTakes,
   type StockTakeRow,
@@ -240,7 +241,7 @@ export const StockTakes = () => {
             }}
           >
             <option value="">Any warehouse</option>
-            {(warehouses.data ?? []).map((w) => (
+            {sortByText(warehouses.data ?? []).map((w) => (
               <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
             ))}
           </select>

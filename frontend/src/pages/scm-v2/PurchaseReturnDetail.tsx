@@ -52,6 +52,7 @@ import {
 } from '../../vendor/scm/lib/purchase-return-queries';
 import { useSuppliers, useSupplierDetail, type SupplierRow } from '../../vendor/scm/lib/suppliers-queries';
 import { useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
@@ -538,11 +539,11 @@ export const PurchaseReturnDetail = () => {
                               </div>
                               {d.itemGroup === 'bedframe' ? (
                                 <div className={styles.formGrid4}>
-                                  <VariantSelect label="Divan Height" disabled={isLocked} options={activeOptions(maint!.divanHeights, String(d.variants?.divanHeight ?? ''))}
+                                  <VariantSelect label="Divan Height" disabled={isLocked} options={sortByNumeric(activeOptions(maint!.divanHeights, String(d.variants?.divanHeight ?? '')))}
                                     value={String(d.variants?.divanHeight ?? '')} onChange={(v) => setVariant(it, 'divanHeight', v)} />
-                                  <VariantSelect label="Gap" disabled={isLocked} options={maintPickerValues(maint!.gaps, String(d.variants?.gap ?? '')).map((g) => ({ value: g, priceSen: 0 }))}
+                                  <VariantSelect label="Gap" disabled={isLocked} options={sortByNumeric(maintPickerValues(maint!.gaps, String(d.variants?.gap ?? '')).map((g) => ({ value: g, priceSen: 0 })))}
                                     value={String(d.variants?.gap ?? '')} onChange={(v) => setVariant(it, 'gap', v)} />
-                                  <VariantSelect label="Leg Height" disabled={isLocked} options={activeOptions(maint!.legHeights, String(d.variants?.legHeight ?? ''))}
+                                  <VariantSelect label="Leg Height" disabled={isLocked} options={sortByNumeric(activeOptions(maint!.legHeights, String(d.variants?.legHeight ?? '')))}
                                     value={String(d.variants?.legHeight ?? '')} onChange={(v) => setVariant(it, 'legHeight', v)} />
                                   {/* Total Height auto-computed (see setVariant). */}
                                   <VariantSelect label="Special" disabled={isLocked} options={specialsPools.bedframe}
@@ -550,9 +551,9 @@ export const PurchaseReturnDetail = () => {
                                 </div>
                               ) : (
                                 <div className={styles.formGrid4}>
-                                  <VariantSelect label="Seat Size" disabled={isLocked} options={maintPickerValues(maint!.sofaSizes, String(d.variants?.seatHeight ?? '')).map((s) => ({ value: s, priceSen: 0 }))}
+                                  <VariantSelect label="Seat Size" disabled={isLocked} options={sortByNumeric(maintPickerValues(maint!.sofaSizes, String(d.variants?.seatHeight ?? '')).map((s) => ({ value: s, priceSen: 0 })))}
                                     value={String(d.variants?.seatHeight ?? '')} onChange={(v) => setVariant(it, 'seatHeight', v)} />
-                                  <VariantSelect label="Leg Height" disabled={isLocked} options={activeOptions(maint!.sofaLegHeights, String(d.variants?.legHeight ?? ''))}
+                                  <VariantSelect label="Leg Height" disabled={isLocked} options={sortByNumeric(activeOptions(maint!.sofaLegHeights, String(d.variants?.legHeight ?? '')))}
                                     value={String(d.variants?.legHeight ?? '')} onChange={(v) => setVariant(it, 'legHeight', v)} />
                                   <VariantSelect label="Special" disabled={isLocked} options={specialsPools.sofa}
                                     value={String(d.variants?.special ?? '')} onChange={(v) => setVariant(it, 'special', v)} />
@@ -661,7 +662,7 @@ const SupplierCard = ({
               <select className={styles.fieldSelect} value={draft.supplierId} disabled={locked}
                 onChange={(e) => onField('supplierId', e.target.value)}>
                 <option value="">— Pick supplier —</option>
-                {suppliers.map((s) => (
+                {sortByText(suppliers).map((s) => (
                   <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
                 ))}
               </select>

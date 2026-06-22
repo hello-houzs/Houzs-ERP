@@ -55,6 +55,7 @@ import {
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { useDrivers } from '../../vendor/scm/lib/drivers-queries';
+import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -635,7 +636,7 @@ export const DeliveryOrderDetail = () => {
                   style={{ padding: '6px 10px', borderRadius: 'var(--radius-md)', border: '1px solid var(--c-border, #d8d2c8)', fontSize: 'var(--fs-13)', background: 'var(--c-surface, #fff)' }}
                 >
                   <option value="" disabled>+ Add from Sales Order…</option>
-                  {remainingLines.map((l) => (
+                  {sortByText(remainingLines).map((l) => (
                     <option key={l.soItemId} value={l.soItemId}>
                       {l.itemCode}{l.description ? ` — ${l.description}` : ''} (remaining {l.remaining})
                     </option>
@@ -940,7 +941,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                 <select className={styles.fieldSelect} value={form.salespersonId}
                   disabled={inputsDisabled} onChange={(e) => set('salespersonId', e.target.value)}>
                   <option value="">— Pick staff —</option>
-                  {staffList.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>)}
+                  {sortByText(staffList).map((s) => <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>)}
                   {form.salespersonId && !staffList.some((s) => s.id === form.salespersonId) && (
                     <option value={form.salespersonId}>(former staff)</option>
                   )}
@@ -972,7 +973,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                     setForm((s) => ({ ...s, driverId: e.target.value, driverName: d?.name ?? '', vehicle: d?.vehicle ?? s.vehicle }));
                   }}>
                   <option value="">— Pick driver —</option>
-                  {drivers.map((d) => <option key={d.id} value={d.id}>{d.name}{d.vehicle ? ` · ${d.vehicle}` : ''}</option>)}
+                  {sortByText(drivers).map((d) => <option key={d.id} value={d.id}>{d.name}{d.vehicle ? ` · ${d.vehicle}` : ''}</option>)}
                   {form.driverId && !drivers.some((d) => d.id === form.driverId) && (
                     <option value={form.driverId}>{form.driverName || '(driver)'}</option>
                   )}
@@ -1086,7 +1087,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                   onChange={(e) => setForm((s) => ({ ...s, state: e.target.value, city: '', postcode: '' }))}
                   disabled={inputsDisabled || localities.isLoading}>
                   <option value="">{localities.isLoading ? 'Loading…' : 'Pick state'}</option>
-                  {states.map((s) => <option key={s} value={s}>{s}</option>)}
+                  {sortByText(states).map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -1098,7 +1099,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                   onChange={(e) => setForm((s) => ({ ...s, city: e.target.value, postcode: '' }))}
                   disabled={inputsDisabled || !form.state}>
                   <option value="">{form.state ? 'Pick city' : '— pick state first'}</option>
-                  {cities.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {sortByText(cities).map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -1110,7 +1111,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                   onChange={(e) => set('postcode', e.target.value)}
                   disabled={inputsDisabled || !form.city}>
                   <option value="">{form.city ? 'Pick postcode' : '— pick city first'}</option>
-                  {postcodes.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {sortByNumeric(postcodes).map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>

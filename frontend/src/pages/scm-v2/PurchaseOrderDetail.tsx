@@ -61,6 +61,7 @@ import {
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { useFabricTrackings } from '../../vendor/scm/lib/fabric-queries';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import {
   computeMfgPoUnitCost,
   type MfgFabricTier,
@@ -934,7 +935,7 @@ const SupplierCard = ({
               <select className={styles.fieldSelect} value={draft.supplierId} disabled={locked}
                 onChange={(e) => onField('supplierId', e.target.value)}>
                 <option value="">— Pick supplier —</option>
-                {suppliers.map((s) => (
+                {sortByText(suppliers).map((s) => (
                   <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
                 ))}
               </select>
@@ -975,7 +976,7 @@ const SupplierCard = ({
               <select className={styles.fieldSelect} value={draft.purchaseLocationId} disabled={locked}
                 onChange={(e) => onField('purchaseLocationId', e.target.value)}>
                 <option value="">— No default —</option>
-                {warehouses.filter((w) => w.is_active).map((w) => (
+                {sortByText(warehouses.filter((w) => w.is_active)).map((w) => (
                   <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
                 ))}
               </select>

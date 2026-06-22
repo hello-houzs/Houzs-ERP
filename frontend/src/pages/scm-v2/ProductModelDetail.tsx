@@ -36,6 +36,7 @@ import styles from './ProductModelDetail.module.css';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 
 // Staff #5 — reuse the proven multi-supplier assign dialog from the Models list,
 // scoped to this single model, so an operator can bind suppliers to an EXISTING
@@ -374,7 +375,7 @@ export const ProductModelDetail = ({
           <label className={styles.field}>
             <span className="t-eyebrow">Branding (optional)</span>
             <datalist id="branding-pool-model-detail">
-              {brandingPool.pool.map((b) => <option key={b} value={b} />)}
+              {sortByText(brandingPool.pool).map((b) => <option key={b} value={b} />)}
             </datalist>
             <input
               type="text"

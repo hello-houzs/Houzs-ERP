@@ -42,6 +42,7 @@ import {
 } from '@2990s/shared/mfg-pricing';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
@@ -405,7 +406,7 @@ export const PurchaseConsignmentOrderNew = () => {
                 className={styles.fieldInput}
               >
                 <option value="">— Pick a supplier —</option>
-                {(suppliers.data ?? []).map((s) => (
+                {sortByText(suppliers.data ?? []).map((s) => (
                   <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
                 ))}
               </select>
@@ -475,7 +476,7 @@ export const PurchaseConsignmentOrderNew = () => {
                 required
               >
                 <option value="">— Pick a warehouse —</option>
-                {(warehouses.data ?? []).map((w) => (
+                {sortByText(warehouses.data ?? []).map((w) => (
                   <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
                 ))}
               </select>
@@ -684,12 +685,12 @@ export const PurchaseConsignmentOrderNew = () => {
                     />
                     <datalist id={`bindings-${l.rid}`}>
                       {supplierId && bindings.length > 0
-                        ? bindings.map((b) => (
+                        ? sortByText(bindings).map((b) => (
                             <option key={b.id} value={b.material_code}>
                               {b.material_name} · {b.supplier_sku} · {fmtRm(b.unit_price_centi, b.currency)}
                             </option>
                           ))
-                        : (allSkus.data ?? []).map((p) => (
+                        : sortByText(allSkus.data ?? []).map((p) => (
                             <option key={p.id} value={p.code}>
                               {p.name} · {p.category}
                             </option>
@@ -723,7 +724,7 @@ export const PurchaseConsignmentOrderNew = () => {
                       style={{ fontFamily: 'var(--font-mono)' }}
                     />
                     <datalist id={`supplier-skus-${l.rid}`}>
-                      {supplierId && bindings.map((b) => (
+                      {supplierId && sortByText(bindings).map((b) => (
                         <option key={b.id} value={b.supplier_sku || ''}>
                           {b.material_code} · {b.material_name} · {fmtRm(b.unit_price_centi, b.currency)}
                         </option>
@@ -823,7 +824,7 @@ export const PurchaseConsignmentOrderNew = () => {
                       className={styles.fieldInput}
                     >
                       <option value="">— Inherit Purchase Location —</option>
-                      {(warehouses.data ?? []).map((w) => (
+                      {sortByText(warehouses.data ?? []).map((w) => (
                         <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
                       ))}
                     </select>

@@ -96,7 +96,14 @@
 // Toast shim now uses the non-blocking corner toast instead of a full-screen
 // modal — fixes the "select a value and it jumps away" interruption on the
 // state->warehouse picker (and everywhere that shim was used).
-const VERSION = "houzs-erp-v21";
+// v22 (2026-06-22): system-wide dropdown/select auto-sort — a shared natural-sort
+// comparator (vendor/scm/lib/sort-options.ts) applied to ~50 SCM picker lists:
+// text pickers (warehouse/supplier/product/category/state/driver/branding/...)
+// sort case-insensitive alphabetical; numeric pickers (postcode/heights/sizes/
+// gaps/leg+divan heights) sort by leading number so "10\"" follows "9\"" not "1".
+// Placeholder rows ("— Unassigned —") stay pinned first; editable Maintenance
+// lists + document-status workflows left in their deliberate order.
+const VERSION = "houzs-erp-v22";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

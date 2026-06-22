@@ -82,6 +82,7 @@ import {
   type SpecialAddonsHistoryRow,
 } from '../../vendor/scm/lib/mfg-products-queries';
 import { useFabricTrackings } from '../../vendor/scm/lib/fabric-queries';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { SkeletonRows } from '../../vendor/scm/components/Skeleton';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
@@ -747,7 +748,7 @@ const SkuMasterTab = () => {
     <>
       {/* Shared datalist for the per-row inline Branding edit (Mattress view). */}
       <datalist id="branding-pool-sku-master">
-        {brandingPool.pool.map((b) => <option key={b} value={b} />)}
+        {sortByText(brandingPool.pool).map((b) => <option key={b} value={b} />)}
       </datalist>
       <div className={styles.headerRow}>
         <div className={styles.categoryChips}>
@@ -4053,7 +4054,7 @@ const NewSkuDrawer = ({ onClose }: { onClose: () => void }) => {
               <>
                 <Field label="Branding" value={form.branding} onChange={(v) => set('branding', v)} placeholder="e.g. Sealy" list="branding-pool-new-sku" />
                 <datalist id="branding-pool-new-sku">
-                  {brandingPool.pool.map((b) => <option key={b} value={b} />)}
+                  {sortByText(brandingPool.pool).map((b) => <option key={b} value={b} />)}
                 </datalist>
               </>
             )}

@@ -35,6 +35,7 @@ import {
 import {
   useSoDropdownOptions, optionsOrFallback,
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
+import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { SoLineCard, emptySoLine, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
 import {
   PaymentsTable, labelToApi, draftMethodFields, type PaymentDraft,
@@ -412,7 +413,7 @@ export const SalesInvoiceNew = () => {
               <span className={styles.selectWrap}>
                 <select className={styles.fieldSelect} value={customerType} onChange={(e) => setCustomerType(e.target.value)}>
                   <option value="">—</option>
-                  {customerTypeOpts.map((t) => <option key={t.id} value={t.value}>{t.label}</option>)}
+                  {sortByText(customerTypeOpts).map((t) => <option key={t.id} value={t.value}>{t.label}</option>)}
                   {customerType && !customerTypeOpts.some((t) => t.value === customerType) && <option value={customerType}>{customerType}</option>}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
@@ -423,7 +424,7 @@ export const SalesInvoiceNew = () => {
               <span className={styles.selectWrap}>
                 <select className={styles.fieldSelect} value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
                   <option value="">— Pick staff —</option>
-                  {staffList.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>)}
+                  {sortByText(staffList).map((s) => <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>)}
                   {salespersonId && !staffList.some((s) => s.id === salespersonId) && <option value={salespersonId}>(former staff)</option>}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
@@ -451,7 +452,7 @@ export const SalesInvoiceNew = () => {
               <span className={styles.selectWrap}>
                 <select className={styles.fieldSelect} value={buildingType} onChange={(e) => setBuildingType(e.target.value)}>
                   <option value="">—</option>
-                  {buildingTypeOpts.map((b) => <option key={b.id} value={b.value}>{b.label}</option>)}
+                  {sortByText(buildingTypeOpts).map((b) => <option key={b.id} value={b.value}>{b.label}</option>)}
                   {buildingType && !buildingTypeOpts.some((b) => b.value === buildingType) && <option value={buildingType}>{buildingType}</option>}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
@@ -490,7 +491,7 @@ export const SalesInvoiceNew = () => {
               <span className={styles.selectWrap}>
                 <select className={styles.fieldSelect} value={emergencyRel} onChange={(e) => setEmergencyRel(e.target.value)}>
                   <option value="">—</option>
-                  {relationshipOpts.map((r) => <option key={r.id} value={r.value}>{r.label}</option>)}
+                  {sortByText(relationshipOpts).map((r) => <option key={r.id} value={r.value}>{r.label}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -523,7 +524,7 @@ export const SalesInvoiceNew = () => {
                   onChange={(e) => { setState(e.target.value); setCity(''); setPostcode(''); }}
                   disabled={loc.isLoading}>
                   <option value="">{loc.isLoading ? 'Loading…' : 'Pick state'}</option>
-                  {states.map((s) => <option key={s} value={s}>{s}</option>)}
+                  {sortByText(states).map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -534,7 +535,7 @@ export const SalesInvoiceNew = () => {
                 <select className={styles.fieldSelect} value={city}
                   onChange={(e) => { setCity(e.target.value); setPostcode(''); }} disabled={!state}>
                   <option value="">{state ? 'Pick city' : '— pick state first'}</option>
-                  {cities.map((cc) => <option key={cc} value={cc}>{cc}</option>)}
+                  {sortByText(cities).map((cc) => <option key={cc} value={cc}>{cc}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -545,7 +546,7 @@ export const SalesInvoiceNew = () => {
                 <select className={styles.fieldSelect} value={postcode}
                   onChange={(e) => setPostcode(e.target.value)} disabled={!state || !city}>
                   <option value="">{(state && city) ? 'Pick postcode' : '— pick city first'}</option>
-                  {postcodes.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {sortByNumeric(postcodes).map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>

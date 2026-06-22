@@ -27,6 +27,7 @@ import {
   DollarSign, Plus, Trash2, Save, FileText, Image as ImageIcon,
   Calendar as CalIcon, User as UserIcon, Tag,
 } from 'lucide-react';
+import { sortByText } from '../lib/sort-options';
 import { fetchPaymentSlipUrl, type SlipUrlResponse } from '../lib/slip';
 import { SlipUploadField } from './SlipUploadField';
 import { MoneyInput } from './MoneyInput';
@@ -794,7 +795,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     onChange={(e) => patchDraft(d.uid, { collectedBy: e.target.value })}
                   >
                     <option value="">—</option>
-                    {staff.filter((s) => s.active).map((s) => (
+                    {sortByText(staff.filter((s) => s.active)).map((s) => (
                       <option key={s.id} value={s.id}>{s.name}</option>
                     ))}
                   </select>

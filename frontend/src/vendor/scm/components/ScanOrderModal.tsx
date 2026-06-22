@@ -23,6 +23,7 @@ import { useNavigate } from 'react-router';
 import { Camera, Loader2, Trash2, Upload, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { authedFetch } from '../lib/authed-fetch';
+import { sortByText } from '../lib/sort-options';
 import styles from './ScanOrderModal.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -415,7 +416,7 @@ export const ScanOrderModal = ({ onClose }: Props) => {
       <span className={styles.fieldLabel}>{label}</span>
       <select className={styles.input} value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">— no match —</option>
-        {opts.map((o) => (
+        {sortByText(opts).map((o) => (
           <option key={o.value} value={o.value}>
             {o.label === o.value ? o.label : `${o.label} (${o.value})`}
           </option>
@@ -467,7 +468,7 @@ export const ScanOrderModal = ({ onClose }: Props) => {
                 />
               </label>
               <datalist id="scan-so-salespeople">
-                {knownReps.map((r) => <option key={r} value={r} />)}
+                {sortByText(knownReps).map((r) => <option key={r} value={r} />)}
               </datalist>
               <div
                 className={`${styles.dropZone} ${dragOver ? styles.dropZoneActive : ''}`}
@@ -636,7 +637,7 @@ export const ScanOrderModal = ({ onClose }: Props) => {
                 </div>
               ))}
               <datalist id="scan-so-sku-options">
-                {skus.map((s) => (
+                {sortByText(skus).map((s) => (
                   <option key={s.code} value={s.code}>{s.name}</option>
                 ))}
               </datalist>
