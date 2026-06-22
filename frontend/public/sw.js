@@ -111,7 +111,10 @@
 // crashes fixed: date(?,..) -> date+int when shifting a project's checklist due
 // dates; LIKE -> ILIKE in the two raw project-search fragments (case-insensitive
 // search restored). Pairs with the per-request DB isolation fix (PR #102).
-const VERSION = "houzs-erp-v23";
+// v24 — SP size = made-to-order custom: SIZE_INFO.SP rendered "(CUSTOM)" not a
+// fake 220X220 (real dims captured per-order on the SO/PO line); SP added to
+// the Mattress/Bedframe Sizes maintenance pools.
+const VERSION = "houzs-erp-v24";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
