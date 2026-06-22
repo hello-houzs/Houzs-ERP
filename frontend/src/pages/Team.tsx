@@ -1912,6 +1912,8 @@ function EditMemberPanel({
   const [positionId, setPositionId] = useState<number | "">(user.position_id ?? "");
   const [managerId, setManagerId] = useState<number | "">(user.manager_id ?? "");
   const [division, setDivision] = useState(user.division || "");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const [picBusy, setPicBusy] = useState(false);
@@ -1977,6 +1979,13 @@ function EditMemberPanel({
     if ((managerId || null) !== (user.manager_id ?? null)) patch.manager_id = managerId || null;
     if ((division.trim() || null) !== (user.division ?? null))
       patch.division = division.trim() || null;
+    if (password.trim()) {
+      if (password.trim().length < 12) {
+        toast.error("Password must be at least 12 characters");
+        return;
+      }
+      patch.password = password.trim();
+    }
 
     if (Object.keys(patch).length === 0) {
       onClose();
@@ -2212,6 +2221,32 @@ function EditMemberPanel({
                 </option>
               ))}
           </select>
+        </div>
+        <div>
+          <label className={labelCls}>Set password</label>
+          <div className="relative">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Leave blank to keep current"
+              autoComplete="new-password"
+              className={cn(inputCls, "pr-10")}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((s) => !s)}
+              className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-ink-muted transition-colors hover:text-accent"
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              title={showPassword ? "Hide password" : "Show password"}
+            >
+              {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+            </button>
+          </div>
+          <div className="mt-1 text-[10px] text-ink-muted">
+            Sets a new password for this member (min 12 chars). They can change it
+            later — leave blank to keep their current one.
+          </div>
         </div>
       </PanelSection>
 
