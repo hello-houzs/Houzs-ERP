@@ -36,6 +36,7 @@ import { useGrnDetail, useAddGrnItem } from '../../vendor/scm/lib/grn-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -487,7 +488,7 @@ export const GrnFromPo = () => {
         style={FILTER_INPUT}
         aria-label="Category filter"
       >
-        {CATEGORY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        {sortByText(CATEGORY_OPTIONS).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
 
       {/* Date-range filter */}

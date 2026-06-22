@@ -41,6 +41,7 @@ import {
 import { useGrnDetail } from '../../vendor/scm/lib/grn-queries';
 import { useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import styles from './SalesOrderDetail.module.css';
@@ -457,7 +458,7 @@ export const PurchaseInvoiceNew = () => {
                     disabled={suppliersQ.isLoading}
                   >
                     <option value="">{suppliersQ.isLoading ? 'Loading suppliers…' : '— Pick a supplier —'}</option>
-                    {(suppliersQ.data ?? []).map((s) => (
+                    {sortByText(suppliersQ.data ?? []).map((s) => (
                       <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
                     ))}
                   </select>
@@ -649,12 +650,12 @@ export const PurchaseInvoiceNew = () => {
                               bound SKUs (New PO parity). Else fall back to the
                               gated full-catalogue search. */}
                           {supplierId && bindings.length > 0
-                            ? bindings.map((b) => (
+                            ? sortByText(bindings).map((b) => (
                                 <option key={b.id} value={b.material_code}>
                                   {b.material_name} · {b.supplier_sku} · {fmtRm(b.unit_price_centi, b.currency)}
                                 </option>
                               ))
-                            : (productsQ.data ?? []).map((p) => (<option key={p.id} value={p.code}>{p.name} · {p.category}</option>))}
+                            : sortByText(productsQ.data ?? []).map((p) => (<option key={p.id} value={p.code}>{p.name} · {p.category}</option>))}
                         </datalist>
                       </>
                     ) : (
@@ -683,11 +684,11 @@ export const PurchaseInvoiceNew = () => {
                     <div style={{ fontFamily: 'var(--font-button)', fontSize: 'var(--fs-11)', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 'var(--space-2)' }}>{l.itemGroup} Variants</div>
                     {l.itemGroup === 'bedframe' ? (
                       <div className={styles.formGrid4}>
-                        <VariantSelect label="Divan Height" options={activeOptions(maint!.divanHeights, String(l.variants?.divanHeight ?? ''))}
+                        <VariantSelect label="Divan Height" options={sortByNumeric(activeOptions(maint!.divanHeights, String(l.variants?.divanHeight ?? '')))}
                           value={String(l.variants?.divanHeight ?? '')} onChange={(v) => setVariant('divanHeight', v)} />
-                        <VariantSelect label="Gap" options={maintPickerValues(maint!.gaps, String(l.variants?.gap ?? '')).map((g) => ({ value: g, priceSen: 0 }))}
+                        <VariantSelect label="Gap" options={sortByNumeric(maintPickerValues(maint!.gaps, String(l.variants?.gap ?? '')).map((g) => ({ value: g, priceSen: 0 })))}
                           value={String(l.variants?.gap ?? '')} onChange={(v) => setVariant('gap', v)} />
-                        <VariantSelect label="Leg Height" options={activeOptions(maint!.legHeights, String(l.variants?.legHeight ?? ''))}
+                        <VariantSelect label="Leg Height" options={sortByNumeric(activeOptions(maint!.legHeights, String(l.variants?.legHeight ?? '')))}
                           value={String(l.variants?.legHeight ?? '')} onChange={(v) => setVariant('legHeight', v)} />
                         {/* Total Heights auto-computed (see setVariant). */}
                         <VariantSelect label="Special" options={specialsPools.bedframe}
@@ -695,9 +696,9 @@ export const PurchaseInvoiceNew = () => {
                       </div>
                     ) : (
                       <div className={styles.formGrid4}>
-                        <VariantSelect label="Seat Size" options={maintPickerValues(maint!.sofaSizes, String(l.variants?.seatHeight ?? '')).map((s) => ({ value: s, priceSen: 0 }))}
+                        <VariantSelect label="Seat Size" options={sortByNumeric(maintPickerValues(maint!.sofaSizes, String(l.variants?.seatHeight ?? '')).map((s) => ({ value: s, priceSen: 0 })))}
                           value={String(l.variants?.seatHeight ?? '')} onChange={(v) => setVariant('seatHeight', v)} />
-                        <VariantSelect label="Leg Height" options={activeOptions(maint!.sofaLegHeights, String(l.variants?.legHeight ?? ''))}
+                        <VariantSelect label="Leg Height" options={sortByNumeric(activeOptions(maint!.sofaLegHeights, String(l.variants?.legHeight ?? '')))}
                           value={String(l.variants?.legHeight ?? '')} onChange={(v) => setVariant('legHeight', v)} />
                         <VariantSelect label="Special" options={specialsPools.sofa}
                           value={String(l.variants?.special ?? '')} onChange={(v) => setVariant('special', v)} />

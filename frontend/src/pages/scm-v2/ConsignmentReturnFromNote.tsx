@@ -25,6 +25,7 @@ import { useReturnableNoteLines, type ReturnableNoteLine } from '../../vendor/sc
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -227,7 +228,7 @@ export const ConsignmentReturnFromNote = () => {
             onChange={(e) => setCondition(r, e.target.value)}
             style={{ ...QTY_INPUT, width: 118, ...(locked ? { cursor: 'not-allowed', background: 'var(--c-cream)' } : null) }}
           >
-            {CONDITIONS.map((cond) => <option key={cond} value={cond}>{cond}</option>)}
+            {sortByText(CONDITIONS).map((cond) => <option key={cond} value={cond}>{cond}</option>)}
           </select>
         );
       },

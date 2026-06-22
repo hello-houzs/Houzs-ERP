@@ -55,6 +55,7 @@ import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import { useRacks } from '../../vendor/scm/lib/warehouse-queries';
 import { useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -851,7 +852,7 @@ const SupplierCard = ({
               <select className={styles.fieldSelect} value={draft.supplierId} disabled={locked}
                 onChange={(e) => onField('supplierId', e.target.value)}>
                 <option value="">— Pick supplier —</option>
-                {suppliers.map((s) => (
+                {sortByText(suppliers).map((s) => (
                   <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
                 ))}
               </select>
@@ -891,7 +892,7 @@ const SupplierCard = ({
               <select className={styles.fieldSelect} value={draft.warehouseId} disabled={locked}
                 onChange={(e) => onField('warehouseId', e.target.value)}>
                 <option value="">— No warehouse —</option>
-                {warehouses.filter((w) => w.is_active).map((w) => (
+                {sortByText(warehouses.filter((w) => w.is_active)).map((w) => (
                   <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
                 ))}
               </select>

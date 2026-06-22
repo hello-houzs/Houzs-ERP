@@ -37,6 +37,7 @@ import {
    warehouse master CRUD belongs at Inventory → Warehouses. The L2 view
    only READS the warehouse list. */
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import {
   useLocalities, distinctStates,
   useCreateLocality, useUpdateLocality, useDeleteLocality,
@@ -535,7 +536,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
                             }}
                           >
                             <option value="">— Unassigned —</option>
-                            {(warehouses.data ?? []).filter((w) => w.is_active).map((w) => (
+                            {sortByText((warehouses.data ?? []).filter((w) => w.is_active)).map((w) => (
                               <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
                             ))}
                           </select>
@@ -622,7 +623,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
               aria-label="Default warehouse for this state"
             >
               <option value="">— Default warehouse (optional) —</option>
-              {(warehouses.data ?? []).filter((w) => w.is_active).map((w) => (
+              {sortByText((warehouses.data ?? []).filter((w) => w.is_active)).map((w) => (
                 <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
               ))}
             </select>
@@ -714,7 +715,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
                                     inherited warehouse name directly, no
                                     "— follow state (...)" decoration. */}
                                 <option value="">{stateWhLabel}</option>
-                                {(warehouses.data ?? []).filter((w) => w.is_active).map((w) => (
+                                {sortByText((warehouses.data ?? []).filter((w) => w.is_active)).map((w) => (
                                   <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
                                 ))}
                               </select>

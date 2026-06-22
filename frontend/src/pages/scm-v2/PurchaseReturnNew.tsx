@@ -37,6 +37,7 @@ import {
 import { useGrnDetail } from '../../vendor/scm/lib/grn-queries';
 import { usePurchaseOrderDetail, useSuppliers } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -337,7 +338,7 @@ export const PurchaseReturnNew = () => {
               ) : (
                 <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} className={styles.fieldInput} required>
                   <option value="">— Pick a supplier —</option>
-                  {(suppliersQ.data ?? []).map((s) => (
+                  {sortByText(suppliersQ.data ?? []).map((s) => (
                     <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
                   ))}
                 </select>
@@ -482,7 +483,7 @@ export const PurchaseReturnNew = () => {
                             style={{ fontFamily: 'var(--font-mono)' }}
                           />
                           <datalist id={`pr-products-${l.rid}`}>
-                            {(productsQ.data ?? []).map((p) => (
+                            {sortByText(productsQ.data ?? []).map((p) => (
                               <option key={p.id} value={p.code}>{p.name} · {p.category}</option>
                             ))}
                           </datalist>
@@ -534,14 +535,14 @@ export const PurchaseReturnNew = () => {
                       }}>{l.itemGroup} Variants</div>
                       {l.itemGroup === 'bedframe' ? (
                         <div className={styles.formGrid4}>
-                          <VariantSelect label="Divan Height" options={activeOptions(maint!.divanHeights, String(l.variants?.divanHeight ?? ''))}
+                          <VariantSelect label="Divan Height" options={sortByNumeric(activeOptions(maint!.divanHeights, String(l.variants?.divanHeight ?? '')))}
                             value={String(l.variants?.divanHeight ?? '')}
                             onChange={(v) => setVariant('divanHeight', v)} />
                           <VariantSelect label="Gap"
-                            options={maintPickerValues(maint!.gaps, String(l.variants?.gap ?? '')).map((g) => ({ value: g, priceSen: 0 }))}
+                            options={sortByNumeric(maintPickerValues(maint!.gaps, String(l.variants?.gap ?? '')).map((g) => ({ value: g, priceSen: 0 })))}
                             value={String(l.variants?.gap ?? '')}
                             onChange={(v) => setVariant('gap', v)} />
-                          <VariantSelect label="Leg Height" options={activeOptions(maint!.legHeights, String(l.variants?.legHeight ?? ''))}
+                          <VariantSelect label="Leg Height" options={sortByNumeric(activeOptions(maint!.legHeights, String(l.variants?.legHeight ?? '')))}
                             value={String(l.variants?.legHeight ?? '')}
                             onChange={(v) => setVariant('legHeight', v)} />
                           {/* Total Heights removed — auto-computed from Divan +
@@ -553,10 +554,10 @@ export const PurchaseReturnNew = () => {
                       ) : (
                         <div className={styles.formGrid4}>
                           <VariantSelect label="Seat Size"
-                            options={maintPickerValues(maint!.sofaSizes, String(l.variants?.seatHeight ?? '')).map((s) => ({ value: s, priceSen: 0 }))}
+                            options={sortByNumeric(maintPickerValues(maint!.sofaSizes, String(l.variants?.seatHeight ?? '')).map((s) => ({ value: s, priceSen: 0 })))}
                             value={String(l.variants?.seatHeight ?? '')}
                             onChange={(v) => setVariant('seatHeight', v)} />
-                          <VariantSelect label="Leg Height" options={activeOptions(maint!.sofaLegHeights, String(l.variants?.legHeight ?? ''))}
+                          <VariantSelect label="Leg Height" options={sortByNumeric(activeOptions(maint!.sofaLegHeights, String(l.variants?.legHeight ?? '')))}
                             value={String(l.variants?.legHeight ?? '')}
                             onChange={(v) => setVariant('legHeight', v)} />
                           <VariantSelect label="Special" options={specialsPools.sofa}

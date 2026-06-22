@@ -34,6 +34,7 @@ import { PcVariantEditor } from '../../vendor/scm/components/PcVariantEditor';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -334,7 +335,7 @@ export const PurchaseConsignmentReturnNew = () => {
               ) : (
                 <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} className={styles.fieldInput} required>
                   <option value="">— Pick a supplier —</option>
-                  {(suppliersQ.data ?? []).map((s) => (
+                  {sortByText(suppliersQ.data ?? []).map((s) => (
                     <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
                   ))}
                 </select>
@@ -471,7 +472,7 @@ export const PurchaseConsignmentReturnNew = () => {
                             style={{ fontFamily: 'var(--font-mono)' }}
                           />
                           <datalist id={`pct-products-${l.rid}`}>
-                            {(productsQ.data ?? []).map((p) => (
+                            {sortByText(productsQ.data ?? []).map((p) => (
                               <option key={p.id} value={p.code}>{p.name} · {p.category}</option>
                             ))}
                           </datalist>

@@ -33,6 +33,7 @@ import { MultiSupplierPicker } from '../../vendor/scm/components/MultiSupplierPi
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './ProductModels.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -1052,7 +1053,7 @@ export function NewModelDialog({
       >
         {/* Shared datalist for every row card's Branding input. */}
         <datalist id="branding-pool-model-rows">
-          {brandingPool.pool.map((b) => <option key={b} value={b} />)}
+          {sortByText(brandingPool.pool).map((b) => <option key={b} value={b} />)}
         </datalist>
         {/* PR — Commander 2026-05-26: "做成长方形、大一点". Title + category
             side-by-side so the header doesn't burn three rows before the
@@ -1305,7 +1306,7 @@ function ModelRowCard({
                 <span>{si === 0 ? 'Supplier (optional)' : `Supplier ${si + 1}`}</span>
                 <select value={sup.supplierId} onChange={(e) => patchSup({ supplierId: e.target.value })}>
                   <option value="">— None —</option>
-                  {suppliers.map((s) => (
+                  {sortByText(suppliers).map((s) => (
                     <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
                   ))}
                 </select>
@@ -1633,7 +1634,7 @@ function EditModelDialog({
         style={{ maxHeight: '90vh', overflowY: 'auto' }}
       >
         <datalist id="branding-pool-edit-model">
-          {brandingPool.pool.map((b) => <option key={b} value={b} />)}
+          {sortByText(brandingPool.pool).map((b) => <option key={b} value={b} />)}
         </datalist>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 'var(--space-4)' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>

@@ -32,6 +32,7 @@ import { useAuth, isAdminLevel } from '../../vendor/scm/lib/auth';
 import { useCreatePosFromSoItems } from '../../vendor/scm/lib/suppliers-queries';
 import { fmtDateOrDash } from '@2990s/shared';
 import { DateField } from '../../vendor/scm/components/DateField';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './Mrp.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -869,7 +870,7 @@ export const Mrp = () => {
           <span className={styles.filterLabel}>Warehouse</span>
           <select className={styles.filterSelect} value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
             <option value="all">All warehouses</option>
-            {(data?.warehouses ?? []).map((w) => (
+            {sortByText(data?.warehouses ?? []).map((w) => (
               <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
             ))}
           </select>
@@ -1033,7 +1034,7 @@ const LineSupplierCell = ({ suppliers, chosenSupplierId, onSupplierChange }: {
       onClick={(e) => e.stopPropagation()}
       title="Supplier for this SO line — defaults to the SKU's main supplier"
     >
-      {suppliers.map((s) => (
+      {sortByText(suppliers).map((s) => (
         <option key={s.supplierId} value={s.supplierId}>
           {s.name}{s.isMain ? ' ★' : ''} · {s.code}
         </option>

@@ -49,6 +49,7 @@ import { useSupplierDetail, useSuppliers, type SupplierRow } from '../lib/suppli
 import { useNotify } from './NotifyDialog';
 import { useConfirm } from './ConfirmDialog';
 import { EffectiveDatedHistory } from './EffectiveDatedHistory';
+import { sortByText, sortByNumeric } from '../lib/sort-options';
 import { todayMyt } from '../lib/dates';
 
 // Seat-height columns mirror the live Maintenance pool (Products → Maintenance
@@ -319,7 +320,7 @@ export const SofaComboTab = ({ supplierId }: ComboTabProps) => {
           style={selectStyle}
         >
           <option value="">All base models</option>
-          {baseModels.map((m) => <option key={m} value={m}>{m}</option>)}
+          {sortByText(baseModels).map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
         <div style={{ flex: 1 }} />
         <span style={{
@@ -475,7 +476,7 @@ function AnchorControl({
         {anchored == null && anchoredSupplierId && (
           <option value={anchoredSupplierId}>{anchoredSupplierId}</option>
         )}
-        {suppliers.map((s) => (
+        {sortByText(suppliers).map((s) => (
           <option key={s.id} value={s.id}>{s.name}</option>
         ))}
       </select>
@@ -585,7 +586,7 @@ function ComboCard({
           into one tight row (Commander 2026-06-15: "字那么小怎么看"). Cells now
           auto-fill at a comfortable min-width and the size + price font is bumped. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(68px, 1fr))', gap: 6 }}>
-        {heights.map((h) => {
+        {sortByNumeric(heights).map((h) => {
           const v = rule.pricesByHeight?.[h];
           return (
             <div key={h} style={{
@@ -825,7 +826,7 @@ function ComposerModal({
             style={selectStyle}
           >
             <option value="">— Select base model —</option>
-            {baseModelOptions.map((m) => (
+            {sortByText(baseModelOptions).map((m) => (
               <option key={m} value={m}>
                 {supplierCodeByBaseModel[m] ? `${m} · ${supplierCodeByBaseModel[m]}` : m}
               </option>
@@ -926,7 +927,7 @@ function ComposerModal({
 
         <Field label="Cost by seat height (RM) — selling price is set by Master Admin on POS">
           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${heights.length}, 1fr)`, gap: 8 }}>
-            {heights.map((h) => (
+            {sortByNumeric(heights).map((h) => (
               <div key={h}>
                 <div style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)', textAlign: 'center' }}>{h}{/^\d/.test(h) ? '"' : ''}</div>
                 <input
@@ -1221,7 +1222,7 @@ function BatchEditModal({
                 <thead>
                   <tr>
                     <th style={gridHeadCellStickyStyle}>Combo</th>
-                    {heights.map((h) => (
+                    {sortByNumeric(heights).map((h) => (
                       <th key={h} style={gridHeadCellStyle}>
                         {h}{/^\d/.test(h) ? '"' : ''}
                       </th>
@@ -1254,7 +1255,7 @@ function BatchEditModal({
                           <Pencil size={11} strokeWidth={1.75} /> Edit composition…
                         </button>
                       </td>
-                      {heights.map((h) => (
+                      {sortByNumeric(heights).map((h) => (
                         <td key={h} style={gridInputCellStyle}>
                           <input
                             type="number"
@@ -1353,7 +1354,7 @@ function HistoryModal({ rule, supplierId, heights, onClose }: { rule: SofaComboR
         renderRow={(r) => (
           <>
             <div style={{ display: 'grid', gridTemplateColumns: `repeat(${heights.length}, 1fr)`, gap: 4, marginTop: 6 }}>
-              {heights.map((h) => (
+              {sortByNumeric(heights).map((h) => (
                 <div key={h} style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>{h}</div>
                   <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-12)' }}>
