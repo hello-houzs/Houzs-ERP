@@ -209,11 +209,12 @@ export default function App() {
             </PageGuard>
           }
         />
-        {/* ── Supply Chain (vendored 2990's SCM) — owner-gated /scm/* ── */}
+        {/* ── Supply Chain (vendored 2990's SCM) — scm.access-gated /scm/*;
+            Owner / IT Admin pass via their "*" wildcard (can() short-circuits "*"). ── */}
         <Route
           path="/scm/suppliers"
           element={
-            <Guard perm="*">
+            <Guard perm="scm.access">
               <ScmSuppliersV2 />
             </Guard>
           }
@@ -221,107 +222,107 @@ export default function App() {
         {/* Vendored 2990's Purchase Order pages. /new + /from-so precede /:id so
             the literal segments match before the param route. Each page is wrapped
             in <Scm2990Shell> for the Notify/Confirm/dialog-service providers. */}
-        <Route path="/scm/purchase-orders" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseOrdersV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-orders/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseOrderNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-orders/from-so" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseOrderFromSoV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-orders/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseOrderDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-orders" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseOrdersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-orders/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseOrderNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-orders/from-so" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseOrderFromSoV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-orders/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseOrderDetailV2 /></Scm2990Shell></Guard>} />
         {/* Vendored 2990's MRP + read/list pages. Each wrapped in <Scm2990Shell>.
             product-models list precedes /:id so the literal segment matches first. */}
-        <Route path="/scm/mrp" element={<Guard perm="*"><Scm2990Shell><ScmMrpV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/accounting" element={<Guard perm="*"><Scm2990Shell><ScmAccountingV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/outstanding" element={<Guard perm="*"><Scm2990Shell><ScmOutstandingV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/fabric-tracking" element={<Guard perm="*"><Scm2990Shell><ScmFabricTrackingV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/warehouses" element={<Guard perm="*"><Scm2990Shell><ScmWarehousesV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/products" element={<Guard perm="*"><Scm2990Shell><ScmProductsV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/product-models" element={<Guard perm="*"><Scm2990Shell><ScmProductModelsV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/product-models/:id" element={<Guard perm="*"><Scm2990Shell><ScmProductModelDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/mrp" element={<Guard perm="scm.access"><Scm2990Shell><ScmMrpV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/accounting" element={<Guard perm="scm.access"><Scm2990Shell><ScmAccountingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/outstanding" element={<Guard perm="scm.access"><Scm2990Shell><ScmOutstandingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/fabric-tracking" element={<Guard perm="scm.access"><Scm2990Shell><ScmFabricTrackingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/warehouses" element={<Guard perm="scm.access"><Scm2990Shell><ScmWarehousesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/products" element={<Guard perm="scm.access"><Scm2990Shell><ScmProductsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/product-models" element={<Guard perm="scm.access"><Scm2990Shell><ScmProductModelsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/product-models/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmProductModelDetailV2 /></Scm2990Shell></Guard>} />
         {/* TEMP — vendored 2990's GRN + Purchase Invoice pages (wave 3), parallel
             to the native /scm/* below. Each wrapped in <Scm2990Shell>. Literal
             segments (/new, /from-po, /from-grn) precede /:id so they match first. */}
-        <Route path="/scm/grns" element={<Guard perm="*"><Scm2990Shell><ScmGoodsReceivedV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/grns/new" element={<Guard perm="*"><Scm2990Shell><ScmGrnNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/grns/from-po" element={<Guard perm="*"><Scm2990Shell><ScmGrnFromPoV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/grns/:id" element={<Guard perm="*"><Scm2990Shell><ScmGoodsReceivedDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-invoices" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseInvoicesV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-invoices/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseInvoiceNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-invoices/from-grn" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseInvoiceFromGrnV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-invoices/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseInvoiceDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/grns" element={<Guard perm="scm.access"><Scm2990Shell><ScmGoodsReceivedV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/grns/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmGrnNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/grns/from-po" element={<Guard perm="scm.access"><Scm2990Shell><ScmGrnFromPoV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/grns/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmGoodsReceivedDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-invoices" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseInvoicesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-invoices/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseInvoiceNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-invoices/from-grn" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseInvoiceFromGrnV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-invoices/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseInvoiceDetailV2 /></Scm2990Shell></Guard>} />
         {/* TEMP — vendored 2990's stock-movement pages (wave 4: Adjustments /
             Transfers / Takes), parallel to the native /scm/* below. Each wrapped
             in <Scm2990Shell>. Literal /new precedes /:id so it matches first. */}
-        <Route path="/scm/stock-adjustments" element={<Guard perm="*"><Scm2990Shell><ScmStockAdjustmentsV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/stock-adjustments/new" element={<Guard perm="*"><Scm2990Shell><ScmStockAdjustmentNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/stock-transfers" element={<Guard perm="*"><Scm2990Shell><ScmStockTransfersV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/stock-transfers/new" element={<Guard perm="*"><Scm2990Shell><ScmStockTransferNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/stock-transfers/:id" element={<Guard perm="*"><Scm2990Shell><ScmStockTransferDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/stock-takes" element={<Guard perm="*"><Scm2990Shell><ScmStockTakesV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/stock-takes/new" element={<Guard perm="*"><Scm2990Shell><ScmStockTakeNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/stock-takes/:id" element={<Guard perm="*"><Scm2990Shell><ScmStockTakeDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-adjustments" element={<Guard perm="scm.access"><Scm2990Shell><ScmStockAdjustmentsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-adjustments/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmStockAdjustmentNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-transfers" element={<Guard perm="scm.access"><Scm2990Shell><ScmStockTransfersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-transfers/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmStockTransferNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-transfers/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmStockTransferDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-takes" element={<Guard perm="scm.access"><Scm2990Shell><ScmStockTakesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-takes/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmStockTakeNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/stock-takes/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmStockTakeDetailV2 /></Scm2990Shell></Guard>} />
         {/* TEMP — vendored 2990's PR / Inventory / Stock Card / Supplier Detail /
             Drivers pages (this wave), parallel to the native /scm/* below. Each
             wrapped in <Scm2990Shell>. Literal segments (/new, /stock-card)
             precede the /:id routes so they match first. */}
-        <Route path="/scm/purchase-returns" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseReturnsV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-returns/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseReturnNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-returns/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseReturnDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/inventory" element={<Guard perm="*"><Scm2990Shell><ScmInventoryV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/inventory/stock-card/:productCode" element={<Guard perm="*"><Scm2990Shell><ScmStockCardV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/suppliers/:id" element={<Guard perm="*"><Scm2990Shell><ScmSupplierDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/drivers" element={<Guard perm="*"><Scm2990Shell><ScmDriversV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-returns" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseReturnsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-returns/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseReturnNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-returns/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseReturnDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/inventory" element={<Guard perm="scm.access"><Scm2990Shell><ScmInventoryV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/inventory/stock-card/:productCode" element={<Guard perm="scm.access"><Scm2990Shell><ScmStockCardV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/suppliers/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmSupplierDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/drivers" element={<Guard perm="scm.access"><Scm2990Shell><ScmDriversV2 /></Scm2990Shell></Guard>} />
         {/* Sales Orders READ side (vendored). The literal /maintenance route
             MUST precede /:docNo so 'maintenance' isn't caught as a doc number.
             2990 uses :docNo (not :id) for the SO detail. */}
-        <Route path="/scm/sales-orders" element={<Guard perm="*"><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/sales-orders/maintenance" element={<Guard perm="*"><Scm2990Shell><ScmSalesOrderMaintenanceV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-orders" element={<Guard perm="scm.access"><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-orders/maintenance" element={<Guard perm="scm.access"><Scm2990Shell><ScmSalesOrderMaintenanceV2 /></Scm2990Shell></Guard>} />
         {/* Literal /new + /generate MUST precede /:docNo so they match first. */}
-        <Route path="/scm/sales-orders/new" element={<Guard perm="*"><Scm2990Shell><ScmSalesOrderNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/sales-orders/generate" element={<Guard perm="*"><Scm2990Shell><ScmSoFromProductsV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/sales-orders/:docNo" element={<Guard perm="*"><Scm2990Shell><ScmSalesOrderDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-orders/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmSalesOrderNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-orders/generate" element={<Guard perm="scm.access"><Scm2990Shell><ScmSoFromProductsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-orders/:docNo" element={<Guard perm="scm.access"><Scm2990Shell><ScmSalesOrderDetailV2 /></Scm2990Shell></Guard>} />
         {/* SCM Reports v2 — AutoCount-style detail listings. Each wrapped in <Scm2990Shell>. */}
-        <Route path="/scm/reports/sales-order-detail-listing" element={<Guard perm="*"><Scm2990Shell><ScmSoDetailListingV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/reports/delivery-order-detail-listing" element={<Guard perm="*"><Scm2990Shell><ScmDoDetailListingV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/reports/sales-invoice-detail-listing" element={<Guard perm="*"><Scm2990Shell><ScmSiDetailListingV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/reports/delivery-return-detail-listing" element={<Guard perm="*"><Scm2990Shell><ScmDrDetailListingV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/delivery-orders" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryOrdersV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/delivery-orders/new" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryOrderNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/delivery-orders/from-so" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryOrderFromSoV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/delivery-orders/:id" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryOrderDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/sales-invoices" element={<Guard perm="*"><Scm2990Shell><ScmSalesInvoicesV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/sales-invoices/new" element={<Guard perm="*"><Scm2990Shell><ScmSalesInvoiceNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/sales-invoices/from-do" element={<Guard perm="*"><Scm2990Shell><ScmSalesInvoiceFromDoV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/sales-invoices/:id" element={<Guard perm="*"><Scm2990Shell><ScmSalesInvoiceDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/delivery-returns" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryReturnsV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/delivery-returns/new" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryReturnNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/delivery-returns/from-do" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryReturnFromDoV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/delivery-returns/:id" element={<Guard perm="*"><Scm2990Shell><ScmDeliveryReturnDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/consignment-orders" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentOrdersV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/consignment-orders/new" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentOrderNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/consignment-orders/:docNo" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentOrderDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/consignment-notes" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentNotesV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/consignment-notes/new" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentNoteNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/consignment-notes/from-order" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentNoteFromOrderV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/consignment-notes/:id" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentNoteDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/reports/sales-order-detail-listing" element={<Guard perm="scm.access"><Scm2990Shell><ScmSoDetailListingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/reports/delivery-order-detail-listing" element={<Guard perm="scm.access"><Scm2990Shell><ScmDoDetailListingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/reports/sales-invoice-detail-listing" element={<Guard perm="scm.access"><Scm2990Shell><ScmSiDetailListingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/reports/delivery-return-detail-listing" element={<Guard perm="scm.access"><Scm2990Shell><ScmDrDetailListingV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-orders" element={<Guard perm="scm.access"><Scm2990Shell><ScmDeliveryOrdersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-orders/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmDeliveryOrderNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-orders/from-so" element={<Guard perm="scm.access"><Scm2990Shell><ScmDeliveryOrderFromSoV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-orders/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmDeliveryOrderDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-invoices" element={<Guard perm="scm.access"><Scm2990Shell><ScmSalesInvoicesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-invoices/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmSalesInvoiceNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-invoices/from-do" element={<Guard perm="scm.access"><Scm2990Shell><ScmSalesInvoiceFromDoV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/sales-invoices/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmSalesInvoiceDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-returns" element={<Guard perm="scm.access"><Scm2990Shell><ScmDeliveryReturnsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-returns/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmDeliveryReturnNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-returns/from-do" element={<Guard perm="scm.access"><Scm2990Shell><ScmDeliveryReturnFromDoV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/delivery-returns/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmDeliveryReturnDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-orders" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentOrdersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-orders/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentOrderNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-orders/:docNo" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentOrderDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-notes" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentNotesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-notes/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentNoteNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-notes/from-order" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentNoteFromOrderV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-notes/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentNoteDetailV2 /></Scm2990Shell></Guard>} />
         {/* Consignment Returns (DR-clone) + Purchase Consignment Orders (PO-clone),
             vendored 2990 pages wrapped in <Scm2990Shell>. Literal segments
             (/new, /from-note) precede /:id so they match first. */}
-        <Route path="/scm/consignment-returns" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentReturnsV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/consignment-returns/new" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentReturnNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/consignment-returns/from-note" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentReturnFromNoteV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/consignment-returns/:id" element={<Guard perm="*"><Scm2990Shell><ScmConsignmentReturnDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-orders" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentOrdersV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-orders/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentOrderNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-orders/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentOrderDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-receives" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReceivesV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-receives/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReceiveNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-receives/from-pc-order" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReceiveFromOrderV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-receives/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReceiveDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-returns" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReturnsV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-returns/new" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReturnNewV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-returns/from-receive" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReturnFromReceiveV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/purchase-consignment-returns/:id" element={<Guard perm="*"><Scm2990Shell><ScmPurchaseConsignmentReturnDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-returns" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentReturnsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-returns/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentReturnNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-returns/from-note" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentReturnFromNoteV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/consignment-returns/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmConsignmentReturnDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-orders" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentOrdersV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-orders/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentOrderNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-orders/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentOrderDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-receives" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentReceivesV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-receives/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentReceiveNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-receives/from-pc-order" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentReceiveFromOrderV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-receives/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentReceiveDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-returns" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentReturnsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-returns/new" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentReturnNewV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-returns/from-receive" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentReturnFromReceiveV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/purchase-consignment-returns/:id" element={<Guard perm="scm.access"><Scm2990Shell><ScmPurchaseConsignmentReturnDetailV2 /></Scm2990Shell></Guard>} />
         {/* Maintenance — no standalone vendored page; the vendored Products page
             hosts the Maintenance tab. The "Maintenance" nav item resolves here. */}
-        <Route path="/scm/maintenance" element={<Guard perm="*"><Scm2990Shell><ScmProductsV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/maintenance" element={<Guard perm="scm.access"><Scm2990Shell><ScmProductsV2 /></Scm2990Shell></Guard>} />
         {/* Legacy /roles → Team page's Roles tab */}
         <Route
           path="/roles"

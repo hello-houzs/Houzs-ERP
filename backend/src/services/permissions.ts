@@ -35,6 +35,11 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "sales.write",  resource: "Sales Entries", verb: "write",  label: "Edit sales entries",   description: "Create and edit own draft sales entries, submit for review" },
   { key: "sales.manage", resource: "Sales Entries", verb: "manage", label: "Manage sales entries", description: "Edit any entry, configure fields, void entries, push to AutoCount" },
 
+  // Supply Chain — ported 2990's furniture SCM (/api/scm). Single coarse
+  // gate: holding scm.access (or "*") unlocks every SCM module. Owner +
+  // IT Admin already cover it via "*"; this lets non-admin roles in too.
+  { key: "scm.access", resource: "Supply Chain", verb: "read", label: "Access Supply Chain", description: "See and use the Supply Chain (furniture SCM) modules" },
+
   // System
   { key: "udf.manage", resource: "Custom Fields", verb: "manage", label: "Manage custom fields", description: "Add or remove user-defined fields on tables" },
   { key: "settings.manage", resource: "Settings", verb: "manage", label: "Manage settings", description: "Edit connection and sync configuration" },
