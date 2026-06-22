@@ -509,6 +509,16 @@ export const SalesOrderNew = () => {
     return v?.name ?? '';
   }, [resolvedVenueId, venuesQ.data]);
 
+  /* Houzs 2026-06-22 (owner: "houzs 的 venue 是 manually 選的") — unlike 2990,
+     where Commander locked Venue to the salesperson's home venue, Houzs picks
+     Venue manually. Defaults to the salesperson's venue but stays changeable. */
+  const [pickedVenueId, setPickedVenueId] = useState<string | null>(null);
+  const effectiveVenueId = pickedVenueId ?? resolvedVenueId;
+  const effectiveVenueName: string = useMemo(() => {
+    if (!effectiveVenueId) return '';
+    return (venuesQ.data ?? []).find((r) => r.id === effectiveVenueId)?.name ?? '';
+  }, [effectiveVenueId, venuesQ.data]);
+
   /* Phone is compulsory on every SO; name too. We no longer pre-disable the Save
      button on these — onSave validates and tells the operator exactly what's
      missing (a silently-greyed button left them guessing). The server also
@@ -722,8 +732,8 @@ export const SalesOrderNew = () => {
            home venue. Send the FK so the API persists `venue_id`; we also
            send the resolved name as the legacy free-text `venue` column
            for back-compat with reports / PDFs that still read it. */
-        venueId: resolvedVenueId ?? undefined,
-        venue: resolvedVenueName || undefined,
+        venueId: effectiveVenueId ?? undefined,
+        venue: effectiveVenueName || undefined,
         /* Address handling: address1/2 skipped when fill-later is on, but
            State/City/Postcode/BuildingType always submit. */
         address1: fillAddressLater ? undefined : (address1 || undefined),
@@ -969,23 +979,29 @@ export const SalesOrderNew = () => {
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Venue</span>
-              {/* Commander 2026-05-27: "venue就不能换 自动跳出来". The venue
-                  is locked to the picked salesperson's staff.venue_id —
-                  rendered as a disabled input. Helper text under the
-                  field explains the lock to the user. */}
-              <input
-                className={styles.fieldInput}
-                value={resolvedVenueName || (resolvedVenueId ? 'Loading…' : '—')}
-                disabled
-                readOnly
-                aria-label="Venue (auto-set from salesperson)"
-              />
+              {/* Houzs 2026-06-22 (owner): Venue is manually pickable (was a
+                  locked 2990 field). Defaults to the salesperson's home venue,
+                  the operator can change it. */}
+              <span className={styles.selectWrap}>
+                <select
+                  className={styles.fieldSelect}
+                  value={effectiveVenueId ?? ''}
+                  onChange={(e) => setPickedVenueId(e.target.value || null)}
+                  aria-label="Venue"
+                >
+                  <option value="">—</option>
+                  {(venuesQ.data ?? []).map((v) => (
+                    <option key={v.id} value={v.id}>{v.name}</option>
+                  ))}
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+              </span>
               <span style={{
                 fontSize: 'var(--fs-11)',
                 color: 'var(--fg-muted)',
                 marginTop: 2,
               }}>
-                Auto-set from the salesperson's assigned venue. Contact admin to change.
+                Defaults to the salesperson's venue — change it if this order is for another venue.
               </span>
             </label>
             <label className={styles.field}>
