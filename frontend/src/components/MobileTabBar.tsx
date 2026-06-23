@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { createPortal } from "react-dom";
 import {
   LayoutDashboard,
-  Trophy,
+  Receipt,
   Grid3x3,
   X,
   ShieldCheck,
@@ -52,7 +52,7 @@ export function MobileTabBar() {
 
   const leftTabs: Tab[] = [
     { to: "/", label: "Home", icon: LayoutDashboard, end: true },
-    { to: "/gamification", label: "Points", icon: Trophy },
+    { to: "/scm/sales-orders", label: "SO", icon: Receipt },
   ];
   const rightTabs: Tab[] = [
     { to: "/notifications", label: "Inbox", icon: Bell },
@@ -201,15 +201,22 @@ function BottomTab({ tab }: { tab: Tab }) {
 // dismiss.
 
 function MenuModal({ onClose }: { onClose: () => void }) {
-  const { can } = useAuth();
+  const { can, pageAccess } = useAuth();
   const navigate = useNavigate();
   const notifs = useNotifications();
 
   // Recursive permission filter — same shape as Sidebar.tsx's so the
-  // two stay in lockstep.
+  // two stay in lockstep. `anyPerm` + `anyAccess` are ORed (additive
+  // SCM page-access gating); a tab with both shows if EITHER passes.
   function filterTab(t: NavTab): NavTab | null {
     if (t.perm && !can(t.perm)) return null;
-    if (t.anyPerm && !t.anyPerm.some((p) => can(p))) return null;
+    if (t.anyPerm || t.anyAccess) {
+      const permOk = t.anyPerm ? t.anyPerm.some((p) => can(p)) : false;
+      const accessOk = t.anyAccess
+        ? t.anyAccess.some((k) => pageAccess(k) !== "none")
+        : false;
+      if (!permOk && !accessOk) return null;
+    }
     if (t.hidePerm && can(t.hidePerm)) return null;
     if (t.children) {
       const kids = t.children

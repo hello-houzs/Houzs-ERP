@@ -120,7 +120,77 @@
 // suffix + derived colour; owner: "你只需要显示 Fabric Code 就可以了").
 // v27 — variant summary no longer repeats a colour the fabric code already
 // ends with ("A201-7-LIGHT BROWN BROWN" → "A201-7-LIGHT BROWN").
-const VERSION = "houzs-erp-v27";
+// v28 — SO DRAFT flow re-enabled (OCR drafts): "Save as Draft" on New SO
+// (primary when from a scan), DRAFT banner + Confirm on detail, DRAFT pill in
+// list; backend excludes DRAFT from KPI/MRP/PO/DO/credit. + New-SO form layout
+// tidied (roomier grid) + backend variant-summary dedupe.
+// v29 — OCR learning + capture (HOOKKA-parity): scan modal only re-learns when
+// the operator actually edited the AI result (edit-gate, stops pool pollution),
+// changed fields shown with a blue diff mark, the slip photo is kept in R2 and
+// shown as "Original Slip" on SO detail, and the per-salesperson rule distill
+// now runs weekly (Sun) via the existing cron.
+// v30 — OCR payment read correctly + aligned to the Payments panel: a credit
+// card via a bank → Merchant + that bank (MBB→Maybank); EPP with no month count
+// defaults to 12 months; the parenthesised approval code is captured; the
+// extracted payment seeds ONE draft row in the New-SO Payments panel (method /
+// bank / installment / approval / deposit) instead of the header shortcut.
+// v31 — Payment-receipt OCR (REVERTED in v32).
+// v32 — reverted v31's payment-receipt OCR (owner only wants the order-slip
+//   "Scan Order" upload to extract everything, incl. payment); also restores the
+//   Payments-panel Slip column to a clean single upload control (v31 broke it).
+// v33 — payment-receipt OCR re-added, LAYOUT-SAFE: uploading a card-terminal/EPP
+//   receipt as a payment-row slip auto-scans it (/scan-payment/extract) and fills
+//   method (Installment + months per owner convention) / approval code / amount,
+//   fill-blanks-only. In-column UI is ONLY a spinner swapped onto the upload icon
+//   (no floating label, Slip column unbroken); success silent, failure via toast.
+// v34 — Scan Order dual-image: one scan can carry the handwritten order slip AND
+//   a printed card-terminal receipt; the OCR auto-classifies them (order from the
+//   handwriting, payment preferentially from the printed receipt), stores both in
+//   R2, and SO detail shows "Order Slip" + "Payment Receipt" View-original cards.
+// v35 — User Management onboarding fixes: invite is now a real /invite/:token
+//   public route (works even when already logged in — fixes "can't set password");
+//   accept-invite password check passes the email; Reports-To lists invited members;
+//   invite dropdowns refresh after adding a dept/position; the invite form now has a
+//   Role dropdown (default Position Preview) so role no longer sticks on BD Exec;
+//   warns when the chosen position has no pages enabled.
+// v36 — SCM modules are now per-position page keys (scm.sales / procurement /
+//   consignment / transportation / warehouse / finance) in the position matrix.
+//   Gating is ADDITIVE: scm.access + * still grant everything (no lockout); a
+//   position granted only scm.procurement sees only Procurement, etc. Backend
+//   /api/scm gate, sidebar, mobile tab bar + all /scm route guards OR the keys in.
+// v37 — mobile bottom nav: the dead "Points" (/gamification, removed module) tab
+//   is now "SO" → /scm/sales-orders, so staff reach Sales Orders / Scan Order in
+//   one tap on the phone.
+// v38 — New SO / SO Detail form on PHONE (<=600px) collapses to a SINGLE column:
+//   every field on its own full-width row flowing straight down (name, dates, …)
+//   instead of cramped multi-column blocks; the span-reset clears the inline
+//   gridColumn:'span N' on wide fields so they don't overflow the 1-track grid.
+// v39 — OCR speed: catalog prompt-cache kept warm so scans are fast for the whole
+//   team (shared cache). Scan modal pre-warms /scan-so/warm on open; a keep-warm
+//   runs every 30min in business hours; catalog prefix slimmed (dropped base_model).
+//   First scan after a cold gap still pays the vision cost; the rest are fast.
+// v40 — SCM page-access matrix now granular to L2 sub-pages: each group's
+//   documents toggle separately (Sales Orders / Delivery Orders / Sales Invoices
+//   / Delivery Returns; Procurement's 7; Warehouse's 4; Consignment's 6; etc.).
+//   L1 Full grants the whole area (inherit); override a child to None to hide it.
+//   Additive, no lockout (scm.access + * still grant everything).
+// v41 — RECOVERY: production (erp.houzscentury.com) was overwritten ~40min after
+//   the v40 deploy by an OLD commit (6f8f8e9 / PR#25, pre-SCM), reverting prod to
+//   a very old build with no SCM. Re-deploying the current tree (SCM + this
+//   session's OCR/DRAFT/L2/mobile work) to production to restore it.
+// v42 — mobile density: header wordmark smaller on phone; SCM form (shared by all
+//   57 SCM doc pages) gets a phone-only density pass — smaller section headers /
+//   field labels / inputs + tighter padding, matching the Service Case card scale
+//   so more fields fit per phone screen.
+// v43 — SO OCR now feeds the REAL New-SO dropdown form directly (Scan Order →
+//   upload → extract → /scm/sales-orders/new?fromScan=1, no separate free-text
+//   review modal). Venue vocabulary UNIFIED: the OCR-matched venue resolves to a
+//   real project_venues id (same source as the form's Venue dropdown) and seeds
+//   it as a valid selection; no confident match -> left blank, never a wrong pick.
+//   Edit-gate learning moved to Save; changed fields show a blue diff.
+// v44 — New SO: removed the Venue helper caption ("Defaults to the salesperson's
+//   venue…") per owner; the Venue dropdown stands on its own.
+const VERSION = "houzs-erp-v44";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

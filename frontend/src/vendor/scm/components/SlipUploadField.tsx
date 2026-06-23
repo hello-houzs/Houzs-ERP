@@ -1,10 +1,12 @@
 import { useRef, useState } from 'react';
-import { Check, Upload, X } from 'lucide-react';
+import { Check, Loader2, Upload, X } from 'lucide-react';
 import {
   ALLOWED_SLIP_MIMES, MAX_SLIP_SIZE_BYTES,
   uploadSlipFull, type SlipUploadPhase,
 } from '../lib/slip';
 import paymentsStyles from '../../../pages/scm-v2/Payments.module.css';
+
+const IMAGE_SLIP_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 type Phase = 'idle' | SlipUploadPhase | 'done' | 'error';
 
@@ -17,6 +19,7 @@ export function SlipUploadField({
   disabled = false,
   onConfirmed,
   onCleared,
+  onImageScan,
 }: {
   /** When true, the trigger label reads "Slip *" to signal the SAVED-mode
    *  requirement. DRAFT-mode callers leave it false (slip optional). */
@@ -24,14 +27,21 @@ export function SlipUploadField({
   disabled?: boolean;
   onConfirmed: (uploadSessionId: string) => void;
   onCleared: () => void;
+  /** Optional. When an IMAGE (jpg/png/webp) is uploaded, the same file is also
+   *  handed here so the caller can OCR-scan it (card-terminal / EPP receipt)
+   *  and fill-blanks the payment row. Returns a promise that resolves when the
+   *  scan settles — while it is pending the upload button shows a spinner in
+   *  place of its icon (no extra element). PDFs are NOT passed (skipped). */
+  onImageScan?: (file: File) => Promise<void>;
 }) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const reset = () => {
-    setPhase('idle'); setErrorMsg(null); setFileName(null);
+    setPhase('idle'); setErrorMsg(null); setFileName(null); setScanning(false);
     if (inputRef.current) inputRef.current.value = '';
     onCleared();
   };
@@ -45,6 +55,16 @@ export function SlipUploadField({
       setErrorMsg('File too large (max 5 MB).'); setPhase('error'); return;
     }
     setFileName(f.name); setErrorMsg(null);
+
+    /* Receipt OCR — fire IN PARALLEL with the slip upload when the file is an
+       image (the receipt IS the slip). The scan never blocks or fails the
+       upload; the caller reports its own outcome via a toast. The only UI
+       effect here is the spinner-in-place-of-icon while it's pending. */
+    if (onImageScan && IMAGE_SLIP_MIMES.has(f.type)) {
+      setScanning(true);
+      void onImageScan(f).finally(() => setScanning(false));
+    }
+
     try {
       const result = await uploadSlipFull({ file: f, onProgress: (p) => setPhase(p) });
       setPhase('done');
@@ -74,7 +94,12 @@ export function SlipUploadField({
           onClick={() => inputRef.current?.click()}
           disabled={busy || disabled}
         >
-          <Upload size={14} strokeWidth={1.75} />
+          {/* Icon swaps to a same-size spinner while uploading OR OCR-scanning
+              the receipt — no extra element, so the narrow Slip column never
+              shifts. The button label is unchanged. */}
+          {busy || scanning
+            ? <Loader2 size={14} strokeWidth={1.75} className={paymentsStyles.slipScanSpin} />
+            : <Upload size={14} strokeWidth={1.75} />}
           {busy ? 'Uploading…' : (required ? 'Slip *' : 'Slip')}
         </button>
       ) : (

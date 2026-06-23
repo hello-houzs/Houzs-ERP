@@ -50,7 +50,7 @@ export const mrp = new Hono<{ Bindings: Env; Variables: Variables }>();
 mrp.use('*', supabaseAuth);
 
 /* SO statuses that no longer create demand (already shipped / closed). */
-const SO_DONE = new Set(['DELIVERED', 'INVOICED', 'CLOSED', 'CANCELLED']);
+const SO_DONE = new Set(['DELIVERED', 'INVOICED', 'CLOSED', 'CANCELLED', 'DRAFT']);
 /* PO statuses that no longer supply goods. */
 const PO_DEAD = new Set(['CANCELLED']);
 

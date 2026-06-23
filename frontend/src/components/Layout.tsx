@@ -82,7 +82,10 @@ function MobileTopBar() {
       <img
         src={LOGO_WORDMARK_SRC}
         alt="Houzs Century"
-        className="h-7 w-auto max-w-[140px] object-contain"
+        // Phone: shrink the wordmark so the top bar reads as chrome, not a
+        // brochure header (owner: logo too big on phone). Steps back up to the
+        // original size at sm+ (tablet). h-5≈20px → h-7≈28px.
+        className="h-5 w-auto max-w-[104px] object-contain sm:h-7 sm:max-w-[140px]"
         draggable={false}
       />
       <div className="ml-auto flex min-w-0 items-center gap-1.5">

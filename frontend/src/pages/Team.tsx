@@ -253,12 +253,24 @@ function MembersTab({
   const invites = useQuery<{ invitations: Invitation[] }>(() =>
     api.get("/api/users/invitations")
   );
-  const roles = useQuery<{ roles: Role[] }>(() => api.get("/api/roles"));
-  const depts = useQuery<{ departments: Department[] }>(() =>
-    api.get("/api/departments")
+  // refetchOnMount "always" + staleTime 0 so a role/department/position
+  // freshly created on a sibling tab shows up in the invite dropdowns the
+  // moment this tab (and its InvitePanel) remounts — no stale snapshot.
+  const freshList = { refetchOnMount: "always" as const, staleTime: 0 };
+  const roles = useQuery<{ roles: Role[] }>(
+    () => api.get("/api/roles"),
+    [],
+    freshList,
   );
-  const positions = useQuery<{ positions: Position[] }>(() =>
-    api.get("/api/positions")
+  const depts = useQuery<{ departments: Department[] }>(
+    () => api.get("/api/departments"),
+    [],
+    freshList,
+  );
+  const positions = useQuery<{ positions: Position[] }>(
+    () => api.get("/api/positions"),
+    [],
+    freshList,
   );
   // Live presence — who's online right now (active in the last few minutes).
   const presence = useQuery<{ active: { id: number }[] }>(() =>
@@ -3744,10 +3756,39 @@ export function InvitePanel({
     email_sent?: boolean;
   } | null>(null);
 
-  if (roleId === "" && roles.length > 0) {
-    const defaultRole = roles.find((r) => !r.is_system) || roles[0];
+  // Page access for the chosen position — the invitee can only reach pages
+  // their position grants, so a position with zero granted pages drops them
+  // on a blank/Forbidden app. Fetched on demand to warn before sending.
+  const positionPages = useQuery<{
+    page_access: Record<string, { explicit?: boolean; level: string }>;
+  }>(
+    () =>
+      positionId !== ""
+        ? api.get(`/api/positions/${positionId}/page-access`)
+        : Promise.resolve({ page_access: {} }),
+    [positionId],
+  );
+  const positionPageCount =
+    positionId === ""
+      ? null
+      : Object.values(positionPages.data?.page_access ?? {}).filter(
+          (v) => v?.level && v.level !== "none",
+        ).length;
+  const positionHasNoPages =
+    positionId !== "" && !positionPages.loading && positionPageCount === 0;
+
+  // Default the role once roles load. Prefer the "Position Preview" role
+  // (action permissions only — page visibility still follows the position);
+  // fall back to the first non-system role, then any role. Kept in an effect
+  // (not the render body) so it never sets state during render.
+  useEffect(() => {
+    if (roleId !== "" || roles.length === 0) return;
+    const preview = roles.find(
+      (r) => r.name.trim().toLowerCase() === "position preview",
+    );
+    const defaultRole = preview || roles.find((r) => !r.is_system) || roles[0];
     setRoleId(defaultRole.id);
-  }
+  }, [roles, roleId]);
 
   async function submit() {
     if (!email) {
@@ -3933,6 +3974,32 @@ export function InvitePanel({
             <div className="mt-1 text-[10px] text-ink-muted">
               Controls which pages this member can see (least-privilege per position).
             </div>
+            {positionHasNoPages && (
+              <div className="mt-1.5 rounded-md border border-warning-text/30 bg-warning-bg px-2.5 py-1.5 text-[10.5px] text-warning-text">
+                This position has no pages enabled yet — set its access under
+                Team → Positions first, or the member sees a blank screen.
+              </div>
+            )}
+          </div>
+          <div>
+            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Role
+            </label>
+            <select
+              value={roleId}
+              onChange={(e) => setRoleId(e.target.value ? Number(e.target.value) : "")}
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            >
+              <option value="">— Select role —</option>
+              {roles.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+            <div className="mt-1 text-[10px] text-ink-muted">
+              Action permissions (which pages they see still follows the Position).
+            </div>
           </div>
           <div>
             <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
@@ -3955,7 +4022,7 @@ export function InvitePanel({
                     const q = managerQuery.trim().toLowerCase();
                     const matches = members.filter(
                       (m) =>
-                        m.status === "active" &&
+                        m.status !== "disabled" &&
                         ((m.name || "").toLowerCase().includes(q) ||
                           (m.email || "").toLowerCase().includes(q)),
                     );

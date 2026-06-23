@@ -264,7 +264,10 @@ const deriveBranding = (r: SoRow): string => {
 };
 
 const STATUS_CLASS: Record<string, string> = {
-  // DRAFT removed in migration 0078 — SOs start at CONFIRMED.
+  // DRAFT flow re-added — scanned / auto-generated SOs land as DRAFT (pending
+  // operator Confirm on the SO detail page). Muted grey pill via the existing
+  // .statusDraft class.
+  DRAFT:          soDetailStyles.statusDraft ?? '',
   CONFIRMED:      soDetailStyles.statusConfirmed ?? '',
   IN_PRODUCTION:  soDetailStyles.statusInProd ?? '',
   READY_TO_SHIP:  soDetailStyles.statusReady ?? '',
@@ -289,6 +292,7 @@ const STATUS_CLASS: Record<string, string> = {
      ON_HOLD        → On Hold
      CANCELLED      → Cancelled */
 const STATUS_LABEL: Record<string, string> = {
+  DRAFT:         'Draft',
   CONFIRMED:     'Confirmed',
   IN_PRODUCTION: 'Proceed',
   READY_TO_SHIP: 'Stock Ready',
@@ -937,6 +941,54 @@ export const MfgSalesOrdersList = () => {
 
       {showScan && <ScanOrderModal onClose={() => setShowScan(false)} />}
 
+      {/* Phone (Houzs 2026-06-23) — the wide AutoCount grid is unreadable on a
+          phone, so below 600px we hide it (.gridWrap) and render the SO rows as
+          clean stacked cards instead, mirroring the Service Case (ASSR) mobile
+          cards the owner likes: customer name as the title + labeled rows + a
+          status pill. Tapping a card opens the SO detail. Source rows are
+          baseRows (the outstanding overlay applies; the grid's own per-column
+          funnels aren't surfaced on phone). */}
+      <div className={styles.mobileCards}>
+        {!isLoading && baseRows.length === 0 && (
+          <div className={styles.bannerWarn} style={{ background: 'transparent', border: 'none', color: 'var(--fg-muted)' }}>
+            No sales orders yet — tap "+ New Sales Order" to start.
+          </div>
+        )}
+        {baseRows.map((r) => {
+          const ref = r.customer_so_no ?? r.po_doc_no ?? r.ref ?? '—';
+          return (
+            <div
+              key={r.doc_no}
+              className={`${styles.card} ${r.status === 'CANCELLED' ? styles.cardCancelled : ''}`}
+              onClick={() => openDetail(r)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r); } }}
+            >
+              <div className={styles.cardHead}>
+                <span className={styles.cardTitle}>{r.debtor_name || '—'}</span>
+                <StatusPill status={r.status} deliveryState={r.delivery_state} lifecycleState={r.lifecycle_state} />
+              </div>
+              <div className={styles.cardRows}>
+                <span className={styles.cardLabel}>Doc No</span>
+                <span className={styles.cardValue} style={{ fontWeight: 700, color: 'var(--c-burnt)' }}>{r.doc_no}</span>
+                <span className={styles.cardLabel}>Date</span>
+                <span className={styles.cardValue}>{compactDate(r.so_date) || '—'}</span>
+                <span className={styles.cardLabel}>Phone</span>
+                <span className={styles.cardValue}>{formatPhone(r.phone) || '—'}</span>
+                <span className={styles.cardLabel}>Location</span>
+                <span className={styles.cardValue}>{r.venue || r.sales_location || '—'}</span>
+                <span className={styles.cardLabel}>Reference</span>
+                <span className={styles.cardValue}>{ref}</span>
+                <span className={styles.cardLabel}>Total</span>
+                <span className={styles.cardValue} style={{ fontWeight: 700 }}>RM {fmtRm(r.local_total_centi)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className={styles.gridWrap}>
       <DataGrid<SoRow>
         rows={baseRows}
         onFilteredRowsChange={setVisibleRows}
@@ -1032,6 +1084,7 @@ export const MfgSalesOrdersList = () => {
           return items;
         }}
       />
+      </div>
     </div>
   );
 };

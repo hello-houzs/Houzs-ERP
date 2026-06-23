@@ -53,7 +53,7 @@ import { RelationshipMapButton } from '../../vendor/scm/components/RelationshipM
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { usePrompt } from '../../vendor/scm/components/PromptDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
-import { fetchSoSlipUrl } from '../../vendor/scm/lib/slip';
+import { fetchSoSlipUrl, fetchScanSlipImageBlobUrl } from '../../vendor/scm/lib/slip';
 import {
   useLocalities,
   distinctStates,
@@ -142,6 +142,9 @@ const STATUS_LIST = [
 type SoStatus = typeof STATUS_LIST[number];
 
 const STATUS_CLASS: Record<string, string> = {
+  // DRAFT flow — re-added so a DRAFT SO (scanned / auto-generated, pending
+  // operator Confirm) renders the muted grey pill instead of a bare string.
+  DRAFT:          styles.statusDraft ?? '',
   CONFIRMED:      styles.statusConfirmed ?? '',
   IN_PRODUCTION:  styles.statusInProd ?? '',
   READY_TO_SHIP:  styles.statusReady ?? '',
@@ -158,6 +161,7 @@ const STATUS_CLASS: Record<string, string> = {
 // and here (lifecycle states like Delivered/Invoiced/Delivery Return still come
 // from soStatusDisplay; this is only the stored-status fallback).
 const SO_STATUS_LABEL: Record<string, string> = {
+  DRAFT:         'Draft',
   CONFIRMED:     'Confirmed',
   IN_PRODUCTION: 'Proceed',
   READY_TO_SHIP: 'Stock Ready',
@@ -266,6 +270,14 @@ type SoHeader = {
      (display via the /slip-url presign route); slip_state = review state. */
   slip_key: string | null;
   slip_state: 'none' | 'pending' | 'verified' | 'flagged' | null;
+  /* Migration 0033 — original handwritten slip image (R2 key under
+     `scan-slips/...`) when this SO was created via the Scan Order flow. Served
+     back (authed) via GET /scan-so/slip-image?key=... and shown as proof. */
+  slip_image_key: string | null;
+  /* Migration 0034 — scanned card-terminal payment receipt image (R2 key under
+     `scan-slips/...-receipt`) when the Scan Order flow carried a receipt photo
+     alongside the order slip. Served back via the same authed endpoint. */
+  receipt_image_key: string | null;
   /* PR #143 + #150 — Payment. Installment is a sub-type of merchant
      (not its own top-level method). approval_code captured for the
      terminal auth slip. */
@@ -961,6 +973,44 @@ export const SalesOrderDetail = () => {
         </div>
       ) : null}
 
+      {/* ── DRAFT banner + Confirm (DRAFT flow) ─────────────────────
+          Scanned / auto-generated SOs land as DRAFT (excluded from
+          KPI / MRP / PO / DO) so the operator can review + correct first.
+          Confirming flips DRAFT → CONFIRMED via the status mutation, which
+          invalidates the SO detail + list queries so the page updates.
+          `header.status` is typed to the post-0078 enum (no DRAFT), so the
+          stored value is read off a string view for the comparison. */}
+      {(header.status as string) === 'DRAFT' && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          fontSize: 'var(--fs-13)',
+        }}>
+          <span style={LOCK_BANNER_INNER_STYLE}>
+            <FileText {...ICON} />
+            <span>
+              <strong>Draft — not yet confirmed.</strong>{' '}
+              Review and Confirm to make it a live order (it stays out of MRP / PO / DO until then).
+            </span>
+          </span>
+          <Button variant="primary" size="sm"
+            onClick={async () => {
+              if (!(await askConfirm({
+                title: `Confirm ${header.doc_no}?`,
+                body: 'This turns the draft into a live, confirmed sales order — it will appear in MRP / PO / DO flows and KPIs.',
+                confirmLabel: 'Confirm Order',
+              }))) return;
+              updateStatus.mutate({ docNo: header.doc_no, status: 'CONFIRMED' });
+            }}
+            disabled={updateStatus.isPending}>
+            <span>{updateStatus.isPending ? 'Confirming…' : 'Confirm Order'}</span>
+          </Button>
+        </div>
+      )}
+
       {/* ── Lock banner ─────────────────────────────────────────── */}
       {!isCancelled && lockedStatuses.includes(header.status) && (
         <div style={{
@@ -1302,6 +1352,38 @@ export const SalesOrderDetail = () => {
           </div>
         </section>
       )}
+
+      {/* ── ORIGINAL SLIP + PAYMENT RECEIPT (migrations 0033 + 0034) — the
+          handwritten order-slip photo (and, when the scan carried one, the
+          printed card-terminal payment receipt) this SO was scanned from, kept
+          as proof. Dual-read camelCase ?? snake_case (the pg driver camelCases
+          result columns). Each card is shown only when its key is present, so
+          the operator can View original on whichever images exist. */}
+      {(() => {
+        const slipImageKey =
+          (header as unknown as { slipImageKey?: string | null }).slipImageKey ?? header.slip_image_key;
+        const receiptImageKey =
+          (header as unknown as { receiptImageKey?: string | null }).receiptImageKey ?? header.receipt_image_key;
+        if (!slipImageKey && !receiptImageKey) return null;
+        return (
+          <>
+            {slipImageKey && (
+              <ScannedImageCard
+                imageKey={slipImageKey}
+                title="Order Slip"
+                alt="Original handwritten sale-order slip"
+              />
+            )}
+            {receiptImageKey && (
+              <ScannedImageCard
+                imageKey={receiptImageKey}
+                title="Payment Receipt"
+                alt="Scanned card-terminal payment receipt"
+              />
+            )}
+          </>
+        );
+      })()}
 
       {/* ── Variant-completeness banner ─────────────────────────────
           PR #144 + #156 gating rule kept as a read-only warning. The
@@ -2173,6 +2255,67 @@ VariantsPills.displayName = 'VariantsPills';
 /* ════════════════════════════════════════════════════════════════════════
    Totals card
    ════════════════════════════════════════════════════════════════════════ */
+
+/* ── Scanned image viewer (migrations 0033 + 0034) ──────────────────────────
+   When the SO was created via the Scan Order flow, the handwritten ORDER SLIP
+   (0033) and/or the printed card-terminal PAYMENT RECEIPT (0034) were kept in
+   R2. Show each as proof: authed-fetch the serve endpoint as a blob (the bearer
+   token can't ride on an <img src>), render the object URL inline, and offer
+   "open full size" in a new tab. Mirrors the item-photo blob display pattern;
+   the object URL is revoked on unmount. `title` / `alt` distinguish the two. */
+const ScannedImageCard = ({
+  imageKey,
+  title,
+  alt,
+}: {
+  imageKey: string;
+  title: string;
+  alt: string;
+}) => {
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let url: string | null = null;
+    fetchScanSlipImageBlobUrl(imageKey)
+      .then((u) => {
+        if (cancelled) { URL.revokeObjectURL(u); return; }
+        url = u;
+        setSrc(u);
+      })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [imageKey]);
+
+  return (
+    <section className={styles.card}>
+      <header className={styles.cardHeader}>
+        <h2 className={styles.cardTitle}>{title}</h2>
+      </header>
+      <div className={styles.cardBody}>
+        {error ? (
+          <div style={{ color: 'var(--c-festive-b, #B8331F)', fontSize: 13 }}>
+            Couldn&apos;t load the scanned image. {error}
+          </div>
+        ) : src ? (
+          <a href={src} target="_blank" rel="noreferrer" title="Open full size in a new tab">
+            <img
+              src={src}
+              alt={alt}
+              style={{ maxWidth: 360, width: '100%', height: 'auto', border: '1px solid var(--c-line, #E5E1DC)', borderRadius: 8, background: '#fff', cursor: 'zoom-in' }}
+            />
+          </a>
+        ) : (
+          <div style={{ fontSize: 13, color: 'var(--c-muted, #8A8377)' }}>Loading…</div>
+        )}
+      </div>
+    </section>
+  );
+};
 
 const TotalsCard = ({ header }: { header: SoHeader }) => {
   // margin_pct_basis is margin/revenue × 10000 (i.e. percent × 100). Divide

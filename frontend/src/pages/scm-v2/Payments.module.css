@@ -256,3 +256,15 @@
   color: var(--c-festive-b, #B8331F);
   font-weight: 700;
 }
+
+/* Slip-upload button icon spinner — while a receipt is being OCR-scanned the
+   SlipUploadField swaps its upload icon for a spinning loader of the SAME size,
+   so nothing in the narrow Slip column shifts. No extra element, no label. */
+.slipScanSpin {
+  animation: slipScanSpin 0.9s linear infinite;
+}
+
+@keyframes slipScanSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}

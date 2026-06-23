@@ -53,6 +53,7 @@ import { drivers } from "./routes/drivers";
 import { soDropdownOptions } from "./routes/so-dropdown-options";
 import { reports } from "./routes/reports";
 import { scanSo } from "./routes/scan-so";
+import { scanPayment } from "./routes/scan-payment";
 
 export const scm = new Hono<{ Bindings: Env }>();
 
@@ -144,5 +145,14 @@ scm.route("/reports", reports);
 // (distillAllSalespersonRules) not yet wired to a scheduled trigger; the
 // per-confirm fire-and-forget distill is the live learning path.
 scm.route("/scan-so", scanSo);
+// Re-added 2026-06-23 — card-terminal / EPP receipt OCR for the Payments panel.
+// The receipt IS the payment row's slip (one upload, both uses): the frontend
+// POSTs the image here in parallel with the slip upload and fill-blanks-only
+// auto-fills the row's method/bank/online-type/installment/approval/amount
+// fields. Reads the live active so_dropdown_options (payment_method /
+// payment_merchant / online_type / installment_plan); never invents a value.
+// Extraction-only (no samples/learning). ANTHROPIC_API_KEY optional —
+// /scan-payment/extract returns 503 anthropic_key_missing when absent.
+scm.route("/scan-payment", scanPayment);
 
 export default scm;

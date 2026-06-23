@@ -503,7 +503,7 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
   // which origin the admin's browser is on. sendEmail() never throws —
   // when the channel/key is off we still hand back the link for
   // copy-paste, and the UI shows the delivery status.
-  const invite_url = publicUrl(c.env, `/#invite=${token}`);
+  const invite_url = publicUrl(c.env, `/invite/${token}`);
   const sendResult = await sendEmail(c.env, {
     to: email,
     subject: "You're invited to Houzs ERP",
@@ -583,7 +583,7 @@ app.post(
       );
     }
 
-    const invite_url = publicUrl(c.env, `/#invite=${inv.token}`);
+    const invite_url = publicUrl(c.env, `/invite/${inv.token}`);
     const sendResult = await sendEmail(c.env, {
       to: inv.email,
       subject: "You're invited to Houzs ERP",
@@ -1047,7 +1047,7 @@ app.get("/invitations", requirePermission("users.read"), async (c) => {
   return c.json({
     invitations: rows.map((r) => ({
       ...r,
-      invite_url: publicUrl(c.env, `/#invite=${r.token}`),
+      invite_url: publicUrl(c.env, `/invite/${r.token}`),
     })),
   });
 });

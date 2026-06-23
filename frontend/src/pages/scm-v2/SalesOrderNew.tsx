@@ -32,7 +32,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
+import { ArrowLeft, Camera, ChevronDown, Plus, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -55,7 +55,9 @@ import {
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
-import { SCAN_PREFILL_KEY, type ScanPrefill } from '../../vendor/scm/components/ScanOrderModal';
+import {
+  SCAN_PREFILL_KEY, type ScanPrefill, type ExtractedSlip,
+} from '../../vendor/scm/components/ScanOrderModal';
 import {
   PaymentsTable, labelToApi, draftMethodFields, newPaymentDraft, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
@@ -208,6 +210,32 @@ export const SalesOrderNew = () => {
      instead of needing to click "+ Add line item" first. */
   const [lines, setLines] = useState<DraftLine[]>(() => [newLine()]);
 
+  /* ── Scan-Order review state (fromScan only) ───────────────────────────
+     Task #73 — the OCR review now happens HERE, in the real form (no separate
+     free-text modal). We carry the frozen AI-original slip + sampleId +
+     salesperson so the SAVE can run the edit-gate learning POST, the
+     AI-prefilled baseline (per field) so changed fields show the blue
+     `.edited` diff, and per-line confidence so each line shows a
+     "scanned · NN%" chip. Keyed by the line's rid (set during seed). */
+  const [scanSampleId,    setScanSampleId]    = useState<string | null>(null);
+  const [scanSalesperson, setScanSalesperson] = useState<string | null>(null);
+  const [scanAiOriginal,  setScanAiOriginal]  = useState<ExtractedSlip | null>(null);
+  /* AI-prefilled baseline for the blue diff — only the header fields the form
+     exposes as editable inputs. A field whose current value differs from its
+     baseline is marked `.edited`. Undefined entries = the scan didn't touch
+     that field (so it never shows as edited). */
+  type ScanBaseline = {
+    debtorName?: string; address1?: string; note?: string;
+    deliveryDate?: string; processingDate?: string;
+    customerType?: string; buildingType?: string; venueId?: string;
+  };
+  const [scanBaseline, setScanBaseline] = useState<ScanBaseline | null>(null);
+  /* Per-line scan meta, keyed by the seeded line's rid: the verbatim slip row,
+     the SKU Claude suggested, its confidence, and the itemCode the scan seeded
+     (so the chip can tell a still-AI match from an operator override). */
+  type ScanLineMeta = { rawText: string; suggestedCode: string; confidence: number; seededCode: string };
+  const [scanLineMeta, setScanLineMeta] = useState<Record<string, ScanLineMeta>>({});
+
   /* Copy-to-new-SO seed — runs once when the source SO finishes loading.
      Fills customer + address + emergency + line items. Deliberately omits
      processing/delivery dates, payments, customer SO ref, doc no and status
@@ -263,6 +291,14 @@ export const SalesOrderNew = () => {
      still runs on Save. */
   const fromScan = searchParams.get('fromScan') === '1';
   const [scanSeeded, setScanSeeded] = useState(false);
+  /* Original-slip R2 key from the scan handoff — survives in state past the
+     one-shot sessionStorage consume so it can ride onto the create body and
+     become the SO's "Original Slip" proof. '' for a non-scan / PDF order. */
+  const [scanSlipImageKey, setScanSlipImageKey] = useState('');
+  /* Payment-receipt R2 key from the scan handoff — parallel to the slip key
+     above; rides onto the create body to become the SO's "Payment Receipt"
+     proof. '' when the scan carried no card-terminal receipt photo. */
+  const [scanReceiptImageKey, setScanReceiptImageKey] = useState('');
   useEffect(() => {
     if (!fromScan || scanSeeded) return;
     setScanSeeded(true);
@@ -272,6 +308,8 @@ export const SalesOrderNew = () => {
     } catch { payload = null; }
     sessionStorage.removeItem(SCAN_PREFILL_KEY);
     if (!payload) return;
+    if (payload.slipImageKey) setScanSlipImageKey(payload.slipImageKey);
+    if (payload.receiptImageKey) setScanReceiptImageKey(payload.receiptImageKey);
     if (payload.customerName) setDebtorName(payload.customerName);
     if (payload.phone) setPhone(payload.phone);
     if (payload.address1) setAddress1(payload.address1);
@@ -282,34 +320,90 @@ export const SalesOrderNew = () => {
        normal editable selects, same as a manual pick. */
     if (payload.customerType) setCustomerType(payload.customerType);
     if (payload.buildingType) setBuildingType(payload.buildingType);
+    /* VENUE UNIFY (Task #73) — the modal resolved the OCR venue text to a REAL
+       venue id from the same useVenues() master this form's Venue dropdown
+       renders, so it seeds the dropdown with a valid selection (not free text).
+       '' = no confident match → leave the salesperson-default venue alone. */
+    if (payload.venueId) setPickedVenueId(payload.venueId);
     /* Matched payment → ONE draft row in the Payments table (visible,
        editable, deletable — flushed only on Create, and only when it
        carries an amount + slip like any manually-added draft). */
     if (payload.payment?.methodValue) {
       const p = payload.payment;
+      /* Default the installment plan to 12 months when the matched method is a
+         bank card / in-house Installment but no term rode in from the scan
+         (owner rule: a bank EPP with no written month count = 12m). The
+         modal already applies this default; we re-apply defensively so a
+         stale prefill (e.g. older modal build) still seeds 12m. The value
+         MUST match the installment_plan option VALUE ('12 months', mig 0022).
+         A Merchant swipe with no EPP carries an empty installmentLabel and
+         is left blank here. */
+      const installmentLabel =
+        p.installmentLabel ||
+        (p.methodValue === 'Installment' ? '12 months' : '');
       setPaymentDrafts([{
         ...newPaymentDraft(),
         methodLabel:            p.methodValue,
         merchantProvider:       p.bankValue || '',
-        installmentMonthsLabel: p.installmentLabel || '',
+        installmentMonthsLabel: installmentLabel,
         onlineType:             p.onlineTypeValue || '',
+        approvalCode:           p.approvalCode || '',
         amountCenti:            p.depositCenti > 0 ? p.depositCenti : 0,
       }]);
     }
+    const lineMeta: Record<string, ScanLineMeta> = {};
     if (Array.isArray(payload.lines) && payload.lines.length > 0) {
       const dd = payload.deliveryDate ?? null;
-      setLines(payload.lines.map((l) => ({
-        ...newLine(dd),
-        itemCode:       l.itemCode,
-        itemGroup:      l.itemGroup || 'others',
-        description:    l.description,
-        qty:            l.qty > 0 ? l.qty : 1,
-        unitPriceCenti: l.unitPriceCenti,
-        remark:         l.remark,
-      })));
+      setLines(payload.lines.map((l) => {
+        const seeded = newLine(dd);
+        lineMeta[seeded.rid] = {
+          rawText:       l.rawText ?? '',
+          suggestedCode: l.suggestedCode ?? '',
+          confidence:    l.confidence ?? 0,
+          seededCode:    l.itemCode,
+        };
+        return {
+          ...seeded,
+          itemCode:       l.itemCode,
+          itemGroup:      l.itemGroup || 'others',
+          description:    l.description,
+          qty:            l.qty > 0 ? l.qty : 1,
+          unitPriceCenti: l.unitPriceCenti,
+          remark:         l.remark,
+        };
+      }));
     }
+    /* Stash the edit-gate carry-through + the blue-diff baseline + per-line
+       confidence. The learning POST fires from onSave (below) only when the
+       operator's final values differ from this AI-original snapshot. */
+    setScanSampleId(payload.sampleId ?? null);
+    setScanSalesperson(payload.salesperson ?? null);
+    setScanAiOriginal(payload.aiOriginal ?? null);
+    setScanLineMeta(lineMeta);
+    setScanBaseline({
+      debtorName:     payload.customerName || '',
+      address1:       payload.address1 || '',
+      note:           payload.note || '',
+      deliveryDate:   payload.deliveryDate ?? '',
+      processingDate: payload.processingDate ?? '',
+      customerType:   payload.customerType || '',
+      buildingType:   payload.buildingType || '',
+      venueId:        payload.venueId || '',
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromScan, scanSeeded]);
+
+  /* Blue-diff helper — a field whose current value differs from the
+     AI-prefilled baseline gets the `.edited` class (only meaningful on a
+     fromScan SO; null baseline → never edited). Compares the live value to
+     the snapshot the scan seeded so the operator sees exactly what they
+     changed from the AI's guess. */
+  const editedClass = (key: keyof ScanBaseline, current: string): string => {
+    if (!scanBaseline) return '';
+    const base = scanBaseline[key];
+    if (base === undefined) return '';
+    return current !== base ? styles.edited : '';
+  };
 
   // ── Payments draft state ───────────────────────────────────────────
   /* Task #105 — Same Houzs PaymentsTable used on Detail, but in DRAFT mode
@@ -642,7 +736,113 @@ export const SalesOrderNew = () => {
     return { failed: results.filter((ok) => !ok).length };
   };
 
-  const onSave = () => {
+  /* ── Edit-gate learning (fromScan only) ────────────────────────────────
+     Task #73 — the OCR review now happens in THIS form, so the learning POST
+     that used to fire from the modal fires HERE, on save. We rebuild the
+     operator's FINAL values into the ExtractedSlip shape and compare against
+     the frozen AI-original; if anything changed, POST
+     /scan-so/samples/:id/confirm so the correction becomes a few-shot example
+     + re-distills the rep's rules. Fire-and-forget — it never blocks or fails
+     the save.
+
+     The corrected blob mirrors the extracted-slip shape the distiller pairs
+     against the AI-original (customer block, option matches, per-line
+     rawText→code). Only the fields the form actually exposes are reconciled;
+     everything else is carried straight from the AI-original so the diff is
+     limited to what the operator genuinely touched. */
+  const maybeLearnFromScan = (validLines: DraftLine[]) => {
+    if (!fromScan || !scanSampleId || !scanAiOriginal) return;
+    const ai = scanAiOriginal;
+
+    const optMatch = (v: string) =>
+      v ? { value: v, confidence: 1, reason: 'operator-confirmed' } : null;
+    const phones = phone.trim() ? [phone.trim()] : ai.phones;
+    const norm = (s: string | null | undefined) => (s ?? '').trim();
+
+    /* Edit-gate — only learn when the operator GENUINELY corrected something.
+       Compare the operator's final values against the AI's on the dimensions
+       that actually teach the OCR: customer block, the option matches, and
+       per-line SKU/qty/price. (The form reshapes the slip, so a structural
+       stringify diff would always "differ" — we compare field-by-field.) */
+    let changed = false;
+    const mark = (a: string, b: string) => { if (a !== b) changed = true; };
+    mark(norm(debtorName), norm(ai.customerName));
+    mark(norm(address1), norm(ai.address));
+    mark(norm(customerType), norm(ai.customerTypeMatch?.value));
+    mark(norm(buildingType), norm(ai.buildingTypeMatch?.value));
+    mark(norm(paymentDrafts[0]?.methodLabel), norm(ai.paymentMethodMatch?.value));
+    mark(norm(paymentDrafts[0]?.merchantProvider), norm(ai.bankMatch?.value));
+    mark(norm(paymentDrafts[0]?.onlineType), norm(ai.onlineTypeMatch?.value));
+    mark(norm(paymentDrafts[0]?.installmentMonthsLabel), norm(ai.installmentPlanMatch?.value));
+    // Line count differing (operator added/removed a row) is itself a correction.
+    if (validLines.length !== ai.lines.length) changed = true;
+    for (const l of validLines) {
+      const meta = scanLineMeta[l.rid];
+      // A line with no scan meta was added by the operator → a correction.
+      if (!meta) { changed = true; continue; }
+      if (l.itemCode !== meta.seededCode) changed = true;
+    }
+
+    if (!changed) return;
+
+    const corrected: ExtractedSlip = {
+      customerName: debtorName.trim() || null,
+      address: address1.trim() || null,
+      phones,
+      location: ai.location,
+      deliveryDate: deliveryDate || ai.deliveryDate,
+      processingDate: processingDate || ai.processingDate,
+      salesRep: scanSalesperson || ai.salesRep,
+      paymentMethod: ai.paymentMethod,
+      depositRm: ai.depositRm,
+      totalRm: ai.totalRm,
+      remarks: ai.remarks,
+      approvalCode: ai.approvalCode,
+      /* Operator-confirmed option picks win; the form's selects are the
+         dropdown-validated source of truth now. */
+      paymentMethodMatch:   optMatch(paymentDrafts[0]?.methodLabel ?? '') ?? ai.paymentMethodMatch,
+      bankMatch:            optMatch(paymentDrafts[0]?.merchantProvider ?? '') ?? ai.bankMatch,
+      onlineTypeMatch:      optMatch(paymentDrafts[0]?.onlineType ?? '') ?? ai.onlineTypeMatch,
+      installmentPlanMatch: optMatch(paymentDrafts[0]?.installmentMonthsLabel ?? '') ?? ai.installmentPlanMatch,
+      customerTypeMatch:    optMatch(customerType),
+      buildingTypeMatch:    optMatch(buildingType),
+      locationMatch:        ai.locationMatch,
+      /* Per-line correction — pair the slip's verbatim rawText (carried from
+         the scan) with the operator's FINAL itemCode/qty/price so the
+         distiller learns this rep's handwriting → catalog mapping. */
+      lines: validLines.map((l) => {
+        const meta = scanLineMeta[l.rid];
+        const rawText = meta?.rawText ?? l.remark;
+        const codeChanged = !meta || l.itemCode !== meta.seededCode;
+        return {
+          rawText,
+          qtyGuess: l.qty,
+          priceRmGuess: l.unitPriceCenti > 0 ? l.unitPriceCenti / 100 : null,
+          skuMatch: l.itemCode
+            ? {
+                code: l.itemCode,
+                confidence: codeChanged ? 1 : (meta?.confidence ?? 1),
+                reason: codeChanged ? 'operator-picked' : 'operator-confirmed',
+              }
+            : null,
+          fabricMatch: null,
+          notes: null,
+        };
+      }),
+    };
+
+    void authedFetch(`/scan-so/samples/${scanSampleId}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ corrected, salesperson: scanSalesperson || null }),
+    }).catch(() => { /* few-shot learning is best-effort — never blocks save */ });
+  };
+
+  /* DRAFT flow — `asDraft` adds `asDraft: true` to the create body so the SO
+     lands as DRAFT (excluded from KPI/MRP/PO/DO until Confirmed on Detail).
+     The two header buttons both call onSave; only the flag differs. When the
+     form was opened from a scan (fromScan), "Save as Draft" is the primary
+     button so scanned orders default to draft for operator review. */
+  const onSave = (asDraft = false) => {
     if (!debtorName.trim()) {
       notify({ title: 'Customer name is required.', tone: 'error' });
       return;
@@ -719,8 +919,16 @@ export const SalesOrderNew = () => {
       return;
     }
 
+    /* Edit-gate — operator committed to saving, so fold their corrections back
+       into the few-shot pool (fire-and-forget, fromScan only). */
+    maybeLearnFromScan(validLines);
+
     create.mutate(
       {
+        /* DRAFT flow — backend reads `asDraft: true` to create the SO with
+           status 'DRAFT' instead of 'CONFIRMED'. Omitted (undefined) for a
+           normal Create so the body stays unchanged in that path. */
+        asDraft: asDraft || undefined,
         debtorName,
         debtorCode: debtorCode || undefined,
         phone: phone || undefined,
@@ -754,6 +962,13 @@ export const SalesOrderNew = () => {
         internalExpectedDd:   processingDate || undefined,
         customerDeliveryDate: deliveryDate   || undefined,
         note: note || undefined,
+        /* Original-slip provenance — the scanned slip's R2 key (from the Scan
+           Order handoff) so the SO detail page can show it as proof. */
+        slipImageKey: scanSlipImageKey || undefined,
+        /* Payment-receipt provenance — the scanned card-terminal receipt's R2
+           key (from the Scan Order handoff) so the SO detail page can show it
+           as "Payment Receipt" proof alongside the order slip. */
+        receiptImageKey: scanReceiptImageKey || undefined,
         /* PR #114 — full variant payload preserved end-to-end. */
         items: validLines.map((l) => ({
           itemGroup:      l.itemGroup,
@@ -821,21 +1036,61 @@ export const SalesOrderNew = () => {
           <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-orders')}>
             <X {...ICON} /> Cancel
           </Button>
+          {/* DRAFT flow — two create actions. Both run the SAME create + the
+              same post-create payment/photo flush + navigation; only the
+              `asDraft` flag differs. From a scan handoff (fromScan) the
+              scanned order should default to DRAFT for operator review, so
+              "Save as Draft" is the PRIMARY button and "Create" the secondary
+              one. For a normal New SO, "Create" stays primary. The buttons stay
+              CLICKABLE even when fields are missing (only blocked while a save
+              is in flight) — onSave validates and tells the operator EXACTLY
+              what's missing. (Wei Siang 2026-06-03) */}
           <Button
-            variant="primary" size="md"
-            onClick={onSave}
-            /* Keep the button CLICKABLE even when fields are missing (only block
-               while a save is in flight). onSave validates and tells the operator
-               EXACTLY what's missing (name / phone / dates / items / variants) —
-               a silently-greyed button left them guessing what was wrong.
-               (Wei Siang 2026-06-03) */
+            variant={fromScan ? 'secondary' : 'primary'} size="md"
+            onClick={() => onSave(false)}
             disabled={create.isPending}
           >
             <Save {...ICON} />
             {create.isPending ? 'Saving…' : 'Create Sales Order'}
           </Button>
+          <Button
+            variant={fromScan ? 'primary' : 'secondary'} size="md"
+            onClick={() => onSave(true)}
+            disabled={create.isPending}
+          >
+            <Save {...ICON} />
+            {create.isPending ? 'Saving…' : 'Save as Draft'}
+          </Button>
         </div>
       </div>
+
+      {/* ── SCAN BANNER (fromScan only) ───────────────────────────────
+          Task #73 — the OCR review happens in THIS form now. Tell the operator
+          to check every dropdown-bound field before saving. Changed fields show
+          a blue highlight; each scanned line shows a "scanned · NN%" chip. */}
+      {fromScan && (
+        <div
+          style={{
+            display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)',
+            background: 'rgba(43, 108, 176, 0.08)',
+            border: '1px solid #2B6CB0',
+            borderRadius: 'var(--radius-md)',
+            padding: 'var(--space-3)',
+            marginBottom: 'var(--space-3)',
+            color: '#1A4E8A',
+            fontSize: 'var(--fs-13)',
+          }}
+        >
+          <Camera size={18} strokeWidth={1.75} style={{ flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <div style={{ fontWeight: 600 }}>Prefilled from a scanned slip — check every dropdown before saving.</div>
+            <div style={{ marginTop: 2, color: '#2B6CB0' }}>
+              Confirm the venue, SKU, fabric, size and payment selections, then Create the Sales Order.
+              Fields you change from the scan are highlighted in blue.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── CUSTOMER ──────────────────────────────────────────────────
           Matches SalesOrderDetail's Customer card: Name * / Phone * /
@@ -851,7 +1106,7 @@ export const SalesOrderNew = () => {
             <label className={styles.field} style={{ gridColumn: 'span 3' }}>
               <span className={styles.fieldLabel}>Customer Name *</span>
               <input
-                className={styles.fieldInput}
+                className={`${styles.fieldInput} ${editedClass('debtorName', debtorName)}`}
                 value={debtorName}
                 onChange={(e) => { setDebtorName(e.target.value); setShowDebtorSuggest(true); }}
                 onFocus={() => setShowDebtorSuggest(true)}
@@ -909,7 +1164,7 @@ export const SalesOrderNew = () => {
               <span className={styles.fieldLabel}>Customer Type</span>
               <span className={styles.selectWrap}>
                 <select
-                  className={styles.fieldSelect}
+                  className={`${styles.fieldSelect} ${editedClass('customerType', customerType)}`}
                   value={customerType}
                   onChange={(e) => setCustomerType(e.target.value)}
                 >
@@ -965,7 +1220,7 @@ export const SalesOrderNew = () => {
               <span className={styles.fieldLabel}>Building Type</span>
               <span className={styles.selectWrap}>
                 <select
-                  className={styles.fieldSelect}
+                  className={`${styles.fieldSelect} ${editedClass('buildingType', buildingType)}`}
                   value={buildingType}
                   onChange={(e) => setBuildingType(e.target.value)}
                 >
@@ -984,7 +1239,7 @@ export const SalesOrderNew = () => {
                   the operator can change it. */}
               <span className={styles.selectWrap}>
                 <select
-                  className={styles.fieldSelect}
+                  className={`${styles.fieldSelect} ${editedClass('venueId', effectiveVenueId ?? '')}`}
                   value={effectiveVenueId ?? ''}
                   onChange={(e) => setPickedVenueId(e.target.value || null)}
                   aria-label="Venue"
@@ -996,19 +1251,12 @@ export const SalesOrderNew = () => {
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
-              <span style={{
-                fontSize: 'var(--fs-11)',
-                color: 'var(--fg-muted)',
-                marginTop: 2,
-              }}>
-                Defaults to the salesperson's venue — change it if this order is for another venue.
-              </span>
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Processing Date</span>
               <input
                 type="date"
-                className={styles.fieldInput}
+                className={`${styles.fieldInput} ${editedClass('processingDate', processingDate)}`}
                 value={processingDate}
                 min={today}
                 onChange={(e) => setProcessingDate(e.target.value)}
@@ -1019,7 +1267,7 @@ export const SalesOrderNew = () => {
               <span className={styles.fieldLabel}>Delivery Date</span>
               <input
                 type="date"
-                className={styles.fieldInput}
+                className={`${styles.fieldInput} ${editedClass('deliveryDate', deliveryDate)}`}
                 value={deliveryDate}
                 min={today}
                 onChange={(e) => setDeliveryDate(e.target.value)}
@@ -1029,7 +1277,7 @@ export const SalesOrderNew = () => {
             <label className={styles.field} style={{ gridColumn: 'span 4' }}>
               <span className={styles.fieldLabel}>Note</span>
               <input
-                className={styles.fieldInput}
+                className={`${styles.fieldInput} ${editedClass('note', note)}`}
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
                 placeholder="Internal notes — visible on the SO detail page only"
@@ -1150,7 +1398,7 @@ export const SalesOrderNew = () => {
             >
               <span className={styles.fieldLabel}>Address Line 1</span>
               <input
-                className={styles.fieldInput}
+                className={`${styles.fieldInput} ${editedClass('address1', address1)}`}
                 value={address1}
                 onChange={(e) => setAddress1(e.target.value)}
                 placeholder="Unit, street, area"
@@ -1260,17 +1508,64 @@ export const SalesOrderNew = () => {
           <h2 className={styles.cardTitle}>Line Items ({lines.length})</h2>
         </header>
         <div className={styles.cardBody} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-          {lines.map((line, idx) => (
-            <SoLineCard
-              key={line.rid}
-              index={idx}
-              draft={line}
-              onChange={(patch) => updateLine(line.rid, patch)}
-              onRemove={() => dropLine(line.rid)}
-              canRemove={lines.length > 1}
-              inheritVariantsByCategory={inheritVariantsByCategory}
-            />
-          ))}
+          {lines.map((line, idx) => {
+            /* Per-line scan confidence chip (fromScan only). "scanned · NN%"
+               for a SKU still on the AI's suggestion; "scanned · changed" once
+               the operator picks a different code; "scanned · no match" when
+               the AI couldn't match. The real SKU picker inside SoLineCard is
+               still the only way to set the code — the chip is read-only. */
+            const meta = scanLineMeta[line.rid];
+            let chip: { text: string; tone: 'good' | 'warn' | 'muted' } | null = null;
+            if (meta) {
+              if (!line.itemCode) {
+                chip = { text: 'scanned · no match', tone: 'muted' };
+              } else if (line.itemCode !== meta.seededCode) {
+                chip = { text: 'scanned · changed', tone: 'muted' };
+              } else {
+                const pct = Math.round(meta.confidence * 100);
+                chip = { text: `scanned · ${pct}%`, tone: meta.confidence >= 0.8 ? 'good' : 'warn' };
+              }
+            }
+            return (
+              <div key={line.rid} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                {chip && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span
+                      title={meta?.rawText ? `Slip: ${meta.rawText}` : undefined}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center',
+                        padding: '2px 8px', borderRadius: 999,
+                        fontSize: 'var(--fs-11)', fontWeight: 600,
+                        background:
+                          chip.tone === 'good' ? 'rgba(47, 93, 79, 0.12)'
+                          : chip.tone === 'warn' ? 'rgba(196, 148, 28, 0.16)'
+                          : 'rgba(0, 0, 0, 0.06)',
+                        color:
+                          chip.tone === 'good' ? 'var(--c-secondary-a, #2f5d4f)'
+                          : chip.tone === 'warn' ? '#8a6914'
+                          : 'var(--fg-muted)',
+                      }}
+                    >
+                      {chip.text}
+                    </span>
+                    {meta?.rawText && (
+                      <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }} title={meta.rawText}>
+                        “{meta.rawText.length > 48 ? `${meta.rawText.slice(0, 48)}…` : meta.rawText}”
+                      </span>
+                    )}
+                  </div>
+                )}
+                <SoLineCard
+                  index={idx}
+                  draft={line}
+                  onChange={(patch) => updateLine(line.rid, patch)}
+                  onRemove={() => dropLine(line.rid)}
+                  canRemove={lines.length > 1}
+                  inheritVariantsByCategory={inheritVariantsByCategory}
+                />
+              </div>
+            );
+          })}
 
           <button
             type="button"

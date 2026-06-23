@@ -82,7 +82,7 @@ export async function recomputeSoStockAllocation(
     const { data: orderRows } = await sb
       .from('mfg_sales_orders')
       .select('doc_no, status, created_at, customer_delivery_date')
-      .not('status', 'in', '(CANCELLED,CLOSED,SHIPPED,DELIVERED,INVOICED)')
+      .not('status', 'in', '(CANCELLED,CLOSED,SHIPPED,DELIVERED,INVOICED,DRAFT)')
       .order('customer_delivery_date',  { ascending: true, nullsFirst: false })
       .order('created_at',              { ascending: true });
     const orders = (orderRows ?? []) as Array<{

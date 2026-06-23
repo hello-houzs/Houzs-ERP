@@ -62,7 +62,14 @@ export function buildVariantSummary(
   // (variants.fabricId/fabricLabel — its tier add-on is already charged) but
   // confirms the colour later, so there's no fabricCode yet. Surface the
   // series + the open colour so the doc line reads the true state.
-  const fabric = [...new Set(fabricParts.filter(Boolean))].join(' ')
+  // Houzs 2026-06-23 — drop a colour the fabric code already leads OR ends with
+  // ("A201-7-LIGHT BROWN" + derived "BROWN" → just the code, not "... BROWN BROWN").
+  const presentFabric = fabricParts.filter(Boolean);
+  const dedupedFabric = presentFabric.filter((p, i) =>
+    !presentFabric.some((q, j) => j !== i && q !== p &&
+      (q.startsWith(`${p} `) || q.startsWith(`${p}(`) || q.endsWith(` ${p}`))),
+  );
+  const fabric = [...new Set(dedupedFabric)].join(' ')
     || str(variants.fabricColor)
     || (str(variants.fabricLabel) ? `${str(variants.fabricLabel)} COLOUR KIV` : '');
   if (fabric) segments.push(opts?.labelled ? `Fabric: ${fabric}` : fabric);

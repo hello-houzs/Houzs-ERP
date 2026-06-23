@@ -74,6 +74,13 @@ export interface NavTab {
   /** Show when the user has at least one of the listed permissions.
    *  Paired with `perm` it's `any` OR `perm` — rarely needed together. */
   anyPerm?: string[];
+  /** ADDITIVE page-access OR-gate. Show when ANY listed page-access key
+   *  resolves to !== 'none'. When combined with `anyPerm` on the same tab,
+   *  the tab is shown if EITHER the permission OR a page-access key passes
+   *  (OR semantics — used for the SCM nav so a position granted just one
+   *  SCM area sees it without holding the broad `scm.access` permission).
+   *  Wildcard `*` short-circuits inside `pageAccess(...)` to 'full'. */
+  anyAccess?: string[];
   /** If the user has this permission, the tab is hidden — used to suppress
    *  legacy entries when a richer replacement is available (e.g. hide the
    *  flat Delivery list from dispatchers who already have the Trips Queue
@@ -180,6 +187,18 @@ export const NAV_TABS: NavTab[] = [
     icon: Boxes,
     groupId: "scm",
     anyPerm: ["*", "scm.access"],
+    // Umbrella shows if ANY SCM area is granted per-position (additive). The
+    // recursive filter also hides this group when no child survives, so this
+    // list is belt-and-suspenders with the children's own anyAccess keys.
+    anyAccess: [
+      "scm",
+      "scm.sales",
+      "scm.procurement",
+      "scm.consignment",
+      "scm.transportation",
+      "scm.warehouse",
+      "scm.finance",
+    ],
     children: [
       // 1:1 with 2990's backend Sidebar sectioning + order: Sales Order ->
       // Consignment -> Procurement -> Transportation -> Warehouse (then Finance,
@@ -189,16 +208,24 @@ export const NAV_TABS: NavTab[] = [
       // separate nav items here either (reach them via Products & Maintenance /
       // their /scm/* routes). Consignment labels match 2990 verbatim: singular
       // "Consignment Order/Note/Return" + full "Purchase Consignment ...".
+      // Each leaf carries its own L2 page-access key (additive — still ORed
+      // with ["*","scm.access"]). The GROUP header keeps its L1 key AND lists
+      // every child L2 key in `anyAccess`, so granting either the L1 area or
+      // any single L2 child shows the group; the recursive filter then hides
+      // any leaf whose own L2 key resolves to "none". Result: set scm.sales =
+      // full → all four sales leaves show (inherit); override scm.sales.delivery
+      // = none → just Delivery Orders disappears while the rest stay.
       {
         label: "Sales Order",
         icon: ShoppingCart,
         groupId: "scm-sales",
         anyPerm: ["*", "scm.access"],
+        anyAccess: ["scm.sales", "scm.sales.orders", "scm.sales.delivery", "scm.sales.invoices", "scm.sales.returns"],
         children: [
-          { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.orders"] },
+          { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.delivery"] },
+          { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.invoices"] },
+          { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.returns"] },
         ],
       },
       {
@@ -206,13 +233,14 @@ export const NAV_TABS: NavTab[] = [
         icon: Handshake,
         groupId: "scm-consignment",
         anyPerm: ["*", "scm.access"],
+        anyAccess: ["scm.consignment", "scm.consignment.orders", "scm.consignment.notes", "scm.consignment.returns", "scm.consignment.po_orders", "scm.consignment.po_receives", "scm.consignment.po_returns"],
         children: [
-          { to: "/scm/consignment-orders", label: "Consignment Order", icon: Handshake, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/consignment-notes", label: "Consignment Note", icon: FileText, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/consignment-returns", label: "Consignment Return", icon: CornerUpLeft, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/purchase-consignment-orders", label: "Purchase Consignment Order", icon: HandCoins, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/purchase-consignment-receives", label: "Purchase Consignment Receive", icon: PackageOpen, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/purchase-consignment-returns", label: "Purchase Consignment Return", icon: Reply, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/consignment-orders", label: "Consignment Order", icon: Handshake, anyPerm: ["*", "scm.access"], anyAccess: ["scm.consignment.orders"] },
+          { to: "/scm/consignment-notes", label: "Consignment Note", icon: FileText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.consignment.notes"] },
+          { to: "/scm/consignment-returns", label: "Consignment Return", icon: CornerUpLeft, anyPerm: ["*", "scm.access"], anyAccess: ["scm.consignment.returns"] },
+          { to: "/scm/purchase-consignment-orders", label: "Purchase Consignment Order", icon: HandCoins, anyPerm: ["*", "scm.access"], anyAccess: ["scm.consignment.po_orders"] },
+          { to: "/scm/purchase-consignment-receives", label: "Purchase Consignment Receive", icon: PackageOpen, anyPerm: ["*", "scm.access"], anyAccess: ["scm.consignment.po_receives"] },
+          { to: "/scm/purchase-consignment-returns", label: "Purchase Consignment Return", icon: Reply, anyPerm: ["*", "scm.access"], anyAccess: ["scm.consignment.po_returns"] },
         ],
       },
       {
@@ -220,14 +248,15 @@ export const NAV_TABS: NavTab[] = [
         icon: Package,
         groupId: "scm-procurement",
         anyPerm: ["*", "scm.access"],
+        anyAccess: ["scm.procurement", "scm.procurement.products", "scm.procurement.suppliers", "scm.procurement.mrp", "scm.procurement.po", "scm.procurement.grn", "scm.procurement.pi", "scm.procurement.pr"],
         children: [
-          { to: "/scm/products", label: "Products & Maintenance", icon: Sofa, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/suppliers", label: "Suppliers", icon: Truck, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/products", label: "Products & Maintenance", icon: Sofa, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.products"] },
+          { to: "/scm/suppliers", label: "Suppliers", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.suppliers"] },
+          { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.mrp"] },
+          { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.po"] },
+          { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.grn"] },
+          { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.pi"] },
+          { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.pr"] },
         ],
       },
       {
@@ -235,8 +264,9 @@ export const NAV_TABS: NavTab[] = [
         icon: Truck,
         groupId: "scm-transportation",
         anyPerm: ["*", "scm.access"],
+        anyAccess: ["scm.transportation", "scm.transportation.drivers"],
         children: [
-          { to: "/scm/drivers", label: "Drivers", icon: Truck, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/drivers", label: "Drivers", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
         ],
       },
       {
@@ -244,12 +274,14 @@ export const NAV_TABS: NavTab[] = [
         icon: Warehouse,
         groupId: "scm-warehouse",
         anyPerm: ["*", "scm.access"],
+        anyAccess: ["scm.warehouse", "scm.warehouse.inventory", "scm.warehouse.adjustments", "scm.warehouse.transfers", "scm.warehouse.stock_take"],
         children: [
-          { to: "/scm/inventory", label: "Inventory", icon: Package, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/stock-adjustments", label: "Adjustments", icon: SlidersHorizontal, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/stock-transfers", label: "Transfers", icon: ArrowLeftRight, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/stock-takes", label: "Stock Take", icon: ClipboardCheck, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/inventory", label: "Inventory", icon: Package, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.inventory"] },
+          { to: "/scm/stock-adjustments", label: "Adjustments", icon: SlidersHorizontal, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.adjustments"] },
+          { to: "/scm/stock-transfers", label: "Transfers", icon: ArrowLeftRight, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.transfers"] },
+          { to: "/scm/stock-takes", label: "Stock Take", icon: ClipboardCheck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.stock_take"] },
+          // Warehouses master has no finer nav split → rides on Inventory's L2.
+          { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.inventory"] },
         ],
       },
       {
@@ -257,9 +289,10 @@ export const NAV_TABS: NavTab[] = [
         icon: BookOpen,
         groupId: "scm-finance",
         anyPerm: ["*", "scm.access"],
+        anyAccess: ["scm.finance", "scm.finance.accounting", "scm.finance.outstanding"],
         children: [
-          { to: "/scm/accounting", label: "Accounting", icon: BookOpen, anyPerm: ["*", "scm.access"] },
-          { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, anyPerm: ["*", "scm.access"] },
+          { to: "/scm/accounting", label: "Accounting", icon: BookOpen, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.accounting"] },
+          { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
         ],
       },
     ],
@@ -332,7 +365,17 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   // visible children is itself hidden.
   function filterTab(t: NavTab): NavTab | null {
     if (t.perm && !can(t.perm)) return null;
-    if (t.anyPerm && !t.anyPerm.some((p) => can(p))) return null;
+    // `anyPerm` + `anyAccess` are ORed: when both are present the tab shows
+    // if EITHER a listed permission OR a listed page-access key passes. This
+    // keeps the SCM nav ADDITIVE — `scm.access`/`*` still grant everything,
+    // and a per-position SCM page-access grant ALSO unlocks its area.
+    if (t.anyPerm || t.anyAccess) {
+      const permOk = t.anyPerm ? t.anyPerm.some((p) => can(p)) : false;
+      const accessOk = t.anyAccess
+        ? t.anyAccess.some((k) => pageAccess(k) !== "none")
+        : false;
+      if (!permOk && !accessOk) return null;
+    }
     if (t.hidePerm && can(t.hidePerm)) return null;
     // Page-access (mig 073) — `pageAccess` requires ≥ partial; the
     // -Full variant requires "full". Wildcard short-circuits to full

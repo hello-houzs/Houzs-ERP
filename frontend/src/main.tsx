@@ -11,7 +11,7 @@ import "./vendor/design-system/tokens.css";
 import { ToastProvider } from "./hooks/useToast";
 import { DialogProvider } from "./hooks/useDialog";
 import { AuthProvider } from "./auth/AuthContext";
-import { AuthGate } from "./auth/AuthScreens";
+import { AuthGate, AcceptInviteScreen } from "./auth/AuthScreens";
 import { PwaBanners } from "./components/PwaBanners";
 import { ChunkReloadBoundary } from "./components/RouteFallback";
 import { registerPwa } from "./pwa";
@@ -44,6 +44,12 @@ const isSurvey = path.startsWith("/survey/");
 const isPortal = path === "/track" || path.startsWith("/track/") ||
                  path === "/portal" || path.startsWith("/portal/");
 const isReset = path.startsWith("/reset/");
+// Invitation acceptance is a real public route (/invite/:token) so the
+// set-password screen works even when a session already exists (e.g. the
+// owner clicking the link while logged in). It needs AuthProvider for
+// acceptInvite(), but renders OUTSIDE AuthGate so a live session doesn't
+// short-circuit it into the dashboard.
+const isInvite = path.startsWith("/invite/");
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -70,6 +76,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>
+        ) : isInvite ? (
+          <AuthProvider>
+            <Routes>
+              <Route path="/invite/:token" element={<AcceptInviteScreen />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </AuthProvider>
         ) : (
           <AuthProvider>
             <AuthGate>

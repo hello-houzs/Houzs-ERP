@@ -91,3 +91,101 @@
   font-weight: 600;
   color: var(--c-burnt);
 }
+
+/* ── Phone stacked-card list (Houzs 2026-06-23) ─────────────────────────────
+   On phone widths the wide AutoCount DataGrid is unreadable, so we hide it
+   and render the SO rows as clean stacked cards — mirroring the Service Case
+   (ASSR) mobile cards the owner loves: customer name as the title, labeled
+   rows (Doc No / Date / Phone / Location / Reference) + a status pill.
+   Desktop table is untouched — the cards are display:none above 600px and the
+   grid wrapper is display:none below it. */
+.mobileCards { display: none; }
+
+@media (max-width: 600px) {
+  .gridWrap { display: none; }
+  .mobileCards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+}
+
+.card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--c-paper);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(17, 24, 16, 0.05));
+  padding: var(--space-3);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.card:active { background: var(--c-cream); }
+
+/* Brass accent rail down the left edge — echoes the ASSR card. */
+.card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 2px;
+  background: linear-gradient(
+    to bottom,
+    rgba(232, 107, 58, 0),
+    rgba(232, 107, 58, 0.55),
+    rgba(232, 107, 58, 0)
+  );
+  pointer-events: none;
+}
+
+.cardCancelled { opacity: 0.55; filter: grayscale(0.6); }
+
+.cardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.cardTitle {
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-title);
+  font-size: var(--fs-15, 15px);
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--c-ink);
+  word-break: break-word;
+}
+
+.cardRows {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr;
+  gap: 3px var(--space-3);
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-2);
+}
+
+.cardLabel {
+  font-family: var(--font-button);
+  font-size: var(--fs-10);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  align-self: start;
+  padding-top: 1px;
+}
+
+.cardValue {
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  font-weight: 500;
+  color: var(--c-ink);
+  word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}

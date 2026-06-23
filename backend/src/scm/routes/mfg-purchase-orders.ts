@@ -275,7 +275,7 @@ mfgPurchaseOrders.get('/outstanding-so-items', async (c) => {
   }
 
   const outstanding = ((items ?? []) as unknown as Row[])
-    .filter((r) => r.so.status !== 'CANCELLED')
+    .filter((r) => r.so.status !== 'CANCELLED' && r.so.status !== 'DRAFT')
     .filter((r) => (pooledOk ? (shortageBySoItem.get(r.id) ?? 0) > 0 : r.qty - r.po_qty_picked > 0))
     .map((r) => {
       const remaining = pooledOk ? (shortageBySoItem.get(r.id) ?? 0) : (r.qty - r.po_qty_picked);

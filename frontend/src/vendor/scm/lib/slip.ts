@@ -66,6 +66,56 @@ export async function fetchPaymentSlipUrl(
   return res.json() as Promise<SlipUrlResponse>;
 }
 
+/** Authed GET of a scanned "Original Slip" image (GET /scan-so/slip-image?key=…)
+ *  as a blob → object URL the SO detail page hands to <img src>. Mirrors the
+ *  bearer-token proxy fetch used for payment slips; the caller is responsible
+ *  for URL.revokeObjectURL() when the image is unmounted. */
+export async function fetchScanSlipImageBlobUrl(key: string): Promise<string> {
+  const res = await fetch(`${API_URL}/scan-so/slip-image?key=${encodeURIComponent(key)}`, {
+    headers: { authorization: `Bearer ${token()}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '<no body>');
+    throw new Error(humanApiError(res.status, text));
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+/* ── Card-terminal / EPP receipt OCR (POST /scan-payment/extract) ─────────────
+   The receipt IS the payment row's slip. The Payments panel POSTs the uploaded
+   IMAGE here in parallel with the slip upload; the validated matches fill-blanks
+   the row's draft fields. Each *Match value is snapped server-side to the live
+   active so_dropdown_options (any value not in the list is cleared to null), so
+   the caller can trust value || '' directly. Multipart field name: `file`. */
+export type ScanPaymentMatch = { value: string; confidence: number; reason: string };
+export type ScanPaymentReceipt = {
+  paymentMethodMatch:   ScanPaymentMatch | null;
+  bankMatch:            ScanPaymentMatch | null;
+  onlineTypeMatch:      ScanPaymentMatch | null;
+  installmentPlanMatch: ScanPaymentMatch | null;
+  approvalCode:         string | null;
+  amountRm:             number | null;
+};
+
+export async function scanPaymentReceipt(file: File): Promise<ScanPaymentReceipt> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(`${API_URL}/scan-payment/extract`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token()}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '<no body>');
+    throw new Error(humanApiError(res.status, text));
+  }
+  const json = (await res.json()) as { data?: { extracted?: ScanPaymentReceipt } };
+  const extracted = json.data?.extracted;
+  if (!extracted) throw new Error('scan_payment_no_data');
+  return extracted;
+}
+
 export async function sha256Hex(file: File | Blob): Promise<string> {
   const buf = await file.arrayBuffer();
   const digest = await crypto.subtle.digest('SHA-256', buf);

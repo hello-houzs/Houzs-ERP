@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useParams } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
@@ -468,6 +469,9 @@ export function BootstrapScreen() {
 // ──────────────────────────────────────────────────────────
 export function AcceptInviteScreen() {
   const { acceptInvite } = useAuth();
+  // Token arrives via the real public route (/invite/:token); the old
+  // email links used a #invite= hash, still accepted for backward-compat.
+  const { token: routeToken } = useParams<{ token: string }>();
   const baseUrl =
     (import.meta.env.VITE_API_URL as string) ||
     "https://autocount-sync-api.houzs-erp.workers.dev";
@@ -483,12 +487,16 @@ export function AcceptInviteScreen() {
     null
   );
 
-  // Pull the token out of the URL hash (#invite=…), then preflight it so
-  // we can pre-fill the name/email and show the role they're invited as.
+  // Resolve the token from the path param first (/invite/:token), falling
+  // back to the legacy #invite= hash, then preflight it so we can pre-fill
+  // the name/email and show the role they're invited as.
   useEffect(() => {
-    const m = window.location.hash.match(/invite=([^&]+)/);
-    if (!m) return;
-    const t = decodeURIComponent(m[1]);
+    let t = routeToken ? decodeURIComponent(routeToken) : "";
+    if (!t) {
+      const m = window.location.hash.match(/invite=([^&]+)/);
+      if (m) t = decodeURIComponent(m[1]);
+    }
+    if (!t) return;
     setToken(t);
     fetch(`${baseUrl}/api/auth/invite/${encodeURIComponent(t)}`)
       .then(async (r) => {
@@ -504,12 +512,12 @@ export function AcceptInviteScreen() {
       .catch(() => {
         /* fall back to the manual token form below */
       });
-  }, [baseUrl]);
+  }, [baseUrl, routeToken]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
-    const strength = validatePasswordStrength(password);
+    const strength = validatePasswordStrength(password, meta?.email);
     if (!strength.ok) {
       setErr(strength.error || "Password is too weak");
       return;
@@ -580,7 +588,7 @@ export function AcceptInviteScreen() {
             placeholder="••••••••"
             required
           />
-          <PasswordStrengthMeter password={password} />
+          <PasswordStrengthMeter password={password} email={meta?.email} />
         </div>
         {err && <div className="text-[11px] text-err">{err}</div>}
         <Button variant="brass" className="w-full" disabled={busy}>

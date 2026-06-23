@@ -152,6 +152,43 @@ export function requireAnyPermission(perms: string[]): MiddlewareHandler<{ Bindi
 }
 
 /**
+ * SCM umbrella gate for `/api/scm/*`. ADDITIVE on top of the legacy
+ * permission check — preserves the EXACT existing pass conditions so no
+ * current SCM user loses access:
+ *   - `*` wildcard           → pass (Owner / IT Admin)   [unchanged]
+ *   - `scm.access` permission → pass                      [unchanged]
+ *   - ANY `scm*` page-access key at level !== 'none' → pass  [NEW]
+ *
+ * The new branch only ADDS access for positions explicitly granted an
+ * SCM area in the page-access matrix; it can never deny a caller who
+ * already passes the first two conditions. Coarse by design — per-area
+ * route checks are a later, riskier slice.
+ */
+export const requireScmAccess: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const granted = user.permissions_set ?? user.permissions;
+  // Legacy pass conditions — kept exactly as before.
+  if (hasPermission(granted, "*") || hasPermission(granted, "scm.access")) {
+    await next();
+    return;
+  }
+  // Additive: any SCM page-access area granted at >= view.
+  const pa = user.page_access ?? {};
+  const hasScmPage = Object.entries(pa).some(
+    ([key, level]) => key.startsWith("scm") && level !== "none",
+  );
+  if (hasScmPage) {
+    await next();
+    return;
+  }
+  return c.json(
+    { error: "Forbidden: requires one of *, scm.access" },
+    403,
+  );
+};
+
+/**
  * Per-page access gate. Reads `user.page_access[pageKey]` and compares
  * against `minLevel` (default 'partial' — i.e. user needs ≥partial to
  * enter). The wildcard `*` permission short-circuits to 'full'.
