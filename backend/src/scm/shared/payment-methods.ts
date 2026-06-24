@@ -7,9 +7,17 @@
    so_dropdown_options 'payment_method' category. This module is the bridge
    between that list and the code that branches on a method:
 
-   - Each maintenance row's VALUE is an immutable key ('Merchant' / 'Online' /
-     'Installment' / 'Cash') — the API blocks value edits, adds, deletes and
-     deactivation for this category (see routes/so-dropdown-options.ts).
+   - Each LOCKED maintenance row's VALUE is an immutable key ('Merchant' /
+     'Online' / 'Cash') — the API blocks value edits, adds, deletes and
+     deactivation for these core rows (see routes/so-dropdown-options.ts).
+     2026-06-24: the L1 method set is THREE (Merchant / Online / Cash).
+     'Installment' is NO LONGER a top-level method — it is the *plan under
+     Merchant* (a bank EPP is Merchant + an installment_months tenure). The
+     'installment' ledger code below is RETAINED for back-compat with already
+     stored payment rows (mfg_sales_order_payments.method) and the manual
+     Finance route, but 'Installment' is NOT a protected L1 row — so the
+     migration that deactivates the L1 'Installment' so_dropdown_options row is
+     not blocked / re-locked by isCorePaymentMethodRow.
    - Each VALUE maps here to an internal CODE ('merchant' / 'transfer' /
      'installment' / 'cash') — what the ledger stores
      (mfg_sales_order_payments.method) and what branch logic switches on.
@@ -25,15 +33,18 @@ export type PaymentMethodCode = 'merchant' | 'transfer' | 'installment' | 'cash'
 
 export const PAYMENT_METHOD_CODES = ['merchant', 'transfer', 'installment', 'cash'] as const;
 
-/** Maintenance row VALUE (immutable key) → internal code.
+/** LOCKED L1 method VALUE (immutable key) → internal code. THREE rows only
+ *  (Merchant / Online / Cash) — these are the protected core payment methods
+ *  (isCorePaymentMethodRow keys off this map). 'Installment' is deliberately
+ *  ABSENT: it is no longer a top-level method (it is the plan under Merchant),
+ *  so its L1 so_dropdown_options row is unprotected and can be deactivated.
  *  'Online' → 'transfer' is historical: the ledger enum predates the
  *  maintenance cascade (migration 0083) and renaming stored methods would
  *  orphan Finance data. */
 export const PAYMENT_METHOD_VALUE_TO_CODE: Readonly<Record<string, PaymentMethodCode>> = {
-  Merchant:    'merchant',
-  Online:      'transfer',
-  Installment: 'installment',
-  Cash:        'cash',
+  Merchant: 'merchant',
+  Online:   'transfer',
+  Cash:     'cash',
 };
 
 /** Internal code → maintenance row VALUE (the immutable key). */
@@ -55,13 +66,15 @@ export const PAYMENT_METHOD_DEFAULT_LABELS: Readonly<Record<PaymentMethodCode, s
 };
 
 /** Resolve a maintenance VALUE to its internal code, or null when the value
- *  isn't one of the four core rows (shouldn't happen — the category is
- *  locked — but renders must never crash on bad data). */
+ *  isn't one of the three core rows (a legacy 'Installment' L1 row, or bad
+ *  data — renders must never crash). Legacy installment ledger rows persist
+ *  the 'installment' code directly, so they are unaffected by this lookup. */
 export const paymentMethodCodeForValue = (value: string): PaymentMethodCode | null =>
   PAYMENT_METHOD_VALUE_TO_CODE[value] ?? null;
 
-/** True when this (category, value) pair is one of the four locked core
- *  payment-method rows — the API refuses to delete/deactivate these and the
- *  maintenance UIs render them with the lock affordance. */
+/** True when this (category, value) pair is one of the three locked core
+ *  payment-method rows (Merchant / Online / Cash) — the API refuses to
+ *  delete/deactivate these and the maintenance UIs render them with the lock
+ *  affordance. 'Installment' is NOT core, so it returns false. */
 export const isCorePaymentMethodRow = (category: string, value: string): boolean =>
   category === 'payment_method' && value in PAYMENT_METHOD_VALUE_TO_CODE;

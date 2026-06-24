@@ -11,21 +11,27 @@
 // narrow) and snaps every *Match to the LIVE active so_dropdown_options just
 // like scan-so's validateSlip.
 //
-// OWNER'S RECORDING CONVENTION (authoritative — from a real recorded payment):
-// a card-terminal EPP receipt is booked as Method = Installment with the tenure
-// in months (their screenshot: "Installment / 6m", Approval Code 009498, a
-// Maybank EPP receipt totalling MYR 4980). So an EPP/installment receipt maps to
-// paymentMethodMatch = the Installment method value + installmentPlanMatch = the
-// N-month value. A plain card swipe with NO tenure → Merchant + bank. DuitNow /
-// transfer / TNG / cheque → Online + sub-type. Cash → Cash.
+// OWNER'S RECORDING CONVENTION (authoritative — ocr-payment-spec.md, 3-method
+// model): a card-terminal receipt is booked as Method = MERCHANT.
+//   • merchant_provider (bankMatch) = the Host / acquirer bank ("Host: MBB" ->
+//     MBB; an AEON terminal -> AEON). If the host bank is NOT in the live
+//     payment_merchant list, leave it blank for a manual pick — never invent.
+//   • installment_months (installmentPlanMatch) = the "Tenure: N Months" / IPP /
+//     EPP tenure when the receipt prints one; a plain swipe with NO tenure ->
+//     "One Shot". (A bank EPP is still Merchant + an installment term — there is
+//     no separate "Installment" method.)
+//   • paid_at (paidAt) = the receipt SWIPE DATE/TIME — this CAN be in the past
+//     (the SO is often opened days after the money was collected). NEVER today.
+// DuitNow / transfer / TNG / cheque -> Online + sub-type. Cash -> Cash.
 //
 // Endpoint:
 //   POST /scan-payment/extract   — multipart image/pdf → validated JSON
 //     { paymentMethodMatch, bankMatch, onlineTypeMatch, installmentPlanMatch,
-//       approvalCode, amountRm }
+//       approvalCode, amountRm, paidAt }
 //   each *Match = { value, confidence, reason } | null, snapped to the live
 //   active so_dropdown_options (categories payment_method / payment_merchant /
 //   online_type / installment_plan); any value not in the live list is cleared.
+//   paidAt is a bare YYYY-MM-DD string (the receipt's swipe date) or null.
 //
 // Auth: supabaseAuth on the whole router (same as scan-so). The catalog read
 // uses the middleware-attached c.get('supabase') (scm-scoped, RLS applies).
@@ -85,10 +91,10 @@ function stripJsonFences(text: string): string {
 // so_dropdown_options on every /extract (mirrors scan-so's loadCatalog).
 // ===========================================================================
 const OPTION_CATEGORIES = [
-  'payment_method',     // L1 — Merchant / Online / Installment / Cash
-  'payment_merchant',   // L2 merchant banks (MBB / CIMB / Public / …)
+  'payment_method',     // L1 — Merchant / Online / Cash (3-method model)
+  'payment_merchant',   // L2 merchant banks (MBB / CIMB / Public / AEON / …)
   'online_type',        // L2 online sub-types (Bank Transfer / TNG / Cheque / DuitNow)
-  'installment_plan',   // L2 plans (One-off / 3 / 6 / 12 / 24 / 36 months)
+  'installment_plan',   // L2 Merchant plans (One Shot / 3 / 6 / 12 / 24 / 36 months)
 ] as const;
 type OptionCategory = (typeof OPTION_CATEGORIES)[number];
 type CatalogOption = { value: string; label: string };
@@ -138,42 +144,43 @@ function formatOptions(o: CatalogOptions): string {
 }
 
 // ===========================================================================
-// Prompt — extraction-only, baked with the owner's EPP→Installment convention.
+// Prompt — extraction-only, 3-method model (Merchant / Online / Cash). A card
+// terminal receipt (incl. EPP / installment) is Method = MERCHANT; the tenure
+// is the installment_months plan under Merchant, not a separate method.
 // ===========================================================================
-const SYSTEM_PROMPT = `You read a single MALAYSIAN bank CARD-TERMINAL / payment receipt and extract the payment fields for ONE payment row at 2990's Home, a Malaysian furniture retailer. The image is usually a thermal card-machine slip (Maybank / CIMB / Public Bank / HLB / RHB terminal), an EPP (Easy Payment Plan / installment) approval slip, a DuitNow / bank-transfer / e-wallet (Touch 'n Go) confirmation, a cheque, or a cash receipt.
+const SYSTEM_PROMPT = `You read a single MALAYSIAN bank CARD-TERMINAL / payment receipt and extract the payment fields for ONE payment row at Houzs Century, a Malaysian furniture retailer. The image is usually a thermal card-machine slip (Maybank / CIMB / Public Bank / HLB / RHB / AEON terminal), an EPP (Easy Payment Plan / installment) approval slip, a DuitNow / bank-transfer / e-wallet (Touch 'n Go) confirmation, a cheque, or a cash receipt.
 
-A reference list of ALLOWED VALUES follows this prompt (PAYMENT METHODS, MERCHANT BANKS, ONLINE TYPES, INSTALLMENT PLANS). Each row is "value | label". Every match you return MUST be the VALUE (left side), copied character-for-character from the list. NEVER invent a value outside the list; when you cannot find a defensible match, return null for that field.
+A reference list of ALLOWED VALUES follows this prompt (PAYMENT METHODS, MERCHANT BANKS, ONLINE TYPES, INSTALLMENT PLANS). Each row is "value | label". Every *Match you return MUST be the VALUE (left side), copied character-for-character from the list. NEVER invent a value outside the list; when you cannot find a defensible match, return null for that field.
+
+PAYMENT METHODS are exactly THREE: Merchant, Online, Cash. There is NO "Installment" method — a bank EPP / installment receipt is recorded as Method = Merchant with the tenure carried in installmentPlanMatch.
 
 HOW TO CLASSIFY THE RECEIPT
 ===========================
 Decide the top-level method (paymentMethodMatch — one of PAYMENT METHODS):
 
-1. CARD-TERMINAL EPP / INSTALLMENT receipt → method = the "Installment" value.
-   Recognise it by an installment/EPP tenure on the slip: a "TENURE", "06 MONTHS" / "6 MTHS", "MONTHLY REPAYMENT" / "MONTHLY INSTALMENT" line, the words "EPP" / "EASY PAYMENT PLAN" / "INSTALMENT" / "ANSURAN", or a plan/package code with a month count. In this house an EPP card receipt is RECORDED as method = Installment with the tenure in months — so:
-     • paymentMethodMatch.value = the Installment value.
-     • installmentPlanMatch.value = the matching N-month value from INSTALLMENT PLANS (e.g. "06 MONTHS"/"6 MTHS" → the 6-month value, "12" → the 12-month value). Map the printed tenure to the closest N-month list entry.
-   (Do NOT set bankMatch for an EPP receipt — bankMatch is only used when the method ends up Merchant.)
+1. ANY CARD-TERMINAL receipt — a normal swipe ("SALE" / "APPROVED") OR an EPP / installment approval (a "TENURE", "06 MONTHS" / "6 MTHS", "MONTHLY REPAYMENT" / "MONTHLY INSTALMENT" line, the words "EPP" / "EASY PAYMENT PLAN" / "INSTALMENT" / "ANSURAN" / "IPP", a plan code with a month count) → method = the "Merchant" value. Then:
+     • bankMatch.value = the HOST / acquirer / terminal bank from MERCHANT BANKS. Read the "HOST", acquirer, or terminal-bank line (Maybank "Host: MBB" → the MBB value; Public Bank → the Public value; CIMB → CIMB; Hong Leong → HLB; RHB → RHB; an AEON terminal → the AEON value). If the host bank is NOT a row in MERCHANT BANKS, return bankMatch = null (leave it blank for a manual pick — do NOT substitute a different bank).
+     • installmentPlanMatch.value = the tenure plan from INSTALLMENT PLANS. If the receipt prints a tenure ("TENURE 06 MONTHS" / "6 MTHS" / "12 Months" / IPP 12) → the matching N-month value (06 → the 6-month value, 12 → the 12-month value). If the receipt shows NO tenure / months at all (a plain swipe) → the "One Shot" / one-off plan value (the no-months / single-payment entry in INSTALLMENT PLANS). Always set installmentPlanMatch for a Merchant receipt (One Shot when no tenure is printed).
 
-2. PLAIN CARD SWIPE with NO tenure (a normal credit/debit sale, "SALE" / "APPROVED", no EPP / no months) → method = the "Merchant" value, and set bankMatch to the issuing/terminal bank from MERCHANT BANKS (Maybank → the MBB value, Public Bank → the Public value, CIMB → CIMB, Hong Leong → HLB, RHB → RHB). installmentPlanMatch = null.
+2. DUITNOW / BANK TRANSFER / TOUCH 'N GO (TNG) / E-WALLET / CHEQUE → method = the "Online" value, and set onlineTypeMatch to the matching ONLINE TYPES value (DuitNow → the DuitNow value, an IBG/instant transfer → the Bank Transfer value, Touch 'n Go / TNG → the TNG value, a cheque → the Cheque value). bankMatch and installmentPlanMatch = null.
 
-3. DUITNOW / BANK TRANSFER / TOUCH 'N GO (TNG) / E-WALLET / CHEQUE → method = the "Online" value, and set onlineTypeMatch to the matching ONLINE TYPES value (DuitNow → the DuitNow value, an IBG/instant transfer → the Bank Transfer value, Touch 'n Go / TNG → the TNG value, a cheque → the Cheque value). bankMatch and installmentPlanMatch = null.
-
-4. CASH receipt → method = the "Cash" value. All other matches = null.
+3. CASH receipt → method = the "Cash" value. All other matches = null.
 
 FIELDS
 ======
-- paymentMethodMatch — the method value chosen by the rules above.
-- bankMatch — a MERCHANT BANKS value. ONLY meaningful when the method is Merchant (rule 2). Leave null otherwise (including for EPP/Installment receipts).
-- onlineTypeMatch — an ONLINE TYPES value. ONLY meaningful when the method is Online (rule 3). Leave null otherwise.
-- installmentPlanMatch — an INSTALLMENT PLANS value (the tenure in months). ONLY meaningful when the method is Installment (rule 1). Leave null otherwise.
-- approvalCode — the receipt's "APPROVAL CODE" / "APPROVAL NO" / "APPR CODE" / "AUTH CODE" / "KOD KELULUSAN", as the bare alphanumeric string (e.g. "APPROVAL CODE 009498" → "009498"). Strip labels/brackets. null when absent.
-- amountRm — the charged TOTAL as a NUMBER in RM: the "TOTAL", "CARD TOTAL", "AMOUNT", "JUMLAH", or "SALE AMOUNT" the customer was charged (e.g. "RM 4,980.00" → 4980). For an EPP receipt this is the full financed amount (the TOTAL), NOT the monthly repayment. null when no total is readable.
+- paymentMethodMatch — the method value chosen by the rules above (Merchant / Online / Cash only).
+- bankMatch — a MERCHANT BANKS value: the HOST / acquirer bank. ONLY meaningful when the method is Merchant (rule 1). null when the method is Online/Cash OR when the host bank is not in the list.
+- onlineTypeMatch — an ONLINE TYPES value. ONLY meaningful when the method is Online (rule 2). Leave null otherwise.
+- installmentPlanMatch — an INSTALLMENT PLANS value (the tenure). For a Merchant receipt this is the printed tenure, or the "One Shot" / one-off value when no tenure is printed. null when the method is Online/Cash.
+- approvalCode — the receipt's "APPROVAL CODE" / "APPROVAL NO" / "APPR CODE" / "APPR" / "AUTH CODE" / "KOD KELULUSAN", as the bare alphanumeric string (e.g. "APPROVAL CODE 073496" → "073496"). Strip labels/brackets. null when absent.
+- amountRm — the charged TOTAL as a NUMBER in RM: the "TOTAL", "CARD TOTAL", "AMOUNT", "JUMLAH", or "SALE AMOUNT" the customer was charged (e.g. "RM 4,600.00" → 4600; "TOTAL RM 1,500.00" → 1500). For an EPP receipt this is the full financed amount (the TOTAL), NOT the monthly repayment. null when no total is readable.
+- paidAt — the receipt's own SWIPE / transaction DATE as "YYYY-MM-DD". Read the printed DATE/TIME on the receipt (e.g. "DATE 22/06/26 14:03" → "2026-06-22"). THIS MAY BE A PAST DATE — the receipt date is days before the slip is scanned; use the printed date, NEVER today's date. Two-digit years are 20YY. null when no date is readable.
 
 Each *Match returns { "value": <exact list value>, "confidence": 0-1, "reason": <short why> } or null. Use confidence 0.9+ only when the receipt clearly identifies one specific list row; 0.5-0.8 when plausible but ambiguous; below 0.5 prefer null.
 
-Example A — a Maybank EPP slip with "TENURE 06 MONTHS", "APPROVAL CODE 009498", "TOTAL RM 4,980.00": paymentMethodMatch.value = the Installment value, installmentPlanMatch.value = the 6-month value, bankMatch = null, onlineTypeMatch = null, approvalCode = "009498", amountRm = 4980.
-Example B — a plain Public Bank "SALE / APPROVED" swipe, no tenure, "APPROVAL CODE 028471", "TOTAL RM 1,200.00": paymentMethodMatch.value = the Merchant value, bankMatch.value = the Public value, installmentPlanMatch = null, approvalCode = "028471", amountRm = 1200.
-Example C — a DuitNow transfer confirmation for RM 550.50: paymentMethodMatch.value = the Online value, onlineTypeMatch.value = the DuitNow value, bankMatch = null, installmentPlanMatch = null, approvalCode = null (unless a reference number is clearly an approval code), amountRm = 550.5.
+Example A — a Maybank swipe "Host: MBB", no tenure, "APPR 073496", "TOTAL RM 4,600.00", "DATE 22/06/26": paymentMethodMatch.value = the Merchant value, bankMatch.value = the MBB value, installmentPlanMatch.value = the One Shot / one-off value, onlineTypeMatch = null, approvalCode = "073496", amountRm = 4600, paidAt = "2026-06-22".
+Example B — an AEON EPP slip with "TENURE 12 MONTHS", "APPROVAL CODE 046501", "TOTAL RM 1,500.00", "DATE 20/06/26": paymentMethodMatch.value = the Merchant value, bankMatch.value = the AEON value (if AEON is in MERCHANT BANKS; else null), installmentPlanMatch.value = the 12-month value, onlineTypeMatch = null, approvalCode = "046501", amountRm = 1500, paidAt = "2026-06-20".
+Example C — a DuitNow transfer confirmation for RM 550.50 dated 19 Jun 2026: paymentMethodMatch.value = the Online value, onlineTypeMatch.value = the DuitNow value, bankMatch = null, installmentPlanMatch = null, approvalCode = null (unless a reference number is clearly an approval code), amountRm = 550.5, paidAt = "2026-06-19".
 
 OUTPUT
 ======
@@ -184,7 +191,8 @@ Return STRICT JSON, no markdown fences, no prose:
   "onlineTypeMatch":      { "value": string, "confidence": number, "reason": string } | null,
   "installmentPlanMatch": { "value": string, "confidence": number, "reason": string } | null,
   "approvalCode": string | null,
-  "amountRm": number | null
+  "amountRm": number | null,
+  "paidAt": string | null
 }`;
 
 // ===========================================================================
@@ -198,6 +206,8 @@ type ExtractedReceipt = {
   installmentPlanMatch: OptionMatch | null;
   approvalCode: string | null;
   amountRm: number | null;
+  // The receipt's own SWIPE date (YYYY-MM-DD) — can be a PAST date, never today.
+  paidAt: string | null;
 };
 
 type AnthropicResponse = {
@@ -215,6 +225,18 @@ function normalizeReceipt(raw: unknown): ExtractedReceipt {
     typeof v === 'string' && v.trim() !== '' ? v : null;
   const num = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? v : null;
+  // Accept only a bare ISO date the receipt printed (YYYY-MM-DD). Anything else
+  // (today's date, free text, a datetime) is dropped — the UI keeps its own
+  // default. Never coerce to today: the receipt date is intentionally past.
+  const isoDate = (v: unknown): string | null => {
+    if (typeof v !== 'string') return null;
+    const m = v.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return null;
+    const [, y, mo, d] = m;
+    const month = Number(mo); const day = Number(d);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    return `${y}-${mo}-${d}`;
+  };
   const optionMatch = (v: unknown): OptionMatch | null => {
     if (!v || typeof v !== 'object') return null;
     const m = v as Record<string, unknown>;
@@ -235,6 +257,7 @@ function normalizeReceipt(raw: unknown): ExtractedReceipt {
     installmentPlanMatch: optionMatch(r.installmentPlanMatch),
     approvalCode:         str(r.approvalCode),
     amountRm:             num(r.amountRm),
+    paidAt:              isoDate(r.paidAt),
   };
 }
 

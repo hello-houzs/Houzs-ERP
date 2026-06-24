@@ -219,13 +219,11 @@ const CATEGORY_TO_GROUP: Record<string, string> = {
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-/* Owner rule — a bank EPP / installment indicated with NO written month count
-   defaults to the 12-month plan. The value MUST equal the installment_plan
-   option VALUE seeded in migration 0022 ('12 months'). */
-const DEFAULT_INSTALLMENT_PLAN = '12 months';
-/* Free-text signals (in the payment-notes line) that EPP / installment was
-   indicated even when no explicit term was parsed into a plan match. */
-const EPP_HINT_RE = /\b(epp|installment|instalment|ansuran|分期)\b|个月|\d\s*(?:m|mth|months?|bln|个月)\b/i;
+/* Owner rule (spec 6, 2026-06-24) — a card paid through a bank (Merchant) with
+   NO written month/tenure defaults to "One Shot", NOT a 12-month plan. Only an
+   explicitly-written tenure seeds N months. The value MUST equal the
+   installment_plan "One Shot" option VALUE seeded for this category. */
+const ONE_SHOT_PLAN = 'One Shot';
 
 /* ── Venue unify helper ─────────────────────────────────────────────────
    Resolve the OCR's venue text to a REAL venue id from the SAME useVenues()
@@ -335,14 +333,17 @@ export const ScanOrderModal = ({ onClose }: Props) => {
 
     const phones = ex.phones.filter((p) => p.trim() !== '');
 
-    /* EPP/installment indicated when the matched method is the in-house
-       Installment plan, OR a Merchant (bank card) with an EPP hint in the raw
-       payment notes ("EPP", "12m", "分期"…). Drives the 12-month default below
-       when no plan value was matched. */
-    const pmValue = ex.paymentMethodMatch?.value ?? '';
-    const installmentIndicated =
-      pmValue === 'Installment' ||
-      (pmValue === 'Merchant' && EPP_HINT_RE.test(ex.paymentMethod ?? ''));
+    /* 3-method model (spec 1 + 6, 2026-06-24) — top-level method is only
+       Merchant / Online / Cash; "Installment" is no longer a returnable method
+       (a bank EPP is Merchant + an installment plan). Defensively fold any
+       legacy "Installment" match to Merchant so a stale backend never seeds a
+       dropped method. */
+    const rawPmValue = ex.paymentMethodMatch?.value ?? '';
+    const pmValue = rawPmValue === 'Installment' ? 'Merchant' : rawPmValue;
+    /* A bank card (Merchant) with NO matched tenure → "One Shot" (spec 6:
+       Maybank merchant swipe = One Shot). Only an explicitly-matched plan
+       seeds N months. */
+    const isMerchant = pmValue === 'Merchant';
     const planValue = ex.installmentPlanMatch?.value ?? '';
 
     /* VENUE UNIFY — resolve the OCR venue text to a real venue id from the
@@ -393,13 +394,12 @@ export const ScanOrderModal = ({ onClose }: Props) => {
         ? {
             methodValue:      pmValue,
             bankValue:        ex.bankMatch?.value ?? '',
-            /* Installment default — when the slip indicates EPP/installment
-               (Merchant card over months, or the in-house Installment method)
-               but no plan was matched, fall back to the 12-month value so a
-               bank EPP with no written term seeds as 12m (owner rule). The
-               value MUST match the installment_plan option VALUE ('12 months'
-               per migration 0022). A plain swipe (no EPP signal) keeps ''. */
-            installmentLabel: planValue || (installmentIndicated ? DEFAULT_INSTALLMENT_PLAN : ''),
+            /* Plan default (spec 6) — a Merchant card with no matched tenure
+               seeds "One Shot" (a plain swipe is a one-shot Merchant payment,
+               not a 12-month plan). An explicitly-matched plan wins. Non-Merchant
+               methods (Online / Cash) carry no plan. The value MUST equal the
+               installment_plan option VALUE for the One-shot row. */
+            installmentLabel: isMerchant ? (planValue || ONE_SHOT_PLAN) : '',
             onlineTypeValue:  ex.onlineTypeMatch?.value ?? '',
             approvalCode:     ex.approvalCode ?? '',
             depositCenti:     Math.round((ex.depositRm ?? 0) * 100),

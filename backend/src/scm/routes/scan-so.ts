@@ -159,6 +159,37 @@ async function geocodeAddress(
   }
 }
 
+// Postcode IS the driver (spec section 4): once the geocoder resolves a precise
+// 5-digit postcode, the city + state must come from the SAME my_localities row
+// the New SO form's cascade fills from that postcode — NOT from Google's own
+// (sometimes divergent) admin-area components. This snaps the seeded city/state
+// to the catalog's own postcode→city→state mapping so the form's dropdowns can
+// actually select them. Fail-soft: no postcode / no matching row / query error
+// → return null and let the Google components stand.
+async function localityForPostcode(
+  sb: SupabaseClient,
+  postcode: string | null | undefined,
+): Promise<{ city: string | null; state: string | null } | null> {
+  const pc = (postcode ?? '').replace(/[^\d]/g, '');
+  if (pc.length !== 5) return null;
+  try {
+    const { data, error } = await sb
+      .from('my_localities')
+      .select('city, state')
+      .eq('postcode', pc)
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return null;
+    const row = data as Record<string, unknown>;
+    const city = typeof row.city === 'string' && row.city.trim() !== '' ? row.city : null;
+    const state = typeof row.state === 'string' && row.state.trim() !== '' ? row.state : null;
+    if (!city && !state) return null;
+    return { city, state };
+  } catch {
+    return null;
+  }
+}
+
 // JSON-coercion recovery (ported verbatim from HOOKKA scan-po.ts) — Claude
 // sometimes wraps the result in fences, sometimes adds a "Looking at the
 // image…" preamble, sometimes both. Parse a best-effort substring rather
@@ -198,10 +229,10 @@ type CatalogFabric = { code: string; description: string | null };
 // into the cached prompt prefix as allowed-values lists so the OCR can map
 // handwritten payment notes ("mbb 12 EPP") to exact maintenance values.
 const OPTION_CATEGORIES = [
-  'payment_method',     // L1 method — locked four: Merchant / Online / Installment / Cash
+  'payment_method',     // L1 method — locked three: Merchant / Online / Cash
   'payment_merchant',   // L2 merchant banks (MBB / CIMB / Public / …)
   'online_type',        // L2 online sub-types (Bank Transfer / TNG / Cheque / DuitNow)
-  'installment_plan',   // L2 plans (One-off / 3 / 6 / 12 / 24 / 36 months)
+  'installment_plan',   // L2 plans (One Shot / 3 / 6 / 12 / 24 / 36 months)
   'customer_type',      // New / Existing
   'building_type',      // Condo / Landed / …
   'venue',              // showroom / roadshow venues
@@ -513,7 +544,7 @@ export async function warmCatalogCacheForCron(env: Env): Promise<WarmResult> {
 // ===========================================================================
 // Prompt
 // ===========================================================================
-const SYSTEM_PROMPT = `You extract structured data from photos of HANDWRITTEN showroom sale-order slips at 2990's Home, a Malaysian furniture retailer. The slips are carbon-copy order forms (Zanotti / AKEMI style): a printed header block (customer name, contact, address, delivery date) filled in by hand, a handwritten line-item table (description, qty, price), and a footer with totals, deposit, payment method, and the salesperson's name.
+const SYSTEM_PROMPT = `You extract structured data from photos of HANDWRITTEN showroom sale-order slips at Houzs Century, a Malaysian furniture retailer. The slips are carbon-copy order forms (Zanotti / AKEMI style): a printed header block (customer name, contact, address, delivery date) filled in by hand, a handwritten line-item table (description, qty, price), and a footer with totals, deposit, payment method, and the salesperson's name.
 
 The handwriting is often rushed, slanted, abbreviated, and mixed-case. Phone photos may be skewed, shadowed, or low-contrast. Read carefully; prefer extracting a raw transcription over guessing.
 
@@ -582,16 +613,17 @@ OPTION MATCHING (SO Maintenance vocabularies)
 The catalog ends with ALLOWED VALUES lists (PAYMENT METHODS, MERCHANT BANKS, ONLINE TYPES, INSTALLMENT PLANS, CUSTOMER TYPES, BUILDING TYPES, VENUES). Each list row is "value | label" — a match must return the VALUE (left side), copied character-for-character. NEVER invent a value outside the list; when you cannot find a defensible match, return null for that field and keep the raw handwriting in paymentMethod / location / remarks so nothing is lost. Use the same confidence scale as skuMatch.
 
 Map the slip's handwritten notes to these fields:
-- paymentMethodMatch — the top-level method, one of PAYMENT METHODS. A CREDIT CARD paid through a BANK — a card machine / credit-card terminal / a bank name with a card swipe, WITH OR WITHOUT an EPP/installment term → "Merchant" (a bank EPP is a Merchant card payment plus an installment term, NOT the in-house "Installment" method). Bank transfer / TNG / DuitNow / cheque → "Online". Cash → "Cash". The "Installment" method is reserved for an IN-HOUSE installment arrangement with NO bank/card — a bank EPP is never "Installment".
-- bankMatch — one of MERCHANT BANKS when a bank is named ("mbb"/"maybank" → the Maybank value (MBB), "pbb"/"public bank" → the Public-bank value, "cimb" → CIMB, "hlb"/"hong leong" → HLB, "rhb" → RHB). On a CREDIT card / EPP payment the named bank is the merchant bank — always populate bankMatch alongside paymentMethodMatch = "Merchant".
+- paymentMethodMatch — the top-level method, one of PAYMENT METHODS. The ONLY valid values are "Merchant", "Online", and "Cash"; never return any other method. A CREDIT CARD paid through a BANK — a card machine / credit-card terminal / a bank name with a card swipe, WITH OR WITHOUT an EPP/installment term → "Merchant" (a bank EPP is a Merchant card payment plus an installment term carried in installmentPlanMatch). Bank transfer / TNG / DuitNow / cheque → "Online". Cash → "Cash".
+- bankMatch — one of MERCHANT BANKS when a bank is named ("mbb"/"maybank" → the Maybank value (MBB), "pbb"/"public bank" → the Public-bank value, "cimb" → CIMB, "hlb"/"hong leong" → HLB, "rhb" → RHB, "aeon"/"aeon credit" → the AEON value, "hsbc" → the HSBC value). AEON Credit / HSBC issuers appear on EPP receipts. On a CREDIT card / EPP payment the named bank is the merchant bank — always populate bankMatch alongside paymentMethodMatch = "Merchant".
 - onlineTypeMatch — one of ONLINE TYPES when the transfer channel is named (TNG / DuitNow / cheque / bank transfer). Only meaningful when the method is Online.
-- installmentPlanMatch — one of INSTALLMENT PLANS when an EPP / installment term is indicated. Any month term ("12 EPP", "x12", "12 bln", "12个月", "12 months") → the matching N-month value (e.g. the 12-month value). IMPORTANT: when the slip indicates EPP / installment (the word "EPP", "installment", "ansuran", or a card paid over months) but writes NO explicit month count, DEFAULT installmentPlanMatch to the 12-month value from the INSTALLMENT PLANS list. A plain credit-card swipe with NO EPP/term → "Merchant" with installment = none (return null here, or the One-off value only when the slip explicitly says one-off / paid-in-full).
+- installmentPlanMatch — one of INSTALLMENT PLANS. This is the plan UNDER a Merchant card payment. Rule: only return an N-month value when the receipt/slip ACTUALLY shows a tenure / month count ("12 EPP", "x12", "12 bln", "12个月", "12 months", "Tenure: 12 Months") → the matching N-month value (e.g. the 12-month value). For ANY card paid through a bank with NO month/tenure written — including a plain swipe AND an EPP/installment note that omits the month count — return the "One Shot" value from the INSTALLMENT PLANS list (a Maybank receipt with no tenure = One Shot). NEVER default to 12 months when no tenure is written.
 - customerTypeMatch — one of CUSTOMER TYPES when the slip marks new/existing (header checkbox or note).
 - buildingTypeMatch — one of BUILDING TYPES when the slip notes condo / landed / apartment etc.
 - locationMatch — one of VENUES when the written showroom/venue/branch clearly matches a list entry. Still report the raw text in the location field.
-Example: a payment note "[x]CREDIT : MBB EPP (12m) (001586) dep 1500" → paymentMethodMatch.value = the Merchant value (credit card via a bank = Merchant, NOT Installment), bankMatch.value = the MBB/Maybank value, installmentPlanMatch.value = the 12-month value, approvalCode = "001586" (the parenthesized number on the payment line), depositRm = 1500, paymentMethod = "CREDIT : MBB EPP (12m) (001586) dep 1500".
-Example: a payment note "CREDIT MBB EPP (001586)" with NO month count → paymentMethodMatch.value = Merchant, bankMatch.value = the MBB value, installmentPlanMatch.value = the 12-month value (DEFAULT when EPP is indicated but no term is written), approvalCode = "001586".
-Example: a plain "CREDIT MBB (001586)" swipe with no EPP/term → paymentMethodMatch.value = Merchant, bankMatch.value = the MBB value, installmentPlanMatch = null, approvalCode = "001586".
+Example: a payment note "[x]CREDIT : MBB EPP (12m) (001586) dep 1500" → paymentMethodMatch.value = the Merchant value (credit card via a bank = Merchant), bankMatch.value = the MBB/Maybank value, installmentPlanMatch.value = the 12-month value (the receipt shows a 12-month tenure), approvalCode = "001586" (the parenthesized number on the payment line), depositRm = 1500, paymentMethod = "CREDIT : MBB EPP (12m) (001586) dep 1500".
+Example: a payment note "CREDIT MBB EPP (001586)" with NO month count → paymentMethodMatch.value = Merchant, bankMatch.value = the MBB value, installmentPlanMatch.value = the "One Shot" value (no tenure written → One Shot, NOT a 12-month default), approvalCode = "001586".
+Example: a plain "CREDIT MBB (001586)" swipe with no EPP/term → paymentMethodMatch.value = Merchant, bankMatch.value = the MBB value, installmentPlanMatch.value = the "One Shot" value (a Maybank card paid through the bank with no tenure = One Shot), approvalCode = "001586".
+Example: an AEON Credit receipt "Tenure: 12 Months APPR 046501" → paymentMethodMatch.value = Merchant, bankMatch.value = the AEON value, installmentPlanMatch.value = the 12-month value (the receipt shows a 12-month tenure), approvalCode = "046501".
 
 OUTPUT
 ======
@@ -930,7 +962,7 @@ function ilikeExact(v: string): string {
 const GLOBAL_ALIAS_KEY = '__GLOBAL__';
 const isGlobalKey = (v: string): boolean => v.trim().toUpperCase() === GLOBAL_ALIAS_KEY;
 
-const DISTILL_META_PROMPT = `You are reviewing extraction sessions of HANDWRITTEN showroom sale-order slips at 2990's Home, a Malaysian furniture retailer. ALL the examples below were written by ONE salesperson. Each example is a PAIR: what the AI initially extracted, followed by what the human operator corrected it to (the confirmed truth). Each salesperson has their own handwriting and notation habits, and those habits DIFFER per product category. Write a concise salesperson-specific OCR rule block so future extractions of this rep's slips apply their conventions automatically.
+const DISTILL_META_PROMPT = `You are reviewing extraction sessions of HANDWRITTEN showroom sale-order slips at Houzs Century, a Malaysian furniture retailer. ALL the examples below were written by ONE salesperson. Each example is a PAIR: what the AI initially extracted, followed by what the human operator corrected it to (the confirmed truth). Each salesperson has their own handwriting and notation habits, and those habits DIFFER per product category. Write a concise salesperson-specific OCR rule block so future extractions of this rep's slips apply their conventions automatically.
 
 DERIVE THE RULES FROM THE DIFFS: compare each "AI extracted" JSON against its "Operator corrected" JSON. Wherever they differ, the AI misread this rep's notation and the human fixed it — that diff is exactly how this rep's shorthand maps to catalog truth (e.g. AI read "BO315-2", operator corrected to "BO315-02" → this rep drops leading zeros in suffixes). Fields that the AI already got right need no rule. Prioritize recurring corrections across multiple pairs over one-off fixes.
 
@@ -1131,7 +1163,7 @@ async function distillSalespersonRules(
 // "B.Cruise" → one SKU), so one rep's corrections should teach everyone.
 // Per-rep STYLE notes stay in the per-rep rule rows; this is aliases only.
 // ===========================================================================
-const GLOBAL_ALIAS_META_PROMPT = `You are reviewing extraction sessions of HANDWRITTEN showroom sale-order slips at 2990's Home, a Malaysian furniture retailer. The examples below were written by MANY DIFFERENT salespeople. Each example is a PAIR: what the AI initially extracted, followed by what the human operator corrected it to (the confirmed truth).
+const GLOBAL_ALIAS_META_PROMPT = `You are reviewing extraction sessions of HANDWRITTEN showroom sale-order slips at Houzs Century, a Malaysian furniture retailer. The examples below were written by MANY DIFFERENT salespeople. Each example is a PAIR: what the AI initially extracted, followed by what the human operator corrected it to (the confirmed truth).
 
 Your ONLY job is to build a SHARED PRODUCT-NAME ALIAS DICTIONARY that benefits every salesperson. The same product gets written many different ways across reps ("Bamboo Cruise", "Cruise", "B.Cruise" all mean one SKU). DERIVE THE ALIASES FROM THE DIFFS: wherever the operator corrected a line's skuMatch or fabricMatch, that line's rawText shows how the product was written and the corrected code is the catalog truth — record that variant → code mapping. rawText spellings the AI already matched correctly also confirm aliases worth recording when they differ from the catalog name.
 
@@ -1862,11 +1894,25 @@ scanSo.post('/extract', async (c) => {
   try {
     const geo = await geocodeAddress(parsed.address, c.env.GOOGLE_MAPS_API_KEY);
     if (geo) {
-      if (geo.state) {
-        parsed.addressStateMatch = { value: geo.state, confidence: 0.95, reason: 'Google geocode' };
+      // Postcode is the driver: seed it first, then resolve city/state from the
+      // SAME my_localities row that postcode maps to (the cascade the form uses),
+      // so the seeded city/state are consistent with the postcode and selectable
+      // in the form's dropdowns. Fall back to Google's components only when no
+      // localities row matches the resolved postcode.
+      let city = geo.city;
+      let state = geo.state;
+      if (geo.postcode) {
+        parsed.postcode = geo.postcode;
+        const loc = await localityForPostcode(sb, geo.postcode);
+        if (loc) {
+          if (loc.city) city = loc.city;
+          if (loc.state) state = loc.state;
+        }
       }
-      if (geo.city) parsed.city = geo.city;
-      if (geo.postcode) parsed.postcode = geo.postcode;
+      if (state) {
+        parsed.addressStateMatch = { value: state, confidence: 0.95, reason: 'Google geocode' };
+      }
+      if (city) parsed.city = city;
     }
   } catch {
     /* fail-soft — keep the LLM address parse */

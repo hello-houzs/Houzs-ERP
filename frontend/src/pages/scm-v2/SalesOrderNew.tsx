@@ -64,7 +64,8 @@ import {
   SCAN_PREFILL_KEY, type ScanPrefill, type ExtractedSlip,
 } from '../../vendor/scm/components/ScanOrderModal';
 import {
-  PaymentsTable, labelToApi, draftMethodFields, newPaymentDraft, type PaymentDraft,
+  PaymentsTable, labelToApi, draftMethodFields, newPaymentDraft,
+  missingMethodSubField, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
 import { formatPhone } from '@2990s/shared/phone';
 import styles from './SalesOrderDetail.module.css';
@@ -90,6 +91,22 @@ const fmtRm = (centi: number, currency = 'MYR'): string =>
   `${currency} ${(centi / 100).toLocaleString('en-MY', {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   })}`;
+
+/* Coupled-dates rule (spec 3) — given a Delivery date, the Processing date is
+   when procurement should start: ~6 weeks (42 days) before delivery, but never
+   before today (don't buy stock too soon, and never a past date). Returns a
+   local YYYY-MM-DD matching the `today`/date-input format. The caller only
+   invokes this when a Delivery date exists; with no Delivery date BOTH dates
+   stay empty (the order is un-proceeded). */
+const PROCESSING_LEAD_DAYS = 42;
+const deriveProcessingDate = (deliveryDate: string): string => {
+  const today = new Date().toLocaleDateString('en-CA');
+  const d = new Date(`${deliveryDate}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return today;
+  d.setDate(d.getDate() - PROCESSING_LEAD_DAYS);
+  const lead = d.toLocaleDateString('en-CA');
+  return lead < today ? today : lead;
+};
 
 export const SalesOrderNew = () => {
   const navigate = useNavigate();
@@ -340,15 +357,17 @@ export const SalesOrderNew = () => {
     if (payload.addressCity) setScanCity(payload.addressCity);
     if (payload.addressPostcode) setScanPostcode(payload.addressPostcode);
     if (payload.note) setNote(payload.note);
-    if (payload.deliveryDate) setDeliveryDate(payload.deliveryDate);
-    /* Processing Date (Task #73, owner 2026-06-24) — a scanned slip is an order
-       opened TODAY, so default Processing Date to today when the OCR didn't read
-       a date off the slip. This frees the operator from the XOR trap ("Processing
-       Date and Delivery Date must be set together — Save is blocked") that fired
-       when Processing was left blank. Delivery Date stays optional — the operator
-       sets it (and Processing ≤ Delivery is still enforced on Save). en-CA gives
-       a local YYYY-MM-DD, matching the `today` used by the date inputs + guards. */
-    setProcessingDate(payload.processingDate || new Date().toLocaleDateString('en-CA'));
+    /* Coupled dates (spec 3, owner 2026-06-24) — the two dates are both-set or
+       both-empty. A scanned slip may carry a Delivery date but never a
+       Processing date, so we DERIVE Processing from Delivery: set Delivery, and
+       Processing = max(today, Delivery − 6 weeks). When the slip has NO Delivery
+       date, leave BOTH empty (the order is un-proceeded — customer not ready).
+       The earlier "force Processing = today on every scan" default is removed:
+       seeding a lone Processing date violated the both-or-neither rule. */
+    if (payload.deliveryDate) {
+      setDeliveryDate(payload.deliveryDate);
+      setProcessingDate(deriveProcessingDate(payload.deliveryDate));
+    }
     /* SO-Maintenance matches from the scan (2026-06-12) — both land in
        normal editable selects, same as a manual pick. */
     if (payload.customerType) setCustomerType(payload.customerType);
@@ -363,22 +382,17 @@ export const SalesOrderNew = () => {
        carries an amount + slip like any manually-added draft). */
     if (payload.payment?.methodValue) {
       const p = payload.payment;
-      /* Default the installment plan to 12 months when the matched method is a
-         bank card / in-house Installment but no term rode in from the scan
-         (owner rule: a bank EPP with no written month count = 12m). The
-         modal already applies this default; we re-apply defensively so a
-         stale prefill (e.g. older modal build) still seeds 12m. The value
-         MUST match the installment_plan option VALUE ('12 months', mig 0022).
-         A Merchant swipe with no EPP carries an empty installmentLabel and
-         is left blank here. */
-      const installmentLabel =
-        p.installmentLabel ||
-        (p.methodValue === 'Installment' ? '12 months' : '');
+      /* 3-method model (spec 1 + 6, 2026-06-24) — top-level method is only
+         Merchant / Online / Cash. The modal already folds any legacy
+         "Installment" match to Merchant and defaults a tenure-less Merchant
+         card to "One Shot" (not 12 months); we carry its values straight
+         through. A Merchant swipe with no tenure arrives as One Shot; Online /
+         Cash carry no plan. */
       setPaymentDrafts([{
         ...newPaymentDraft(),
         methodLabel:            p.methodValue,
         merchantProvider:       p.bankValue || '',
-        installmentMonthsLabel: installmentLabel,
+        installmentMonthsLabel: p.installmentLabel || '',
         onlineType:             p.onlineTypeValue || '',
         approvalCode:           p.approvalCode || '',
         amountCenti:            p.depositCenti > 0 ? p.depositCenti : 0,
@@ -418,10 +432,10 @@ export const SalesOrderNew = () => {
       address1:       payload.address1 || '',
       note:           payload.note || '',
       deliveryDate:   payload.deliveryDate ?? '',
-      /* Match the auto-seeded Processing Date (today when the OCR read none) so
-         the blue `.edited` diff doesn't falsely flag a field the operator never
-         touched. */
-      processingDate: payload.processingDate || new Date().toLocaleDateString('en-CA'),
+      /* Match the DERIVED Processing Date (Delivery − 6 weeks, floored at today;
+         empty when there's no Delivery date) so the blue `.edited` diff doesn't
+         falsely flag a field the operator never touched. */
+      processingDate: payload.deliveryDate ? deriveProcessingDate(payload.deliveryDate) : '',
       customerType:   payload.customerType || '',
       buildingType:   payload.buildingType || '',
       venueId:        payload.venueId || '',
@@ -1039,6 +1053,24 @@ export const SalesOrderNew = () => {
           `${slipless.length} payment row${slipless.length === 1 ? '' : 's'} ` +
           `${slipless.length === 1 ? 'is' : 'are'} missing a slip — upload ` +
           `${slipless.length === 1 ? 'it' : 'them'} (the "Slip *" button) and try again.`,
+        tone: 'error',
+      });
+      return;
+    }
+
+    /* Cascade guard (spec 1) — a chosen payment method needs its required
+       sub-field(s): Merchant → Bank + Plan; Online → Sub-Type; Cash → none.
+       Block the save and name the first row + missing field so commander knows
+       exactly what to pick. Only checks amount-bearing rows (a zeroed/blank row
+       is dropped at flush time). */
+    const methodGaps = paymentDrafts
+      .map((d, i) => ({ row: i + 1, method: d.methodLabel, missing: d.amountCenti > 0 ? missingMethodSubField(d) : null }))
+      .filter((x) => x.missing !== null);
+    if (methodGaps.length > 0) {
+      const g = methodGaps[0]!;
+      notify({
+        title: `Payment ${g.row} (${g.method}) needs a ${g.missing}.`,
+        body: 'Pick the required sub-field for each payment method before saving.',
         tone: 'error',
       });
       return;

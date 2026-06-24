@@ -231,7 +231,11 @@
 //   matches Vite's "Unable to preload CSS" message AND purges all caches before
 //   the one-shot reload, so a poisoned/empty SW cache (left by the earlier empty
 //   Git-integration builds) can't trap a page on "Something went wrong" anymore.
-const VERSION = "houzs-erp-v52";
+// v53 — POM tidy: 3-method payments (Merchant/Online/Cash), scan-payment receipt
+//   OCR (One-Shot when no tenure, paid_at may be past), coupled Processing/Delivery
+//   dates (both-or-neither, Processing = max(today, delivery-6wk)), OCR prompt
+//   rebranded to Houzs Century, AEON/HSBC banks.
+const VERSION = "houzs-erp-v53";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

@@ -51,14 +51,19 @@ Read a card terminal receipt photo and map to a payment row:
 
 - **Processing date** = when the order is "proceeded" (procurement starts). Some
   customers aren't ready for delivery yet, so the order may sit un-proceeded.
+- **The two dates are COUPLED — both set, or both empty.** A Processing date never
+  exists without a Delivery date (you only "proceed" once there is a delivery to plan for).
 - On create / scan, default:
-  - If a **Delivery date** is set: `Processing = max(today, Delivery − 6 weeks)`.
+  - If a **Delivery date** is present (from the slip or typed): set Delivery, and
+    `Processing = max(today, Delivery − 6 weeks)`.
     (Delivery far out -> proceed ~6 weeks before, not too early -> don't buy stock too soon.
      Delivery soon / within 6 weeks -> proceed today. Never a past date.)
     Example: Delivery Jun 1 -> Processing ~Apr 15.
-  - If **no Delivery date**: `Processing = today`.
-- Reconcile the "Processing Date and Delivery Date must be set together — Save is
-  blocked" guard so auto-seeding Processing keeps Save unblocked (Delivery stays optional).
+  - If **no Delivery date**: leave **BOTH Processing and Delivery EMPTY** (the order is
+    un-proceeded — customer not ready). Do NOT default Processing to today.
+- The "Processing Date and Delivery Date must be set together — Save is blocked" guard is
+  CORRECT (both-or-neither). The earlier fix that force-seeded Processing = today on every
+  scan is WRONG and must be removed — only seed Processing when a Delivery date exists.
 
 ---
 
@@ -85,6 +90,30 @@ Read a card terminal receipt photo and map to a payment row:
   of venue / other phones / delivery terms / payment). Per-line "Slip: ..." annotation -> short.
 
 ---
+
+## 6. OCR SYSTEM_PROMPT corrections (scan-so.ts)
+
+The vendored prompt still carries 2990-era + pre-3-method wording. Fix in place:
+
+- **Company name**: the prompt (and GLOBAL_ALIAS_META_PROMPT) say "**2990's Home**, a
+  Malaysian furniture retailer" — wrong. This is **Houzs Century**. Replace the company
+  name (the Zanotti / AKEMI brand references are real products — keep those).
+- **No "Installment" method**: `paymentMethodMatch` must only ever return Merchant / Online
+  / Cash. Remove the "Installment method = in-house" carve-out. A bank EPP is already
+  Merchant + an installment term — keep that, but drop Installment as a returnable method.
+- **No tenure -> One Shot**: the prompt currently DEFAULTS `installmentPlanMatch` to 12
+  months when EPP is indicated but no count is written, and returns null for a plain swipe.
+  Both wrong. Rule: a card paid through a bank with **no month/tenure written -> One Shot**
+  (Maybank receipt = One Shot). Only set N-months when the receipt/slip actually shows a tenure.
+- **Banks**: add AEON / HSBC to the bankMatch examples once seeded (see Open question).
+
+## 7. Branding as configuration (not hardcoded)
+
+Root cause of the "2990's Home" leak: company identity is hardcoded across the prompt, PDF
+letterhead, and emails. Make it a **maintained Branding config** (Settings): company name,
+registration no., logo, address — one source of truth that the OCR prompt, PDF letterhead,
+and outbound email all read. Owner wants this maintainable, not hardcoded. (Built deliberately
+as its own step after the POM round, since it touches PDFs + emails — not rushed in parallel.)
 
 ## Open question — bank list is incomplete
 

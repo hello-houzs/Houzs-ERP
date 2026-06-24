@@ -31,13 +31,14 @@ export const soDropdownOptions = new Hono<{ Bindings: Env; Variables: Variables 
 
 soDropdownOptions.use("*", supabaseAuth);
 
-/* payment_method is a LOCKED set. The four core rows (Merchant / Online /
-   Installment / Cash) drive branch logic end-to-end (POS handover cards, the
-   deposit ledger, the payments cascade). Rename/reorder is fine; add, delete,
-   deactivate, or VALUE edit is refused. This gate is the backstop for direct
-   API calls. */
+/* payment_method is a LOCKED set. The three core rows (Merchant / Online /
+   Cash) drive branch logic end-to-end (POS handover cards, the deposit ledger,
+   the payments cascade). Rename/reorder is fine; add, delete, deactivate, or
+   VALUE edit is refused. ('Installment' is no longer a core L1 method — it is
+   the plan under Merchant — so it is intentionally unprotected and may be
+   deactivated.) This gate is the backstop for direct API calls. */
 const PAYMENT_METHOD_LOCK_REASON =
-  "Payment methods are a fixed set of four — they are wired to order logic " +
+  "Payment methods are a fixed set of three — they are wired to order logic " +
   "(POS handover cards, deposit ledger, payments cascade). Rename or reorder " +
   "them anytime; they cannot be added to, removed, or turned off.";
 

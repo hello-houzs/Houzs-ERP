@@ -59,6 +59,10 @@ const fmtRm = (centi: number, currency = 'MYR'): string =>
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   })}`;
 
+/* installment_plan "One Shot" option VALUE (spec 1 + 6) — the default plan for
+   a Merchant card with no written tenure. Parsed to null months on persist. */
+const ONE_SHOT_PLAN = 'One Shot';
+
 /* ════════════════════════════════════════════════════════════════════════
    API enum + Houzs friendly-label mapping (kept verbatim from PaymentCard
    so the Detail page's ledger semantics don't change).
@@ -178,13 +182,38 @@ export const newPaymentDraft = (defaultStaffId = ''): PaymentDraft => ({
   slipUploadSessionId: null,
 });
 
-/* Parse an installment-plan label like 'One-off' / '3 months' / '12 months'
-   into an integer term in months. 'One-off' and unrecognised strings return
-   null (= no installment); otherwise the leading number. */
+/* Parse an installment-plan label like 'One Shot' / 'One-off' / '3 months' /
+   '12 months' into an integer term in months. The one-shot labels and any
+   unrecognised string return null (= no installment); otherwise the leading
+   number. */
 export const parseInstallmentMonths = (label: string): number | null => {
-  if (!label || label === 'One-off') return null;
+  if (!label || label === 'One-off' || label === ONE_SHOT_PLAN) return null;
   const m = /^(\d+)\s*month/i.exec(label.trim());
   return m ? Number(m[1]) : null;
+};
+
+/* Cascade required-field check (spec 1) — returns a human reason when the
+   chosen method is missing a required sub-field, else null:
+     Merchant → Bank (merchantProvider) AND Plan (installmentMonthsLabel)
+     Online   → Sub-Type (onlineType)
+     Cash     → nothing
+   Keyed off the L1 methodLabel VALUE (Merchant / Online / Cash). Unknown /
+   pre-lock labels are treated as Cash (no sub-field), matching labelToApi's
+   cash fallback. Shared by the per-row commit gate (SAVED mode) and the New SO
+   batch-save guard (DRAFT mode) so both pages enforce the same rule. */
+export const missingMethodSubField = (
+  d: Pick<PaymentDraft, 'methodLabel' | 'merchantProvider' | 'installmentMonthsLabel' | 'onlineType'>,
+): string | null => {
+  if (d.methodLabel === 'Merchant') {
+    if (!d.merchantProvider) return 'Bank';
+    if (!d.installmentMonthsLabel) return 'Plan';
+    return null;
+  }
+  if (d.methodLabel === 'Online') {
+    if (!d.onlineType) return 'Sub-Type';
+    return null;
+  }
+  return null;
 };
 
 /* Method-scoped L2 fields for a draft row — shared by commitDraft below and
@@ -414,7 +443,12 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
     const row = draftsRef.current.find((d) => d.uid === uid);
     if (!row) return;
 
-    const method = rec.paymentMethodMatch?.value ?? '';
+    /* 3-method model (spec 1 + 2) — a card-terminal receipt is always a
+       Merchant payment (drop the legacy Installment carve-out: a bank EPP is
+       Merchant + an N-month plan). Fold any legacy "Installment" match to
+       Merchant so a stale backend never seeds a dropped method. */
+    const rawMethod = rec.paymentMethodMatch?.value ?? '';
+    const method = rawMethod === 'Installment' ? 'Merchant' : rawMethod;
     const patch: Partial<PaymentDraft> = {};
     // methodLabel ← payment_method VALUE (only when the row still holds the
     // default 'Cash' OR is blank — i.e. the operator hasn't deliberately set it).
@@ -424,11 +458,16 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
     // The method the row WILL have once this patch applies (so the L2 fills are
     // gated against the post-patch method, not the stale one).
     const effectiveMethod = patch.methodLabel ?? row.methodLabel;
-    if (effectiveMethod === 'Merchant' && rec.bankMatch?.value && !row.merchantProvider) {
-      patch.merchantProvider = rec.bankMatch.value;
-    }
-    if (effectiveMethod === 'Installment' && rec.installmentPlanMatch?.value && !row.installmentMonthsLabel) {
-      patch.installmentMonthsLabel = rec.installmentPlanMatch.value;
+    if (effectiveMethod === 'Merchant') {
+      // Bank (merchant_provider).
+      if (rec.bankMatch?.value && !row.merchantProvider) {
+        patch.merchantProvider = rec.bankMatch.value;
+      }
+      // Plan (installment_months) — a matched tenure (e.g. AEON 12 Months) wins;
+      // a Merchant swipe with NO tenure on the receipt → "One Shot" (spec 6).
+      if (!row.installmentMonthsLabel) {
+        patch.installmentMonthsLabel = rec.installmentPlanMatch?.value || ONE_SHOT_PLAN;
+      }
     }
     if (effectiveMethod === 'Online' && rec.onlineTypeMatch?.value && !row.onlineType) {
       patch.onlineType = rec.onlineTypeMatch.value;
@@ -438,6 +477,13 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
     }
     if (rec.amountRm != null && rec.amountRm > 0 && row.amountCenti <= 0) {
       patch.amountCenti = Math.round(rec.amountRm * 100);
+    }
+    /* paid_at ← the receipt's swipe date (spec 2). THIS MAY BE A PAST DATE —
+       the salesperson can open the SO days after collecting the money — so we
+       set it verbatim and never clamp to today. Only fills when the row still
+       holds the default todayMyt() value (the operator hasn't set a date). */
+    if (rec.paidAt && (row.paidAt === '' || row.paidAt === todayMyt())) {
+      patch.paidAt = rec.paidAt;
     }
 
     if (Object.keys(patch).length > 0) patchDraft(uid, patch);
@@ -451,6 +497,17 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
        without a slip; gate the commit on both the amount and a confirmed
        slip upload session so the user never round-trips a 400. */
     if (d.amountCenti <= 0 || !d.slipUploadSessionId) return;
+    /* Cascade guard (spec 1) — block the commit when the chosen method is
+       missing a required sub-field (Merchant → Bank + Plan; Online → Sub-Type)
+       and tell the operator which one. */
+    const missing = missingMethodSubField(d);
+    if (missing) {
+      void notify({
+        title: `Pick the ${missing} for this ${d.methodLabel} payment.`,
+        tone: 'error',
+      });
+      return;
+    }
     const { method } = labelToApi(d.methodLabel);
     /* Cascade payload — populate sub-fields by the L1 method only
        (draftMethodFields). The API mirrors the same guard and will scrub any
@@ -884,15 +941,19 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                         user can drop a half-typed row. */}
                     {isSaved && (() => {
                       /* Spec D4 — commit needs an amount AND a confirmed slip
-                         (the SO route 400s without one). */
+                         (the SO route 400s without one). Spec 1 — a chosen
+                         method also needs its required sub-field(s). */
                       const noAmount = d.amountCenti <= 0;
                       const noSlip   = !d.slipUploadSessionId;
-                      const blocked  = noAmount || noSlip;
+                      const missing  = missingMethodSubField(d);
+                      const blocked  = noAmount || noSlip || missing !== null;
                       const title = noAmount
                         ? 'Enter an amount > 0 first'
                         : noSlip
                           ? 'Upload the payment slip first'
-                          : 'Save payment';
+                          : missing
+                            ? `Pick the ${missing} for this ${d.methodLabel} payment first`
+                            : 'Save payment';
                       return (
                         <button
                           type="button"

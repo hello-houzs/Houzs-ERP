@@ -117,6 +117,11 @@ export type ScanPaymentReceipt = {
   installmentPlanMatch: ScanPaymentMatch | null;
   approvalCode:         string | null;
   amountRm:             number | null;
+  /* Spec 2 (2026-06-24) — the receipt's SWIPE date (YYYY-MM-DD) → the payment
+     row's paid_at. THIS CAN BE A PAST DATE (the salesperson may open the SO a
+     few days after collecting the money), so the caller must NOT clamp it to
+     today. null when the OCR read no date. */
+  paidAt:               string | null;
 };
 
 export async function scanPaymentReceipt(file: File): Promise<ScanPaymentReceipt> {
