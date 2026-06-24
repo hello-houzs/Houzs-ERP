@@ -56,7 +56,7 @@ import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
-type SiStatus = 'SENT' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'CANCELLED';
+type SiStatus = 'DRAFT' | 'SENT' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'CANCELLED';
 
 const fmtRm = (centi: number, currency = 'MYR'): string =>
   `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -392,6 +392,7 @@ export const SalesInvoiceDetail = () => {
 
   const isLocked = lockedStatuses.includes(header.status);
   const isCancelled = header.status === 'CANCELLED';
+  const isDraft = header.status === 'DRAFT';
   const grandTotal = header.local_total_centi || header.total_centi || 0;
 
   const handlePrint = () => {
@@ -406,6 +407,17 @@ export const SalesInvoiceDetail = () => {
   };
   const handleReopen = async () => {
     if (!(await askConfirm({ title: `Reopen ${header.invoice_number} back to Issued?`, confirmLabel: 'Reopen' }))) return;
+    updateStatus.mutate({ id: header.id, status: 'SENT' });
+  };
+  /* Confirm a DRAFT invoice → SENT. This is where the server posts AR/GL revenue
+     and auto-applies customer credit (both skipped on draft create). Mirrors the
+     SO confirm (SalesOrderDetail DRAFT banner). */
+  const handleConfirm = async () => {
+    if (!(await askConfirm({
+      title: `Confirm ${header.invoice_number}?`,
+      body: 'This issues the invoice — it posts revenue (AR / Sales) and applies any customer credit. It will then appear in Outstanding / AR aging.',
+      confirmLabel: 'Confirm Invoice',
+    }))) return;
     updateStatus.mutate({ id: header.id, status: 'SENT' });
   };
 
@@ -475,6 +487,33 @@ export const SalesInvoiceDetail = () => {
         <div className={styles.bannerWarn}>
           <strong>Save failed.</strong>
           <span>{saveError}</span>
+        </div>
+      )}
+
+      {/* ── DRAFT banner + Confirm (DRAFT flow) ─────────────────────
+          A DRAFT invoice committed nothing on create (no AR/GL revenue, no
+          customer credit). The operator reviews + edits, then Confirms to
+          issue it (DRAFT → SENT), which posts revenue + applies credit. Mirrors
+          the SO DRAFT banner (SalesOrderDetail.tsx:971-1007). */}
+      {isDraft && !isEditing && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          fontSize: 'var(--fs-13)',
+        }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <FileText {...ICON} />
+            <span>
+              <strong>Draft — not yet confirmed.</strong>{' '}
+              Review and Confirm to issue the invoice (it posts revenue / AR and applies customer credit, and only then appears in Outstanding).
+            </span>
+          </span>
+          <Button variant="primary" size="sm" onClick={handleConfirm} disabled={updateStatus.isPending}>
+            <span>{updateStatus.isPending ? 'Confirming…' : 'Confirm Invoice'}</span>
+          </Button>
         </div>
       )}
 

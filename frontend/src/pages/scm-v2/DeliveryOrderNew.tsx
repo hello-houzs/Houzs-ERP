@@ -276,7 +276,7 @@ export const DeliveryOrderNew = () => {
     return { failed: results.filter((ok) => !ok).length };
   };
 
-  const onSave = () => {
+  const onSave = (asDraft = false) => {
     if (loadingPrefill) { notify({ title: 'Still loading the Sales Order', body: 'please wait a moment.' }); return; }
     if (!canSave) { notify({ title: 'Customer name is required.', tone: 'error' }); return; }
     const validLines = lines.filter((l) => l.itemCode.trim() && l.qty > 0);
@@ -287,6 +287,9 @@ export const DeliveryOrderNew = () => {
 
     create.mutate(
       {
+        /* DRAFT flow (2026-06-24) — asDraft lands the DO as DRAFT (no stock OUT,
+           no SO-delivered sync) so the operator can review before shipping. */
+        asDraft: asDraft || undefined,
         soDocNo: fromSo || undefined,
         doDate: doDate || undefined,
         debtorName,
@@ -375,7 +378,13 @@ export const DeliveryOrderNew = () => {
           <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-orders')}>
             <X {...ICON} /> Cancel
           </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={create.isPending}>
+          {/* DRAFT flow — save without shipping (no stock OUT). Confirm later on
+              the detail page to deduct stock + ship. */}
+          <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={create.isPending}>
+            <Save {...ICON} />
+            {create.isPending ? 'Saving…' : 'Save as Draft'}
+          </Button>
+          <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={create.isPending}>
             <Save {...ICON} />
             {create.isPending ? 'Saving…' : 'Create Delivery Order'}
           </Button>

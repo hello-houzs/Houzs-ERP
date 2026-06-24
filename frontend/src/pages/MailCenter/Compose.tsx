@@ -90,16 +90,40 @@ export function ComposeDialog({
     [],
   );
 
-  const activeAddresses = useMemo(
-    () => (addresses ?? []).filter((a) => a.active),
-    [addresses],
-  );
+  // The signed-in member's OWN outward alias (users.email_alias), e.g.
+  // lim@houzscentury.com. With the free-alias model this is the member's personal
+  // sending identity. It may not appear in the scoped /addresses list (that lists
+  // shared/dept mailboxes), so we splice it into the From options ourselves.
+  const ownAlias = (user?.email_alias ?? "").trim().toLowerCase();
 
-  // The mailbox that belongs to the logged-in user, if any of the active ones
-  // map to them. "" when the user owns no listed mailbox → fall back below.
+  const activeAddresses = useMemo(() => {
+    const list = (addresses ?? []).filter((a) => a.active);
+    // Prepend the member's own alias as a first-class From option when it's not
+    // already represented in the scoped address list (case-insensitive).
+    if (
+      ownAlias &&
+      !list.some((a) => (a.address ?? "").toLowerCase() === ownAlias)
+    ) {
+      return [
+        {
+          id: `own-alias:${ownAlias}`,
+          address: ownAlias,
+          label: "My email",
+          active: true,
+          assignedUserId: user?.id ?? null,
+        } as MailAddress,
+        ...list,
+      ];
+    }
+    return list;
+  }, [addresses, ownAlias, user?.id]);
+
+  // The mailbox that belongs to the logged-in user. Prefer the member's own alias
+  // (their personal sending identity); else fall back to the assigned/granted
+  // mailbox match. "" when the user owns no listed mailbox → fall back below.
   const userDefaultFrom = useMemo(
-    () => pickDefaultFromAddress(activeAddresses, user),
-    [activeAddresses, user],
+    () => ownAlias || pickDefaultFromAddress(activeAddresses, user),
+    [activeAddresses, user, ownAlias],
   );
 
   // Explicit From override the operator picked (empty = follow the default).

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, ArrowLeft, SlidersHorizontal, Eye, EyeOff } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, AtSign, ArrowLeft, SlidersHorizontal, Eye, EyeOff } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -1616,8 +1616,17 @@ function MemberDetail({
             )}
             <div className="flex items-center gap-2 text-[12px] text-ink-secondary">
               <Mail size={12} className="shrink-0 text-ink-muted" />
-              <span className="truncate">{user.email}</span>
+              <span className="truncate" title="Login email">{user.email}</span>
             </div>
+            {user.email_alias && (
+              <div
+                className="flex items-center gap-2 text-[12px] text-ink-secondary"
+                title="Mail Center alias — the member's outward email address"
+              >
+                <AtSign size={12} className="shrink-0 text-ink-muted" />
+                <span className="truncate">{user.email_alias}</span>
+              </div>
+            )}
           </div>
 
           {canManage && (

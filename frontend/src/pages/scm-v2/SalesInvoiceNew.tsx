@@ -280,7 +280,7 @@ export const SalesInvoiceNew = () => {
     return { failed: results.filter((ok) => !ok).length };
   };
 
-  const onSave = () => {
+  const onSave = (asDraft = false) => {
     if (!canSave) { notify({ title: 'Customer name is required.', tone: 'error' }); return; }
     const validLines = lines.filter((l) => l.itemCode.trim() && l.qty > 0);
     if (validLines.length === 0) {
@@ -290,6 +290,9 @@ export const SalesInvoiceNew = () => {
 
     create.mutate(
       {
+        /* DRAFT flow — when saving as draft the server lands the invoice as DRAFT
+           and posts NO revenue / credit until it is confirmed on the detail page. */
+        asDraft: asDraft || undefined,
         deliveryOrderId: fromDo || undefined,
         debtorName,
         debtorCode: debtorCode || undefined,
@@ -334,7 +337,10 @@ export const SalesInvoiceNew = () => {
       },
       {
         onSuccess: async (res: { id: string; invoiceNumber: string }) => {
-          const { failed } = await flushPaymentDrafts(res.id);
+          /* A DRAFT invoice cannot take payments yet (the server 409s a draft
+             payment). Skip the payment flush — the operator records payments
+             after confirming on the detail page. */
+          const { failed } = asDraft ? { failed: 0 } : await flushPaymentDrafts(res.id);
           if (failed > 0) {
             await notify({
               title: `Invoice ${res.invoiceNumber} was created, but ${failed} payment ` +
@@ -371,7 +377,11 @@ export const SalesInvoiceNew = () => {
           <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices')}>
             <X {...ICON} /> Cancel
           </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={create.isPending}>
+          <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={create.isPending}>
+            <Save {...ICON} />
+            {create.isPending ? 'Saving…' : 'Save as Draft'}
+          </Button>
+          <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={create.isPending}>
             <Save {...ICON} />
             {create.isPending ? 'Saving…' : 'Create Sales Invoice'}
           </Button>

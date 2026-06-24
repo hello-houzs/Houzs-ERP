@@ -164,11 +164,11 @@ type Folder =
   | "trash"
   | "all";
 
-// Houzs's real departments (matches the public.departments table) — replaces
-// the ported Hookka set (Support/Finance/HR). These show as the canonical
-// department-mailbox placeholders in the sidebar until an admin assigns each
-// a shared address (e.g. sales@/it@).
-const DEPT_PRIORITY = ["Sales Department", "Operation Department", "IT Department", "Management"];
+// Department LABELS used by the 5 shared department mailboxes (operation@ /
+// sales@ / marketing@ / finance@ / hr@houzscentury.com). These MUST match the
+// mailboxes' `assignedDept` strings exactly so the sidebar groups each shared
+// mailbox under its department header (and rolls up its unread count).
+const DEPT_PRIORITY = ["Operation", "Sales", "Marketing", "Finance", "HR"];
 const UNASSIGNED_DEPT = "Other";
 
 function deptRank(dept: string): number {
@@ -428,17 +428,17 @@ function CompactRow({
       className={cn(
         "group relative flex items-center border-l-2 transition",
         active
-          ? "border-amber-500 bg-amber-50/70"
+          ? "border-accent bg-accent-soft/80"
           : selected
-            ? "border-amber-400 bg-amber-50/40"
+            ? "border-accent/60 bg-accent-soft/50"
             : unread
-              ? "border-amber-400 bg-amber-50/40"
+              ? "border-accent/60 bg-accent-soft/50"
               : "border-transparent hover:bg-surface-dim/50",
       )}
     >
       <RowLead t={t} selected={selected} onToggleSelect={onToggleSelect} onRowAction={onRowAction} />
       <span className="flex w-3 shrink-0 items-center justify-center">
-        {unread && <span className="h-2 w-2 rounded-full bg-amber-500" aria-hidden="true" />}
+        {unread && <span className="h-2 w-2 rounded-full bg-accent" aria-hidden="true" />}
       </span>
       <button
         onClick={() => onOpen(t.id)}
@@ -502,11 +502,11 @@ function ComfortableRow({
       className={cn(
         "group relative flex items-stretch border-l-2 transition",
         active
-          ? "border-amber-500 bg-amber-50/70"
+          ? "border-accent bg-accent-soft/80"
           : selected
-            ? "border-amber-400 bg-amber-50/40"
+            ? "border-accent/60 bg-accent-soft/50"
             : unread
-              ? "border-amber-400 bg-amber-50/30"
+              ? "border-accent/60 bg-accent-soft/40"
               : "border-transparent hover:bg-surface-dim/50",
       )}
     >
@@ -517,7 +517,7 @@ function ComfortableRow({
       >
         <div className="mt-1.5 flex h-4 w-4 shrink-0 items-center justify-center">
           {unread ? (
-            <span className="h-2.5 w-2.5 rounded-full bg-amber-500" />
+            <span className="h-2.5 w-2.5 rounded-full bg-accent" />
           ) : t.lastDirection === "outbound" ? (
             <ArrowUpRight className="h-3.5 w-3.5 text-ink-muted/50" />
           ) : (
@@ -1214,7 +1214,7 @@ export function MailInbox() {
                   className={cn(
                     "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition",
                     labelFilter === l.name
-                      ? "bg-amber-50 font-medium text-amber-800"
+                      ? "bg-accent-soft font-medium text-accent-ink"
                       : "text-ink/80 hover:bg-surface-dim",
                   )}
                 >
@@ -1429,7 +1429,7 @@ function CategoryTabs({
             onClick={() => onSelect(t.id)}
             className={cn(
               "flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium transition",
-              on ? "border-amber-600 text-amber-800" : "border-transparent text-ink-muted hover:text-ink",
+              on ? "border-accent text-accent-ink" : "border-transparent text-ink-muted hover:text-ink",
             )}
           >
             <t.icon className="h-3.5 w-3.5" />
@@ -1438,7 +1438,7 @@ function CategoryTabs({
               <span
                 className={cn(
                   "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-                  on ? "bg-amber-100 text-amber-800" : "bg-surface-dim text-ink-muted",
+                  on ? "bg-accent-soft text-accent-ink" : "bg-surface-dim text-ink-muted",
                 )}
               >
                 {t.count}
@@ -1514,7 +1514,7 @@ function ViewSettingsMenu({ prefs }: { prefs: MailViewPrefs }) {
             <span
               className={cn(
                 "flex h-4 w-7 items-center rounded-full px-0.5 transition",
-                prefs.categoryTabs ? "bg-amber-500" : "bg-ink-muted/30",
+                prefs.categoryTabs ? "bg-accent" : "bg-ink-muted/30",
               )}
             >
               <span className={cn("h-3 w-3 rounded-full bg-white transition-transform", prefs.categoryTabs && "translate-x-3")} />
@@ -1548,7 +1548,7 @@ function SegButton({
       onClick={onClick}
       className={cn(
         "flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-medium transition",
-        active ? "border-amber-300 bg-amber-50 text-amber-800" : "border-border bg-surface text-ink/70 hover:bg-surface-dim",
+        active ? "border-accent/40 bg-accent-soft text-accent-ink" : "border-border bg-surface text-ink/70 hover:bg-surface-dim",
       )}
     >
       <Icon className="h-3.5 w-3.5" />
@@ -1578,11 +1578,11 @@ function FolderItem({
       onClick={onClick}
       className={cn(
         "flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm transition",
-        active ? "bg-amber-50 font-semibold text-amber-800" : "text-ink/80 hover:bg-surface-dim",
+        active ? "bg-accent-soft font-semibold text-accent-ink" : "text-ink/80 hover:bg-surface-dim",
       )}
     >
       <span className="flex min-w-0 items-center gap-2.5">
-        <Icon className={cn("h-4 w-4 shrink-0", active ? "text-amber-700" : "text-ink-muted/60")} />
+        <Icon className={cn("h-4 w-4 shrink-0", active ? "text-accent" : "text-ink-muted/60")} />
         <span className="truncate">{label}</span>
       </span>
       {badge !== undefined && badge > 0 && (
@@ -1591,10 +1591,10 @@ function FolderItem({
             "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
             badgeTone === "accent"
               ? active
-                ? "bg-amber-200 text-amber-900"
-                : "bg-amber-100 text-amber-800"
+                ? "bg-accent/20 text-accent-ink"
+                : "bg-accent-soft text-accent-ink"
               : active
-                ? "bg-amber-200 text-amber-900"
+                ? "bg-accent/20 text-accent-ink"
                 : "bg-surface-dim text-ink-muted",
           )}
         >
@@ -1630,8 +1630,8 @@ function BulkBar({
   onClear: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-1 border-b border-amber-200 bg-amber-50/70 px-3 py-2">
-      <span className="mr-1 text-xs font-medium text-amber-900">{count} selected</span>
+    <div className="flex flex-wrap items-center gap-1 border-b border-accent/30 bg-accent-soft/70 px-3 py-2">
+      <span className="mr-1 text-xs font-medium text-accent-ink">{count} selected</span>
       {folder === "archive" ? (
         <BulkButton icon={InboxIcon} label="Move to Inbox" onClick={onInbox} />
       ) : folder !== "trash" ? (
@@ -1643,7 +1643,7 @@ function BulkBar({
       {folder !== "trash" && <BulkButton icon={Trash2} label="Trash" onClick={onTrash} />}
       <button
         onClick={onClear}
-        className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-amber-800 transition hover:bg-amber-100"
+        className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-accent-ink transition hover:bg-accent/15"
       >
         <X className="h-3.5 w-3.5" />
         Clear
@@ -1694,7 +1694,7 @@ function BulkLabelMenu({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex items-center gap-1.5 rounded-md border border-amber-200 bg-surface px-2 py-1 text-xs font-medium text-amber-900 transition hover:bg-amber-100"
+        className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-surface px-2 py-1 text-xs font-medium text-accent-ink transition hover:bg-accent/15"
       >
         <Tag className="h-3.5 w-3.5" />
         Label
@@ -1758,7 +1758,7 @@ function BulkButton({
   return (
     <button
       onClick={onClick}
-      className="inline-flex items-center gap-1.5 rounded-md border border-amber-200 bg-surface px-2 py-1 text-xs font-medium text-amber-900 transition hover:bg-amber-100"
+      className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-surface px-2 py-1 text-xs font-medium text-accent-ink transition hover:bg-accent/15"
     >
       <Icon className="h-3.5 w-3.5" />
       {label}
@@ -1786,18 +1786,18 @@ function MailboxItem({
       title={title}
       className={cn(
         "flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm transition",
-        active ? "bg-amber-50 font-medium text-amber-800" : "text-ink/80 hover:bg-surface-dim",
+        active ? "bg-accent-soft font-medium text-accent-ink" : "text-ink/80 hover:bg-surface-dim",
       )}
     >
       <span className="flex min-w-0 items-center gap-2">
-        <CheckCheck className={cn("h-4 w-4 shrink-0", active ? "text-amber-700" : "text-ink-muted/60")} />
+        <CheckCheck className={cn("h-4 w-4 shrink-0", active ? "text-accent" : "text-ink-muted/60")} />
         <span className="truncate">{label}</span>
       </span>
       {unread > 0 && (
         <span
           className={cn(
             "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-            active ? "bg-amber-200 text-amber-900" : "bg-surface-dim text-ink-muted",
+            active ? "bg-accent/20 text-accent-ink" : "bg-surface-dim text-ink-muted",
           )}
         >
           {unread}
@@ -1837,7 +1837,7 @@ function DeptGroup({
       <div
         className={cn(
           "flex w-full items-center gap-1 rounded-md pr-2 text-sm transition",
-          deptActive ? "bg-amber-50 font-medium text-amber-800" : "text-ink/80 hover:bg-surface-dim",
+          deptActive ? "bg-accent-soft font-medium text-accent-ink" : "text-ink/80 hover:bg-surface-dim",
         )}
       >
         <button
@@ -1855,7 +1855,7 @@ function DeptGroup({
           className="flex min-w-0 flex-1 items-center justify-between gap-2 py-2 text-left"
         >
           <span className="flex min-w-0 items-center gap-2">
-            <Users className={cn("h-4 w-4 shrink-0", deptActive ? "text-amber-700" : "text-ink-muted/60")} />
+            <Users className={cn("h-4 w-4 shrink-0", deptActive ? "text-accent" : "text-ink-muted/60")} />
             <span className="truncate font-medium">{dept}</span>
             <span className="shrink-0 text-[11px] font-normal text-ink-muted/70">{realCount}</span>
           </span>
@@ -1863,7 +1863,7 @@ function DeptGroup({
             <span
               className={cn(
                 "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-                deptActive ? "bg-amber-200 text-amber-900" : "bg-surface-dim text-ink-muted",
+                deptActive ? "bg-accent/20 text-accent-ink" : "bg-surface-dim text-ink-muted",
               )}
             >
               {unreadForDept}
@@ -1969,18 +1969,18 @@ function PersonItem({
       title={title}
       className={cn(
         "flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm transition",
-        active ? "bg-amber-50 font-medium text-amber-800" : "text-ink/75 hover:bg-surface-dim",
+        active ? "bg-accent-soft font-medium text-accent-ink" : "text-ink/75 hover:bg-surface-dim",
       )}
     >
       <span className="flex min-w-0 items-center gap-2">
-        <Icon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-amber-700" : "text-ink-muted/50")} />
+        <Icon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-accent" : "text-ink-muted/50")} />
         <span className="truncate">{label}</span>
       </span>
       {unread > 0 && (
         <span
           className={cn(
             "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-            active ? "bg-amber-200 text-amber-900" : "bg-surface-dim text-ink-muted",
+            active ? "bg-accent/20 text-accent-ink" : "bg-surface-dim text-ink-muted",
           )}
         >
           {unread}

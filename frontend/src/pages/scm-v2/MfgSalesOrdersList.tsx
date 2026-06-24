@@ -304,6 +304,17 @@ const STATUS_LABEL: Record<string, string> = {
   CANCELLED:     'Cancelled',
 };
 
+/* Visible Draft/Confirmed tab bar (2026-06-24) — mirrors the same rollout the
+   other 5 SO-family docs (DO / SI / PO / GRN / PI) got: a chip strip that
+   pre-filters the list by status via `?status=` in the URL, on top of which the
+   DataGrid's own per-column funnels still apply. SO already carries
+   DRAFT/CONFIRMED on the header `status` column (scanned / auto-generated SOs
+   land DRAFT; operator Confirms on the detail page), so the chips just surface
+   the existing field as a tab bar. Chips match on the RAW header status
+   (DRAFT/CONFIRMED are pre-delivery, so the delivery/lifecycle display overrides
+   in soStatusDisplay don't apply to them). */
+const STATUS_CHIPS = ['all', 'DRAFT', 'CONFIRMED', 'CANCELLED'] as const;
+
 const StatusPill = ({ status, deliveryState, lifecycleState }: { status: string; deliveryState?: DeliveryState; lifecycleState?: SoLifecycle }) => {
   const eff = soStatusDisplay(status, deliveryState, lifecycleState);
   return (
@@ -678,15 +689,35 @@ export const MfgSalesOrdersList = () => {
      list to rows with live balance > 0; clear-chip restores. Same param
      name used on every SO-family L1 and on the L2 listings. */
   const outstandingOnly = searchParams.get('outstanding') === '1';
+  /* Draft/Confirmed tab bar — same `?status=` pre-filter the other 5 docs use.
+     Stacks with the ?outstanding=1 overlay (both narrow the rows before the
+     grid's per-column funnels). */
+  const statusChip = searchParams.get('status') ?? 'all';
   const { data, isLoading, error } = useMfgSalesOrders(undefined);
   const allRows = useMemo<SoRow[]>(() => (data?.salesOrders ?? []) as SoRow[], [data]);
 
-  /* The outstanding-only overlay (?outstanding=1) narrows the rows; the
-     DataGrid's own per-column funnel filters do the rest on top. */
-  const baseRows = useMemo<SoRow[]>(
-    () => (outstandingOnly ? allRows.filter((r) => liveBalance(r) > 0) : allRows),
-    [allRows, outstandingOnly],
-  );
+  const setStatusChip = (s: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (s === 'all') next.delete('status'); else next.set('status', s);
+    setSearchParams(next, { replace: true });
+  };
+
+  /* Per-chip counts (scoped to the outstanding overlay so the numbers agree
+     with what the active overlay would show). `all` counts every row. */
+  const statusCounts = useMemo(() => {
+    const pool = outstandingOnly ? allRows.filter((r) => liveBalance(r) > 0) : allRows;
+    const counts: Record<string, number> = { all: pool.length };
+    for (const r of pool) counts[r.status] = (counts[r.status] ?? 0) + 1;
+    return counts;
+  }, [allRows, outstandingOnly]);
+
+  /* The outstanding-only overlay (?outstanding=1) + the status chip narrow the
+     rows; the DataGrid's own per-column funnel filters do the rest on top. */
+  const baseRows = useMemo<SoRow[]>(() => {
+    let rows = outstandingOnly ? allRows.filter((r) => liveBalance(r) > 0) : allRows;
+    if (statusChip !== 'all') rows = rows.filter((r) => r.status === statusChip);
+    return rows;
+  }, [allRows, outstandingOnly, statusChip]);
   // DataGrid filters internally now; capture its on-screen rows so the KPI
   // strip reflects the active funnel filters (was the ColumnFilterBar output).
   const [visibleRows, setVisibleRows] = useState<SoRow[]>(baseRows);
@@ -926,6 +957,23 @@ export const MfgSalesOrdersList = () => {
         {kpiTile('Revenue (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Outstanding (RM)', fmtRm(kpis.outstanding), kpis.outstanding > 0 ? 'bad' : undefined)}
         {kpiTile('Paid (RM)', fmtRm(kpis.paid), kpis.paid > 0 ? 'good' : undefined)}
+      </div>
+
+      {/* Draft/Confirmed tab bar — mirrors the DO/SI/PO/GRN/PI rollout so SO is
+          consistent. Each chip shows its live count; clicking sets ?status=. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {STATUS_CHIPS.map((s) => (
+          <button key={s} type="button" onClick={() => setStatusChip(s)}
+            style={{
+              height: 28, padding: '0 12px', borderRadius: 999, cursor: 'pointer',
+              fontSize: 11, fontWeight: 600,
+              border: '1px solid ' + (statusChip === s ? 'var(--c-burnt)' : '#DDE5E5'),
+              background: statusChip === s ? 'rgba(232, 107, 58, 0.10)' : '#FFFFFF',
+              color: statusChip === s ? 'var(--c-burnt)' : 'var(--fg-muted)',
+            }}>
+            {(s === 'all' ? 'All' : STATUS_LABEL[s] ?? s)} ({statusCounts[s] ?? 0})
+          </button>
+        ))}
       </div>
 
       <ListingPickerDialog

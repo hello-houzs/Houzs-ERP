@@ -57,16 +57,11 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
     .select('purchase_order_item_id, qty_accepted, material_code, material_name, unit_price_centi, item_group, variants')
     .eq('grn_id', grnId);
 
-  // Recount received_qty + re-evaluate PO status from live GRN lines.
-  const touchedPoItemIds = (items ?? [])
-    .map((it: { purchase_order_item_id: string | null }) => it.purchase_order_item_id);
-  await recomputePoReceived(sb, touchedPoItemIds);
-
-  // PR-DRAFT-removal — GRNs are now created as POSTED directly (see POST
-  // handler below). This helper still runs on legacy DRAFT rows + on already-
-  // POSTED rows (idempotent: matches any non-CLOSED status). Returns ok:true
-  // when posted_at is in place so downstream auto-post-on-create flows don't
-  // 409 themselves on the second pass.
+  // Flip to POSTED FIRST, THEN recount. recomputePoReceived excludes DRAFT lines
+  // from a PO line's received_qty, so the confirm transition (which calls this
+  // while the row is still DRAFT) MUST flip the row to POSTED before recounting —
+  // otherwise this GRN's own just-confirmed lines wouldn't count. Idempotent on
+  // the legacy already-POSTED path (no status change there).
   const { data, error } = await sb.from('grns').update({
     status: 'POSTED',
     posted_at: new Date().toISOString(),
@@ -74,6 +69,12 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
   }).eq('id', grnId).neq('status', 'CLOSED').select('id, status, posted_at').single();
   if (error) return { ok: false, reason: error.message, status: 500 };
   if (!data) return { ok: false, reason: 'cannot_post', status: 409 };
+
+  // Recount received_qty + re-evaluate PO status from live GRN lines (now that
+  // this GRN is POSTED, its lines count).
+  const touchedPoItemIds = (items ?? [])
+    .map((it: { purchase_order_item_id: string | null }) => it.purchase_order_item_id);
+  await recomputePoReceived(sb, touchedPoItemIds);
 
   // ── Inventory IN per item — best effort, doesn't roll back the post. ─
   const grnNo = (grnHeader as { grn_number: string } | null)?.grn_number ?? grnId;
@@ -196,7 +197,14 @@ async function verifyGrnOverReceipt(
     if (grnIds.length > 0) {
       const { data: gs } = await sb.from('grns').select('id, status').in('id', grnIds);
       for (const g of (gs ?? []) as Array<{ id: string; status: string }>) {
-        if (g.status === 'CANCELLED') cancelled.add(g.id);
+        // DRAFT GRNs have committed no receipt, so (like CANCELLED) their SIBLING
+        // lines don't count toward a PO line's live-accepted cap — two drafts can
+        // coexist on one PO line, and a draft sibling never falsely 409s a real
+        // receive. EXCEPTION: the GRN under scrutiny (grnId) always counts its own
+        // lines, so the confirm transition (which runs this while the row is still
+        // DRAFT) still catches a draft that would over-receive on confirm.
+        if (g.id === grnId) continue;
+        if (g.status === 'CANCELLED' || g.status === 'DRAFT') cancelled.add(g.id);
       }
     }
     // This GRN's own contribution per PO line — what we'd give back on rollback.
@@ -256,7 +264,11 @@ export async function recomputePoReceived(sb: any, poItemIds: Array<string | nul
     if (grnIds.length > 0) {
       const { data: gs } = await sb.from('grns').select('id, status').in('id', grnIds);
       for (const g of (gs ?? []) as Array<{ id: string; status: string }>) {
-        if (g.status === 'CANCELLED') cancelled.add(g.id);
+        // DRAFT GRNs have committed no receipt, so their lines must NOT count
+        // toward a PO line's received_qty (same treatment as CANCELLED). The
+        // confirm transition flips DRAFT → POSTED first, then runs the recount,
+        // so a confirmed GRN's lines DO count.
+        if (g.status === 'CANCELLED' || g.status === 'DRAFT') cancelled.add(g.id);
       }
     }
     const recvByPoi = new Map<string, number>(ids.map((id) => [id, 0]));
@@ -711,7 +723,13 @@ grns.get('/:id/linked', async (c) => {
 grns.post('/', async (c) => {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
-  if (body.status === 'DRAFT') return c.json({ error: 'draft_status_not_supported', message: 'DRAFT was removed in migration 0078 — GRNs post immediately on create.' }, 400);
+  /* Draft/Confirmed two-state (mirrors SO) — DRAFT is opt-in per request via
+     asDraft. A DRAFT GRN commits NOTHING (no stock IN, no PO received-rollup);
+     the entire commit moves to the confirm transition (PATCH /:id/post). A
+     manual `status:'DRAFT'` body field is still rejected — DRAFT is reached only
+     through the asDraft flag below, never as a free-form status. */
+  const asDraft = (body as { asDraft?: unknown }).asDraft === true;
+  if (body.status === 'DRAFT') return c.json({ error: 'draft_status_not_supported', message: 'Use asDraft:true to save a GRN as a draft.' }, 400);
   /* Commander 2026-05-29 — a GRN may now be created WITHOUT a parent PO
      (blank/manual receipt + From-PO-multi picks that feed the New GRN form).
      Only the supplier is required; purchaseOrderId is optional. Each grn_item
@@ -775,8 +793,10 @@ grns.post('/', async (c) => {
     received_at: (body.receivedAt as string) ?? new Date().toISOString().slice(0, 10),
     delivery_note_ref: (body.deliveryNoteRef as string) ?? null,
     notes: (body.notes as string) ?? null,
-    status: 'POSTED',
-    posted_at: new Date().toISOString(),
+    // Draft/Confirmed — DRAFT commits nothing; the confirm transition (PATCH
+    // /:id/post) flips it to POSTED and runs the stock IN + PO rollup there.
+    status: asDraft ? 'DRAFT' : 'POSTED',
+    posted_at: asDraft ? null : new Date().toISOString(),
     created_by: user.id,
   }).select(HEADER).single();
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
@@ -822,8 +842,12 @@ grns.post('/', async (c) => {
 
   /* Post-insert over-receipt verification — the pre-check above is a read-then-
      write race (two concurrent receives both pass). Re-sum live received per PO
-     line; if any now exceeds cap, THIS GRN broke it → delete it + 409. */
-  {
+     line; if any now exceeds cap, THIS GRN broke it → delete it + 409.
+     LEAK GUARD: skipped for a DRAFT — a draft consumes no PO headroom (it hasn't
+     committed) and verifyGrnOverReceipt sums ALL non-cancelled lines (incl.
+     DRAFT), so running it on a draft could falsely 409 it or count its lines
+     against a sibling. The cap is re-verified at confirm time. */
+  if (!asDraft) {
     const over = await verifyGrnOverReceipt(sb, h.id, items.map((it) => (it.purchaseOrderItemId as string | undefined) ?? null));
     if (over) {
       await sb.from('grn_items').delete().eq('grn_id', h.id);
@@ -832,9 +856,12 @@ grns.post('/', async (c) => {
     }
   }
 
-  // Roll up qty_accepted to PO items + write inventory IN. Best-effort.
-  await postGrnAndRollup(sb, h.id, user.id);
+  /* LEAK GUARD (CRITICAL): a DRAFT GRN must NOT post — postGrnAndRollup is the
+     single chokepoint that writes inventory IN + rolls up the PO received_qty.
+     Skip it for a draft; the confirm transition (PATCH /:id/post) runs it. */
+  if (!asDraft) await postGrnAndRollup(sb, h.id, user.id);
   // Migration 0101 — populate header money rollups from the inserted lines.
+  // (Money only — no stock — so it's safe to run for a draft too.)
   await recomputeGrnTotals(sb, h.id);
 
   return c.json({ id: h.id, grnNumber: h.grn_number }, 201);
@@ -979,10 +1006,16 @@ grns.post('/from-pos', async (c) => {
 });
 
 grns.patch('/:id/post', async (c) => {
-  /* PR-DRAFT-removal — kept as a no-op endpoint for backward compat. The
-     POST handler now creates GRNs in POSTED state directly. If the caller
-     hits this on a row that's already POSTED, we return 200 with the
-     current row (idempotent) instead of 409. */
+  /* Confirm transition (DRAFT → POSTED) — this is where the GRN commits.
+     postGrnAndRollup is the single chokepoint: it writes inventory IN +
+     rolls up the PO received_qty + flips PO status. A GRN created with
+     asDraft:true sits at DRAFT (committing nothing) until this runs.
+
+     Back-compat: a non-draft GRN is already POSTED at create; hitting this on
+     a POSTED row is an idempotent no-op (200 with the current row). The
+     manual New-GRN form still calls this right after create — when that create
+     was non-draft the row is POSTED → no-op; when it was a draft this is the
+     real confirm. */
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
   const { data: cur } = await sb.from('grns').select('id, status, posted_at').eq('id', id).maybeSingle();
   if (!cur) return c.json({ error: 'not_found' }, 404);
@@ -990,8 +1023,27 @@ grns.patch('/:id/post', async (c) => {
   if (row.status === 'POSTED') {
     return c.json({ grn: row });
   }
+  if (row.status === 'CANCELLED' || row.status === 'CLOSED') {
+    return c.json({ error: 'cannot_confirm', message: `GRN is ${row.status} — cannot confirm.` }, 409);
+  }
+
+  /* Over-receipt verification at confirm — the draft-create path SKIPS this
+     guard (a draft consumes no PO headroom), so re-check it here before the
+     stock IN / PO rollup commits. If confirming this draft would push a PO line
+     past its cap, refuse + leave it DRAFT. */
+  const { data: gLines } = await sb.from('grn_items')
+    .select('purchase_order_item_id').eq('grn_id', id);
+  const poItemIds = ((gLines ?? []) as Array<{ purchase_order_item_id: string | null }>)
+    .map((l) => l.purchase_order_item_id);
+  const over = await verifyGrnOverReceipt(sb, id, poItemIds);
+  if (over) {
+    return c.json({ error: 'qty_exceeds_remaining', poItemId: over.poItemId, requested: over.requested, remaining: over.remaining }, 409);
+  }
+
   const res = await postGrnAndRollup(sb, id, user.id);
   if (!res.ok) return c.json({ error: 'post_failed', reason: res.reason }, 500);
+  // Header money rollup (no stock) — keep it in sync on confirm.
+  await recomputeGrnTotals(sb, id);
   const { data } = await sb.from('grns').select('id, status, posted_at').eq('id', id).single();
   return c.json({ grn: data });
 });
@@ -1244,6 +1296,17 @@ grns.patch('/:id/cancel', async (c) => {
   // Idempotent — already cancelled, echo back without re-reversing.
   if (head.status === 'CANCELLED') {
     const { data } = await sb.from('grns').select(HEADER).eq('id', id).maybeSingle();
+    return c.json({ grn: data ?? { id, status: 'CANCELLED' } });
+  }
+
+  /* LEAK GUARD (CRITICAL): a DRAFT GRN committed NOTHING (no inventory IN, no
+     PO received-rollup), so cancelling one must NOT reverse anything — the
+     inventory OUT + PO recount below would over-reverse (drive stock negative /
+     wrongly re-open a PO). Short-circuit: just flip DRAFT → CANCELLED. */
+  if (head.status === 'DRAFT') {
+    const { data } = await sb.from('grns')
+      .update({ status: 'CANCELLED', updated_at: new Date().toISOString() })
+      .eq('id', id).eq('status', 'DRAFT').select(HEADER).maybeSingle();
     return c.json({ grn: data ?? { id, status: 'CANCELLED' } });
   }
 
@@ -1549,12 +1612,17 @@ grns.post('/:id/items', async (c) => {
 
   await recomputeGrnTotals(sb, grnId);
 
+  /* LEAK GUARD: a DRAFT GRN commits NOTHING on line-add — no inventory IN, no PO
+     received-rollup. The row's qty stays correct; the full IN + PO rollup happen
+     once at confirm (postGrnAndRollup re-reads all live lines). Skip the
+     per-line rollup/movement below for a draft. */
+  const addedPoiId = (it.purchaseOrderItemId as string) ?? null;
+  if (grnGateStatus !== 'DRAFT') {
   // A line added to a POSTED GRN must roll up exactly like one created at post
   // time, otherwise its PO line stays "outstanding" (re-appears in the convert
   // picker) and its stock never enters inventory — yet DELETE still writes an
   // OUT to reverse it, driving inventory negative. Mirror postGrnAndRollup for
   // this one line so add/edit/delete all converge. Best-effort throughout.
-  const addedPoiId = (it.purchaseOrderItemId as string) ?? null;
   try { await recomputePoReceived(sb, [addedPoiId]); } catch { /* best-effort */ }
   if (qtyReceived > 0) {
     try {
@@ -1589,6 +1657,7 @@ grns.post('/:id/items', async (c) => {
       }
     } catch { /* best-effort */ }
   }
+  } // end non-DRAFT line-add rollup/movement guard
   return c.json({ item: data }, 201);
 });
 
@@ -1702,7 +1771,12 @@ grns.patch('/:id/items/:itemId', async (c) => {
   const matName = (updates.material_name as string | undefined) ?? (prev as { material_name: string | null }).material_name;
   const bucketChanged = oldKey !== newKey;
   const qtyChanged = newAccepted !== prevAccepted;
-  const inventoryChange = (qtyChanged || bucketChanged) && (prevAccepted > 0 || newAccepted > 0);
+  /* LEAK GUARD: a DRAFT GRN has no committed stock, so editing a line writes NO
+     inventory delta (and runs no on-hand guard) — the row + header money update,
+     and the full IN is written once at confirm. inventoryChange stays false for
+     a draft so the movement block + grnReverseWouldGoNegative guard are skipped. */
+  const isDraftGrn = grnGateStatus === 'DRAFT';
+  const inventoryChange = !isDraftGrn && (qtyChanged || bucketChanged) && (prevAccepted > 0 || newAccepted > 0);
 
   // Resolve warehouse once (needed by both the guard and the movement write).
   let editWarehouseId: string | null = null;
@@ -1781,12 +1855,16 @@ grns.patch('/:id/items/:itemId', async (c) => {
   }
 
   await recomputeGrnTotals(sb, grnId);
-  // Editing qty_accepted changes how much the PO counts as received — recount it.
-  try { await recomputePoReceived(sb, [(prev as { purchase_order_item_id: string | null }).purchase_order_item_id]); } catch { /* best-effort */ }
-  // Costing B — when the GR price (or its variant bucket) was corrected and no PI
-  // has superseded it yet, re-cost this GRN's lots → consumptions → movements →
-  // DO → SI so a shipped order's margin reflects the fix in real time.
-  {
+  /* LEAK GUARD: skip the PO received-recount + recost for a DRAFT GRN — its lines
+     don't count toward any PO receipt and no lots exist to re-cost yet. Both run
+     once the draft is confirmed (postGrnAndRollup / future edits on the POSTED
+     row). */
+  if (!isDraftGrn) {
+    // Editing qty_accepted changes how much the PO counts as received — recount it.
+    try { await recomputePoReceived(sb, [(prev as { purchase_order_item_id: string | null }).purchase_order_item_id]); } catch { /* best-effort */ }
+    // Costing B — when the GR price (or its variant bucket) was corrected and no PI
+    // has superseded it yet, re-cost this GRN's lots → consumptions → movements →
+    // DO → SI so a shipped order's margin reflects the fix in real time.
     const prevUnit = (prev as { unit_price_centi: number | null }).unit_price_centi ?? 0;
     const priceChanged = Number(unit) !== Number(prevUnit);
     if (priceChanged || bucketChanged) await recostFromGrn(sb, grnId);
@@ -1826,11 +1904,16 @@ grns.delete('/:id/items/:itemId', async (c) => {
     .select('qty_accepted, purchase_order_item_id, material_code, material_name, unit_price_centi, item_group, variants')
     .eq('id', itemId).maybeSingle();
 
+  /* LEAK GUARD: a DRAFT GRN's line never wrote an inventory IN, so deleting it
+     reverses NOTHING — skip the consumed-downstream guard (there's no committed
+     stock to over-reverse). The post-delete OUT + PO recount below are likewise
+     gated on !isDraftGrn. */
+  const isDraftGrn = grnGateStatus === 'DRAFT';
   // Bug #2 — deleting a posted GRN line writes an OUT to reverse its receipt.
   // If that line's received stock was already consumed downstream the OUT would
   // drive on-hand negative + corrupt COGS, so block it. Resolve the GRN's
   // warehouse the same way the reversal below does.
-  if (line) {
+  if (line && !isDraftGrn) {
     const lg = line as {
       qty_accepted: number; material_code: string;
       item_group?: string | null; variants?: VariantAttrs | null;
@@ -1847,7 +1930,10 @@ grns.delete('/:id/items/:itemId', async (c) => {
   const { error } = await sb.from('grn_items').delete().eq('id', itemId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
 
-  if (line) {
+  /* LEAK GUARD: for a DRAFT GRN there is no committed receipt — skip BOTH the PO
+     received-recount and the reversing inventory OUT (the draft never wrote an
+     IN). Only the row delete + header-money recompute below apply. */
+  if (line && !isDraftGrn) {
     const l = line as {
       qty_accepted: number; purchase_order_item_id: string | null;
       material_code: string; material_name: string | null; unit_price_centi: number | null;

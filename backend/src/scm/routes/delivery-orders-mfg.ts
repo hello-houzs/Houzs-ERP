@@ -820,7 +820,11 @@ export async function soDeliverableRemaining(
   if (doIds.length > 0) {
     const { data: dos } = await sb.from('delivery_orders').select('id, status').in('id', doIds);
     for (const d of (dos ?? []) as Array<{ id: string; status: string | null }>) {
-      if ((d.status ?? '').toUpperCase() !== 'CANCELLED') activeDoIds.add(d.id);
+      /* LEAK GUARD (DRAFT): a DRAFT DO hasn't shipped — it must NOT consume the
+         SO line's deliverable remaining (else the real DO can't be raised and
+         the picker shows phantom-delivered qty). Treated like CANCELLED here. */
+      const st = (d.status ?? '').toUpperCase();
+      if (st !== 'CANCELLED' && st !== 'DRAFT') activeDoIds.add(d.id);
     }
   }
   // DO line id → SO item id (only for active DOs), used to trace returns below.
@@ -913,8 +917,11 @@ export async function soLineDeliveries(
   const { data: dos } = await sb.from('delivery_orders').select('id, do_number, status').in('id', doIds);
   const doMeta = new Map<string, { doNumber: string; status: string }>();
   for (const d of (dos ?? []) as Array<{ id: string; do_number: string | null; status: string | null }>) {
-    if ((d.status ?? '').toUpperCase() === 'CANCELLED') continue;
-    doMeta.set(d.id, { doNumber: d.do_number ?? '—', status: (d.status ?? '').toUpperCase() });
+    const st = (d.status ?? '').toUpperCase();
+    // LEAK GUARD (DRAFT): a DRAFT DO hasn't shipped — exclude from the "Delivered"
+    // display (mirrors soDeliverableRemaining so the two never disagree).
+    if (st === 'CANCELLED' || st === 'DRAFT') continue;
+    doMeta.set(d.id, { doNumber: d.do_number ?? '—', status: st });
   }
   for (const r of rows) {
     if (!r.so_item_id) continue;
@@ -1482,8 +1489,11 @@ deliveryOrdersMfg.post('/', async (c) => {
     currency: (body.currency as string) ?? 'MYR',
     /* Commander 2026-05-29 — a DO means goods are OUT the moment it's created.
        Skip the LOADED→DISPATCHED→IN_TRANSIT… hand-walk: start at DISPATCHED
-       (= shipped) and deduct stock right after the items insert below. */
-    status: 'DISPATCHED',
+       (= shipped) and deduct stock right after the items insert below.
+       DRAFT flow (2026-06-24) — opt-in asDraft lands the DO as DRAFT instead,
+       with NO stock deduction and NO SO-delivered sync; the commit moves to the
+       Confirm transition (PATCH /:id/status → DISPATCHED). Mirror of the SO. */
+    status: (body.asDraft === true) ? 'DRAFT' : 'DISPATCHED',
     notes: (body.notes as string) ?? null,
     created_by: user.id,
   }).select(HEADER).single();
@@ -1499,13 +1509,16 @@ deliveryOrdersMfg.post('/', async (c) => {
 
   /* A DO = goods shipped on creation → deduct stock now (idempotent: the
      existence check + UNIQUE index mean this never double-deducts even if the
-     status is later advanced). */
-  await deductInventoryForDo(sb, h.id, user.id);
+     status is later advanced). LEAK GUARD (DRAFT): a DRAFT DO has NOT shipped —
+     skip the deduction AND the SO-delivered sync; both fire on Confirm. */
+  if (body.asDraft !== true) {
+    await deductInventoryForDo(sb, h.id, user.id);
 
-  /* Requirement #3 (Loo 2026-05-30) — if this DO now fully covers its SO,
-     auto-advance the SO to DELIVERED (best-effort, never blocks the DO). The
-     POS "My orders" board reflects the flip via Supabase realtime. */
-  await syncSoDeliveredFromDo(sb, [(body.soDocNo as string) ?? null], user.id);
+    /* Requirement #3 (Loo 2026-05-30) — if this DO now fully covers its SO,
+       auto-advance the SO to DELIVERED (best-effort, never blocks the DO). The
+       POS "My orders" board reflects the flip via Supabase realtime. */
+    await syncSoDeliveredFromDo(sb, [(body.soDocNo as string) ?? null], user.id);
+  }
 
   return c.json({ id: h.id, doNumber: h.do_number }, 201);
 });
@@ -1569,7 +1582,7 @@ function buildItemRow(deliveryOrderId: string, it: Record<string, unknown>, line
      4. recomputeTotals + deductInventoryForDo (both idempotent). */
 deliveryOrdersMfg.post('/from-sos', async (c) => {
   const sb = c.get('supabase'); const user = c.get('user');
-  let body: { picks?: Array<{ soItemId?: string; qty?: number }>; confirmShortStock?: boolean; warehouseId?: string };
+  let body: { picks?: Array<{ soItemId?: string; qty?: number }>; confirmShortStock?: boolean; warehouseId?: string; asDraft?: boolean };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
   // Collapse duplicate soItemIds (sum their qty) so a line can't appear twice.
@@ -1740,8 +1753,10 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
     emergency_contact_relationship: (head.emergency_contact_relationship as string | null) ?? null,
     currency: (head.currency as string | null) ?? 'MYR',
     /* A DO means goods are OUT the moment it's created — start at DISPATCHED
-       (= shipped) and deduct stock below. */
-    status: 'DISPATCHED',
+       (= shipped) and deduct stock below. DRAFT flow (2026-06-24) — opt-in
+       asDraft lands the DO as DRAFT (no stock OUT, no SO sync); the commit
+       moves to the Confirm transition. Mirror of the SO. */
+    status: (body.asDraft === true) ? 'DRAFT' : 'DISPATCHED',
     created_by: user.id,
   }).select('id, do_number').single();
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
@@ -1810,13 +1825,17 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
     }
   }
 
-  // 4. Roll up the header totals + deduct stock (both idempotent).
+  // 4. Roll up the header totals + deduct stock (both idempotent). LEAK GUARD
+  //    (DRAFT): a DRAFT DO has not shipped — roll up totals but SKIP the stock
+  //    OUT and the SO-delivered sync; both fire on Confirm.
   await recomputeTotals(sb, dh.id);
-  await deductInventoryForDo(sb, dh.id, user.id);
+  if (body.asDraft !== true) {
+    await deductInventoryForDo(sb, dh.id, user.id);
 
-  /* Requirement #3 — a multi-SO DO may complete several SOs at once; check each
-     source SO for full coverage and auto-advance to DELIVERED (best-effort). */
-  await syncSoDeliveredFromDo(sb, [...docNos], user.id);
+    /* Requirement #3 — a multi-SO DO may complete several SOs at once; check each
+       source SO for full coverage and auto-advance to DELIVERED (best-effort). */
+    await syncSoDeliveredFromDo(sb, [...docNos], user.id);
+  }
 
   return c.json({ id: dh.id, doNumber: dh.do_number }, 201);
 });
@@ -2322,9 +2341,20 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
   /* Inventory OUT — fire on the first transition into ANY shipped state.
      deductInventoryForDo is idempotent (existence check + UNIQUE index), so a
      DO that jumps straight to SIGNED/DELIVERED still deducts exactly once, and
-     re-advancing through later shipped states never double-deducts. */
+     re-advancing through later shipped states never double-deducts.
+     DRAFT CONFIRM (2026-06-24) — the Confirm action is exactly DRAFT→DISPATCHED:
+     DISPATCHED ∈ SHIPPED_STATES so the deduction (skipped on draft create) fires
+     HERE, the single chokepoint. This is the commit moving create→confirm. */
   if (SHIPPED_STATES.includes(body.status)) {
     await deductInventoryForDo(sb, id, user.id);
+    /* Mirror the create path: once stock goes out, re-check the source SO for
+       full coverage and auto-advance to DELIVERED (best-effort). A DRAFT confirm
+       reaches this for the first time here, so the SO sync that was skipped on
+       draft-create runs now. Idempotent + best-effort. */
+    if (prevStatus === 'DRAFT') {
+      const { data: doRow } = await sb.from('delivery_orders').select('so_doc_no').eq('id', id).maybeSingle();
+      await syncSoDeliveredFromDo(sb, [(doRow as { so_doc_no?: string } | null)?.so_doc_no], user.id);
+    }
   }
 
   /* Requirement #3 — if a DO is explicitly marked DELIVERED, re-check its SO

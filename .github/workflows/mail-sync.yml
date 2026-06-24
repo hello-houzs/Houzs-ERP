@@ -47,7 +47,13 @@ jobs:
           MAIL_INBOUND_URL: ${{ vars.MAIL_INBOUND_URL }}
           # Must equal the ERP worker's MAIL_INBOUND_SECRET (Cloudflare secret).
           MAIL_INBOUND_SECRET: ${{ secrets.MAIL_INBOUND_SECRET }}
-          # The Gmail address + a Google App Password (NOT the account password).
+          # PREFERRED: JSON array of every mailbox account to pull, each its own
+          # Google account + App Password (NOT the normal password). Example:
+          #   [{"user":"hello@houzscentury.com","password":"abcd efgh ijkl mnop"},
+          #    {"user":"sales@houzscentury.com","password":"…"}]
+          IMAP_ACCOUNTS: ${{ secrets.IMAP_ACCOUNTS }}
+          # Back-compat single-account path — used ONLY when IMAP_ACCOUNTS is
+          # unset. The Gmail address + a Google App Password.
           IMAP_USER: ${{ secrets.IMAP_USER }}
           IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
           # Optional overrides (script defaults: imap.gmail.com:993, INBOX).

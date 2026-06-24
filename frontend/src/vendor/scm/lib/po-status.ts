@@ -16,6 +16,7 @@
 import type { PoStatus } from './suppliers-queries';
 
 export const PO_STATUS_LABEL: Record<PoStatus, string> = {
+  DRAFT: 'Draft',
   SUBMITTED: 'Confirmed',
   PARTIALLY_RECEIVED: 'Partially Received',
   RECEIVED: 'Received',

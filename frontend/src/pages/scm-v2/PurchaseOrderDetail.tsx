@@ -50,6 +50,7 @@ import {
   useUpdatePurchaseOrderItem,
   useDeletePurchaseOrderItem,
   useCancelPurchaseOrder,
+  useConfirmPurchaseOrder,
   useReopenPurchaseOrder,
   useDeletePurchaseOrder,
   useSuppliers,
@@ -142,6 +143,7 @@ export const PurchaseOrderDetail = () => {
   const updateHeader = useUpdatePurchaseOrderHeader();
   // PR-DRAFT-removal — Submit button removed (POs are SUBMITTED on create).
   const cancel = useCancelPurchaseOrder();
+  const confirm = useConfirmPurchaseOrder();
   const reopen = useReopenPurchaseOrder();
   const deletePo = useDeletePurchaseOrder();
   const addItem = useAddPurchaseOrderItem();
@@ -217,8 +219,12 @@ export const PurchaseOrderDetail = () => {
   // must be cancelled / deleted before editing again. Partial receiving (more
   // GRNs) is still allowed via the list's Convert-to-GRN action.
   const hasChildren = Boolean(po?.has_children);
-  const isLocked = po ? (!(po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED') || hasChildren) : true;
-  const lockedDueToChildren = po ? ((po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED') && hasChildren) : false;
+  /* Draft/Confirmed — a DRAFT PO is also editable (review + correct before
+     confirming), alongside SUBMITTED / PARTIALLY_RECEIVED. A DRAFT never has a
+     GRN child, so hasChildren can't lock it. RECEIVED / CANCELLED stay locked. */
+  const isEditableStatus = po ? (po.status === 'DRAFT' || po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED') : false;
+  const isLocked = po ? (!isEditableStatus || hasChildren) : true;
+  const lockedDueToChildren = po ? (isEditableStatus && hasChildren) : false;
 
   /* If a PO locks while we're in Edit mode (e.g. it's Received / Cancelled
      after a status change), drop back to View and discard the draft so the
@@ -599,10 +605,29 @@ export const PurchaseOrderDetail = () => {
               <span>From Sales Order</span>
             </Button>
           )}
+          {/* Draft/Confirmed — a DRAFT PO shows a primary Confirm. Confirming
+              flips DRAFT -> SUBMITTED (commits the SO-quota advance + makes the
+              PO live MRP supply / GRN-receivable). Hidden once committed. */}
+          {po.status === 'DRAFT' && !isEditing && (
+            <Button variant="primary" size="md"
+              onClick={async () => {
+                if (!(await askConfirm({
+                  title: `Confirm PO ${po.po_number}?`,
+                  body: 'This turns the draft into a live Purchase Order — it counts as MRP supply, locks the source SO lines, and becomes receivable (GRN).',
+                  confirmLabel: 'Confirm PO',
+                }))) return;
+                confirm.mutate(po.id, {
+                  onError: (err) => notify({ title: 'Confirm failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+                });
+              }}
+              disabled={confirm.isPending}>
+              <span>{confirm.isPending ? 'Confirming…' : 'Confirm PO'}</span>
+            </Button>
+          )}
           {/* PR — Commander 2026-05-27: "Cancel/Delete PO 没反应".
-              Cancel: any pre-receipt status. API blocks RECEIVED.
-              Delete: only CANCELLED (after migration 0078; DRAFT no longer exists). */}
-          {(po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED') && (
+              Cancel: any pre-receipt status (incl. DRAFT). API blocks RECEIVED.
+              Delete: only CANCELLED. */}
+          {(po.status === 'DRAFT' || po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED') && (
             <Button variant="ghost" size="md"
               onClick={async () => {
                 if (!(await askConfirm({ title: `Cancel PO ${po.po_number}?`, body: 'This sets status to CANCELLED — line items + linked docs stay for audit.', confirmLabel: 'Cancel PO', danger: true }))) return;
@@ -683,6 +708,45 @@ export const PurchaseOrderDetail = () => {
           )}
         </div>
       </div>
+
+      {/* ── DRAFT banner + Confirm (Draft/Confirmed two-state) ──────────────
+          A DRAFT PO is uncommitted: it does NOT count as MRP supply, does NOT
+          lock its source SO lines, and is NOT GRN-receivable until confirmed.
+          Review + correct, then Confirm to make it live. Mirrors the SO detail
+          DRAFT banner. */}
+      {po.status === 'DRAFT' && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          marginBottom: 'var(--space-3)',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          fontSize: 'var(--fs-13)',
+        }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <FileText {...ICON} />
+            <span>
+              <strong>Draft — not yet confirmed.</strong>{' '}
+              Review and Confirm to make it a live Purchase Order (it stays out of MRP supply, doesn't lock the source SO lines, and can't be received until then).
+            </span>
+          </span>
+          <Button variant="primary" size="sm"
+            onClick={async () => {
+              if (!(await askConfirm({
+                title: `Confirm PO ${po.po_number}?`,
+                body: 'This turns the draft into a live Purchase Order — it counts as MRP supply, locks the source SO lines, and becomes receivable (GRN).',
+                confirmLabel: 'Confirm PO',
+              }))) return;
+              confirm.mutate(po.id, {
+                onError: (err) => notify({ title: 'Confirm failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+              });
+            }}
+            disabled={confirm.isPending}>
+            <span>{confirm.isPending ? 'Confirming…' : 'Confirm PO'}</span>
+          </Button>
+        </div>
+      )}
 
       {/* Tier 2 downstream-lock — once any GRN is created from this PO the page
           becomes read-only + un-cancellable. Partial receiving (more GRNs) is

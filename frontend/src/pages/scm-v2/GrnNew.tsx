@@ -474,7 +474,10 @@ export const GrnNew = () => {
   const canSave = !!supplierId && lines.length > 0 &&
     lines.every((l) => l.qtyReceived >= 0);
 
-  const onSave = async () => {
+  // asDraft=true saves the GRN as a DRAFT (no stock IN, no PO rollup) for later
+  // review + Confirm on the detail page. asDraft=false (default) creates then
+  // immediately confirms (the historical "Receive & Post" behaviour).
+  const onSave = async (asDraft = false) => {
     if (!supplierId) {
       setDialog({ title: 'Pick a supplier', body: hasPicks
         ? 'The picks are missing a supplier — go back to the picker and try again.'
@@ -495,6 +498,9 @@ export const GrnNew = () => {
       const createRes = await create.mutateAsync({
         purchaseOrderId: headerPoId,
         supplierId,
+        // Draft/Confirmed — when true the server lands the GRN at DRAFT and
+        // commits nothing until it's confirmed on the detail page.
+        asDraft,
         // Commander 2026-05-29 — chosen "Receive into" warehouse (PO parity).
         // grns.ts persists it on the header (falls back to the default warehouse
         // when omitted) so the inventory-IN movement lands in the right place.
@@ -525,10 +531,14 @@ export const GrnNew = () => {
           rackId:              l.rackId || undefined,
         })),
       });
-      await post.mutateAsync(createRes.id);
+      // Non-draft → confirm immediately (the historical Receive & Post). A draft
+      // is left at DRAFT for review; the detail page's Confirm runs the commit.
+      if (!asDraft) await post.mutateAsync(createRes.id);
       setDialog({
-        title: `GRN ${createRes.grnNumber} created`,
-        body: 'Received & posted — inventory + PO received qty updated.',
+        title: `GRN ${createRes.grnNumber} ${asDraft ? 'saved as draft' : 'created'}`,
+        body: asDraft
+          ? 'Saved as a draft — no stock moved yet. Open it and Confirm to receive the goods.'
+          : 'Received & posted — inventory + PO received qty updated.',
         goTo: `/scm/grns/${createRes.id}`,
       });
     } catch (err) {
@@ -553,7 +563,13 @@ export const GrnNew = () => {
           <Button variant="ghost" size="md" onClick={() => navigate('/scm/grns')}>
             <X {...ICON} /> Cancel
           </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={saving}>
+          {/* Save as Draft — lands the GRN at DRAFT (no stock IN, no PO rollup)
+              for later review + Confirm. */}
+          <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={saving}>
+            <Save {...ICON} />
+            {saving ? 'Saving…' : 'Save as Draft'}
+          </Button>
+          <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={saving}>
             <Save {...ICON} />
             {saving ? 'Saving…' : 'Create Goods Receipt'}
           </Button>

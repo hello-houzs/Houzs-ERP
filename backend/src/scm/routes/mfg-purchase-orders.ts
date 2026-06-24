@@ -101,7 +101,7 @@ async function poHasDownstream(sb: any, poId: string): Promise<{ error: string; 
   return null;
 }
 
-const VALID_STATUSES = new Set(['SUBMITTED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED']);
+const VALID_STATUSES = new Set(['DRAFT', 'SUBMITTED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED']);
 const VALID_CURRENCIES = new Set(['MYR', 'RMB', 'USD', 'SGD']);
 const VALID_KINDS = new Set(['mfg_product', 'fabric', 'raw']);
 
@@ -610,15 +610,21 @@ mfgPurchaseOrders.post('/', async (c) => {
     };
   });
 
-  /* PR #131 — Commander 2026-05-26: "PO 是直接 create 的，不需要进入 DRAFT".
-     POST creates SUBMITTED directly. Migration 0078 (2026-05-27) removed
-     DRAFT from po_status entirely. PATCH /submit is kept as an idempotent
-     no-op for any legacy callers. */
+  /* Draft/Confirmed two-state model — a PO is opt-in saveable as DRAFT
+     (asDraft === true) for review before it commits, exactly like the SO
+     template. A DRAFT PO: (a) carries status DRAFT + NULL submitted_at, and
+     (b) does NOT advance the source SO lines' po_qty_picked (skipped below),
+     so the SO stays in the From-SO picker and the draft is invisible to MRP
+     supply (PO_DEAD includes DRAFT). Confirm (PATCH /:id/confirm) flips it to
+     SUBMITTED and runs the SO-picked recount there. A manual PO with no
+     asDraft flag still defaults to SUBMITTED so existing flows are unaffected.
+     PATCH /submit stays an idempotent no-op for legacy callers. */
+  const asDraft = body.asDraft === true;
   const headerInsert: Record<string, unknown> = {
     po_number: poNumber,
     supplier_id: supplierId,
-    status: 'SUBMITTED',
-    submitted_at: new Date().toISOString(),
+    status: asDraft ? 'DRAFT' : 'SUBMITTED',
+    submitted_at: asDraft ? null : new Date().toISOString(),
     currency,
     expected_at: expectedAt,
     /* Migration 0180 — supplier-revised header delivery dates (default NULL). */
@@ -666,8 +672,13 @@ mfgPurchaseOrders.post('/', async (c) => {
   /* Commander 2026-05-30 — recount po_qty_picked from the live PO lines for
      every source SO line this PO just converted, so they drop out of the
      From-SO picker (qty - picked > 0). Self-healing — see recomputeSoPicked.
-     Best-effort: never fail the PO if the recount errors. */
-  if (pickedQtyBySoItem.size > 0) {
+     Best-effort: never fail the PO if the recount errors.
+     Leak guard (Draft/Confirmed) — a DRAFT PO must NOT advance the SO quota:
+     it is reference-only until confirmed (recomputeSoPicked already excludes
+     it, since recomputeSoPicked drops PO lines whose PO is not live — but the
+     PO IS the one we just made, so skip the call entirely while DRAFT). The
+     confirm transition runs this recount. */
+  if (!asDraft && pickedQtyBySoItem.size > 0) {
     try { await recomputeSoPicked(supabase, [...pickedQtyBySoItem.keys()]); }
     catch { /* PO already created — don't fail on counter recount */ }
   }
@@ -1618,16 +1629,21 @@ async function recomputeSoPicked(sb: any, soItemIds: Array<string | null | undef
     const rows = ((lines ?? []) as Array<{ so_item_id: string; qty: number; purchase_order_id: string; from_mrp: boolean | null }>)
       .filter((r) => r.from_mrp !== true);
     const poIds = [...new Set(rows.map((r) => r.purchase_order_id).filter(Boolean))];
-    const cancelled = new Set<string>();
+    /* Leak guard (Draft/Confirmed) — a DRAFT PO is reference-only: it must NOT
+       lock the source SO line's po_qty_picked (else a draft would drop the SO
+       from the From-SO picker before it commits). Exclude DRAFT alongside
+       CANCELLED from the picked recount; the line re-counts once the PO
+       confirms (DRAFT -> SUBMITTED). */
+    const deadPo = new Set<string>();
     if (poIds.length > 0) {
       const { data: pos } = await sb.from('purchase_orders').select('id, status').in('id', poIds);
       for (const p of (pos ?? []) as Array<{ id: string; status: string }>) {
-        if (p.status === 'CANCELLED') cancelled.add(p.id);
+        if (p.status === 'CANCELLED' || p.status === 'DRAFT') deadPo.add(p.id);
       }
     }
     const pickedBySo = new Map<string, number>(ids.map((id) => [id, 0]));
     for (const r of rows) {
-      if (cancelled.has(r.purchase_order_id)) continue;
+      if (deadPo.has(r.purchase_order_id)) continue;
       pickedBySo.set(r.so_item_id, (pickedBySo.get(r.so_item_id) ?? 0) + Number(r.qty ?? 0));
     }
     await Promise.all([...pickedBySo.entries()].map(([soItemId, picked]) =>
@@ -2032,6 +2048,60 @@ mfgPurchaseOrders.patch('/:id/submit', async (c) => {
   const row = data as { id: string; status: string; submitted_at: string | null };
   if (row.status === 'SUBMITTED') return c.json({ purchaseOrder: row });
   return c.json({ error: 'cannot_submit', message: `PO is ${row.status}` }, 409);
+});
+
+/* ── Confirm (Draft/Confirmed two-state) ──────────────────────────────────
+   DRAFT -> SUBMITTED. This is where a draft PO COMMITS: it stamps submitted_at
+   and runs recomputeSoPicked so its converted SO lines drop out of the From-SO
+   picker (the SO-quota advance that the create path skips while DRAFT). Once
+   SUBMITTED the PO becomes live supply in MRP (PO_DEAD no longer hides it) and
+   GRN-receivable (the GRN-from-PO picker accepts SUBMITTED). Idempotent on an
+   already-live PO; rejects RECEIVED/CANCELLED. Split read -> guard -> update ->
+   re-read so the RETURNING-coercion PGRST116 can't 500 it (mirrors cancel). */
+mfgPurchaseOrders.patch('/:id/confirm', async (c) => {
+  const id = c.req.param('id');
+  const supabase = c.get('supabase');
+
+  const { data: cur, error: readErr } = await supabase
+    .from('purchase_orders')
+    .select('id, status')
+    .eq('id', id)
+    .maybeSingle();
+  if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
+  if (!cur) return c.json({ error: 'not_found' }, 404);
+  const curStatus = (cur as { status: string }).status;
+  // Idempotent — an already-live PO is already confirmed, echo back.
+  if (curStatus === 'SUBMITTED' || curStatus === 'PARTIALLY_RECEIVED') {
+    return c.json({ purchaseOrder: { id, status: curStatus } });
+  }
+  if (curStatus !== 'DRAFT') {
+    return c.json({ error: 'cannot_confirm', message: `Only a draft PO can be confirmed (this is ${curStatus})` }, 409);
+  }
+
+  const { error: updErr } = await supabase
+    .from('purchase_orders')
+    .update({ status: 'SUBMITTED', submitted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (updErr) return c.json({ error: 'confirm_failed', reason: updErr.message }, 500);
+
+  /* Commit the SO-quota advance that the DRAFT create deliberately skipped: the
+     PO is SUBMITTED now, so recomputeSoPicked counts this PO's lines and the
+     converted SO lines drop from the From-SO picker. Best-effort — never fail
+     the confirm on a counter recount. */
+  try {
+    const { data: lines } = await supabase
+      .from('purchase_order_items')
+      .select('so_item_id')
+      .eq('purchase_order_id', id);
+    await recomputeSoPicked(supabase, ((lines ?? []) as Array<{ so_item_id: string | null }>).map((l) => l.so_item_id));
+  } catch { /* PO already confirmed — don't fail on counter recount */ }
+
+  const { data: after } = await supabase
+    .from('purchase_orders')
+    .select('id, status, submitted_at')
+    .eq('id', id)
+    .maybeSingle();
+  return c.json({ purchaseOrder: after ?? { id, status: 'SUBMITTED' } });
 });
 
 mfgPurchaseOrders.patch('/:id/cancel', async (c) => {

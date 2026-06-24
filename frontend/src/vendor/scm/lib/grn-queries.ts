@@ -73,11 +73,20 @@ export const useCreateGrn = () => {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['grns'] }),
   });
 };
+/* Confirm a DRAFT GRN → POSTED (PATCH /grns/:id/post). This is the commit
+   chokepoint: the server runs postGrnAndRollup here (inventory IN + PO
+   received-rollup). Also used right after a non-draft create as an idempotent
+   no-op (the row is already POSTED). Invalidates the GRN detail + list +
+   inventory so the page + on-hand reflect the just-committed receipt. */
 export const usePostGrn = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => authedFetch(`/grns/${id}/post`, { method: 'PATCH' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['grns'] }),
+    onSuccess: (_, id) => {
+      qc.invalidateQueries({ queryKey: ['grn-detail', id] });
+      qc.invalidateQueries({ queryKey: ['grns'] });
+      qc.invalidateQueries({ queryKey: ['inventory'] });
+    },
   });
 };
 

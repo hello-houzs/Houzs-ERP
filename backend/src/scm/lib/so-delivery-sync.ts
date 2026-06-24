@@ -103,11 +103,15 @@ export async function syncSoDeliveredFromDo(
       // reference these SO items (a line may be split over several DOs). This is
       // re-derived live every call, so a cancelled DO drops out of the sum.
       // Keep the DO line id so returns can be traced back to the SO line below.
+      // LEAK GUARD (DRAFT): a DRAFT DO has NOT shipped — it must never count
+      // toward SO delivery coverage (else a draft could auto-advance the SO to
+      // DELIVERED or stamp lines READY without any stock leaving). Excluded
+      // alongside CANCELLED, so any path that re-runs this sync stays safe.
       const { data: doItemsRaw } = await sb
         .from('delivery_order_items')
         .select('id, so_item_id, qty, delivery_orders!inner(status)')
         .in('so_item_id', soLines.map((l) => l.id))
-        .neq('delivery_orders.status', 'CANCELLED');
+        .not('delivery_orders.status', 'in', '("CANCELLED","DRAFT")');
       const doItemRows = (doItemsRaw ?? []) as Array<{ id: string; so_item_id: string | null; qty: number }>;
       const doLines = doItemRows.map((d) => ({ soItemId: d.so_item_id, qty: Number(d.qty) }));
 

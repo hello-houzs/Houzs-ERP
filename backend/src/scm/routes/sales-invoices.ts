@@ -234,6 +234,12 @@ salesInvoices.post('/', async (c) => {
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
   const nowIso = new Date().toISOString();
 
+  /* DRAFT flow (mirror SO mfg-sales-orders.ts:3072) — opt-in `asDraft` lands the
+     invoice as DRAFT. A DRAFT SI commits NOTHING: no AR/GL revenue, no customer
+     credit. It also leaves sent_at / confirmed_at NULL (stamped on confirm).
+     The confirm transition (PATCH /:id/status DRAFT→SENT) does the posting. */
+  const isDraft = (body as { asDraft?: unknown }).asDraft === true;
+
   const { data: header, error: hErr } = await sb.from('sales_invoices').insert({
     invoice_number: invoiceNumber,
     so_doc_no: (body.soDocNo as string) ?? null,
@@ -268,9 +274,9 @@ salesInvoices.post('/', async (c) => {
     emergency_contact_phone: emPhoneRaw ? (normalizePhone(emPhoneRaw) ?? emPhoneRaw) : null,
     emergency_contact_relationship: (body.emergencyContactRelationship as string) ?? null,
     currency: ((body.currency as string) ?? 'MYR').toUpperCase(),
-    status: 'SENT',
-    sent_at: nowIso,
-    confirmed_at: nowIso,
+    status: isDraft ? 'DRAFT' : 'SENT',
+    sent_at: isDraft ? null : nowIso,
+    confirmed_at: isDraft ? null : nowIso,
     notes: (body.notes as string) ?? null,
     created_by: user.id,
   }).select(HEADER).single();
@@ -282,6 +288,12 @@ salesInvoices.post('/', async (c) => {
     const { error: iErr } = await sb.from('sales_invoice_items').insert(rows);
     if (iErr) { await sb.from('sales_invoices').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
     await recomputeTotals(sb, h.id);
+  }
+
+  /* LEAK GUARD (DRAFT) — a DRAFT SI must NOT post AR/GL revenue nor auto-apply
+     customer credit. Both happen on confirm (PATCH /:id/status DRAFT→SENT). */
+  if (isDraft) {
+    return c.json({ id: h.id, invoiceNumber: h.invoice_number, revenue: { posted: false, status: 'draft' }, creditApplied: 0 }, 201);
   }
 
   /* REVENUE — record it now. Idempotent + best-effort. */
@@ -327,8 +339,12 @@ salesInvoices.post('/', async (c) => {
 /* ── Convert picked DO LINES (partial qty) → ONE Sales Invoice ───────────── */
 salesInvoices.post('/from-dos', async (c) => {
   const sb = c.get('supabase'); const user = c.get('user');
-  let body: { picks?: Array<{ doItemId?: string; qty?: number }> };
+  let body: { picks?: Array<{ doItemId?: string; qty?: number }>; asDraft?: unknown };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  /* DRAFT flow — opt-in, identical to POST /. A DRAFT SI off DO lines commits
+     nothing (no AR/GL revenue, no credit) until confirm. A DRAFT SI is allowed
+     to draw from DO lines (a draft is just a draft; confirm does the posting). */
+  const isDraft = body.asDraft === true;
 
   const pickQtyById = new Map<string, number>();
   for (const p of (body.picks ?? [])) {
@@ -446,9 +462,9 @@ salesInvoices.post('/from-dos', async (c) => {
     emergency_contact_phone: emPhoneRaw ? (normalizePhone(emPhoneRaw) ?? emPhoneRaw) : null,
     emergency_contact_relationship: (head.emergency_contact_relationship as string | null) ?? null,
     currency: ((head.currency as string | null) ?? 'MYR').toUpperCase(),
-    status: 'SENT',
-    sent_at: nowIso,
-    confirmed_at: nowIso,
+    status: isDraft ? 'DRAFT' : 'SENT',
+    sent_at: isDraft ? null : nowIso,
+    confirmed_at: isDraft ? null : nowIso,
     created_by: user.id,
   }).select(HEADER).single();
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
@@ -474,6 +490,13 @@ salesInvoices.post('/from-dos', async (c) => {
   }
 
   await recomputeTotals(sb, h.id);
+
+  /* LEAK GUARD (DRAFT) — no AR/GL revenue, no customer credit on a DRAFT SI.
+     Both move to the confirm transition (PATCH /:id/status DRAFT→SENT). */
+  if (isDraft) {
+    return c.json({ id: h.id, invoiceNumber: h.invoice_number, revenue: { posted: false, status: 'draft' }, creditApplied: 0 }, 201);
+  }
+
   let revenue: { posted: boolean; jeNo?: string; status: string } = { posted: false, status: 'skipped' };
   const post = await postSiRevenue(sb, h.invoice_number);
   if (post.ok) {
@@ -565,7 +588,11 @@ salesInvoices.post('/:id/items/from-do/:doId', async (c) => {
   if (iErr) return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500);
   await recomputeTotals(sb, id);
   await recomputePaid(sb, id);
-  await postSiRevenue(sb, (si as { invoice_number: string }).invoice_number);
+  /* LEAK GUARD (DRAFT) — appending DO lines to a DRAFT invoice must NOT post
+     AR/GL revenue. Posting happens once, on confirm. */
+  if ((si as { status: string }).status !== 'DRAFT') {
+    await postSiRevenue(sb, (si as { invoice_number: string }).invoice_number);
+  }
   return c.json({ ok: true, added: rows.length }, 201);
 });
 
@@ -783,7 +810,11 @@ async function recomputePaid(sb: any, salesInvoiceId: string) {
   if (!cur) return;
   const c0 = cur as { total_centi: number; status: string };
   const updates: Record<string, unknown> = { paid_centi: paid, updated_at: new Date().toISOString() };
-  if (c0.status !== 'CANCELLED') {
+  /* LEAK GUARD (DRAFT) — never auto-advance a DRAFT invoice's status off the
+     payments rollup. A DRAFT stays DRAFT until it is explicitly confirmed; the
+     `else` branch below would otherwise silently flip it to SENT on a line edit.
+     CANCELLED is likewise frozen. */
+  if (c0.status !== 'CANCELLED' && c0.status !== 'DRAFT') {
     if (paid >= c0.total_centi && c0.total_centi > 0) {
       updates.status = 'PAID';
       updates.paid_at = new Date().toISOString();
@@ -802,6 +833,9 @@ salesInvoices.post('/:id/payments', async (c) => {
   const { data: doc } = await sb.from('sales_invoices').select('id, status').eq('id', id).maybeSingle();
   if (!doc) return c.json({ error: 'sales_invoice_not_found' }, 404);
   if ((doc as { status?: string }).status === 'CANCELLED') return c.json({ error: 'not_payable', message: 'SI is cancelled' }, 409);
+  /* LEAK GUARD (DRAFT) — a DRAFT invoice is not yet committed; it cannot accept
+     payments. Confirm it first (DRAFT → SENT), then record payments. */
+  if ((doc as { status?: string }).status === 'DRAFT') return c.json({ error: 'not_payable', message: 'SI is a draft — confirm it before recording payments' }, 409);
 
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -868,6 +902,59 @@ salesInvoices.patch('/:id/status', async (c) => {
   if (curErr) return c.json({ error: 'load_failed', reason: curErr.message }, 500);
   if (!curRow) return c.json({ error: 'not_found' }, 404);
   const prevStatus = ((curRow as { status: string }).status ?? '').toUpperCase();
+
+  /* ── CONFIRM transition (DRAFT → SENT) ─────────────────────────────────
+     A DRAFT SI committed nothing on create. Confirming it is where the
+     posting now happens: stamp sent_at / confirmed_at, post AR/GL revenue
+     (postSiRevenue — idempotent), then auto-apply any customer credit
+     (applyCustomerCreditToSi). DRAFT may ONLY move to SENT (or be cancelled,
+     handled below). This mirrors the SO confirm (status PATCH DRAFT→CONFIRMED). */
+  if (prevStatus === 'DRAFT' && status !== 'CANCELLED') {
+    if (status !== 'SENT') {
+      return c.json({
+        error: 'invalid_transition',
+        message: `A draft invoice can only be confirmed (to SENT) or cancelled. Cannot move directly to ${status}.`,
+        from: prevStatus, to: status,
+      }, 409);
+    }
+    const { data: confirmed, error: cErr } = await sb.from('sales_invoices')
+      .update({ status: 'SENT', sent_at: now, confirmed_at: now, updated_at: now })
+      .eq('id', id).eq('status', 'DRAFT')
+      .select('id, status, invoice_number, debtor_code, debtor_name, total_centi, paid_centi')
+      .maybeSingle();
+    if (cErr) return c.json({ error: 'update_failed', reason: cErr.message }, 500);
+    if (!confirmed) return c.json({ error: 'not_found' }, 404);
+    const d = confirmed as { id: string; status: string; invoice_number: string; debtor_code: string | null; debtor_name: string | null; total_centi: number | null; paid_centi: number | null };
+
+    /* POST revenue now (was skipped on draft create). Idempotent + best-effort. */
+    const post = await postSiRevenue(sb, d.invoice_number);
+    if (!post.ok && post.status !== 'zero_total' && post.status !== 'invoice_not_found') {
+      // eslint-disable-next-line no-console
+      console.error(`[si-revenue] confirm post failed for ${d.invoice_number}:`, post.status, (post as { reason?: string }).reason);
+    }
+
+    /* Auto-apply customer credit now (was skipped on draft create). */
+    if (d.debtor_code) {
+      try {
+        const { data: latest } = await sb.from('sales_invoices').select('total_centi, paid_centi').eq('id', id).maybeSingle();
+        const total = Number((latest as { total_centi: number } | null)?.total_centi ?? 0);
+        const paid  = Number((latest as { paid_centi: number } | null)?.paid_centi ?? 0);
+        const res = await applyCustomerCreditToSi(sb, {
+          debtorCode: d.debtor_code,
+          debtorName: d.debtor_name,
+          siId: id,
+          siNumber: d.invoice_number,
+          remainingDueCenti: Math.max(0, total - paid),
+          createdBy: c.get('user')?.id,
+        });
+        if (res.applied > 0) await recomputePaid(sb, id);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error(`[customer-credit] apply-on-confirm failed for ${d.invoice_number}:`, e);
+      }
+    }
+    return c.json({ salesInvoice: { id, status: 'SENT' } });
+  }
 
   if (status === 'CANCELLED' && prevStatus === 'CANCELLED') {
     return c.json({ salesInvoice: { id, status: 'CANCELLED' } });
@@ -996,6 +1083,8 @@ salesInvoices.patch('/:id/payment', async (c) => {
   const { data: cur } = await sb.from('sales_invoices').select('status').eq('id', id).maybeSingle();
   if (!cur) return c.json({ error: 'not_found' }, 404);
   if ((cur as { status: string }).status === 'CANCELLED') return c.json({ error: 'not_payable', message: 'SI is cancelled' }, 409);
+  /* LEAK GUARD (DRAFT) — same as POST /:id/payments: a draft can't be paid. */
+  if ((cur as { status: string }).status === 'DRAFT') return c.json({ error: 'not_payable', message: 'SI is a draft — confirm it before recording payments' }, 409);
 
   const { error } = await sb.from('sales_invoice_payments').insert({
     sales_invoice_id: id,

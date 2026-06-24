@@ -247,11 +247,17 @@
 // v57 — OCR scan: line chip is now just the short "Slip: …" reference (dropped the
 //   verbose AI ambiguity/operator notes); Note no longer carries venue/delivery
 //   (each has its own field) — only the genuine standalone remark.
+// v59 — Mail Center: single flat nav entry (match Hookka) + brass design tokens +
+//   department sidebar + inbound alias routing by Delivered-To + member alias on
+//   the profile card & as Compose "From". SCM: Draft/Confirmed two-state for
+//   SO/DO/SI/PO/GRN/PI (visible tabs + leak guards; migs 0040-0044). Projects:
+//   PIC + Sales-Attending list all Sales-dept members (brand-relaxed); Dismantle
+//   Time moved above Dismantle crew; OPERATION checklist items default to N/A.
 // v58 — Mail Center: admin "Mailboxes" tab in User Management (assign a mailbox to
 //   a person or a Houzs department + access matrix + view-level); replies now send
 //   FROM the chosen mailbox (hello@). OCR scan: 2nd phone -> Emergency Contact;
 //   removed the per-line "scanned · NN%" review chip from the create-SO page.
-const VERSION = "houzs-erp-v58";
+const VERSION = "houzs-erp-v59";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

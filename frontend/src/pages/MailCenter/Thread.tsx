@@ -540,7 +540,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
               onClick={handleToggleStar}
               disabled={mutating}
               title={starred ? "Unstar" : "Star"}
-              className={cn(starred && "text-amber-700")}
+              className={cn(starred && "text-accent")}
             >
               <Star className={cn("h-4 w-4", starred && "fill-amber-400 text-amber-500")} />
               {starred ? "Starred" : "Star"}
@@ -564,7 +564,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
               onClick={handleTrash}
               disabled={mutating}
               title={trashed ? "Restore from Trash" : "Move to Trash"}
-              className={cn(trashed && "text-amber-700")}
+              className={cn(trashed && "text-accent")}
             >
               <Trash2 className="h-4 w-4" />
               {trashed ? "Restore" : "Trash"}
@@ -723,7 +723,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
                   key={m.id}
                   className={cn(
                     "rounded-xl border bg-surface p-4 shadow-sm",
-                    outbound ? "border-amber-200 bg-amber-50/40" : "border-border",
+                    outbound ? "border-accent/30 bg-accent-soft/40" : "border-border",
                   )}
                 >
                   <div className="flex items-start gap-3">
@@ -741,7 +741,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
                           <div className="flex items-center gap-1.5">
                             <span className="truncate text-sm font-semibold text-ink">{senderName}</span>
                             {outbound ? (
-                              <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+                              <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-accent" />
                             ) : (
                               <ArrowDownLeft className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
                             )}
@@ -810,11 +810,11 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
           </div>
 
           {/* Reply composer */}
-          <div className="rounded-xl border border-amber-200/70 bg-surface p-4 shadow-sm">
+          <div className="rounded-xl border border-accent/30 bg-surface p-4 shadow-sm">
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2">
                 <div className="flex items-center gap-1.5">
-                  <Send className="h-3.5 w-3.5 text-amber-600" />
+                  <Send className="h-3.5 w-3.5 text-accent" />
                   <p className="text-sm font-semibold text-ink">Reply</p>
                 </div>
                 <span className="text-xs text-ink-muted">

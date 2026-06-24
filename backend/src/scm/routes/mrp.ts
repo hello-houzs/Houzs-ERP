@@ -51,8 +51,11 @@ mrp.use('*', supabaseAuth);
 
 /* SO statuses that no longer create demand (already shipped / closed). */
 const SO_DONE = new Set(['DELIVERED', 'INVOICED', 'CLOSED', 'CANCELLED', 'DRAFT']);
-/* PO statuses that no longer supply goods. */
-const PO_DEAD = new Set(['CANCELLED']);
+/* PO statuses that no longer supply goods. DRAFT is included: a draft PO is
+   not yet committed, so it must NOT count as incoming supply — otherwise a
+   draft PO would make an SO line look "covered" and hide a real shortage from
+   MRP + the From-SO shortage cap (leak guard, Draft/Confirmed rollout). */
+const PO_DEAD = new Set(['CANCELLED', 'DRAFT']);
 
 type DemandRow = {
   id: string;

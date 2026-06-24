@@ -30,17 +30,20 @@ export type StatusDocType =
 type Entry = { label: string; tone: StatusTone };
 
 const PO: Record<string, Entry> = {
+  DRAFT:              { label: 'Draft',              tone: 'pending' },
   SUBMITTED:          { label: 'Confirmed',          tone: 'info' },
   PARTIALLY_RECEIVED: { label: 'Partially Received', tone: 'progress' },
   RECEIVED:           { label: 'Received',           tone: 'success' },
   CANCELLED:          { label: 'Cancelled',          tone: 'danger' },
 };
 const GRN: Record<string, Entry> = {
+  DRAFT:     { label: 'Draft',     tone: 'pending' },
   POSTED:    { label: 'Confirmed', tone: 'info' },
   CLOSED:    { label: 'Closed',    tone: 'success' },
   CANCELLED: { label: 'Cancelled', tone: 'danger' },
 };
 const PI: Record<string, Entry> = {
+  DRAFT:          { label: 'Draft',          tone: 'pending' },
   POSTED:         { label: 'Confirmed',      tone: 'info' },
   PARTIALLY_PAID: { label: 'Partially Paid', tone: 'progress' },
   PAID:           { label: 'Paid',           tone: 'success' },
@@ -53,6 +56,7 @@ const PR: Record<string, Entry> = {
   CANCELLED: { label: 'Cancelled', tone: 'danger' },
 };
 const SO: Record<string, Entry> = {
+  DRAFT:         { label: 'Draft',         tone: 'pending' },
   CONFIRMED:     { label: 'Confirmed',     tone: 'info' },
   IN_PRODUCTION: { label: 'Proceed',       tone: 'progress' },
   READY_TO_SHIP: { label: 'Ready to Ship', tone: 'success' },
@@ -65,6 +69,7 @@ const SO: Record<string, Entry> = {
   CANCELLED:     { label: 'Cancelled',     tone: 'danger' },
 };
 const DO: Record<string, Entry> = {
+  DRAFT:      { label: 'Draft',      tone: 'pending' },
   LOADED:     { label: 'Loaded',     tone: 'info' },
   DISPATCHED: { label: 'Shipped',    tone: 'progress' },
   IN_TRANSIT: { label: 'In Transit', tone: 'progress' },
@@ -74,6 +79,7 @@ const DO: Record<string, Entry> = {
   CANCELLED:  { label: 'Cancelled',  tone: 'danger' },
 };
 const SI: Record<string, Entry> = {
+  DRAFT:          { label: 'Draft',          tone: 'pending' },
   SENT:           { label: 'Issued',         tone: 'info' },
   PARTIALLY_PAID: { label: 'Partially Paid', tone: 'progress' },
   PAID:           { label: 'Paid',           tone: 'success' },

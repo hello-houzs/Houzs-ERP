@@ -39,9 +39,16 @@ const RESET_TTL_SECONDS = 60 * 60; // 1 hour — password reset should expire fa
  *
  * Optional ?brand=<x> narrows the list to users with that brand in
  * their user_brands row set (mig 049). Used by the project PIC picker.
+ *
+ * Optional ?department=<name> narrows to users whose PRIMARY department
+ * name matches case-insensitively (contains). Used by the project PIC +
+ * Sales-attending pickers, which list all Sales-department members
+ * regardless of brand (owner: Option A). Prod's dept is "Sales Department",
+ * so the match is a substring (ILIKE %name%), not equality.
  */
 app.get("/", requirePermission("users.read"), async (c) => {
   const brand = (c.req.query("brand") || "").trim();
+  const department = (c.req.query("department") || "").trim();
   const db = getDb(c.env);
   const manager = alias(users, "m");
   const inviter = alias(users, "ib");
@@ -54,6 +61,15 @@ app.get("/", requirePermission("users.read"), async (c) => {
       sql`EXISTS (SELECT 1 FROM ${user_brands} ub
                    WHERE ub.user_id = ${users.id}
                      AND ub.brand = ${brand})`
+    );
+  }
+  if (department) {
+    // Match the user's primary department by name, case-insensitively and
+    // by substring so "Sales" matches the prod "Sales Department" row.
+    conds.push(
+      sql`EXISTS (SELECT 1 FROM ${departments} d2
+                   WHERE d2.id = ${users.department_id}
+                     AND d2.name ILIKE ${"%" + department + "%"})`
     );
   }
 

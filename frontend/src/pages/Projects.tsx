@@ -4217,16 +4217,13 @@ function ProjectDetailContent({
 
   const p = detail.data?.project;
 
-  // Brand-narrowed users list for the PIC picker only — backend
-  // enforces the same filter, so this is mostly a UX convenience that
-  // hides invalid candidates instead of showing a 403 toast on save.
-  const picBrand = p?.brand ?? "";
+  // PIC picker source — ALL Sales-department members, regardless of
+  // brand (owner: Option A). The backend ?department= filter matches the
+  // dept name case-insensitively/by-substring (prod = "Sales Department"),
+  // and the PIC-save brand gate is brand-relaxed for Sales-dept members.
   const picUsersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>(
-    () =>
-      picBrand
-        ? api.get(`/api/users?brand=${encodeURIComponent(picBrand)}`)
-        : Promise.resolve({ users: [] }),
-    [picBrand]
+    () => api.get(`/api/users?department=${encodeURIComponent("Sales")}`),
+    []
   );
   const picUsers = picUsersQ.data?.users ?? [];
   const checklist = detail.data?.checklist ?? [];
@@ -4509,9 +4506,9 @@ function ProjectDetailContent({
 // Lives in the right sidebar above Chat. Carries the project's PIC
 // (one User, the project owner) plus the list of sales reps who'll
 // physically attend the event (project_sales_attendees, mig 087).
-// Both are brand-scoped: the PIC picker filters users who cover the
-// project's brand, the attendee picker filters sales_reps tied to
-// the same brand.
+// Both pickers list ALL Sales-department members regardless of brand
+// (owner: Option A): PIC = Sales-dept users (GET /api/users?department=Sales),
+// attendees = active sales_person reps (GET /api/projects/sales-rep-options).
 
 interface SalesRepBrief {
   id: number;
@@ -4543,18 +4540,12 @@ function ProjectTeamSection({
   toast: ReturnType<typeof useToast>;
 }) {
   const dialog = useDialog();
-  const brand = p.brand ?? "";
-  // Project-scoped picker — gated on projects.write, role-filtered to
-  // sales_person, brand match is case-insensitive. See
-  // GET /api/projects/sales-rep-options.
+  // Sales-attending picker — gated on projects.write, role-filtered to
+  // sales_person. Brand-relaxed (owner: Option A): lists ALL active
+  // Sales Persons regardless of brand. See GET /api/projects/sales-rep-options.
   const repsQ = useQuery<{ data: SalesRepBrief[] }>(
-    () =>
-      api.get(
-        brand
-          ? `/api/projects/sales-rep-options?brand=${encodeURIComponent(brand)}`
-          : `/api/projects/sales-rep-options`
-      ),
-    [brand]
+    () => api.get(`/api/projects/sales-rep-options`),
+    []
   );
   const reps = repsQ.data?.data ?? [];
   const takenRepIds = new Set(attendees.map((a) => a.sales_rep_id));
@@ -4612,12 +4603,9 @@ function ProjectTeamSection({
                 const v = e.target.value;
                 patch({ pic_id: v ? parseInt(v, 10) : null });
               }}
-              disabled={!brand}
               className={SPEC_INPUT_CLASS}
             >
-              <option value="">
-                {brand ? "— unassigned —" : "Pick a brand first"}
-              </option>
+              <option value="">— unassigned —</option>
               {p.pic_id != null && p.pic_name &&
                 !picUsers.some((u) => u.id === p.pic_id) && (
                   <option value={p.pic_id}>
@@ -4630,9 +4618,9 @@ function ProjectTeamSection({
                 </option>
               ))}
             </select>
-            {brand && picUsers.length === 0 && !picUsersLoading && (
+            {picUsers.length === 0 && !picUsersLoading && (
               <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
-                No user covers {brand}.
+                No Sales-department members found.
               </div>
             )}
           </>
@@ -4690,9 +4678,8 @@ function ProjectTeamSection({
             {!picking ? (
               <button
                 onClick={() => setPicking(true)}
-                disabled={!brand}
                 className="inline-flex items-center gap-1 rounded-md border border-dashed border-border bg-surface px-2 py-1 text-[10.5px] font-semibold text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                title={!brand ? "Pick a brand first" : "Add a sales rep"}
+                title="Add a sales rep"
               >
                 <Plus size={11} /> Add rep
               </button>
@@ -4729,9 +4716,9 @@ function ProjectTeamSection({
                     <X size={13} />
                   </button>
                 </div>
-                {!repsQ.loading && reps.length === 0 && brand && (
+                {!repsQ.loading && reps.length === 0 && (
                   <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
-                    No Sales Persons cover {brand}. Assign brands to reps in Sales Team → Rep Detail.
+                    No Sales Persons found. Add members to the Sales department in User Management.
                   </div>
                 )}
               </div>
@@ -7798,6 +7785,7 @@ function PhaseCrewEditor({
   lorryOptions,
   patch,
   emptyHint,
+  headerExtra,
 }: {
   title: string;
   field: "setup_crew" | "dismantle_crew";
@@ -7807,6 +7795,8 @@ function PhaseCrewEditor({
   lorryOptions: string[];
   patch: (body: Record<string, any>) => Promise<void>;
   emptyHint?: string;
+  /** Rendered above the "{title} Drivers" heading (e.g. the Dismantle Time field). */
+  headerExtra?: React.ReactNode;
 }) {
   const [pc, setPc] = useState<PhaseCrew>(() => parsePhaseCrew(value));
   useEffect(() => {
@@ -7826,6 +7816,7 @@ function PhaseCrewEditor({
   return (
     <div className="mt-3 space-y-2">
       {emptyHint && <div className="text-[9px] italic text-ink-muted">{emptyHint}</div>}
+      {headerExtra}
       <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} Drivers</div>
       <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={pc.drivers[0]} onChange={(s) => setSlot("drivers", 0, s)} />
       <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={pc.drivers[1]} onChange={(s) => setSlot("drivers", 1, s)} />
@@ -7951,13 +7942,25 @@ function LogisticsCrewSection({
         </span>
       }
     >
-      <div className="grid grid-cols-2 gap-3">
+      <div>
         <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} />
-        <DateTimeField label="Dismantle Time" value={project.dismantle_start_at} onSave={(v) => patch({ dismantle_start_at: v })} />
       </div>
       <PhaseCrewEditor title="Setup" field="setup_crew" value={project.setup_crew} drivers={drivers} helpers={helpers} lorryOptions={lorryOptions} patch={patch} />
       <div className="my-3 border-t border-dashed border-border" />
-      <PhaseCrewEditor title="Dismantle" field="dismantle_crew" value={project.dismantle_crew} drivers={drivers} helpers={helpers} lorryOptions={lorryOptions} patch={patch} emptyHint="Leave empty if same as setup" />
+      {/* Dismantle Time sits above Dismantle Drivers, mirroring Setup. */}
+      <PhaseCrewEditor
+        title="Dismantle"
+        field="dismantle_crew"
+        value={project.dismantle_crew}
+        drivers={drivers}
+        helpers={helpers}
+        lorryOptions={lorryOptions}
+        patch={patch}
+        emptyHint="Leave empty if same as setup"
+        headerExtra={
+          <DateTimeField label="Dismantle Time" value={project.dismantle_start_at} onSave={(v) => patch({ dismantle_start_at: v })} />
+        }
+      />
     </PanelSection>
   );
 }

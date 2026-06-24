@@ -91,6 +91,10 @@ export interface AuthUser {
   id: number;
   email: string;
   name: string | null;
+  /** The member's outward Mail Center alias (users.email_alias, mig 0039). Lets
+   *  the member compose/reply FROM their own address in the Mail Center. null
+   *  when none assigned. */
+  email_alias?: string | null;
   role_id: number;
   role_name: string;
   /** Position = department×position org unit (mig 094). When set, page_access
@@ -210,6 +214,7 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
   return {
     id: row.id,
     email: row.email,
+    email_alias: row.email_alias ?? null,
     name: row.name,
     role_id: row.role_id,
     role_name: row.role_name,
@@ -240,7 +245,7 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
   if (cached) return cached;
 
   const row = await env.DB.prepare(
-    `SELECT u.id, u.email, u.name, u.role_id, u.status,
+    `SELECT u.id, u.email, u.email_alias, u.name, u.role_id, u.status,
             u.manager_id, u.department_id, u.position_id, u.joined_at, u.last_login_at,
             u.points_balance, u.gifting_balance, u.current_streak,
             u.profile_pic_r2_key,
@@ -272,7 +277,7 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
 
 export async function getUserById(env: Env, id: number): Promise<AuthUser | null> {
   const row = await env.DB.prepare(
-    `SELECT u.id, u.email, u.name, u.role_id, u.status, u.manager_id,
+    `SELECT u.id, u.email, u.email_alias, u.name, u.role_id, u.status, u.manager_id,
             u.department_id, u.position_id,
             u.points_balance, u.gifting_balance, u.current_streak,
             u.profile_pic_r2_key,

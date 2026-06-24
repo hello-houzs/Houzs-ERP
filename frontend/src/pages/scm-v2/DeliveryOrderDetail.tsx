@@ -60,7 +60,7 @@ import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
-const STATUS_FLOW = ['LOADED', 'DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVOICED', 'CANCELLED'] as const;
+const STATUS_FLOW = ['DRAFT', 'LOADED', 'DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVOICED', 'CANCELLED'] as const;
 type DoStatus = typeof STATUS_FLOW[number];
 
 /* Commander 2026-05-29 — the linear LOADED→DISPATCHED→… stage walk was retired.
@@ -68,6 +68,7 @@ type DoStatus = typeof STATUS_FLOW[number];
    next-stage map any more; only Cancel / Reopen remain (header buttons). */
 
 const STATUS_CLASS: Record<string, string> = {
+  DRAFT:      styles.statusDraft ?? '',
   LOADED:     styles.statusConfirmed ?? '',
   DISPATCHED: styles.statusShipped ?? '',
   IN_TRANSIT: styles.statusInProd ?? '',
@@ -82,10 +83,14 @@ const STATUS_CLASS: Record<string, string> = {
    Delivery Return. Mirrors the DO list. The detail endpoint sends lifecycle_state. */
 type DoLifecycle = 'shipped' | 'invoiced' | 'returned';
 const DO_STATUS_LABEL: Record<string, string> = {
-  DISPATCHED: 'Shipped', INVOICED: 'Invoiced', RETURNED: 'Delivery Return', CANCELLED: 'Cancelled',
+  DRAFT: 'Draft', DISPATCHED: 'Shipped', INVOICED: 'Invoiced', RETURNED: 'Delivery Return', CANCELLED: 'Cancelled',
 };
 const doEffectiveKey = (status: string, lifecycle?: DoLifecycle): string => {
   if (status === 'CANCELLED') return 'CANCELLED';
+  /* DRAFT flow (2026-06-24) — a DRAFT DO has not shipped, so its badge must NOT
+     collapse to the 'shipped' (DISPATCHED) baseline (the old bug showed a draft
+     as "Shipped"). Short-circuit on the stored status before the lifecycle. */
+  if (status === 'DRAFT') return 'DRAFT';
   if (lifecycle === 'returned') return 'RETURNED';
   if (lifecycle === 'invoiced') return 'INVOICED';
   return 'DISPATCHED';
@@ -496,6 +501,11 @@ export const DeliveryOrderDetail = () => {
   const hasChildren = Boolean(header.has_children);
   const isLocked = lockedStatuses.includes(header.status) || hasChildren;
   const isCancelled = header.status === 'CANCELLED';
+  /* DRAFT flow (2026-06-24) — a DRAFT DO is fully editable and has NOT shipped
+     (no stock OUT, no SO-delivered sync). Confirming flips it DRAFT→DISPATCHED
+     via the status mutation; the backend deducts stock + runs the SO sync at
+     that single chokepoint. Mirror of the SO draft→confirm. */
+  const isDraft = (header.status as string) === 'DRAFT';
 
   const handlePrint = () => {
     import('../../vendor/scm/lib/delivery-order-pdf')
@@ -510,6 +520,14 @@ export const DeliveryOrderDetail = () => {
   const handleReopen = async () => {
     if (!(await askConfirm({ title: `Reopen ${header.do_number} back to LOADED?`, confirmLabel: 'Reopen' }))) return;
     updateStatus.mutate({ id: header.id, status: 'LOADED' });
+  };
+  const handleConfirm = async () => {
+    if (!(await askConfirm({
+      title: `Confirm & ship ${header.do_number}?`,
+      body: 'This turns the draft into a live Delivery Order — stock is deducted now and the goods are marked shipped.',
+      confirmLabel: 'Confirm & Ship',
+    }))) return;
+    updateStatus.mutate({ id: header.id, status: 'DISPATCHED' });
   };
 
   return (
@@ -548,6 +566,11 @@ export const DeliveryOrderDetail = () => {
           <Button variant="ghost" size="md" onClick={handlePrint}>
             <Printer {...ICON} /><span>Print PDF</span>
           </Button>
+          {isDraft && !isEditing ? (
+            <Button variant="primary" size="md" onClick={handleConfirm} disabled={updateStatus.isPending}>
+              <Truck {...ICON} /><span>{updateStatus.isPending ? 'Confirming…' : 'Confirm & Ship DO'}</span>
+            </Button>
+          ) : null}
           {isCancelled ? (
             <Button variant="primary" size="md" onClick={handleReopen} disabled={updateStatus.isPending}>
               <RotateCcw {...ICON} /><span>Reopen DO</span>
@@ -576,11 +599,39 @@ export const DeliveryOrderDetail = () => {
         </div>
       </div>
 
-      {justCreated && !isCancelled && (
+      {justCreated && !isCancelled && !isDraft && (
         <div className={styles.bannerOk}>
           <strong>Delivery order {header.do_number} created.</strong>
           <span>Stock has already been deducted. Nothing more to save — close this page or click Edit if you need to adjust delivery details.</span>
           <button type="button" className={styles.bannerDismiss} onClick={() => setJustCreated(false)}>Dismiss</button>
+        </div>
+      )}
+
+      {/* ── DRAFT banner + Confirm (DRAFT flow, 2026-06-24) ─────────────────
+          A DRAFT DO has NOT shipped: no stock OUT, no SO-delivered sync, out of
+          the committed KPIs. The operator reviews + edits, then Confirm flips it
+          DRAFT→DISPATCHED via the status mutation — the backend deducts stock at
+          that single chokepoint. Mirror of the SO draft→confirm banner. */}
+      {isDraft && !isCancelled && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 'var(--space-3)',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          fontSize: 'var(--fs-13)',
+        }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <FileText {...ICON} />
+            <span>
+              <strong>Draft — not yet shipped.</strong>{' '}
+              Review and Confirm to ship it (stock is deducted only on confirm — it stays out of inventory and KPIs until then).
+            </span>
+          </span>
+          <Button variant="primary" size="sm" onClick={handleConfirm} disabled={updateStatus.isPending}>
+            <span>{updateStatus.isPending ? 'Confirming…' : 'Confirm & Ship DO'}</span>
+          </Button>
         </div>
       )}
 

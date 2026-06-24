@@ -12,8 +12,10 @@ import { authedFetch } from './authed-fetch';
 export type SupplierStatus = 'ACTIVE' | 'INACTIVE' | 'BLOCKED';
 export type Currency = 'MYR' | 'RMB' | 'USD' | 'SGD';
 export type MaterialKind = 'mfg_product' | 'fabric' | 'raw';
-// PR-DRAFT-removal — DRAFT dropped from po_status (migration 0078).
-export type PoStatus = 'SUBMITTED' | 'PARTIALLY_RECEIVED' | 'RECEIVED' | 'CANCELLED';
+// Draft/Confirmed two-state model re-adds DRAFT to po_status (migration 0042
+// re-adds the enum value 0078 removed). A PO can be saved as DRAFT (no SO-quota
+// advance, invisible to MRP supply) and later confirmed -> SUBMITTED.
+export type PoStatus = 'DRAFT' | 'SUBMITTED' | 'PARTIALLY_RECEIVED' | 'RECEIVED' | 'CANCELLED';
 
 export type StatementType = 'OPEN_ITEM' | 'BALANCE_FORWARD' | 'NO_STATEMENT';
 export type AgingBasis    = 'INVOICE_DATE' | 'DUE_DATE';
@@ -759,6 +761,9 @@ export function useCreatePurchaseOrder() {
       /** PR #97 — AutoCount Purchase Location at create time. NULL → can be
           set on the detail page after creation. */
       purchaseLocationId?: string | null;
+      /** Draft/Confirmed — opt-in DRAFT save (status DRAFT, no SO-quota advance,
+          invisible to MRP supply). Omitted/false → SUBMITTED, as before. */
+      asDraft?: boolean;
     }) =>
       authedFetch<{ id: string; poNumber: string }>(`/mfg-purchase-orders`, {
         method: 'POST',
@@ -844,6 +849,26 @@ export function useSubmitPurchaseOrder() {
         { method: 'PATCH' },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['mfg-purchase-orders'] }),
+  });
+}
+
+/** Confirm a DRAFT PO → SUBMITTED (Draft/Confirmed two-state). This is where a
+    draft commits: it stamps submitted_at server-side and advances the source
+    SO lines' po_qty_picked (they leave the From-SO picker) + the PO becomes
+    live MRP supply / GRN-receivable. Invalidates the PO list (incl. the
+    outstanding-so-items picker via the shared prefix) + this PO's detail. */
+export function useConfirmPurchaseOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      authedFetch<{ purchaseOrder: { id: string; status: PoStatus; submitted_at: string } }>(
+        `/mfg-purchase-orders/${id}/confirm`,
+        { method: 'PATCH' },
+      ),
+    onSuccess: (_, id) => {
+      qc.invalidateQueries({ queryKey: ['mfg-purchase-orders'] });
+      qc.invalidateQueries({ queryKey: ['mfg-purchase-order-detail', id] });
+    },
   });
 }
 

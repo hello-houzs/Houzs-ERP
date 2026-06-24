@@ -13,13 +13,36 @@
 // shape the standalone CF Email Worker would send, so receive works whichever
 // path is active — with NO MX change required.
 //
+// FREE-ALIAS MODEL (current): the five department mailboxes — operation@ /
+// sales@ / marketing@ / finance@ / hr@houzscentury.com — are ALIASES of the
+// single hello@ Google Workspace user in Google Admin, NOT separate accounts.
+// So ALL department mail lands in hello@'s ONE inbox. We pull that single mailbox
+// (IMAP_USER / IMAP_PASSWORD) and forward each message's Delivered-To / To
+// headers; the ERP routes the message to the right department mailbox by matching
+// Delivered-To (the alias the sender used) against its registered email_addresses
+// — see toPayload + the ERP's ingestInboundEmail. A single hello@ pull is enough.
+//
+// MULTI-ACCOUNT (back-compat, optional): if the company ever splits the dept
+// mailboxes back into SEPARATE Google accounts, set IMAP_ACCOUNTS (a JSON array
+// of {user,password}); this job will iterate and pull each in turn. The ERP
+// dedups by Message-ID so a cross-posted message is stored once. Dept routing no
+// longer DEPENDS on per-account pulls — it is driven by Delivered-To — so this
+// path is purely a convenience for a future split, not a requirement.
+//
 // Required env (GitHub Actions secrets — see README.md):
-//   IMAP_USER            the Gmail address, e.g. hello@houzscentury.com
-//   IMAP_PASSWORD        a Google App Password (NOT the account password)
+//   IMAP_USER            the shared Gmail address, hello@houzscentury.com
+//   IMAP_PASSWORD        that account's Google App Password (NOT the login pw)
 //   MAIL_INBOUND_SECRET  shared secret; MUST equal the ERP's MAIL_INBOUND_SECRET (>= 16 chars)
 //   MAIL_INBOUND_URL     the ERP worker, e.g.
 //                        https://autocount-sync-api.houzs-erp.workers.dev/api/mail-center/inbound
-// Optional env (sensible defaults):
+//
+// Optional multi-account override (used when IMAP_ACCOUNTS is set):
+//   IMAP_ACCOUNTS        JSON array of accounts, e.g.
+//                          [{"user":"hello@houzscentury.com","password":"app-pw"},
+//                           {"user":"sales@houzscentury.com","password":"app-pw"}]
+//                        Each `password` is that account's Google App Password.
+//
+// Optional env (sensible defaults), applied to EVERY account:
 //   IMAP_HOST / IMAP_PORT  default imap.gmail.com / 993
 //   IMAP_MAILBOX           IMAP folder to read (default INBOX)
 //   BACKFILL               "true"/"1" => fetch ALL history once; else incremental
@@ -35,11 +58,61 @@ const MAIL_INBOUND_URL =
 const SECRET = (process.env.MAIL_INBOUND_SECRET || "").trim();
 const IMAP_HOST = (process.env.IMAP_HOST || "").trim() || "imap.gmail.com";
 const IMAP_PORT = Number(process.env.IMAP_PORT || 993) || 993;
-const IMAP_USER = (process.env.IMAP_USER || "").trim();
-const IMAP_PASSWORD = process.env.IMAP_PASSWORD || "";
 const IMAP_MAILBOX = (process.env.IMAP_MAILBOX || "").trim() || "INBOX";
 const BACKFILL = /^(1|true|yes)$/i.test(process.env.BACKFILL || "");
 const SINCE_DAYS = Number(process.env.SINCE_DAYS || 3) || 3;
+
+// Resolve the account list. DEFAULT path is the single shared hello@ mailbox
+// (IMAP_USER / IMAP_PASSWORD) — enough for the free-alias model. The optional
+// IMAP_ACCOUNTS (JSON [{user,password}, …]) overrides it for a future split into
+// separate accounts. Returns a normalised, de-duplicated (by lowercased user)
+// list of {user,password}.
+function resolveAccounts() {
+  const raw = (process.env.IMAP_ACCOUNTS || "").trim();
+  let list = [];
+  if (raw) {
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      console.error(
+        "FATAL: IMAP_ACCOUNTS is not valid JSON. Expected an array like " +
+          '[{"user":"hello@houzscentury.com","password":"app-pw"}]. ' +
+          ((e && e.message) || e),
+      );
+      process.exit(1);
+    }
+    if (!Array.isArray(parsed)) {
+      console.error("FATAL: IMAP_ACCOUNTS must be a JSON ARRAY of {user,password} objects.");
+      process.exit(1);
+    }
+    list = parsed.map((a) => ({
+      user: String((a && (a.user ?? a.email)) || "").trim(),
+      password: String((a && (a.password ?? a.pass)) || ""),
+    }));
+  } else {
+    // Back-compat single-account path.
+    list = [
+      {
+        user: (process.env.IMAP_USER || "").trim(),
+        password: process.env.IMAP_PASSWORD || "",
+      },
+    ];
+  }
+
+  // Drop empties + de-dup by lowercased user (a repeated address is harmless via
+  // Message-ID dedup, but skipping it saves a needless IMAP login).
+  const seen = new Set();
+  const out = [];
+  for (const a of list) {
+    if (!a.user || !a.password) continue;
+    const key = a.user.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(a);
+  }
+  return out;
+}
 
 if (SECRET.length < 16) {
   console.error(
@@ -47,9 +120,12 @@ if (SECRET.length < 16) {
   );
   process.exit(1);
 }
-if (!IMAP_USER || !IMAP_PASSWORD) {
+
+const ACCOUNTS = resolveAccounts();
+if (ACCOUNTS.length === 0) {
   console.error(
-    "FATAL: IMAP_USER and IMAP_PASSWORD must be set (IMAP_PASSWORD is a Google App Password).",
+    "FATAL: no mailbox accounts configured. Set IMAP_ACCOUNTS (JSON [{user,password}, …]) " +
+      "or the single IMAP_USER + IMAP_PASSWORD (each password is a Google App Password).",
   );
   process.exit(1);
 }
@@ -81,6 +157,73 @@ function firstName(field) {
     return n || undefined;
   }
   return undefined;
+}
+
+// Pull every Delivered-To / X-Original-To header off the parsed message. These
+// are the ENVELOPE recipients the receiving server saw — with the free-alias
+// model (operation@/sales@/marketing@/finance@/hr@ are all aliases of hello@),
+// the dept alias the sender used lands HERE, not necessarily in To:. We surface
+// them so the ERP can route the message to the right department mailbox.
+//
+// mailparser exposes headers two ways: parsed.headers (a Map, lowercased keys,
+// value collapsed to a string when single / array when repeated) and
+// parsed.headerLines (the raw "key: value" lines). Gmail repeats Delivered-To,
+// so we read BOTH sources and union the addresses. Returns bare addresses.
+const ADDR_IN_ANGLE_RE = /<([^>]+)>/g;
+function extractAddresses(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return [];
+  const out = [];
+  let m;
+  ADDR_IN_ANGLE_RE.lastIndex = 0;
+  while ((m = ADDR_IN_ANGLE_RE.exec(s))) {
+    const a = m[1].trim();
+    if (a.includes("@")) out.push(a);
+  }
+  if (out.length === 0 && s.includes("@")) {
+    // No angle brackets — split on commas/whitespace and keep the @-tokens.
+    for (const tok of s.split(/[,\s]+/)) {
+      const t = tok.trim().replace(/^<|>$/g, "");
+      if (t.includes("@")) out.push(t);
+    }
+  }
+  return out;
+}
+
+function deliveredToList(parsed) {
+  const out = [];
+  const push = (raw) => {
+    for (const a of extractAddresses(raw)) out.push(a);
+  };
+  const headers = parsed.headers;
+  if (headers && typeof headers.get === "function") {
+    for (const key of ["delivered-to", "x-original-to"]) {
+      const v = headers.get(key);
+      if (Array.isArray(v)) v.forEach(push);
+      else if (v) push(v);
+    }
+  }
+  // Belt-and-braces: also scan the raw header lines (catches repeated headers
+  // that the Map collapsed, and X-Original-To variants).
+  const lines = Array.isArray(parsed.headerLines) ? parsed.headerLines : [];
+  for (const ln of lines) {
+    const key = String((ln && ln.key) || "").toLowerCase();
+    if (key === "delivered-to" || key === "x-original-to") {
+      const line = String((ln && ln.line) || "");
+      const colon = line.indexOf(":");
+      push(colon >= 0 ? line.slice(colon + 1) : line);
+    }
+  }
+  // De-dup, order-preserving (lowercased compare).
+  const seen = new Set();
+  const dedup = [];
+  for (const a of out) {
+    const lc = a.toLowerCase();
+    if (seen.has(lc)) continue;
+    seen.add(lc);
+    dedup.push(a);
+  }
+  return dedup;
 }
 
 // Per-attachment and per-message size caps. We base64-encode attachment bytes
@@ -141,19 +284,24 @@ async function postToErp(payload) {
   return res.json().catch(() => ({}));
 }
 
-// Build the ERP InboundEmailPayload. We PREPEND the mailbox we fetched this
-// message FROM to `to`, guaranteeing it is the first recipient on our domain so
-// the ERP attributes the thread to the correct mailbox even when the original
-// To: was a list, a BCC, or a forward.
+// Build the ERP InboundEmailPayload. We forward `to` (the header recipients) AND
+// `deliveredTo` (the envelope recipients). Under the FREE-ALIAS model every dept
+// mailbox is an alias of the single hello@ account we pull from, so the alias the
+// sender actually used (sales@, finance@, …) lives in Delivered-To, NOT in To:.
+// The ERP prefers Delivered-To when matching one of our registered addresses, so
+// we must NOT inject the source mailbox into `to` (that would force hello@ to win
+// the match and collapse every dept's mail onto the general inbox).
 function toPayload(parsed, sourceMailbox) {
   const from = firstAddress(parsed.from);
   const fromName = firstName(parsed.from);
-  const parsedTo = addrList(parsed.to);
-  const to = [
-    sourceMailbox,
-    ...parsedTo.filter((x) => x.toLowerCase() !== sourceMailbox.toLowerCase()),
-  ];
+  const to = addrList(parsed.to);
   const cc = addrList(parsed.cc);
+  // Envelope recipients (Delivered-To / X-Original-To). Fall back to the mailbox
+  // we fetched from when no such header exists, so routing still has a signal.
+  let deliveredTo = deliveredToList(parsed);
+  if (deliveredTo.length === 0 && sourceMailbox) {
+    deliveredTo = [sourceMailbox];
+  }
   // mailparser exposes references as string | string[]; normalise to string[].
   let references;
   if (Array.isArray(parsed.references)) {
@@ -171,7 +319,10 @@ function toPayload(parsed, sourceMailbox) {
   return {
     from,
     fromName,
-    to,
+    // `to` falls back to deliveredTo so the stored header recipient is never
+    // empty when the original To: was absent (BCC-only / list mail).
+    to: to.length ? to : deliveredTo,
+    deliveredTo: deliveredTo.length ? deliveredTo : undefined,
     cc: cc.length ? cc : undefined,
     subject: parsed.subject || undefined,
     text: parsed.text || undefined,
@@ -184,12 +335,13 @@ function toPayload(parsed, sourceMailbox) {
   };
 }
 
-async function syncMailbox() {
+async function syncMailbox(account) {
+  const { user: imapUser, password: imapPassword } = account;
   const client = new ImapFlow({
     host: IMAP_HOST,
     port: IMAP_PORT,
     secure: true,
-    auth: { user: IMAP_USER, pass: IMAP_PASSWORD },
+    auth: { user: imapUser, pass: imapPassword },
     logger: false,
   });
   let total = 0;
@@ -227,7 +379,7 @@ async function syncMailbox() {
               continue;
             }
             const parsed = await simpleParser(msg.source);
-            const payload = toPayload(parsed, IMAP_USER);
+            const payload = toPayload(parsed, imapUser);
             if (!payload.from) {
               failed++;
               continue;
@@ -248,16 +400,25 @@ async function syncMailbox() {
     await client.logout().catch(() => {});
   }
   console.log(
-    `${IMAP_USER}: ${total} seen, ${added} new, ${deduped} dup, ${failed} failed`,
+    `${imapUser}: ${total} seen, ${added} new, ${deduped} dup, ${failed} failed`,
   );
 }
 
+// Sync every configured account in sequence. One account's failure (bad app
+// password, IMAP disabled, transient network) is isolated — it's logged and the
+// run continues to the next mailbox, and the process exits non-zero so the
+// GitHub Actions run is flagged red.
 let anyHardFail = false;
-try {
-  await syncMailbox();
-} catch (e) {
-  anyHardFail = true;
-  console.error(`MAILBOX ${IMAP_USER} FAILED:`, (e && e.message) || e);
+console.log(
+  `Syncing ${ACCOUNTS.length} mailbox${ACCOUNTS.length === 1 ? "" : "es"}: ${ACCOUNTS.map((a) => a.user).join(", ")}`,
+);
+for (const account of ACCOUNTS) {
+  try {
+    await syncMailbox(account);
+  } catch (e) {
+    anyHardFail = true;
+    console.error(`MAILBOX ${account.user} FAILED:`, (e && e.message) || e);
+  }
 }
 console.log(
   `Done. mode=${BACKFILL ? "BACKFILL(all)" : `incremental(${SINCE_DAYS}d)`} -> ${MAIL_INBOUND_URL}`,

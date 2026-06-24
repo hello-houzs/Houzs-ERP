@@ -53,6 +53,14 @@ export interface InboundEmailPayload {
   fromName?: string;
   to?: string[] | string;
   cc?: string[] | string;
+  // The envelope recipient as seen by the receiving server (the Delivered-To /
+  // Received-for header). With the FREE-ALIAS model every dept alias
+  // (operation@/sales@/marketing@/finance@/hr@) is an alias of the single hello@
+  // mailbox, so ALL mail is pulled from ONE IMAP account and `to` may not name
+  // the alias that was actually hit (list mail, BCC, forwards). Delivered-To is
+  // the authoritative routing key; we prefer it over `to`/`cc` when matching one
+  // of our email_addresses. May be a single address or a list.
+  deliveredTo?: string[] | string;
   subject?: string;
   text?: string;
   html?: string;
@@ -209,12 +217,18 @@ export async function ingestInboundEmail(
 
   const to = toArray(payload.to);
   const cc = toArray(payload.cc);
-  const recipients = [...to, ...cc];
+  const deliveredTo = toArray(payload.deliveredTo);
 
-  // Which of OUR addresses did this hit? Prefer an explicit email_addresses
-  // match, else the first recipient on our branding domain, else the first to:.
+  // Which of OUR addresses did this hit? With the free-alias model the dept
+  // alias is in Delivered-To (the envelope recipient), NOT necessarily in To/Cc.
+  // Resolve against email_addresses in priority order:
+  //   1. Delivered-To  (authoritative envelope recipient — the alias hit)
+  //   2. To, then Cc   (header recipients — covers direct sends + back-compat)
+  // The FIRST registered address that matches wins, so mail to sales@ lands on
+  // the Sales mailbox even though it was pulled from the shared hello@ account.
   let mailbox = "";
-  for (const r of recipients) {
+  const matchOrder = [...deliveredTo, ...to, ...cc];
+  for (const r of matchOrder) {
     const hit = await db
       .prepare(
         `SELECT address FROM email_addresses WHERE lower(address) = lower(?) LIMIT 1`,
@@ -227,11 +241,14 @@ export async function ingestInboundEmail(
     }
   }
   if (!mailbox) {
+    // No registered alias matched. Fall back to the first recipient on our
+    // branding domain, then any first recipient, then the general hello@ inbox.
     const domain = await brandingDomain(env);
+    const recipients = [...deliveredTo, ...to, ...cc];
     mailbox =
       recipients.find((r) => r.toLowerCase().endsWith(`@${domain}`)) ||
       recipients[0] ||
-      "";
+      `hello@${domain}`;
   }
 
   const now = new Date().toISOString();
@@ -626,6 +643,46 @@ async function getMailScope(c: Context<{ Bindings: Env }>): Promise<{
   }
 
   return { isAdmin: false, userId, addresses: dedupeLower(addresses), level };
+}
+
+// The caller's OWN outward alias (users.email_alias), lowercased — their personal
+// sending identity under the free-alias model. A member may send FROM this even
+// when it isn't a shared/dept mailbox in their getMailScope set. "" when none.
+async function ownAliasFor(
+  c: Context<{ Bindings: Env }>,
+): Promise<string> {
+  const user = c.get("user");
+  const alias = (user?.email_alias ?? "").trim().toLowerCase();
+  if (alias) return alias;
+  // Fallback for callers whose cached AuthUser predates the email_alias field:
+  // read it straight from users by id.
+  const userId = c.get("userId") ?? null;
+  if (userId == null) return "";
+  try {
+    const row = await c.env.DB.prepare(
+      `SELECT email_alias FROM users WHERE id = ? LIMIT 1`,
+    )
+      .bind(userId)
+      .first<{ email_alias?: string | null }>();
+    return (row?.email_alias ?? "").trim().toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+// Whether `fromAddress` is an allowed sender for this caller: admins may send
+// from any; everyone else from a mailbox in their scope OR their own alias.
+async function canSendFrom(
+  c: Context<{ Bindings: Env }>,
+  scope: { isAdmin: boolean; addresses: string[] },
+  fromAddress: string,
+): Promise<boolean> {
+  if (scope.isAdmin) return true;
+  const lc = fromAddress.trim().toLowerCase();
+  if (!lc) return false;
+  if (scope.addresses.includes(lc)) return true;
+  const alias = await ownAliasFor(c);
+  return !!alias && alias === lc;
 }
 
 // Lowercase + de-duplicate an address list (order-preserving).
@@ -1439,14 +1496,11 @@ app.post("/threads/:id/reply", async (c) => {
   const mailbox = (thread.mailbox_address ?? "").trim();
 
   // Resolve the From: an explicit fromAddress is honoured only when the caller
-  // may send from it (admin = any; non-admin = a mailbox in scope). Otherwise
-  // fall back to the thread's mailbox (already ownership-checked above).
+  // may send from it (admin = any; non-admin = a mailbox in scope OR their own
+  // alias). Otherwise fall back to the thread's mailbox (ownership-checked above).
   const requestedFrom = (body.fromAddress ?? "").trim();
   let fromAddress = mailbox;
-  if (
-    requestedFrom &&
-    (scope.isAdmin || scope.addresses.includes(requestedFrom.toLowerCase()))
-  ) {
+  if (requestedFrom && (await canSendFrom(c, scope, requestedFrom))) {
     fromAddress = requestedFrom;
   }
 
@@ -1562,8 +1616,9 @@ app.post("/compose", async (c) => {
   }
 
   // Authorize the From: non-admins may only send from a mailbox they own or have
-  // been granted. addresses are already lowercased in getMailScope.
-  if (!scope.isAdmin && !scope.addresses.includes(fromAddress.toLowerCase())) {
+  // been granted, OR their own outward alias (users.email_alias). addresses are
+  // already lowercased in getMailScope.
+  if (!(await canSendFrom(c, scope, fromAddress))) {
     return c.json({ error: "not allowed to send from " + fromAddress }, 403);
   }
 

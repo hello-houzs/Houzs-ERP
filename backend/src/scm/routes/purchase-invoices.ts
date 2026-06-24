@@ -8,7 +8,7 @@ import {
   orderSofaModuleRowsWithinBuilds,
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
-import { reversePiAccounting, resyncPiAccounting } from './accounting';
+import { postPiAccounting, reversePiAccounting, resyncPiAccounting } from './accounting';
 import { recostForPi, recostFromGrn } from '../lib/recost';
 import { nextMonthlyDocNo } from '../lib/doc-no';
 
@@ -317,10 +317,16 @@ purchaseInvoices.get('/:id/linked', async (c) => {
 purchaseInvoices.post('/', async (c) => {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
-  if (body.status === 'DRAFT') return c.json({ error: 'draft_status_not_supported', message: 'DRAFT was removed in migration 0078 — PIs post immediately on create.' }, 400);
   if (!body.supplierId) return c.json({ error: 'supplier_required' }, 400);
   const items = body.items as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(items) || !items.length) return c.json({ error: 'items_required' }, 400);
+
+  /* DRAFT lifecycle (re-added per the full 6-doc Draft/Confirmed plan; reverses
+     migration 0078's PI DRAFT removal). asDraft is opt-in per request — a normal
+     create still defaults to POSTED (the committed state), exactly like SO. A
+     DRAFT PI commits NOTHING: no GRN-line consume, no GL post, no recost. Those
+     all move to the confirm transition (PATCH /:id/post). */
+  const asDraft = body.asDraft === true;
 
   const sb = c.get('supabase'); const user = c.get('user');
 
@@ -398,8 +404,8 @@ purchaseInvoices.post('/', async (c) => {
     subtotal_centi: subtotal,
     total_centi: subtotal,
     notes: (body.notes as string) ?? null,
-    status: 'POSTED',
-    posted_at: new Date().toISOString(),
+    status: asDraft ? 'DRAFT' : 'POSTED',
+    posted_at: asDraft ? null : new Date().toISOString(),
     created_by: user.id,
   }).select(HEADER).single();
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
@@ -420,28 +426,73 @@ purchaseInvoices.post('/', async (c) => {
       return c.json({ error: 'qty_exceeds_remaining', lines: over }, 409);
     }
   }
-  // Self-heal the GRN invoiced counter so the just-billed lines drop out of the
-  // outstanding picker (mirrors /from-grn-items line ~523 + /:id/items).
-  await recomputeGrnInvoiced(sb, itemRows.map((r) => r.grn_item_id));
-  // Costing B — a new PI is the authoritative cost: re-cost the GRN's lots →
-  // consumptions → movements → DO → SI so a shipped order's margin reflects the
-  // billed price (or its later correction) in real time.
-  await recostForPi(sb, h.id);
+  /* LEAK GUARD (DRAFT) — a DRAFT PI commits nothing: it must NOT consume the GRN
+     line (recomputeGrnInvoiced) nor re-cost (recostForPi). Both move to the
+     confirm transition (PATCH /:id/post). GL/AP posting (postPiAccounting) is
+     ALSO skipped for DRAFT — but note PI never auto-posts the GL on create even
+     when POSTED (it posts only on demand via /post/pi), so there's no GL call to
+     gate here on this path; the confirm transition is where it now posts. */
+  if (!asDraft) {
+    // Self-heal the GRN invoiced counter so the just-billed lines drop out of the
+    // outstanding picker (mirrors /from-grn-items line ~523 + /:id/items).
+    await recomputeGrnInvoiced(sb, itemRows.map((r) => r.grn_item_id));
+    // Costing B — a new PI is the authoritative cost: re-cost the GRN's lots →
+    // consumptions → movements → DO → SI so a shipped order's margin reflects the
+    // billed price (or its later correction) in real time.
+    await recostForPi(sb, h.id);
+  }
   return c.json({ id: h.id, invoiceNumber: h.invoice_number }, 201);
 });
 
+/* ── PATCH /:id/post — CONFIRM transition (DRAFT → POSTED) ───────────────────
+   This is where a DRAFT PI commits. It mirrors the SO confirm: an atomic
+   DRAFT → POSTED flip, then the side-effects that a DRAFT deliberately skipped
+   on create now run exactly once here:
+     · recomputeGrnInvoiced  — consume the source GRN lines (drop them out of the
+       outstanding picker) — the SAME chokepoint POST/ runs for a non-DRAFT PI.
+     · postPiAccounting       — post Dr Inventory 1200 / Cr Payables 2000 (AP/GL).
+     · recostForPi            — push the billed price down the lots → DO → SI.
+   Idempotent + back-compat: a PI already POSTED (e.g. created non-DRAFT) echoes
+   back without re-committing — postPiAccounting is itself idempotent (keyed on an
+   active PI JE) and recomputeGrnInvoiced is a from-scratch recount, so a stray
+   double-call can't double-bill. */
 purchaseInvoices.patch('/:id/post', async (c) => {
-  /* PR-DRAFT-removal — kept for backward compat; idempotent. POST now
-     creates PIs as POSTED directly. */
   const sb = c.get('supabase'); const id = c.req.param('id');
-  const { data: cur } = await sb.from('purchase_invoices').select('id, status').eq('id', id).maybeSingle();
+  const { data: cur } = await sb.from('purchase_invoices').select('id, status, invoice_number').eq('id', id).maybeSingle();
   if (!cur) return c.json({ error: 'not_found' }, 404);
-  if ((cur as { status: string }).status === 'POSTED') return c.json({ purchaseInvoice: cur });
+  const curRow = cur as { id: string; status: string; invoice_number: string };
+  // Already POSTED (or beyond — PARTIALLY_PAID / PAID) → nothing to confirm.
+  if (curRow.status !== 'DRAFT') return c.json({ purchaseInvoice: cur });
+
+  /* Atomic single DRAFT → POSTED transition — the conditional UPDATE only fires
+     when the row is still DRAFT, so two concurrent confirms race and exactly ONE
+     flips it (the other gets no row → idempotent echo). This guarantees the
+     GRN-consume + GL post + recost below run exactly once. */
   const { data, error } = await sb.from('purchase_invoices').update({
     status: 'POSTED', posted_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-  }).eq('id', id).neq('status', 'CANCELLED').select('id, status').single();
+  }).eq('id', id).eq('status', 'DRAFT').select('id, status').maybeSingle();
   if (error) return c.json({ error: 'post_failed', reason: error.message }, 500);
-  if (!data) return c.json({ error: 'cannot_post' }, 409);
+  if (!data) {
+    // Lost the race — a concurrent confirm already flipped it. Echo the live row.
+    const { data: now } = await sb.from('purchase_invoices').select('id, status').eq('id', id).maybeSingle();
+    return c.json({ purchaseInvoice: now ?? cur });
+  }
+
+  // COMMIT (was skipped at DRAFT create). Consume the GRN lines so the just-billed
+  // rows drop out of the outstanding picker.
+  const { data: lines } = await sb.from('purchase_invoice_items')
+    .select('grn_item_id').eq('purchase_invoice_id', id);
+  const grnItemIds = (lines ?? []).map((l: { grn_item_id: string | null }) => l.grn_item_id);
+  await recomputeGrnInvoiced(sb, grnItemIds);
+  // Post the AP/GL entry (Dr Inventory 1200 / Cr Payables 2000). Best-effort —
+  // idempotent + a post failure never un-confirms the PI.
+  const postRes = await postPiAccounting(sb, curRow.invoice_number);
+  if (!postRes.ok) {
+    // eslint-disable-next-line no-console
+    console.error(`[pi-accounting] confirm post failed for ${curRow.invoice_number}:`, postRes.status, postRes.reason);
+  }
+  // Costing B — the now-confirmed PI is the authoritative cost: re-cost lots/DO/SI.
+  await recostForPi(sb, id);
   return c.json({ purchaseInvoice: data });
 });
 
@@ -466,7 +517,9 @@ purchaseInvoices.patch('/:id/payment', async (c) => {
       .select('paid_centi, total_centi, status').eq('id', id).maybeSingle();
     if (!cur) return c.json({ error: 'not_found' }, 404);
     const c0 = cur as { paid_centi: number; total_centi: number; status: string };
-    // DRAFT removed in migration 0078 — only block CANCELLED now.
+    // LEAK GUARD (DRAFT) — a DRAFT PI is not yet a real liability; reject payment
+    // until it's confirmed. (Re-added with the DRAFT lifecycle — see POST/.)
+    if (c0.status === 'DRAFT') return c.json({ error: 'not_payable', message: 'PI is a draft — confirm it before recording payment' }, 409);
     if (c0.status === 'CANCELLED') return c.json({ error: 'not_payable', message: 'PI is cancelled' }, 409);
 
     const newPaid = c0.paid_centi + amount;
@@ -499,6 +552,16 @@ purchaseInvoices.patch('/:id/cancel', async (c) => {
   }
   // Idempotent — already cancelled, echo back without re-releasing.
   if (head.status === 'CANCELLED') return c.json({ purchaseInvoice: { id, status: 'CANCELLED' } });
+
+  /* LEAK GUARD (DRAFT) — a DRAFT PI never committed anything (no GL post, no
+     GRN consume, no recost), so cancelling it is a plain status flip: skip the
+     accounting reversal + GRN release + recost entirely (nothing to reverse). */
+  if (head.status === 'DRAFT') {
+    const { data: d } = await sb.from('purchase_invoices').update({
+      status: 'CANCELLED', updated_at: new Date().toISOString(),
+    }).eq('id', id).eq('status', 'DRAFT').select('id, status').maybeSingle();
+    return c.json({ purchaseInvoice: d ?? { id, status: 'CANCELLED' } });
+  }
 
   /* Bug #3/#11 — ATOMIC single ACTIVE→CANCELLED transition. The conditional
      UPDATE excludes both PAID and CANCELLED, so two concurrent cancels race on

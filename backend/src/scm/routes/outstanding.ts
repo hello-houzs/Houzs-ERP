@@ -64,6 +64,12 @@ for (const [slug, { view, dateCol }] of Object.entries(MODULES)) {
         q = q.eq("is_outstanding", false);
       }
       // else 'all' (or any other value) → no filter, return both
+      /* LEAK GUARD (DRAFT) — a DRAFT Sales Invoice has not posted AR yet, so it
+         must never appear in the SI Outstanding / AR-aging list. The
+         v_si_outstanding view's is_outstanding CASE only excludes PAID/CANCELLED
+         (it would mark a DRAFT outstanding), so filter DRAFT out here. The view
+         exposes s.status, so this is safe (verified 0059_outstanding_views.sql). */
+      if (slug === "si") q = q.neq("status", "DRAFT");
       if (from) q = q.gte(dateCol, from);
       if (to) q = q.lte(dateCol, to);
       return q.range(pFrom, pTo);
@@ -97,6 +103,8 @@ outstanding.get("/summary", async (c) => {
     // 1000-row cap would understate both on a large outstanding set.
     const { data } = await paginateAll((pFrom, pTo) => {
       let q = sb.from(view).select("*").eq("is_outstanding", true);
+      // LEAK GUARD (DRAFT) — keep DRAFT SIs out of the AR outstanding totals.
+      if (slug === "si") q = q.neq("status", "DRAFT");
       if (from) q = q.gte(dateCol, from);
       if (to) q = q.lte(dateCol, to);
       return q.range(pFrom, pTo);

@@ -46,6 +46,7 @@ import {
   useUpdateGrnItem,
   useDeleteGrnItem,
   useCancelGrn,
+  usePostGrn,
 } from '../../vendor/scm/lib/grn-queries';
 import {
   useSuppliers, useSupplierDetail,
@@ -190,6 +191,7 @@ export const GoodsReceivedDetail = () => {
   const askConfirm = useConfirm();
   const notify = useNotify();
   const cancel = useCancelGrn();
+  const confirmGrn = usePostGrn();
 
   const grn = detail.data?.grn ?? null;
   const items = (detail.data?.items ?? []) as GrnItemRow[];
@@ -232,11 +234,14 @@ export const GoodsReceivedDetail = () => {
   const [lineDrafts, setLineDrafts] = useState<Record<string, LineDraft>>({});
   const [savingDraft, setSavingDraft] = useState(false);
 
-  // POSTED ("Confirmed") is editable UNLESS the GRN has a downstream PI/PR
-  // (unified model, migration 0106): once a child exists the page is read-only —
-  // to edit you must delete the downstream doc first. CANCELLED / CLOSED also lock.
+  // DRAFT + POSTED ("Confirmed") are editable; CANCELLED / CLOSED lock. POSTED is
+  // additionally locked once the GRN has a downstream PI/PR (unified model,
+  // migration 0106) — to edit you must delete the downstream doc first. A DRAFT
+  // GRN can never have downstream children (it committed nothing), so it stays
+  // editable. The line-CRUD endpoints accept DRAFT writes WITHOUT moving stock.
   const hasChildren = Boolean(grn?.has_children);
-  const isLocked = grn ? (grn.status !== 'POSTED' || hasChildren) : true;
+  const isDraft = grn?.status === 'DRAFT';
+  const isLocked = grn ? !(grn.status === 'DRAFT' || (grn.status === 'POSTED' && !hasChildren)) : true;
   // Distinguish the child-lock case so we can show the "delete it first" note.
   const lockedDueToChildren = grn ? (grn.status === 'POSTED' && hasChildren) : false;
 
@@ -421,15 +426,18 @@ export const GoodsReceivedDetail = () => {
             <Printer {...ICON} />
             <span>Print PDF</span>
           </Button>
-          {/* Cancel — only when the GRN is still editable (Confirmed) AND has no
-              downstream PI/PR (unified model). Confirm dialog → cancel mutation
-              (reverses the receipt server-side). */}
-          {grn.status === 'POSTED' && !hasChildren && (
+          {/* Cancel — when the GRN is still editable (Draft or Confirmed) AND has
+              no downstream PI/PR (unified model). Confirm dialog → cancel mutation.
+              For a Confirmed GRN this reverses the receipt; for a Draft the server
+              short-circuits (nothing committed to reverse) and just voids it. */}
+          {(grn.status === 'POSTED' || grn.status === 'DRAFT') && !hasChildren && (
             <Button variant="ghost" size="md"
               onClick={async () => {
                 if (!(await askConfirm({
                   title: `Cancel GRN ${grn.grn_number}?`,
-                  body: `This reverses the receipt — stock is taken back out and the source PO's received qty is rolled back. Line items stay for audit.`,
+                  body: isDraft
+                    ? 'This voids the draft. Nothing was committed, so no stock or PO change is reversed. Line items stay for audit.'
+                    : `This reverses the receipt — stock is taken back out and the source PO's received qty is rolled back. Line items stay for audit.`,
                   confirmLabel: 'Cancel GRN',
                   danger: true,
                 }))) return;
@@ -464,6 +472,46 @@ export const GoodsReceivedDetail = () => {
       {lockedDueToChildren && (
         <div className={styles.bannerWarn}>
           <strong>Locked</strong> — has a Purchase Invoice / Return. Delete it first to edit.
+        </div>
+      )}
+
+      {/* ── DRAFT banner + Confirm (Draft/Confirmed flow, mirrors SO) ───────
+          A GRN saved as a draft has committed NOTHING: no stock IN, no PO
+          received-rollup. Review the lines, then Confirm to receive — that runs
+          postGrnAndRollup server-side (inventory IN + PO rollup) and flips the
+          status to Confirmed. Stays out of inventory + the PI/PR pickers until
+          then. */}
+      {isDraft && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 'var(--space-3)',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          fontSize: 'var(--fs-13)',
+        }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <FileText {...ICON} />
+            <span>
+              <strong>Draft — not yet confirmed.</strong>{' '}
+              Review and Confirm to receive the goods (stock moves in + the PO updates only on confirm).
+            </span>
+          </span>
+          <Button variant="primary" size="sm"
+            onClick={async () => {
+              if (!(await askConfirm({
+                title: `Confirm GRN ${grn.grn_number}?`,
+                body: 'This receives the goods — stock moves in and the source PO received quantity updates. The GRN becomes Confirmed.',
+                confirmLabel: 'Confirm & Receive',
+              }))) return;
+              confirmGrn.mutate(grn.id, {
+                onError: (err) => notify({ title: 'Confirm failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+              });
+            }}
+            disabled={confirmGrn.isPending}>
+            <span>{confirmGrn.isPending ? 'Confirming…' : 'Confirm & Receive'}</span>
+          </Button>
         </div>
       )}
 

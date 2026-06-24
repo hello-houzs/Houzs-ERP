@@ -94,6 +94,7 @@ const compactDate = (iso: string | null | undefined): string => {
    plus CANCELLED. Pill styling reuses the SO detail status classes where the
    stages line up; the rest fall back to a neutral pill. */
 const STATUS_CLASS: Record<string, string> = {
+  DRAFT:       soDetailStyles.statusDraft ?? '',
   LOADED:      soDetailStyles.statusConfirmed ?? '',
   DISPATCHED:  soDetailStyles.statusShipped ?? '',
   IN_TRANSIT:  soDetailStyles.statusInProd ?? '',
@@ -104,6 +105,7 @@ const STATUS_CLASS: Record<string, string> = {
   CANCELLED:   soDetailStyles.statusCancelled ?? '',
 };
 const STATUS_LABEL: Record<string, string> = {
+  DRAFT:      'Draft',
   LOADED:     'Loaded',
   DISPATCHED: 'Shipped',
   IN_TRANSIT: 'In Transit',
@@ -120,11 +122,15 @@ const STATUS_LABEL: Record<string, string> = {
 type DoLifecycle = 'shipped' | 'invoiced' | 'returned';
 const doEffectiveKey = (status: string, lifecycle?: DoLifecycle): string => {
   if (status === 'CANCELLED') return 'CANCELLED';
+  /* DRAFT flow (2026-06-24) — a DRAFT DO has NOT shipped, so it must NOT collapse
+     to the 'shipped' (DISPATCHED) baseline below (the old bug rendered a draft as
+     "Shipped"). Short-circuit on the stored status BEFORE the lifecycle override. */
+  if (status === 'DRAFT') return 'DRAFT';
   if (lifecycle === 'returned') return 'RETURNED';
   if (lifecycle === 'invoiced') return 'INVOICED';
   return 'DISPATCHED'; // shipped baseline
 };
-const STATUS_CHIPS = ['all', 'DISPATCHED', 'INVOICED', 'RETURNED', 'CANCELLED'] as const;
+const STATUS_CHIPS = ['all', 'DRAFT', 'DISPATCHED', 'INVOICED', 'RETURNED', 'CANCELLED'] as const;
 
 const StatusPill = ({ status, lifecycle }: { status: string; lifecycle?: DoLifecycle }) => {
   const key = doEffectiveKey(status, lifecycle);
@@ -369,6 +375,9 @@ export const MfgDeliveryOrdersList = () => {
   const kpis = useMemo(() => {
     let revenue = 0, cost = 0, margin = 0;
     for (const r of visibleRows) {
+      /* LEAK GUARD (DRAFT): a DRAFT DO has not shipped — keep it out of the
+         revenue / cost / margin tiles so a draft never inflates committed KPIs. */
+      if (r.status === 'DRAFT') continue;
       revenue += r.local_total_centi ?? 0;
       cost += r.total_cost_centi ?? 0;
       margin += r.total_margin_centi ?? 0;

@@ -343,7 +343,11 @@ export const PurchaseInvoiceNew = () => {
 
   const canSave = !!supplierId && lines.length > 0 && lines.every((l) => l.qty > 0);
 
-  const onSave = async () => {
+  /* asDraft = "Save as Draft": create the PI as DRAFT (no AP/GL post, no GRN
+     consume) so the operator can review/correct first, then Confirm on the detail
+     page. Default (asDraft=false) keeps the existing create-then-auto-post flow so
+     PI lands POSTED, exactly like the SO template's CONFIRMED default. */
+  const onSave = async (asDraft = false) => {
     if (!supplierId) {
       setDialog({ title: 'Pick a supplier', body: isManual
         ? 'Choose a supplier for this manual invoice.'
@@ -367,6 +371,9 @@ export const PurchaseInvoiceNew = () => {
         invoiceDate,
         dueDate:            dueDate || undefined,
         notes:              notes || undefined,
+        // DRAFT lifecycle — opt-in. The server skips the GRN consume + GL post
+        // for a DRAFT; both run on Confirm (PATCH /:id/post).
+        asDraft,
         items: realLines.map((l) => ({
           grnItemId:      l.grnItemId,
           materialKind:   l.materialKind,
@@ -382,11 +389,15 @@ export const PurchaseInvoiceNew = () => {
           variants:       l.variants,
         })),
       });
-      // Auto-post so PI lands in POSTED state (matches PO + GRN behaviour).
-      await post.mutateAsync(createRes.id);
+      if (!asDraft) {
+        // Auto-post (Confirm) so PI lands in POSTED state (matches PO + GRN).
+        await post.mutateAsync(createRes.id);
+      }
       setDialog({
         title: `PI ${createRes.invoiceNumber} created`,
-        body: 'Created + posted — AP liability recorded.',
+        body: asDraft
+          ? 'Saved as Draft — review, then Confirm to post the AP liability.'
+          : 'Created + posted — AP liability recorded.',
         goTo: `/scm/purchase-invoices/${createRes.id}`,
       });
     } catch (err) {
@@ -414,7 +425,13 @@ export const PurchaseInvoiceNew = () => {
           <Button variant="ghost" size="md" onClick={() => navigate(isManual ? '/scm/purchase-invoices' : (grn ? `/scm/grns/${grn.id}` : '/scm/grns'))}>
             <X {...ICON} /> Cancel
           </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={saving}>
+          {/* Save as Draft — creates the PI as DRAFT (no AP post / GRN consume);
+              Confirm later on the detail page. Mirrors the SO Draft flow. */}
+          <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={saving}>
+            <Save {...ICON} />
+            {saving ? 'Saving…' : 'Save as Draft'}
+          </Button>
+          <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={saving}>
             <Save {...ICON} />
             {saving ? 'Saving…' : 'Create Purchase Invoice'}
           </Button>

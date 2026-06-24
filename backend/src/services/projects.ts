@@ -303,7 +303,17 @@ export async function instantiateChecklistFromEventType(
     .all<{ id: number; name: string; sort_order: number; display_mode: string | null }>();
 
   const sectionIdMap = new Map<number, number>();
+  // Owner default (2026-06-24): items in the OPERATION section start as N/A so
+  // they don't read as pending. N/A items are off the progress math everywhere
+  // (done / (total − na)), so OPERATION renders 0/0 until a coordinator marks an
+  // item applicable. Collect the template section ids named OPERATION so the
+  // item loop below can seed the right status per section. Only runs at NEW
+  // project creation — existing projects' rows are never touched.
+  const operationSectionIds = new Set<number>();
   for (const s of tplSections.results ?? []) {
+    if ((s.name ?? "").trim().toUpperCase() === "OPERATION") {
+      operationSectionIds.add(s.id);
+    }
     const ins = await env.DB.prepare(
       `INSERT INTO project_checklist_sections (project_id, name, sort_order, display_mode)
        VALUES (?, ?, ?, ?)`
@@ -347,6 +357,12 @@ export async function instantiateChecklistFromEventType(
     const requiredPerm =
       item.required_perm ??
       (item.requires_review ? "projects.approve" : null);
+    // Seed status: pill rows (payment/deposit) and OPERATION-section items
+    // clone in as 'na' (off the progress math, never shown as pending);
+    // everything else starts 'pending'.
+    const isOperation =
+      item.section_id != null && operationSectionIds.has(item.section_id);
+    const seedStatus = item.pill_kind || isOperation ? "na" : "pending";
     await env.DB.prepare(
       `INSERT INTO project_checklist
          (project_id, section_id, seq, title, description, required_perm,
@@ -364,9 +380,7 @@ export async function instantiateChecklistFromEventType(
         item.crew_visible ? 1 : 0,
         due,
         item.due_offset_days,
-        // Pill rows (payment/deposit) never count toward checklist
-        // progress, so they clone in as 'na'.
-        item.pill_kind ? "na" : "pending",
+        seedStatus,
         item.pill_kind,
         item.pill_value
       )

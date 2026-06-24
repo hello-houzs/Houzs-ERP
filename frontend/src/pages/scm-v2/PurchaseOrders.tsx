@@ -42,9 +42,13 @@ const ICON = { size: 16, strokeWidth: 1.75 } as const;
 // that. "All" stays as the escape hatch when chasing closed/cancelled history.
 // Outstanding = SUBMITTED ∪ PARTIALLY_RECEIVED. Filtered client-side since the
 // API supports only one status at a time.
-type StatusFilter = 'all' | 'outstanding';
+// Draft/Confirmed two-state — a third "Draft" tab surfaces uncommitted POs
+// (status DRAFT). Outstanding stays the default 95% view (committed POs still
+// inbound); Draft is the review queue; All is the escape hatch.
+type StatusFilter = 'all' | 'outstanding' | 'draft';
 const STATUS_CHIPS: { value: StatusFilter; label: string }[] = [
   { value: 'outstanding', label: 'Outstanding' },
+  { value: 'draft', label: 'Draft' },
   { value: 'all', label: 'All' },
 ];
 
@@ -52,7 +56,8 @@ const STATUS_CHIPS: { value: StatusFilter; label: string }[] = [
 // active = burnt · in-progress = darker burnt · complete = green · cancelled = red.
 // Keeps the PO list pill colours identical to the PO detail page.
 const STATUS_COLOR: Record<PoStatus, string> = {
-  // DRAFT removed in migration 0078.
+  // Draft/Confirmed — muted neutral so a draft reads as "not yet live".
+  DRAFT: 'rgba(120, 113, 108, 0.14)',
   SUBMITTED: 'rgba(166, 71, 30, 0.12)',
   PARTIALLY_RECEIVED: 'rgba(166, 71, 30, 0.18)',
   RECEIVED: 'rgba(47, 93, 79, 0.28)',
@@ -231,6 +236,8 @@ export const PurchaseOrders = () => {
   const rows = useMemo(() => {
     const all = data ?? [];
     if (status === 'all') return all;
+    if (status === 'draft') return all.filter((r) => r.status === 'DRAFT');
+    // Outstanding = committed + still inbound (excludes DRAFT, which is uncommitted).
     return all.filter((r) => r.status === 'SUBMITTED' || r.status === 'PARTIALLY_RECEIVED');
   }, [data, status]);
 

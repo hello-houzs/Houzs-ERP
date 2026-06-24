@@ -90,6 +90,7 @@ const compactDate = (iso: string | null | undefined): string => {
    PAID, plus CANCELLED. Pill styling reuses the SO detail status classes where
    they line up; the rest fall back to a neutral pill. */
 const STATUS_CLASS: Record<string, string> = {
+  DRAFT:          soDetailStyles.statusDraft ?? '',
   SENT:           soDetailStyles.statusShipped ?? '',
   PARTIALLY_PAID: soDetailStyles.statusInProd ?? '',
   PAID:           soDetailStyles.statusDelivered ?? '',
@@ -97,13 +98,14 @@ const STATUS_CLASS: Record<string, string> = {
   CANCELLED:      soDetailStyles.statusCancelled ?? '',
 };
 const STATUS_LABEL: Record<string, string> = {
+  DRAFT:          'Draft',
   SENT:           'Issued',
   PARTIALLY_PAID: 'Partially Paid',
   PAID:           'Paid',
   OVERDUE:        'Overdue',
   CANCELLED:      'Cancelled',
 };
-const STATUS_CHIPS = ['all', 'SENT', 'PARTIALLY_PAID', 'PAID', 'CANCELLED'] as const;
+const STATUS_CHIPS = ['all', 'DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'CANCELLED'] as const;
 
 const StatusPill = ({ status }: { status: string }) => (
   <span className={`${soDetailStyles.statusPill} ${STATUS_CLASS[status] ?? ''}`}>
@@ -326,6 +328,10 @@ export const SalesInvoicesList = () => {
   const kpis = useMemo(() => {
     let revenue = 0, cost = 0, margin = 0, outstanding = 0;
     for (const r of visibleRows) {
+      /* LEAK GUARD (DRAFT) — a DRAFT invoice has posted no revenue/AR, so it must
+         not feed the Revenue / Cost / Margin / Outstanding tiles (it is still
+         counted in Total Invoices so the operator can see drafts exist). */
+      if (r.status === 'DRAFT') continue;
       revenue += localTotal(r);
       cost += r.total_cost_centi ?? 0;
       margin += r.total_margin_centi ?? 0;

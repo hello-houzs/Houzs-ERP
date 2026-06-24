@@ -1115,6 +1115,12 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
  * picked user has the project's brand in their user_brands row set
  * (mig 049, replaces the prior dept-level join in mig 048).
  *
+ * Brand-relaxed for Sales (owner: Option A). Any member of the Sales
+ * department may be assigned PIC regardless of brand coverage — the
+ * PIC picker lists all Sales-dept members ignoring brand, so the save
+ * gate must accept them too. Non-Sales users still need a matching
+ * user_brands row.
+ *
  * A project with no brand can never have a PIC assigned: there's no
  * brand to match against, and unbranded projects are deliberately
  * invisible to scoped users anyway.
@@ -1127,6 +1133,17 @@ async function canPicProjectBrand(
   if (!brand) return false;
   // env.DB (not getDb): this gate must also work on the D1 fallback used by
   // the test suite and the rollback path, where no DATABASE_URL is bound.
+  // Brand-relaxed: a Sales-department member is always an eligible PIC.
+  const sales = await env.DB.prepare(
+    `SELECT 1 AS one
+       FROM users u
+       JOIN departments d ON d.id = u.department_id
+      WHERE u.id = ? AND LOWER(d.name) LIKE '%sales%'
+      LIMIT 1`
+  )
+    .bind(picUserId)
+    .first();
+  if (sales !== null) return true;
   const row = await env.DB.prepare(
     `SELECT 1 AS one FROM user_brands WHERE user_id = ? AND brand = ? LIMIT 1`
   )
@@ -2783,26 +2800,23 @@ app.delete("/team/:teamId", requirePermission("projects.write"), async (c) => {
 // /api/sales-team/reps because that endpoint is gated on
 // `sales_team.read` (which project roles don't carry) AND returns
 // PII (phone, email, NRIC) the picker doesn't need. This endpoint
-// is gated on `projects.write` (same as add/remove below), filters
-// to position=sales_person (boss's call: that's the role that
-// attends), and matches brand case-insensitively so a future hand-
-// edit drift doesn't silently empty the picker.
+// is gated on `projects.write` (same as add/remove below) and filters
+// to position=sales_person (boss's call: that's the role that attends).
+//
+// Brand-relaxed (owner: Option A) — lists ALL active sales_person reps
+// regardless of brand. The legacy ?brand= query param is accepted but
+// ignored so the frontend doesn't need a coordinated change.
 app.get("/sales-rep-options", requirePermission("projects.write"), async (c) => {
-  const brand = c.req.query("brand") || null;
   const rows = await c.env.DB.prepare(
     `SELECT r.id, r.code, r.name
        FROM sales_reps r
        JOIN sales_positions p ON p.id = r.position_id
-       LEFT JOIN sales_rep_brands srb ON srb.rep_id = r.id
       WHERE r.archived_at IS NULL
         AND r.status = 'active'
         AND p.slug = 'sales_person'
-        AND (?1::text IS NULL OR UPPER(srb.brand) = UPPER(?1))
       GROUP BY r.id
       ORDER BY r.code`
-  )
-    .bind(brand)
-    .all<{ id: number; code: string; name: string }>();
+  ).all<{ id: number; code: string; name: string }>();
   return c.json({ data: rows.results ?? [] });
 });
 

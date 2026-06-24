@@ -48,6 +48,7 @@ import {
   useUpdatePurchaseInvoiceItem,
   useDeletePurchaseInvoiceItem,
   useCancelPurchaseInvoice,
+  usePostPurchaseInvoice,
 } from '../../vendor/scm/lib/purchase-invoice-queries';
 import {
   useSuppliers, useSupplierDetail,
@@ -154,6 +155,7 @@ export const PurchaseInvoiceDetail = () => {
   const askConfirm = useConfirm();
   const notify = useNotify();
   const cancel = useCancelPurchaseInvoice();
+  const confirmPi = usePostPurchaseInvoice();
 
   const pi = detail.data?.purchaseInvoice ?? null;
   /* Memoised so the edit-mode seed + cost-recompute effects don't re-fire on
@@ -213,6 +215,9 @@ export const PurchaseInvoiceDetail = () => {
   // payment recorded (paid_centi > 0) OR is CANCELLED. POSTED with zero payment
   // stays editable.
   const isLocked = pi ? (pi.status === 'CANCELLED' || (pi.paid_centi ?? 0) > 0) : true;
+  // DRAFT lifecycle — a DRAFT PI is editable (not locked) and shows a Confirm
+  // banner; confirming flips DRAFT → POSTED (where AP/GL post + GRN consume run).
+  const isDraft = (pi?.status as string) === 'DRAFT';
 
   /* If the PI locks while we're in Edit mode (e.g. cancelled in another tab),
      drop back to View + discard the draft. */
@@ -543,6 +548,45 @@ export const PurchaseInvoiceDetail = () => {
           )}
         </div>
       </div>
+
+      {/* ── DRAFT banner + Confirm (DRAFT flow) ─────────────────────
+          A PI created with Save as Draft lands as DRAFT: no AP/GL post, no GRN
+          consume, no recost happened yet. Review + Confirm flips DRAFT → POSTED
+          (PATCH /:id/post), which is where the AP liability posts + the GRN lines
+          are consumed. Mirrors the SO detail DRAFT banner. */}
+      {isDraft && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          fontSize: 'var(--fs-13)',
+          marginBottom: 'var(--space-3)',
+        }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <FileText {...ICON} />
+            <span>
+              <strong>Draft — not yet confirmed.</strong>{' '}
+              Review and Confirm to post the AP liability (it stays out of payables / GL until then).
+            </span>
+          </span>
+          <Button variant="primary" size="sm"
+            onClick={async () => {
+              if (!(await askConfirm({
+                title: `Confirm invoice ${pi.invoice_number}?`,
+                body: 'This posts the supplier AP liability and consumes the linked GRN lines. The invoice becomes payable.',
+                confirmLabel: 'Confirm Invoice',
+              }))) return;
+              confirmPi.mutate(pi.id, {
+                onError: (err) => notify({ title: 'Confirm failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+              });
+            }}
+            disabled={confirmPi.isPending}>
+            <span>{confirmPi.isPending ? 'Confirming…' : 'Confirm Invoice'}</span>
+          </Button>
+        </div>
+      )}
 
       {/* ── Supplier / ref / dates / currency / notes ───────────── */}
       {/* In View the card renders read-only text; in Edit it shows inputs bound

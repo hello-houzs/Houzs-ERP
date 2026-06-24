@@ -102,8 +102,9 @@ export async function logSalesTeamActivity(
 // editable in the Sales Team page — only the rep ROW lifecycle is auto-
 // managed here. Called from users PATCH after department_id changes.
 //
-// Department lookup is by NAME (case-insensitive) — there's no slug on
-// the departments table, but the seeded row is canonically "Sales".
+// Department lookup is by NAME (case-insensitive). There's no slug on
+// the departments table; the seeded row is canonically "Sales" but prod
+// uses "Sales Department", so we match any name CONTAINING 'sales'.
 
 export async function syncSalesRepFromUser(
   env: Env,
@@ -120,7 +121,7 @@ export async function syncSalesRepFromUser(
     .first<{ id: number; name: string | null; email: string; dept_name: string | null }>();
   if (!user) return { action: "noop", repId: null };
 
-  const isSales = (user.dept_name || "").trim().toLowerCase() === "sales";
+  const isSales = (user.dept_name || "").trim().toLowerCase().includes("sales");
 
   // Existing rep linked to this user (active or archived).
   const existing = await env.DB.prepare(
@@ -219,7 +220,7 @@ export async function autoBackfillSalesReps(env: Env): Promise<number> {
        FROM users u
        JOIN departments d ON d.id = u.department_id
   LEFT JOIN sales_reps r ON r.user_id = u.id
-      WHERE LOWER(d.name) = 'sales'
+      WHERE LOWER(d.name) LIKE '%sales%'
         AND r.id IS NULL`,
   ).all<{ id: number }>();
   const missing = rows.results ?? [];

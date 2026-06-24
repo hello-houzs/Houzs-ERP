@@ -414,6 +414,9 @@ export interface RolePageAccess {
 export interface AuthUser {
   id: number;
   email: string;
+  /** The signed-in member's outward Mail Center alias (users.email_alias).
+   *  Lets them compose/reply FROM their own address. Older backends omit it. */
+  email_alias?: string | null;
   name: string | null;
   role_id: number;
   role_name: string;
