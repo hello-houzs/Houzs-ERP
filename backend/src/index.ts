@@ -37,6 +37,7 @@ import stockItems from "./routes/stockItems";
 import fleet from "./routes/fleet";
 import lorries from "./routes/lorries";
 import settings from "./routes/settings";
+import branding from "./routes/branding";
 import inbox from "./routes/inbox";
 import projectsPrint from "./routes/projects_print";
 import search from "./routes/search";
@@ -59,6 +60,7 @@ import { runProjectDueReminders } from "./services/projectReminders";
 // service client scan-so.ts uses internally (serviceClient(env)).
 import { distillAllSalespersonRules, warmCatalogCacheForCron } from "./scm/routes/scan-so";
 import { getSupabaseService } from "./db/supabase";
+import { getBranding } from "./services/branding";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -129,6 +131,7 @@ app.route("/api/stockitems", stockItems);
 app.route("/api/fleet", fleet);
 app.route("/api/lorries", lorries);
 app.route("/api/settings", settings);
+app.route("/api/branding", branding);
 app.route("/api/inbox", inbox);
 app.route("/api/projects-print", projectsPrint);
 app.route("/api/search", search);
@@ -288,9 +291,11 @@ export default {
         ctx.waitUntil(
           (async () => {
             try {
+              const branding = await getBranding(env);
               const summary = await distillAllSalespersonRules(
                 getSupabaseService(env),
                 env.ANTHROPIC_API_KEY,
+                branding.companyName,
               );
               console.log("[scan-so weekly distill]", JSON.stringify(summary));
             } catch (e) {

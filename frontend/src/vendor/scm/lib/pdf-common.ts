@@ -8,28 +8,56 @@
 // ----------------------------------------------------------------------------
 
 import { fmtDate } from '@2990s/shared';
+import { getBrandingCache } from '../../../lib/branding';
 
-/* HOUZS letterhead — name / reg no / address taken VERBATIM from the existing
-   Houzs print templates (backend/src/routes/assr_print.ts +
-   projects_print.ts letterhead block, the real registered entity).
+/* HOUZS letterhead — name / reg no / address / phone / email now come from the
+   centralised Branding config (one editable record in Settings → Branding),
+   NOT from hardcoded literals. The pure (non-React) PDF libs can't use hooks,
+   so they read the module-level branding cache (lib/branding.ts), which
+   useBranding() primes the moment GET /api/branding resolves. Until then the
+   cache holds DEFAULT_BRANDING — VERBATIM the values that were hardcoded here
+   before — so a PDF drawn pre-fetch is byte-identical to the old output.
 
-   TODO_HOUZS_* — these fields are NOT present anywhere in the Houzs codebase
-   (the HTML letterhead prints no TIN / tel / email). OWNER TO FILL: replace
-   each placeholder with the real value before these PDFs are sent externally.
-   Leaving them blank in COMPANY below means they simply don't print. */
-export const TODO_HOUZS_TIN = ''; // OWNER TO FILL — tax identification number
-export const TODO_HOUZS_TEL = ''; // OWNER TO FILL — company telephone
-export const TODO_HOUZS_EMAIL = ''; // OWNER TO FILL — company email
+   COMPANY is exposed as live getters (not a frozen literal) so every draw call
+   reflects the latest edit without the 9 consumer PDF libs changing a line —
+   they all keep reading COMPANY.name / .reg / .addressLines / .portalLabel. */
+
+/** Split the single-line branding address into ≤2 print lines on a comma
+ *  boundary, matching the historic two-line letterhead block. */
+function splitAddressLines(address: string): string[] {
+  const a = (address || '').trim();
+  if (!a) return [];
+  const parts = a.split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length <= 1) return [a];
+  // Balance the comma-separated chunks across two lines (first line gets the
+  // bulk; the tail — typically "postcode City, State." — goes on line two).
+  const split = Math.max(1, Math.ceil(parts.length / 2));
+  const line1 = parts.slice(0, split).join(', ') + ',';
+  const line2 = parts.slice(split).join(', ') + (a.endsWith('.') ? '.' : '');
+  return [line1, line2];
+}
 
 export const COMPANY = {
-  name: 'HOUZS CENTURY SDN. BHD.',
-  reg: '202201031135 (1476832-W)',
-  addressLines: [
-    '1831-B, Jalan KPB 1, Kawasan Perindustrian Balakong,',
-    '43300 Seri Kembangan, Selangor.',
-  ],
+  get name(): string {
+    return getBrandingCache().companyName;
+  },
+  get reg(): string {
+    return getBrandingCache().registrationNo;
+  },
+  get addressLines(): string[] {
+    return splitAddressLines(getBrandingCache().address);
+  },
+  get phone(): string {
+    return getBrandingCache().phone;
+  },
+  get email(): string {
+    return getBrandingCache().email;
+  },
+  get website(): string {
+    return getBrandingCache().website;
+  },
   portalLabel: 'Houzs ERP',
-} as const;
+};
 
 /* ── Amount in words (AutoCount footer convention) ─────────────────────
    "RINGGIT MALAYSIA ONE THOUSAND TWO HUNDRED THIRTY-FOUR AND SEN

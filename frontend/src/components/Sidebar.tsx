@@ -43,6 +43,7 @@ import {
 import { cn } from "../lib/utils";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
+import { useBranding } from "../hooks/useBranding";
 import { PresencePanel } from "./PresencePanel";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
@@ -323,6 +324,7 @@ const LOGO_WORDMARK_SRC = "/logo-wordmark.png"; // 1:4 horizontal — expanded s
 
 export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Props) {
   const { user, can, pageAccess, logout } = useAuth();
+  const branding = useBranding();
   const location = useLocation();
   // On mobile the drawer is always full-width — collapsed state is
   // a desktop-only concept.
@@ -530,7 +532,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
           // Collapsed: just the square mark
           <img
             src={LOGO_MARK_SRC}
-            alt="Houzs Century"
+            alt={branding.companyName}
             className="h-9 w-9 object-contain"
             draggable={false}
           />
@@ -539,7 +541,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
           // The 1:4 aspect ratio + h-10 yields a comfortable ~40×160 box.
           <img
             src={LOGO_WORDMARK_SRC}
-            alt="Houzs Century"
+            alt={branding.companyName}
             className="h-10 w-auto max-w-[160px] object-contain"
             draggable={false}
           />

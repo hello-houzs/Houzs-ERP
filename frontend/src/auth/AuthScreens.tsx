@@ -4,6 +4,7 @@ import { useAuth } from "./AuthContext";
 import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
 import { api } from "../api/client";
+import { useBranding } from "../hooks/useBranding";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
 
@@ -33,6 +34,7 @@ function AuthShell({
   children: ReactNode;
 }) {
   const year = new Date().getFullYear();
+  const branding = useBranding();
   return (
     <div
       className="relative min-h-screen overflow-hidden text-sidebar"
@@ -82,7 +84,7 @@ function AuthShell({
           >
             <span className="h-px w-10 bg-accent" />
             <span className="text-[11px] font-semibold uppercase tracking-brand text-accent">
-              Houzs Century
+              {branding.companyName}
             </span>
           </div>
           {/* wordmark: rises in (entrance) → floats gently → a metallic
@@ -95,7 +97,7 @@ function AuthShell({
             <div className="auth-float relative inline-block overflow-hidden">
               <img
                 src={LOGO_WORDMARK_SRC}
-                alt="Houzs Century"
+                alt={branding.companyName}
                 draggable={false}
                 style={INVERT_TO_CREAM}
                 className="block h-24 w-auto max-w-[560px] object-contain drop-shadow-[0_10px_36px_rgba(0,0,0,0.5)] sm:h-28 xl:h-36"
@@ -149,7 +151,7 @@ function AuthShell({
             </div>
           </div>
           <div className="mt-5 text-center text-[10px] uppercase tracking-brand text-sidebar-ink-soft lg:text-left">
-            {year} Houzs Century Sdn Bhd
+            {year} {branding.companyName}
           </div>
         </div>
       </div>

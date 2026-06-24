@@ -235,7 +235,10 @@
 //   OCR (One-Shot when no tenure, paid_at may be past), coupled Processing/Delivery
 //   dates (both-or-neither, Processing = max(today, delivery-6wk)), OCR prompt
 //   rebranded to Houzs Century, AEON/HSBC banks.
-const VERSION = "houzs-erp-v53";
+// v54 — Branding config: company name/reg/address/phone/email centralized into one
+//   Settings -> Branding editor (app_settings 'branding' key); OCR prompts, PDF
+//   letterheads, email, and UI chrome all read it. Edit the company identity once.
+const VERSION = "houzs-erp-v54";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

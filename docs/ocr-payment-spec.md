@@ -122,3 +122,24 @@ but the field's own hint lists 9 (… RHB / Bank Islam / BSN / AmBank …) and t
 need **AEON** (issuer HSBC). Decide how a receipt bank not in the list maps:
 add the missing banks (+ AEON/HSBC), have the OCR pick the closest, or leave it blank for
 a manual pick. Recommendation: seed the full intended set + AEON, leave unknowns blank for manual.
+
+## Round 2 — OCR polish (owner test 2026-06-24; do AFTER the Branding wave to avoid file conflicts)
+
+NOTE over-stuffing was already fixed in v53 (`ScanOrderModal` buildPrefill keeps only
+remarks + unresolved-venue + non-date-delivery). The owner's screenshot still showing the old
+`Venue/location on slip:` / `Other phone(s):` / `Payment method on slip:` / `Deposit on slip:`
+prefixes is a STALE SW cache (old frontend) — hard-refresh resolves it. Genuine remaining bugs:
+
+1. **Phone country defaults to US +1** — must default to **MY +60** (frontend PhoneInput
+   default + the scan prefill). The number is Malaysian; the selector picks US.
+2. **"W. Protector (King)" matched a JM-branded protector** instead of the plain
+   **MATTRESS PROTECTOR (KING)** — when several SKUs match a token, prefer the plain/generic
+   row over a branded variant (scan-so prompt tuning: "prefer the most generic catalog match
+   unless the slip names the brand").
+3. **Receipt = the payment slip**: when a payment row is created from a scanned card receipt,
+   store that receipt image AS the payment's slip so the "Each payment needs a slip uploaded
+   before saving" guard is auto-satisfied — the owner has no separate slip, the receipt IS it.
+   (PaymentsTable scanReceiptIntoRow + the slip-required guard + the scan-payment R2 image.)
+4. **Payments table right side skewed** — the Slip upload column overflows / is cut off;
+   layout fix in PaymentsTable (responsive/overflow).
+5. (Confirm w/ owner) the per-line PHOTOS upload section on scanned lines — keep or drop?

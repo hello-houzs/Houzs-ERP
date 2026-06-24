@@ -7,6 +7,7 @@ import { MobileTabBar } from "./MobileTabBar";
 import { PullToRefresh, PullToRefreshGuardProvider } from "./PullToRefresh";
 import { RowActionsMenu, type MenuItem } from "./RowActionsMenu";
 import { useQuery } from "../hooks/useQuery";
+import { useBranding } from "../hooks/useBranding";
 import { api } from "../api/client";
 import type { SyncStatusResponse } from "../types";
 
@@ -22,6 +23,11 @@ export function Layout({ children }: Props) {
   // drawer-opening hamburger; the bottom rail's centre Menu disc
   // covers nav, so the top bar is just brand + chrome.
   const [collapsed, setCollapsed] = useState(false);
+
+  // Fetch the company identity once here (Layout wraps every authed page). This
+  // primes the module-level branding cache that the pure jspdf PDF libs read,
+  // so any document generated from inside the app carries the live letterhead.
+  useBranding();
 
   // One global poll of /api/sync/status — used to surface the
   // AutoCount-writes-disabled kill switch as a persistent banner.
@@ -77,11 +83,12 @@ export function Layout({ children }: Props) {
  * by the bottom rail's centre Menu disc — no hamburger here.
  */
 function MobileTopBar() {
+  const branding = useBranding();
   return (
     <div className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-surface/95 px-4 backdrop-blur-sm lg:hidden">
       <img
         src={LOGO_WORDMARK_SRC}
-        alt="Houzs Century"
+        alt={branding.companyName}
         // Phone: shrink the wordmark so the top bar reads as chrome, not a
         // brochure header (owner: logo too big on phone). Steps back up to the
         // original size at sm+ (tablet). h-5≈20px → h-7≈28px.

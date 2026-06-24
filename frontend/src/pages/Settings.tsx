@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Database, Mail, Send } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Building2, Database, Mail, Send } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -9,13 +9,21 @@ import { Pagination } from "../components/Pagination";
 import { ListSkeleton } from "../components/Skeleton";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
+import { useDialog } from "../hooks/useDialog";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useStickyFilters } from "../hooks/useStickyFilters";
+import { useAuth } from "../auth/AuthContext";
 import { api, buildQuery } from "../api/client";
 import { relativeTime } from "../lib/utils";
+import {
+  type Branding,
+  DEFAULT_BRANDING,
+  normalizeBranding,
+  setBrandingCache,
+} from "../lib/branding";
 import type { SyncStatusResponse, Paginated, ExecutionLog } from "../types";
 
-type SettingsTab = "connection" | "sync" | "email" | "logs";
+type SettingsTab = "connection" | "sync" | "email" | "branding" | "logs";
 
 const SETTINGS_KEYS = ["tab"] as const;
 
@@ -30,7 +38,7 @@ export function Settings() {
 
   const raw = params.get("tab") as SettingsTab | null;
   const active: SettingsTab =
-    raw && ["connection", "sync", "email", "logs"].includes(raw)
+    raw && ["connection", "sync", "email", "branding", "logs"].includes(raw)
       ? raw
       : "connection";
 
@@ -46,6 +54,7 @@ export function Settings() {
     { value: "connection", label: "Connection" },
     { value: "sync", label: "Sync" },
     { value: "email", label: "Email" },
+    { value: "branding", label: "Branding" },
     { value: "logs", label: "Activity Log" },
   ];
 
@@ -64,6 +73,11 @@ export function Settings() {
     email: {
       title: "Email Notifications",
       description: "Resend integration and per-channel toggles.",
+    },
+    branding: {
+      title: "Company Branding",
+      description:
+        "The company identity printed on documents (PDF letterheads), the app chrome, and the login screen.",
     },
     logs: {
       title: "Activity Log",
@@ -90,6 +104,7 @@ export function Settings() {
         <SyncTab status={status.data} onReload={() => status.reload()} />
       )}
       {active === "email" && <EmailTab />}
+      {active === "branding" && <BrandingTab />}
       {active === "logs" && <ActivityLog />}
     </div>
   );
@@ -391,6 +406,175 @@ function EmailTab() {
             Test email ignores channel toggles but still requires RESEND_API_KEY.
           </div>
         </>
+      )}
+    </section>
+  );
+}
+
+// ── Branding tab ─────────────────────────────────────────────
+//
+// One editable record for the company identity that used to be hardcoded
+// across the PDF letterheads, the app chrome, and the login screen. Reads
+// GET /api/branding, saves via PUT /api/branding behind an in-app confirm
+// (no window.confirm). The save is gated to settings.manage admins; non-admins
+// see the values read-only.
+
+interface BrandingResponse {
+  branding?: unknown;
+}
+
+const BRANDING_FIELDS: {
+  key: keyof Branding;
+  label: string;
+  placeholder: string;
+  hint?: string;
+  optional?: boolean;
+}[] = [
+  { key: "companyName", label: "Company name", placeholder: "Houzs Century Sdn Bhd" },
+  {
+    key: "registrationNo",
+    label: "SSM registration no",
+    placeholder: "202201031135 (1476832-W)",
+  },
+  {
+    key: "address",
+    label: "Address",
+    placeholder: "Lot / street, area, postcode city, state.",
+    hint: "Printed as the letterhead address; split onto two lines on a comma boundary.",
+  },
+  { key: "phone", label: "Phone", placeholder: "011-1110 8883" },
+  { key: "email", label: "Email", placeholder: "hello@houzscentury.com" },
+  {
+    key: "website",
+    label: "Website",
+    placeholder: "houzscentury.com",
+    optional: true,
+  },
+];
+
+function BrandingTab() {
+  const toast = useToast();
+  const dialog = useDialog();
+  const { can } = useAuth();
+  const canEdit = can("settings.manage");
+
+  const q = useQuery<BrandingResponse>(() => api.get("/api/branding"));
+  const [form, setForm] = useState<Branding | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Hydrate the editable form once the fetch lands (and on reloads).
+  useEffect(() => {
+    if (q.data) setForm(normalizeBranding(q.data.branding));
+  }, [q.data]);
+
+  function set<K extends keyof Branding>(key: K, value: Branding[K]) {
+    setForm((f) => (f ? { ...f, [key]: value } : f));
+  }
+
+  async function save() {
+    if (!form) return;
+    if (!form.companyName.trim()) {
+      toast.error("Company name is required");
+      return;
+    }
+    const ok = await dialog.confirm({
+      title: "Save company branding?",
+      message:
+        "This updates the identity printed on every document (PDF letterheads), the app chrome, and the login screen.",
+      confirmLabel: "Save",
+    });
+    if (!ok) return;
+    setSaving(true);
+    try {
+      const res = await api.put<BrandingResponse>("/api/branding", form);
+      const next = normalizeBranding(res?.branding ?? form);
+      setForm(next);
+      // Push to the module cache so PDFs generated this session use the new
+      // values immediately, without waiting for a refetch.
+      setBrandingCache(next);
+      q.reload();
+      toast.success("Branding saved");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="relative overflow-hidden rounded-md border border-border bg-surface p-6 shadow-stone">
+      <h2 className="mb-4 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
+        <Building2 size={12} /> Company Identity
+      </h2>
+
+      {q.loading && !form && <ListSkeleton rows={4} />}
+
+      {form && (
+        <div className="space-y-4">
+          {BRANDING_FIELDS.map((f) => {
+            const isAddress = f.key === "address";
+            const value = form[f.key];
+            return (
+              <div key={f.key}>
+                <label className="mb-1 block text-[11px] font-semibold text-ink-secondary">
+                  {f.label}
+                  {f.optional && (
+                    <span className="ml-1 font-normal text-ink-muted">(optional)</span>
+                  )}
+                </label>
+                {isAddress ? (
+                  <textarea
+                    value={value}
+                    disabled={!canEdit || saving}
+                    onChange={(e) => set(f.key, e.target.value)}
+                    placeholder={f.placeholder}
+                    rows={2}
+                    className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:opacity-60"
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    value={value}
+                    disabled={!canEdit || saving}
+                    onChange={(e) => set(f.key, e.target.value)}
+                    placeholder={f.placeholder}
+                    className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:opacity-60"
+                  />
+                )}
+                {f.hint && (
+                  <div className="mt-1 text-[11px] text-ink-muted">{f.hint}</div>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Logo upload is deferred — placeholder so the surface is discoverable. */}
+          <div className="rounded-md border border-dashed border-border bg-bg/50 px-3 py-3 text-[11px] text-ink-muted">
+            Logo upload coming soon — the document letterheads currently use the
+            built-in wordmark.
+          </div>
+
+          {canEdit ? (
+            <div className="flex items-center gap-2 border-t border-border pt-4">
+              <Button onClick={save} disabled={saving}>
+                {saving ? "Saving…" : "Save Branding"}
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={saving}
+                onClick={() =>
+                  setForm(q.data ? normalizeBranding(q.data.branding) : DEFAULT_BRANDING)
+                }
+              >
+                Reset
+              </Button>
+            </div>
+          ) : (
+            <div className="border-t border-border pt-4 text-[11px] text-ink-muted">
+              You don't have permission to edit branding. Ask an administrator.
+            </div>
+          )}
+        </div>
       )}
     </section>
   );

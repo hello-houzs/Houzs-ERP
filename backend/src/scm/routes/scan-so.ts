@@ -61,6 +61,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { getSupabaseService } from '../../db/supabase';
 import { paginateAll } from '../lib/paginate-all';
+import { getBranding } from '../../services/branding';
 
 // The scm-scoped service client (getSupabaseService, db:{schema:'scm'}) and the
 // middleware-attached c.get('supabase') are both schema-parameterised clients.
@@ -457,8 +458,8 @@ function formatCatalog(c: Catalog): string {
 // they warm/read different caches. SINGLE SOURCE OF TRUTH — never inline this
 // string anywhere else. Few-shot/rep-rule/alias blocks stay OUTSIDE this prefix
 // (after the cache boundary) so a new sample doesn't invalidate the cache.
-export function buildCachedPrefix(catalog: Catalog): string {
-  return `${SYSTEM_PROMPT}\n\nCATALOG\n=======\n${formatCatalog(catalog)}`;
+export function buildCachedPrefix(catalog: Catalog, companyName: string): string {
+  return `${buildSystemPrompt(companyName)}\n\nCATALOG\n=======\n${formatCatalog(catalog)}`;
 }
 
 // Warm the Anthropic prompt cache with the catalog prefix so the next real
@@ -472,6 +473,7 @@ type WarmResult = { ok: boolean; reason?: string; cacheCreated?: boolean; cacheR
 async function warmCatalogCache(
   sb: SupabaseClient,
   apiKey: string | undefined,
+  companyName: string,
 ): Promise<WarmResult> {
   if (!apiKey) return { ok: false, reason: 'no_key' };
   let catalog: Catalog;
@@ -480,7 +482,7 @@ async function warmCatalogCache(
   } catch (e) {
     return { ok: false, reason: `catalog_load_failed: ${(e as Error).message}` };
   }
-  const cachedPrefix = buildCachedPrefix(catalog);
+  const cachedPrefix = buildCachedPrefix(catalog, companyName);
   try {
     const resp = await fetch(ANTHROPIC_URL, {
       method: 'POST',
@@ -538,13 +540,19 @@ async function warmCatalogCache(
 // load. Exported for index.ts's scheduled handler so the cron and the endpoint
 // share ONE Claude call.
 export async function warmCatalogCacheForCron(env: Env): Promise<WarmResult> {
-  return warmCatalogCache(getSupabaseService(env), env.ANTHROPIC_API_KEY);
+  const branding = await getBranding(env);
+  return warmCatalogCache(getSupabaseService(env), env.ANTHROPIC_API_KEY, branding.companyName);
 }
 
 // ===========================================================================
 // Prompt
 // ===========================================================================
-const SYSTEM_PROMPT = `You extract structured data from photos of HANDWRITTEN showroom sale-order slips at Houzs Century, a Malaysian furniture retailer. The slips are carbon-copy order forms (Zanotti / AKEMI style): a printed header block (customer name, contact, address, delivery date) filled in by hand, a handwritten line-item table (description, qty, price), and a footer with totals, deposit, payment method, and the salesperson's name.
+// The OCR system prompt anchors itself to the company name. It used to be a
+// hardcoded "Houzs Century"; it now comes from the central Branding config
+// (getBranding) so the literal lives in ONE place. The company name is STABLE
+// (seeded, rarely edited), so injecting it keeps buildCachedPrefix() byte-
+// identical across /warm + /extract + the cron — the prompt cache still holds.
+const buildSystemPrompt = (companyName: string) => `You extract structured data from photos of HANDWRITTEN showroom sale-order slips at ${companyName}, a Malaysian furniture retailer. The slips are carbon-copy order forms (Zanotti / AKEMI style): a printed header block (customer name, contact, address, delivery date) filled in by hand, a handwritten line-item table (description, qty, price), and a footer with totals, deposit, payment method, and the salesperson's name.
 
 The handwriting is often rushed, slanted, abbreviated, and mixed-case. Phone photos may be skewed, shadowed, or low-contrast. Read carefully; prefer extracting a raw transcription over guessing.
 
@@ -962,7 +970,7 @@ function ilikeExact(v: string): string {
 const GLOBAL_ALIAS_KEY = '__GLOBAL__';
 const isGlobalKey = (v: string): boolean => v.trim().toUpperCase() === GLOBAL_ALIAS_KEY;
 
-const DISTILL_META_PROMPT = `You are reviewing extraction sessions of HANDWRITTEN showroom sale-order slips at Houzs Century, a Malaysian furniture retailer. ALL the examples below were written by ONE salesperson. Each example is a PAIR: what the AI initially extracted, followed by what the human operator corrected it to (the confirmed truth). Each salesperson has their own handwriting and notation habits, and those habits DIFFER per product category. Write a concise salesperson-specific OCR rule block so future extractions of this rep's slips apply their conventions automatically.
+const buildDistillMetaPrompt = (companyName: string) => `You are reviewing extraction sessions of HANDWRITTEN showroom sale-order slips at ${companyName}, a Malaysian furniture retailer. ALL the examples below were written by ONE salesperson. Each example is a PAIR: what the AI initially extracted, followed by what the human operator corrected it to (the confirmed truth). Each salesperson has their own handwriting and notation habits, and those habits DIFFER per product category. Write a concise salesperson-specific OCR rule block so future extractions of this rep's slips apply their conventions automatically.
 
 DERIVE THE RULES FROM THE DIFFS: compare each "AI extracted" JSON against its "Operator corrected" JSON. Wherever they differ, the AI misread this rep's notation and the human fixed it — that diff is exactly how this rep's shorthand maps to catalog truth (e.g. AI read "BO315-2", operator corrected to "BO315-02" → this rep drops leading zeros in suffixes). Fields that the AI already got right need no rule. Prioritize recurring corrections across multiple pairs over one-off fixes.
 
@@ -1076,11 +1084,12 @@ async function distillSalespersonRules(
   svc: SupabaseClient,
   apiKey: string | undefined,
   salesperson: string,
+  companyName: string,
 ): Promise<DistillResult> {
   const rep = salesperson.trim();
   if (!rep) return { status: 'error', reason: 'Missing salesperson.' };
   // Reserved key → the GLOBAL alias distill, never a per-rep rules pass.
-  if (isGlobalKey(rep)) return distillGlobalAliases(svc, apiKey);
+  if (isGlobalKey(rep)) return distillGlobalAliases(svc, apiKey, companyName);
   if (!apiKey) {
     return {
       status: 'error',
@@ -1114,7 +1123,7 @@ async function distillSalespersonRules(
     `from the diffs and write the rule block:\n\n` +
     pairExamplesText(samples);
 
-  const call = await claudeDistillCall(apiKey, DISTILL_META_PROMPT, userPayload);
+  const call = await claudeDistillCall(apiKey, buildDistillMetaPrompt(companyName), userPayload);
   let distilledText = call.text;
   const errorMsg = call.error;
 
@@ -1163,7 +1172,7 @@ async function distillSalespersonRules(
 // "B.Cruise" → one SKU), so one rep's corrections should teach everyone.
 // Per-rep STYLE notes stay in the per-rep rule rows; this is aliases only.
 // ===========================================================================
-const GLOBAL_ALIAS_META_PROMPT = `You are reviewing extraction sessions of HANDWRITTEN showroom sale-order slips at Houzs Century, a Malaysian furniture retailer. The examples below were written by MANY DIFFERENT salespeople. Each example is a PAIR: what the AI initially extracted, followed by what the human operator corrected it to (the confirmed truth).
+const buildGlobalAliasMetaPrompt = (companyName: string) => `You are reviewing extraction sessions of HANDWRITTEN showroom sale-order slips at ${companyName}, a Malaysian furniture retailer. The examples below were written by MANY DIFFERENT salespeople. Each example is a PAIR: what the AI initially extracted, followed by what the human operator corrected it to (the confirmed truth).
 
 Your ONLY job is to build a SHARED PRODUCT-NAME ALIAS DICTIONARY that benefits every salesperson. The same product gets written many different ways across reps ("Bamboo Cruise", "Cruise", "B.Cruise" all mean one SKU). DERIVE THE ALIASES FROM THE DIFFS: wherever the operator corrected a line's skuMatch or fabricMatch, that line's rawText shows how the product was written and the corrected code is the catalog truth — record that variant → code mapping. rawText spellings the AI already matched correctly also confirm aliases worth recording when they differ from the catalog name.
 
@@ -1197,6 +1206,7 @@ Output ONLY the dictionary text. The very first characters of your response must
 async function distillGlobalAliases(
   svc: SupabaseClient,
   apiKey: string | undefined,
+  companyName: string,
 ): Promise<DistillResult> {
   if (!apiKey) {
     return {
@@ -1229,7 +1239,7 @@ async function distillGlobalAliases(
     `dictionary from the diffs:\n\n` +
     pairExamplesText(samples);
 
-  const call = await claudeDistillCall(apiKey, GLOBAL_ALIAS_META_PROMPT, userPayload);
+  const call = await claudeDistillCall(apiKey, buildGlobalAliasMetaPrompt(companyName), userPayload);
   let distilledText = call.text;
   if (call.error || !distilledText) {
     return { status: 'error', reason: call.error ?? 'Claude returned empty aliases.' };
@@ -1271,13 +1281,14 @@ async function distillGlobalAliases(
 export async function distillAllSalespersonRules(
   svc: SupabaseClient,
   apiKey: string | undefined,
+  companyName: string,
 ): Promise<{ distilled: number; skipped: number; errors: number; reps: number }> {
   const summary = { distilled: 0, skipped: 0, errors: 0, reps: 0 };
 
   // Shared alias dictionary first — it benefits every rep's scans and its
   // sample pool (all corrected rows) is a superset of any rep's.
   try {
-    const g = await distillGlobalAliases(svc, apiKey);
+    const g = await distillGlobalAliases(svc, apiKey, companyName);
     if (g.status === 'distilled') summary.distilled += 1;
     else if (g.status === 'skipped') summary.skipped += 1;
     else {
@@ -1325,7 +1336,7 @@ export async function distillAllSalespersonRules(
 
   for (const rep of reps) {
     try {
-      const res = await distillSalespersonRules(svc, apiKey, rep);
+      const res = await distillSalespersonRules(svc, apiKey, rep, companyName);
       if (res.status === 'distilled') summary.distilled += 1;
       else if (res.status === 'skipped') summary.skipped += 1;
       else {
@@ -1404,7 +1415,8 @@ scanSo.get('/rules/:salesperson', async (c) => {
 scanSo.post('/rules/:salesperson/distill', async (c) => {
   const rep = (c.req.param('salesperson') ?? '').trim();
   if (!rep) return c.json({ error: 'bad_request', reason: 'Missing salesperson.' }, 400);
-  const res = await distillSalespersonRules(serviceClient(c.env), c.env.ANTHROPIC_API_KEY, rep);
+  const branding = await getBranding(c.env);
+  const res = await distillSalespersonRules(serviceClient(c.env), c.env.ANTHROPIC_API_KEY, rep, branding.companyName);
   if (res.status === 'error') {
     return c.json({ error: 'distill_failed', reason: res.reason }, 500);
   }
@@ -1453,7 +1465,8 @@ scanSo.get('/slip-image', async (c) => {
 // ===========================================================================
 scanSo.post('/warm', async (c) => {
   const sb = c.get('supabase');
-  const result = await warmCatalogCache(sb, c.env.ANTHROPIC_API_KEY);
+  const branding = await getBranding(c.env);
+  const result = await warmCatalogCache(sb, c.env.ANTHROPIC_API_KEY, branding.companyName);
   return c.json(result);
 });
 
@@ -1557,12 +1570,16 @@ scanSo.post('/extract', async (c) => {
   const sb = c.get('supabase');
   const catalog = await loadCatalog(sb);
 
+  // Company name for the prompt anchor comes from the central Branding config
+  // (stable → the cached prefix below stays byte-identical to /warm + cron).
+  const branding = await getBranding(c.env);
+
   // Cached prefix = SYSTEM_PROMPT + catalog (shared builder — BYTE-IDENTICAL to
   // what /scan-so/warm and the keep-warm cron send, so they warm the SAME cache
   // /extract reads). Identical across calls until the catalog changes →
   // Anthropic prompt-cache hit (~90% discount). Few-shot examples stay OUTSIDE
   // the cache boundary so a new confirmed sample doesn't invalidate the cache.
-  const cachedPrefix = buildCachedPrefix(catalog);
+  const cachedPrefix = buildCachedPrefix(catalog, branding.companyName);
 
   const svc = serviceClient(c.env);
 
@@ -2005,17 +2022,18 @@ scanSo.post('/samples/:id/confirm', async (c) => {
   // is safe. Sequential to keep it to one Anthropic call at a time. Never
   // blocks/fails the confirm.
   const rep = repGiven || ((updated[0] as { salesperson?: string | null }).salesperson ?? '').trim();
+  const distillCompanyName = (await getBranding(c.env)).companyName;
   const distillPromise = (async () => {
     if (rep && !isGlobalKey(rep)) {
       try {
-        const r = await distillSalespersonRules(svc, c.env.ANTHROPIC_API_KEY, rep);
+        const r = await distillSalespersonRules(svc, c.env.ANTHROPIC_API_KEY, rep, distillCompanyName);
         if (r.status === 'error') console.warn(`[scan-so distill] ${rep}: ${r.reason}`);
       } catch (e) {
         console.warn(`[scan-so distill] ${rep} threw:`, (e as Error).message);
       }
     }
     try {
-      const g = await distillGlobalAliases(svc, c.env.ANTHROPIC_API_KEY);
+      const g = await distillGlobalAliases(svc, c.env.ANTHROPIC_API_KEY, distillCompanyName);
       if (g.status === 'error') console.warn(`[scan-so distill] __GLOBAL__ aliases: ${g.reason}`);
     } catch (e) {
       console.warn('[scan-so distill] __GLOBAL__ aliases threw:', (e as Error).message);

@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { getBranding } from "./branding";
 
 // ── Email service (Resend-backed) ─────────────────────────────
 //
@@ -152,7 +153,17 @@ async function deliverViaResend(
   env: Env,
   m: { to: string; subject: string; html: string; text?: string | null; replyTo?: string | null },
 ): Promise<SendResult> {
-  const from = env.EMAIL_FROM || "Houzs ERP <no-reply@houzscentury.com>";
+  // From-name + fallback sender address come from the central Branding config
+  // (company name + email) so the outbound identity tracks Settings, not a
+  // hardcode. EMAIL_FROM (when set) still wins — it's the verified Resend
+  // sender. The local-part stays no-reply@<branding.email's domain> so the
+  // address remains a deliverable on the verified domain.
+  let from = env.EMAIL_FROM;
+  if (!from) {
+    const branding = await getBranding(env);
+    const domain = (branding.email.split("@")[1] || "houzscentury.com").trim();
+    from = `${branding.companyName} <no-reply@${domain}>`;
+  }
   const replyTo = m.replyTo ?? env.EMAIL_REPLY_TO ?? null;
   try {
     const resp = await fetch("https://api.resend.com/emails", {
@@ -389,8 +400,13 @@ export function documentEmailHtml(p: {
   rows: Array<{ label: string; value: string }>; // summary key/values
   viewLink?: string | null; // tokenized public view/print URL, optional
   note?: string | null;
+  // Company name for the header + footer — pass branding.companyName from the
+  // central Branding config. Falls back to the historical literal so existing
+  // callers (and any pre-migration call) render unchanged.
+  companyName?: string;
 }): string {
   const label = escapeHtml(p.docTypeLabel);
+  const company = escapeHtml(p.companyName?.trim() || "Houzs Century");
   const summary = p.rows
     .map(
       (r) =>
@@ -404,7 +420,7 @@ export function documentEmailHtml(p: {
     : "";
   return `
     <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222">
-      <h2 style="margin:0 0 4px">Houzs Century</h2>
+      <h2 style="margin:0 0 4px">${company}</h2>
       <p style="margin:0 0 16px;color:#777">${label} ${escapeHtml(p.docNo)}</p>
       <p>Dear ${escapeHtml(p.recipientName)},</p>
       <p>Please find your ${escapeHtml(p.docTypeLabel.toLowerCase())} details below.</p>
@@ -412,7 +428,7 @@ export function documentEmailHtml(p: {
       ${p.note ? `<p style="color:#555">${escapeHtml(p.note)}</p>` : ""}
       ${button}
       <p style="color:#777;font-size:12px;margin-top:24px">
-        This is an automated message from Houzs Century. Reply to this email if
+        This is an automated message from ${company}. Reply to this email if
         you have any questions about your order.
       </p>
     </div>`;

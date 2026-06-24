@@ -44,6 +44,7 @@ import type { SupabaseClient as SupabaseClientGeneric } from '@supabase/supabase
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
+import { getBranding } from '../../services/branding';
 
 // scm-scoped, loosely-typed client (matches scm/env.ts Variables.supabase).
 type SupabaseClient = SupabaseClientGeneric<any, any, any>;
@@ -148,7 +149,10 @@ function formatOptions(o: CatalogOptions): string {
 // terminal receipt (incl. EPP / installment) is Method = MERCHANT; the tenure
 // is the installment_months plan under Merchant, not a separate method.
 // ===========================================================================
-const SYSTEM_PROMPT = `You read a single MALAYSIAN bank CARD-TERMINAL / payment receipt and extract the payment fields for ONE payment row at Houzs Century, a Malaysian furniture retailer. The image is usually a thermal card-machine slip (Maybank / CIMB / Public Bank / HLB / RHB / AEON terminal), an EPP (Easy Payment Plan / installment) approval slip, a DuitNow / bank-transfer / e-wallet (Touch 'n Go) confirmation, a cheque, or a cash receipt.
+// Company name comes from the central Branding config (getBranding) instead of
+// a hardcode. scan-payment sends the prompt inline per call (no prompt-cache),
+// so injecting the name has no cache implications.
+const buildSystemPrompt = (companyName: string) => `You read a single MALAYSIAN bank CARD-TERMINAL / payment receipt and extract the payment fields for ONE payment row at ${companyName}, a Malaysian furniture retailer. The image is usually a thermal card-machine slip (Maybank / CIMB / Public Bank / HLB / RHB / AEON terminal), an EPP (Easy Payment Plan / installment) approval slip, a DuitNow / bank-transfer / e-wallet (Touch 'n Go) confirmation, a cheque, or a cash receipt.
 
 A reference list of ALLOWED VALUES follows this prompt (PAYMENT METHODS, MERCHANT BANKS, ONLINE TYPES, INSTALLMENT PLANS). Each row is "value | label". Every *Match you return MUST be the VALUE (left side), copied character-for-character from the list. NEVER invent a value outside the list; when you cannot find a defensible match, return null for that field.
 
@@ -369,6 +373,10 @@ scanPayment.post('/extract', async (c) => {
   const options = await loadOptions(sb);
   const optionsText = formatOptions(options);
 
+  // Company name from the central Branding config (anchors the prompt).
+  const branding = await getBranding(c.env);
+  const systemPrompt = buildSystemPrompt(branding.companyName);
+
   let errorMsg: string | null = null;
   let parsed: ExtractedReceipt | null = null;
   let claudeText = '';
@@ -390,7 +398,7 @@ scanPayment.post('/extract', async (c) => {
           {
             role: 'user',
             content: [
-              { type: 'text', text: `${SYSTEM_PROMPT}\n\nALLOWED VALUES\n==============\n${optionsText}` },
+              { type: 'text', text: `${systemPrompt}\n\nALLOWED VALUES\n==============\n${optionsText}` },
               fileBlock,
               {
                 type: 'text',
