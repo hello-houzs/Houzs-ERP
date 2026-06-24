@@ -2625,7 +2625,7 @@ function ProjectsCalendarView() {
   // CLAUDE.md's URL-state convention.
   const [showTasks, setShowTasks] = useLocalStorage<boolean>(
     "projects:cal:showTasks",
-    true
+    false
   );
   const [showHolidays, setShowHolidays] = useLocalStorage<boolean>(
     "projects:cal:showHolidays",
@@ -2722,6 +2722,12 @@ function ProjectsCalendarView() {
     if (!el || mode !== "month") return;
     const onWheel = (e: WheelEvent) => {
       if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      // Only flip months when scrolling over BLANK calendar space (e.g. the
+      // empty leading cells, or a day with no items). Over a project bar, task
+      // chip, or a "+N more" link the page scrolls normally — so Expand all can
+      // still be scrolled by dragging over its content. Works in both modes.
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest(".cal-bar,[data-cal-content]")) return;
       e.preventDefault();
       const now = Date.now();
       if (now - wheelTsRef.current < 380) return;
@@ -2733,6 +2739,27 @@ function ProjectsCalendarView() {
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, [mode]);
+
+  // Month grid fills from its top to the viewport bottom, so the 5–6 week
+  // rows share that height EQUALLY (uniform rows, no tiny empty week, no
+  // dead gap at the bottom). Re-measured on resize / month change since the
+  // grid's top is fixed by the header+toolbar+legend above it.
+  const [availH, setAvailH] = useState<number | null>(null);
+  useEffect(() => {
+    if (mode !== "month") {
+      setAvailH(null);
+      return;
+    }
+    const measure = () => {
+      const el = gridRef.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top;
+      setAvailH(Math.max(440, Math.round(window.innerHeight - top - 14)));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [mode, anchor]);
 
   const setMode = (next: "month" | "week") => {
     // When flipping to week mode for the first time, snap the week
@@ -2861,11 +2888,43 @@ function ProjectsCalendarView() {
     clipRight: boolean;
     lane: number;
   };
-  // Week mode has plenty of vertical real estate per column, so don't
-  // cap lanes — show every project bar inline. Month mode keeps the
-  // 3-lane cap in month mode; clicking "+N more" on a cell jumps to
-  // week view for that week (unlimited lanes). Week mode never caps.
+  // Layout constants for the per-week bar overlay. BAR_TOP_OFFSET puts the
+  // bars below the day-number row; week mode's pill header needs a bigger one.
+  const BAR_H = 18;
+  const LANE_GAP = 3;
+  const LANE_TOTAL = BAR_H + LANE_GAP;
+  const BAR_TOP_OFFSET = mode === "week" ? 52 : 24;
+  // Compact month shows up to 3 project-event lanes per cell; extra bars fold
+  // into "+N more". Tasks render separately (2 rows, pinned to the bottom).
+  // Week mode + expand-all never cap — they show everything inline.
   const MAX_LANES = mode === "week" || expandAll ? Infinity : 3;
+  // Compact month: every row is the SAME height — tall enough for 3 bars + 2
+  // task rows (COMPACT_ROW_MIN), but stretched to fill the viewport when
+  // there's room. If the month needs more than the viewport, the page scrolls
+  // (and the wheel-to-change-month is disabled so scrolling works normally).
+  const BAR_TOP_OFFSET_M = 24;
+  const COMPACT_ROW_MIN =
+    BAR_TOP_OFFSET_M +
+    3 * 21 /* 3 bar lanes */ +
+    16 /* project "+N more" line */ +
+    (showTasks ? 70 : 8) /* 2 task rows when tasks shown, else just padding */;
+  let renderedWeeks = 0;
+  for (let w = 0; w < weekCount; w++) {
+    if (
+      mode !== "month" ||
+      Array.from({ length: 7 }).some(
+        (_, d) => cells[w * 7 + d].date.getUTCMonth() === anchor.getMonth(),
+      )
+    )
+      renderedWeeks++;
+  }
+  const compactRowH =
+    mode === "month" && !expandAll
+      ? Math.max(
+          COMPACT_ROW_MIN,
+          availH ? Math.floor((availH - 34) / Math.max(renderedWeeks, 1)) : COMPACT_ROW_MIN,
+        )
+      : null;
   const weekSegs: WeekSeg[][] = Array.from({ length: weekCount }, () => []);
   const overflowByCell: number[] = Array(totalCells).fill(0);
   for (let w = 0; w < weekCount; w++) {
@@ -2937,35 +2996,36 @@ function ProjectsCalendarView() {
     }
   }
 
-  // Layout constants for the per-week bar overlay.
-  // BAR_TOP_OFFSET puts the bars below the cell's day-number row.
-  // Week mode's pill-style header is ~30 px tall + cell padding —
-  // need a bigger offset so bars land underneath instead of covering it.
-  const BAR_H = 18;
-  const LANE_GAP = 3;
-  const LANE_TOTAL = BAR_H + LANE_GAP;
-  const BAR_TOP_OFFSET = mode === "week" ? 52 : 24;
-  // Reserved bar-overlay height. Month: cap at MAX_LANES (3). Week:
-  // grow to the deepest lane actually used so every bar has room +
-  // tasks below don't collide with bars.
-  const maxLaneUsed = weekSegs.reduce(
-    (m, segs) => Math.max(m, ...segs.map((s) => s.lane + 1), 0),
-    0,
-  );
-  const BARS_AREA_H =
-    mode === "week" || expandAll
-      ? Math.max(maxLaneUsed, 1) * LANE_TOTAL
+  // Reserved bar-overlay height for WEEK mode (month uses uniform flex rows).
+  const barsAreaHByWeek = weekSegs.map((segs) => {
+    const lanesUsed = segs.reduce((m, s) => Math.max(m, s.lane + 1), 0);
+    return mode === "week" || expandAll
+      ? Math.max(lanesUsed, 1) * LANE_TOTAL
       : 3 * LANE_TOTAL;
+  });
+  // Per-CELL reserved bar height (expand / week only): only as tall as the
+  // deepest bar lane that actually crosses THAT day, so a quiet cell's tasks
+  // sit right under its own bars instead of being shoved down by the busiest
+  // day in the week. (That was the leftover "Expand all" middle whitespace.)
+  const cellBarsH = Array(totalCells).fill(0);
+  for (let w = 0; w < weekCount; w++) {
+    for (const seg of weekSegs[w]) {
+      for (let col = seg.startCol; col <= seg.endCol; col++) {
+        const idx = w * 7 + col;
+        cellBarsH[idx] = Math.max(cellBarsH[idx], (seg.lane + 1) * LANE_TOTAL);
+      }
+    }
+  }
 
   return (
     <div>
       <PageHeader
         eyebrow="Operations · Projects"
         title="Calendar"
-        description="Event spans and checklist due dates across all brands"
+        dense
       />
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         <button
           onClick={() => {
             const d = new Date(anchor);
@@ -3142,7 +3202,7 @@ function ProjectsCalendarView() {
       </div>
 
       {/* Status legend — bars are tinted by project status (mig 088). */}
-      <div className="mb-3 flex flex-wrap items-center gap-3 text-[10px]">
+      <div className="mb-1.5 flex flex-wrap items-center gap-3 text-[12px]">
         {STATUS_OPTIONS.map((s) => (
           <span key={s.value} className="inline-flex items-center gap-1">
             <span
@@ -3152,6 +3212,11 @@ function ProjectsCalendarView() {
             <span className="text-ink-muted">{s.label}</span>
           </span>
         ))}
+        {mode === "month" && (
+          <span className="ml-auto text-[10.5px] italic text-ink-muted">
+            Tip: scroll over empty space to change month
+          </span>
+        )}
       </div>
 
       {q.loading && <div className="text-[12px] text-ink-muted">Loading calendar…</div>}
@@ -3169,11 +3234,11 @@ function ProjectsCalendarView() {
             renders its own "Day. DD/MM" header with a today pill, so
             this row would be redundant. */}
         {mode === "month" && (
-          <div className="grid grid-cols-7 border-b border-border bg-bg/60">
+          <div className="grid shrink-0 grid-cols-7 border-b border-border bg-bg/60">
             {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
               <div
                 key={d}
-                className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted"
+                className="px-2 py-1.5 text-[12.5px] font-semibold uppercase tracking-wider text-ink-muted"
               >
                 {d}
               </div>
@@ -3195,18 +3260,26 @@ function ProjectsCalendarView() {
             return null;
           }
           const segs = weekSegs[w];
-          // Week mode renders columns ~3× the height of month-mode
-          // cells so each day reads as its own panel (matches the
-          // boss's mockup). Month mode keeps the original tight grid.
+          const barsAreaH = barsAreaHByWeek[w];
+          // Compact month: every row is the SAME fixed height (compactRowH) —
+          // an empty week (29/30) matches a busy one, and the height always
+          // fits 3 bars + 2 task rows so they never overlap. Week / expand-all:
+          // content-driven min-height so every bar + task shows inline.
           const rowMinHeight =
             mode === "week"
-              ? BAR_TOP_OFFSET + BARS_AREA_H + 320
-              : BAR_TOP_OFFSET + BARS_AREA_H + 50;
+              ? BAR_TOP_OFFSET + barsAreaH + (showTasks ? 320 : 90)
+              : expandAll
+                ? BAR_TOP_OFFSET + barsAreaH + (showTasks ? 40 : 8)
+                : 96;
           return (
             <div
               key={w}
               className="relative grid grid-cols-7"
-              style={{ minHeight: rowMinHeight }}
+              style={
+                compactRowH != null
+                  ? { height: compactRowH }
+                  : { minHeight: rowMinHeight }
+              }
             >
               {Array.from({ length: 7 }).map((_, d) => {
                 const idx = w * 7 + d;
@@ -3242,9 +3315,13 @@ function ProjectsCalendarView() {
                     key={idx}
                     className={cn(
                       "relative border-b border-r border-border text-[10px]",
-                      mode === "week" ? "px-2 py-2" : "px-1.5 py-1",
+                      mode === "week"
+                        ? "px-2 py-2"
+                        : expandAll
+                          ? "px-1.5 py-1"
+                          : "flex flex-col overflow-hidden px-1.5 py-1",
                       !inMonth && "bg-bg/40 text-ink-muted",
-                      isHolidayCell && inMonth && "bg-[#f1f1f9]",
+                      isHolidayCell && inMonth && "bg-[#e7e8f5]",
                       // Today highlight only on month view; week view
                       // moves the highlight onto the header pill so
                       // the cell body stays neutral. A brass inset ring +
@@ -3275,62 +3352,80 @@ function ProjectsCalendarView() {
                         )}
                       </div>
                     ) : (
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
                         {isToday ? (
-                          <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 font-mono text-[10px] font-bold text-white">
+                          <span className="inline-flex h-[22px] min-w-[22px] shrink-0 items-center justify-center rounded-full bg-accent px-1.5 font-mono text-[13px] font-bold text-white">
                             {cell.date.getUTCDate()}
                           </span>
                         ) : (
-                          <span className="font-mono">{cell.date.getUTCDate()}</span>
+                          <span className="shrink-0 font-mono text-[14px] font-bold text-ink">
+                            {cell.date.getUTCDate()}
+                          </span>
                         )}
-                        {cellTasks.length > 0 && (
-                          <DayCountBadge
-                            count={cellTasks.length}
-                            overdue={cellTasks.some((t) => t.is_overdue)}
-                          />
+                        {/* Holiday marker sits right beside the date (deeper
+                            tint than before so it reads at a glance). */}
+                        {isHolidayCell && (
+                          <span
+                            className="min-w-0 truncate rounded bg-[#bcc0e6] px-1.5 py-0.5 text-[9.5px] font-semibold text-[#2b3063]"
+                            title={holidays.map((h) => h.name).join(", ")}
+                          >
+                            {holidays[0].name}
+                            {holidays.length > 1 && ` +${holidays.length - 1}`}
+                          </span>
                         )}
                       </div>
                     )}
 
-                    {/* Reserved vertical space for the absolute bar
-                        overlay so cell content (holiday + tasks) sits
-                        below all bars regardless of how many lanes are
-                        used in this week. */}
-                    <div style={{ height: BARS_AREA_H }} aria-hidden />
+                    {/* Reserved vertical space for the absolute bar overlay so
+                        cell content (holiday + tasks) sits below this cell's
+                        own bars. Month caps at the visible-lane count so the
+                        overflowing bars don't reserve space ("+N more" instead). */}
+                    <div
+                      className="shrink-0"
+                      style={{
+                        height:
+                          mode === "week" || expandAll
+                            ? cellBarsH[idx]
+                            : MAX_LANES * LANE_TOTAL,
+                      }}
+                      aria-hidden
+                    />
 
                     {/* Bar overflow — month mode only (week mode has
                         unlimited lanes). Clicking expands the cell's
                         week into week view, showing every bar inline
                         without a popover. Old popover behaviour removed
                         per the team's request. */}
-                    {mode === "month" && !expandAll && overflow > 0 && (
+                    {mode === "month" && overflow > 0 && (
                       <button
                         type="button"
+                        data-cal-content
                         onClick={(e) => {
                           e.stopPropagation();
                           setDayModalIso(cell.iso);
                         }}
-                        className="block text-[9px] font-semibold text-accent hover:underline"
+                        className="block w-full pr-0.5 text-right text-[9px] font-semibold text-accent hover:underline"
                         title="Show every project + task on this day"
                       >
                         +{overflow} more
                       </button>
                     )}
 
-                    {isHolidayCell && (
-                      <div
-                        className="mt-1 truncate rounded bg-[#e6e7f3] px-1 py-0.5 text-[9px] font-semibold text-[#474d79]"
-                        title={holidays.map((h) => h.name).join(", ")}
-                      >
-                        {holidays[0].name}
-                        {holidays.length > 1 && ` +${holidays.length - 1}`}
-                      </div>
-                    )}
-
                     {cellTasks.length > 0 && (
-                      <div className="mt-1 space-y-0.5 border-t border-border-subtle pt-1">
+                      <div
+                        data-cal-content
+                        className={cn(
+                          "space-y-0.5 border-t border-border-subtle pt-1",
+                          // Compact month: pin tasks to the cell bottom so every
+                          // cell's tasks line up on the last rows regardless of
+                          // how many bars (or a "+N more") sit above.
+                          mode === "month" && !expandAll
+                            ? "absolute inset-x-1.5 bottom-1 z-20 bg-inherit"
+                            : "mt-1",
+                        )}
+                      >
                         {/* Week mode shows every task — there's room.
-                            Month mode keeps the 2-task cap + "+N more"
+                            Month mode keeps a 2-task cap + "+N more"
                             expander since cells are tighter. */}
                         {(mode === "week" || expandAll ? cellTasks : cellTasks.slice(0, 2)).map((t) => (
                           <CalendarTaskChip

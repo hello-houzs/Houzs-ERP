@@ -141,7 +141,7 @@ export function Team() {
       eyebrow: "Workspace · Access by Position",
       title: "Positions",
       description:
-        "Set which pages each position can see (none / view / edit / full). This drives the menu and blocks direct-URL access — a member only ever sees their position's pages.",
+        "Set which pages each position can see (none / view / edit / full) — this drives the menu and blocks direct-URL access.",
     },
     orgchart: {
       eyebrow: "Workspace · Hierarchy",

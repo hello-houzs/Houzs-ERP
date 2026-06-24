@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { Plus, Pencil, Trash2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "../components/Button";
 import { Panel, PanelSection } from "../components/Panel";
 import { Skeleton } from "../components/Skeleton";
@@ -25,6 +25,14 @@ export function PositionsTab() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // null = closed · "new" = create · Position = edit that one
   const [editing, setEditing] = useState<Position | "new" | null>(null);
+  // Department groups the admin has collapsed in the left list.
+  const [collapsedDepts, setCollapsedDepts] = useState<Set<string>>(new Set());
+  const toggleDept = (dept: string) =>
+    setCollapsedDepts((prev) => {
+      const next = new Set(prev);
+      next.has(dept) ? next.delete(dept) : next.add(dept);
+      return next;
+    });
 
   const positions = positionsQ.data?.positions ?? [];
   const selected = positions.find((p) => p.id === selectedId) ?? null;
@@ -68,14 +76,27 @@ export function PositionsTab() {
 
       <div className="flex flex-col gap-4 lg:flex-row">
         {/* Position list — grouped by department, each row editable/deletable */}
-        <div className="shrink-0 space-y-4 lg:w-64">
+        {/* Position list — single column, department-grouped + collapsible */}
+        <div className="shrink-0 lg:w-64">
           {positionsQ.loading && <Skeleton className="h-40 w-full" />}
-          {byDept.map(([dept, list]) => (
-            <div key={dept}>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                {dept}
-              </div>
-              <div className="space-y-1">
+          <div className="space-y-2.5">
+          {byDept.map(([dept, list]) => {
+            const collapsed = collapsedDepts.has(dept);
+            return (
+            <div key={dept} className="break-inside-avoid">
+              <button
+                type="button"
+                onClick={() => toggleDept(dept)}
+                className="mb-1 flex w-full items-center gap-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted transition-colors hover:text-accent"
+              >
+                {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                <span className="truncate">{dept}</span>
+                <span className="ml-auto rounded bg-surface-dim px-1.5 text-[9px] font-semibold text-ink-muted">
+                  {list.length}
+                </span>
+              </button>
+              {!collapsed && (
+              <div className="space-y-0.5">
                 {list.map((p) => (
                   <div
                     key={p.id}
@@ -88,7 +109,7 @@ export function PositionsTab() {
                   >
                     <button
                       onClick={() => setSelectedId(p.id)}
-                      className="flex min-w-0 flex-1 items-center justify-between gap-2 px-3 py-2 text-left text-[12px]"
+                      className="flex min-w-0 flex-1 items-center justify-between gap-2 px-3 py-1.5 text-left text-[12px]"
                     >
                       <span
                         className={cn(
@@ -123,8 +144,11 @@ export function PositionsTab() {
                   </div>
                 ))}
               </div>
+              )}
             </div>
-          ))}
+            );
+          })}
+          </div>
           {!positionsQ.loading && positions.length === 0 && (
             <div className="rounded-md border border-dashed border-border p-4 text-center text-[11px] text-ink-muted">
               No positions yet — add one to start.
@@ -338,6 +362,14 @@ function PositionMatrixEditor({
   const [levels, setLevels] = useState<Record<string, AccessLevel>>({});
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  // Module groups the admin has collapsed (parent page keys).
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggleGroup = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
 
   useEffect(() => {
     if (!accessQ.data) return;
@@ -354,6 +386,11 @@ function PositionMatrixEditor({
 
   const parents = pages.filter((p) => !p.parent);
   const childrenOf = (key: string) => pages.filter((p) => p.parent === key);
+  const groupParents = parents.filter((p) => childrenOf(p.key).length > 0);
+  const allCollapsed =
+    groupParents.length > 0 && groupParents.every((p) => collapsed.has(p.key));
+  const toggleAll = () =>
+    setCollapsed(allCollapsed ? new Set() : new Set(groupParents.map((p) => p.key)));
 
   async function save() {
     if (dirty.size === 0) return;
@@ -391,47 +428,68 @@ function PositionMatrixEditor({
             {position.department_name ?? "No department"} · which pages this position can see
           </div>
         </div>
-        <Button variant="brass" onClick={save} disabled={busy || dirty.size === 0}>
-          {busy ? "Saving…" : dirty.size ? `Save (${dirty.size})` : "Saved"}
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          {groupParents.length > 0 && (
+            <button
+              type="button"
+              onClick={toggleAll}
+              className="text-[11px] font-semibold text-ink-muted transition-colors hover:text-accent"
+            >
+              {allCollapsed ? "Expand all" : "Collapse all"}
+            </button>
+          )}
+          <Button variant="brass" onClick={save} disabled={busy || dirty.size === 0}>
+            {busy ? "Saving…" : dirty.size ? `Save (${dirty.size})` : "Saved"}
+          </Button>
+        </div>
       </div>
 
       {accessQ.loading ? (
         <Skeleton className="h-64 w-full" />
       ) : (
-        <div className="space-y-2">
-          {parents.map((parent) => {
-            const kids = childrenOf(parent.key);
-            return (
-              <div key={parent.key} className="rounded-md border border-border bg-bg/40 p-3">
-                <LevelRow
-                  page={parent}
-                  level={levels[parent.key] ?? "none"}
-                  dirty={dirty.has(parent.key)}
-                  onChange={(l) => change(parent.key, l)}
-                />
-                {kids.length > 0 && (
-                  <div className="mt-2 space-y-2 border-l-2 border-border-subtle pl-3">
-                    {kids.map((child) => (
-                      <LevelRow
-                        key={child.key}
-                        page={child}
-                        level={levels[child.key] ?? "none"}
-                        dirty={dirty.has(child.key)}
-                        onChange={(l) => change(child.key, l)}
-                        dense
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          <p className="pt-1 text-[10.5px] text-ink-muted">
+        <>
+          {/* Cards flow into columns so the whole matrix fits one screen — no scroll */}
+          <div className="columns-1 gap-3 lg:columns-2 [&>*]:mb-2">
+            {parents.map((parent) => {
+              const kids = childrenOf(parent.key);
+              const isCollapsed = collapsed.has(parent.key);
+              return (
+                <div
+                  key={parent.key}
+                  className="break-inside-avoid rounded-md border border-border bg-bg/40 p-2.5"
+                >
+                  <LevelRow
+                    page={parent}
+                    level={levels[parent.key] ?? "none"}
+                    dirty={dirty.has(parent.key)}
+                    onChange={(l) => change(parent.key, l)}
+                    collapsible={kids.length > 0}
+                    collapsed={isCollapsed}
+                    onToggleCollapse={() => toggleGroup(parent.key)}
+                  />
+                  {kids.length > 0 && !isCollapsed && (
+                    <div className="mt-1.5 space-y-1 border-l-2 border-border-subtle pl-2.5">
+                      {kids.map((child) => (
+                        <LevelRow
+                          key={child.key}
+                          page={child}
+                          level={levels[child.key] ?? "none"}
+                          dirty={dirty.has(child.key)}
+                          onChange={(l) => change(child.key, l)}
+                          dense
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <p className="pt-2 text-[10.5px] text-ink-muted">
             Sub-pages inherit their parent's level unless set directly. Set a parent to grant a
             whole area, then override individual sub-pages (e.g. Projects = view, Finances = none).
           </p>
-        </div>
+        </>
       )}
     </div>
   );
@@ -443,35 +501,54 @@ function LevelRow({
   dirty,
   onChange,
   dense,
+  collapsible,
+  collapsed,
+  onToggleCollapse,
 }: {
   page: PageDef;
   level: AccessLevel;
   dirty: boolean;
   onChange: (l: AccessLevel) => void;
   dense?: boolean;
+  collapsible?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <div className="min-w-0 flex-1">
-        <div className={cn("font-semibold text-ink", dense ? "text-[11.5px]" : "text-[12px]")}>
+    <div className="flex items-center justify-between gap-2">
+      {/* Label + key on one line keeps each page to a single dense row */}
+      <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+        {collapsible && (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title={collapsed ? "Expand sub-pages" : "Collapse sub-pages"}
+            className="-ml-0.5 shrink-0 self-center rounded p-0.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
+          >
+            {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+          </button>
+        )}
+        <span className={cn("truncate font-semibold text-ink", dense ? "text-[12.5px]" : "text-[13.5px]")}>
           {page.label}
-          {dirty && (
-            <span className="ml-2 rounded bg-warning-bg px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning-text">
-              unsaved
-            </span>
-          )}
-        </div>
-        <div className="mt-0.5 font-mono text-[9px] text-ink-muted">{page.key}</div>
+        </span>
+        <span className="hidden shrink-0 truncate font-mono text-[10px] text-ink-muted sm:inline">
+          {page.key}
+        </span>
+        {dirty && (
+          <span className="shrink-0 rounded bg-warning-bg px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning-text">
+            unsaved
+          </span>
+        )}
       </div>
       {/* Segmented level control — clearer than 4 loose radios */}
-      <div className="inline-flex overflow-hidden rounded-md border border-border">
+      <div className="inline-flex shrink-0 overflow-hidden rounded-md border border-border">
         {LEVELS.map((opt, i) => (
           <button
             key={opt}
             type="button"
             onClick={() => onChange(opt)}
             className={cn(
-              "px-2.5 py-1 text-[11px] capitalize transition-colors",
+              "px-2.5 py-1 text-[12px] capitalize transition-colors",
               i > 0 && "border-l border-border",
               level === opt
                 ? "bg-accent font-semibold text-white"
