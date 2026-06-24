@@ -164,7 +164,11 @@ type Folder =
   | "trash"
   | "all";
 
-const DEPT_PRIORITY = ["Support", "Finance", "HR"];
+// Houzs's real departments (matches the public.departments table) — replaces
+// the ported Hookka set (Support/Finance/HR). These show as the canonical
+// department-mailbox placeholders in the sidebar until an admin assigns each
+// a shared address (e.g. sales@/it@).
+const DEPT_PRIORITY = ["Sales Department", "Operation Department", "IT Department", "Management"];
 const UNASSIGNED_DEPT = "Other";
 
 function deptRank(dept: string): number {

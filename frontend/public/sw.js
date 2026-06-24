@@ -241,7 +241,10 @@
 // v55 — OCR polish (phone MY default, JM->plain match, receipt-as-slip, payments
 //   table scroll, cross-salesperson shared-rules layer) + Mail Center (shared
 //   inbox: Inbox/Thread/Compose, Email Alias per member, Gmail IMAP pull inbound).
-const VERSION = "houzs-erp-v55";
+// v56 — Mail Center: department placeholders switched from Hookka's
+//   Support/Finance/HR to Houzs's real departments (Sales/Operation/IT/Management);
+//   hello@ mailbox assigned to the owner (seeded) so "New email" unlocks.
+const VERSION = "houzs-erp-v56";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
