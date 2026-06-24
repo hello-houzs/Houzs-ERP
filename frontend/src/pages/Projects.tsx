@@ -1094,14 +1094,14 @@ function ProjectsListView() {
     },
     {
       key: "size_sqm",
-      label: "Size",
+      label: "Size (sqm)",
       align: "right",
       render: (r) => (r.size_sqm != null ? `${r.size_sqm} m²` : "—"),
       getValue: (r) => r.size_sqm,
     },
     {
       key: "rental",
-      label: "Rental",
+      label: "Rental (RM)",
       align: "right",
       render: (r) => (
         <span className="font-mono text-[11px]">
@@ -1112,7 +1112,7 @@ function ProjectsListView() {
     },
     {
       key: "total_sales",
-      label: "Sales",
+      label: "Sales (RM)",
       align: "right",
       render: (r) => (
         <span className="font-mono text-[11px]">
