@@ -87,9 +87,9 @@ export function PositionsTab() {
               <button
                 type="button"
                 onClick={() => toggleDept(dept)}
-                className="mb-1 flex w-full items-center gap-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted transition-colors hover:text-accent"
+                className="mb-1.5 flex w-full items-center gap-1 text-[13px] font-bold uppercase tracking-brand text-ink transition-colors hover:text-accent"
               >
-                {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
                 <span className="truncate">{dept}</span>
                 <span className="ml-auto rounded bg-surface-dim px-1.5 text-[9px] font-semibold text-ink-muted">
                   {list.length}
