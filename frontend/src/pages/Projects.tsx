@@ -4813,7 +4813,13 @@ function ProjectSpecStrip({
           </button>
         )}
       </header>
-      <div className="grid grid-cols-1 divide-x divide-y divide-border-subtle border-y border-border-subtle md:grid-cols-2 lg:grid-cols-4">
+      <div
+        className={cn(
+          "grid grid-cols-1 divide-x divide-y divide-border-subtle border-y border-border-subtle md:grid-cols-2",
+          // View mode = 5 key fields on one row; Edit mode = 4-col grid for all fields.
+          editing ? "lg:grid-cols-4" : "lg:grid-cols-5",
+        )}
+      >
         {/* View mode shows only the key fields (Organizer, Start, End, Booth,
             Venue). Clicking Edit reveals every field. */}
         {editing && (<>
