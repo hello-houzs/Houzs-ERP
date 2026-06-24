@@ -2902,11 +2902,16 @@ function ProjectsCalendarView() {
         segs.push({ project: p, startCol, endCol, clipLeft, clipRight, lane: 0 });
       }
     }
-    // Longer + earlier first → better greedy packing.
+    // Longer + earlier first → better greedy packing. Then group events that
+    // share a venue + organizer (different brands) so they stack together
+    // instead of being split apart by another brand's event.
     segs.sort(
       (a, b) =>
         a.startCol - b.startCol ||
-        b.endCol - b.startCol - (a.endCol - a.startCol)
+        b.endCol - b.startCol - (a.endCol - a.startCol) ||
+        (a.project.venue || "").localeCompare(b.project.venue || "") ||
+        (a.project.organizer || "").localeCompare(b.project.organizer || "") ||
+        (a.project.brand || "").localeCompare(b.project.brand || "")
     );
     const lanes: WeekSeg[][] = [];
     for (const seg of segs) {
