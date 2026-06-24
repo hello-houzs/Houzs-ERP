@@ -4813,7 +4813,13 @@ function ProjectSpecStrip({
           </button>
         )}
       </header>
-      <div className="grid grid-cols-1 divide-x divide-y divide-border-subtle border-y border-border-subtle md:grid-cols-2 lg:grid-cols-4">
+      <div
+        className={cn(
+          "grid grid-cols-1 divide-x divide-y divide-border-subtle border-y border-border-subtle md:grid-cols-2",
+          // View mode = 5 key fields on one row; Edit mode = 4-col grid for all fields.
+          editing ? "lg:grid-cols-4" : "lg:grid-cols-5",
+        )}
+      >
         {/* View mode shows only the key fields (Organizer, Start, End, Booth,
             Venue). Clicking Edit reveals every field. */}
         {editing && (<>
@@ -4821,7 +4827,25 @@ function ProjectSpecStrip({
           {editing ? (
             <select
               value={p.brand ?? ""}
-              onChange={(e) => patch({ brand: e.target.value || null })}
+              onChange={(e) => {
+                const newBrand = e.target.value || null;
+                const updates: Record<string, any> = { brand: newBrand };
+                // Keep the project title's [brand] tag in sync with the Brand.
+                if (p.name && /\[[^\]]*\]/.test(p.name)) {
+                  updates.name = newBrand
+                    ? p.name.replace(/\[[^\]]*\]/, `[${newBrand}]`)
+                    : p.name.replace(/\s*\[[^\]]*\]\s*/, " ").replace(/\s+/g, " ").trim();
+                } else if (newBrand) {
+                  updates.name = composeDefaultProjectName({
+                    state: p.state,
+                    brand: newBrand,
+                    organizer: p.organizer,
+                    venue: p.venue,
+                    event_type_slug: slug,
+                  });
+                }
+                patch(updates);
+              }}
               className={SPEC_INPUT_CLASS}
             >
               <option value="">— none —</option>
