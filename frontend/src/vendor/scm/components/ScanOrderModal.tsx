@@ -372,8 +372,10 @@ export const ScanOrderModal = ({ onClose }: Props) => {
        slip's venue isn't silently lost). */
     const noteParts: string[] = [];
     if (ex.remarks) noteParts.push(ex.remarks);
-    if (!venueId && ex.location) noteParts.push(`Venue on slip: ${ex.location}`);
-    if (ex.deliveryDate && !ISO_DATE_RE.test(ex.deliveryDate)) noteParts.push(`Delivery: ${ex.deliveryDate}`);
+    /* Owner: do NOT pile the venue or the delivery note into the Note. The venue
+       has its own picker (an unmatched venue is simply left for the operator to
+       pick — not dumped here), and delivery has its own date field. The Note
+       carries ONLY the genuine standalone order remark. */
 
     return {
       customerName: ex.customerName ?? '',
@@ -424,7 +426,11 @@ export const ScanOrderModal = ({ onClose }: Props) => {
            aiOriginal), so nothing is lost — only the visible chip is trimmed. */
         const slipShort =
           l.rawText && l.rawText.length > 40 ? `${l.rawText.slice(0, 40).trimEnd()}…` : l.rawText;
-        const remarkParts = [slipShort && `Slip: ${slipShort}`, l.notes].filter(Boolean) as string[];
+        /* Owner: the line chip is JUST the short slip reference. The AI's per-line
+           notes (ambiguity flags, "operator to confirm…", restated handwriting)
+           are noise in the line display — they ride along only in `rawText` /
+           aiOriginal for the learning snapshot, never the visible chip. */
+        const remarkParts = [slipShort && `Slip: ${slipShort}`].filter(Boolean) as string[];
         return {
           itemCode: sku?.code ?? '',
           itemGroup: sku ? (CATEGORY_TO_GROUP[sku.category] ?? 'others') : 'others',

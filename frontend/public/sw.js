@@ -244,7 +244,10 @@
 // v56 — Mail Center: department placeholders switched from Hookka's
 //   Support/Finance/HR to Houzs's real departments (Sales/Operation/IT/Management);
 //   hello@ mailbox assigned to the owner (seeded) so "New email" unlocks.
-const VERSION = "houzs-erp-v56";
+// v57 — OCR scan: line chip is now just the short "Slip: …" reference (dropped the
+//   verbose AI ambiguity/operator notes); Note no longer carries venue/delivery
+//   (each has its own field) — only the genuine standalone remark.
+const VERSION = "houzs-erp-v57";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
