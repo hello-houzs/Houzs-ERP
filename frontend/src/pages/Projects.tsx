@@ -4827,7 +4827,25 @@ function ProjectSpecStrip({
           {editing ? (
             <select
               value={p.brand ?? ""}
-              onChange={(e) => patch({ brand: e.target.value || null })}
+              onChange={(e) => {
+                const newBrand = e.target.value || null;
+                const updates: Record<string, any> = { brand: newBrand };
+                // Keep the project title's [brand] tag in sync with the Brand.
+                if (p.name && /\[[^\]]*\]/.test(p.name)) {
+                  updates.name = newBrand
+                    ? p.name.replace(/\[[^\]]*\]/, `[${newBrand}]`)
+                    : p.name.replace(/\s*\[[^\]]*\]\s*/, " ").replace(/\s+/g, " ").trim();
+                } else if (newBrand) {
+                  updates.name = composeDefaultProjectName({
+                    state: p.state,
+                    brand: newBrand,
+                    organizer: p.organizer,
+                    venue: p.venue,
+                    event_type_slug: slug,
+                  });
+                }
+                patch(updates);
+              }}
               className={SPEC_INPUT_CLASS}
             >
               <option value="">— none —</option>
