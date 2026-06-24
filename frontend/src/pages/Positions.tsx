@@ -380,8 +380,26 @@ function PositionMatrixEditor({
   }, [accessQ.data]);
 
   function change(key: string, level: AccessLevel) {
-    setLevels((p) => ({ ...p, [key]: level }));
-    setDirty((p) => new Set(p).add(key));
+    // Setting a parent cascades the level to its whole sub-tree so the admin
+    // sees the entire category flip at once; they can then click an individual
+    // sub-page to override it. (Every cascaded page is written explicitly.)
+    const subtree: string[] = [];
+    let frontier = pages.filter((p) => p.parent === key);
+    while (frontier.length) {
+      subtree.push(...frontier.map((p) => p.key));
+      frontier = frontier.flatMap((p) => pages.filter((c) => c.parent === p.key));
+    }
+    const all = [key, ...subtree];
+    setLevels((p) => {
+      const next = { ...p };
+      for (const k of all) next[k] = level;
+      return next;
+    });
+    setDirty((p) => {
+      const next = new Set(p);
+      for (const k of all) next.add(k);
+      return next;
+    });
   }
 
   const parents = pages.filter((p) => !p.parent);
