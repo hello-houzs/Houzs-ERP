@@ -477,7 +477,7 @@ function PositionMatrixEditor({
       ) : (
         <>
           {/* Cards flow into columns so the whole matrix fits one screen — no scroll */}
-          <div className="columns-1 gap-3 lg:columns-2 [&>*]:mb-2">
+          <div className="space-y-2">
             {parents.map((parent) => (
               <div
                 key={parent.key}
