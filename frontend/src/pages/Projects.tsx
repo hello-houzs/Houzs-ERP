@@ -4430,6 +4430,8 @@ function ProjectDetailContent({
                 projectName={p.name}
                 canWrite={can("sales.write")}
                 canManage={can("sales.manage")}
+                currentTotalSales={detail.data?.finance?.total_sales ?? null}
+                onTotalSaved={() => detail.reload()}
                 toast={toast}
               />
 
@@ -4812,6 +4814,9 @@ function ProjectSpecStrip({
         )}
       </header>
       <div className="grid grid-cols-1 divide-x divide-y divide-border-subtle border-y border-border-subtle md:grid-cols-2 lg:grid-cols-4">
+        {/* View mode shows only the key fields (Organizer, Start, End, Booth,
+            Venue). Clicking Edit reveals every field. */}
+        {editing && (<>
         <SpecCell label="Brand">
           {editing ? (
             <select
@@ -4864,6 +4869,7 @@ function ProjectSpecStrip({
               : "—"}
           </SpecValue>
         </SpecCell>
+        </>)}
         <SpecCell label="Start">
           {editing ? (
             <input
@@ -4927,9 +4933,11 @@ function ProjectSpecStrip({
             <SpecValue>{p.venue ?? "—"}</SpecValue>
           )}
         </SpecCell>
+        {editing && (
         <SpecCell label="State">
           <SpecValue muted mono>{p.state ?? "—"}</SpecValue>
         </SpecCell>
+        )}
         <SpecCell label="Organizer">
           {editing ? (
             <OrganizerPicker
@@ -4941,6 +4949,7 @@ function ProjectSpecStrip({
             <SpecValue>{p.organizer ?? "—"}</SpecValue>
           )}
         </SpecCell>
+        {editing && (<>
         <SpecCell label="Size · m²">
           <SpecTextField
             editing={editing}
@@ -5002,6 +5011,7 @@ function ProjectSpecStrip({
             </a>
           </SpecCell>
         )}
+        </>)}
       </div>
     </section>
   );
@@ -8828,6 +8838,8 @@ function ProjectSalesEntriesSection({
   projectName,
   canWrite,
   canManage,
+  currentTotalSales,
+  onTotalSaved,
   toast,
 }: {
   projectId: number;
@@ -8835,6 +8847,8 @@ function ProjectSalesEntriesSection({
   projectName: string;
   canWrite: boolean;
   canManage: boolean;
+  currentTotalSales: number | null;
+  onTotalSaved: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
   const dialog = useDialog();
@@ -8850,6 +8864,32 @@ function ProjectSalesEntriesSection({
   const [qlRefNo, setQlRefNo] = useState("");
   const [qlDate, setQlDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [qlSaving, setQlSaving] = useState(false);
+  // Quick Total Sales — set the project's lump-sum total sales directly
+  // (project_finance.total_sales) without logging individual entries. Used
+  // for exhibitions where only the final total is known. Shows on the
+  // Project List "Sales" column + Overview P&L.
+  const [quickTotalOpen, setQuickTotalOpen] = useState(false);
+  const [qtValue, setQtValue] = useState("");
+  const [qtSaving, setQtSaving] = useState(false);
+
+  async function saveQuickTotal() {
+    const n = parseFloat(qtValue);
+    if (!Number.isFinite(n) || n < 0) {
+      toast.error("Enter a valid total sales amount");
+      return;
+    }
+    setQtSaving(true);
+    try {
+      await api.patch(`/api/projects/${projectId}/finance`, { total_sales: n });
+      toast.success("Total sales updated");
+      setQuickTotalOpen(false);
+      onTotalSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    } finally {
+      setQtSaving(false);
+    }
+  }
 
   async function saveQuickLog() {
     const n = parseFloat(qlAmount);
@@ -8978,6 +9018,25 @@ function ProjectSalesEntriesSection({
           </button>
           {canWrite && (
             <button
+              onClick={() => {
+                setQtValue(
+                  currentTotalSales != null ? String(currentTotalSales) : ""
+                );
+                setQuickTotalOpen((v) => !v);
+              }}
+              className={cn(
+                "inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[10.5px] font-semibold",
+                quickTotalOpen
+                  ? "border-emerald-600/60 bg-emerald-600 text-white"
+                  : "border-emerald-600/40 bg-emerald-100 text-emerald-800 hover:bg-emerald-200",
+              )}
+              title="Set the project's total sales figure directly (shows on the Project List + dashboard)"
+            >
+              <Plus size={11} /> Total Sales
+            </button>
+          )}
+          {canWrite && (
+            <button
               onClick={() => setQuickLogOpen((v) => !v)}
               className={cn(
                 "inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[10.5px] font-semibold",
@@ -9000,6 +9059,51 @@ function ProjectSalesEntriesSection({
           )}
         </div>
       </div>
+      {/* Quick Total Sales inline form — sets project_finance.total_sales
+          directly (lump sum), no individual entries. */}
+      {quickTotalOpen && (
+        <div className="mb-2 rounded-md border border-emerald-600/40 bg-emerald-50/60 p-2.5">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-800">
+              Total Sales · lump sum for this project
+            </span>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">
+                Total Sales (RM)
+              </span>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={qtValue}
+                onChange={(e) => setQtValue(e.target.value)}
+                placeholder="0.00"
+                autoFocus
+                className="h-7 w-40 rounded-md border border-border bg-surface px-2 text-[12px]"
+              />
+            </label>
+            <button
+              onClick={saveQuickTotal}
+              disabled={qtSaving}
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-emerald-600/60 bg-emerald-600 px-2.5 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {qtSaving ? "Saving…" : "Save"}
+            </button>
+            <button
+              onClick={() => setQuickTotalOpen(false)}
+              className="inline-flex h-7 items-center rounded-md border border-border bg-surface px-2.5 text-[11px] font-semibold text-ink-secondary hover:text-ink"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="mt-1.5 text-[9.5px] text-ink-secondary">
+            Sets the project's total sales directly — shows in the Project List
+            "Sales" column and the dashboard. Use for exhibitions where you only
+            record the final total. (If individual sales are logged, those take over.)
+          </p>
+        </div>
+      )}
       {/* Quick-log inline form — three required fields, no full
           customer / deposit panel. Reps complete the rest later via
           the Sales page (the row gets a yellow "Quick log" pill). */}
