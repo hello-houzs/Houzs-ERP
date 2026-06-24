@@ -97,6 +97,68 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
     .join('');
 }
 
+// ---------------------------------------------------------------------------
+// Phone normalisation — Malaysian numbers to a bare national-significant form
+// under the +60 country prefix, WITHOUT the leading trunk 0. The slip writes
+// "0197770309" / "012-345 6789" / "+6017 888 9999"; the form stores the part
+// AFTER +60, so a leading 0 must be dropped ("0197770309" → "197770309"). Any
+// existing +60 / 60 country prefix is also stripped. Non-MY-looking strings
+// fall through unchanged (digits-only) so nothing is silently corrupted.
+// ---------------------------------------------------------------------------
+function normalizeMyPhone(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  let digits = raw.replace(/[^\d]/g, '');
+  if (digits === '') return null;
+  // Strip a leading +60 / 60 country code, then the trunk 0.
+  if (digits.startsWith('60')) digits = digits.slice(2);
+  if (digits.startsWith('0')) digits = digits.replace(/^0+/, '');
+  return digits === '' ? null : digits;
+}
+
+// ---------------------------------------------------------------------------
+// Google Geocoding — turn the raw handwritten address text into accurate
+// state / city / postcode. The LLM frequently mis-parses Malaysian areas
+// (e.g. "Melawati" sits in KL/Setapak ~53100, not Ampang/Selangor 68000), so
+// when GOOGLE_MAPS_API_KEY is present we geocode the raw address and prefer the
+// returned components over the LLM guess. Fail-soft: missing key / network
+// error / no confident result → return null and keep the LLM parse.
+// ---------------------------------------------------------------------------
+type GeocodeParts = { state: string | null; city: string | null; postcode: string | null };
+async function geocodeAddress(
+  rawAddress: string | null | undefined,
+  apiKey: string | undefined,
+): Promise<GeocodeParts | null> {
+  const addr = (rawAddress ?? '').trim();
+  if (!apiKey || addr === '') return null;
+  try {
+    const url =
+      'https://maps.googleapis.com/maps/api/geocode/json' +
+      `?address=${encodeURIComponent(addr)}&region=my&components=country:MY&key=${apiKey}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+    if (!resp.ok) return null;
+    const body = (await resp.json()) as {
+      status?: string;
+      results?: Array<{
+        address_components?: Array<{ long_name?: string; short_name?: string; types?: string[] }>;
+      }>;
+    };
+    if (body.status !== 'OK' || !body.results?.length) return null;
+    const comps = body.results[0].address_components ?? [];
+    const pick = (type: string): string | null => {
+      const c = comps.find((x) => (x.types ?? []).includes(type));
+      return (c?.long_name ?? '').trim() || null;
+    };
+    const state = pick('administrative_area_level_1');
+    // City: prefer locality, fall back to the postal town / admin level 2.
+    const city = pick('locality') ?? pick('postal_town') ?? pick('administrative_area_level_2');
+    const postcode = pick('postal_code');
+    if (!state && !city && !postcode) return null;
+    return { state, city, postcode };
+  } catch {
+    return null;
+  }
+}
+
 // JSON-coercion recovery (ported verbatim from HOOKKA scan-po.ts) — Claude
 // sometimes wraps the result in fences, sometimes adds a "Looking at the
 // image…" preamble, sometimes both. Parse a best-effort substring rather
@@ -462,7 +524,7 @@ You may receive ONE or TWO images: a HANDWRITTEN order slip (a carbon-copy form 
 - Read the PAYMENT fields (paymentMethodMatch / bankMatch / installmentPlanMatch / approvalCode / depositRm or the receipt's amount) PREFERENTIALLY from the PRINTED receipt when one is present — the printed thermal receipt is far more accurate than the handwritten payment note. Still keep the handwritten payment note verbatim in paymentMethod. When NO receipt is present, fall back to the handwritten slip's payment note exactly as before.
 You MUST also classify every input image in the OUTPUT "images" array (see below).
 
-A reference CATALOG follows this prompt (live product SKUs, fabrics, sofa sizes, leg heights). Use it for fuzzy matching.
+A reference CATALOG follows this prompt (live product SKUs, fabrics, sofa sizes, leg heights). It is the FULL master (≈1100+ SKUs) — every catalog row is "code | name". Use it for AGGRESSIVE fuzzy / keyword / substring / abbreviation matching: a slip token should resolve to the SKU whose NAME contains that token's keyword, even when the rep wrote only a fragment. Search the WHOLE catalog before giving up.
 
 EXTRACTION RULES
 ================
@@ -475,7 +537,7 @@ EXTRACTION RULES
 7. salesRep — the salesperson's name from the footer/header.
 8. paymentMethod — as written ("cash", "TNG", "bank transfer", "CC", deposit slips etc.). null if absent.
 9. depositRm / totalRm — RM amounts as NUMBERS (e.g. "RM 1,500" → 1500, "550.50" → 550.5). null when blank.
-10. remarks — any handwritten notes that are not line items (delivery instructions, "lift access", "self collect", floor info…), one string.
+10. remarks — ONLY the genuine ORDER REMARK: a handwritten free-text note that is not a line item and does not already belong to a dedicated field — e.g. a promo note, a special handling instruction like "FOC dispose, not dismantle", "lift access", "self collect", floor info. Do NOT copy the venue/location, the phone numbers, the payment method/bank/EPP term, the deposit/total amounts, the delivery date, or the salesperson into remarks — those each have their own output fields and must NOT be duplicated here. Return null when there is no such standalone remark.
 11. approvalCode — the approval / reference number printed on the PAYMENT line, typically a card-terminal approval code written in parentheses (e.g. "(001586)" → "001586", "Appr 028471" → "028471"). Strip surrounding brackets/labels and return the bare digits/alphanumerics as a string. null when no such number is on the payment line.
 12. customerSoRef — the CUSTOMER'S OWN reference number for this order, usually pre-printed or hand-written in the TOP-RIGHT corner of the slip (a serial / docket number like "HC14032", "No. 14032", "Ref: A-2291"). It is the SLIP's own number, NOT a phone number, NOT a price, NOT the salesperson code, NOT the delivery date. Return the bare reference string exactly as written (keep its letter prefix, e.g. "HC14032"). null when no such number is on the slip.
 
@@ -495,17 +557,20 @@ For EVERY handwritten row in the item table output one lines[] entry:
 - priceRmGuess — the row's unit price in RM as a number; null when blank. If only a line total is written and qty > 1, still report the written figure and say so in notes.
 - skuMatch — your best FUZZY match against the catalog SKUS:
     { "code": <exact catalog code>, "confidence": 0-1, "reason": <short why> }
-  Handwriting mangles model names — match tolerantly:
+  Handwriting mangles model names AND reps write heavy shorthand — match AGGRESSIVELY against the FULL catalog. Try HARD before returning null; a slip token almost always corresponds to some catalog row whose NAME contains that keyword:
     • misspellings: "Ultimatee" / "Ultmate" → the ULTIMATE model's SKU.
     • partial names: "Hilton K" → the HILTON bedframe King-size SKU.
-    • base-model + size: a written size (King/Queen/K/Q/6FT/5FT) picks the size variant within the base model.
+    • base-model + size: a written size (King/Queen/K/Q/SS/S.S/SP/6FT/5FT) picks the size variant within the base model.
+    • KEYWORD / SUBSTRING tokens: a single descriptive word maps to the SKU whose name CONTAINS that word — "holes" → the SKU whose name contains "HOLES" (e.g. "… 7 HOLES PILLOW"); "bolster" → the SKU whose name contains "BOLSTER"; "Shamplo pillow" / "hole pillow" → the matching pillow SKU by its distinctive keyword.
+    • ABBREVIATION expansion: expand the rep's shorthand to the full catalog wording before matching — "W. Protector" / "W.Protector" → "WATERPROOF PROTECTOR"; "MP" → "MATTRESS PROTECTOR"; "Guardian" → the GUARDIAN model. Then apply the size token: "W. Protector (King)" → the WATERPROOF PROTECTOR King SKU; "W. Protector (S.S)" → the Super-Single one; "MP (Q)" → the MATTRESS PROTECTOR Queen SKU; "Guardian (King)" / "Guardian (Super Single)" → the GUARDIAN bedframe at King / Super-Single.
+    • SIZE TOKEN MAP — the parenthesised/trailing size on a slip maps to the catalog size grid: K = King, Q = Queen, SS / S.S / S/S = Super Single, S = Single, SP = Special/custom, 6FT ≈ Queen, 5FT ≈ Queen/King per the model's grid. Pick the SKU row whose name carries that size.
   VARIANT / DESCRIPTION-STYLE LINES (especially BEDFRAME). A row is often written as a base model PLUS variant options and a fabric code rather than a clean model name, e.g. "Col: PC151-01 + front / Side Divan 8\"+0\"". Read it as: a FABRIC/colour code (here "PC151-01" — match it in fabricMatch, see below), plus VARIANT options (a divan/side build, a divan height like 8", a leg/gap like 0"). These variant phrases are NOT part of the model name — strip them when looking for the model:
     • Identify the catalog MODEL from the remaining model words on the row (or the row above, since reps often write the model once and list fabrics/variants beneath). Match THAT to the BEDFRAME (or SOFA) SKUS.
     • If the catalog encodes size/variant as distinct SKU rows for that model, pick the SKU whose name matches the written size/variant; the divan-height / side / leg / gap details that the catalog does NOT encode as a SKU stay in "notes" for the operator to set in the form's variant picker.
     • A bare fabric code with NO model word on the row (or above it) is NOT enough to choose a model — set skuMatch = null, put the fabric in fabricMatch, and let rawText + notes carry the variant text. Never guess a model from a fabric code alone.
   Rules:
     • The code MUST be copied character-for-character from the catalog. NEVER invent, modify, or extrapolate a code that is not in the catalog. NEVER assemble a code out of a fabric code + a size; the code must already exist verbatim in the SKUS list.
-    • When you cannot find a defensible match, skuMatch = null and let rawText speak. A null with good rawText is worth more than a wrong code.
+    • Only AFTER genuinely searching the whole catalog by keyword/substring/abbreviation and finding nothing defensible, set skuMatch = null and let rawText speak. A null with good rawText is worth more than a wrong code — but a real catalog row keyworded in the slip token must NOT be returned as null.
     • confidence: 0.9+ only when the written text clearly identifies one specific catalog row; 0.5-0.8 when the model matches but the size/variant is ambiguous; below 0.5 prefer null.
 - fabricMatch — match against the FABRICS catalog whenever the row (or a margin note, or a "Col:" / "Color" / "Fabric" prefix) names a fabric/colour code (e.g. "PC151-01", "Col: PC151-01"). The fabric code is frequently the FIRST token on a bedframe/sofa variant line; always look for it there. null when the row names no fabric. Same never-invent rule — the code must be copied character-for-character from the FABRICS list.
 - notes — anything else on the row the operator should see (free gifts, "FOC", sizes that don't match the catalog, unreadable words flagged as "[illegible]").
@@ -1777,6 +1842,34 @@ scanSo.post('/extract', async (c) => {
       { error: 'extract_failed', reason: errorMsg ?? 'Extraction failed.', sampleId, imageKey, receiptImageKey },
       502,
     );
+  }
+
+  // Phone normalisation — store the bare national-significant form under +60
+  // (drop the trunk 0): "0197770309" → "197770309". Applies to every extracted
+  // phone (main + spouse/emergency) so the form's PhoneInput seeds the correct
+  // digits. phones[0] is the primary; the rest ride along for the edit-gate.
+  parsed.phones = parsed.phones
+    .map((p) => normalizeMyPhone(p))
+    .filter((p): p is string => p !== null);
+
+  // Address via Google Geocoding (GOOGLE_MAPS_API_KEY). The LLM mis-parses
+  // Malaysian areas (it put Melawati at Ampang/Selangor 68000 — it's KL/Setapak
+  // ~53100), so when geocoding succeeds we PREFER its state/city/postcode over
+  // the LLM guess. Fail-soft: no key / network error / no result → keep the LLM
+  // parse untouched. The geocoded STATE is seeded into addressStateMatch so the
+  // validateSlip pass below still snaps it to the catalog states list (and
+  // clears it if the geocoder ever returns a non-catalog state).
+  try {
+    const geo = await geocodeAddress(parsed.address, c.env.GOOGLE_MAPS_API_KEY);
+    if (geo) {
+      if (geo.state) {
+        parsed.addressStateMatch = { value: geo.state, confidence: 0.95, reason: 'Google geocode' };
+      }
+      if (geo.city) parsed.city = geo.city;
+      if (geo.postcode) parsed.postcode = geo.postcode;
+    }
+  } catch {
+    /* fail-soft — keep the LLM address parse */
   }
 
   const warnings = validateSlip(parsed, catalog);

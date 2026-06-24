@@ -150,6 +150,7 @@ const SoLineCardInner = ({
   docNo,
   itemId,
   isEditing = true,
+  searchHint,
 }: {
   index:     number;
   draft:     SoLineDraft;
@@ -160,6 +161,11 @@ const SoLineCardInner = ({
   docNo?:    string;
   itemId?:   string;
   isEditing?: boolean;
+  /* Scan-Order (Task #73) — the OCR rawText for a NO-MATCH line, shown as the
+     SKU picker's placeholder so the operator sees what was on the slip while
+     they pick a real SKU. It is a HINT ONLY — never committed as the product
+     value (a no-match line must be filled from the dropdown, not free-typed). */
+  searchHint?: string;
 }) => {
   const notify = useNotify();
   const maintQ   = useMaintenanceConfig('master');
@@ -586,7 +592,10 @@ const SoLineCardInner = ({
           ) : (
             <input
               className={styles.input}
-              placeholder="Click to pick or type to filter…"
+              /* Scan-Order no-match (Task #73) — surface the slip's rawText as
+                 the placeholder so the operator sees what was written while
+                 picking a real SKU, without it being committed as a value. */
+              placeholder={searchHint ? `Slip: ${searchHint} — pick a SKU` : 'Click to pick or type to filter…'}
               value={search}
               disabled={!isEditing}
               onFocus={() => setShowPicker(true)}

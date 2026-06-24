@@ -59,7 +59,7 @@ export type ScanPrefillLine = {
   description:    string;
   qty:            number;
   unitPriceCenti: number;        // RM handwriting × 100, rounded
-  remark:         string;        // rawText + notes so nothing on the slip is lost
+  remark:         string;        // short "Slip: …" chip (rawText capped ~40c) + notes; full rawText below
   /* Verification + learning carry-through. rawText is the slip's verbatim row
      (the source of truth the edit-gate pairs against the corrected code);
      confidence/suggestedCode drive the per-line "scanned · NN%" chip in the
@@ -99,7 +99,7 @@ export type ScanPrefill = {
   addressPostcode: string;
   /* The customer's own order reference (e.g. "HC14032") → Customer SO Ref. */
   customerSoRef:  string;
-  note:           string;        // remarks + location + extra phones + non-date delivery text
+  note:           string;        // genuine order remark only (+ unresolved venue / non-date delivery)
   deliveryDate:   string | null; // only when a clean YYYY-MM-DD
   processingDate: string | null;
   customerType:   string;        // customer_type value matched to SO Maintenance ('' = none)
@@ -353,22 +353,17 @@ export const ScanOrderModal = ({ onClose }: Props) => {
       ex.location ?? '',
     );
 
+    /* Note carries ONLY the genuine order remark. Venue, payment, deposit,
+       total, sales rep and extra phones all have their own dedicated fields /
+       flows on the form, so they must NOT be piled into the Note (owner: it
+       over-stuffed the Note). The only extras kept here are things with NO
+       home on the form: a non-date delivery text (e.g. "after CNY", "TBC") and
+       the raw venue text when it could not be resolved to a dropdown id (so the
+       slip's venue isn't silently lost). */
     const noteParts: string[] = [];
     if (ex.remarks) noteParts.push(ex.remarks);
-    if (ex.location) noteParts.push(`Venue/location on slip: ${ex.location}`);
-    /* Keep the raw venue text in the Note when we couldn't resolve it to a
-       dropdown id, so nothing on the slip is lost (the operator can pick the
-       venue manually in the form). */
-    if (!venueId && ex.locationMatch?.value && ex.locationMatch.value !== ex.location) {
-      noteParts.push(`Venue matched (SO Maintenance): ${ex.locationMatch.value}`);
-    }
-    if (phones.length > 1) noteParts.push(`Other phone(s): ${phones.slice(1).join(', ')}`);
+    if (!venueId && ex.location) noteParts.push(`Venue on slip: ${ex.location}`);
     if (ex.deliveryDate && !ISO_DATE_RE.test(ex.deliveryDate)) noteParts.push(`Delivery: ${ex.deliveryDate}`);
-    if (ex.paymentMethod) noteParts.push(`Payment method on slip: ${ex.paymentMethod}`);
-    if (ex.depositRm != null) noteParts.push(`Deposit on slip: RM ${ex.depositRm}`);
-    if (ex.totalRm != null) noteParts.push(`Total on slip: RM ${ex.totalRm}`);
-    if (ex.salesRep) noteParts.push(`Sales rep on slip: ${ex.salesRep}`);
-    noteParts.push('(Prefilled from scanned slip — verify before saving.)');
 
     return {
       customerName: ex.customerName ?? '',
@@ -413,11 +408,27 @@ export const ScanOrderModal = ({ onClose }: Props) => {
       lines: ex.lines.map((l) => {
         const code = l.skuMatch?.code ?? '';
         const sku = code ? skuByCode.get(code.toUpperCase()) : undefined;
-        const remarkParts = [l.rawText && `Slip: ${l.rawText}`, l.notes].filter(Boolean) as string[];
+        /* Visible line remark — keep it SHORT so it doesn't overflow the line's
+           Remarks textarea (owner: the "Slip: …" chip was too long). Cap the
+           raw slip text to ~40 chars; the FULL verbatim rawText is preserved in
+           the `rawText` field below (and rides into the learning sample via
+           aiOriginal), so nothing is lost — only the visible chip is trimmed. */
+        const slipShort =
+          l.rawText && l.rawText.length > 40 ? `${l.rawText.slice(0, 40).trimEnd()}…` : l.rawText;
+        const remarkParts = [slipShort && `Slip: ${slipShort}`, l.notes].filter(Boolean) as string[];
         return {
           itemCode: sku?.code ?? '',
           itemGroup: sku ? (CATEGORY_TO_GROUP[sku.category] ?? 'others') : 'others',
-          description: sku?.name ?? l.rawText,
+          /* Owner core rule (Task #73) — a NO-MATCH line must seed an EMPTY,
+             UNPICKED product so the New SO form renders the normal SKU picker
+             dropdown the operator is FORCED to fill. Never commit the OCR
+             rawText as the product description (that became a free-text
+             "OTHERS" row the operator could type anything into and save —
+             "不可以走后门乱插"). The rawText still rides along in `rawText`
+             (shown as the picker's search-hint placeholder) and in `remark`
+             ("Slip: …"), so nothing on the slip is lost. A MATCHED line keeps
+             its picked SKU name. */
+          description: sku?.name ?? '',
           qty: l.qtyGuess > 0 ? l.qtyGuess : 1,
           unitPriceCenti: Math.round((l.priceRmGuess ?? 0) * 100),
           remark: remarkParts.join(' · '),

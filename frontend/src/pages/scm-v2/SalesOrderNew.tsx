@@ -341,7 +341,14 @@ export const SalesOrderNew = () => {
     if (payload.addressPostcode) setScanPostcode(payload.addressPostcode);
     if (payload.note) setNote(payload.note);
     if (payload.deliveryDate) setDeliveryDate(payload.deliveryDate);
-    if (payload.processingDate) setProcessingDate(payload.processingDate);
+    /* Processing Date (Task #73, owner 2026-06-24) — a scanned slip is an order
+       opened TODAY, so default Processing Date to today when the OCR didn't read
+       a date off the slip. This frees the operator from the XOR trap ("Processing
+       Date and Delivery Date must be set together — Save is blocked") that fired
+       when Processing was left blank. Delivery Date stays optional — the operator
+       sets it (and Processing ≤ Delivery is still enforced on Save). en-CA gives
+       a local YYYY-MM-DD, matching the `today` used by the date inputs + guards. */
+    setProcessingDate(payload.processingDate || new Date().toLocaleDateString('en-CA'));
     /* SO-Maintenance matches from the scan (2026-06-12) — both land in
        normal editable selects, same as a manual pick. */
     if (payload.customerType) setCustomerType(payload.customerType);
@@ -411,7 +418,10 @@ export const SalesOrderNew = () => {
       address1:       payload.address1 || '',
       note:           payload.note || '',
       deliveryDate:   payload.deliveryDate ?? '',
-      processingDate: payload.processingDate ?? '',
+      /* Match the auto-seeded Processing Date (today when the OCR read none) so
+         the blue `.edited` diff doesn't falsely flag a field the operator never
+         touched. */
+      processingDate: payload.processingDate || new Date().toLocaleDateString('en-CA'),
       customerType:   payload.customerType || '',
       buildingType:   payload.buildingType || '',
       venueId:        payload.venueId || '',
@@ -981,6 +991,23 @@ export const SalesOrderNew = () => {
     const validLines = lines.filter((l) => l.itemCode.trim() && l.qty > 0);
     if (validLines.length === 0) {
       notify({ title: 'Add at least one item via "+ Add Line Item".', tone: 'error' });
+      return;
+    }
+    /* Scan-Order core rule (Task #73) — a NO-MATCH scanned line seeds an empty
+       SKU picker the operator MUST fill from the dropdown ("应该是 dropdown 而
+       不是 manually 填写"). Block the save while any scanned line is still
+       unpicked (it carries the slip rawText but no itemCode) rather than
+       silently dropping it, so the operator is forced to pick a real SKU. */
+    const unpickedScanned = lines.filter((l) => !l.itemCode.trim() && (scanLineMeta[l.rid]?.rawText ?? '').trim() !== '');
+    if (unpickedScanned.length > 0) {
+      notify({
+        title: 'Pick a SKU for every scanned line.',
+        body:
+          `${unpickedScanned.length} scanned line${unpickedScanned.length === 1 ? '' : 's'} ` +
+          `${unpickedScanned.length === 1 ? "doesn't" : "don't"} have a product picked yet. ` +
+          'Pick a real SKU from the dropdown (the slip text is shown as a hint) or remove the line, then try again.',
+        tone: 'error',
+      });
       return;
     }
     // Variants are only mandatory once a processing date is set: with a date,
@@ -1677,6 +1704,11 @@ export const SalesOrderNew = () => {
                   onRemove={() => dropLine(line.rid)}
                   canRemove={lines.length > 1}
                   inheritVariantsByCategory={inheritVariantsByCategory}
+                  /* Scan-Order (Task #73) — a NO-MATCH scanned line seeds an
+                     empty SKU picker; pass the slip rawText as the picker's
+                     placeholder hint so the operator can pick a real SKU
+                     (never free-text). Only while the line is still unpicked. */
+                  searchHint={!line.itemCode && meta?.rawText ? meta.rawText : undefined}
                 />
               </div>
             );

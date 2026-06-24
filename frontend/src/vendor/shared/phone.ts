@@ -188,7 +188,12 @@ export function splitE164(stored: string | null | undefined): { dial: string; na
     if (digits.startsWith(c.dial)) return { dial: c.dial, national: digits.slice(c.dial.length) };
   }
   // No known country code — assume the digits are a Malaysian national number.
-  return { dial: DEFAULT_DIAL, national: digits.startsWith('60') ? digits.slice(2) : digits };
+  // Strip the local trunk prefix `0` when defaulting to +60: a slip / OCR phone
+  // written "0197770309" is the Malaysian local form whose leading 0 is replaced
+  // by the +60 country code, so the national part is "197770309" → displays
+  // "19-777 0309", never "0197770309" (request 2026-06-24).
+  const national = digits.startsWith('60') ? digits.slice(2) : digits.replace(/^0+/, '');
+  return { dial: DEFAULT_DIAL, national };
 }
 
 /**
