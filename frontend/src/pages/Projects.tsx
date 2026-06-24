@@ -839,6 +839,7 @@ const PROJECTS_LIST_FILTER_KEYS = [
   "brand",
   "year",
   "month",
+  "status",
   "page",
 ] as const;
 
@@ -856,6 +857,7 @@ function ProjectsListView() {
   const year = params.get("year") || "";
   const month = params.get("month") || "";
   const section = params.get("section") || "";
+  const status = params.get("status") || "";
   const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
   function patchParams(patch: Record<string, string>) {
     const next = new URLSearchParams(params);
@@ -870,6 +872,7 @@ function ProjectsListView() {
   const setYear = (v: string) => patchParams({ year: v, page: "1" });
   const setMonth = (v: string) => patchParams({ month: v, page: "1" });
   const setSection = (v: string) => patchParams({ section: v, page: "1" });
+  const setStatus = (v: string) => patchParams({ status: v, page: "1" });
   const setPage = (n: number) => patchParams({ page: String(n) });
 
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
@@ -907,14 +910,27 @@ function ProjectsListView() {
           exclude_done: excludeDoneParam,
           my_pending: myPending ? 1 : undefined,
           search,
-          page,
-          per_page: perPage,
+          // Status is filtered client-side (the list endpoint has no status
+          // param). To stay correct across pagination, pull the whole result
+          // set in one page while a status filter is active — there are only a
+          // few hundred projects, so this is cheap.
+          page: status ? 1 : page,
+          per_page: status ? 1000 : perPage,
           include_archived: showArchived ? 1 : undefined,
           ...sortParams,
         })}`
       ),
-    [brand, year, month, section, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir]
+    [brand, year, month, section, status, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir]
   );
+
+  // Client-side status filter (Confirmed / Pending / Cancelled), applied over
+  // the rows the list endpoint returns. When active, the query above loads the
+  // full set so this sees every matching project, not just the current page.
+  const rows = useMemo(() => {
+    const all = list.data?.data ?? null;
+    if (!all || !status) return all;
+    return all.filter((r) => r.status === status);
+  }, [list.data, status]);
 
   const summary = useQuery<{
     by_stage: { stage: string; count: number }[];
@@ -1211,6 +1227,19 @@ function ProjectsListView() {
             </option>
           ))}
         </select>
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          className="h-8 rounded-md border border-border bg-surface px-2 text-[12px]"
+          title="Filter by project status"
+        >
+          <option value="">All statuses</option>
+          {STATUS_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
         <label
           className="ml-auto inline-flex items-center gap-1.5 text-[11px] font-semibold text-ink-secondary"
           title="Show only projects with a task pending on your side (your role)"
@@ -1263,17 +1292,17 @@ function ProjectsListView() {
           placeholder: "Search code, name, venue, organizer…",
         }}
         resetFilters={{
-          active: !!(search || brand || year || month || section),
+          active: !!(search || brand || year || month || section || status),
           onReset: () => {
             const next = new URLSearchParams(params);
-            ["search", "brand", "year", "month", "section", "page"].forEach((k) =>
+            ["search", "brand", "year", "month", "section", "status", "page"].forEach((k) =>
               next.delete(k)
             );
             setParams(next, { replace: true });
           },
         }}
         columns={columns}
-        rows={list.data?.data ?? null}
+        rows={rows}
         loading={list.loading}
         error={list.error}
         emptyLabel="No projects yet"
@@ -1284,7 +1313,7 @@ function ProjectsListView() {
         onSortChange={handleSortChange}
       />
 
-      {list.data && (
+      {list.data && !status && (
         <Pagination
           page={page}
           perPage={perPage}
@@ -4401,6 +4430,8 @@ function ProjectDetailContent({
                 projectName={p.name}
                 canWrite={can("sales.write")}
                 canManage={can("sales.manage")}
+                currentTotalSales={detail.data?.finance?.total_sales ?? null}
+                onTotalSaved={() => detail.reload()}
                 toast={toast}
               />
 
@@ -4783,6 +4814,9 @@ function ProjectSpecStrip({
         )}
       </header>
       <div className="grid grid-cols-1 divide-x divide-y divide-border-subtle border-y border-border-subtle md:grid-cols-2 lg:grid-cols-4">
+        {/* View mode shows only the key fields (Organizer, Start, End, Booth,
+            Venue). Clicking Edit reveals every field. */}
+        {editing && (<>
         <SpecCell label="Brand">
           {editing ? (
             <select
@@ -4835,6 +4869,7 @@ function ProjectSpecStrip({
               : "—"}
           </SpecValue>
         </SpecCell>
+        </>)}
         <SpecCell label="Start">
           {editing ? (
             <input
@@ -4898,9 +4933,11 @@ function ProjectSpecStrip({
             <SpecValue>{p.venue ?? "—"}</SpecValue>
           )}
         </SpecCell>
+        {editing && (
         <SpecCell label="State">
           <SpecValue muted mono>{p.state ?? "—"}</SpecValue>
         </SpecCell>
+        )}
         <SpecCell label="Organizer">
           {editing ? (
             <OrganizerPicker
@@ -4912,6 +4949,7 @@ function ProjectSpecStrip({
             <SpecValue>{p.organizer ?? "—"}</SpecValue>
           )}
         </SpecCell>
+        {editing && (<>
         <SpecCell label="Size · m²">
           <SpecTextField
             editing={editing}
@@ -4973,6 +5011,7 @@ function ProjectSpecStrip({
             </a>
           </SpecCell>
         )}
+        </>)}
       </div>
     </section>
   );
@@ -8799,6 +8838,8 @@ function ProjectSalesEntriesSection({
   projectName,
   canWrite,
   canManage,
+  currentTotalSales,
+  onTotalSaved,
   toast,
 }: {
   projectId: number;
@@ -8806,6 +8847,8 @@ function ProjectSalesEntriesSection({
   projectName: string;
   canWrite: boolean;
   canManage: boolean;
+  currentTotalSales: number | null;
+  onTotalSaved: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
   const dialog = useDialog();
@@ -8821,6 +8864,32 @@ function ProjectSalesEntriesSection({
   const [qlRefNo, setQlRefNo] = useState("");
   const [qlDate, setQlDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [qlSaving, setQlSaving] = useState(false);
+  // Quick Total Sales — set the project's lump-sum total sales directly
+  // (project_finance.total_sales) without logging individual entries. Used
+  // for exhibitions where only the final total is known. Shows on the
+  // Project List "Sales" column + Overview P&L.
+  const [quickTotalOpen, setQuickTotalOpen] = useState(false);
+  const [qtValue, setQtValue] = useState("");
+  const [qtSaving, setQtSaving] = useState(false);
+
+  async function saveQuickTotal() {
+    const n = parseFloat(qtValue);
+    if (!Number.isFinite(n) || n < 0) {
+      toast.error("Enter a valid total sales amount");
+      return;
+    }
+    setQtSaving(true);
+    try {
+      await api.patch(`/api/projects/${projectId}/finance`, { total_sales: n });
+      toast.success("Total sales updated");
+      setQuickTotalOpen(false);
+      onTotalSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    } finally {
+      setQtSaving(false);
+    }
+  }
 
   async function saveQuickLog() {
     const n = parseFloat(qlAmount);
@@ -8949,6 +9018,25 @@ function ProjectSalesEntriesSection({
           </button>
           {canWrite && (
             <button
+              onClick={() => {
+                setQtValue(
+                  currentTotalSales != null ? String(currentTotalSales) : ""
+                );
+                setQuickTotalOpen((v) => !v);
+              }}
+              className={cn(
+                "inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[10.5px] font-semibold",
+                quickTotalOpen
+                  ? "border-emerald-600/60 bg-emerald-600 text-white"
+                  : "border-emerald-600/40 bg-emerald-100 text-emerald-800 hover:bg-emerald-200",
+              )}
+              title="Set the project's total sales figure directly (shows on the Project List + dashboard)"
+            >
+              <Plus size={11} /> Total Sales
+            </button>
+          )}
+          {canWrite && (
+            <button
               onClick={() => setQuickLogOpen((v) => !v)}
               className={cn(
                 "inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-md border px-2 text-[10.5px] font-semibold",
@@ -8971,6 +9059,51 @@ function ProjectSalesEntriesSection({
           )}
         </div>
       </div>
+      {/* Quick Total Sales inline form — sets project_finance.total_sales
+          directly (lump sum), no individual entries. */}
+      {quickTotalOpen && (
+        <div className="mb-2 rounded-md border border-emerald-600/40 bg-emerald-50/60 p-2.5">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-800">
+              Total Sales · lump sum for this project
+            </span>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[9.5px] font-semibold uppercase tracking-wider text-ink-secondary">
+                Total Sales (RM)
+              </span>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={qtValue}
+                onChange={(e) => setQtValue(e.target.value)}
+                placeholder="0.00"
+                autoFocus
+                className="h-7 w-40 rounded-md border border-border bg-surface px-2 text-[12px]"
+              />
+            </label>
+            <button
+              onClick={saveQuickTotal}
+              disabled={qtSaving}
+              className="inline-flex h-7 items-center gap-1 rounded-md border border-emerald-600/60 bg-emerald-600 px-2.5 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {qtSaving ? "Saving…" : "Save"}
+            </button>
+            <button
+              onClick={() => setQuickTotalOpen(false)}
+              className="inline-flex h-7 items-center rounded-md border border-border bg-surface px-2.5 text-[11px] font-semibold text-ink-secondary hover:text-ink"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="mt-1.5 text-[9.5px] text-ink-secondary">
+            Sets the project's total sales directly — shows in the Project List
+            "Sales" column and the dashboard. Use for exhibitions where you only
+            record the final total. (If individual sales are logged, those take over.)
+          </p>
+        </div>
+      )}
       {/* Quick-log inline form — three required fields, no full
           customer / deposit panel. Reps complete the rest later via
           the Sales page (the row gets a yellow "Quick log" pill). */}
