@@ -535,7 +535,7 @@ function LevelRow({
   onToggleCollapse?: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2">
+    <div className="group -mx-1 flex items-center justify-between gap-2 rounded px-1 transition-colors hover:bg-accent-soft/40">
       {/* Label + key on one line keeps each page to a single dense row */}
       <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
         {collapsible && (
@@ -548,7 +548,7 @@ function LevelRow({
             {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
           </button>
         )}
-        <span className={cn("truncate font-semibold text-ink", dense ? "text-[12.5px]" : "text-[13.5px]")}>
+        <span className={cn("truncate font-semibold text-ink transition-colors group-hover:font-bold group-hover:text-accent", dense ? "text-[12.5px]" : "text-[13.5px]")}>
           {page.label}
         </span>
         <span className="hidden shrink-0 truncate font-mono text-[10px] text-ink-muted sm:inline">
