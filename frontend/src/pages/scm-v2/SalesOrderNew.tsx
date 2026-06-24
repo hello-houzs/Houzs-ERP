@@ -60,6 +60,12 @@ import {
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
+/* FIX (d) scan fabric seed — resolve a scanned fabric code (e.g. "BO315-22")
+   to the SAME fabric_colours / fabric_library rows SoLineCard's pickFabricColour
+   uses, so the matched colour rides onto the seeded line's variants instead of
+   being dropped. */
+import { useFabricColoursActive } from '../../vendor/scm/lib/fabric-queries';
+import { useFabricLibrary } from '../../vendor/scm/lib/queries';
 import {
   SCAN_PREFILL_KEY, type ScanPrefill, type ExtractedSlip,
 } from '../../vendor/scm/components/ScanOrderModal';
@@ -123,6 +129,11 @@ export const SalesOrderNew = () => {
   const staffQ   = useStaff();
   const venuesQ  = useVenues();
   const loc      = useLocalities();
+  /* FIX (d) — fabric colour + library lookups for the scan seed (same sources
+     as SoLineCard.pickFabricColour). Lets a matched scan fabric code resolve to
+     fabricId / colour label / hex before it lands on the seeded line. */
+  const scanFabricColoursQ = useFabricColoursActive();
+  const scanFabricLibQ     = useFabricLibrary();
   /* Commander 2026-05-27: "他们都要有自己的account... 用自己的account开单
      都是自己的名字...salesperson 还是可以换 只是default跳出来 venue就不能换
      自动跳出来". The current logged-in staff drives:
@@ -419,6 +430,30 @@ export const SalesOrderNew = () => {
           confidence:    l.confidence ?? 0,
           seededCode:    l.itemCode,
         };
+        /* FIX (d) — carry the OCR-matched fabric colour onto the line's variants.
+           BO315-22 is the WHOLE code: fabric_colours.colourId === the matched
+           code (do NOT split it). fabricCode + colourId satisfy SoLineCard's
+           Fabrics dropdown + the server's allowed-fabric gate + pricing lookup.
+           When the colours/library queries have loaded, ALSO resolve fabricId /
+           colour label / hex the way pickFabricColour does so the dropdown shows
+           a fully-rehydrated selection (not a bare "(current)" code). If they
+           haven't loaded yet, seed fabricCode/colourId alone — SoLineCard's
+           "(current)" rehydrate + pickedFabric pricing still work on mount. */
+        const fabricCode = l.fabricCode ?? '';
+        let fabricVariants: Record<string, unknown> = {};
+        if (fabricCode) {
+          const colour = (scanFabricColoursQ.data ?? []).find((c) => c.colourId === fabricCode);
+          const seriesLabel =
+            (scanFabricLibQ.data ?? []).find((f) => f.id === colour?.fabricId)?.label ?? null;
+          fabricVariants = {
+            fabricCode,
+            colourId: fabricCode,
+            ...(colour ? { fabricId: colour.fabricId } : {}),
+            ...(seriesLabel ? { fabricLabel: seriesLabel } : {}),
+            ...(colour?.label ? { colourLabel: colour.label } : {}),
+            ...(colour?.swatchHex ? { colourHex: colour.swatchHex } : {}),
+          };
+        }
         return {
           ...seeded,
           itemCode:       l.itemCode,
@@ -427,6 +462,7 @@ export const SalesOrderNew = () => {
           qty:            l.qty > 0 ? l.qty : 1,
           unitPriceCenti: l.unitPriceCenti,
           remark:         l.remark,
+          ...(fabricCode ? { variants: { ...seeded.variants, ...fabricVariants } } : {}),
         };
       }));
     }

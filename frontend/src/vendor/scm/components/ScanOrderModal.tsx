@@ -419,18 +419,11 @@ export const ScanOrderModal = ({ onClose }: Props) => {
       lines: ex.lines.map((l) => {
         const code = l.skuMatch?.code ?? '';
         const sku = code ? skuByCode.get(code.toUpperCase()) : undefined;
-        /* Visible line remark — keep it SHORT so it doesn't overflow the line's
-           Remarks textarea (owner: the "Slip: …" chip was too long). Cap the
-           raw slip text to ~40 chars; the FULL verbatim rawText is preserved in
-           the `rawText` field below (and rides into the learning sample via
-           aiOriginal), so nothing is lost — only the visible chip is trimmed. */
-        const slipShort =
-          l.rawText && l.rawText.length > 40 ? `${l.rawText.slice(0, 40).trimEnd()}…` : l.rawText;
-        /* Owner: the line chip is JUST the short slip reference. The AI's per-line
-           notes (ambiguity flags, "operator to confirm…", restated handwriting)
-           are noise in the line display — they ride along only in `rawText` /
-           aiOriginal for the learning snapshot, never the visible chip. */
-        const remarkParts = [slipShort && `Slip: ${slipShort}`].filter(Boolean) as string[];
+        /* Owner (repeated): do NOT emit a visible "Slip: …" line remark — it was
+           noise on the line display. The line remark seeds EMPTY. The verbatim
+           slip text is NOT lost: it still rides in the `rawText` field below (and
+           into the learning sample via aiOriginal), which feeds the learning gate
+           and the per-line scanned-hint placeholder. */
         return {
           itemCode: sku?.code ?? '',
           itemGroup: sku ? (CATEGORY_TO_GROUP[sku.category] ?? 'others') : 'others',
@@ -440,13 +433,13 @@ export const ScanOrderModal = ({ onClose }: Props) => {
              rawText as the product description (that became a free-text
              "OTHERS" row the operator could type anything into and save —
              "不可以走后门乱插"). The rawText still rides along in `rawText`
-             (shown as the picker's search-hint placeholder) and in `remark`
-             ("Slip: …"), so nothing on the slip is lost. A MATCHED line keeps
-             its picked SKU name. */
+             (shown as the picker's search-hint placeholder), so nothing on the
+             slip is lost. A MATCHED line keeps its picked SKU name. */
           description: sku?.name ?? '',
           qty: l.qtyGuess > 0 ? l.qtyGuess : 1,
           unitPriceCenti: Math.round((l.priceRmGuess ?? 0) * 100),
-          remark: remarkParts.join(' · '),
+          /* Owner (repeated): no "Slip: …" chip — line remark seeds empty. */
+          remark: '',
           rawText: l.rawText,
           fabricCode: l.fabricMatch?.code ?? '',
           suggestedCode: code,

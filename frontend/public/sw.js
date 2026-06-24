@@ -247,6 +247,10 @@
 // v57 — OCR scan: line chip is now just the short "Slip: …" reference (dropped the
 //   verbose AI ambiguity/operator notes); Note no longer carries venue/delivery
 //   (each has its own field) — only the genuine standalone remark.
+// v62 — SO OCR (scan-so): customerSoRef prefers the printed ZNT#### docket (not a
+//   handwritten "SO…"); dropped the verbose "Slip:" line chip; Square Pillow matches
+//   its accessory SKU; matched fabric colour (e.g. BO315-22) now reaches the SO line
+//   variants; multi-compartment sofa "2R+1R" emits one line per compartment.
 // v61 — SCM sofa: compartment art images (PNG + SVG set) vendored from 2990 into
 //   /public/sofa-modules — the Maintenance Compartments pool + SKU master now
 //   render pictures (were empty 404 boxes). 1S/2S/3S art_filename set.
@@ -263,7 +267,7 @@
 //   a person or a Houzs department + access matrix + view-level); replies now send
 //   FROM the chosen mailbox (hello@). OCR scan: 2nd phone -> Emergency Contact;
 //   removed the per-line "scanned · NN%" review chip from the create-SO page.
-const VERSION = "houzs-erp-v61";
+const VERSION = "houzs-erp-v62";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
