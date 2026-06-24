@@ -224,7 +224,10 @@
 //   paginate helper across catalog/inventory/OCR/reports/reconcile/analytics; frontend
 //   binary fetches get timeouts; System Health now sees SCM audit + R2/Anthropic/SCM probes;
 //   L2 per-area SCM write authorization (safe no-lockout fallback).
-const VERSION = "houzs-erp-v50";
+// v51 — first deploy from the UNIFIED main (PR #113): this session's foundation
+//   hardening + the other dev's Project-List status-filter / detail-card work,
+//   merged. From here on, deploy from main only (Pages -> GitHub auto-deploy).
+const VERSION = "houzs-erp-v51";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
