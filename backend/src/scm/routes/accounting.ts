@@ -22,6 +22,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { postSiRevenue } from '../lib/post-si-revenue';
+import { paginateAll } from '../lib/paginate-all';
 
 export const accounting = new Hono<{ Bindings: Env; Variables: Variables }>();
 accounting.use('*', supabaseAuth);
@@ -496,12 +497,15 @@ accounting.get('/gl', async (c) => {
   const from = c.req.query('from');
   const to = c.req.query('to');
 
-  let q = sb.from('v_gl_entries').select('*').limit(1000);
-  if (accountCode) q = q.eq('account_code', accountCode);
-  if (from)        q = q.gte('entry_date', from);
-  if (to)          q = q.lte('entry_date', to);
-
-  const { data, error } = await q;
+  // PostgREST's 1000-row cap silently truncated the GL export — page through so
+  // a wide account/date range exports every entry, not just the first 1000.
+  const { data, error } = await paginateAll((pFrom, pTo) => {
+    let q = sb.from('v_gl_entries').select('*');
+    if (accountCode) q = q.eq('account_code', accountCode);
+    if (from)        q = q.gte('entry_date', from);
+    if (to)          q = q.lte('entry_date', to);
+    return q.range(pFrom, pTo);
+  });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ glEntries: data ?? [] });
 });

@@ -370,14 +370,19 @@ export const PurchaseConsignmentReceiveNew = () => {
     }
     try {
       const createRes = await create.mutateAsync({
-        purchaseOrderId: headerPoId,
+        // Backend (purchase-consignment-receives POST) reads
+        // purchaseConsignmentOrderId / pcOrderItemId — NOT the PO's
+        // purchaseOrderId / purchaseOrderItemId. Sending the wrong keys
+        // dropped the PC-Order link (no pc_order_no snapshot) and silently
+        // disabled the over-receipt guard.
+        purchaseConsignmentOrderId: headerPoId,
         supplierId,
         warehouseId:     warehouseId || undefined,
         receivedAt,
         deliveryNoteRef: deliveryNoteRef || undefined,
         notes:           notes || undefined,
         items: realLines.map((l) => ({
-          purchaseOrderItemId: l.purchaseOrderItemId,
+          pcOrderItemId:       l.purchaseOrderItemId,
           materialKind:        l.materialKind,
           materialCode:        l.materialCode,
           materialName:        l.materialName,

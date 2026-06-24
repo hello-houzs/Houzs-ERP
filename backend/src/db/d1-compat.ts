@@ -28,9 +28,22 @@
 import type { Sql } from "postgres";
 
 /**
- * Rewrite SQLite `?` positional placeholders to Postgres `$1,$2,...`.
- * Quote-aware: `?` inside single-quoted string literals is left alone, so a
- * literal `'a?b'` is not mangled. Postgres `$n` are 1-based.
+ * Rewrite SQLite positional placeholders to Postgres `$n`.
+ *
+ * Two SQLite placeholder forms are supported, matching how the call sites
+ * bind their argument array:
+ *   * BARE  `?`   — anonymous; the Nth `?` binds the Nth array element. These
+ *     map to a running `$1,$2,...` counter (D1 parity).
+ *   * NUMBERED `?N` — explicit 1-based index into the SAME array; a repeated
+ *     `?2` reuses the same value. SQLite numbered params map DIRECTLY to
+ *     Postgres `$N` (both are 1-based positional), so `?2` -> `$2` and a reused
+ *     `?2` correctly resolves to the same `$2`. The previous version replaced
+ *     EVERY `?` with the bare counter, so `?1 ... ?1 ... ?1` wrongly became
+ *     `$1 ... $2 ... $3` and 500'd (global search, uniqueProjectCode, etc).
+ *
+ * No query in the codebase mixes the two forms, so the bare counter and the
+ * numbered indices never collide. Quote-aware: `?` inside single-quoted string
+ * literals or double-quoted identifiers is left alone. Postgres `$n` are 1-based.
  */
 export function toPgPlaceholders(sql: string): string {
   let out = "";
@@ -42,7 +55,16 @@ export function toPgPlaceholders(sql: string): string {
     if (ch === "'" && !inDouble) inSingle = !inSingle;
     else if (ch === '"' && !inSingle) inDouble = !inDouble;
     if (ch === "?" && !inSingle && !inDouble) {
-      out += "$" + ++n;
+      // `?N` (one or more digits) -> `$N` verbatim, preserving reuse.
+      let j = i + 1;
+      while (j < sql.length && sql[j] >= "0" && sql[j] <= "9") j++;
+      if (j > i + 1) {
+        out += "$" + sql.slice(i + 1, j);
+        i = j - 1;
+      } else {
+        // bare `?` -> running counter (D1 parity)
+        out += "$" + ++n;
+      }
     } else {
       out += ch;
     }

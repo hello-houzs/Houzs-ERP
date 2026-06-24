@@ -403,7 +403,7 @@ export const SalesInvoicesList = () => {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--space-2)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-2)' }}>
         {kpiTile('Total Invoices', kpis.totalInvoices.toLocaleString('en-MY'))}
         {kpiTile('Revenue (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Outstanding (RM)', fmtRm(kpis.outstanding), kpis.outstanding > 0 ? 'bad' : 'good')}

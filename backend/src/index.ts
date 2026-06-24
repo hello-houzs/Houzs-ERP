@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./types";
-import { auth, requirePermission, requireAnyPermission } from "./middleware/auth";
+import { auth, requirePermission, requireAnyPermission, requireScmAccess } from "./middleware/auth";
 import { TRANSIENT_CONN_RE } from "./db/d1-compat";
 // Ported 2990's SCM modules (furniture supply chain). Talk to the `scm` Postgres
 // schema via supabase-js; namespaced under /api/scm/*, owner-only during the port.
@@ -54,6 +54,11 @@ import { runSlaEscalation } from "./services/assrEscalation";
 import { runAssrAlerts, runAssrDailyDigest } from "./services/assrAlerts";
 import { runScheduledLeadTimeActivations } from "./services/assrLeadTime";
 import { runProjectDueReminders } from "./services/projectReminders";
+// Weekly OCR rule-distill (scan-so self-evolution). Run via the daily 02:00
+// slot gated to Sundays — no new cron trigger. getSupabaseService is the same
+// service client scan-so.ts uses internally (serviceClient(env)).
+import { distillAllSalespersonRules, warmCatalogCacheForCron } from "./scm/routes/scan-so";
+import { getSupabaseService } from "./db/supabase";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -132,7 +137,11 @@ app.route("/api/assr-print", assrPrint);
 // ── Ported 2990's SCM (furniture supply chain) — /api/scm/* ──────────
 // Gated on scm.access (Owner / IT Admin pass via their "*" wildcard). The
 // routes attach their own scm-scoped supabase client via scm/middleware/auth.
-app.use("/api/scm/*", requireAnyPermission(["*", "scm.access"]));
+// requireScmAccess is ADDITIVE: it keeps the exact "*"/"scm.access" pass
+// conditions AND also lets a position pass when it has ANY scm* page-access
+// area granted at >= view — so per-position SCM grants work without removing
+// any existing user's access. (Was requireAnyPermission(["*","scm.access"]).)
+app.use("/api/scm/*", requireScmAccess);
 app.route("/api/scm", scmApp);
 
 // Map raw infrastructure errors to operator-friendly messages so staff never
@@ -150,7 +159,7 @@ function humanizeError(err: Error): { status: 500 | 503; message: string } {
   if (TRANSIENT_CONN_RE.test(m))
     return { status: 503, message: "The database is briefly unavailable. Please try again in a moment." };
   if (/operator does not exist|column .* does not exist|relation .* does not exist|syntax error|invalid input syntax|violates .* constraint|duplicate key/i.test(m))
-    return { status: 500, message: "Something went wrong processing that request. Our team has been notified." };
+    return { status: 500, message: "Something went wrong processing that request. Please try again." };
   return { status: 500, message: "Something went wrong. Please try again." };
 }
 
@@ -219,6 +228,22 @@ export default {
           })
           .catch((e) => console.error("[cron lead-time-schedule]", e))
       );
+      // Keep-warm the scan-SO catalog prompt-cache during Malaysia business
+      // hours (UTC+8 ~08:00–22:00 → UTC hour 0–13) so the shared Anthropic
+      // cache rarely goes cold between showroom scans. Fires the SAME minimal
+      // warm call /scan-so/warm uses (byte-identical cachedPrefix). Skips
+      // gracefully when ANTHROPIC_API_KEY is unset; try/catch so a warm failure
+      // can never break the scheduled handler.
+      {
+        const h = new Date(event.scheduledTime).getUTCHours();
+        if (h >= 0 && h < 14 && env.ANTHROPIC_API_KEY) {
+          ctx.waitUntil(
+            warmCatalogCacheForCron(env)
+              .then((r) => console.log(`[cron scan-so warm] ${JSON.stringify(r)}`))
+              .catch((e) => console.error("[cron scan-so warm]", e)),
+          );
+        }
+      }
     } else if (event.cron === "0 2 * * *") {
       // Daily 02:00 UTC slot: SLA escalation + ASSR digest + project reminders.
       ctx.waitUntil(
@@ -253,6 +278,27 @@ export default {
           })
           .catch((e) => console.error("[cron idempotency-sweep]", e)),
       );
+      // Weekly: re-distill every salesperson's scan-so OCR rules + the
+      // __GLOBAL__ alias dictionary. Reuses the daily 02:00 slot, gated to
+      // Sundays so it runs once a week without a dedicated cron trigger.
+      // distillAllSalespersonRules cheap-skips reps with <2 samples and returns
+      // a graceful error result when ANTHROPIC_API_KEY is unset — log + swallow
+      // so a distill failure can never break the scheduled handler.
+      if (new Date(event.scheduledTime).getUTCDay() === 0) {
+        ctx.waitUntil(
+          (async () => {
+            try {
+              const summary = await distillAllSalespersonRules(
+                getSupabaseService(env),
+                env.ANTHROPIC_API_KEY,
+              );
+              console.log("[scan-so weekly distill]", JSON.stringify(summary));
+            } catch (e) {
+              console.error("[scan-so weekly distill]", e);
+            }
+          })(),
+        );
+      }
     }
   },
 };

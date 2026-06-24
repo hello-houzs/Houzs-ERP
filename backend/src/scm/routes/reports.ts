@@ -24,6 +24,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const reports = new Hono<{ Bindings: Env; Variables: Variables }>();
 reports.use('*', supabaseAuth);
@@ -43,45 +44,45 @@ reports.get('/sales-order-detail-listing', async (c) => {
   // Pull SO header + items as nested join. supabase-js renders the nested
   // table as a property on the item row — we flatten it back out below so
   // the client doesn't need to traverse mfg_sales_orders.*.
-  let q = sb
-    .from('mfg_sales_order_items')
-    .select(`
-      id, doc_no, line_date, debtor_code, debtor_name, agent, item_group, item_code,
-      description, description2, uom, location, qty, unit_price_centi, discount_centi,
-      total_centi, tax_centi, total_inc_centi, balance_centi, payment_status, venue,
-      branding, remark, cancelled, variants, created_at,
-      unit_cost_centi, line_cost_centi, line_margin_centi,
-      divan_height_inches, leg_height_inches, custom_specials,
-      mfg_sales_orders!inner (
-        doc_no, so_date, debtor_code, debtor_name, agent, branding, venue, ref,
-        po_doc_no, phone, address1, address2, address3, address4,
-        currency, status, remark2, remark3, remark4, note,
-        processing_date, sales_exemption_expiry, approval_code,
-        local_total_centi, balance_centi, deposit_centi,
-        mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, service_centi,
-        mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, service_cost_centi,
-        total_cost_centi, total_margin_centi, margin_pct_basis,
-        customer_delivery_date, internal_expected_dd, target_date,
-        customer_state, customer_country, customer_po, customer_po_id, customer_po_date, customer_so_no,
-        hub_name
-      )
-    `)
-    .limit(2000);
-
-  if (docNo)      q = q.ilike('doc_no', `%${docNo}%`);
-  if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
-  if (debtorCode) q = q.eq('debtor_code', debtorCode);
-
-  // Sort: line-level for item_code, header-level (joined) for date/doc_no.
-  if (sortBy === 'item_code') {
-    q = q.order('item_code', { ascending: true });
-  } else if (sortBy === 'doc_no') {
-    q = q.order('doc_no', { ascending: false });
-  } else {
-    q = q.order('line_date', { ascending: false });
-  }
-
-  const { data, error } = await q;
+  // PostgREST's 1000-row cap silently truncated this listing — page through so
+  // a wide date range returns every line, not just the first 1000.
+  const { data, error } = await paginateAll((pFrom, pTo) => {
+    let q = sb
+      .from('mfg_sales_order_items')
+      .select(`
+        id, doc_no, line_date, debtor_code, debtor_name, agent, item_group, item_code,
+        description, description2, uom, location, qty, unit_price_centi, discount_centi,
+        total_centi, tax_centi, total_inc_centi, balance_centi, payment_status, venue,
+        branding, remark, cancelled, variants, created_at,
+        unit_cost_centi, line_cost_centi, line_margin_centi,
+        divan_height_inches, leg_height_inches, custom_specials,
+        mfg_sales_orders!inner (
+          doc_no, so_date, debtor_code, debtor_name, agent, branding, venue, ref,
+          po_doc_no, phone, address1, address2, address3, address4,
+          currency, status, remark2, remark3, remark4, note,
+          processing_date, sales_exemption_expiry, approval_code,
+          local_total_centi, balance_centi, deposit_centi,
+          mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, service_centi,
+          mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, service_cost_centi,
+          total_cost_centi, total_margin_centi, margin_pct_basis,
+          customer_delivery_date, internal_expected_dd, target_date,
+          customer_state, customer_country, customer_po, customer_po_id, customer_po_date, customer_so_no,
+          hub_name
+        )
+      `);
+    if (docNo)      q = q.ilike('doc_no', `%${docNo}%`);
+    if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
+    if (debtorCode) q = q.eq('debtor_code', debtorCode);
+    // Sort: line-level for item_code, header-level (joined) for date/doc_no.
+    if (sortBy === 'item_code') {
+      q = q.order('item_code', { ascending: true });
+    } else if (sortBy === 'doc_no') {
+      q = q.order('doc_no', { ascending: false });
+    } else {
+      q = q.order('line_date', { ascending: false });
+    }
+    return q.range(pFrom, pTo);
+  });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   type ItemRow = Record<string, unknown> & {
@@ -115,14 +116,14 @@ reports.get('/sales-order-detail-listing', async (c) => {
   // in multiple instalments, each with its own code).
   const approvalCodesByDoc = new Map<string, Array<{ paidAt: string | null; code: string }>>();
   if (docNos.length > 0) {
-    const { data: paymentTotals, error: payErr } = await sb
+    // chunkIn — docNos can exceed 1000 (un-truncated listing) and a doc can have
+    // many instalment payments; batch the .in() and page each batch so the
+    // paid totals are never UNDERSTATED (which would overstate outstanding).
+    const { data: paymentTotals, error: payErr } = await chunkIn(docNos, (batch, pFrom, pTo) => sb
       .from('mfg_sales_order_payments')
       .select('so_doc_no, amount_centi, paid_at, account_sheet, approval_code, collected_by')
-      .in('so_doc_no', docNos)
-      // .limit(5000): a doc can have many instalment payments, so rows across the
-      // listed docs can exceed PostgREST's default 1000-row cap — truncation
-      // would UNDERSTATE paid_total_centi (overstate outstanding).
-      .limit(5000);
+      .in('so_doc_no', batch)
+      .range(pFrom, pTo));
     if (payErr) return c.json({ error: 'load_failed', reason: payErr.message }, 500);
     for (const p of paymentTotals ?? []) {
       const row = p as {
@@ -162,13 +163,13 @@ reports.get('/sales-order-detail-listing', async (c) => {
   ));
   const staffNameById = new Map<string, string>();
   if (collectorIds.length > 0) {
-    const { data: staffRows, error: staffErr } = await sb
+    // chunkIn — bound the collector-name resolve so the .in() list never exceeds
+    // 1000 and PostgREST's cap can't drop names (unresolved collector → blank).
+    const { data: staffRows, error: staffErr } = await chunkIn(collectorIds, (batch, pFrom, pTo) => sb
       .from('staff')
       .select('id, name')
-      .in('id', collectorIds)
-      // .limit(5000): bound the collector-name resolve so PostgREST's default
-      // 1000-row cap can't drop names (unresolved collector → blank column).
-      .limit(5000);
+      .in('id', batch)
+      .range(pFrom, pTo));
     if (staffErr) return c.json({ error: 'load_failed', reason: staffErr.message }, 500);
     for (const s of staffRows ?? []) {
       const row = s as { id: string; name: string | null };
@@ -294,26 +295,26 @@ reports.get('/delivery-order-detail-listing', async (c) => {
   const debtorCode  = c.req.query('debtorCode');
   const itemCode    = c.req.query('itemCode');
 
-  let q = sb
-    .from('delivery_order_items')
-    .select(`
-      id, delivery_order_id, so_item_id, item_code, description, description2,
-      qty, m3_milli, unit_price_centi, discount_centi, line_total_centi,
-      uom, item_group, variants, line_suffix, notes, created_at,
-      delivery_orders!inner (
-        id, do_number, so_doc_no, debtor_code, debtor_name, do_date,
-        expected_delivery_at, signed_at, delivered_at, dispatched_at,
-        driver_name, vehicle, address1, address2, city, state, postcode, phone,
-        status, notes, m3_total_milli
-      )
-    `)
-    .limit(2000);
-
-  if (docNo)      q = q.ilike('delivery_orders.do_number', `%${docNo}%`);
-  if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
-  if (debtorCode) q = q.eq('delivery_orders.debtor_code', debtorCode);
-
-  const { data, error } = await q;
+  // PostgREST's 1000-row cap silently truncated this listing — page through.
+  const { data, error } = await paginateAll((pFrom, pTo) => {
+    let q = sb
+      .from('delivery_order_items')
+      .select(`
+        id, delivery_order_id, so_item_id, item_code, description, description2,
+        qty, m3_milli, unit_price_centi, discount_centi, line_total_centi,
+        uom, item_group, variants, line_suffix, notes, created_at,
+        delivery_orders!inner (
+          id, do_number, so_doc_no, debtor_code, debtor_name, do_date,
+          expected_delivery_at, signed_at, delivered_at, dispatched_at,
+          driver_name, vehicle, address1, address2, city, state, postcode, phone,
+          status, notes, m3_total_milli
+        )
+      `);
+    if (docNo)      q = q.ilike('delivery_orders.do_number', `%${docNo}%`);
+    if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
+    if (debtorCode) q = q.eq('delivery_orders.debtor_code', debtorCode);
+    return q.range(pFrom, pTo);
+  });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   const rows = ((data ?? []) as unknown as AnyRow[])
@@ -344,26 +345,26 @@ reports.get('/sales-invoice-detail-listing', async (c) => {
   const debtorCode  = c.req.query('debtorCode');
   const itemCode    = c.req.query('itemCode');
 
-  let q = sb
-    .from('sales_invoice_items')
-    .select(`
-      id, sales_invoice_id, so_item_id, item_code, description, description2,
-      qty, unit_price_centi, discount_centi, tax_centi, line_total_centi,
-      uom, item_group, variants, line_suffix, notes, created_at,
-      sales_invoices!inner (
-        id, invoice_number, so_doc_no, delivery_order_id, debtor_code, debtor_name,
-        invoice_date, due_date, currency,
-        subtotal_centi, discount_centi, tax_centi, total_centi, paid_centi,
-        status, notes, sent_at, paid_at
-      )
-    `)
-    .limit(2000);
-
-  if (docNo)      q = q.ilike('sales_invoices.invoice_number', `%${docNo}%`);
-  if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
-  if (debtorCode) q = q.eq('sales_invoices.debtor_code', debtorCode);
-
-  const { data, error } = await q;
+  // PostgREST's 1000-row cap silently truncated this listing — page through.
+  const { data, error } = await paginateAll((pFrom, pTo) => {
+    let q = sb
+      .from('sales_invoice_items')
+      .select(`
+        id, sales_invoice_id, so_item_id, item_code, description, description2,
+        qty, unit_price_centi, discount_centi, tax_centi, line_total_centi,
+        uom, item_group, variants, line_suffix, notes, created_at,
+        sales_invoices!inner (
+          id, invoice_number, so_doc_no, delivery_order_id, debtor_code, debtor_name,
+          invoice_date, due_date, currency,
+          subtotal_centi, discount_centi, tax_centi, total_centi, paid_centi,
+          status, notes, sent_at, paid_at
+        )
+      `);
+    if (docNo)      q = q.ilike('sales_invoices.invoice_number', `%${docNo}%`);
+    if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
+    if (debtorCode) q = q.eq('sales_invoices.debtor_code', debtorCode);
+    return q.range(pFrom, pTo);
+  });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   const rows = ((data ?? []) as unknown as AnyRow[])
@@ -412,24 +413,24 @@ reports.get('/delivery-return-detail-listing', async (c) => {
   const debtorCode  = c.req.query('debtorCode');
   const itemCode    = c.req.query('itemCode');
 
-  let q = sb
-    .from('delivery_return_items')
-    .select(`
-      id, delivery_return_id, do_item_id, item_code, description,
-      qty_returned, condition, unit_price_centi, refund_centi, notes, created_at,
-      delivery_returns!inner (
-        id, return_number, delivery_order_id, sales_invoice_id, debtor_code,
-        debtor_name, return_date, reason, status, refund_centi,
-        received_at, inspected_at, refunded_at, inspection_notes, notes
-      )
-    `)
-    .limit(2000);
-
-  if (docNo)      q = q.ilike('delivery_returns.return_number', `%${docNo}%`);
-  if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
-  if (debtorCode) q = q.eq('delivery_returns.debtor_code', debtorCode);
-
-  const { data, error } = await q;
+  // PostgREST's 1000-row cap silently truncated this listing — page through.
+  const { data, error } = await paginateAll((pFrom, pTo) => {
+    let q = sb
+      .from('delivery_return_items')
+      .select(`
+        id, delivery_return_id, do_item_id, item_code, description,
+        qty_returned, condition, unit_price_centi, refund_centi, notes, created_at,
+        delivery_returns!inner (
+          id, return_number, delivery_order_id, sales_invoice_id, debtor_code,
+          debtor_name, return_date, reason, status, refund_centi,
+          received_at, inspected_at, refunded_at, inspection_notes, notes
+        )
+      `);
+    if (docNo)      q = q.ilike('delivery_returns.return_number', `%${docNo}%`);
+    if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
+    if (debtorCode) q = q.eq('delivery_returns.debtor_code', debtorCode);
+    return q.range(pFrom, pTo);
+  });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   const rows = ((data ?? []) as unknown as AnyRow[])

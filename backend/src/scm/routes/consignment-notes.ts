@@ -31,6 +31,8 @@ import type { Env, Variables } from '../env';
 import { defaultWarehouseId, writeMovements, resolveWarehouseLotBatches } from '../lib/inventory-movements';
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
+import { nextMonthlyDocNo } from '../lib/doc-no';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const consignmentNotes = new Hono<{ Bindings: Env; Variables: Variables }>();
 consignmentNotes.use('*', supabaseAuth);
@@ -83,8 +85,8 @@ const SHIPPED_STATES = ['DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVO
 const nextNum = async (sb: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('consignment_delivery_orders').select('id', { head: true, count: 'exact' }).like('do_number', `CN-${yymm}-%`);
-  return `CN-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  const { data: existing } = await sb.from('consignment_delivery_orders').select('do_number').like('do_number', `CN-${yymm}-%`);
+  return nextMonthlyDocNo(`CN-${yymm}`, ((existing ?? []) as Array<{ do_number: string }>).map((r) => r.do_number));
 };
 
 /* Re-derive the note header's per-category revenue/cost totals + grand total from
@@ -337,11 +339,11 @@ consignmentNotes.get('/', async (c) => {
   const childIds = new Set<string>();
   if (rows.length > 0) {
     const ids = rows.map((r) => r.id);
-    // .limit(5000): child reads across 500 list docs can exceed PostgREST's
-    // default 1000-row cap; truncation would mis-stamp has_children (Edit/Cancel
-    // would wrongly stay enabled on downstream-locked notes).
-    const { data: crRes } = await sb.from('consignment_delivery_returns')
-      .select('consignment_do_id').in('consignment_do_id', ids).neq('status', 'CANCELLED').limit(5000);
+    // chunkIn — child reads across the list docs can exceed PostgREST's 1000-row
+    // cap; truncation would mis-stamp has_children (Edit/Cancel would wrongly
+    // stay enabled on downstream-locked notes).
+    const { data: crRes } = await chunkIn<{ consignment_do_id: string | null }>(ids, (batch, from, to) => sb.from('consignment_delivery_returns')
+      .select('consignment_do_id').in('consignment_do_id', batch).neq('status', 'CANCELLED').range(from, to));
     for (const r of ((crRes ?? []) as Array<{ consignment_do_id: string | null }>)) {
       if (r.consignment_do_id) childIds.add(r.consignment_do_id);
     }
@@ -357,21 +359,22 @@ consignmentNotes.get('/', async (c) => {
 // pickable. Mirrors the SO→DO from-so picker. MUST precede /:id.
 consignmentNotes.get('/deliverable-order-lines', async (c) => {
   const sb = c.get('supabase');
-  const { data: orders, error: oErr } = await sb
+  const { data: orders, error: oErr } = await paginateAll<{ doc_no: string; debtor_code: string | null; debtor_name: string | null }>((from, to) => sb
     .from('consignment_sales_orders')
     .select('doc_no, debtor_code, debtor_name')
     .order('so_date', { ascending: false })
-    .limit(1000);
+    .range(from, to));
   if (oErr) return c.json({ error: 'load_failed', reason: oErr.message }, 500);
   const orderList = (orders ?? []) as Array<{ doc_no: string; debtor_code: string | null; debtor_name: string | null }>;
   if (orderList.length === 0) return c.json({ lines: [] });
   const orderByDoc = new Map(orderList.map((o) => [o.doc_no, o]));
   const docNos = orderList.map((o) => o.doc_no);
 
-  const { data: items, error: iErr } = await sb
+  const { data: items, error: iErr } = await chunkIn<Record<string, unknown>>(docNos, (batch, from, to) => sb
     .from('consignment_sales_order_items')
     .select('id, doc_no, item_code, item_group, description, description2, uom, qty, unit_price_centi, discount_centi, unit_cost_centi, variants, cancelled')
-    .in('doc_no', docNos);
+    .in('doc_no', batch)
+    .range(from, to));
   if (iErr) return c.json({ error: 'load_failed', reason: iErr.message }, 500);
   const itemList = (items ?? []).filter((it: Record<string, unknown>) => !it.cancelled) as Array<Record<string, unknown>>;
   if (itemList.length === 0) return c.json({ lines: [] });
@@ -383,10 +386,11 @@ consignmentNotes.get('/deliverable-order-lines', async (c) => {
     .select('id, status')
     .neq('status', 'CANCELLED');
   const liveNoteIds = new Set(((noteRows ?? []) as Array<{ id: string }>).map((r) => r.id));
-  const { data: noteItems } = await sb
+  const { data: noteItems } = await chunkIn<{ consignment_delivery_order_id: string; consignment_so_item_id: string | null; qty: number }>(itemIds, (batch, from, to) => sb
     .from('consignment_delivery_order_items')
     .select('consignment_delivery_order_id, consignment_so_item_id, qty')
-    .in('consignment_so_item_id', itemIds);
+    .in('consignment_so_item_id', batch)
+    .range(from, to));
   const deliveredByItem = new Map<string, number>();
   for (const r of ((noteItems ?? []) as Array<{ consignment_delivery_order_id: string; consignment_so_item_id: string | null; qty: number }>)) {
     if (!r.consignment_so_item_id || !liveNoteIds.has(r.consignment_delivery_order_id)) continue;

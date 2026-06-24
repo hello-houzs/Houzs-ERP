@@ -87,6 +87,35 @@ class HttpError extends Error {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Binary upload / download / blob fetches below bypass request()'s GET cap, so
+// a stalled Hyperdrive cold-start would hang the UI forever (staff stares at a
+// spinner with no way out). Give each its own AbortSignal deadline — generous
+// for uploads (large bodies over slow links), tighter for downloads/blobs — and
+// translate a timeout into a plain-language retryable error. A caller's own
+// abort (if any) is never rewritten.
+const UPLOAD_TIMEOUT_MS = 120_000;
+const BINARY_GET_TIMEOUT_MS = 60_000;
+
+function binarySignal(ms: number): AbortSignal | undefined {
+  try {
+    return AbortSignal.timeout(ms);
+  } catch {
+    return undefined; // pre-2022 browsers
+  }
+}
+
+async function binaryFetch(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const caller = init.signal;
+  try {
+    return await fetch(url, { ...init, signal: caller ?? binarySignal(timeoutMs) });
+  } catch (e) {
+    if (!caller && e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
+      throw new Error("The server took too long to respond. Please check your connection and try again.");
+    }
+    throw e;
+  }
+}
+
 // GET resilience for the Hyperdrive cold-start stall. When the pooled DB
 // connection is cold the Worker can hang until the runtime kills it (~30s),
 // which the browser surfaces as an opaque "Failed to fetch". GETs are
@@ -224,14 +253,14 @@ export const api = {
    */
   async putBinary<T>(path: string, body: Blob | ArrayBuffer, contentType: string): Promise<T> {
     const token = tokenStore.get();
-    const res = await fetch(`${baseUrl}${path}`, {
+    const res = await binaryFetch(`${baseUrl}${path}`, {
       method: "PUT",
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         "Content-Type": contentType,
       },
       body,
-    });
+    }, UPLOAD_TIMEOUT_MS);
     if (!res.ok) {
       let txt = "";
       try {
@@ -254,11 +283,11 @@ export const api = {
     const token = tokenStore.get();
     const form = new FormData();
     for (const f of files) form.append(fieldName, f);
-    const res = await fetch(`${baseUrl}${path}`, {
+    const res = await binaryFetch(`${baseUrl}${path}`, {
       method: "POST",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,
-    });
+    }, UPLOAD_TIMEOUT_MS);
     if (!res.ok) {
       let txt = "";
       try {
@@ -282,9 +311,9 @@ export const api = {
    */
   async fetchBlobUrl(path: string): Promise<string> {
     const token = tokenStore.get();
-    const res = await fetch(`${baseUrl}${path}`, {
+    const res = await binaryFetch(`${baseUrl}${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    }, BINARY_GET_TIMEOUT_MS);
     if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
     const blob = await res.blob();
     return URL.createObjectURL(blob);
@@ -302,9 +331,9 @@ export const api = {
    */
   async downloadFile(path: string, fallbackName = "download"): Promise<void> {
     const token = tokenStore.get();
-    const res = await fetch(`${baseUrl}${path}`, {
+    const res = await binaryFetch(`${baseUrl}${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    }, BINARY_GET_TIMEOUT_MS);
     if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
     const cd = res.headers.get("Content-Disposition") || "";
     const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
@@ -322,9 +351,9 @@ export const api = {
 
   async openHtml(path: string): Promise<void> {
     const token = tokenStore.get();
-    const res = await fetch(`${baseUrl}${path}`, {
+    const res = await binaryFetch(`${baseUrl}${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    }, BINARY_GET_TIMEOUT_MS);
     if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
     const html = await res.text();
     const blob = new Blob([html], { type: "text/html" });

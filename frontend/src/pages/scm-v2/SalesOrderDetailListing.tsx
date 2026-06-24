@@ -679,7 +679,7 @@ export const SalesOrderDetailListing = () => {
       {/* ── 6 KPI tiles (always rendered, scoped to current filters) ─ */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(6, 1fr)',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
         gap: 'var(--space-2)',
       }}>
         {([

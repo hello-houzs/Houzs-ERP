@@ -45,23 +45,23 @@ const PCR_LIST_STORAGE_KEY = 'pc-receive-list.layout.v1';
 
 type GrnRow = Record<string, unknown> & {
   id: string;
-  grn_number: string;
+  receive_number: string;
   status: string;
   received_at: string | null;
   delivery_note_ref: string | null;
   total_centi?: number;
   currency?: string;
   supplier?: { id: string; code: string; name: string } | null;
-  purchase_order?: { id: string; po_number: string } | null;
+  purchase_consignment_order?: { id: string; pc_number: string } | null;
   has_children?: boolean;
 };
 
 const buildColumns = (): DataGridColumn<GrnRow>[] => [
   {
-    key: 'grn_number', label: 'Receive No.', width: 150, sortable: true,
-    accessor: (g) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{g.grn_number}</span>,
-    searchValue: (g) => g.grn_number,
-    sortFn: (a, b) => a.grn_number.localeCompare(b.grn_number),
+    key: 'receive_number', label: 'Receive No.', width: 150, sortable: true,
+    accessor: (g) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{g.receive_number}</span>,
+    searchValue: (g) => g.receive_number,
+    sortFn: (a, b) => a.receive_number.localeCompare(b.receive_number),
   },
   {
     key: 'supplier', label: 'Supplier', width: 220, sortable: true, groupable: true,
@@ -72,10 +72,10 @@ const buildColumns = (): DataGridColumn<GrnRow>[] => [
       (a.supplier?.name ?? a.supplier?.code ?? '').localeCompare(b.supplier?.name ?? b.supplier?.code ?? ''),
   },
   {
-    key: 'po_number', label: 'Transfer From (Order)', width: 160, sortable: true, groupable: true,
-    accessor: (g) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{g.purchase_order?.po_number ?? '—'}</span>,
-    searchValue: (g) => g.purchase_order?.po_number ?? '',
-    groupValue: (g) => g.purchase_order?.po_number ?? '(none)',
+    key: 'pc_number', label: 'Transfer From (Order)', width: 160, sortable: true, groupable: true,
+    accessor: (g) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{g.purchase_consignment_order?.pc_number ?? '—'}</span>,
+    searchValue: (g) => g.purchase_consignment_order?.pc_number ?? '',
+    groupValue: (g) => g.purchase_consignment_order?.pc_number ?? '(none)',
   },
   {
     key: 'received_at', label: 'Received Date', width: 120, sortable: true,
@@ -249,7 +249,7 @@ export const PurchaseConsignmentReceives = () => {
 
   const doCancel = async (g: GrnRow) => {
     if (!(await askConfirm({
-      title: `Cancel ${g.grn_number}?`,
+      title: `Cancel ${g.receive_number}?`,
       body: 'This reverses the receipt. Line items stay for audit.',
       confirmLabel: 'Cancel receipt',
       danger: true,

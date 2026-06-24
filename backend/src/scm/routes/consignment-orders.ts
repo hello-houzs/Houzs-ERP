@@ -47,6 +47,8 @@ import {
 } from '../lib/allowed-options-check';
 import { findIncompleteVariantLines } from '../lib/so-variant-check';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
+import { chunkIn } from '../lib/paginate-all';
+import { nextMonthlyDocNo } from '../lib/doc-no';
 import type { Env, Variables } from '../env';
 
 export const consignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -179,16 +181,17 @@ const deriveSalesLocationFromState = async (
 };
 
 const nextDocNo = async (sb: any): Promise<string> => {
-  // Format: CS-YYMM-NNN (counts within month). Consignment Order numbering.
+  // Format: CS-YYMM-NNN. max(suffix)+1 (NEVER count+1) so a deleted mid-month
+  // row can't make the counter re-mint a surviving number forever — see doc-no.ts.
   const yymm = (() => {
     const d = new Date();
     return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   })();
-  const { count } = await sb
+  const { data: existing } = await sb
     .from('consignment_sales_orders')
-    .select('doc_no', { head: true, count: 'exact' })
+    .select('doc_no')
     .like('doc_no', `CS-${yymm}-%`);
-  return `CS-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  return nextMonthlyDocNo(`CS-${yymm}`, ((existing ?? []) as Array<{ doc_no: string }>).map((r) => r.doc_no));
 };
 
 /* ── Cost snapshot ──────────────────────────────────────────────────────
@@ -225,16 +228,16 @@ consignmentOrders.get('/', async (c) => {
     /* Per-CO category set + first-item branding source, mirroring the SO list.
        Ordered (doc_no, created_at ASC) so the FIRST line per doc_no is its
        earliest. */
-    const { data: itemRows } = await sb
+    // chunkIn — lines across the listed docs can exceed PostgREST's 1000-row
+    // cap; page so per-doc category/branding rollups aren't dropped.
+    const { data: itemRows } = await chunkIn<Record<string, unknown>>(docNos, (batch, from, to) => sb
       .from('consignment_sales_order_items')
       .select('doc_no, item_group, cancelled, branding, item_code, created_at')
-      .in('doc_no', docNos)
+      .in('doc_no', batch)
       .eq('cancelled', false)
       .order('doc_no')
       .order('created_at', { ascending: true })
-      // .limit(5000): lines across 500 list docs can exceed PostgREST's default
-      // 1000-row cap; truncation would drop per-doc category/branding rollups.
-      .limit(5000);
+      .range(from, to));
     const cats = new Map<string, Set<string>>();
     const firstCat = new Map<string, string>();
     const firstBranding = new Map<string, string | null>();

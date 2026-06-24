@@ -400,7 +400,7 @@ export const DeliveryReturnsList = () => {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--space-2)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-2)' }}>
         {kpiTile('Total Returns', kpis.totalReturns.toLocaleString('en-MY'))}
         {kpiTile('Returned Value (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Cost (RM)', fmtRm(kpis.cost))}

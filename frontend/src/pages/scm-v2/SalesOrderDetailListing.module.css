@@ -101,6 +101,16 @@
   .filterGrid { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* Phone (Houzs 2026-06-24) — element-level overflow clamp: single-column filter grid + date range, full-width search, lighter page padding. The wide result table already scrolls inside .tableScroll. */
+@media (max-width: 600px) {
+  .page { padding: var(--space-3) var(--space-3) var(--space-5); }
+  .filterGrid { grid-template-columns: 1fr; }
+  .filterGridSpan2 { grid-column: auto; }
+  .dateRangeRow { grid-template-columns: 1fr; }
+  .criteriaBox { grid-template-columns: 1fr; }
+  .searchInput { width: 100%; }
+}
+
 .filterGridSpan2 { grid-column: span 2; }
 .filterGridSpanAll { grid-column: 1 / -1; }
 

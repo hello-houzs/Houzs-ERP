@@ -776,7 +776,7 @@ export const PurchaseConsignmentOrderNew = () => {
                 )}
 
                 {/* Pricing row — Qty · Unit Price · Discount · Delivery · Ship-to */}
-                <div className={styles.formGrid4} style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
+                <div className={styles.formGrid4} style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))' }}>
                   <label className={styles.field}>
                     <span className={styles.fieldLabel}>Qty</span>
                     <input

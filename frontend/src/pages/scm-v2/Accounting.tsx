@@ -398,7 +398,7 @@ const bucketTotals = <T extends { aging_bucket: Bucket; outstanding_centi: numbe
 const BucketSummary = ({
   totals, grandTotal,
 }: { totals: Record<Bucket, number>; grandTotal: number }) => (
-  <section style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 'var(--space-3)' }}>
+  <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-3)' }}>
     {(['CURRENT', '1-30', '31-60', '61-90', '90+'] as const).map((b) => (
       <SummaryTile key={b} label={b} value={fmt(totals[b])} muted={b === 'CURRENT'} />
     ))}

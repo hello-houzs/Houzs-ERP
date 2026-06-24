@@ -484,3 +484,20 @@
 .addBindingBtn:hover {
   background: var(--c-cream);
 }
+
+/* Phone (Houzs 2026-06-24) — element-level overflow clamp. */
+@media (max-width: 600px) {
+  .searchBox { min-width: 0; max-width: 100%; width: 100%; }
+  .actionsRow { flex-wrap: wrap; }
+  .tableCard { overflow-x: auto; }
+  .table { min-width: 560px; }
+  .formGrid { grid-template-columns: 1fr; }
+  .bindingRow {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+  .bindingPrice { text-align: left; }
+  .bindingMeta { text-align: left; }
+}

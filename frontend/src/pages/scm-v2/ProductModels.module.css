@@ -426,3 +426,21 @@
   border-radius: 4px;
   font-weight: 600;
 }
+
+/* Phone (Houzs 2026-06-24) — element-level overflow clamp. */
+@media (max-width: 600px) {
+  .actions {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .searchBox {
+    width: 100%;
+  }
+  .section {
+    overflow-x: auto;
+  }
+  .field input,
+  .field select {
+    width: 100%;
+  }
+}

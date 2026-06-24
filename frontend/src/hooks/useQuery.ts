@@ -7,6 +7,15 @@ export interface QueryState<T> {
   reload: () => void;
 }
 
+// Optional per-callsite freshness controls. Defaults mirror the global
+// queryClient (staleTime 0, refetch-on-mount when stale). Set
+// `refetchOnMount: "always"` + `staleTime: 0` on a list query that must
+// reflect a sibling tab's create the instant the consumer mounts.
+export interface UseQueryOptions {
+  refetchOnMount?: boolean | "always";
+  staleTime?: number;
+}
+
 // Backed by TanStack Query (see lib/queryClient.ts). The public API is
 // unchanged from the old hand-rolled hook — every existing callsite keeps
 // working as `useQuery(fetcher, deps)` — but now gets caching, request dedup
@@ -17,10 +26,15 @@ export interface QueryState<T> {
 export function useQuery<T>(
   fetcher: () => Promise<T>,
   deps: ReadonlyArray<unknown> = [],
+  options: UseQueryOptions = {},
 ): QueryState<T> {
   const q = useTanstackQuery<T>({
     queryKey: ["uq", fetcher.toString(), ...deps],
     queryFn: () => fetcher(),
+    ...(options.refetchOnMount !== undefined && {
+      refetchOnMount: options.refetchOnMount,
+    }),
+    ...(options.staleTime !== undefined && { staleTime: options.staleTime }),
   });
   return {
     data: q.data ?? null,

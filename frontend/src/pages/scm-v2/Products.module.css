@@ -655,3 +655,47 @@
   text-align: right;
   color: var(--c-ink);
 }
+
+/* Phone (Houzs 2026-06-24) — element-level overflow clamp. */
+@media (max-width: 600px) {
+  .page {
+    padding: var(--space-3) var(--space-3) var(--space-5);
+  }
+  .title {
+    font-size: var(--fs-20);
+  }
+  .actionsRow {
+    flex-wrap: wrap;
+  }
+  .tabSwitch {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .categoryChips {
+    flex-wrap: wrap;
+  }
+  .searchBox {
+    width: 100%;
+  }
+  .searchInput {
+    width: 100%;
+  }
+  .tableCard {
+    overflow-x: auto;
+  }
+  .table {
+    min-width: 560px;
+  }
+  .maintLayout {
+    grid-template-columns: 1fr;
+  }
+  .maintPanel {
+    padding: var(--space-4);
+  }
+  .maintRowPrice {
+    min-width: 0;
+  }
+  .formGrid {
+    grid-template-columns: 1fr;
+  }
+}

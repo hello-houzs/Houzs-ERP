@@ -25,7 +25,7 @@ import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
-import { fmtDateOrDash, buildVariantSummary } from '@2990s/shared'; // Commander 2026-05-28 — Description 2
+import { fmtDateOrDash } from '@2990s/shared';
 import {
   useStockTakeDetail,
   useUpdateStockTakeLines,
@@ -61,6 +61,7 @@ type LineDraft = {
   id: string;
   productCode: string;
   productName: string | null;
+  variantLabel: string | null;
   systemQty: number;
   countedQtyInput: string;   // '' means uncounted
   notes: string;
@@ -72,6 +73,7 @@ const toDraft = (l: StockTakeLine): LineDraft => ({
   id:               l.id,
   productCode:      l.product_code,
   productName:      l.product_name,
+  variantLabel:     l.variant_label,
   systemQty:        l.system_qty,
   countedQtyInput:  l.counted_qty == null ? '' : String(l.counted_qty),
   notes:            l.notes ?? '',
@@ -125,7 +127,8 @@ export const StockTakeDetail = () => {
     if (!q) return lines;
     return lines.filter((l) =>
       l.productCode.toLowerCase().includes(q) ||
-      (l.productName ?? '').toLowerCase().includes(q),
+      (l.productName ?? '').toLowerCase().includes(q) ||
+      (l.variantLabel ?? '').toLowerCase().includes(q),
     );
   }, [lines, search]);
 
@@ -471,7 +474,7 @@ export const StockTakeDetail = () => {
               <tr>
                 <th style={{ width: '18%' }}>SKU</th>
                 <th>Name</th>
-                <th>Description 2</th>
+                <th>Variant</th>
                 <th style={{ width: 110, textAlign: 'right' }}>System Qty</th>
                 <th style={{ width: 130, textAlign: 'right' }}>Counted Qty</th>
                 <th style={{ width: 110, textAlign: 'right' }}>Variance</th>
@@ -504,23 +507,12 @@ export const StockTakeDetail = () => {
                     <td style={{ fontSize: 'var(--fs-13)' }}>
                       {ln.productName || <span className={styles.muted}>—</span>}
                     </td>
-                    {/* "Description 2": variant/spec summary in its own column.
-                        Prefers a stored description2, falls back to the computed
-                        variant summary, then a muted em-dash when both are empty. */}
+                    {/* Variant bucket (migration 0183) — the (product_code,
+                        variant_key) this line counts. A plain SKU shows '—'. */}
                     <td style={{ fontSize: 'var(--fs-13)' }}>
-                      {(() => {
-                        const row = ln as unknown as {
-                          description2?: string | null;
-                          item_group?: string | null;
-                          variants?: Record<string, unknown> | null;
-                        };
-                        const desc2 = (row.description2 && row.description2.trim())
-                          ? row.description2
-                          : buildVariantSummary(row.item_group, row.variants);
-                        return desc2
-                          ? <span>{desc2}</span>
-                          : <span className={styles.muted}>—</span>;
-                      })()}
+                      {ln.variantLabel
+                        ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-12)' }}>{ln.variantLabel}</span>
+                        : <span className={styles.muted}>—</span>}
                     </td>
                     <td className={styles.tableRight}
                         style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-13)' }}>

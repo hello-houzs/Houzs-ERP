@@ -35,6 +35,8 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { writeMovements, defaultWarehouseId, resolveWarehouseLotBatches } from '../lib/inventory-movements';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { nextMonthlyDocNo } from '../lib/doc-no';
 import { recomputePcoReceived } from './purchase-consignment-receives';
 
 export const purchaseConsignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -200,12 +202,14 @@ const ITEM =
   'item_group, variants, created_at';
 
 const nextNum = async (sb: any): Promise<string> => {
+  // PCT-YYMM-NNN. max(suffix)+1 (NEVER count+1) so a deleted mid-month row can't
+  // make the counter re-mint a surviving number forever — see doc-no.ts.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('purchase_consignment_returns')
-    .select('id', { head: true, count: 'exact' })
+  const { data: existing } = await sb.from('purchase_consignment_returns')
+    .select('return_number')
     .like('return_number', `PCT-${yymm}-%`);
-  return `PCT-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  return nextMonthlyDocNo(`PCT-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 };
 
 /* ── Recompute PC Return header money rollup ───────────────────────────────
@@ -280,22 +284,23 @@ purchaseConsignmentReturns.get('/', async (c) => {
 // DO→DR returnable picker. MUST precede /:id so the static path isn't an id.
 purchaseConsignmentReturns.get('/returnable-receive-lines', async (c) => {
   const sb = c.get('supabase');
-  const { data: receives, error: rErr } = await sb
+  const { data: receives, error: rErr } = await paginateAll((from, to) => sb
     .from('purchase_consignment_receives')
     .select('id, receive_number, supplier_id, status, supplier:suppliers(id, code, name)')
     .neq('status', 'CANCELLED')
     .order('receive_number', { ascending: false })
-    .limit(1000);
+    .range(from, to));
   if (rErr) return c.json({ error: 'load_failed', reason: rErr.message }, 500);
   const recvList = (receives ?? []) as Array<{ id: string; receive_number: string; supplier_id: string | null; supplier?: { name?: string | null } | null }>;
   if (recvList.length === 0) return c.json({ lines: [] });
   const recvById = new Map(recvList.map((r) => [r.id, r]));
   const recvIds = recvList.map((r) => r.id);
 
-  const { data: items, error: iErr } = await sb
+  const { data: items, error: iErr } = await chunkIn<Record<string, unknown>>(recvIds, (batch, from, to) => sb
     .from('purchase_consignment_receive_items')
     .select('id, pc_receive_id, material_kind, material_code, material_name, item_group, description, uom, qty_accepted, returned_qty, unit_price_centi, variants')
-    .in('pc_receive_id', recvIds);
+    .in('pc_receive_id', batch)
+    .range(from, to));
   if (iErr) return c.json({ error: 'load_failed', reason: iErr.message }, 500);
   const itemList = (items ?? []) as Array<Record<string, unknown>>;
 

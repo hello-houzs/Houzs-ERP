@@ -45,7 +45,7 @@ export function Scm2990Shell({ children }: { children: ReactNode }) {
       <ConfirmProvider>
         <PromptProvider>
           <DialogServiceBridge />
-          <div className="scm2990">{children}</div>
+          <div className="scm2990 max-w-full overflow-x-hidden">{children}</div>
         </PromptProvider>
       </ConfirmProvider>
     </NotifyProvider>

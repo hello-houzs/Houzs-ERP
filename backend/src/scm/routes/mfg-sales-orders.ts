@@ -573,6 +573,7 @@ mfgSalesOrders.get('/', async (c) => {
     let sq = sb
       .from('mfg_sales_orders')
       .select('doc_no, status, proceeded_at, local_total_centi, created_at, so_date')
+      .neq('status', 'DRAFT')
       .order('so_date', { ascending: false })
       .limit(500);
     if (selfScopeId) sq = sq.eq('salesperson_id', selfScopeId);
@@ -909,7 +910,7 @@ mfgSalesOrders.get('/mine', async (c) => {
       'customer_delivery_date, internal_expected_dd, status, payment_method, approval_code, note, so_date, created_at, ' +
       'proceeded_at, total_revenue_centi, line_count, deposit_centi',
     )
-    .not('status', 'in', '("CANCELLED","ON_HOLD")');
+    .not('status', 'in', '("CANCELLED","ON_HOLD","DRAFT")');
   if (targetSalespersonId) query = query.eq('salesperson_id', targetSalespersonId);
 
   if (q) {
@@ -1152,7 +1153,7 @@ mfgSalesOrders.get('/cross-category-match', async (c) => {
     .from('mfg_sales_orders')
     .select('doc_no, debtor_name, created_at')
     .eq('phone', normPhone)
-    .neq('status', 'CANCELLED')
+    .not('status', 'in', '("CANCELLED","DRAFT")')
     .order('created_at', { ascending: false })
     .limit(50);
   const candidates: AutoMatchCandidate[] = ((rows ?? []) as Array<{ doc_no: string; debtor_name: string | null }>)
@@ -1196,7 +1197,7 @@ mfgSalesOrders.get('/customer-search', async (c) => {
     .from('mfg_sales_orders')
     .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, created_at')
     .ilike('debtor_name', `%${esc}%`)
-    .neq('status', 'CANCELLED')
+    .not('status', 'in', '("CANCELLED","DRAFT")')
     .order('created_at', { ascending: false })
     .limit(60);
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -1277,7 +1278,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
        (LIST_COLS = HEADER + …) reads. Keeping it out of the shared HEADER and
        appending it only here means the detail page still gets the Proceed Date
        while the list view query stays valid. */
-    sb.from('mfg_sales_orders').select(`${HEADER}, proceeded_at, signature_b64, slip_key, slip_state`).eq('doc_no', docNo).maybeSingle(),
+    sb.from('mfg_sales_orders').select(`${HEADER}, proceeded_at, signature_b64, slip_key, slip_state, slip_image_key, receipt_image_key`).eq('doc_no', docNo).maybeSingle(),
     /* line_no = the persisted listing order (0165); NULLS LAST so pre-0165
        docs fall back to created_at + the rule re-derive below. */
     sb.from('mfg_sales_order_items').select(ITEM).eq('doc_no', docNo)
@@ -3040,6 +3041,16 @@ mfgSalesOrders.post('/', async (c) => {
        is attached; left at the column default 'none' otherwise. */
     slip_key: slipKey,
     slip_state: slipKey ? 'pending' : 'none',
+    /* Original-slip provenance (migration 0033) — the R2 key of the handwritten
+       slip photo this SO was scanned from, carried over from the Scan Order
+       flow so the SO detail page can show it as "Original Slip" proof. null for
+       manually-keyed orders. */
+    slip_image_key: (body.slipImageKey as string) ?? null,
+    /* Payment-receipt provenance (migration 0034) — the R2 key of the printed
+       card-terminal payment receipt this SO was scanned from, carried over from
+       the Scan Order flow so the SO detail page can show it as "Payment Receipt"
+       proof. null for manually-keyed orders / scans with no receipt photo. */
+    receipt_image_key: (body.receiptImageKey as string) ?? null,
     /* PR #148 + #150 — Payment fields on create (mirror PATCH handler).
        Lets commander set payment_method + deposit_centi straight from the
        New SO form, including approval_code for merchant transactions. */
@@ -3058,7 +3069,7 @@ mfgSalesOrders.post('/', async (c) => {
        trading company; we don't need a DRAFT staging step. Every new SO is
        CONFIRMED on insert. The DRAFT enum value still exists for legacy
        row compatibility, but new rows skip it entirely. */
-    status: 'CONFIRMED',
+    status: (body as { asDraft?: unknown }).asDraft === true ? 'DRAFT' : 'CONFIRMED',
     created_by: user.id,
   });
   if (hErr) { await rollbackPwpClaims(); return c.json({ error: 'insert_failed', reason: hErr.message }, 500); }
@@ -3474,7 +3485,7 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
 
   /* Edge #B — SO cancel with deposit paid turns the deposit into a customer
      credit. Idempotent on (source_type, source_doc_no). Best-effort. */
-  if (body.status === 'CANCELLED' && fromStatus !== 'CANCELLED') {
+  if (body.status === 'CANCELLED' && fromStatus !== 'CANCELLED' && fromStatus !== 'DRAFT') {
     try {
       const { data: so } = await sb.from('mfg_sales_orders').select('debtor_code, debtor_name').eq('doc_no', docNo).maybeSingle();
       const s = so as { debtor_code: string | null; debtor_name: string | null } | null;
@@ -3808,7 +3819,7 @@ async function redetectCrossCategoryDelivery(
   if (newName && normPhone) {
     const { data: candRows } = await sb.from('mfg_sales_orders')
       .select('doc_no, debtor_name, created_at')
-      .eq('phone', normPhone).neq('status', 'CANCELLED').neq('doc_no', docNo)
+      .eq('phone', normPhone).not('status', 'in', '("CANCELLED","DRAFT")').neq('doc_no', docNo)
       .order('created_at', { ascending: false }).limit(50);
     const candidates: AutoMatchCandidate[] = ((candRows ?? []) as Array<{ doc_no: string; debtor_name: string | null }>)
       .map((r) => ({ docNo: r.doc_no, debtorName: r.debtor_name }));

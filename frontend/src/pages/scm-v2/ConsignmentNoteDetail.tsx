@@ -104,7 +104,7 @@ type CnHeader = {
 
 type CnItem = {
   id: string;
-  delivery_order_id: string;
+  consignment_delivery_order_id: string;
   item_group: string | null;
   item_code: string;
   description: string | null;
@@ -113,7 +113,7 @@ type CnItem = {
   qty: number;
   unit_price_centi: number;
   discount_centi: number;
-  total_centi: number;
+  line_total_centi: number;
   unit_cost_centi: number;
   line_cost_centi: number;
   line_margin_centi: number;
@@ -223,7 +223,7 @@ export const ConsignmentNoteDetail = () => {
             danger: true,
           })) {
             deleteItem.mutate(
-              { id: it.delivery_order_id, itemId: it.id },
+              { id: it.consignment_delivery_order_id, itemId: it.id },
               { onSuccess: () => removeEditingLine(it.id) },
             );
           }
@@ -488,7 +488,7 @@ export const ConsignmentNoteDetail = () => {
                   <td className={styles.tableRight}>{it.qty}</td>
                   <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, header.currency)}</td>
                   <td className={styles.tableRight}>{it.discount_centi > 0 ? fmtRm(it.discount_centi, header.currency) : '—'}</td>
-                  <td className={styles.priceCell}>{fmtRm(it.total_centi, header.currency)}</td>
+                  <td className={styles.priceCell}>{fmtRm(it.line_total_centi, header.currency)}</td>
                 </tr>
               ))}
             </tbody>

@@ -31,6 +31,8 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { writeMovements, defaultWarehouseId, resolveWarehouseLotCosts } from '../lib/inventory-movements';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { nextMonthlyDocNo } from '../lib/doc-no';
 
 export const purchaseConsignmentReceives = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseConsignmentReceives.use('*', supabaseAuth);
@@ -212,10 +214,12 @@ const ITEM =
   'rack_id';
 
 const nextNumber = async (sb: any, prefix: string, table: string, col: string): Promise<string> => {
+  // <PREFIX>-YYMM-NNN. max(suffix)+1 (NEVER count+1) so a deleted mid-month row
+  // can't make the counter re-mint a surviving number forever — see doc-no.ts.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from(table).select('id', { head: true, count: 'exact' }).like(col, `${prefix}-${yymm}-%`);
-  return `${prefix}-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  const { data: existing } = await sb.from(table).select(col).like(col, `${prefix}-${yymm}-%`);
+  return nextMonthlyDocNo(`${prefix}-${yymm}`, ((existing ?? []) as Array<Record<string, string>>).map((r) => r[col]));
 };
 
 /* ── Recompute PC Receive header money rollups ────────────────────────────
@@ -499,22 +503,23 @@ export async function pcReceiveLineDownstream(
 // picker. MUST precede /:id so the static path isn't read as an id.
 purchaseConsignmentReceives.get('/outstanding-order-lines', async (c) => {
   const sb = c.get('supabase');
-  const { data: orders, error: oErr } = await sb
+  const { data: orders, error: oErr } = await paginateAll((from, to) => sb
     .from('purchase_consignment_orders')
     .select('id, pc_number, supplier_id, status, supplier:suppliers(id, code, name)')
     .neq('status', 'CANCELLED')
     .order('pc_number', { ascending: false })
-    .limit(1000);
+    .range(from, to));
   if (oErr) return c.json({ error: 'load_failed', reason: oErr.message }, 500);
   const orderList = (orders ?? []) as Array<{ id: string; pc_number: string; supplier_id: string | null; supplier?: { name?: string | null } | null }>;
   if (orderList.length === 0) return c.json({ lines: [] });
   const orderById = new Map(orderList.map((o) => [o.id, o]));
   const orderIds = orderList.map((o) => o.id);
 
-  const { data: items, error: iErr } = await sb
+  const { data: items, error: iErr } = await chunkIn<Record<string, unknown>>(orderIds, (batch, from, to) => sb
     .from('purchase_consignment_order_items')
     .select('id, purchase_consignment_order_id, material_kind, material_code, material_name, supplier_sku, item_group, description, uom, qty, received_qty, unit_price_centi, variants')
-    .in('purchase_consignment_order_id', orderIds);
+    .in('purchase_consignment_order_id', batch)
+    .range(from, to));
   if (iErr) return c.json({ error: 'load_failed', reason: iErr.message }, 500);
   const itemList = (items ?? []) as Array<Record<string, unknown>>;
 

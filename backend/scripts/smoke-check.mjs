@@ -8,9 +8,13 @@
 // most need to catch.
 //
 // Probes, in order:
-//   1. GET /health          -> { ok: true }                (Worker is up; no DB)
-//   2. GET /api/auth/status -> { has_users: <bool> }       (full DB round-trip;
+//   1. GET /health               -> { ok: true }            (Worker is up; no DB)
+//   2. GET /api/auth/status      -> { has_users: <bool> }   (full DB round-trip;
 //                                                           public, no PII, one COUNT)
+//   3. GET /api/scm/suppliers     -> HTTP 200                (SCM PostgREST path,
+//   4. GET /api/scm/mrp-lead-times -> HTTP 200                authed, read-only) —
+//      so a deploy where the core API is up but the SCM stack 500s fails loudly.
+//      Authenticated with DASHBOARD_API_KEY (the wildcard service token).
 //
 // Each probe retries with backoff to absorb deploy propagation + a cold
 // Hyperdrive pool on the first hit. Deliberately low-volume (a handful of
@@ -31,19 +35,32 @@ if (!BASE) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Service token for the authenticated SCM read probes. Accepted at
+// backend/src/middleware/auth.ts:86 as the wildcard service token. Read-only.
+const SMOKE_TOKEN = process.env.DASHBOARD_API_KEY || "";
+
 // Retry schedule (ms): ~total 60s, front-loaded but never tight-looping.
 const BACKOFFS = [0, 3000, 6000, 10000, 15000, 25000];
 
-async function probe(path, validate) {
+async function probe(path, validate, opts = {}) {
   const url = `${BASE}${path}`;
+  const headers = opts.headers || {};
   let lastErr = "unknown";
   for (let i = 0; i < BACKOFFS.length; i++) {
     if (BACKOFFS[i]) await sleep(BACKOFFS[i]);
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 20000);
     try {
-      const res = await fetch(url, { signal: ctrl.signal });
-      if (!res.ok) {
+      const res = await fetch(url, { signal: ctrl.signal, headers });
+      // statusOnly probes assert HTTP 200 without parsing the body — useful for
+      // authed reads where any 200 (even an empty list) proves the path is live.
+      if (opts.statusOnly) {
+        if (res.status === 200) {
+          console.log(`[smoke] PASS ${path} (attempt ${i + 1})`);
+          return true;
+        }
+        lastErr = `HTTP ${res.status}`;
+      } else if (!res.ok) {
         lastErr = `HTTP ${res.status}`;
       } else {
         const body = await res.json();
@@ -70,7 +87,26 @@ const okDb = await probe("/api/auth/status", (b) =>
   b && typeof b.has_users === "boolean" ? true : "has_users missing/non-bool"
 );
 
-if (okHealth && okDb) {
+// Authenticated, read-only SCM reads — catch a deploy where the core API is up
+// but the SCM PostgREST stack 500s. Skipped (with a loud warning) if the
+// service token isn't available, so the script still works in unauth contexts.
+let okScm = true;
+if (SMOKE_TOKEN) {
+  const authHeaders = { Authorization: `Bearer ${SMOKE_TOKEN}` };
+  const okSuppliers = await probe("/api/scm/suppliers", null, {
+    statusOnly: true,
+    headers: authHeaders,
+  });
+  const okLeadTimes = await probe("/api/scm/mrp-lead-times", null, {
+    statusOnly: true,
+    headers: authHeaders,
+  });
+  okScm = okSuppliers && okLeadTimes;
+} else {
+  console.log("[smoke] WARN: DASHBOARD_API_KEY unset — skipping authed SCM read probes.");
+}
+
+if (okHealth && okDb && okScm) {
   console.log("[smoke] all probes passed — deploy is serving and DB is reachable.");
   // Set exitCode (don't process.exit) so the event loop drains naturally —
   // a hard exit mid-socket-teardown trips a libuv assertion on Windows.

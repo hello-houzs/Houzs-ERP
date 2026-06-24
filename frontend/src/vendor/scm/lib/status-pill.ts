@@ -44,6 +44,7 @@ const PI: Record<string, Entry> = {
   POSTED:         { label: 'Confirmed',      tone: 'info' },
   PARTIALLY_PAID: { label: 'Partially Paid', tone: 'progress' },
   PAID:           { label: 'Paid',           tone: 'success' },
+  VOID:           { label: 'Void',           tone: 'danger' },
   CANCELLED:      { label: 'Cancelled',      tone: 'danger' },
 };
 const PR: Record<string, Entry> = {
@@ -77,6 +78,7 @@ const SI: Record<string, Entry> = {
   PARTIALLY_PAID: { label: 'Partially Paid', tone: 'progress' },
   PAID:           { label: 'Paid',           tone: 'success' },
   OVERDUE:        { label: 'Overdue',        tone: 'danger' },
+  VOID:           { label: 'Void',           tone: 'danger' },
   CANCELLED:      { label: 'Cancelled',      tone: 'danger' },
 };
 const DR: Record<string, Entry> = {
@@ -85,6 +87,7 @@ const DR: Record<string, Entry> = {
   INSPECTED:    { label: 'Inspected',    tone: 'success' },
   REFUNDED:     { label: 'Refunded',     tone: 'success' },
   CREDIT_NOTED: { label: 'Credit Noted', tone: 'success' },
+  REJECTED:     { label: 'Rejected',     tone: 'danger' },
   CANCELLED:    { label: 'Cancelled',    tone: 'danger' },
 };
 const STOCK_TRANSFER: Record<string, Entry> = {

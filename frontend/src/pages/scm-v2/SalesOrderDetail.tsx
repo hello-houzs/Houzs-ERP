@@ -53,7 +53,7 @@ import { RelationshipMapButton } from '../../vendor/scm/components/RelationshipM
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { usePrompt } from '../../vendor/scm/components/PromptDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
-import { fetchSoSlipUrl } from '../../vendor/scm/lib/slip';
+import { fetchSoSlipUrl, fetchScanSlipImageBlobUrl } from '../../vendor/scm/lib/slip';
 import {
   useLocalities,
   distinctStates,
@@ -111,14 +111,9 @@ const DATES_XOR_WARN_STYLE: CSSProperties = {
 const EMERGENCY_HEADER_NOTE_STYLE: CSSProperties = {
   fontSize: 'var(--fs-12)', color: 'var(--fg-muted)',
 };
-const TOTALS_KPI_GRID_STYLE: CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(4, 1fr)',
-  gap: 'var(--space-3)',
-  marginBottom: 'var(--space-3)',
-  paddingBottom: 'var(--space-3)',
-  borderBottom: '1px solid var(--line)',
-};
+/* Houzs 2026-06-24 — the totals KPI grid moved from this inline const to the
+   .totalsKpiGrid CSS-module class so the phone breakpoint can collapse it to
+   2×2 (inline styles can't carry a media query). See SalesOrderDetail.module.css. */
 /* PR — Step KPI tile values from fs-18 → fs-15 so the totals card no longer
    reads as another hero. Margin / Margin % share this override. */
 const TOTALS_KPI_VALUE_STYLE: CSSProperties = { fontSize: 'var(--fs-15, 15px)' };
@@ -142,6 +137,9 @@ const STATUS_LIST = [
 type SoStatus = typeof STATUS_LIST[number];
 
 const STATUS_CLASS: Record<string, string> = {
+  // DRAFT flow — re-added so a DRAFT SO (scanned / auto-generated, pending
+  // operator Confirm) renders the muted grey pill instead of a bare string.
+  DRAFT:          styles.statusDraft ?? '',
   CONFIRMED:      styles.statusConfirmed ?? '',
   IN_PRODUCTION:  styles.statusInProd ?? '',
   READY_TO_SHIP:  styles.statusReady ?? '',
@@ -158,6 +156,7 @@ const STATUS_CLASS: Record<string, string> = {
 // and here (lifecycle states like Delivered/Invoiced/Delivery Return still come
 // from soStatusDisplay; this is only the stored-status fallback).
 const SO_STATUS_LABEL: Record<string, string> = {
+  DRAFT:         'Draft',
   CONFIRMED:     'Confirmed',
   IN_PRODUCTION: 'Proceed',
   READY_TO_SHIP: 'Stock Ready',
@@ -266,6 +265,14 @@ type SoHeader = {
      (display via the /slip-url presign route); slip_state = review state. */
   slip_key: string | null;
   slip_state: 'none' | 'pending' | 'verified' | 'flagged' | null;
+  /* Migration 0033 — original handwritten slip image (R2 key under
+     `scan-slips/...`) when this SO was created via the Scan Order flow. Served
+     back (authed) via GET /scan-so/slip-image?key=... and shown as proof. */
+  slip_image_key: string | null;
+  /* Migration 0034 — scanned card-terminal payment receipt image (R2 key under
+     `scan-slips/...-receipt`) when the Scan Order flow carried a receipt photo
+     alongside the order slip. Served back via the same authed endpoint. */
+  receipt_image_key: string | null;
   /* PR #143 + #150 — Payment. Installment is a sub-type of merchant
      (not its own top-level method). approval_code captured for the
      terminal auth slip. */
@@ -961,6 +968,44 @@ export const SalesOrderDetail = () => {
         </div>
       ) : null}
 
+      {/* ── DRAFT banner + Confirm (DRAFT flow) ─────────────────────
+          Scanned / auto-generated SOs land as DRAFT (excluded from
+          KPI / MRP / PO / DO) so the operator can review + correct first.
+          Confirming flips DRAFT → CONFIRMED via the status mutation, which
+          invalidates the SO detail + list queries so the page updates.
+          `header.status` is typed to the post-0078 enum (no DRAFT), so the
+          stored value is read off a string view for the comparison. */}
+      {(header.status as string) === 'DRAFT' && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          fontSize: 'var(--fs-13)',
+        }}>
+          <span style={LOCK_BANNER_INNER_STYLE}>
+            <FileText {...ICON} />
+            <span>
+              <strong>Draft — not yet confirmed.</strong>{' '}
+              Review and Confirm to make it a live order (it stays out of MRP / PO / DO until then).
+            </span>
+          </span>
+          <Button variant="primary" size="sm"
+            onClick={async () => {
+              if (!(await askConfirm({
+                title: `Confirm ${header.doc_no}?`,
+                body: 'This turns the draft into a live, confirmed sales order — it will appear in MRP / PO / DO flows and KPIs.',
+                confirmLabel: 'Confirm Order',
+              }))) return;
+              updateStatus.mutate({ docNo: header.doc_no, status: 'CONFIRMED' });
+            }}
+            disabled={updateStatus.isPending}>
+            <span>{updateStatus.isPending ? 'Confirming…' : 'Confirm Order'}</span>
+          </Button>
+        </div>
+      )}
+
       {/* ── Lock banner ─────────────────────────────────────────── */}
       {!isCancelled && lockedStatuses.includes(header.status) && (
         <div style={{
@@ -1163,7 +1208,7 @@ export const SalesOrderDetail = () => {
                       line. Older rows carried a STALE stored description2 (written
                       before the remark/RM display fixes) that made this VIEW
                       disagree with what the PO printed. */}
-                  <td>
+                  <td data-label="Description 2">
                     {(() => {
                       const live = buildVariantSummary(it.item_group, it.variants);
                       const desc2 = live || (it.description2 ?? '').trim();
@@ -1172,8 +1217,8 @@ export const SalesOrderDetail = () => {
                         : <span className={styles.muted}>—</span>;
                     })()}
                   </td>
-                  <td className={styles.tableRight}>{it.qty}</td>
-                  <td>
+                  <td className={styles.tableRight} data-label="Qty">{it.qty}</td>
+                  <td data-label="Transfer To">
                     {(() => {
                       const hasDeliveries = it.deliveries && it.deliveries.length > 0;
                       const notFullyDelivered = (it.remaining_qty ?? 1) > 0;
@@ -1215,9 +1260,9 @@ export const SalesOrderDetail = () => {
                       return coverage ?? <span className={styles.muted}>—</span>;
                     })()}
                   </td>
-                  <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, header.currency)}</td>
-                  <td className={styles.tableRight}>{it.discount_centi > 0 ? fmtRm(it.discount_centi, header.currency) : '—'}</td>
-                  <td className={styles.tableRight}>
+                  <td className={styles.tableRight} data-label="Unit">{fmtRm(it.unit_price_centi, header.currency)}</td>
+                  <td className={styles.tableRight} data-label="Disc">{it.discount_centi > 0 ? fmtRm(it.discount_centi, header.currency) : '—'}</td>
+                  <td className={styles.tableRight} data-label="Delivery">
                     {displayDate ? (
                       <span style={isAuto ? { color: 'var(--fg-muted)' } : undefined}>
                         {fmtDateOrDash(displayDate)}
@@ -1227,22 +1272,22 @@ export const SalesOrderDetail = () => {
                       </span>
                     ) : '—'}
                   </td>
-                  <td className={styles.priceCell}>{fmtRm(it.total_centi, header.currency)}</td>
+                  <td className={styles.priceCell} data-label="Total">{fmtRm(it.total_centi, header.currency)}</td>
                   {/* Task #114 — cost + margin columns. unit_cost_centi is
                       snapshotted server-side from mfg_products on insert.
                       Margin coloring rule matches Houzs: green > 0, red < 0,
                       grey when zero (typically a not-yet-priced item). */}
-                  <td className={styles.tableRight}>
+                  <td className={styles.tableRight} data-label="Unit Cost">
                     <span className={styles.muted}>
                       {it.unit_cost_centi > 0 ? fmtRm(it.unit_cost_centi, header.currency) : '—'}
                     </span>
                   </td>
-                  <td className={styles.tableRight}>
+                  <td className={styles.tableRight} data-label="Line Cost">
                     <span className={styles.muted}>
                       {it.line_cost_centi > 0 ? fmtRm(it.line_cost_centi, header.currency) : '—'}
                     </span>
                   </td>
-                  <td className={styles.tableRight}>
+                  <td className={styles.tableRight} data-label="Margin">
                     {it.total_centi > 0 ? (
                       <span className={
                         it.line_margin_centi > 0 ? styles.marginGood
@@ -1302,6 +1347,38 @@ export const SalesOrderDetail = () => {
           </div>
         </section>
       )}
+
+      {/* ── ORIGINAL SLIP + PAYMENT RECEIPT (migrations 0033 + 0034) — the
+          handwritten order-slip photo (and, when the scan carried one, the
+          printed card-terminal payment receipt) this SO was scanned from, kept
+          as proof. Dual-read camelCase ?? snake_case (the pg driver camelCases
+          result columns). Each card is shown only when its key is present, so
+          the operator can View original on whichever images exist. */}
+      {(() => {
+        const slipImageKey =
+          (header as unknown as { slipImageKey?: string | null }).slipImageKey ?? header.slip_image_key;
+        const receiptImageKey =
+          (header as unknown as { receiptImageKey?: string | null }).receiptImageKey ?? header.receipt_image_key;
+        if (!slipImageKey && !receiptImageKey) return null;
+        return (
+          <>
+            {slipImageKey && (
+              <ScannedImageCard
+                imageKey={slipImageKey}
+                title="Order Slip"
+                alt="Original handwritten sale-order slip"
+              />
+            )}
+            {receiptImageKey && (
+              <ScannedImageCard
+                imageKey={receiptImageKey}
+                title="Payment Receipt"
+                alt="Scanned card-terminal payment receipt"
+              />
+            )}
+          </>
+        );
+      })()}
 
       {/* ── Variant-completeness banner ─────────────────────────────
           PR #144 + #156 gating rule kept as a read-only warning. The
@@ -2174,6 +2251,67 @@ VariantsPills.displayName = 'VariantsPills';
    Totals card
    ════════════════════════════════════════════════════════════════════════ */
 
+/* ── Scanned image viewer (migrations 0033 + 0034) ──────────────────────────
+   When the SO was created via the Scan Order flow, the handwritten ORDER SLIP
+   (0033) and/or the printed card-terminal PAYMENT RECEIPT (0034) were kept in
+   R2. Show each as proof: authed-fetch the serve endpoint as a blob (the bearer
+   token can't ride on an <img src>), render the object URL inline, and offer
+   "open full size" in a new tab. Mirrors the item-photo blob display pattern;
+   the object URL is revoked on unmount. `title` / `alt` distinguish the two. */
+const ScannedImageCard = ({
+  imageKey,
+  title,
+  alt,
+}: {
+  imageKey: string;
+  title: string;
+  alt: string;
+}) => {
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let url: string | null = null;
+    fetchScanSlipImageBlobUrl(imageKey)
+      .then((u) => {
+        if (cancelled) { URL.revokeObjectURL(u); return; }
+        url = u;
+        setSrc(u);
+      })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [imageKey]);
+
+  return (
+    <section className={styles.card}>
+      <header className={styles.cardHeader}>
+        <h2 className={styles.cardTitle}>{title}</h2>
+      </header>
+      <div className={styles.cardBody}>
+        {error ? (
+          <div style={{ color: 'var(--c-festive-b, #B8331F)', fontSize: 13 }}>
+            Couldn&apos;t load the scanned image. {error}
+          </div>
+        ) : src ? (
+          <a href={src} target="_blank" rel="noreferrer" title="Open full size in a new tab">
+            <img
+              src={src}
+              alt={alt}
+              style={{ maxWidth: 360, width: '100%', height: 'auto', border: '1px solid var(--c-line, #E5E1DC)', borderRadius: 8, background: '#fff', cursor: 'zoom-in' }}
+            />
+          </a>
+        ) : (
+          <div style={{ fontSize: 13, color: 'var(--c-muted, #8A8377)' }}>Loading…</div>
+        )}
+      </div>
+    </section>
+  );
+};
+
 const TotalsCard = ({ header }: { header: SoHeader }) => {
   // margin_pct_basis is margin/revenue × 10000 (i.e. percent × 100). Divide
   // by 100 to get the displayed percentage. Coloring rule matches the Houzs
@@ -2218,8 +2356,10 @@ const TotalsCard = ({ header }: { header: SoHeader }) => {
         <h2 className={styles.cardTitle}>Totals · Margin</h2>
       </header>
       <div className={styles.cardBody}>
-        {/* Top row — Revenue / Cost / Margin / Margin % as 4 KPI tiles */}
-        <div style={TOTALS_KPI_GRID_STYLE}>
+        {/* Top row — Revenue / Cost / Margin / Margin % as 4 KPI tiles.
+            Houzs 2026-06-24 — class (not inline const) so the phone breakpoint
+            can collapse 4 cols → 2×2 (Margin % was clipping at ~80px/col). */}
+        <div className={styles.totalsKpiGrid}>
           <div>
             <div className={styles.totalLabel}>Revenue</div>
             <div className={styles.grandTotal} style={TOTALS_KPI_VALUE_STYLE}>

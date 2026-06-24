@@ -718,3 +718,10 @@
   color: var(--c-ink);
   font-variant-numeric: tabular-nums;
 }
+
+/* Phone (Houzs 2026-06-24) — element-level overflow clamp. */
+@media (max-width: 600px) {
+  .page { padding: var(--space-3); }
+  .infoGrid { grid-template-columns: 1fr; }
+  .formGrid { grid-template-columns: 1fr; }
+}

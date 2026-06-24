@@ -60,6 +60,7 @@ import type { SupabaseClient as SupabaseClientGeneric } from '@supabase/supabase
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { getSupabaseService } from '../../db/supabase';
+import { paginateAll } from '../lib/paginate-all';
 
 // The scm-scoped service client (getSupabaseService, db:{schema:'scm'}) and the
 // middleware-attached c.get('supabase') are both schema-parameterised clients.
@@ -163,6 +164,13 @@ type Catalog = {
   sofaSizes: string[];
   sofaLegHeights: string[];
   options: CatalogOptions;
+  // Distinct delivery STATES from scm.my_localities — the same vocabulary the
+  // New SO form's State <select> renders. Injected as an allowed-values list so
+  // the OCR's address parse snaps STATE to a real catalog state (never a free
+  // text string the form's dropdown can't select). City/postcode stay free-text
+  // here: they cascade off the chosen state on the form, so the frontend
+  // reconciles them against the live my_localities list.
+  states: string[];
 };
 
 // MaintenanceConfig option entries are either plain strings or
@@ -188,22 +196,26 @@ function optionValues(arr: unknown): string[] {
 }
 
 async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
-  const [prodRes, fabRes, cfgRes, optRes] = await Promise.all([
-    sb
+  // PostgREST's default 1000-row cap silently truncates the OCR validation
+  // catalogue (mfg_products is 1141 ACTIVE SKUs live, my_localities 2933) — a
+  // truncated catalogue makes the OCR reject valid SKUs/states as "unknown".
+  // Page each list read with .range(); cfgRes stays a single .maybeSingle().
+  const [prodRes, fabRes, cfgRes, optRes, locRes] = await Promise.all([
+    paginateAll((from, to) => sb
       .from('mfg_products')
       .select('code, name, category, base_model')
       .eq('status', 'ACTIVE')
       .order('category')
       .order('code')
-      .limit(5000),
+      .range(from, to)),
     // Migration 0167 — ACTIVE fabrics only: a deactivated fabric must not
     // re-enter on NEW scanned orders (existing docs keep their stored code).
-    sb
+    paginateAll((from, to) => sb
       .from('fabric_trackings')
       .select('fabric_code, fabric_description')
       .eq('is_active', true)
       .order('fabric_code')
-      .limit(5000),
+      .range(from, to)),
     sb
       .from('maintenance_config_history')
       .select('config')
@@ -213,14 +225,23 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
       .maybeSingle(),
     // SO Maintenance vocab — ACTIVE rows only (the maintenance page's
     // soft-deleted options must never re-enter via OCR).
-    sb
+    paginateAll((from, to) => sb
       .from('so_dropdown_options')
       .select('category, value, label')
       .eq('active', true)
       .order('category', { ascending: true })
       .order('sort_order', { ascending: true })
       .order('label', { ascending: true })
-      .limit(2000),
+      .range(from, to)),
+    // Delivery STATES — the same scm.my_localities master the New SO form's
+    // State <select> renders. We only need the distinct state names for the
+    // OCR's allowed-values list; city/postcode cascade off the state on the
+    // form so they're reconciled there, not here.
+    paginateAll((from, to) => sb
+      .from('my_localities')
+      .select('state')
+      .order('state', { ascending: true })
+      .range(from, to)),
   ]);
 
   const skus: CatalogSku[] = ((prodRes.data as Array<{
@@ -257,7 +278,21 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
     }
   }
 
-  return { skus, fabrics, sofaSizes, sofaLegHeights, options };
+  // Distinct, de-duped state names (the my_localities table has one row per
+  // postcode, so the same state repeats thousands of times).
+  const stateSeen = new Set<string>();
+  const states: string[] = [];
+  for (const row of (locRes.data as Array<{ state: string | null }> | null) ?? []) {
+    const st = (row.state ?? '').trim();
+    if (!st) continue;
+    const key = st.toUpperCase();
+    if (stateSeen.has(key)) continue;
+    stateSeen.add(key);
+    states.push(st);
+  }
+  states.sort((a, b) => a.localeCompare(b));
+
+  return { skus, fabrics, sofaSizes, sofaLegHeights, options, states };
 }
 
 function formatCatalog(c: Catalog): string {
@@ -273,9 +308,12 @@ function formatCatalog(c: Catalog): string {
   for (const cat of ['SOFA', 'BEDFRAME', 'MATTRESS', 'ACCESSORY', 'SERVICE']) {
     const list = byCategory.get(cat);
     if (!list || list.length === 0) continue;
-    lines.push(`=== ${cat} SKUS (code | name | base model) ===`);
+    // Slim: code | name only (base_model dropped 2026-06-23). The model name in
+    // `name` is enough for fuzzy matching; dropping base_model shrinks the cached
+    // prefix (1141 SKUs) so the first/warm call is faster and the cache cheaper.
+    lines.push(`=== ${cat} SKUS (code | name) ===`);
     for (const s of list) {
-      lines.push(`${s.code} | ${s.name}${s.baseModel ? ` | ${s.baseModel}` : ''}`);
+      lines.push(`${s.code} | ${s.name}`);
     }
     lines.push('');
   }
@@ -289,6 +327,13 @@ function formatCatalog(c: Catalog): string {
   lines.push('');
   lines.push('=== SOFA LEG HEIGHTS ===');
   lines.push(c.sofaLegHeights.join(', ') || '—');
+  lines.push('');
+
+  // Delivery STATES allowed-values list — the addressStateMatch in the system
+  // prompt must return one of these EXACTLY (the form's State <select> only
+  // accepts a real my_localities state).
+  lines.push('=== DELIVERY STATES (allowed values) ===');
+  lines.push(c.states.join(', ') || '—');
   lines.push('');
 
   // SO Maintenance allowed-values lists — the OPTION MATCHING rules in the
@@ -312,6 +357,97 @@ function formatCatalog(c: Catalog): string {
   return lines.join('\n').trimEnd();
 }
 
+// Cached prefix = SYSTEM_PROMPT + catalog. Identical across calls until the
+// catalog changes → Anthropic prompt-cache hit (~90% discount). The cache is
+// shared per-API-key + per-identical-prefix across all users, so /warm and
+// /extract MUST build this BYTE-IDENTICALLY (same function, same inputs) or
+// they warm/read different caches. SINGLE SOURCE OF TRUTH — never inline this
+// string anywhere else. Few-shot/rep-rule/alias blocks stay OUTSIDE this prefix
+// (after the cache boundary) so a new sample doesn't invalidate the cache.
+export function buildCachedPrefix(catalog: Catalog): string {
+  return `${SYSTEM_PROMPT}\n\nCATALOG\n=======\n${formatCatalog(catalog)}`;
+}
+
+// Warm the Anthropic prompt cache with the catalog prefix so the next real
+// /extract reads a hot cache instead of paying full price on a cold catalog.
+// ONE minimal Claude call: the IDENTICAL cachedPrefix (same model, same
+// cache_control ttl, same beta header as /extract) plus a tiny 'warm' tail,
+// max_tokens:1. Shared by the /scan-so/warm endpoint AND the keep-warm cron so
+// neither can drift from /extract. Graceful: no key → { ok:false, reason }; any
+// fetch failure is caught and returned, never thrown.
+type WarmResult = { ok: boolean; reason?: string; cacheCreated?: boolean; cacheRead?: boolean };
+async function warmCatalogCache(
+  sb: SupabaseClient,
+  apiKey: string | undefined,
+): Promise<WarmResult> {
+  if (!apiKey) return { ok: false, reason: 'no_key' };
+  let catalog: Catalog;
+  try {
+    catalog = await loadCatalog(sb);
+  } catch (e) {
+    return { ok: false, reason: `catalog_load_failed: ${(e as Error).message}` };
+  }
+  const cachedPrefix = buildCachedPrefix(catalog);
+  try {
+    const resp = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        // MUST match /extract — same beta header or the cache is a different
+        // bucket and warming is pointless.
+        'anthropic-beta': 'extended-cache-ttl-2025-04-11',
+      },
+      body: JSON.stringify({
+        model: CLAUDE_MODEL,
+        max_tokens: 1,
+        temperature: 0,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              // BYTE-IDENTICAL cached block to /extract (same text, same
+              // cache_control ttl) so this writes the cache /extract then reads.
+              { type: 'text', text: cachedPrefix, cache_control: { type: 'ephemeral', ttl: '1h' } },
+              { type: 'text', text: 'warm' },
+            ],
+          },
+        ],
+      }),
+    });
+    const bodyText = await resp.text();
+    if (!resp.ok) {
+      return { ok: false, reason: `Anthropic ${resp.status}: ${bodyText.slice(0, 300)}` };
+    }
+    let parsedResp: AnthropicResponse;
+    try {
+      parsedResp = JSON.parse(bodyText) as AnthropicResponse;
+    } catch {
+      return { ok: false, reason: `Anthropic returned non-JSON: ${bodyText.slice(0, 200)}` };
+    }
+    if (parsedResp.error) {
+      return { ok: false, reason: `Anthropic: ${parsedResp.error.type}: ${parsedResp.error.message}` };
+    }
+    return {
+      ok: true,
+      cacheCreated: (parsedResp.usage?.cache_creation_input_tokens ?? 0) > 0,
+      cacheRead: (parsedResp.usage?.cache_read_input_tokens ?? 0) > 0,
+    };
+  } catch (e) {
+    return { ok: false, reason: `Network/fetch error: ${(e as Error).message}` };
+  }
+}
+
+// Cron-callable warm: same logic as the /warm endpoint but takes an Env
+// (cron has no Hono context). getSupabaseService is the same scm-scoped service
+// client scan-so uses internally — RLS-bypass is fine for a read-only catalog
+// load. Exported for index.ts's scheduled handler so the cron and the endpoint
+// share ONE Claude call.
+export async function warmCatalogCacheForCron(env: Env): Promise<WarmResult> {
+  return warmCatalogCache(getSupabaseService(env), env.ANTHROPIC_API_KEY);
+}
+
 // ===========================================================================
 // Prompt
 // ===========================================================================
@@ -319,12 +455,19 @@ const SYSTEM_PROMPT = `You extract structured data from photos of HANDWRITTEN sh
 
 The handwriting is often rushed, slanted, abbreviated, and mixed-case. Phone photos may be skewed, shadowed, or low-contrast. Read carefully; prefer extracting a raw transcription over guessing.
 
+MULTIPLE IMAGES
+===============
+You may receive ONE or TWO images: a HANDWRITTEN order slip (a carbon-copy form with the customer, line items, handwriting, and payment checkboxes) and/or a PRINTED card-terminal payment RECEIPT (a thermal print: a bank name e.g. Maybank / Public Bank / CIMB, VISA / Mastercard, an APPROVAL CODE, a TOTAL amount, and often a TENURE / number of months for an EPP plan). Decide what each input image is:
+- Read the ORDER fields (customerName, address, phones, line items, deliveryDate, processingDate, salesRep) from the HANDWRITTEN slip.
+- Read the PAYMENT fields (paymentMethodMatch / bankMatch / installmentPlanMatch / approvalCode / depositRm or the receipt's amount) PREFERENTIALLY from the PRINTED receipt when one is present — the printed thermal receipt is far more accurate than the handwritten payment note. Still keep the handwritten payment note verbatim in paymentMethod. When NO receipt is present, fall back to the handwritten slip's payment note exactly as before.
+You MUST also classify every input image in the OUTPUT "images" array (see below).
+
 A reference CATALOG follows this prompt (live product SKUs, fabrics, sofa sizes, leg heights). Use it for fuzzy matching.
 
 EXTRACTION RULES
 ================
 1. customerName — the customer's name from the header block (NOT the salesperson).
-2. address — full delivery address as one string, exactly as written (keep unit numbers, taman names, postcode, state).
+2. address — full delivery address as one string, exactly as written (keep unit numbers, taman names, postcode, state). ALSO break the same address into its parts (see ADDRESS PARTS below) so the form can fill State / City / Postcode.
 3. phones — ALL phone numbers on the slip, as raw strings exactly as written (e.g. "012-345 6789", "+6017 888 9999"). Multiple numbers are common (customer + spouse). Do NOT normalize or reformat.
 4. location — the showroom / venue / branch the order was taken at, if written (often a header checkbox or stamp).
 5. deliveryDate — as written. If it is a real date, convert to YYYY-MM-DD (slips write DD/MM or DD/MM/YYYY — Malaysian day-first). If it says "TBC", "call first", "after CNY" or any non-date text, return that text verbatim.
@@ -333,6 +476,16 @@ EXTRACTION RULES
 8. paymentMethod — as written ("cash", "TNG", "bank transfer", "CC", deposit slips etc.). null if absent.
 9. depositRm / totalRm — RM amounts as NUMBERS (e.g. "RM 1,500" → 1500, "550.50" → 550.5). null when blank.
 10. remarks — any handwritten notes that are not line items (delivery instructions, "lift access", "self collect", floor info…), one string.
+11. approvalCode — the approval / reference number printed on the PAYMENT line, typically a card-terminal approval code written in parentheses (e.g. "(001586)" → "001586", "Appr 028471" → "028471"). Strip surrounding brackets/labels and return the bare digits/alphanumerics as a string. null when no such number is on the payment line.
+12. customerSoRef — the CUSTOMER'S OWN reference number for this order, usually pre-printed or hand-written in the TOP-RIGHT corner of the slip (a serial / docket number like "HC14032", "No. 14032", "Ref: A-2291"). It is the SLIP's own number, NOT a phone number, NOT a price, NOT the salesperson code, NOT the delivery date. Return the bare reference string exactly as written (keep its letter prefix, e.g. "HC14032"). null when no such number is on the slip.
+
+ADDRESS PARTS
+=============
+Besides the full "address" string, break the SAME delivery address into structured parts so the form can fill its State / City / Postcode dropdowns. Read carefully — a Malaysian address ends "..., <postcode> <city>, <state>" (e.g. "..., 81100 Johor Bahru, Johor").
+- addressLine1 — the street portion: unit/house no., street, taman/area. Everything BEFORE the postcode. Verbatim. null when unreadable.
+- postcode — the 5-digit Malaysian postcode (e.g. "81100"). Digits only. null when absent.
+- city — the town / city (e.g. "Johor Bahru", "Petaling Jaya"). Verbatim as written. null when absent.
+- addressStateMatch — the STATE, matched to the DELIVERY STATES allowed-values list at the end of the catalog. Return the state VALUE copied character-for-character from that list (handle handwriting: "JB"/"Johor Bahru area" still belongs to state "Johor"; "PJ"/"KL area" → "Selangor"/"Kuala Lumpur" per the list; "N.Sembilan" → "Negeri Sembilan"; "P.Pinang"/"Penang" → the list's Penang value). Same shape + same never-invent rule as the OPTION MATCHING below: { "value": <exact state from the list>, "confidence": 0-1, "reason": <short why> }. When you cannot confidently map to a listed state, return null and keep the raw text in "address" so nothing is lost.
 
 LINE ITEMS
 ==========
@@ -346,11 +499,15 @@ For EVERY handwritten row in the item table output one lines[] entry:
     • misspellings: "Ultimatee" / "Ultmate" → the ULTIMATE model's SKU.
     • partial names: "Hilton K" → the HILTON bedframe King-size SKU.
     • base-model + size: a written size (King/Queen/K/Q/6FT/5FT) picks the size variant within the base model.
+  VARIANT / DESCRIPTION-STYLE LINES (especially BEDFRAME). A row is often written as a base model PLUS variant options and a fabric code rather than a clean model name, e.g. "Col: PC151-01 + front / Side Divan 8\"+0\"". Read it as: a FABRIC/colour code (here "PC151-01" — match it in fabricMatch, see below), plus VARIANT options (a divan/side build, a divan height like 8", a leg/gap like 0"). These variant phrases are NOT part of the model name — strip them when looking for the model:
+    • Identify the catalog MODEL from the remaining model words on the row (or the row above, since reps often write the model once and list fabrics/variants beneath). Match THAT to the BEDFRAME (or SOFA) SKUS.
+    • If the catalog encodes size/variant as distinct SKU rows for that model, pick the SKU whose name matches the written size/variant; the divan-height / side / leg / gap details that the catalog does NOT encode as a SKU stay in "notes" for the operator to set in the form's variant picker.
+    • A bare fabric code with NO model word on the row (or above it) is NOT enough to choose a model — set skuMatch = null, put the fabric in fabricMatch, and let rawText + notes carry the variant text. Never guess a model from a fabric code alone.
   Rules:
-    • The code MUST be copied character-for-character from the catalog. NEVER invent, modify, or extrapolate a code that is not in the catalog.
+    • The code MUST be copied character-for-character from the catalog. NEVER invent, modify, or extrapolate a code that is not in the catalog. NEVER assemble a code out of a fabric code + a size; the code must already exist verbatim in the SKUS list.
     • When you cannot find a defensible match, skuMatch = null and let rawText speak. A null with good rawText is worth more than a wrong code.
     • confidence: 0.9+ only when the written text clearly identifies one specific catalog row; 0.5-0.8 when the model matches but the size/variant is ambiguous; below 0.5 prefer null.
-- fabricMatch — same idea against the FABRICS catalog when the row (or a margin note) names a fabric/colour code; null otherwise. Same never-invent rule.
+- fabricMatch — match against the FABRICS catalog whenever the row (or a margin note, or a "Col:" / "Color" / "Fabric" prefix) names a fabric/colour code (e.g. "PC151-01", "Col: PC151-01"). The fabric code is frequently the FIRST token on a bedframe/sofa variant line; always look for it there. null when the row names no fabric. Same never-invent rule — the code must be copied character-for-character from the FABRICS list.
 - notes — anything else on the row the operator should see (free gifts, "FOC", sizes that don't match the catalog, unreadable words flagged as "[illegible]").
 
 Delivery fees, disposal fees and lift/stair-carry charges written as rows ARE line items — match them against the SERVICE SKUS section.
@@ -360,30 +517,39 @@ OPTION MATCHING (SO Maintenance vocabularies)
 The catalog ends with ALLOWED VALUES lists (PAYMENT METHODS, MERCHANT BANKS, ONLINE TYPES, INSTALLMENT PLANS, CUSTOMER TYPES, BUILDING TYPES, VENUES). Each list row is "value | label" — a match must return the VALUE (left side), copied character-for-character. NEVER invent a value outside the list; when you cannot find a defensible match, return null for that field and keep the raw handwriting in paymentMethod / location / remarks so nothing is lost. Use the same confidence scale as skuMatch.
 
 Map the slip's handwritten notes to these fields:
-- paymentMethodMatch — the top-level method, one of PAYMENT METHODS. Card machine / credit-card terminal / EPP / a bank name with a term → "Merchant". Bank transfer / TNG / DuitNow / cheque → "Online". Cash → "Cash". An in-house installment arrangement → "Installment".
-- bankMatch — one of MERCHANT BANKS when a bank is named ("mbb"/"maybank" → MBB-like value, "pbb"/"public bank" → the Public-bank value). Usually accompanies a Merchant method.
+- paymentMethodMatch — the top-level method, one of PAYMENT METHODS. A CREDIT CARD paid through a BANK — a card machine / credit-card terminal / a bank name with a card swipe, WITH OR WITHOUT an EPP/installment term → "Merchant" (a bank EPP is a Merchant card payment plus an installment term, NOT the in-house "Installment" method). Bank transfer / TNG / DuitNow / cheque → "Online". Cash → "Cash". The "Installment" method is reserved for an IN-HOUSE installment arrangement with NO bank/card — a bank EPP is never "Installment".
+- bankMatch — one of MERCHANT BANKS when a bank is named ("mbb"/"maybank" → the Maybank value (MBB), "pbb"/"public bank" → the Public-bank value, "cimb" → CIMB, "hlb"/"hong leong" → HLB, "rhb" → RHB). On a CREDIT card / EPP payment the named bank is the merchant bank — always populate bankMatch alongside paymentMethodMatch = "Merchant".
 - onlineTypeMatch — one of ONLINE TYPES when the transfer channel is named (TNG / DuitNow / cheque / bank transfer). Only meaningful when the method is Online.
-- installmentPlanMatch — one of INSTALLMENT PLANS when a term is written ("12 EPP", "x12", "12 bln" → the 12-month value; paid-in-full / no term → the One-off value only when the slip explicitly says so, else null).
+- installmentPlanMatch — one of INSTALLMENT PLANS when an EPP / installment term is indicated. Any month term ("12 EPP", "x12", "12 bln", "12个月", "12 months") → the matching N-month value (e.g. the 12-month value). IMPORTANT: when the slip indicates EPP / installment (the word "EPP", "installment", "ansuran", or a card paid over months) but writes NO explicit month count, DEFAULT installmentPlanMatch to the 12-month value from the INSTALLMENT PLANS list. A plain credit-card swipe with NO EPP/term → "Merchant" with installment = none (return null here, or the One-off value only when the slip explicitly says one-off / paid-in-full).
 - customerTypeMatch — one of CUSTOMER TYPES when the slip marks new/existing (header checkbox or note).
 - buildingTypeMatch — one of BUILDING TYPES when the slip notes condo / landed / apartment etc.
 - locationMatch — one of VENUES when the written showroom/venue/branch clearly matches a list entry. Still report the raw text in the location field.
-Example: a payment note "mbb 12 EPP dep 1500" → paymentMethodMatch.value = the Merchant value, bankMatch.value = the MBB value, installmentPlanMatch.value = the 12-month value, depositRm = 1500, paymentMethod = "mbb 12 EPP dep 1500".
+Example: a payment note "[x]CREDIT : MBB EPP (12m) (001586) dep 1500" → paymentMethodMatch.value = the Merchant value (credit card via a bank = Merchant, NOT Installment), bankMatch.value = the MBB/Maybank value, installmentPlanMatch.value = the 12-month value, approvalCode = "001586" (the parenthesized number on the payment line), depositRm = 1500, paymentMethod = "CREDIT : MBB EPP (12m) (001586) dep 1500".
+Example: a payment note "CREDIT MBB EPP (001586)" with NO month count → paymentMethodMatch.value = Merchant, bankMatch.value = the MBB value, installmentPlanMatch.value = the 12-month value (DEFAULT when EPP is indicated but no term is written), approvalCode = "001586".
+Example: a plain "CREDIT MBB (001586)" swipe with no EPP/term → paymentMethodMatch.value = Merchant, bankMatch.value = the MBB value, installmentPlanMatch = null, approvalCode = "001586".
 
 OUTPUT
 ======
 Return STRICT JSON, no markdown fences, no prose:
 {
+  "images": [{ "index": number, "kind": "order_slip" | "payment_receipt" }],
   "customerName": string | null,
   "address": string | null,
+  "addressLine1": string | null,
+  "city": string | null,
+  "postcode": string | null,
+  "addressStateMatch": { "value": string, "confidence": number, "reason": string } | null,
   "phones": string[],
   "location": string | null,
   "deliveryDate": string | null,
   "processingDate": string | null,
   "salesRep": string | null,
+  "customerSoRef": string | null,
   "paymentMethod": string | null,
   "depositRm": number | null,
   "totalRm": number | null,
   "remarks": string | null,
+  "approvalCode": string | null,
   "paymentMethodMatch": { "value": string, "confidence": number, "reason": string } | null,
   "bankMatch": { "value": string, "confidence": number, "reason": string } | null,
   "onlineTypeMatch": { "value": string, "confidence": number, "reason": string } | null,
@@ -407,6 +573,12 @@ Return STRICT JSON, no markdown fences, no prose:
 type SkuMatch = { code: string; confidence: number; reason: string };
 // SO-Maintenance option match — value is the so_dropdown_options row VALUE.
 type OptionMatch = { value: string; confidence: number; reason: string };
+// Per-input-image classification — which uploaded image is the handwritten
+// order slip vs the printed card-terminal payment receipt. Drives which buffer
+// gets stored under image_key (`scan-slips/{id}`) vs receipt_image_key
+// (`scan-slips/{id}-receipt`) in the /extract handler.
+type ImageKind = 'order_slip' | 'payment_receipt';
+type ImageClass = { index: number; kind: ImageKind };
 type ExtractedLine = {
   rawText: string;
   qtyGuess: number;
@@ -418,15 +590,28 @@ type ExtractedLine = {
 type ExtractedSlip = {
   customerName: string | null;
   address: string | null;
+  // Structured address parts (the form fills State / City / Postcode from
+  // these). addressLine1 is the street portion; addressStateMatch is snapped to
+  // the live my_localities state list (validateSlip clears a non-listed state).
+  addressLine1: string | null;
+  city: string | null;
+  postcode: string | null;
+  addressStateMatch: OptionMatch | null;
   phones: string[];
   location: string | null;
   deliveryDate: string | null;
   processingDate: string | null;
   salesRep: string | null;
+  // The customer's own reference number for this order (usually top-right of the
+  // slip, e.g. "HC14032") — seeds the form's "Customer SO Ref" field.
+  customerSoRef: string | null;
   paymentMethod: string | null;
   depositRm: number | null;
   totalRm: number | null;
   remarks: string | null;
+  // Card-terminal approval / reference number on the payment line (e.g. the
+  // parenthesized "(001586)") — seeds the Payments-panel draft's approvalCode.
+  approvalCode: string | null;
   // SO Maintenance vocab matches (active so_dropdown_options values only —
   // validateSlip clears anything outside the live lists).
   paymentMethodMatch: OptionMatch | null;
@@ -436,6 +621,10 @@ type ExtractedSlip = {
   customerTypeMatch: OptionMatch | null;
   buildingTypeMatch: OptionMatch | null;
   locationMatch: OptionMatch | null;
+  // Per-input-image classification (order_slip vs payment_receipt). Used only
+  // by /extract to decide which uploaded buffer to store under image_key vs
+  // receipt_image_key — not surfaced in the modal's review form.
+  images: ImageClass[];
   lines: ExtractedLine[];
 };
 
@@ -497,9 +686,27 @@ function normalizeSlip(raw: unknown): ExtractedSlip {
         };
       })
     : [];
+  // Image classification — keep only well-formed { index:number, kind } entries
+  // (kind one of the two known values). Anything else is dropped; the /extract
+  // handler's positional fallback covers a missing/garbled array.
+  const images: ImageClass[] = Array.isArray(r.images)
+    ? (r.images as unknown[])
+        .map((x) => {
+          const o = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
+          const index = typeof o.index === 'number' && Number.isFinite(o.index) ? o.index : null;
+          const kind = o.kind === 'order_slip' || o.kind === 'payment_receipt' ? o.kind : null;
+          return index === null || kind === null ? null : { index, kind };
+        })
+        .filter((x): x is ImageClass => x !== null)
+    : [];
   return {
+    images,
     customerName: str(r.customerName),
     address: str(r.address),
+    addressLine1: str(r.addressLine1),
+    city: str(r.city),
+    postcode: str(r.postcode),
+    addressStateMatch: optionMatch(r.addressStateMatch),
     phones: Array.isArray(r.phones)
       ? (r.phones as unknown[]).filter((p): p is string => typeof p === 'string' && p.trim() !== '')
       : [],
@@ -507,10 +714,12 @@ function normalizeSlip(raw: unknown): ExtractedSlip {
     deliveryDate: str(r.deliveryDate),
     processingDate: str(r.processingDate),
     salesRep: str(r.salesRep),
+    customerSoRef: str(r.customerSoRef),
     paymentMethod: str(r.paymentMethod),
     depositRm: num(r.depositRm),
     totalRm: num(r.totalRm),
     remarks: str(r.remarks),
+    approvalCode: str(r.approvalCode),
     paymentMethodMatch:   optionMatch(r.paymentMethodMatch),
     bankMatch:            optionMatch(r.bankMatch),
     onlineTypeMatch:      optionMatch(r.onlineTypeMatch),
@@ -593,6 +802,24 @@ function validateSlip(slip: ExtractedSlip, catalog: Catalog): Warning[] {
         message: `Suggested ${category.replace(/_/g, ' ')} not in the SO Maintenance list — cleared; pick manually.`,
       });
       slip[field] = null;
+    }
+  }
+
+  // Delivery STATE — same never-invent enforcement against the live
+  // my_localities state list. A state outside the catalog (or empty list) is
+  // cleared so the form never seeds a State the dropdown can't select.
+  if (slip.addressStateMatch) {
+    const stateCanon = new Map(catalog.states.map((s) => [s.toUpperCase(), s]));
+    const hit = stateCanon.get(slip.addressStateMatch.value.toUpperCase());
+    if (hit) {
+      slip.addressStateMatch.value = hit;
+    } else {
+      warnings.push({
+        field: 'addressStateMatch',
+        value: slip.addressStateMatch.value,
+        message: 'Suggested delivery state not in the localities list — cleared; pick manually.',
+      });
+      slip.addressStateMatch = null;
     }
   }
   return warnings;
@@ -969,13 +1196,13 @@ export async function distillAllSalespersonRules(
   // aggregate over the REST API, so pull the (small) salesperson column and
   // count client-side, case-insensitively (matching the ilike used by
   // distillSalespersonRules).
-  const { data, error } = await svc
+  const { data, error } = await paginateAll((from, to) => svc
     .from('so_scan_samples')
     .select('salesperson')
     .not('corrected', 'is', null)
     .not('salesperson', 'is', null)
     .order('created_at', { ascending: false })
-    .limit(5000);
+    .range(from, to));
   if (error) {
     console.error('[scan-so weekly distill] sample scan failed:', error.message);
     summary.errors += 1;
@@ -1088,6 +1315,52 @@ scanSo.post('/rules/:salesperson/distill', async (c) => {
 });
 
 // ===========================================================================
+// GET /scan-so/slip-image?key=scan-slips/<sampleId> — serve the stored slip
+// image back as "Original Slip" proof on the SO detail page.
+//
+// Authed (supabaseAuth runs on the whole router). Mirrors the item-photo GET
+// proxy in mfg-sales-orders.ts: validate the key prefix, stream the R2 object
+// with its stored content-type, 404 when missing. The `scan-slips/` prefix
+// guard stops an attacker-supplied key from reaching an unrelated R2 object.
+// ===========================================================================
+scanSo.get('/slip-image', async (c) => {
+  const key = c.req.query('key') ?? '';
+  if (!key.startsWith('scan-slips/')) {
+    return c.json({ error: 'bad_request', reason: 'key must start with scan-slips/' }, 400);
+  }
+  if (!c.env.SO_ITEM_PHOTOS) {
+    return c.json({ error: 'photo_bucket_not_configured' }, 500);
+  }
+  const obj = await c.env.SO_ITEM_PHOTOS.get(key);
+  if (!obj) return c.json({ error: 'slip_image_not_found' }, 404);
+  return new Response(obj.body, {
+    headers: {
+      'content-type': obj.httpMetadata?.contentType ?? 'application/octet-stream',
+      // Immutable per sample (key is the sampleId), so a long browser cache
+      // is safe — matches the item-photo proxy cache policy.
+      'cache-control': 'private, max-age=3600',
+    },
+  });
+});
+
+// ===========================================================================
+// POST /scan-so/warm — pre-warm the Anthropic catalog prompt-cache.
+//
+// The modal fires this on open (fire-and-forget) so the cache heats while the
+// operator readies their photo; the keep-warm cron fires the same logic during
+// business hours so the shared cache rarely goes cold. ONE minimal Claude call
+// sending the BYTE-IDENTICAL cachedPrefix /extract uses (same model, same
+// cache_control ttl, same beta header) — warms exactly the bucket /extract
+// reads. Returns fast. Graceful: no key → { ok:false, reason:'no_key' } (200);
+// any failure is caught and returned, never thrown.
+// ===========================================================================
+scanSo.post('/warm', async (c) => {
+  const sb = c.get('supabase');
+  const result = await warmCatalogCache(sb, c.env.ANTHROPIC_API_KEY);
+  return c.json(result);
+});
+
+// ===========================================================================
 // POST /scan-so/extract
 // ===========================================================================
 scanSo.post('/extract', async (c) => {
@@ -1121,7 +1394,15 @@ scanSo.post('/extract', async (c) => {
   // Build Claude content blocks (image or document per file).
   type ContentBlock = Record<string, unknown>;
   const fileBlocks: ContentBlock[] = [];
+  // Per-IMAGE provenance, indexed by the SAME `index` Claude classifies in the
+  // OUTPUT "images" array — fileBlocks is built in file order, so image #N in
+  // the model's view is uploadedImages[N]. PDFs are NOT displayable inline on
+  // the SO detail page so they are never stored (and never classified for
+  // storage); they still ride into the prompt as document blocks.
+  type UploadedImage = { index: number; buffer: ArrayBuffer; mime: string };
+  const uploadedImages: UploadedImage[] = [];
   let firstBuffer: ArrayBuffer | null = null;
+  let blockIndex = 0;
   for (const file of files) {
     if (file.size > MAX_FILE_BYTES) {
       return c.json(
@@ -1156,11 +1437,13 @@ scanSo.post('/extract', async (c) => {
         : name.endsWith('.png') ? 'image/png'
         : name.endsWith('.webp') ? 'image/webp'
         : 'image/jpeg';
+      uploadedImages.push({ index: blockIndex, buffer: buf, mime: mediaType });
       fileBlocks.push({
         type: 'image',
         source: { type: 'base64', media_type: mediaType, data },
       });
     }
+    blockIndex += 1;
   }
 
   const imageSha256 = firstBuffer ? await sha256Hex(firstBuffer) : null;
@@ -1176,13 +1459,13 @@ scanSo.post('/extract', async (c) => {
   // operator already has on the SKU master screens).
   const sb = c.get('supabase');
   const catalog = await loadCatalog(sb);
-  const catalogText = formatCatalog(catalog);
 
-  // Cached prefix = SYSTEM_PROMPT + catalog. Identical across calls until
-  // the catalog changes → Anthropic prompt-cache hit (~90% discount within
-  // 5 min). Few-shot examples stay OUTSIDE the cache boundary so a new
-  // confirmed sample doesn't invalidate the cache.
-  const cachedPrefix = `${SYSTEM_PROMPT}\n\nCATALOG\n=======\n${catalogText}`;
+  // Cached prefix = SYSTEM_PROMPT + catalog (shared builder — BYTE-IDENTICAL to
+  // what /scan-so/warm and the keep-warm cron send, so they warm the SAME cache
+  // /extract reads). Identical across calls until the catalog changes →
+  // Anthropic prompt-cache hit (~90% discount). Few-shot examples stay OUTSIDE
+  // the cache boundary so a new confirmed sample doesn't invalidate the cache.
+  const cachedPrefix = buildCachedPrefix(catalog);
 
   const svc = serviceClient(c.env);
 
@@ -1292,6 +1575,7 @@ scanSo.post('/extract', async (c) => {
   }
 
   let errorMsg: string | null = null;
+  let timedOut = false;
   let parsed: ExtractedSlip | null = null;
   let claudeText = '';
   let cacheHit = false;
@@ -1300,10 +1584,20 @@ scanSo.post('/extract', async (c) => {
   try {
     const resp = await fetch(ANTHROPIC_URL, {
       method: 'POST',
+      // Outbound timeout (110s, under the Worker's wall-clock budget) so a hung
+      // Anthropic call fails fast into the graceful 503 below instead of the
+      // request dangling until the platform kills it with an opaque error.
+      signal: AbortSignal.timeout(110_000),
       headers: {
         'content-type': 'application/json',
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
+        // Houzs 2026-06-23 — Houzs is a RETAILER (1141 SKUs + 705 fabrics in the
+        // injected catalog vs HOOKKA's small maker catalog), so the cached prefix
+        // is large and the default 5-min ephemeral cache expires between scans
+        // spaced apart ("隔久再扫又全价"). Extend the cache to 1h so back-to-back
+        // and within-the-hour scans reuse the catalog prefix and stay fast.
+        'anthropic-beta': 'extended-cache-ttl-2025-04-11',
       },
       body: JSON.stringify({
         model: CLAUDE_MODEL,
@@ -1316,7 +1610,7 @@ scanSo.post('/extract', async (c) => {
           {
             role: 'user',
             content: [
-              { type: 'text', text: cachedPrefix, cache_control: { type: 'ephemeral' } },
+              { type: 'text', text: cachedPrefix, cache_control: { type: 'ephemeral', ttl: '1h' } },
               // Global aliases + rep rules + few-shot live AFTER the cache
               // boundary — they vary per distill/salesperson/sample and must
               // not bust the prefix. Order: shared aliases → rep rules →
@@ -1363,7 +1657,13 @@ scanSo.post('/extract', async (c) => {
       }
     }
   } catch (e) {
-    errorMsg = `Network/fetch error: ${(e as Error).message}`;
+    // AbortSignal.timeout fires a TimeoutError (older runtimes: AbortError).
+    if ((e as Error).name === 'TimeoutError' || (e as Error).name === 'AbortError') {
+      timedOut = true;
+      errorMsg = 'OCR timed out — the slip took too long to read. Please try again.';
+    } else {
+      errorMsg = `Network/fetch error: ${(e as Error).message}`;
+    }
   }
 
   // Persist the sample row (status EXTRACTED, or FAILED with the error blob).
@@ -1394,8 +1694,89 @@ scanSo.post('/extract', async (c) => {
     console.error('so_scan_samples insert failed:', sampleInsertError);
   }
 
+  // Original-image persistence (best-effort). The scan can carry TWO photos —
+  // a HANDWRITTEN order slip and a PRINTED card-terminal payment receipt. Pick
+  // which uploaded IMAGE is which from Claude's `images` classification, then
+  // store up to two raw buffers in the SO_ITEM_PHOTOS R2 bucket:
+  //   • order slip   → `scan-slips/${sampleId}`          (image_key, mig 0033)
+  //   • payment recpt → `scan-slips/${sampleId}-receipt`  (receipt_image_key, mig 0034)
+  // Both keys ride onto the created SO so the SO Detail page can serve them back
+  // as "Order Slip" / "Payment Receipt" proof. CLASSIFICATION FALLBACK: when the
+  // model's tags are missing/ambiguous, the first image = order slip and a
+  // second image (if any) = receipt. PDFs are never stored (not inline-viewable)
+  // and are excluded from uploadedImages above. An R2/classify/DB failure must
+  // NEVER fail the extraction — it's pure provenance.
+  let imageKey: string | null = null;
+  let receiptImageKey: string | null = null;
+  if (sampleId && uploadedImages.length > 0 && c.env.SO_ITEM_PHOTOS) {
+    // Resolve order-slip + receipt images from the classification, falling back
+    // to positional order (1st = slip, 2nd = receipt) when tags don't cover it.
+    const tagByIndex = new Map<number, ImageKind>();
+    for (const img of parsed?.images ?? []) {
+      if (!tagByIndex.has(img.index)) tagByIndex.set(img.index, img.kind);
+    }
+    let slipImg: UploadedImage | null =
+      uploadedImages.find((u) => tagByIndex.get(u.index) === 'order_slip') ?? null;
+    let receiptImg: UploadedImage | null =
+      uploadedImages.find((u) => tagByIndex.get(u.index) === 'payment_receipt') ?? null;
+    // Guard against the model tagging the same image as both.
+    if (slipImg && receiptImg && slipImg.index === receiptImg.index) receiptImg = null;
+    if (!slipImg) {
+      // Positional fallback: first image not already taken as the receipt.
+      slipImg = uploadedImages.find((u) => u.index !== receiptImg?.index) ?? null;
+    }
+    if (!receiptImg && uploadedImages.length > 1) {
+      receiptImg = uploadedImages.find((u) => u.index !== slipImg?.index) ?? null;
+    }
+
+    const putImage = async (
+      img: UploadedImage | null,
+      key: string,
+      column: 'image_key' | 'receipt_image_key',
+      label: string,
+    ): Promise<string | null> => {
+      if (!img) return null;
+      try {
+        await c.env.SO_ITEM_PHOTOS!.put(key, img.buffer, {
+          httpMetadata: { contentType: img.mime },
+        });
+        const { error: keyErr } = await svc
+          .from('so_scan_samples')
+          .update({ [column]: key })
+          .eq('id', sampleId);
+        if (keyErr) {
+          console.warn(`[scan-so ${label}] ${column} update failed:`, keyErr.message);
+          return null;
+        }
+        return key;
+      } catch (e) {
+        console.warn(`[scan-so ${label}] R2 put failed:`, (e as Error).message);
+        return null;
+      }
+    };
+
+    imageKey = await putImage(slipImg, `scan-slips/${sampleId}`, 'image_key', 'slip-image');
+    receiptImageKey = await putImage(
+      receiptImg,
+      `scan-slips/${sampleId}-receipt`,
+      'receipt_image_key',
+      'receipt-image',
+    );
+  }
+
   if (!parsed) {
-    return c.json({ error: 'extract_failed', reason: errorMsg ?? 'Extraction failed.', sampleId }, 502);
+    // A hung Anthropic call (caught by the 110s AbortSignal.timeout) maps to the
+    // graceful 503 {error, reason} so the modal shows "try again", not a 502.
+    if (timedOut) {
+      return c.json(
+        { error: 'ocr_timeout', reason: errorMsg ?? 'OCR timed out. Please try again.', sampleId, imageKey, receiptImageKey },
+        503,
+      );
+    }
+    return c.json(
+      { error: 'extract_failed', reason: errorMsg ?? 'Extraction failed.', sampleId, imageKey, receiptImageKey },
+      502,
+    );
   }
 
   const warnings = validateSlip(parsed, catalog);
@@ -1404,15 +1785,24 @@ scanSo.post('/extract', async (c) => {
     success: true,
     data: {
       sampleId,
+      // Original-slip R2 key (null when the upload was a PDF or the put
+      // failed). The modal carries it onto the New SO create body.
+      imageKey,
+      // Payment-receipt R2 key (null when no receipt was uploaded / classified
+      // or the put failed). Carried onto the New SO create body alongside.
+      receiptImageKey,
       extracted: parsed,
       warnings,
       // Slim catalog so the modal's SKU/fabric pickers work without a second
       // round-trip. `options` = the SO Maintenance allowed-values lists the
       // matches were validated against (feeds the modal's review selects).
+      // `states` = the my_localities state list the addressStateMatch was
+      // validated against (the modal carries the matched state to the form).
       catalog: {
         skus: catalog.skus,
         fabrics: catalog.fabrics,
         options: catalog.options,
+        states: catalog.states,
       },
       meta: {
         cacheHit,

@@ -26,6 +26,8 @@
 // rows; there is no stored counter to drift.
 // ----------------------------------------------------------------------------
 
+import { paginateAll } from './paginate-all';
+
 export type DoRemainingLine = {
   doItemId: string;
   deliveryOrderId: string;
@@ -219,12 +221,14 @@ export async function resolveCandidateDoIds(sb: any, doIdsParam: string | undefi
   if (doIdsParam && doIdsParam.trim()) {
     return [...new Set(doIdsParam.split(',').map((d) => d.trim()).filter(Boolean))];
   }
-  const { data: dos } = await sb
+  // Page through so PostgREST's 1000-row cap can't drop DOs from the picker
+  // (a non-cancelled DO past row 1000 would be invisible to From-DO flows).
+  const { data: dos } = await paginateAll<{ id: string; status: string }>((from, to) => sb
     .from('delivery_orders')
     .select('id, status')
     .neq('status', 'CANCELLED')
     .order('do_date', { ascending: false })
-    .limit(1000);
+    .range(from, to));
   return ((dos ?? []) as Array<{ id: string }>).map((d) => d.id).filter(Boolean);
 }
 

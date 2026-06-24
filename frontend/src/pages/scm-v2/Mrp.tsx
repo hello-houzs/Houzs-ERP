@@ -24,8 +24,9 @@ import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { ChevronRight, ChevronDown, RefreshCw, Truck, ShoppingCart, CalendarRange, Info, Clock } from 'lucide-react';
 import {
-  useMrp, useCategoryLeadTimes, useUpdateCategoryLeadTime,
+  useMrp, useCategoryLeadTimes, useUpdateCategoryLeadTime, GLOBAL_LEAD_KEY,
   type MrpSku, type MrpLine, type MrpResponse, type SofaSet, type LeadCategory,
+  type MrpWarehouse, type CategoryLeadTimes,
 } from '../../vendor/scm/lib/mrp-queries';
 import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
 import { useAuth, isAdminLevel } from '../../vendor/scm/lib/auth';
@@ -49,22 +50,41 @@ const MRP_LEAD_CATEGORIES: LeadCategory[] = ['sofa', 'bedframe', 'mattress', 'ac
 /* LeadTimesDialog (Commander 2026-06-18, moved from SO Maintenance) — per-
    category "order N days early". When you Proceed PO, the PO delivery date is
    set this many days BEFORE the customer delivery date (see mfg-purchase-orders
-   /from-sos). Self-contained: owns its query + per-category draft + save. */
-function LeadTimesDialog({ onClose }: { onClose: () => void }) {
+   /from-sos). Self-contained: owns its query + per-category draft + save.
+   Commander 2026-06-22 (migration 0184 / SCM mig 0036) — also per-WAREHOUSE: a
+   Warehouse selector at the top switches which bucket the rows edit. "Global
+   Defaults" (warehouseId null) is the fallback; a warehouse with no override yet
+   shows the global values until you Save an override. */
+function LeadTimesDialog({ onClose, warehouses }: { onClose: () => void; warehouses: MrpWarehouse[] }) {
   const q = useCategoryLeadTimes();
   const update = useUpdateCategoryLeadTime();
-  const leadTimes = q.data?.leadTimes;
+  const map = q.data?.leadTimes;
+  /* Selected bucket: GLOBAL_LEAD_KEY = the global defaults; else a warehouse id.
+     The PUT body warehouseId is null for the global bucket. */
+  const [whKey, setWhKey] = useState<string>(GLOBAL_LEAD_KEY);
+  const warehouseId = whKey === GLOBAL_LEAD_KEY ? null : whKey;
   const [draft, setDraft] = useState<Partial<Record<LeadCategory, string>>>({});
-  const valueFor = (cat: LeadCategory) => draft[cat] ?? String(leadTimes?.[cat] ?? 0);
+
+  const globalBucket: CategoryLeadTimes | undefined = map?.[GLOBAL_LEAD_KEY];
+  const whBucket: CategoryLeadTimes | undefined = map?.[whKey];
+  /* Stored value for the selected bucket: its own override if present, else fall
+     back to the global default (so a warehouse with no override displays the
+     global instead of a misleading 0). */
+  const storedFor = (cat: LeadCategory): number =>
+    whBucket?.[cat] ?? globalBucket?.[cat] ?? 0;
+  const valueFor = (cat: LeadCategory) => draft[cat] ?? String(storedFor(cat));
   const dirty = (cat: LeadCategory) =>
-    draft[cat] !== undefined && draft[cat] !== String(leadTimes?.[cat] ?? 0);
+    draft[cat] !== undefined && draft[cat] !== String(storedFor(cat));
   const save = (cat: LeadCategory) => {
     const n = Math.max(0, Math.floor(Number(valueFor(cat)) || 0));
     update.mutate(
-      { category: cat, leadDays: n },
+      { warehouseId, category: cat, leadDays: n },
       { onSuccess: () => setDraft((s) => { const x = { ...s }; delete x[cat]; return x; }) },
     );
   };
+  // Switching warehouse clears any half-typed draft so rows reflect the new bucket.
+  const switchWh = (key: string) => { setWhKey(key); setDraft({}); };
+
   return (
     <div className={styles.dialogBackdrop} onClick={onClose}>
       <div className={styles.dialog} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
@@ -72,8 +92,24 @@ function LeadTimesDialog({ onClose }: { onClose: () => void }) {
         <p className={styles.dialogBody}>
           How many days <strong>before</strong> the customer delivery date each category&rsquo;s PO is
           ordered. When you Proceed PO, the PO delivery date is set this many days earlier so the
-          supplier delivers ahead of the customer date.
+          supplier delivers ahead of the customer date. Set a per-<strong>warehouse</strong> override
+          (e.g. Sabah / Sarawak ship longer); a warehouse with no override falls back to the Global
+          Defaults shown here.
         </p>
+        <label className={styles.dialogField}>
+          <span className={styles.filterLabel}>Warehouse</span>
+          <select
+            className={styles.filterSelect}
+            style={{ minWidth: 200 }}
+            value={whKey}
+            onChange={(e) => switchWh(e.target.value)}
+          >
+            <option value={GLOBAL_LEAD_KEY}>Global Defaults</option>
+            {warehouses.map((w) => (
+              <option key={w.id} value={w.id}>{w.code} · {w.name}</option>
+            ))}
+          </select>
+        </label>
         {q.isLoading && <p className={styles.dialogBody}>Loading…</p>}
         {!q.isLoading && MRP_LEAD_CATEGORIES.map((cat) => (
           <label key={cat} className={styles.dialogField}>
@@ -1011,7 +1047,12 @@ export const Mrp = () => {
         </div>
       )}
 
-      {showLeadTimes && <LeadTimesDialog onClose={() => setShowLeadTimes(false)} />}
+      {showLeadTimes && (
+        <LeadTimesDialog
+          onClose={() => setShowLeadTimes(false)}
+          warehouses={data?.warehouses ?? []}
+        />
+      )}
     </div>
   );
 };

@@ -392,6 +392,8 @@ export type StockTakeLine = {
   stock_take_id: string;
   product_code: string;
   product_name: string | null;
+  variant_key: string;
+  variant_label: string | null;
   system_qty: number;
   counted_qty: number | null;
   variance: number | null;

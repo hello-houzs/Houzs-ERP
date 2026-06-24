@@ -135,7 +135,8 @@ function PriorityTargetsSection({
                 <tr key={p.id} className="border-t border-border">
                   <td className="sticky left-0 z-10 bg-surface px-4 py-2 font-semibold text-ink whitespace-nowrap">
                     {p.name}
-                    <div className="font-mono text-[10px] text-ink-muted">{p.slug}</div>
+                    {/* Slug hidden (Houzs 2026-06-24) — owner: the gray machine
+                        code under the name is unnecessary clutter. */}
                   </td>
                   {STAGE_ORDER.map((s) => {
                     const cellVal = cellMap.get(`${p.id}|${s.value}`);

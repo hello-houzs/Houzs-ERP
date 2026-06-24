@@ -20,6 +20,7 @@ import type { Env, Variables } from '../env';
 import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { computeVariantKey, isServiceLine, type VariantAttrs } from '../shared';
 import { syncSoDeliveredFromDo } from '../lib/so-delivery-sync';
+import { paginateAll } from '../lib/paginate-all';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-availability';
 import { findSofaLinesWithoutCompleteBatch, sofaNoCompleteBatchResponse, findIncompleteSofaSets, sofaIncompleteSetResponse } from '../lib/sofa-batch-guard';
@@ -1285,12 +1286,14 @@ deliveryOrdersMfg.get('/deliverable-so-lines', async (c) => {
   if (docNosParam && docNosParam.trim()) {
     docNos = [...new Set(docNosParam.split(',').map((d) => d.trim()).filter(Boolean))];
   } else {
-    const { data: sos, error } = await sb
+    // Page through so PostgREST's 1000-row cap can't drop SOs from the picker
+    // (a non-cancelled SO past row 1000 would be undeliverable via the UI).
+    const { data: sos, error } = await paginateAll<{ doc_no: string; status: string }>((from, to) => sb
       .from('mfg_sales_orders')
       .select('doc_no, status')
       .neq('status', 'CANCELLED')
       .order('doc_no', { ascending: false })
-      .limit(1000);
+      .range(from, to));
     if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
     docNos = ((sos ?? []) as Array<{ doc_no: string }>).map((s) => s.doc_no).filter(Boolean);
   }

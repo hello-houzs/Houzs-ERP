@@ -4301,7 +4301,7 @@ function ProjectDetailContent({
       error={detail.error}
       actions={
         p ? (
-          <>
+          <div className="flex flex-wrap items-center gap-1.5">
             {p.archived_at ? (
               <HeaderButton
                 variant="ghost"
@@ -4364,7 +4364,7 @@ function ProjectDetailContent({
                 }}
               />
             )}
-          </>
+          </div>
         ) : undefined
       }
     >
@@ -6108,15 +6108,15 @@ function DocumentTable({
   toast?: ReturnType<typeof useToast>;
 }) {
   return (
-    <div className="overflow-x-auto p-2">
+    <div className="p-2 sm:overflow-x-auto">
       <table className="w-full text-[11px]">
         <thead>
           <tr className="border-b border-border-subtle text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
             <th className="px-3 py-2 text-left">Document</th>
             <th className="px-3 py-2 text-left">Remarks</th>
-            <th className="px-3 py-2 text-left">Files</th>
-            <th className="px-3 py-2 text-left">Uploaded By</th>
-            <th className="px-3 py-2 text-left">Approval</th>
+            <th className="hidden px-3 py-2 text-left sm:table-cell">Files</th>
+            <th className="hidden px-3 py-2 text-left sm:table-cell">Uploaded By</th>
+            <th className="hidden px-3 py-2 text-left sm:table-cell">Approval</th>
             <th className="px-3 py-2 text-right">Actions</th>
           </tr>
         </thead>
@@ -6272,7 +6272,7 @@ function DocRow({
             );
           })()}
         </td>
-        <td className="px-3 py-2">
+        <td className="hidden px-3 py-2 sm:table-cell">
           {attachments.length > 0 ? (
             <button
               onClick={() => setOpen((x) => !x)}
@@ -6284,7 +6284,7 @@ function DocRow({
             <span className="text-ink-muted">—</span>
           )}
         </td>
-        <td className="px-3 py-2">
+        <td className="hidden px-3 py-2 sm:table-cell">
           {latest ? (
             <div>
               <div className="text-ink">{latest.uploader_name || "Unknown"}</div>
@@ -6294,7 +6294,7 @@ function DocRow({
             <span className="text-ink-muted">—</span>
           )}
         </td>
-        <td className="px-3 py-2">
+        <td className="hidden px-3 py-2 sm:table-cell">
           {!reviewable ? (
             <span className="text-ink-muted">—</span>
           ) : (
@@ -7699,7 +7699,7 @@ function CrewSlotRow({
 }) {
   const cur = slot ?? { name: "", phone: "" };
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
       <div className="flex min-w-0 items-center gap-1.5">
         <UserCircle2 size={13} className={cn("shrink-0", color)} />
         <span className="w-14 shrink-0 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
@@ -8974,16 +8974,16 @@ function ProjectSalesEntriesSection({
   return (
     <PanelSection title={`Sales (${rows.length})`}>
       {/* Toolbar: totals · status filter · new-sale */}
-      <div className="mb-2 flex flex-wrap items-center gap-3 rounded-md border border-border-subtle bg-bg/30 px-3 py-2 text-[10.5px]">
+      <div className="mb-2 flex flex-col gap-3 rounded-md border border-border-subtle bg-bg/30 px-3 py-2 text-[10.5px] sm:flex-row sm:flex-wrap sm:items-center">
         {totals && (
-          <>
+          <div className="flex flex-wrap items-center gap-3">
             <Stat label="Total" value={formatCurrency(totals.amount)} accent />
             <Stat label="Drafts" value={String(totals.by_status.draft)} />
             <Stat label="Submitted" value={String(totals.by_status.submitted)} />
             <Stat label="Pushed" value={String(totals.by_status.pushed)} />
-          </>
+          </div>
         )}
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5 sm:ml-auto sm:flex-nowrap">
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -9010,7 +9010,7 @@ function ProjectSalesEntriesSection({
                 toast.error(e?.message || "Export failed");
               }
             }}
-            className="inline-flex h-6 items-center gap-1 rounded-md border border-border bg-surface px-2 text-[10.5px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+            className="inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-md border border-border bg-surface px-2 text-[10.5px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
             title="Download CSV"
             disabled={rows.length === 0}
           >
@@ -9039,7 +9039,7 @@ function ProjectSalesEntriesSection({
             <button
               onClick={() => setQuickLogOpen((v) => !v)}
               className={cn(
-                "inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[10.5px] font-semibold",
+                "inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-md border px-2 text-[10.5px] font-semibold",
                 quickLogOpen
                   ? "border-amber-500/60 bg-amber-500 text-white"
                   : "border-amber-500/40 bg-amber-100 text-amber-800 hover:bg-amber-200",
@@ -9052,7 +9052,7 @@ function ProjectSalesEntriesSection({
           {canWrite && (
             <button
               onClick={() => setCreating(true)}
-              className="inline-flex h-6 items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/60 px-2 text-[10.5px] font-semibold text-accent hover:bg-accent hover:text-white"
+              className="inline-flex h-6 items-center gap-1 whitespace-nowrap rounded-md border border-accent/40 bg-accent-soft/60 px-2 text-[10.5px] font-semibold text-accent hover:bg-accent hover:text-white"
             >
               <Plus size={11} /> New Sale
             </button>
@@ -9379,12 +9379,12 @@ function Stat({
 }) {
   return (
     <div className="flex items-baseline gap-1.5">
-      <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+      <span className="text-[10.5px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
       </span>
       <span
         className={cn(
-          "font-mono text-[12px] font-bold leading-none",
+          "text-[12.5px] font-medium leading-none",
           accent ? "text-accent" : "text-ink"
         )}
       >
@@ -11120,15 +11120,28 @@ function ImportCsvPanel({
     try {
       // Raw text body (POST text/csv) — api helpers all assume JSON, so
       // we call fetch directly. Auth token is the same one api uses.
+      // No timeout here would hang the dialog forever on a stalled cold-start;
+      // cap it with an upload-length AbortSignal and surface a retryable error.
       const token = localStorage.getItem("auth:token") || "";
-      const resp = await fetch(`${api.baseUrl}/api/projects/import/csv`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "text/csv",
-        },
-        body: text,
-      });
+      let signal: AbortSignal | undefined;
+      try { signal = AbortSignal.timeout(120_000); } catch { signal = undefined; }
+      let resp: Response;
+      try {
+        resp = await fetch(`${api.baseUrl}/api/projects/import/csv`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "text/csv",
+          },
+          body: text,
+          signal,
+        });
+      } catch (err) {
+        if (err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError")) {
+          throw new Error("The server took too long to respond. Please check your connection and try again.");
+        }
+        throw err;
+      }
       if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`);
       const data = (await resp.json()) as { imported: number; errors: string[]; total_rows: number };
       setResult(data);

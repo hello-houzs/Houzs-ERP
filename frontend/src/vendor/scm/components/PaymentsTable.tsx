@@ -21,14 +21,14 @@
 // across both modes.
 // ----------------------------------------------------------------------------
 
-import { memo, useEffect, useState, type CSSProperties } from 'react';
+import { memo, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   DollarSign, Plus, Trash2, Save, FileText, Image as ImageIcon,
   Calendar as CalIcon, User as UserIcon, Tag,
 } from 'lucide-react';
 import { sortByText } from '../lib/sort-options';
-import { fetchPaymentSlipUrl, type SlipUrlResponse } from '../lib/slip';
+import { fetchPaymentSlipUrl, scanPaymentReceipt, type SlipUrlResponse } from '../lib/slip';
 import { SlipUploadField } from './SlipUploadField';
 import { MoneyInput } from './MoneyInput';
 import { useNotify } from './NotifyDialog';
@@ -322,6 +322,13 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
   const persistedPayments: SoPayment[] = isSaved ? (paymentsQ.data ?? []) : [];
   const drafts: PaymentDraft[] = isSaved ? savedDrafts : (props as DraftModeProps).payments;
 
+  /* Latest drafts mirror — the receipt-scan handler resolves asynchronously
+     (a late scan can land after the operator has kept typing), so it must read
+     each row's CURRENT values by uid, never the values captured when the scan
+     was fired. This ref is kept in sync with `drafts` every render. */
+  const draftsRef = useRef<PaymentDraft[]>(drafts);
+  draftsRef.current = drafts;
+
   /* Default Collected By → current logged-in staff (2026-05-27 audit pass).
      Commander's screenshot showed new payment rows defaulting to '—' / first
      dropdown entry instead of the staff who's actually entering the
@@ -380,6 +387,60 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
       const cur = (props as DraftModeProps).payments;
       (props as DraftModeProps).onChange(cur.filter((d) => d.uid !== uid));
     }
+  };
+
+  /* Receipt OCR fill (card-terminal / EPP slip). Fired by SlipUploadField when
+     an IMAGE is uploaded to a row's slip — the receipt IS the slip. Reads the
+     row's CURRENT state by uid (draftsRef) and fills ONLY blank fields, so a
+     late scan never clobbers anything the operator already typed. Method maps
+     to the locked payment_method VALUE: Merchant → bank; Online → online type;
+     Installment → tenure plan; Cash → nothing. Owner convention: a card EPP
+     receipt comes back as method=Installment + the N-month plan.
+
+     UI: SUCCESS is SILENT — the visible feedback is the fields populating
+     themselves; we render NOTHING in the narrow Slip column (the reason the
+     last version was reverted). Only a hard scan FAILURE surfaces a brief
+     in-app notice so the operator knows to fill manually; that notice is the
+     shared modal (never rendered inside the Slip cell). Best-effort — a
+     failure changes no fields. */
+  const scanReceiptIntoRow = async (uid: string, file: File): Promise<void> => {
+    let rec;
+    try {
+      rec = await scanPaymentReceipt(file);
+    } catch {
+      void notify({ title: 'Could not read receipt', body: 'Fill the payment fields manually.', tone: 'info' });
+      return;
+    }
+    const row = draftsRef.current.find((d) => d.uid === uid);
+    if (!row) return;
+
+    const method = rec.paymentMethodMatch?.value ?? '';
+    const patch: Partial<PaymentDraft> = {};
+    // methodLabel ← payment_method VALUE (only when the row still holds the
+    // default 'Cash' OR is blank — i.e. the operator hasn't deliberately set it).
+    if (method && (row.methodLabel === '' || row.methodLabel === 'Cash')) {
+      patch.methodLabel = method;
+    }
+    // The method the row WILL have once this patch applies (so the L2 fills are
+    // gated against the post-patch method, not the stale one).
+    const effectiveMethod = patch.methodLabel ?? row.methodLabel;
+    if (effectiveMethod === 'Merchant' && rec.bankMatch?.value && !row.merchantProvider) {
+      patch.merchantProvider = rec.bankMatch.value;
+    }
+    if (effectiveMethod === 'Installment' && rec.installmentPlanMatch?.value && !row.installmentMonthsLabel) {
+      patch.installmentMonthsLabel = rec.installmentPlanMatch.value;
+    }
+    if (effectiveMethod === 'Online' && rec.onlineTypeMatch?.value && !row.onlineType) {
+      patch.onlineType = rec.onlineTypeMatch.value;
+    }
+    if (rec.approvalCode && !row.approvalCode) {
+      patch.approvalCode = rec.approvalCode;
+    }
+    if (rec.amountRm != null && rec.amountRm > 0 && row.amountCenti <= 0) {
+      patch.amountCenti = Math.round(rec.amountRm * 100);
+    }
+
+    if (Object.keys(patch).length > 0) patchDraft(uid, patch);
   };
 
   /* SAVED mode commit — fire POST /:docNo/payments. DRAFT mode has no
@@ -542,10 +603,10 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
             {/* Persisted payment rows (SAVED mode only) */}
             {persistedPayments.map((p) => (
               <div className={paymentsStyles.row} key={p.id}>
-                <span className={paymentsStyles.cell} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                <span className={paymentsStyles.cell} data-label="Date" style={{ fontVariantNumeric: 'tabular-nums' }}>
                   {p.paid_at}
                 </span>
-                <span className={paymentsStyles.cell} style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+                <span className={paymentsStyles.cell} data-label="Method" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
                   <span className={paymentsStyles.methodPill} style={methodPillStyle(p.method)}>
                     {methodDisplay(p)}
                   </span>
@@ -571,18 +632,18 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     </span>
                   )}
                 </span>
-                <span className={paymentsStyles.cellRight}
+                <span className={paymentsStyles.cellRight} data-label="Amount"
                       style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
                   {fmtRm(p.amount_centi, currency)}
                 </span>
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Account Sheet">
                   {p.account_sheet ?? <span className={detailStyles.muted}>—</span>}
                 </span>
-                <span className={paymentsStyles.cell} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                <span className={paymentsStyles.cell} data-label="Approval Code" style={{ fontVariantNumeric: 'tabular-nums' }}>
                   {p.approval_code ?? <span className={detailStyles.muted}>—</span>}
                 </span>
                 {showSlip && (
-                  <span className={paymentsStyles.cell}>
+                  <span className={paymentsStyles.cell} data-label="Slip">
                     {isSaved ? (
                       <PaymentSlipThumb
                         docNo={(props as SavedModeProps).docNo}
@@ -595,7 +656,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     )}
                   </span>
                 )}
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Collected By">
                   {p.collected_by_name ?? staffNameById(p.collected_by) ?? <span className={detailStyles.muted}>—</span>}
                 </span>
                 <span className={paymentsStyles.cell}>
@@ -625,7 +686,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
             {/* In-flight draft rows (SAVED + DRAFT) */}
             {drafts.map((d) => (
               <div className={paymentsStyles.row} key={d.uid}>
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Date">
                   <input
                     type="date"
                     className={paymentsStyles.inlineInput}
@@ -634,7 +695,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     onChange={(e) => patchDraft(d.uid, { paidAt: e.target.value })}
                   />
                 </span>
-                <span className={paymentsStyles.cell} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+                <span className={paymentsStyles.cell} data-label="Method" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
                   {/* L1 — Method (always visible) */}
                   <select
                     className={paymentsStyles.inlineSelect}
@@ -745,7 +806,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
 
                   {/* L2 — Cash: no extra fields */}
                 </span>
-                <span className={paymentsStyles.cellRight}>
+                <span className={paymentsStyles.cellRight} data-label="Amount">
                   <MoneyInput
                     bare allowBlank
                     valueSen={d.amountCenti === 0 ? null : d.amountCenti}
@@ -755,7 +816,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     onCommit={(sen) => patchDraft(d.uid, { amountCenti: sen ?? 0 })}
                   />
                 </span>
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Account Sheet">
                   <input
                     type="text"
                     className={`${paymentsStyles.inlineInput} ${paymentsStyles.placeholderHint}`}
@@ -765,7 +826,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     onChange={(e) => patchDraft(d.uid, { accountSheet: e.target.value })}
                   />
                 </span>
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Approval Code">
                   <input
                     type="text"
                     className={paymentsStyles.inlineInput}
@@ -775,7 +836,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                   />
                 </span>
                 {showSlip && (
-                  <span className={paymentsStyles.cell}>
+                  <span className={paymentsStyles.cell} data-label="Slip">
                     {/* Spec D4 — per-payment slip uploader. SAVED mode (SO
                         route) REQUIRES it; the commit button stays disabled
                         until a slip is confirmed. */}
@@ -784,10 +845,11 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                       disabled={locked}
                       onConfirmed={(sid) => patchDraft(d.uid, { slipUploadSessionId: sid })}
                       onCleared={() => patchDraft(d.uid, { slipUploadSessionId: null })}
+                      onImageScan={(file) => scanReceiptIntoRow(d.uid, file)}
                     />
                   </span>
                 )}
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Collected By">
                   <select
                     className={paymentsStyles.inlineInputUser}
                     value={d.collectedBy}
@@ -813,6 +875,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                         disabled={locked}
                         onConfirmed={(sid) => patchDraft(d.uid, { slipUploadSessionId: sid })}
                         onCleared={() => patchDraft(d.uid, { slipUploadSessionId: null })}
+                        onImageScan={(file) => scanReceiptIntoRow(d.uid, file)}
                       />
                     )}
                     {/* SAVED mode shows the Save (commit) button next to

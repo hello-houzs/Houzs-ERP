@@ -259,6 +259,275 @@ export const PAGES: PageDef[] = [
     backfill: (p) =>
       isOwner(p) || has(p, "users.manage") ? "full" : "none",
   },
+
+  // ── Supply Chain (parent + area children) ───────────────────
+  // ADDITIVE per-position gating for the ported 2990 SCM. These page
+  // keys only GRANT access to a position explicitly given them in the
+  // matrix; they NEVER remove the existing access path. SCM is still
+  // unconditionally unlocked by the `*` wildcard and the `scm.access`
+  // permission at the /api/scm/* gate (index.ts) + the frontend nav /
+  // route guards — those checks are ORed with these page keys, so no
+  // current SCM user loses access. A position with no SCM row resolves
+  // to "none" here (safe default) and falls back to whatever permission
+  // path it already had. Backfill is owner-only (the role matrix relies
+  // on scm.access, NOT on these keys), so legacy roles are unaffected.
+  {
+    key: "scm",
+    label: "Supply Chain",
+    partialMeaning: "Pick which Supply Chain areas this position can access.",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  // ── L1 areas (parents of the L2 sub-pages below). Each L1 area is itself
+  //    a child of `scm` and a parent to its own per-sub-page L2 keys. Setting
+  //    an L1 area = full grants its whole sub-tree (inherit, pass-2 of
+  //    loadPageAccessForPosition); overriding a single L2 child to "none"
+  //    hides just that one sub-page. Every L2 key defaults to "none" + inherits
+  //    its L1 parent, and backfill stays owner-only — so this is purely
+  //    additive: no current SCM user (via `*` / `scm.access`) loses access.
+  {
+    key: "scm.sales",
+    parent: "scm",
+    label: "Sales Orders / Delivery / Invoices / Returns",
+    partialMeaning: "View the sales-side documents; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.sales.orders",
+    parent: "scm.sales",
+    label: "Sales Orders",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.sales.delivery",
+    parent: "scm.sales",
+    label: "Delivery Orders",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.sales.invoices",
+    parent: "scm.sales",
+    label: "Sales Invoices",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.sales.returns",
+    parent: "scm.sales",
+    label: "Delivery Returns",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.procurement",
+    parent: "scm",
+    label:
+      "Products & Maintenance / Suppliers / MRP / Purchase Orders / Goods Receipt / Purchase Invoices / Purchase Returns",
+    partialMeaning: "View the procurement-side documents; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.procurement.products",
+    parent: "scm.procurement",
+    label: "Products & Maintenance",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.procurement.suppliers",
+    parent: "scm.procurement",
+    label: "Suppliers",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.procurement.mrp",
+    parent: "scm.procurement",
+    label: "MRP · Stock Status",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.procurement.po",
+    parent: "scm.procurement",
+    label: "Purchase Orders",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.procurement.grn",
+    parent: "scm.procurement",
+    label: "Goods Receipt",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.procurement.pi",
+    parent: "scm.procurement",
+    label: "Purchase Invoices",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.procurement.pr",
+    parent: "scm.procurement",
+    label: "Purchase Returns",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.consignment",
+    parent: "scm",
+    label: "Consignment",
+    partialMeaning: "View the consignment documents; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.consignment.orders",
+    parent: "scm.consignment",
+    label: "Consignment Order",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.consignment.notes",
+    parent: "scm.consignment",
+    label: "Consignment Note",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.consignment.returns",
+    parent: "scm.consignment",
+    label: "Consignment Return",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.consignment.po_orders",
+    parent: "scm.consignment",
+    label: "Purchase Consignment Order",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.consignment.po_receives",
+    parent: "scm.consignment",
+    label: "Purchase Consignment Receive",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.consignment.po_returns",
+    parent: "scm.consignment",
+    label: "Purchase Consignment Return",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.transportation",
+    parent: "scm",
+    label: "Transportation / Drivers",
+    partialMeaning: "View the transportation pages; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.transportation.drivers",
+    parent: "scm.transportation",
+    label: "Drivers",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.warehouse",
+    parent: "scm",
+    label: "Inventory / Adjustments / Transfers / Stock Take",
+    partialMeaning: "View the warehouse pages; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    // Inventory L2 also covers the Stock Card drill-down + the Warehouses
+    // master (both live under the Warehouse nav group, no finer nav split).
+    key: "scm.warehouse.inventory",
+    parent: "scm.warehouse",
+    label: "Inventory",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.warehouse.adjustments",
+    parent: "scm.warehouse",
+    label: "Adjustments",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.warehouse.transfers",
+    parent: "scm.warehouse",
+    label: "Transfers",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.warehouse.stock_take",
+    parent: "scm.warehouse",
+    label: "Stock Take",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.finance",
+    parent: "scm",
+    label: "Accounting / Outstanding",
+    partialMeaning: "View the SCM finance pages; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.finance.accounting",
+    parent: "scm.finance",
+    label: "Accounting",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+  {
+    key: "scm.finance.outstanding",
+    parent: "scm.finance",
+    label: "Outstanding",
+    partialMeaning: "View only; write gating is per-route (later).",
+    supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
 ];
 
 const PAGE_KEYS = new Set(PAGES.map((p) => p.key));
@@ -355,10 +624,27 @@ export function computeBackfillLevel(
  * directly by `requirePageAccess` and the frontend `usePageAccess`
  * hook — no D1 round-trip on the hot path.
  */
+/**
+ * Optional out-parameter for the loaders below. Lets `hydrateAuthUser`
+ * learn — from the SAME source it hydrates page_access from (role vs
+ * position) — whether the user has ANY explicit `scm*` page-access row
+ * (vs the default "none"). This drives the SAFE L2 SCM write-gate rollout
+ * in `scmAreaGuard`: a user with NO explicit SCM config falls back to the
+ * coarse `scm.access` umbrella (allow), and only users WITH explicit SCM
+ * rows get the per-area enforcement. Populated in-place during the
+ * explicit-row scan, so no extra DB round-trip. Existing callers that
+ * don't care simply omit it.
+ */
+export interface PageAccessMeta {
+  /** True iff at least one explicit row had a page_key starting with "scm". */
+  explicitScm: boolean;
+}
+
 export async function loadPageAccessForRole(
   env: Env,
   roleId: number,
   rolePerms: ReadonlySet<string>,
+  meta?: PageAccessMeta,
 ): Promise<Record<string, AccessLevel>> {
   // Wildcard short-circuits — Owner / IT Admin always see 'full'.
   if (rolePerms.has("*")) {
@@ -375,6 +661,7 @@ export async function loadPageAccessForRole(
   for (const r of rows.results ?? []) {
     if (isValidPageKey(r.page_key) && isValidAccessLevel(r.level)) {
       explicit[r.page_key] = r.level;
+      if (meta && r.page_key.startsWith("scm")) meta.explicitScm = true;
     }
   }
 
@@ -416,6 +703,7 @@ export async function loadPageAccessForRole(
 export async function loadPageAccessForPosition(
   env: Env,
   positionId: number,
+  meta?: PageAccessMeta,
 ): Promise<Record<string, AccessLevel>> {
   const rows = await env.DB.prepare(
     `SELECT page_key, level FROM position_page_access WHERE position_id = ?`,
@@ -427,6 +715,7 @@ export async function loadPageAccessForPosition(
   for (const r of rows.results ?? []) {
     if (isValidPageKey(r.page_key) && isValidAccessLevel(r.level)) {
       explicit[r.page_key] = r.level;
+      if (meta && r.page_key.startsWith("scm")) meta.explicitScm = true;
     }
   }
 
@@ -434,12 +723,18 @@ export async function loadPageAccessForPosition(
   const raw: Record<string, AccessLevel> = {};
   for (const p of PAGES) raw[p.key] = explicit[p.key] ?? "none";
 
-  // Pass 2: children inherit the parent's level unless they have an explicit
-  // row of their own (inherit model — see docstring).
+  // Pass 2: children inherit the parent's RESOLVED level unless they have an
+  // explicit row of their own (inherit model — see docstring). Reading the
+  // already-resolved `out[p.parent]` (not the pass-1 `raw[p.parent]`) lets the
+  // inherit cascade through grandchildren too: PAGES is ordered parents-before-
+  // children, so by the time we reach a grandchild (e.g. scm.sales.orders) its
+  // parent (scm.sales) has already inherited from the grandparent (scm). This
+  // makes "set scm = full" grant the whole 3-level SCM sub-tree, while an
+  // explicit override on any node (parent or leaf) still stands.
   const out: Record<string, AccessLevel> = { ...raw };
   for (const p of PAGES) {
     if (!p.parent) continue;
-    out[p.key] = explicit[p.key] ?? raw[p.parent];
+    out[p.key] = explicit[p.key] ?? out[p.parent];
   }
 
   return out;

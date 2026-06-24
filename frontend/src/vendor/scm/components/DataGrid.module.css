@@ -271,6 +271,12 @@
      Reserve only the topbar + page header + toolbar (~150px) so the grid
      stretches to nearly the full viewport height like the rest of the system. */
   max-height: calc(100vh - 150px);
+  /* Houzs 2026-06-23 (mobile) — the wide `.table { width: max-content }` would
+     otherwise force the page wider than the viewport. The page/SCM-shell now
+     clamps with overflow-x-hidden, so keep the grid's own horizontal scroll
+     CONTAINED inside this box (it scrolls internally) instead of pushing the
+     page out. */
+  max-width: 100%;
 }
 
 /* Embedded (drill-down) mode — no independent scrollbar, no height cap.
@@ -511,4 +517,21 @@
   text-transform: uppercase;
   color: var(--fg-muted);
   min-height: 22px;
+}
+
+/* ── Phone (Houzs 2026-06-23) ───────────────────────────────────────
+   The grid scrolls horizontally inside its own .scroll box on phone (the
+   page itself is clamped by overflow-x-hidden). Keep header/cell type at the
+   intended dense scale — fs-10 header / fs-12 body — so it isn't oversized
+   relative to the Service standard. Not rewritten into cards (out of scope). */
+@media (max-width: 600px) {
+  .table {
+    font-size: var(--fs-12);
+  }
+  .th {
+    font-size: var(--fs-10, 10px);
+  }
+  .td {
+    font-size: var(--fs-12);
+  }
 }

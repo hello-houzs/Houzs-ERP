@@ -213,6 +213,11 @@ export type PoItemRow = {
     specPo: string; specSo: string;
     itemPo: string; itemSo: string;
     itemChanged: boolean;
+    /* Staff #12 — the SO line's ship-from warehouse moved after the PO was
+       raised (so the PO still points at the old warehouse). */
+    warehouseChanged: boolean;
+    warehousePoId: string | null;
+    warehouseSoId: string | null;
   } | null;
 };
 

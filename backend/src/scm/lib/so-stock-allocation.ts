@@ -33,6 +33,7 @@
 import { computeVariantKey, isServiceLine, type VariantAttrs } from '../shared';
 import { summariseReadiness } from './so-readiness';
 import { loadSofaBatchStock, findCoveringBatch, claimSofaBatch } from './sofa-set-coverage';
+import { paginateAll, chunkIn } from './paginate-all';
 
 export type AllocationResult = {
   ok: boolean;
@@ -79,12 +80,15 @@ export async function recomputeSoStockAllocation(
     /* 1. All non-cancelled, non-completed SOs. Allocation priority:
             a) customer_delivery_date ASC NULLS LAST  — earlier delivery wins
             b) created_at ASC  — tiebreaker so order is deterministic */
-    const { data: orderRows } = await sb
+    // Page through — PostgREST's default 1000-row cap would truncate the active
+    // SO set, silently DROPPING orders from allocation (their lines never flip).
+    const { data: orderRows } = await paginateAll<{ doc_no: string; status: string; created_at: string; customer_delivery_date: string | null }>((from, to) => sb
       .from('mfg_sales_orders')
       .select('doc_no, status, created_at, customer_delivery_date')
-      .not('status', 'in', '(CANCELLED,CLOSED,SHIPPED,DELIVERED,INVOICED)')
+      .not('status', 'in', '(CANCELLED,CLOSED,SHIPPED,DELIVERED,INVOICED,DRAFT)')
       .order('customer_delivery_date',  { ascending: true, nullsFirst: false })
-      .order('created_at',              { ascending: true });
+      .order('created_at',              { ascending: true })
+      .range(from, to));
     const orders = (orderRows ?? []) as Array<{
       doc_no: string; status: string; created_at: string;
       customer_delivery_date: string | null;
@@ -95,11 +99,15 @@ export async function recomputeSoStockAllocation(
     // 2. Non-cancelled lines on those SOs. Pull qty + variant fields so we
     //    can compute variant_key and the bucket.
     const docNos = orders.map((o) => o.doc_no);
-    const { data: lineRows } = await sb
+    // chunkIn — docNos can exceed 1000 (un-truncated SO set) and lines across
+    // them can exceed the 1000-row cap; batch the .in() and page each batch so
+    // no SO line is dropped from the allocation walk.
+    const { data: lineRows } = await chunkIn(docNos, (batch, from, to) => sb
       .from('mfg_sales_order_items')
       .select('id, doc_no, item_code, item_group, variants, qty, warehouse_id, stock_status, stock_qty_ready, cancelled')
-      .in('doc_no', docNos)
-      .eq('cancelled', false);
+      .in('doc_no', batch)
+      .eq('cancelled', false)
+      .range(from, to));
     const lines = (lineRows ?? []) as Array<{
       id: string; doc_no: string; item_code: string; item_group: string | null;
       variants: VariantAttrs | null; qty: number; warehouse_id: string | null;
@@ -115,7 +123,10 @@ export async function recomputeSoStockAllocation(
        product catalog's category so the per-line walk below can skip them.
        BEDFRAME is by-SKU (Commander 2026-05-31) — it stays on plain per-line
        FIFO and is NOT batched. */
-    const { data: catRows } = await sb.from('mfg_products').select('code, category');
+    // Page through — mfg_products is >1000 rows (1141 live), so the default cap
+    // would DROP catalog rows → SOFA/SERVICE codes past row 1000 misclassified.
+    const { data: catRows } = await paginateAll<{ code: string; category: string | null }>((from, to) =>
+      sb.from('mfg_products').select('code, category').order('code').range(from, to));
     const batchedCodes = new Set<string>();
     /* P1 SO-SKU spec — SERVICE SKUs (delivery fee / dispose / lift) are not
        goods. Collect their codes here (same catalog pull) so the needs walk
@@ -136,10 +147,11 @@ export async function recomputeSoStockAllocation(
     const sofaLineIds = lines.filter((l) => isBatchedLine(l.item_code, l.item_group)).map((l) => l.id);
     if (sofaLineIds.length > 0) {
       try {
-        const { data: bRows, error: bErr } = await sb
+        const { data: bRows, error: bErr } = await chunkIn<{ id: string; allocated_batch_no: string | null }>(sofaLineIds, (batch, from, to) => sb
           .from('mfg_sales_order_items')
           .select('id, allocated_batch_no')
-          .in('id', sofaLineIds);
+          .in('id', batch)
+          .range(from, to));
         if (!bErr) {
           for (const r of (bRows ?? []) as Array<{ id: string; allocated_batch_no: string | null }>) {
             curBatchByLine.set(r.id, r.allocated_batch_no ?? null);
@@ -152,16 +164,20 @@ export async function recomputeSoStockAllocation(
     //    non-cancelled DOs) + Σ returned (via non-cancelled DRs). Same formula
     //    as soDeliverableRemaining but inlined since we already have line ids.
     const lineIds = lines.map((l) => l.id);
-    const { data: doLines } = await sb
+    // chunkIn — lineIds can exceed 1000 (un-truncated SO set); batch + page so
+    // delivered qty isn't understated by a dropped DO line.
+    const { data: doLines } = await chunkIn<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>(lineIds, (batch, from, to) => sb
       .from('delivery_order_items')
       .select('id, so_item_id, qty, delivery_order_id')
-      .in('so_item_id', lineIds);
+      .in('so_item_id', batch)
+      .range(from, to));
     const doLineRows = (doLines ?? []) as Array<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>;
     const doIds = [...new Set(doLineRows.map((l) => l.delivery_order_id).filter(Boolean))];
     const activeDoIds = new Set<string>();
     const doLineToSoItem = new Map<string, string>();
     if (doIds.length > 0) {
-      const { data: dos } = await sb.from('delivery_orders').select('id, status').in('id', doIds);
+      const { data: dos } = await chunkIn<{ id: string; status: string | null }>(doIds, (batch, from, to) =>
+        sb.from('delivery_orders').select('id, status').in('id', batch).range(from, to));
       for (const d of (dos ?? []) as Array<{ id: string; status: string | null }>) {
         if ((d.status ?? '').toUpperCase() !== 'CANCELLED') activeDoIds.add(d.id);
       }
@@ -175,15 +191,17 @@ export async function recomputeSoStockAllocation(
     const returnedBySoItem = new Map<string, number>();
     const activeDoLineIds = [...doLineToSoItem.keys()];
     if (activeDoLineIds.length > 0) {
-      const { data: drLines } = await sb
+      const { data: drLines } = await chunkIn<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>(activeDoLineIds, (batch, from, to) => sb
         .from('delivery_return_items')
         .select('do_item_id, qty_returned, delivery_return_id')
-        .in('do_item_id', activeDoLineIds);
+        .in('do_item_id', batch)
+        .range(from, to));
       const drLineRows = (drLines ?? []) as Array<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>;
       const drIds = [...new Set(drLineRows.map((l) => l.delivery_return_id).filter(Boolean))];
       const activeDrIds = new Set<string>();
       if (drIds.length > 0) {
-        const { data: drs } = await sb.from('delivery_returns').select('id, status').in('id', drIds);
+        const { data: drs } = await chunkIn<{ id: string; status: string | null }>(drIds, (batch, from, to) =>
+          sb.from('delivery_returns').select('id, status').in('id', batch).range(from, to));
         for (const d of (drs ?? []) as Array<{ id: string; status: string | null }>) {
           if ((d.status ?? '').toUpperCase() !== 'CANCELLED') activeDrIds.add(d.id);
         }
@@ -274,10 +292,13 @@ export async function recomputeSoStockAllocation(
       const parts = n.bucket.split('::');
       return parts[1] ?? '';
     }).filter(Boolean))];
-    const { data: balRows } = await sb
+    // chunkIn — productCodes can exceed 1000 and balances can exceed the 1000-row
+    // cap; batch + page so on-hand isn't understated → lines wrongly PENDING.
+    const { data: balRows } = await chunkIn<{ warehouse_id: string; product_code: string; variant_key: string | null; qty: number }>(productCodes, (batch, from, to) => sb
       .from('inventory_balances')
       .select('warehouse_id, product_code, variant_key, qty')
-      .in('product_code', productCodes);
+      .in('product_code', batch)
+      .range(from, to));
     const onHandByBucket = new Map<string, number>();
     for (const r of (balRows ?? []) as Array<{ warehouse_id: string; product_code: string; variant_key: string | null; qty: number }>) {
       const v = r.variant_key ?? '';
@@ -368,9 +389,13 @@ export async function recomputeSoStockAllocation(
       flipBatches.set(key, batch);
     }
     for (const batch of flipBatches.values()) {
-      await sb.from('mfg_sales_order_items')
-        .update({ stock_status: batch.status, stock_qty_ready: batch.qtyReady })
-        .in('id', batch.ids);
+      // Chunk the id list so the UPDATE's .in() never builds a >1000-element IN
+      // (a full re-allocation can flip thousands of lines into one bucket).
+      for (let i = 0; i < batch.ids.length; i += 200) {
+        await sb.from('mfg_sales_order_items')
+          .update({ stock_status: batch.status, stock_qty_ready: batch.qtyReady })
+          .in('id', batch.ids.slice(i, i + 200));
+      }
       linesFlipped += batch.ids.length;
     }
 
@@ -392,13 +417,17 @@ export async function recomputeSoStockAllocation(
       sofaFlips.set(key, f);
     }
     for (const f of sofaFlips.values()) {
-      const { error } = await sb.from('mfg_sales_order_items')
-        .update({ stock_status: f.status, stock_qty_ready: f.qtyReady, allocated_batch_no: f.batchNo })
-        .in('id', f.ids);
-      if (error && (error.message ?? '').includes('allocated_batch_no')) {
-        await sb.from('mfg_sales_order_items')
-          .update({ stock_status: f.status, stock_qty_ready: f.qtyReady })
-          .in('id', f.ids);
+      // Chunk the id list so the UPDATE's .in() never builds a >1000-element IN.
+      for (let i = 0; i < f.ids.length; i += 200) {
+        const idChunk = f.ids.slice(i, i + 200);
+        const { error } = await sb.from('mfg_sales_order_items')
+          .update({ stock_status: f.status, stock_qty_ready: f.qtyReady, allocated_batch_no: f.batchNo })
+          .in('id', idChunk);
+        if (error && (error.message ?? '').includes('allocated_batch_no')) {
+          await sb.from('mfg_sales_order_items')
+            .update({ stock_status: f.status, stock_qty_ready: f.qtyReady })
+            .in('id', idChunk);
+        }
       }
       linesFlipped += f.ids.length;
     }

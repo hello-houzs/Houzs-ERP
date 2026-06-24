@@ -256,3 +256,97 @@
   color: var(--c-festive-b, #B8331F);
   font-weight: 700;
 }
+
+/* Slip-upload button icon spinner — while a receipt is being OCR-scanned the
+   SlipUploadField swaps its upload icon for a spinning loader of the SAME size,
+   so nothing in the narrow Slip column shifts. No extra element, no label. */
+.slipScanSpin {
+  animation: slipScanSpin 0.9s linear infinite;
+}
+
+@keyframes slipScanSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ── Phone stacked cards (Houzs 2026-06-24) ─────────────────────────────────
+   The fixed-column payments grid sums to ~872px and only had a 1100px
+   breakpoint, so it still drove the page sideways on a phone. Below 600px we
+   abandon the grid entirely: the `.grid` container becomes a vertical flex
+   stack, each `.row` (was display:contents) becomes a bordered card, and each
+   `.cell` becomes a label-on-top block driven by the data-label="…" attributes
+   added in PaymentsTable.tsx. Header cells are hidden; the trailing actions
+   cell (no data-label) right-aligns its controls. Matches the Service-module /
+   line-items card scale.
+
+   This block lives at the END of the file ON PURPOSE: a media query that
+   precedes the base `.cell` / `.row` / `.cellRight` rules would lose the
+   cascade to them (equal specificity → later source wins). Desktop (>600px)
+   is byte-identical. */
+@media (max-width: 600px) {
+  .grid {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    border-top: none;
+  }
+  /* The whole header row is the first 7-8 direct children — hide them all. */
+  .headerCell,
+  .headerCellRight {
+    display: none;
+  }
+  /* Row wrapper: was display:contents (no box) — make it the card. */
+  .row {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--c-paper);
+    padding: var(--space-3);
+  }
+  .row:hover .cell,
+  .row:hover .cellRight {
+    background: transparent;
+  }
+  /* Each cell → a label-on-top block. Label above value (not side-by-side) so
+     cells that hold a multi-select cascade (the Method cell stacks L1 + L2
+     selects) don't fight a 2-column grid. */
+  .cell,
+  .cellRight {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    padding: 3px 0;
+    border-bottom: none;
+  }
+  .cell[data-label]::before,
+  .cellRight[data-label]::before {
+    content: attr(data-label);
+    font-family: var(--font-sans);
+    font-size: var(--fs-10);
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+    line-height: 1.3;
+  }
+  /* The amount cell was right-aligned in the grid — left-align inside the card. */
+  .cellRight { text-align: left; }
+  .inlineInputRight { text-align: left; }
+  /* The trailing actions/trash cell carries no data-label — drop the label and
+     align its controls to the right edge of the card. */
+  .cell:not([data-label]) {
+    flex-direction: row;
+    justify-content: flex-end;
+    padding-top: var(--space-2);
+  }
+
+  /* Summary block (Deposit Paid / Balance) — let it span the card width
+     instead of the 380px right rail. */
+  .summary {
+    max-width: none;
+    margin-left: 0;
+    grid-template-columns: 1fr auto;
+  }
+}
