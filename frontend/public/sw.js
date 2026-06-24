@@ -290,9 +290,18 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+const IS_LOCAL_DEV =
+  self.location.hostname === "localhost" ||
+  self.location.hostname === "127.0.0.1";
+
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
+
+  // Local dev (vite): never intercept. Caching the module graph cache-first
+  // shadows HMR — edits don't show until the SW is cleared. Belt-and-suspenders
+  // with pwa.ts, which unregisters the SW entirely in dev.
+  if (IS_LOCAL_DEV) return;
 
   // Never intercept cross-origin (fonts CDN, Google APIs, etc.).
   // The browser handles these — caching them ourselves invites
