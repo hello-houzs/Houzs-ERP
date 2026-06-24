@@ -4,12 +4,22 @@
 // is the slip AND the OCR source. The Payments panel POSTs it here in parallel
 // with the slip upload and fill-blanks-only auto-fills that row's draft fields.
 //
-// Extraction-only — no samples, no learning, no few-shot, no R2 persistence
-// (that's the slip-upload path's job). A sibling of scan-so.ts but deliberately
-// MINIMAL: it mirrors scan-so's Anthropic fetch + toBase64 + stripJsonFences
-// plumbing (helpers inlined here, NOT imported, so scan-so's exports stay
-// narrow) and snaps every *Match to the LIVE active so_dropdown_options just
-// like scan-so's validateSlip.
+// Extraction-only for the OCR fields — no samples, no learning, no few-shot.
+// A sibling of scan-so.ts but deliberately MINIMAL: it mirrors scan-so's
+// Anthropic fetch + toBase64 + stripJsonFences plumbing (helpers inlined here,
+// NOT imported, so scan-so's exports stay narrow) and snaps every *Match to the
+// LIVE active so_dropdown_options just like scan-so's validateSlip.
+//
+// RECEIPT-AS-SLIP (ocr-payment-spec.md Round-2 bug #3): the owner has no
+// separate slip — the scanned card receipt IS the payment row's slip. So this
+// endpoint ALSO persists the uploaded image to R2 (the SLIPS bucket, same key
+// shape as /slips) and registers a pending_slip_uploads row at status
+// 'uploaded'. It returns that row's { uploadSessionId, slipKey } so the
+// frontend can attach the receipt as the payment's slip exactly like a normal
+// slip upload — the SO-create / add-payment handlers consume the session by
+// upload_session_id and promote it (mfg-sales-orders.ts). The slip persistence
+// is best-effort: if R2 / the DB insert fails (or R2 is unbound), the OCR
+// fields still return — only slipKey/uploadSessionId come back null.
 //
 // OWNER'S RECORDING CONVENTION (authoritative — ocr-payment-spec.md, 3-method
 // model): a card-terminal receipt is booked as Method = MERCHANT.
@@ -32,6 +42,9 @@
 //   active so_dropdown_options (categories payment_method / payment_merchant /
 //   online_type / installment_plan); any value not in the live list is cleared.
 //   paidAt is a bare YYYY-MM-DD string (the receipt's swipe date) or null.
+//   The response also carries { slipKey, uploadSessionId } (or null when the
+//   R2 persistence step was skipped/failed) — the receipt stored AS the
+//   payment's slip (RECEIPT-AS-SLIP, see header above).
 //
 // Auth: supabaseAuth on the whole router (same as scan-so). The catalog read
 // uses the middleware-attached c.get('supabase') (scm-scoped, RLS applies).
@@ -45,6 +58,8 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
 import { getBranding } from '../../services/branding';
+import { slipBindings, expiresInOneHour } from '../lib/slip';
+import { buildSlipKey, type SlipMime } from '../lib/r2';
 
 // scm-scoped, loosely-typed client (matches scm/env.ts Variables.supabase).
 type SupabaseClient = SupabaseClientGeneric<any, any, any>;
@@ -158,13 +173,17 @@ A reference list of ALLOWED VALUES follows this prompt (PAYMENT METHODS, MERCHAN
 
 PAYMENT METHODS are exactly THREE: Merchant, Online, Cash. There is NO "Installment" method — a bank EPP / installment receipt is recorded as Method = Merchant with the tenure carried in installmentPlanMatch.
 
+Extract EXACTLY what is printed on the receipt. Do NOT "correct", reconcile, or recompute any figure, and do NOT derive or sum a TOTAL the receipt does not itself print — read the printed TOTAL / amount as-is, never compute it from a monthly repayment × tenure or from line items. If a field is genuinely absent, return null — never guess a value the receipt does not show.
+
+When a field is genuinely AMBIGUOUS (a smudged digit, two equally-plausible readings, an unclear amount/date/tenure), do NOT confidently pick one — return your single best guess at LOWER confidence (below 0.6) and state the ambiguity in that field's "reason" so the operator reviews it. A flagged low-confidence guess the operator catches beats a confident wrong value that slips through.
+
 HOW TO CLASSIFY THE RECEIPT
 ===========================
 Decide the top-level method (paymentMethodMatch — one of PAYMENT METHODS):
 
 1. ANY CARD-TERMINAL receipt — a normal swipe ("SALE" / "APPROVED") OR an EPP / installment approval (a "TENURE", "06 MONTHS" / "6 MTHS", "MONTHLY REPAYMENT" / "MONTHLY INSTALMENT" line, the words "EPP" / "EASY PAYMENT PLAN" / "INSTALMENT" / "ANSURAN" / "IPP", a plan code with a month count) → method = the "Merchant" value. Then:
      • bankMatch.value = the HOST / acquirer / terminal bank from MERCHANT BANKS. Read the "HOST", acquirer, or terminal-bank line (Maybank "Host: MBB" → the MBB value; Public Bank → the Public value; CIMB → CIMB; Hong Leong → HLB; RHB → RHB; an AEON terminal → the AEON value). If the host bank is NOT a row in MERCHANT BANKS, return bankMatch = null (leave it blank for a manual pick — do NOT substitute a different bank).
-     • installmentPlanMatch.value = the tenure plan from INSTALLMENT PLANS. If the receipt prints a tenure ("TENURE 06 MONTHS" / "6 MTHS" / "12 Months" / IPP 12) → the matching N-month value (06 → the 6-month value, 12 → the 12-month value). If the receipt shows NO tenure / months at all (a plain swipe) → the "One Shot" / one-off plan value (the no-months / single-payment entry in INSTALLMENT PLANS). Always set installmentPlanMatch for a Merchant receipt (One Shot when no tenure is printed).
+     • installmentPlanMatch.value = the tenure plan from INSTALLMENT PLANS. If the receipt prints a tenure ("TENURE 06 MONTHS" / "6 MTHS" / "12 Months" / IPP 12) → the matching N-month value (06 → the 6-month value, 12 → the 12-month value). If the receipt shows NO tenure / months at all (a plain swipe) → the "One Shot" / one-off plan value (the no-months / single-payment entry in INSTALLMENT PLANS). Always set installmentPlanMatch for a Merchant receipt (One Shot when no tenure is printed). NEVER default to a 12-month (or any N-month) value when no tenure / month count is printed — a card receipt with no tenure is One Shot, even when it prints "EPP" / "EASY PAYMENT PLAN" / "INSTALMENT" / "ANSURAN" / "IPP" with NO number. Only set an N-month value when an actual month count is written on the receipt.
 
 2. DUITNOW / BANK TRANSFER / TOUCH 'N GO (TNG) / E-WALLET / CHEQUE → method = the "Online" value, and set onlineTypeMatch to the matching ONLINE TYPES value (DuitNow → the DuitNow value, an IBG/instant transfer → the Bank Transfer value, Touch 'n Go / TNG → the TNG value, a cheque → the Cheque value). bankMatch and installmentPlanMatch = null.
 
@@ -175,7 +194,7 @@ FIELDS
 - paymentMethodMatch — the method value chosen by the rules above (Merchant / Online / Cash only).
 - bankMatch — a MERCHANT BANKS value: the HOST / acquirer bank. ONLY meaningful when the method is Merchant (rule 1). null when the method is Online/Cash OR when the host bank is not in the list.
 - onlineTypeMatch — an ONLINE TYPES value. ONLY meaningful when the method is Online (rule 2). Leave null otherwise.
-- installmentPlanMatch — an INSTALLMENT PLANS value (the tenure). For a Merchant receipt this is the printed tenure, or the "One Shot" / one-off value when no tenure is printed. null when the method is Online/Cash.
+- installmentPlanMatch — an INSTALLMENT PLANS value (the tenure). For a Merchant receipt this is the printed tenure, or the "One Shot" / one-off value when no tenure is printed. NEVER default to 12 months (or any N-month value) when no month count is on the receipt — no tenure printed means One Shot. null when the method is Online/Cash.
 - approvalCode — the receipt's "APPROVAL CODE" / "APPROVAL NO" / "APPR CODE" / "APPR" / "AUTH CODE" / "KOD KELULUSAN", as the bare alphanumeric string (e.g. "APPROVAL CODE 073496" → "073496"). Strip labels/brackets. null when absent.
 - amountRm — the charged TOTAL as a NUMBER in RM: the "TOTAL", "CARD TOTAL", "AMOUNT", "JUMLAH", or "SALE AMOUNT" the customer was charged (e.g. "RM 4,600.00" → 4600; "TOTAL RM 1,500.00" → 1500). For an EPP receipt this is the full financed amount (the TOTAL), NOT the monthly repayment. null when no total is readable.
 - paidAt — the receipt's own SWIPE / transaction DATE as "YYYY-MM-DD". Read the printed DATE/TIME on the receipt (e.g. "DATE 22/06/26 14:03" → "2026-06-22"). THIS MAY BE A PAST DATE — the receipt date is days before the slip is scanned; use the printed date, NEVER today's date. Two-digit years are 20YY. null when no date is readable.
@@ -300,6 +319,83 @@ function validateReceipt(rec: ExtractedReceipt, options: CatalogOptions): Warnin
 }
 
 // ===========================================================================
+// RECEIPT-AS-SLIP persistence (ocr-payment-spec.md Round-2 bug #3)
+// ---------------------------------------------------------------------------
+// Store the uploaded receipt into the SLIPS bucket (same key shape as /slips)
+// and register a pending_slip_uploads row at status 'uploaded' so the SO-create
+// / add-payment handlers can consume it by upload_session_id and promote it.
+// Returns { uploadSessionId, slipKey } for the frontend to attach as the
+// payment row's slip — or null when R2 is unbound or any step fails (the OCR
+// fields still return; the receipt just isn't auto-attached).
+// ===========================================================================
+type SlipPersistResult = { uploadSessionId: string; slipKey: string } | null;
+
+async function persistReceiptAsSlip(
+  c: { env: Env },
+  sb: SupabaseClient,
+  staffId: string,
+  buf: ArrayBuffer,
+  mime: SlipMime,
+): Promise<SlipPersistResult> {
+  // R2 unbound (creds not configured) → skip silently; OCR fields still flow.
+  let bindings;
+  try { bindings = slipBindings(c.env); }
+  catch { return null; }
+
+  // pending_slip_uploads.showroom_id is NOT NULL (FK → scm.showrooms). Houzs
+  // has no showroom concept, so stamp the first active showroom (same fallback
+  // as /slips/init). No showroom seeded → skip the slip (OCR still returns).
+  const { data: defaultRoom } = await sb
+    .from('showrooms')
+    .select('id')
+    .eq('active', true)
+    .order('sort_order', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  const showroomId = (defaultRoom as { id?: string } | null)?.id ?? null;
+  if (!showroomId) return null;
+
+  const sessionId = crypto.randomUUID();
+  const slipKey = buildSlipKey(sessionId, mime);
+
+  // content_hash mirrors the browser-upload path (sha-256 hex of the bytes).
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  const contentHash = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+
+  try {
+    // Worker holds the bytes already (multipart) — write straight through the
+    // native binding (no presigned PUT needed, unlike the browser flow).
+    await bindings.bucket.put(slipKey, buf, { httpMetadata: { contentType: mime } });
+  } catch {
+    return null;
+  }
+
+  // Register the session as already 'uploaded' (the bytes are in R2) so the
+  // consumer accepts it without a separate /confirm round-trip.
+  const { error: insertErr } = await sb.from('pending_slip_uploads').insert({
+    id: sessionId,
+    upload_session_id: sessionId,
+    staff_id: staffId,
+    showroom_id: showroomId,
+    r2_key: slipKey,
+    content_type: mime,
+    content_hash: contentHash,
+    content_size: buf.byteLength,
+    status: 'uploaded',
+    expires_at: expiresInOneHour(),
+  });
+  if (insertErr) {
+    // Roll back the orphaned R2 object so a failed insert doesn't leak bytes.
+    await bindings.bucket.delete(slipKey).catch(() => {});
+    return null;
+  }
+
+  return { uploadSessionId: sessionId, slipKey };
+}
+
+// ===========================================================================
 // POST /scan-payment/extract
 // ===========================================================================
 scanPayment.post('/extract', async (c) => {
@@ -352,6 +448,15 @@ scanPayment.post('/extract', async (c) => {
 
   const buf = await file.arrayBuffer();
   const data = toBase64(buf);
+  // Canonical slip mime for R2 storage (RECEIPT-AS-SLIP) — same coercion as
+  // the Anthropic image block below, but always one of the 4 SlipMime values.
+  const slipMime: SlipMime = isPdf
+    ? 'application/pdf'
+    : IMAGE_MIMES.has(mime)
+      ? (mime as SlipMime)
+      : name.endsWith('.png') ? 'image/png'
+      : name.endsWith('.webp') ? 'image/webp'
+      : 'image/jpeg';
   type ContentBlock = Record<string, unknown>;
   const fileBlock: ContentBlock = isPdf
     ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } }
@@ -445,11 +550,25 @@ scanPayment.post('/extract', async (c) => {
 
   const warnings = validateReceipt(parsed, options);
 
+  // RECEIPT-AS-SLIP: persist the receipt image as the payment row's slip and
+  // hand back its session+key. Best-effort — never block the OCR result on it.
+  let slip: SlipPersistResult = null;
+  try {
+    const staffId = (c.get('user') as { id: string }).id;
+    slip = await persistReceiptAsSlip(c, sb, staffId, buf, slipMime);
+  } catch {
+    slip = null;
+  }
+
   return c.json({
     success: true,
     data: {
       extracted: parsed,
       warnings,
+      // null when R2 is unbound / no showroom / persistence failed — the
+      // frontend then just skips auto-attaching (the OCR fields still apply).
+      slipKey: slip?.slipKey ?? null,
+      uploadSessionId: slip?.uploadSessionId ?? null,
     },
   });
 });

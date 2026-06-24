@@ -50,9 +50,12 @@
 // uses c.get('supabase') (also scm-scoped, attached by supabaseAuth).
 // ANTHROPIC_API_KEY is OPTIONAL on the Houzs Env: when absent /extract returns
 // 503 anthropic_key_missing — it must not break the worker or tsc.
-// FOLLOW-UP: the 2990's weekly distill cron (distillAllSalespersonRules) is
-// NOT wired here yet — the per-confirm fire-and-forget distill is the primary
-// learning path. Wire the cron when scheduled triggers are added to Houzs.
+// Crons (wired in backend/src/index.ts scheduled()): the keep-warm cron
+// (warmCatalogCacheForCron) fires during showroom hours so the catalog prompt
+// cache rarely goes cold, and the weekly distill cron (distillAllSalespersonRules,
+// Sunday-gated in the 02:00 UTC slot) re-distills every rep's rules plus the
+// cross-rep __GLOBAL__ alias dictionary AND __GLOBAL_RULES__ shared rules. The
+// per-confirm fire-and-forget distill remains the primary fast learning path.
 // ---------------------------------------------------------------------------
 
 import { Hono } from 'hono';
@@ -556,6 +559,10 @@ const buildSystemPrompt = (companyName: string) => `You extract structured data 
 
 The handwriting is often rushed, slanted, abbreviated, and mixed-case. Phone photos may be skewed, shadowed, or low-contrast. Read carefully; prefer extracting a raw transcription over guessing.
 
+AMBIGUITY — FLAG, DO NOT GUESS. When a field is genuinely ambiguous (two equally-plausible readings, a smudged or half-formed digit, an unclear size, a model that could be one of several), do NOT pick one at random and report it confidently. Return your single best guess at a LOWER confidence (below 0.6) and state the ambiguity in that field's "reason" (and/or the line's "notes") so the operator reviews it. A flagged ambiguity the operator catches beats a confident wrong value that survives review — wrong-but-confident is the value that slips through unchecked.
+
+NUMBERS — read the FULL numeric token; never truncate a multi-digit number to its first digit. A digit immediately followed by another digit (before any non-digit) is ONE multi-digit number: "12" is 12 (NEVER 1), "RM1,250" is 1250, "x10" is qty 10 (NEVER 1). The inch / quote mark (" or ') and trailing unit words ("ft", "pcs", "mm") are unit/spec text, NOT digit separators — do not let them split or truncate the number.
+
 MULTIPLE IMAGES
 ===============
 You may receive ONE or TWO images: a HANDWRITTEN order slip (a carbon-copy form with the customer, line items, handwriting, and payment checkboxes) and/or a PRINTED card-terminal payment RECEIPT (a thermal print: a bank name e.g. Maybank / Public Bank / CIMB, VISA / Mastercard, an APPROVAL CODE, a TOTAL amount, and often a TENURE / number of months for an EPP plan). Decide what each input image is:
@@ -608,6 +615,7 @@ For EVERY handwritten row in the item table output one lines[] entry:
     • If the catalog encodes size/variant as distinct SKU rows for that model, pick the SKU whose name matches the written size/variant; the divan-height / side / leg / gap details that the catalog does NOT encode as a SKU stay in "notes" for the operator to set in the form's variant picker.
     • A bare fabric code with NO model word on the row (or above it) is NOT enough to choose a model — set skuMatch = null, put the fabric in fabricMatch, and let rawText + notes carry the variant text. Never guess a model from a fabric code alone.
   Rules:
+    • PREFER THE PLAIN / GENERIC ROW over a branded variant. When several catalog SKUs match a slip token, choose the most generic catalog match — the row WITHOUT a brand prefix (e.g. "JM", "AKEMI", a maker name) — UNLESS the slip explicitly writes that brand. Example: "W. Protector (King)" → the plain "MATTRESS PROTECTOR (KING)" / "WATERPROOF PROTECTOR (KING)", NOT a "JM …" branded protector, because the slip names no brand. Only pick the branded SKU when the slip itself writes the brand token.
     • The code MUST be copied character-for-character from the catalog. NEVER invent, modify, or extrapolate a code that is not in the catalog. NEVER assemble a code out of a fabric code + a size; the code must already exist verbatim in the SKUS list.
     • Only AFTER genuinely searching the whole catalog by keyword/substring/abbreviation and finding nothing defensible, set skuMatch = null and let rawText speak. A null with good rawText is worth more than a wrong code — but a real catalog row keyworded in the slip token must NOT be returned as null.
     • confidence: 0.9+ only when the written text clearly identifies one specific catalog row; 0.5-0.8 when the model matches but the size/variant is ambiguous; below 0.5 prefer null.
@@ -968,7 +976,19 @@ function ilikeExact(v: string): string {
 // migration. The /salespeople listing filters it out; the weekly cron and
 // rep enumeration must never treat it as a salesperson.
 const GLOBAL_ALIAS_KEY = '__GLOBAL__';
-const isGlobalKey = (v: string): boolean => v.trim().toUpperCase() === GLOBAL_ALIAS_KEY;
+// Reserved so_scan_rules key for the CROSS-REP SHARED RULES blob — common,
+// NON-rep-specific extraction patterns distilled from CONFIRMED corrections
+// across ALL salespeople ("one rep's learnings benefit every rep"). Sibling to
+// __GLOBAL__ (which is aliases only); this layer is the shared GENERAL/category
+// rules every scan — including a brand-new rep's first scan — benefits from.
+// Same table/shape (just another reserved row), so NO migration.
+const GLOBAL_RULES_KEY = '__GLOBAL_RULES__';
+// Either reserved row must be kept out of the salesperson datalist / per-rep
+// enumeration / weekly per-rep pass.
+const isGlobalKey = (v: string): boolean => {
+  const k = v.trim().toUpperCase();
+  return k === GLOBAL_ALIAS_KEY || k === GLOBAL_RULES_KEY;
+};
 
 const buildDistillMetaPrompt = (companyName: string) => `You are reviewing extraction sessions of HANDWRITTEN showroom sale-order slips at ${companyName}, a Malaysian furniture retailer. ALL the examples below were written by ONE salesperson. Each example is a PAIR: what the AI initially extracted, followed by what the human operator corrected it to (the confirmed truth). Each salesperson has their own handwriting and notation habits, and those habits DIFFER per product category. Write a concise salesperson-specific OCR rule block so future extractions of this rep's slips apply their conventions automatically.
 
@@ -989,6 +1009,12 @@ Within each category section capture what is BESPOKE TO THIS REP:
   • Fabric / colour code conventions and where on the row they write them.
   • Price habits (unit price vs line total, "RM" omitted, thousands separators, rounding).
   • Qty habits ("x2" vs "2pcs" vs a bare digit, what a blank qty means for this rep).
+
+In the GENERAL: section ALSO capture this rep's HEADER / non-line-item habits whenever the diffs reveal them:
+  • customerSoRef format — the prefix, length, and letter/digit pattern of the slip's own reference number they habitually use (e.g. always "HC#####", or "No. <5 digits>" top-right). Teach the pattern, not a one-off value.
+  • Address-part splitting — how they lay out the address and where the postcode / city / state sit, so addressLine1 / postcode / city / addressStateMatch split correctly (e.g. they write state as "JB" meaning Johor, or omit the postcode and only write the taman).
+  • Phone / date / deposit notation quirks for this rep (day-first vs written-out dates, "dep" markers, how they sign off salesRep).
+  • QUIRKS THAT CONFLICT with the universal rules — when this rep consistently writes something that the universal rules would read differently, call it out explicitly as an override for THIS rep only (e.g. "this rep's 'K' on accessory rows means a colour code, NOT King size").
 
 DO NOT restate universal extraction rules that apply to every salesperson.
 DO NOT enumerate every line item from the examples.
@@ -1088,7 +1114,10 @@ async function distillSalespersonRules(
 ): Promise<DistillResult> {
   const rep = salesperson.trim();
   if (!rep) return { status: 'error', reason: 'Missing salesperson.' };
-  // Reserved key → the GLOBAL alias distill, never a per-rep rules pass.
+  // Reserved keys route to their own cross-rep distillers, never a per-rep
+  // rules pass: '__GLOBAL__' → shared alias dictionary,
+  // '__GLOBAL_RULES__' → shared cross-rep rules blob.
+  if (rep.toUpperCase() === GLOBAL_RULES_KEY) return distillGlobalRules(svc, apiKey, companyName);
   if (isGlobalKey(rep)) return distillGlobalAliases(svc, apiKey, companyName);
   if (!apiKey) {
     return {
@@ -1266,17 +1295,126 @@ async function distillGlobalAliases(
   return { status: 'distilled', rulesGenerated: distilledText, sampleCount: samples.length };
 }
 
+// ===========================================================================
+// CROSS-REP SHARED RULES — stored under the reserved '__GLOBAL_RULES__'
+// so_scan_rules row. Where __GLOBAL__ holds product-name ALIASES, this holds
+// the COMMON, NON-rep-specific EXTRACTION PATTERNS distilled from CONFIRMED
+// corrections across ALL salespeople: how the operator consistently fixes
+// sizes, fabric-code casing, payment-note → option mapping, address splitting,
+// customerSoRef shape, etc. — patterns that recur regardless of who wrote the
+// slip. Injected into EVERY /extract so one rep's corrections raise the
+// baseline for everyone, INCLUDING brand-new reps with no rules of their own.
+// Per-rep STYLE (handwriting habits) stays in the per-rep rows; this is the
+// shared, universal-improvement layer.
+// ===========================================================================
+const buildGlobalRulesMetaPrompt = (companyName: string) => `You are reviewing extraction sessions of HANDWRITTEN showroom sale-order slips at ${companyName}, a Malaysian furniture retailer. The examples below were written by MANY DIFFERENT salespeople. Each example is a PAIR: what the AI initially extracted, followed by what the human operator corrected it to (the confirmed truth).
+
+Your job is to distill SHARED EXTRACTION RULES that apply to EVERY salesperson — the COMMON, RECURRING ways the operator corrects the AI that are NOT specific to one rep's handwriting. These rules raise the baseline accuracy for all reps, including brand-new ones. DERIVE THEM FROM THE DIFFS: wherever the operator repeatedly corrected the same KIND of field the same way across DIFFERENT reps, that is a shared pattern worth a rule (e.g. a size token consistently re-mapped, a fabric-code casing normalisation, a payment-note phrase that should map to a specific option value, an address part that's habitually mis-split, a customerSoRef shape that's commonly misread).
+
+ONLY capture a rule when the SAME correction pattern shows up across MULTIPLE different salespeople (or is clearly rep-independent). If a correction is unique to one rep's handwriting/notation, DO NOT include it here — that belongs in the per-rep rules. Skip product-name aliases (those live in a separate shared alias dictionary); focus on EXTRACTION-LOGIC patterns: sizes, options/payment mapping, dates, phones, address parts, customerSoRef, qty/price reading.
+
+ORGANIZE into these sections, in this order, skipping a section only when you have no shared rule for it:
+LINE ITEMS:
+PAYMENT & OPTIONS:
+ADDRESS:
+HEADER & DATES:
+You may end with a GENERAL: section for anything cross-cutting.
+
+Within each section write short bullet rules phrased as universal instructions (not "rep X does…", but "a slip token written as … should map to …"). Each rule must be defensible from the diffs below.
+
+DO NOT restate the universal extraction rules the model already follows by default (never-invent codes, day-first dates, drop trunk 0 on phones) UNLESS the diffs show those defaults are being corrected in a specific consistent direction.
+DO NOT write per-salesperson style notes.
+DO NOT enumerate every line item from the examples.
+DO write 80-350 words total: each section label exactly as above ("LINE ITEMS:", …) on its own line, with short bullet points (•, -, *) underneath. No markdown headers, no fences, no preamble, no closing remarks.
+
+Output ONLY the rule text. The very first characters of your response must be a section label (e.g. "LINE ITEMS:"). Anything else will be stored verbatim into the prompt and corrupt downstream extractions.`;
+
+/**
+ * Regenerate the '__GLOBAL_RULES__' shared cross-rep rules blob from the
+ * latest ≤80 corrected samples ACROSS ALL salespeople. REPLACES the existing
+ * row (regenerate-from-pool, same contract as the alias + per-rep distills).
+ *
+ * Cheap-skip: fewer than 3 corrected samples total → skip WITHOUT an
+ * Anthropic call (shared rules need a few reps' worth of signal to be
+ * meaningful; keeps the fire-and-forget trigger on /confirm cheap + safe).
+ * Fail-soft: every error path returns a DistillResult, never throws.
+ */
+async function distillGlobalRules(
+  svc: SupabaseClient,
+  apiKey: string | undefined,
+  companyName: string,
+): Promise<DistillResult> {
+  if (!apiKey) {
+    return {
+      status: 'error',
+      reason: 'ANTHROPIC_API_KEY not configured. Run: npx wrangler secret put ANTHROPIC_API_KEY',
+    };
+  }
+
+  const { data: rows, error: selErr } = await svc
+    .from('so_scan_samples')
+    .select('extracted, corrected')
+    .not('corrected', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(80);
+  if (selErr) {
+    return { status: 'error', reason: isMissingTable(selErr) ? TABLE_MISSING_MSG : selErr.message };
+  }
+  const samples = (rows as Array<{ extracted: unknown; corrected: unknown }> | null) ?? [];
+  if (samples.length < 3) {
+    return {
+      status: 'skipped',
+      reason: `Need at least 3 corrected samples to distill cross-rep shared rules; have ${samples.length}.`,
+      sampleCount: samples.length,
+    };
+  }
+
+  const userPayload =
+    `Here are ${samples.length} extraction sessions across ALL salespeople (newest first), ` +
+    `each as an AI-extracted → operator-corrected pair. Distill the SHARED, rep-independent ` +
+    `extraction rules from the recurring diffs:\n\n` +
+    pairExamplesText(samples);
+
+  const call = await claudeDistillCall(apiKey, buildGlobalRulesMetaPrompt(companyName), userPayload);
+  let distilledText = call.text;
+  if (call.error || !distilledText) {
+    return { status: 'error', reason: call.error ?? 'Claude returned empty shared rules.' };
+  }
+  // Soft cap — keep the injected prompt block bounded (same ceiling as the
+  // alias + per-rep distills).
+  if (distilledText.length > 32_000) distilledText = distilledText.slice(0, 32_000);
+
+  const { error: upErr } = await svc
+    .from('so_scan_rules')
+    .upsert(
+      {
+        salesperson: GLOBAL_RULES_KEY,
+        rules: distilledText,
+        sample_count: samples.length,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'salesperson' },
+    );
+  if (upErr) {
+    return { status: 'error', reason: isMissingTable(upErr) ? TABLE_MISSING_MSG : upErr.message };
+  }
+
+  return { status: 'distilled', rulesGenerated: distilledText, sampleCount: samples.length };
+}
+
 /**
  * Weekly cron entry point — refresh the '__GLOBAL__' shared alias dictionary
- * FIRST, then regenerate rules for EVERY salesperson with ≥2
+ * and the '__GLOBAL_RULES__' cross-rep rules blob FIRST, then regenerate
+ * rules for EVERY salesperson with ≥2
  * corrected samples. Sequential (one Anthropic call at a time) and
  * error-isolated per rep: one rep failing never blocks the rest. The
  * per-confirm fire-and-forget distill remains the fast path; this weekly
  * pass is the safety net that consolidates (e.g. confirms whose distill
  * fetch died mid-flight).
  *
- * FOLLOW-UP (Houzs): not yet wired to a scheduled trigger. Exported so a
- * future cron handler can call it; the per-confirm distill is the live path.
+ * WIRED: backend/src/index.ts scheduled() calls this on Sundays in the daily
+ * 02:00 UTC slot; the per-confirm fire-and-forget distill is the primary live
+ * path and this weekly pass is the consolidating safety net.
  */
 export async function distillAllSalespersonRules(
   svc: SupabaseClient,
@@ -1298,6 +1436,22 @@ export async function distillAllSalespersonRules(
   } catch (e) {
     summary.errors += 1;
     console.error(`[scan-so weekly distill] __GLOBAL__ aliases threw: ${(e as Error).message}`);
+  }
+
+  // Cross-rep shared RULES blob — also benefits every rep (and brand-new
+  // reps), distilled from the same all-reps corrected pool. Error-isolated
+  // like the alias pass so it can never block the per-rep loop below.
+  try {
+    const gr = await distillGlobalRules(svc, apiKey, companyName);
+    if (gr.status === 'distilled') summary.distilled += 1;
+    else if (gr.status === 'skipped') summary.skipped += 1;
+    else {
+      summary.errors += 1;
+      console.error(`[scan-so weekly distill] __GLOBAL_RULES__ failed: ${gr.reason}`);
+    }
+  } catch (e) {
+    summary.errors += 1;
+    console.error(`[scan-so weekly distill] __GLOBAL_RULES__ threw: ${(e as Error).message}`);
   }
 
   // Distinct salespeople with ≥2 corrected rows. Supabase has no DISTINCT
@@ -1610,6 +1764,36 @@ scanSo.post('/extract', async (c) => {
     /* best-effort */
   }
 
+  // CROSS-REP SHARED RULES ('__GLOBAL_RULES__' so_scan_rules row) — common,
+  // rep-independent extraction patterns distilled from CONFIRMED corrections
+  // across ALL reps. Injected for EVERY scan (including a brand-new rep's
+  // first one), AFTER the cache boundary, alongside the shared aliases and
+  // BEFORE the per-rep rules so a rep's own rules can still refine on top.
+  // Best-effort: row/table missing just skips it.
+  let globalRulesText = '';
+  let globalRulesApplied = false;
+  try {
+    const { data: grRow } = await svc
+      .from('so_scan_rules')
+      .select('rules')
+      .eq('salesperson', GLOBAL_RULES_KEY)
+      .limit(1)
+      .maybeSingle();
+    const gr = grRow as { rules: string } | null;
+    if (gr && gr.rules.trim() !== '') {
+      globalRulesText =
+        `SHARED EXTRACTION RULES (all salespeople) — distilled from every rep's previously ` +
+        `corrected slips: the common, rep-independent ways the operator fixes sizes, payment / ` +
+        `option mapping, address parts, dates and customer references. Apply them to every slip ` +
+        `(they complement, never override, the universal extraction rules, the catalog and the ` +
+        `never-invent-codes rule):\n\n` +
+        gr.rules;
+      globalRulesApplied = true;
+    }
+  } catch {
+    /* best-effort */
+  }
+
   // Per-rep distilled rules block (so_scan_rules). Injected AFTER the
   // cache_control boundary so the catalog prefix stays cache-stable across
   // reps. Best-effort — table missing just skips it.
@@ -1725,11 +1909,13 @@ scanSo.post('/extract', async (c) => {
             role: 'user',
             content: [
               { type: 'text', text: cachedPrefix, cache_control: { type: 'ephemeral', ttl: '1h' } },
-              // Global aliases + rep rules + few-shot live AFTER the cache
-              // boundary — they vary per distill/salesperson/sample and must
-              // not bust the prefix. Order: shared aliases → rep rules →
-              // few-shot examples.
+              // Shared aliases + shared rules + rep rules + few-shot live AFTER
+              // the cache boundary — they vary per distill/salesperson/sample and
+              // must not bust the prefix. Order: shared aliases → shared rules →
+              // rep rules → few-shot examples (rep-specific refines on the shared
+              // baseline; concrete examples come last).
               ...(globalAliasText ? [{ type: 'text', text: globalAliasText }] : []),
+              ...(globalRulesText ? [{ type: 'text', text: globalRulesText }] : []),
               ...(repRulesText ? [{ type: 'text', text: repRulesText }] : []),
               ...(fewShotText ? [{ type: 'text', text: fewShotText }] : []),
               ...fileBlocks,
@@ -1967,6 +2153,7 @@ scanSo.post('/extract', async (c) => {
         sampleInsertError,
         repRules: repRulesMeta,
         sharedAliases: globalAliasApplied,
+        sharedRules: globalRulesApplied,
       },
     },
   });
@@ -2037,6 +2224,15 @@ scanSo.post('/samples/:id/confirm', async (c) => {
       if (g.status === 'error') console.warn(`[scan-so distill] __GLOBAL__ aliases: ${g.reason}`);
     } catch (e) {
       console.warn('[scan-so distill] __GLOBAL__ aliases threw:', (e as Error).message);
+    }
+    // Cross-rep shared RULES — regenerated on every confirm too (cheap-skips
+    // <3 samples without an API call) so each rep's correction lifts the
+    // shared baseline for everyone. Sequential; never blocks the confirm.
+    try {
+      const gr = await distillGlobalRules(svc, c.env.ANTHROPIC_API_KEY, distillCompanyName);
+      if (gr.status === 'error') console.warn(`[scan-so distill] __GLOBAL_RULES__: ${gr.reason}`);
+    } catch (e) {
+      console.warn('[scan-so distill] __GLOBAL_RULES__ threw:', (e as Error).message);
     }
   })();
   try {

@@ -483,6 +483,10 @@ export interface TeamMember {
   profile_pic_r2_key: string | null;
   /** Contact phone (mig 0013). Captured at invite. */
   phone: string | null;
+  /** The member's outward email alias (e.g. lim@houzscentury.com). Surfaced in
+   *  User Management; complements the Mail Center `email_addresses` link. Older
+   *  backends omit it. */
+  email_alias?: string | null;
 }
 
 export interface Department {

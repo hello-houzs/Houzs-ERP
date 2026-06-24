@@ -40,6 +40,15 @@ export const PERMISSIONS: PermissionDef[] = [
   // IT Admin already cover it via "*"; this lets non-admin roles in too.
   { key: "scm.access", resource: "Supply Chain", verb: "read", label: "Access Supply Chain", description: "See and use the Supply Chain (furniture SCM) modules" },
 
+  // Mail Center — in-ERP shared inbox (/api/mail-center). mail_center.read is the
+  // nav/page gate (grant broadly); mail_center.manage gates the alias / access /
+  // scope-level admin grids. Owner + IT Admin cover both via "*". Per-thread
+  // read/reply/star/label/trash are NOT permission-gated — they gate on mailbox
+  // SCOPE ownership (see getMailScope) so an unseeded permission can't 403 a
+  // mailbox owner.
+  { key: "mail_center.read",   resource: "Mail Center", verb: "read",   label: "View Mail Center", description: "See the Mail Center inbox and work the mailboxes in your scope" },
+  { key: "mail_center.manage", resource: "Mail Center", verb: "manage", label: "Manage Mail Center", description: "Create/assign email aliases, the shared-mailbox access matrix, and per-user visibility levels" },
+
   // System
   { key: "udf.manage", resource: "Custom Fields", verb: "manage", label: "Manage custom fields", description: "Add or remove user-defined fields on tables" },
   { key: "settings.manage", resource: "Settings", verb: "manage", label: "Manage settings", description: "Edit connection and sync configuration" },

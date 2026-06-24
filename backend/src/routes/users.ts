@@ -84,6 +84,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
       created_at: users.created_at,
       profile_pic_r2_key: users.profile_pic_r2_key,
       phone: users.phone,
+      email_alias: users.email_alias,
       // GROUP_CONCAT joins the user's brand allow-list in one round-trip.
       // Unit-separator (US, 0x1f) keeps multi-word brands ("MY SOFA
       // FACTORY") splittable client-side without ambiguity.
@@ -634,6 +635,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     name?: string | null;
     phone?: string | null;
     email?: string;
+    email_alias?: string | null;
     status_reason?: string | null;
     // Admin-set/reset password (users.manage). Hashed; never stored plaintext.
     password?: string;
@@ -765,6 +767,10 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   }
   if (body.phone !== undefined) {
     set.phone = body.phone?.trim() || null;
+  }
+  // The member's outward Mail Center alias. Normalised lowercase; empty → null.
+  if (body.email_alias !== undefined) {
+    set.email_alias = body.email_alias?.trim().toLowerCase() || null;
   }
   if (body.email !== undefined) {
     const em = String(body.email).toLowerCase().trim();

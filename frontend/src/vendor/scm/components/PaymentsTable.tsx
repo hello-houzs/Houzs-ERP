@@ -166,6 +166,13 @@ export type PaymentDraft = {
      SAVED mode (SO route) it is REQUIRED before commit; in DRAFT mode it is
      optional and the batching pages (DO / SI / consignment) ignore it. */
   slipUploadSessionId:      string | null;
+  /* Bug #3 (2026-06-24) — when this draft was seeded from a card receipt scanned
+     in the Scan-Order modal, the receipt's R2 key (scan-slips/…-receipt). The
+     receipt IS the slip, so a draft carrying this satisfies the New SO slip-
+     required guard without a second upload; SalesOrderNew records it via the SO-
+     create deposit fields (which reuse the order-level proof) instead of the
+     strict per-payment slip route. '' / undefined for a manually-added row. */
+  receiptImageKey?:         string;
 };
 
 export const newPaymentDraft = (defaultStaffId = ''): PaymentDraft => ({
@@ -583,9 +590,17 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
   }, [isSaved, slipProp?.slipKey]);
 
   /* 8-column override when the Slip column is shown (inserts a 64px slip column
-     just before Collected By). Leaves the shared 7-column CSS untouched. */
+     just before Collected By). Leaves the shared 7-column CSS untouched.
+     Bug #4 (2026-06-24) — pin a min-width equal to the sum of the eight tracks
+     so the grid OVERFLOWS (and scrolls, via .grid { overflow-x:auto }) inside
+     the overflow:hidden card rather than crushing the Slip column off the right
+     edge. 140+140+120+140+140+64+160+32 = 936px of track + 8 cells × 2×8px
+     padding ≈ 1064px; round to 1040px (the 1fr/1.4fr tracks absorb the rest). */
   const gridStyle: CSSProperties | undefined = showSlip
-    ? { gridTemplateColumns: '140px 140px minmax(120px, 1fr) minmax(140px, 1.4fr) minmax(140px, 1.4fr) 64px 160px 32px' }
+    ? {
+        gridTemplateColumns: '140px 140px minmax(120px, 1fr) minmax(140px, 1.4fr) minmax(140px, 1.4fr) 64px 160px 32px',
+        minWidth: 1040,
+      }
     : undefined;
 
   return (
@@ -616,6 +631,11 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
           </div>
 
           {/* Transactions table ──────────────────────────────────────── */}
+          {/* Bug #4 — OUTER scroll wrapper: the wide slip-mode grid scrolls
+              horizontally INSIDE the overflow:hidden card instead of being
+              clipped at the right edge. overflow lives on the wrapper, the
+              min-width on the inner .grid (must be different elements). */}
+          <div className={paymentsStyles.gridScroll}>
           <div className={paymentsStyles.grid} style={gridStyle}>
             {/* Header row */}
             <span className={paymentsStyles.headerCell}>
@@ -983,6 +1003,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                 </span>
               </div>
             ))}
+          </div>
           </div>
 
           {/* ── Summary (Deposit Paid + Balance) ────────────────────── */}

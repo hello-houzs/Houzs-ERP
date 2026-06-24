@@ -26,6 +26,10 @@ const Notifications = lazy(() => import("./pages/Notifications").then((m) => ({ 
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 const Team = lazy(() => import("./pages/Team").then((m) => ({ default: m.Team })));
 const SystemHealth = lazy(() => import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealth })));
+// Mail Center — in-ERP shared inbox (ported from Hookka). Inbox + thread detail;
+// Compose is a modal opened from the inbox (no standalone route).
+const MailInbox = lazy(() => import("./pages/MailCenter/Inbox").then((m) => ({ default: m.MailInbox })));
+const MailThread = lazy(() => import("./pages/MailCenter/Thread").then((m) => ({ default: m.MailThread })));
 // Ported 2990's SCM (furniture supply chain) — owner-gated under /scm/*.
 // These are the VENDORED (wholesale-copied) 2990 pages, now the canonical /scm/*
 // surface. The native pages/scm/* set was retired in the cutover.
@@ -242,6 +246,27 @@ export default function App() {
             <PageGuard page="team">
               <Team />
             </PageGuard>
+          }
+        />
+        {/* ── Mail Center — shared inbox. Permission-gated on mail_center.read
+            (the per-user mailbox scope is enforced server-side; reads/replies
+            aren't gated by a permission key, only by mailbox ownership). The
+            literal /mail-center route precedes /mail-center/:id. Compose is a
+            modal opened from the inbox, not its own route. ── */}
+        <Route
+          path="/mail-center"
+          element={
+            <Guard perm="mail_center.read">
+              <MailInbox />
+            </Guard>
+          }
+        />
+        <Route
+          path="/mail-center/:id"
+          element={
+            <Guard perm="mail_center.read">
+              <MailThread />
+            </Guard>
           }
         />
         {/* ── Supply Chain (vendored 2990's SCM) — scm.access-gated /scm/*;

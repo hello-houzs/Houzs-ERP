@@ -52,6 +52,11 @@ export type Env = {
   // Public origin for building email links (portal survey URLs etc.).
   // Falls back to the worker URL if unset.
   PUBLIC_APP_URL?: string;
+  // Mail Center inbound ingest secret (shared with the standalone
+  // houzs-mail-inbound CF Email Worker / IMAP bridge). The pre-auth
+  // POST /api/mail-center/inbound route 503s until this is set and >= 16 chars.
+  // Set via `wrangler secret put MAIL_INBOUND_SECRET` (owner-gated, MX cutover).
+  MAIL_INBOUND_SECRET?: string;
   // System Health observability (phase 2, ported from Hookka). Writes via the
   // binding; reads via the AE SQL API using the two secrets. All optional —
   // absent => health endpoints serve deterministic mock data.

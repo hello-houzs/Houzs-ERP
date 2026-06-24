@@ -238,7 +238,10 @@
 // v54 — Branding config: company name/reg/address/phone/email centralized into one
 //   Settings -> Branding editor (app_settings 'branding' key); OCR prompts, PDF
 //   letterheads, email, and UI chrome all read it. Edit the company identity once.
-const VERSION = "houzs-erp-v54";
+// v55 — OCR polish (phone MY default, JM->plain match, receipt-as-slip, payments
+//   table scroll, cross-salesperson shared-rules layer) + Mail Center (shared
+//   inbox: Inbox/Thread/Compose, Email Alias per member, Gmail IMAP pull inbound).
+const VERSION = "houzs-erp-v55";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

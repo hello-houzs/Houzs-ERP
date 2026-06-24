@@ -75,6 +75,17 @@
   border-top: 1px solid var(--line);
 }
 
+/* Bug #4 (2026-06-24) — the parent .card is overflow:hidden, so the wider
+   slip-mode grid (min-width pinned inline in PaymentsTable's gridStyle) was
+   CLIPPED at the card's right edge ("右边歪了" — Slip column cut off). This OUTER
+   wrapper scrolls the grid horizontally INSIDE the card instead of clipping it.
+   The overflow MUST be on the wrapper and the min-width on the inner .grid (two
+   elements) — putting both on one makes the grid itself overflow + clip again.
+   The <600px block converts the grid to a flex card stack, where this is moot. */
+.gridScroll {
+  overflow-x: auto;
+}
+
 @media (max-width: 1100px) {
   .grid {
     grid-template-columns: 120px 120px 100px 1fr 1fr 140px 30px;

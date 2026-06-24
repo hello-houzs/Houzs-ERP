@@ -1916,6 +1916,7 @@ function EditMemberPanel({
   const toast = useToast();
   const [name, setName] = useState(user.name || "");
   const [email, setEmail] = useState(user.email || "");
+  const [emailAlias, setEmailAlias] = useState(user.email_alias || "");
   const [phone, setPhone] = useState(user.phone || "");
   const [deptId, setDeptId] = useState<number | "">(user.department_id ?? "");
   // Full department membership (mig 0020). Primary (deptId) is always part of
@@ -1974,6 +1975,8 @@ function EditMemberPanel({
     const patch: Record<string, unknown> = {};
     if (name.trim() !== (user.name || "")) patch.name = name.trim() || null;
     if (em !== (user.email || "")) patch.email = em;
+    if ((emailAlias.trim() || null) !== (user.email_alias ?? null))
+      patch.email_alias = emailAlias.trim().toLowerCase() || null;
     if (phone.trim() !== (user.phone || "")) patch.phone = phone.trim() || null;
     if ((deptId || null) !== (user.department_id ?? null)) patch.department_id = deptId || null;
     // Full membership set — always carry the primary; send only when changed.
@@ -2077,6 +2080,19 @@ function EditMemberPanel({
             placeholder="member@houzscentury.com"
             className={inputCls}
           />
+        </div>
+        <div>
+          <label className={labelCls}>Email Alias</label>
+          <input
+            type="email"
+            value={emailAlias}
+            onChange={(e) => setEmailAlias(e.target.value)}
+            placeholder="e.g. lim@houzscentury.com (optional)"
+            className={inputCls}
+          />
+          <div className="mt-1 text-[10px] text-ink-muted">
+            The member's outward Mail Center address — defaults their reply From.
+          </div>
         </div>
         <div>
           <label className={labelCls}>Phone</label>

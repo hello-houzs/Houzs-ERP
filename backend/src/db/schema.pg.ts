@@ -74,6 +74,9 @@ export const users = pgTable("users", {
   current_streak: integer("current_streak").notNull().default(0),
   profile_pic_r2_key: text("profile_pic_r2_key"),
   phone: text("phone"),
+  // The member's outward Mail Center alias (e.g. lim@houzscentury.com). Surfaced
+  // in User Management; complements the email_addresses link (mig 0039+).
+  email_alias: text("email_alias"),
 });
 
 // ── roles ──────────────────────────────────────────────────

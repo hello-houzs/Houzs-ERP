@@ -65,7 +65,7 @@ import {
 } from '../../vendor/scm/components/ScanOrderModal';
 import {
   PaymentsTable, labelToApi, draftMethodFields, newPaymentDraft,
-  missingMethodSubField, type PaymentDraft,
+  missingMethodSubField, parseInstallmentMonths, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
 import { formatPhone } from '@2990s/shared/phone';
 import styles from './SalesOrderDetail.module.css';
@@ -396,6 +396,12 @@ export const SalesOrderNew = () => {
         onlineType:             p.onlineTypeValue || '',
         approvalCode:           p.approvalCode || '',
         amountCenti:            p.depositCenti > 0 ? p.depositCenti : 0,
+        /* Bug #3 (2026-06-24) — the card receipt scanned in the modal IS this
+           deposit's slip. Tag the draft with the receipt's R2 key so the save
+           treats the slip-required guard as satisfied (no second upload) and
+           records the deposit through the SO-create proof rather than the
+           strict per-payment slip route. */
+        receiptImageKey:        payload.receiptImageKey || '',
       }]);
     }
     const lineMeta: Record<string, ScanLineMeta> = {};
@@ -814,7 +820,11 @@ export const SalesOrderNew = () => {
   const flushPaymentDrafts = async (docNo: string): Promise<{ failed: number }> => {
     if (paymentDrafts.length === 0) return { failed: 0 };
     const tasks = paymentDrafts
-      .filter((d) => d.amountCenti > 0)
+      /* Bug #3 (2026-06-24) — a receipt-backed deposit (scanned in the modal) is
+         recorded through the SO-create body's deposit fields, not the strict
+         per-payment route (which 400s without a slip session). Skip it here so
+         it isn't double-booked. */
+      .filter((d) => d.amountCenti > 0 && !d.receiptImageKey)
       .map(async (d) => {
         const { method } = labelToApi(d.methodLabel);
         const body: { docNo: string } & Record<string, unknown> = {
@@ -1044,8 +1054,15 @@ export const SalesOrderNew = () => {
     /* Spec D4 — every SO payment must carry its own slip. The SO payments
        route (POST /:docNo/payments) 400s a slip-less payment, so gate the
        create here: any amount-bearing draft without a confirmed slip blocks
-       the save and tells commander which rows to fix. */
-    const slipless = paymentDrafts.filter((d) => d.amountCenti > 0 && !d.slipUploadSessionId);
+       the save and tells commander which rows to fix.
+       Bug #3 (2026-06-24) — a draft seeded from a card receipt scanned in the
+       modal carries the receipt's R2 key (receiptImageKey). The receipt IS the
+       slip, so it satisfies the guard WITHOUT a second upload; it is recorded
+       through the SO-create deposit fields (order-level proof), not the strict
+       per-payment route. */
+    const slipless = paymentDrafts.filter(
+      (d) => d.amountCenti > 0 && !d.slipUploadSessionId && !d.receiptImageKey,
+    );
     if (slipless.length > 0) {
       notify({
         title: 'Each payment needs a slip uploaded before saving.',
@@ -1080,8 +1097,31 @@ export const SalesOrderNew = () => {
        into the few-shot pool (fire-and-forget, fromScan only). */
     maybeLearnFromScan(validLines);
 
+    /* Bug #3 (2026-06-24) — the modal seeds ONE receipt-backed deposit (the card
+       receipt scanned alongside the slip). Record it through the SO-create
+       deposit fields so the backend books it WITHOUT demanding a second slip
+       upload (the receipt, on the header as receipt_image_key, IS the proof).
+       flushPaymentDrafts skips it. A manually-added row is unaffected. */
+    const receiptDeposit = paymentDrafts.find(
+      (d) => d.amountCenti > 0 && Boolean(d.receiptImageKey),
+    );
+    const receiptDepositBody = receiptDeposit
+      ? (() => {
+          const { method } = labelToApi(receiptDeposit.methodLabel);
+          return {
+            depositCenti:      receiptDeposit.amountCenti,
+            paymentMethod:     method,
+            merchantProvider:  receiptDeposit.merchantProvider || undefined,
+            installmentMonths: parseInstallmentMonths(receiptDeposit.installmentMonthsLabel) ?? undefined,
+            approvalCode:      receiptDeposit.approvalCode || undefined,
+            paymentDate:       receiptDeposit.paidAt || undefined,
+          };
+        })()
+      : {};
+
     create.mutate(
       {
+        ...receiptDepositBody,
         /* DRAFT flow — backend reads `asDraft: true` to create the SO with
            status 'DRAFT' instead of 'CONFIRMED'. Omitted (undefined) for a
            normal Create so the body stays unchanged in that path. */

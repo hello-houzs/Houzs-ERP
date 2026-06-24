@@ -38,6 +38,8 @@ import {
   HandCoins,
   PackageOpen,
   Reply,
+  Mail,
+  Inbox,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -308,6 +310,21 @@ export const NAV_TABS: NavTab[] = [
     children: [
       { to: "/system-health", label: "System Health", icon: Activity, perm: "*" },
       { to: "/team", label: "User Management", icon: Users, anyPerm: ["users.read", "roles.read"], pageAccess: "team" },
+    ],
+  },
+
+  // ── Mail Center — in-ERP shared inbox (ported from Hookka) ───
+  // Gated on mail_center.read; the per-user mailbox scope is enforced
+  // server-side. Sent is the same inbox page with ?folder=sent (the page
+  // reads its own folder state — the query is a deep-link hint).
+  {
+    label: "Mail Center",
+    icon: Mail,
+    groupId: "mail-center",
+    anyPerm: ["mail_center.read"],
+    children: [
+      { to: "/mail-center", label: "Inbox", icon: Inbox, anyPerm: ["mail_center.read"] },
+      { to: "/mail-center?folder=sent", label: "Sent", icon: Send, anyPerm: ["mail_center.read"] },
     ],
   },
 

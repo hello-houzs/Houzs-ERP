@@ -182,18 +182,31 @@ const DIALS_BY_LEN = [...COUNTRY_DIAL_CODES].sort((a, b) => b.dial.length - a.di
  * with an empty national part. Matching is greedy on the longest known dial code.
  */
 export function splitE164(stored: string | null | undefined): { dial: string; national: string } {
-  const digits = onlyDigits(String(stored ?? ''));
+  const raw = String(stored ?? '');
+  const digits = onlyDigits(raw);
   if (digits.length === 0) return { dial: DEFAULT_DIAL, national: '' };
-  for (const c of DIALS_BY_LEN) {
-    if (digits.startsWith(c.dial)) return { dial: c.dial, national: digits.slice(c.dial.length) };
+  // Country-code matching ONLY when the value carries an explicit international
+  // `+` prefix. Without it the digits are a bare national number and the greedy
+  // dial-code scan would mis-claim a Malaysian mobile as a foreign country —
+  // most painfully "197770309" (a +60 number written without the country code,
+  // per the OCR "+60 without the leading 0" rule) matching US +1 and showing
+  // the selector as "us +1" on a Malaysian number (bug #1, 2026-06-24). A real
+  // foreign number always reaches the UI in E.164 (+65…/+62…) so the `+` gate
+  // never strips a legitimate country code.
+  if (raw.trim().startsWith('+')) {
+    for (const c of DIALS_BY_LEN) {
+      if (digits.startsWith(c.dial)) return { dial: c.dial, national: digits.slice(c.dial.length) };
+    }
+  } else if (digits.startsWith('60')) {
+    // Plus-less but explicitly Malaysian (e.g. "60197770309").
+    return { dial: DEFAULT_DIAL, national: digits.slice(2) };
   }
-  // No known country code — assume the digits are a Malaysian national number.
-  // Strip the local trunk prefix `0` when defaulting to +60: a slip / OCR phone
-  // written "0197770309" is the Malaysian local form whose leading 0 is replaced
-  // by the +60 country code, so the national part is "197770309" → displays
-  // "19-777 0309", never "0197770309" (request 2026-06-24).
-  const national = digits.startsWith('60') ? digits.slice(2) : digits.replace(/^0+/, '');
-  return { dial: DEFAULT_DIAL, national };
+  // No explicit country code and not 60-prefixed — assume a Malaysian national
+  // number. Strip the local trunk prefix `0` when defaulting to +60: a slip /
+  // OCR phone written "0197770309" is the Malaysian local form whose leading 0
+  // is replaced by the +60 country code, so the national part is "197770309" →
+  // displays "19-777 0309", never "0197770309" (request 2026-06-24).
+  return { dial: DEFAULT_DIAL, national: digits.replace(/^0+/, '') };
 }
 
 /**

@@ -47,6 +47,11 @@ import survey from "./routes/survey";
 import track from "./routes/track";
 import portal from "./routes/portal";
 import supplierPortal from "./routes/supplierPortal";
+// Mail Center — in-ERP shared inbox. `mailInbound` is the PRE-AUTH ingest
+// (secret-guarded, mounted before the auth gate); `mailCenter` is the authed
+// read/reply/compose/label/address/access/scope router.
+import mailCenter from "./routes/mail-center";
+import mailInbound from "./routes/mail-inbound";
 import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
@@ -99,6 +104,14 @@ app.route("/api/portal", portal);
 app.use("/api/supplier-portal/*", supplierTrack);
 app.route("/api/supplier-portal", supplierPortal);
 
+// Mail Center inbound ingest — PRE-AUTH, secret-guarded machine-to-machine.
+// MUST be mounted BEFORE the /api/* auth gate so the standalone inbound Worker
+// (no staff session) can POST received mail. It authenticates the caller with
+// the x-mail-secret header vs env.MAIL_INBOUND_SECRET and 503s until that secret
+// is set. Mounted at the exact sub-path so the authed mail-center router below
+// never shadows it.
+app.route("/api/mail-center/inbound", mailInbound);
+
 // Auth gate for everything else under /api/*. Mounted AFTER the
 // public API routes above so they stay unauthenticated.
 app.use("/api/*", auth);
@@ -133,6 +146,11 @@ app.route("/api/lorries", lorries);
 app.route("/api/settings", settings);
 app.route("/api/branding", branding);
 app.route("/api/inbox", inbox);
+// Mail Center (authed) — reads/reply/compose/label gate on mailbox SCOPE
+// ownership; alias/access/scope-level admin gate on mail_center.manage inside
+// the handlers (owner passes via "*"). The pre-auth /api/mail-center/inbound
+// route is mounted above, before the auth gate, and is not shadowed by this.
+app.route("/api/mail-center", mailCenter);
 app.route("/api/projects-print", projectsPrint);
 app.route("/api/search", search);
 app.route("/api/assr-print", assrPrint);

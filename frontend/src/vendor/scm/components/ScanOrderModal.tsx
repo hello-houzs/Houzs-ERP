@@ -46,6 +46,7 @@ import { useAuth } from '../../../auth/AuthContext';
 import { authedFetch } from '../lib/authed-fetch';
 import { sortByText } from '../lib/sort-options';
 import { useVenues, type VenueRow } from '../lib/venues-queries';
+import { normalizePhone } from '@2990s/shared/phone';
 import styles from './ScanOrderModal.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -331,7 +332,15 @@ export const ScanOrderModal = ({ onClose }: Props) => {
     const ex = d.extracted;
     const skuByCode = new Map(d.catalog.skus.map((s) => [s.code.toUpperCase(), s]));
 
-    const phones = ex.phones.filter((p) => p.trim() !== '');
+    /* Bug #1 (2026-06-24) — seed phones in canonical +60 E.164 so the New SO
+       PhoneInput's country selector resolves to Malaysia, never US +1. The OCR
+       returns the national form ("+60 without the leading 0", e.g. "197770309")
+       which, plus-less, the dial-code split would otherwise mis-claim as US.
+       normalizePhone prepends the +60 country code (any explicit international
+       number the rep wrote — +65…/+62… — is preserved). */
+    const phones = ex.phones
+      .map((p) => normalizePhone(p) ?? '')
+      .filter((p) => p.trim() !== '');
 
     /* 3-method model (spec 1 + 6, 2026-06-24) — top-level method is only
        Merchant / Online / Cash; "Installment" is no longer a returnable method
