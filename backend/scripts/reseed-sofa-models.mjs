@@ -89,8 +89,9 @@ const sql = postgres(url, {
   connect_timeout: 15,
 });
 
-// branding drives the SKU-name prefix ("Houzs SOFA <name> <comp>").
-const BRANDING = "Houzs";
+// branding drives the SKU-name prefix. Empty => "SOFA <name> <comp>" (no brand
+// word), matching 2990 + the owner's preference (no "HOUZS" in the SKU name).
+const BRANDING = "";
 
 // Whole-seater pieces the Excel lists on EVERY model but the pool lacked.
 // Inserted into scm.compartment_library before the model upserts so the ids
