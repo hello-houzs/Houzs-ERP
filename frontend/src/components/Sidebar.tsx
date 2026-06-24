@@ -308,7 +308,7 @@ export const NAV_TABS: NavTab[] = [
     groupId: "people",
     anyPerm: ["users.read", "roles.read"],
     children: [
-      { to: "/system-health", label: "System Health", icon: Activity, perm: "*" },
+      { to: "/system-health", label: "System Health", icon: Activity, pageAccess: "system_health" },
       { to: "/team", label: "User Management", icon: Users, anyPerm: ["users.read", "roles.read"], pageAccess: "team" },
     ],
   },

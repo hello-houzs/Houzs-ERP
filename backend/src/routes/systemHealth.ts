@@ -1,11 +1,12 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { requirePermission } from "../middleware/auth";
+import { requirePermission, requirePageAccess } from "../middleware/auth";
 import { isSupabaseConfigured, getSupabaseService } from "../db/supabase";
 import { reconcileLedger } from "../scm/lib/reconcile-ledger";
 
 // ---------------------------------------------------------------------------
-// /api/admin/health — owner-only ("*") System Health, "real data" phase 1.
+// /api/admin/health — System Health, "real data" phase 1. Gated on the
+// `system_health` page (configurable per position; Owner / `*` always pass).
 //
 // Ported from Hookka ERP's /admin/health, trimmed to what Houzs can show
 // WITHOUT Cloudflare Analytics Engine (Houzs has no AE binding). The
@@ -44,7 +45,7 @@ function cutoffIso(range: string | undefined): string {
   return new Date(Date.now() - ms).toISOString();
 }
 
-app.get("/live", requirePermission("*"), async (c) => {
+app.get("/live", requirePageAccess("system_health"), async (c) => {
   // DB ping FIRST so it captures any cold-connection establishment cost —
   // this is the headline number the operator watches for the "Failed to
   // fetch" cold-start stall.
@@ -179,7 +180,7 @@ app.get("/live", requirePermission("*"), async (c) => {
   });
 });
 
-app.get("/audit-feed", requirePermission("*"), async (c) => {
+app.get("/audit-feed", requirePageAccess("system_health"), async (c) => {
   const range = c.req.query("range") || "24h";
   const cutoff = cutoffIso(range);
   const limit = Math.min(parseInt(c.req.query("limit") || "100", 10) || 100, 200);

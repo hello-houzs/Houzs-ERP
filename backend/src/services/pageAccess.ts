@@ -528,6 +528,18 @@ export const PAGES: PageDef[] = [
     supportsPartial: true,
     backfill: (p) => (isOwner(p) ? "full" : "none"),
   },
+
+  // ── System Health (infra health + org-wide audit trail) ─────
+  // High-privilege admin page (was Owner-only). Now configurable per position
+  // so an IT/ops position can be granted it; default stays Owner-only via the
+  // backfill (no role row → only `*` resolves to full).
+  {
+    key: "system_health",
+    label: "System Health",
+    partialMeaning: "(not used; full or none)",
+    supportsPartial: false,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
 ];
 
 const PAGE_KEYS = new Set(PAGES.map((p) => p.key));
