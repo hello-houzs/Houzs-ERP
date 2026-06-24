@@ -407,6 +407,34 @@ function PositionMatrixEditor({
     }
   }
 
+  // Render a page + ALL its descendants (recursive) so every leaf — e.g. each
+  // SCM sub-page (Sales Orders / Delivery / PO / GRN / …) — gets its own
+  // None/View/Edit/Full control. Each level indents under its parent; nodes
+  // with children are collapsible.
+  const renderNode = (page: PageDef, depth: number) => {
+    const kids = childrenOf(page.key);
+    const isCollapsed = collapsed.has(page.key);
+    return (
+      <div key={page.key} className={depth > 0 ? "mt-1" : ""}>
+        <LevelRow
+          page={page}
+          level={levels[page.key] ?? "none"}
+          dirty={dirty.has(page.key)}
+          onChange={(l) => change(page.key, l)}
+          collapsible={kids.length > 0}
+          collapsed={isCollapsed}
+          onToggleCollapse={() => toggleGroup(page.key)}
+          dense={depth > 0}
+        />
+        {kids.length > 0 && !isCollapsed && (
+          <div className="mt-1 space-y-1 border-l-2 border-border-subtle pl-2.5">
+            {kids.map((kid) => renderNode(kid, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="rounded-lg border border-border bg-surface p-4 shadow-stone">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -450,44 +478,18 @@ function PositionMatrixEditor({
         <>
           {/* Cards flow into columns so the whole matrix fits one screen — no scroll */}
           <div className="columns-1 gap-3 lg:columns-2 [&>*]:mb-2">
-            {parents.map((parent) => {
-              const kids = childrenOf(parent.key);
-              const isCollapsed = collapsed.has(parent.key);
-              return (
-                <div
-                  key={parent.key}
-                  className="break-inside-avoid rounded-md border border-border bg-bg/40 p-2.5"
-                >
-                  <LevelRow
-                    page={parent}
-                    level={levels[parent.key] ?? "none"}
-                    dirty={dirty.has(parent.key)}
-                    onChange={(l) => change(parent.key, l)}
-                    collapsible={kids.length > 0}
-                    collapsed={isCollapsed}
-                    onToggleCollapse={() => toggleGroup(parent.key)}
-                  />
-                  {kids.length > 0 && !isCollapsed && (
-                    <div className="mt-1.5 space-y-1 border-l-2 border-border-subtle pl-2.5">
-                      {kids.map((child) => (
-                        <LevelRow
-                          key={child.key}
-                          page={child}
-                          level={levels[child.key] ?? "none"}
-                          dirty={dirty.has(child.key)}
-                          onChange={(l) => change(child.key, l)}
-                          dense
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {parents.map((parent) => (
+              <div
+                key={parent.key}
+                className="break-inside-avoid rounded-md border border-border bg-bg/40 p-2.5"
+              >
+                {renderNode(parent, 0)}
+              </div>
+            ))}
           </div>
           <p className="pt-2 text-[10.5px] text-ink-muted">
-            Sub-pages inherit their parent's level unless set directly. Set a parent to grant a
-            whole area, then override individual sub-pages (e.g. Projects = view, Finances = none).
+            Every page (incl. each SCM sub-page) has its own level. Sub-pages inherit their parent
+            unless set directly — set a parent to grant a whole area, then override individual pages.
           </p>
         </>
       )}
