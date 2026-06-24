@@ -63,6 +63,11 @@ export type DataGridColumn<T> = {
       searchValue → filterValue → groupValue → '' (cells are ReactNode, so we
       never read the rendered node). */
   exportValue?: (row: T) => string | number;
+  /** Header text written to Excel for this column. Defaults to `label`. Use this
+      ONLY when the on-screen `label` is intentionally blank (a pure icon /
+      checkbox / indicator column) so the exported sheet still gets a real,
+      non-empty header cell instead of a blank one (anchoring sync 2026-06-25). */
+  exportLabel?: string;
   /** Clean single value shown in (and matched by) the per-column filter
       dropdown. Use this when `searchValue` deliberately bundles several
       tokens (e.g. "SO-2605-001 CONFIRMED") so the funnel still lists the one
@@ -894,19 +899,26 @@ function DataGridInner<T>({
       if (c.groupValue) return c.groupValue(row);
       return '';
     };
+    // Header for a column in the sheet: an explicit exportLabel (used by pure
+    // icon/checkbox columns whose on-screen label is blank) else the on-screen
+    // label. Falls back to the column key so a blank header never leaves an
+    // unnamed/duplicate-'' column in Excel (anchoring sync 2026-06-25).
+    const header = (c: DataGridColumn<T>): string =>
+      (c.exportLabel && c.exportLabel.trim()) || (c.label && c.label.trim()) || c.key;
     const data = sortedRows.map((row) => {
       const o: Record<string, string | number> = {};
-      for (const c of cols) o[c.label] = cellText(c, row);
+      for (const c of cols) o[header(c)] = cellText(c, row);
       return o;
     });
     const XLSX = await import('xlsx');
-    const ws = XLSX.utils.json_to_sheet(data, { header: cols.map((c) => c.label) });
+    const ws = XLSX.utils.json_to_sheet(data, { header: cols.map((c) => header(c)) });
     // Auto-size each column to its widest cell (header included) so the sheet is
     // legible instead of squished into one default width (Wei Siang 2026-06-20
     // "很乱很难看"). Capped so a stray long value can't blow a column out.
     ws['!cols'] = cols.map((c) => {
-      let w = c.label.length;
-      for (const o of data) w = Math.max(w, String(o[c.label] ?? '').length);
+      const h = header(c);
+      let w = h.length;
+      for (const o of data) w = Math.max(w, String(o[h] ?? '').length);
       return { wch: Math.min(60, Math.max(8, w + 2)) };
     });
     const wb = XLSX.utils.book_new();

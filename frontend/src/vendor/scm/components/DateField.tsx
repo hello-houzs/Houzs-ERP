@@ -30,6 +30,12 @@ export type DateFieldProps = {
   placeholder?: string;
   title?: string;
   'aria-label'?: string;
+  /** Show a validation-error border (replaces the inline red `style` the raw
+   *  native inputs used, since DateField wraps in a span). */
+  invalid?: boolean;
+  /** Soft informational highlight (orange border + cream fill) — e.g. a value
+   *  auto-inherited from a parent doc. Distinct from `invalid` (red error). */
+  highlight?: boolean;
 };
 
 /** "2026-05-31" → "31/05/2026". Returns '' for empty/malformed. */
@@ -66,6 +72,8 @@ export function DateField({
   placeholder = 'dd/mm/yyyy',
   title,
   'aria-label': ariaLabel,
+  invalid = false,
+  highlight = false,
 }: DateFieldProps) {
   // `editing` is non-null only while the text box has focus; the rest of the
   // time the display is derived straight from the canonical ISO `value`, so the
@@ -90,7 +98,16 @@ export function DateField({
   };
 
   return (
-    <span className={`${styles.wrap} ${fullWidth ? styles.fullWidth : ''} ${disabled ? styles.disabled : ''} ${className ?? ''}`}>
+    <span
+      className={`${styles.wrap} ${fullWidth ? styles.fullWidth : ''} ${disabled ? styles.disabled : ''} ${className ?? ''}`}
+      style={
+        invalid
+          ? { borderColor: 'var(--c-festive-b, #B8331F)' }
+          : highlight
+            ? { borderColor: 'var(--c-orange)', background: 'var(--c-cream)' }
+            : undefined
+      }
+    >
       <input
         id={inputId}
         name={name}
