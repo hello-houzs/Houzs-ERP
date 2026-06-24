@@ -38,7 +38,7 @@ const RELOAD_FLAG = "chunk-reloaded-once";
 
 function isStaleChunkError(err: unknown): boolean {
   const msg = String((err as Error)?.message ?? err ?? "");
-  return /dynamically imported module|Loading chunk|Importing a module script failed|error loading dynamically imported/i.test(
+  return /dynamically imported module|Loading chunk|Importing a module script failed|error loading dynamically imported|Unable to preload CSS|Failed to fetch dynamically imported|preload/i.test(
     msg,
   );
 }
@@ -62,10 +62,24 @@ export class ChunkReloadBoundary extends React.Component<
       try {
         if (!sessionStorage.getItem(RELOAD_FLAG)) {
           sessionStorage.setItem(RELOAD_FLAG, "1");
-          window.location.reload();
+          // A poisoned/old service-worker cache can keep serving a stale or
+          // empty asset even after a redeploy (so a plain reload re-fails).
+          // Purge all caches first, then reload once (guarded against loops),
+          // so the fresh hashed build is fetched from the network.
+          const reload = () => window.location.reload();
+          if ("caches" in window) {
+            caches
+              .keys()
+              .then((ks) => Promise.all(ks.map((k) => caches.delete(k))))
+              .finally(reload);
+          } else {
+            reload();
+          }
           return;
         }
-      } catch {}
+      } catch {
+        window.location.reload();
+      }
     }
   }
 
