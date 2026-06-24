@@ -1455,15 +1455,17 @@ app.post("/threads/:id/reply", async (c) => {
 
   const htmlBody = html || `<p>${escapeHtml(text).replace(/\n/g, "<br/>")}</p>`;
 
-  // Send via Houzs sendEmail. purpose:"generic" (caller opted in). replyTo is the
-  // mailbox the operator chose so the customer's reply lands back on it. The From
-  // address/company are derived from Branding inside deliverViaResend.
+  // Send via Houzs sendEmail. purpose:"generic" (caller opted in). The From is
+  // the operator's chosen mailbox (owner ask: replies come FROM the mailbox, not
+  // no-reply@) — sendEmail wraps it with the Branding company display name.
+  // replyTo is the same mailbox so the customer's reply lands back on it.
   const result = await sendEmail(c.env, {
     to,
     subject,
     html: htmlBody,
     text: text || undefined,
     purpose: "generic",
+    from: fromAddress || undefined,
     replyTo: fromAddress || undefined,
   });
   if (result.status !== "sent") {
@@ -1567,12 +1569,15 @@ app.post("/compose", async (c) => {
 
   const htmlBody = `<p>${escapeHtml(text).replace(/\n/g, "<br/>")}</p>`;
 
+  // From = the operator's chosen mailbox (owner ask), not no-reply@. replyTo is
+  // the same so the recipient's reply lands back on it.
   const result = await sendEmail(c.env, {
     to,
     subject,
     html: htmlBody,
     text,
     purpose: "generic",
+    from: fromAddress || undefined,
     replyTo: fromAddress || undefined,
   });
   if (result.status !== "sent") {

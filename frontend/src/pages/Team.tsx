@@ -24,8 +24,15 @@ import { relativeTime, cn } from "../lib/utils";
 import type { TeamMember, Invitation, Role, Department, Position } from "../types";
 import { RolesTab } from "./Roles";
 import { PositionsTab } from "./Positions";
+import { MailboxesTab } from "./MailboxesTab";
 
-type TeamTabValue = "members" | "positions" | "roles" | "orgchart" | "departments";
+type TeamTabValue =
+  | "members"
+  | "positions"
+  | "roles"
+  | "orgchart"
+  | "departments"
+  | "mail";
 
 const TEAM_KEYS = ["tab"] as const;
 
@@ -100,10 +107,15 @@ export function Team() {
   const canRoles = can("roles.read");
   const canManageUsers = can("users.manage");
   const canManageRoles = can("roles.manage");
+  // Mail Center admin — gates the Mailboxes tab (owner via "*").
+  const canManageMail = can("mail_center.manage");
 
   const raw = params.get("tab") as TeamTabValue | null;
   const active: TeamTabValue =
-    raw && ["members", "positions", "roles", "orgchart", "departments"].includes(raw)
+    raw &&
+    ["members", "positions", "roles", "orgchart", "departments", "mail"].includes(
+      raw,
+    )
       ? raw
       : canUsers
       ? "members"
@@ -124,6 +136,7 @@ export function Team() {
     { value: "positions", label: "Positions", show: canManageUsers },
     { value: "orgchart", label: "Org Chart", show: canUsers },
     { value: "departments", label: "Departments", show: canUsers },
+    { value: "mail", label: "Mailboxes", show: canManageMail },
     // Roles tab removed (owner: "删了role") — Position governs page access; a
     // baseline role is auto-assigned on invite. Re-add this line to restore.
   ];
@@ -160,6 +173,12 @@ export function Team() {
       title: "Roles",
       description:
         "Define what each role can access. System roles are locked; create custom roles for fine-grained control.",
+    },
+    mail: {
+      eyebrow: "Workspace · Mail Center",
+      title: "Mailboxes",
+      description:
+        "Assign email addresses to people or departments, grant shared-mailbox access, and set each member's mail visibility.",
     },
   };
 
@@ -231,6 +250,7 @@ export function Team() {
           onCloseCreate={() => setCreatingRole(false)}
         />
       )}
+      {active === "mail" && canManageMail && <MailboxesTab />}
     </div>
   );
 }

@@ -45,6 +45,13 @@ export interface SendOptions {
   refType?: string | null;
   refId?: number | null;
   replyTo?: string | null;
+  // Optional From override. When set, the outbound From is this address (wrapped
+  // with the Branding company name as the display name) INSTEAD of the default
+  // no-reply@<domain> / EMAIL_FROM. Used by the Mail Center so a reply/compose
+  // goes out FROM the chosen mailbox (e.g. hello@houzscentury.com). The address
+  // must be on the verified Resend domain to deliver. Bare address (no "<>") —
+  // the company display name is added here.
+  from?: string | null;
 }
 
 export interface SendResult {
@@ -151,14 +158,31 @@ function stripHtml(html: string): string {
 // outbox drain. Returns 'sent' | 'error' (caller pre-checks channel + key).
 async function deliverViaResend(
   env: Env,
-  m: { to: string; subject: string; html: string; text?: string | null; replyTo?: string | null },
+  m: { to: string; subject: string; html: string; text?: string | null; replyTo?: string | null; from?: string | null },
 ): Promise<SendResult> {
   // From-name + fallback sender address come from the central Branding config
   // (company name + email) so the outbound identity tracks Settings, not a
   // hardcode. EMAIL_FROM (when set) still wins — it's the verified Resend
   // sender. The local-part stays no-reply@<branding.email's domain> so the
   // address remains a deliverable on the verified domain.
-  let from = env.EMAIL_FROM;
+  //
+  // EXCEPTION: an explicit per-message `from` (Mail Center reply/compose) wins
+  // over both — the operator's chosen mailbox becomes the visible sender. We
+  // wrap the bare address with the Branding company display name. The address
+  // must be on the verified Resend domain (houzscentury.com) to deliver.
+  let from: string | undefined;
+  const explicitFrom = (m.from ?? "").trim();
+  if (explicitFrom) {
+    // Already a "Name <addr>" form? Use as-is; otherwise add the company name.
+    if (explicitFrom.includes("<")) {
+      from = explicitFrom;
+    } else {
+      const branding = await getBranding(env);
+      from = `${branding.companyName} <${explicitFrom}>`;
+    }
+  } else {
+    from = env.EMAIL_FROM;
+  }
   if (!from) {
     const branding = await getBranding(env);
     const domain = (branding.email.split("@")[1] || "houzscentury.com").trim();
@@ -234,6 +258,7 @@ export async function sendEmail(env: Env, opts: SendOptions): Promise<SendResult
     html: opts.html,
     text: opts.text,
     replyTo: opts.replyTo,
+    from: opts.from,
   });
   try {
     if (result.status === "sent") {

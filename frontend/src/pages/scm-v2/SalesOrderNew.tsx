@@ -345,6 +345,10 @@ export const SalesOrderNew = () => {
     if (payload.receiptImageKey) setScanReceiptImageKey(payload.receiptImageKey);
     if (payload.customerName) setDebtorName(payload.customerName);
     if (payload.phone) setPhone(payload.phone);
+    /* Owner: the slip often has TWO numbers (customer + spouse/other). The first
+       is the main phone; the SECOND goes to the EMERGENCY CONTACT phone (its
+       proper home) — previously it was dropped (or piled into the Note). */
+    if (payload.phones && payload.phones[1]) setEmergencyPhone(payload.phones[1]);
     if (payload.address1) setAddress1(payload.address1);
     /* Customer's own order reference (e.g. "HC14032") from the slip top-right. */
     if (payload.customerSoRef) setCustomerSoNo(payload.customerSoRef);
@@ -1723,52 +1727,15 @@ export const SalesOrderNew = () => {
         </header>
         <div className={styles.cardBody} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           {lines.map((line, idx) => {
-            /* Per-line scan confidence chip (fromScan only). "scanned · NN%"
-               for a SKU still on the AI's suggestion; "scanned · changed" once
-               the operator picks a different code; "scanned · no match" when
-               the AI couldn't match. The real SKU picker inside SoLineCard is
-               still the only way to set the code — the chip is read-only. */
+            /* fromScan — the slip rawText still feeds the SKU picker's placeholder
+               hint for a no-match line (searchHint below). The per-line
+               "scanned · NN%" review chip was REMOVED: owner — it is scan-review
+               metadata that won't exist on the created SO, so it must not clutter
+               the create page. (A no-match line is still obvious: its SKU picker
+               is empty + required.) */
             const meta = scanLineMeta[line.rid];
-            let chip: { text: string; tone: 'good' | 'warn' | 'muted' } | null = null;
-            if (meta) {
-              if (!line.itemCode) {
-                chip = { text: 'scanned · no match', tone: 'muted' };
-              } else if (line.itemCode !== meta.seededCode) {
-                chip = { text: 'scanned · changed', tone: 'muted' };
-              } else {
-                const pct = Math.round(meta.confidence * 100);
-                chip = { text: `scanned · ${pct}%`, tone: meta.confidence >= 0.8 ? 'good' : 'warn' };
-              }
-            }
             return (
               <div key={line.rid} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
-                {chip && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span
-                      title={meta?.rawText ? `Slip: ${meta.rawText}` : undefined}
-                      style={{
-                        display: 'inline-flex', alignItems: 'center',
-                        padding: '2px 8px', borderRadius: 999,
-                        fontSize: 'var(--fs-11)', fontWeight: 600,
-                        background:
-                          chip.tone === 'good' ? 'rgba(47, 93, 79, 0.12)'
-                          : chip.tone === 'warn' ? 'rgba(196, 148, 28, 0.16)'
-                          : 'rgba(0, 0, 0, 0.06)',
-                        color:
-                          chip.tone === 'good' ? 'var(--c-secondary-a, #2f5d4f)'
-                          : chip.tone === 'warn' ? '#8a6914'
-                          : 'var(--fg-muted)',
-                      }}
-                    >
-                      {chip.text}
-                    </span>
-                    {meta?.rawText && (
-                      <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }} title={meta.rawText}>
-                        “{meta.rawText.length > 48 ? `${meta.rawText.slice(0, 48)}…` : meta.rawText}”
-                      </span>
-                    )}
-                  </div>
-                )}
                 <SoLineCard
                   index={idx}
                   draft={line}

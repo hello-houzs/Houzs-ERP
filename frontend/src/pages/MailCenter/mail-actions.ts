@@ -207,3 +207,112 @@ export async function createDeptMailbox(
     return null;
   }
 }
+
+// ── Mail Center admin helpers (User Management → Mailboxes tab) ─────────────
+// Thin typed wrappers over the admin endpoints in routes/mail-center.ts. All
+// gated server-side on mail_center.manage (owner via "*"). These THROW on
+// failure so the calling tab can toast a real message (unlike the boolean
+// thread helpers above) — the tab needs to know WHY a save failed (409 dup,
+// 400 bad domain, 403 not-admin).
+//
+// userId / assignedUserId are NUMBERS in Houzs (users.id is serial); the
+// address `id` is text. The department picker sends the dept NAME string (the
+// backend string-matches assigned_dept), never an id.
+
+// One mailbox address row as served by GET /api/mail-center/addresses.
+export type MailAddress = {
+  id: string;
+  address: string;
+  label: string;
+  assignedUserId?: number | null;
+  assignedUserName?: string;
+  assignedDept?: string;
+  assignedPosition?: string;
+  active: boolean;
+  createdAt?: string;
+};
+
+export type MailScopeLevel = "personal" | "department" | "company";
+
+export type CreateAddressInput = {
+  label?: string;
+  assignedUserId?: number | null;
+  assignedUserName?: string;
+  assignedDept?: string;
+  assignedPosition?: string;
+};
+
+// List every mailbox address (admin sees all). GET is no-store server-side.
+export function fetchAddresses(): Promise<MailAddress[]> {
+  return api.get<MailAddress[]>("/api/mail-center/addresses");
+}
+
+// Create a mailbox — for a PERSON (pass assignedUserId + assignedUserName) or a
+// DEPARTMENT (pass assignedDept = the dept NAME + a label, no user). Returns the
+// created row. Throws on 400 (bad/duplicate domain) / 409 (exists) / 403.
+export function createAddress(
+  address: string,
+  input: CreateAddressInput = {},
+): Promise<MailAddress> {
+  return api.post<MailAddress>("/api/mail-center/addresses", {
+    address,
+    ...input,
+  });
+}
+
+// Patch a mailbox (reassign / relabel / toggle active). Send only changed
+// fields. `active` is a boolean (backend maps to 1/0).
+export function patchAddress(
+  id: string,
+  patch: {
+    label?: string;
+    assignedUserId?: number | null;
+    assignedUserName?: string | null;
+    assignedDept?: string | null;
+    assignedPosition?: string | null;
+    active?: boolean;
+  },
+): Promise<MailAddress> {
+  return api.patch<MailAddress>(`/api/mail-center/addresses/${id}`, patch);
+}
+
+// The access matrix — every (addressId, userId) grant on a shared mailbox.
+export function fetchAccess(): Promise<{ addressId: string; userId: number }[]> {
+  return api.get<{ addressId: string; userId: number }[]>(
+    "/api/mail-center/access",
+  );
+}
+
+// Grant a user access to a shared mailbox (idempotent server-side).
+export function grantAccess(addressId: string, userId: number): Promise<unknown> {
+  return api.post("/api/mail-center/access", { addressId, userId });
+}
+
+// Revoke a user's access to a shared mailbox.
+export function revokeAccess(
+  addressId: string,
+  userId: number,
+): Promise<unknown> {
+  // api.del takes no body, so pass addressId/userId on the query string — the
+  // DELETE /access handler accepts either body or query.
+  const qs = `addressId=${encodeURIComponent(addressId)}&userId=${userId}`;
+  return api.del(`/api/mail-center/access?${qs}`);
+}
+
+// Per-user visibility levels (personal / department / company). Absent = personal.
+export function fetchScopeLevels(): Promise<
+  { userId: number; level: MailScopeLevel }[]
+> {
+  return api.get<{ userId: number; level: MailScopeLevel }[]>(
+    "/api/mail-center/scope-levels",
+  );
+}
+
+// Upsert a user's visibility level. Note the singular path (write) vs the plural
+// GET /scope-levels (list).
+export function setScopeLevel(
+  userId: number,
+  level: MailScopeLevel,
+): Promise<unknown> {
+  return api.put("/api/mail-center/scope-level", { userId, level });
+}
