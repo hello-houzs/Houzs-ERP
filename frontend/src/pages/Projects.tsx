@@ -3328,6 +3328,12 @@ function ProjectsCalendarView() {
                       // stronger tint makes today unmistakable.
                       mode === "month" && isToday && "bg-accent-soft/50 ring-1 ring-inset ring-accent/50",
                     )}
+                    data-cal-content={
+                      mode === "month" &&
+                      (cellBarsH[idx] > 0 || cellTasks.length > 0 || isHolidayCell)
+                        ? ""
+                        : undefined
+                    }
                   >
                     {mode === "week" ? (
                       // Week-mode header: centred "Day. DD/MM" with a
