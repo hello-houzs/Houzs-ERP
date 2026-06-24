@@ -189,3 +189,29 @@
   word-break: break-word;
   font-variant-numeric: tabular-nums;
 }
+
+/* ── KPI tile row (Houzs 2026-06-23 mobile) ─────────────────────────────────
+   Desktop keeps the 4 tiles side-by-side. On phone (≤600px) "RM 1,234,567"
+   values clip and the row overflows at ~80px/tile, so reflow to a 2×2 grid.
+   The inline gridTemplateColumns:'repeat(4,1fr)' const stays for desktop; this
+   class overrides only at the breakpoint. */
+.kpiRow {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-2);
+}
+
+@media (max-width: 600px) {
+  .kpiRow {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ── Action button row (Houzs 2026-06-23 mobile) ────────────────────────────
+   New Sales Order / Scan Order / SO Maintenance is inline-flex with no wrap →
+   overflows sideways on phone. Allow wrapping; gap keeps the row tidy. */
+.actionRow {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}

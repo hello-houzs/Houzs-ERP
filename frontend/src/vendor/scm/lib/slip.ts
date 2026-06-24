@@ -23,6 +23,26 @@ const token = (): string => {
   return t;
 };
 
+/* These slip fetches go straight to fetch(), bypassing authedFetch's deadline,
+   so a stalled cold-start / slow R2 PUT hangs the upload UI forever. Cap each
+   one — generous for the image OCR + R2 PUT uploads, tighter for the presigned
+   GETs / confirm — and turn a timeout into a plain-language retryable error. */
+const SLIP_UPLOAD_TIMEOUT_MS = 120_000;
+const SLIP_TIMEOUT_MS = 60_000;
+
+async function slipFetch(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  let signal: AbortSignal | undefined;
+  try { signal = AbortSignal.timeout(timeoutMs); } catch { signal = undefined; } // pre-2022 browsers
+  try {
+    return await fetch(input, { ...init, signal });
+  } catch (e) {
+    if (e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      throw new Error('The request took too long — please check your connection and try again.');
+    }
+    throw e;
+  }
+}
+
 /* ── Inlined slip schema (was @2990s/shared/schemas) ─────────────────────── */
 export type SlipUrlResponse = { url: string; contentType: string };
 export type SlipInitRequest = {
@@ -40,9 +60,9 @@ export const MAX_SLIP_SIZE_BYTES = 5 * 1024 * 1024;
 
 /** Presigned GET URL for a manufacturing Sales Order's payment slip. */
 export async function fetchSoSlipUrl(docNo: string): Promise<SlipUrlResponse> {
-  const res = await fetch(`${API_URL}/mfg-sales-orders/${encodeURIComponent(docNo)}/slip-url`, {
+  const res = await slipFetch(`${API_URL}/mfg-sales-orders/${encodeURIComponent(docNo)}/slip-url`, {
     headers: { authorization: `Bearer ${token()}` },
-  });
+  }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
     throw new Error(humanApiError(res.status, text));
@@ -55,9 +75,10 @@ export async function fetchPaymentSlipUrl(
   docNo: string,
   paymentId: string,
 ): Promise<SlipUrlResponse> {
-  const res = await fetch(
+  const res = await slipFetch(
     `${API_URL}/mfg-sales-orders/${encodeURIComponent(docNo)}/payments/${encodeURIComponent(paymentId)}/slip-url`,
     { headers: { authorization: `Bearer ${token()}` } },
+    SLIP_TIMEOUT_MS,
   );
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
@@ -71,9 +92,9 @@ export async function fetchPaymentSlipUrl(
  *  bearer-token proxy fetch used for payment slips; the caller is responsible
  *  for URL.revokeObjectURL() when the image is unmounted. */
 export async function fetchScanSlipImageBlobUrl(key: string): Promise<string> {
-  const res = await fetch(`${API_URL}/scan-so/slip-image?key=${encodeURIComponent(key)}`, {
+  const res = await slipFetch(`${API_URL}/scan-so/slip-image?key=${encodeURIComponent(key)}`, {
     headers: { authorization: `Bearer ${token()}` },
-  });
+  }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
     throw new Error(humanApiError(res.status, text));
@@ -101,11 +122,11 @@ export type ScanPaymentReceipt = {
 export async function scanPaymentReceipt(file: File): Promise<ScanPaymentReceipt> {
   const form = new FormData();
   form.append('file', file);
-  const res = await fetch(`${API_URL}/scan-payment/extract`, {
+  const res = await slipFetch(`${API_URL}/scan-payment/extract`, {
     method: 'POST',
     headers: { authorization: `Bearer ${token()}` },
     body: form,
-  });
+  }, SLIP_UPLOAD_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
     throw new Error(humanApiError(res.status, text));
@@ -131,14 +152,14 @@ async function initSlipUpload(file: File): Promise<SlipInitResponse> {
     contentType: file.type as SlipInitRequest['contentType'],
     contentHash: hash,
   };
-  const res = await fetch(`${API_URL}/slips/init`, {
+  const res = await slipFetch(`${API_URL}/slips/init`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${token()}`,
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
     throw new Error(humanApiError(res.status, text));
@@ -147,21 +168,21 @@ async function initSlipUpload(file: File): Promise<SlipInitResponse> {
 }
 
 async function putToR2(putUrl: string, file: File): Promise<void> {
-  const res = await fetch(putUrl, {
+  const res = await slipFetch(putUrl, {
     method: 'PUT',
     headers: { 'content-type': file.type },
     body: file,
-  });
+  }, SLIP_UPLOAD_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(humanApiError(res.status, ''));
   }
 }
 
 async function confirmUpload(sessionId: string): Promise<SlipConfirmResponse> {
-  const res = await fetch(`${API_URL}/slips/${sessionId}/confirm`, {
+  const res = await slipFetch(`${API_URL}/slips/${sessionId}/confirm`, {
     method: 'POST',
     headers: { authorization: `Bearer ${token()}` },
-  });
+  }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
     throw new Error(humanApiError(res.status, text));

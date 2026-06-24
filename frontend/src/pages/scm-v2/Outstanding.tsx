@@ -76,7 +76,7 @@ export const Outstanding = () => {
 
       {/* Summary tiles — count + outstanding value per module, in selected date range */}
       <section style={{
-        display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
         gap: 'var(--space-3)', marginTop: 'var(--space-3)',
       }}>
         {MODULES.map((m) => {

@@ -869,7 +869,7 @@ export const MfgSalesOrdersList = () => {
             Sales Orders {outstandingOnly && <span style={{ color: 'var(--c-burnt)' }}>· Outstanding only</span>}
           </h1>
         </div>
-        <div style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+        <div className={styles.actionRow}>
           <Button variant="primary" size="sm" onClick={onNew}>
             <Plus size={14} strokeWidth={1.75} />
             <span>New Sales Order</span>
@@ -919,12 +919,9 @@ export const MfgSalesOrdersList = () => {
         </div>
       )}
 
-      {/* ── 4 KPI tiles (Houzs flat layout, scoped to current filters) ── */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(4, 1fr)',
-        gap: 'var(--space-2)',
-      }}>
+      {/* ── 4 KPI tiles (Houzs flat layout, scoped to current filters) ──
+          .kpiRow reflows to 2×2 at ≤600px so RM values don't clip on phone. */}
+      <div className={styles.kpiRow}>
         {kpiTile('Total Orders', kpis.totalOrders.toLocaleString('en-MY'))}
         {kpiTile('Revenue (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Outstanding (RM)', fmtRm(kpis.outstanding), kpis.outstanding > 0 ? 'bad' : undefined)}

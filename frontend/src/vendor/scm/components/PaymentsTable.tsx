@@ -603,10 +603,10 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
             {/* Persisted payment rows (SAVED mode only) */}
             {persistedPayments.map((p) => (
               <div className={paymentsStyles.row} key={p.id}>
-                <span className={paymentsStyles.cell} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                <span className={paymentsStyles.cell} data-label="Date" style={{ fontVariantNumeric: 'tabular-nums' }}>
                   {p.paid_at}
                 </span>
-                <span className={paymentsStyles.cell} style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+                <span className={paymentsStyles.cell} data-label="Method" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
                   <span className={paymentsStyles.methodPill} style={methodPillStyle(p.method)}>
                     {methodDisplay(p)}
                   </span>
@@ -632,18 +632,18 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     </span>
                   )}
                 </span>
-                <span className={paymentsStyles.cellRight}
+                <span className={paymentsStyles.cellRight} data-label="Amount"
                       style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
                   {fmtRm(p.amount_centi, currency)}
                 </span>
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Account Sheet">
                   {p.account_sheet ?? <span className={detailStyles.muted}>—</span>}
                 </span>
-                <span className={paymentsStyles.cell} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                <span className={paymentsStyles.cell} data-label="Approval Code" style={{ fontVariantNumeric: 'tabular-nums' }}>
                   {p.approval_code ?? <span className={detailStyles.muted}>—</span>}
                 </span>
                 {showSlip && (
-                  <span className={paymentsStyles.cell}>
+                  <span className={paymentsStyles.cell} data-label="Slip">
                     {isSaved ? (
                       <PaymentSlipThumb
                         docNo={(props as SavedModeProps).docNo}
@@ -656,7 +656,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     )}
                   </span>
                 )}
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Collected By">
                   {p.collected_by_name ?? staffNameById(p.collected_by) ?? <span className={detailStyles.muted}>—</span>}
                 </span>
                 <span className={paymentsStyles.cell}>
@@ -686,7 +686,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
             {/* In-flight draft rows (SAVED + DRAFT) */}
             {drafts.map((d) => (
               <div className={paymentsStyles.row} key={d.uid}>
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Date">
                   <input
                     type="date"
                     className={paymentsStyles.inlineInput}
@@ -695,7 +695,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     onChange={(e) => patchDraft(d.uid, { paidAt: e.target.value })}
                   />
                 </span>
-                <span className={paymentsStyles.cell} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+                <span className={paymentsStyles.cell} data-label="Method" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
                   {/* L1 — Method (always visible) */}
                   <select
                     className={paymentsStyles.inlineSelect}
@@ -806,7 +806,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
 
                   {/* L2 — Cash: no extra fields */}
                 </span>
-                <span className={paymentsStyles.cellRight}>
+                <span className={paymentsStyles.cellRight} data-label="Amount">
                   <MoneyInput
                     bare allowBlank
                     valueSen={d.amountCenti === 0 ? null : d.amountCenti}
@@ -816,7 +816,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     onCommit={(sen) => patchDraft(d.uid, { amountCenti: sen ?? 0 })}
                   />
                 </span>
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Account Sheet">
                   <input
                     type="text"
                     className={`${paymentsStyles.inlineInput} ${paymentsStyles.placeholderHint}`}
@@ -826,7 +826,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     onChange={(e) => patchDraft(d.uid, { accountSheet: e.target.value })}
                   />
                 </span>
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Approval Code">
                   <input
                     type="text"
                     className={paymentsStyles.inlineInput}
@@ -836,7 +836,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                   />
                 </span>
                 {showSlip && (
-                  <span className={paymentsStyles.cell}>
+                  <span className={paymentsStyles.cell} data-label="Slip">
                     {/* Spec D4 — per-payment slip uploader. SAVED mode (SO
                         route) REQUIRES it; the commit button stays disabled
                         until a slip is confirmed. */}
@@ -849,7 +849,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     />
                   </span>
                 )}
-                <span className={paymentsStyles.cell}>
+                <span className={paymentsStyles.cell} data-label="Collected By">
                   <select
                     className={paymentsStyles.inlineInputUser}
                     value={d.collectedBy}

@@ -213,7 +213,7 @@ function OrganizerManager() {
             key={o.id}
             className="flex items-center justify-between gap-3 px-3 py-2"
           >
-            <span className="flex-1 text-[12.5px] text-ink">{o.name}</span>
+            <span className="flex-1 text-[13px] font-medium text-ink">{o.name}</span>
             <RowActionsMenu
               items={[
                 {
@@ -376,10 +376,10 @@ function VenueManager() {
             className="flex items-center justify-between gap-3 px-3 py-2"
           >
             <div className="min-w-0 flex-1">
-              <div className="text-[12.5px] text-ink">{v.name}</div>
-              {v.state && (
-                <div className="text-[10.5px] text-ink-muted">{v.state}</div>
-              )}
+              <div className="text-[13px] font-medium text-ink">{v.name}</div>
+              {/* Redundant gray state under the name removed (Houzs 2026-06-24)
+                  — the state <select> to the right already shows it; owner
+                  flagged the double-render as clutter. */}
             </div>
             <select
               value={v.state || ""}
@@ -1436,7 +1436,7 @@ function BrandManager() {
                 const v = e.target.value.trim();
                 if (v && v !== b.name) patch(b, { name: v });
               }}
-              className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[12.5px] font-semibold text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
+              className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
             />
             <span
               className={cn(
@@ -1644,11 +1644,11 @@ function EventTypeManager() {
                   const v = e.target.value.trim();
                   if (v && v !== t.name) patch(t, { name: v });
                 }}
-                className="flex-1 min-w-[160px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[12.5px] font-semibold text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
+                className="flex-1 min-w-[160px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
               />
-              <span className="font-mono text-[10px] text-ink-muted">
-                {t.slug}
-              </span>
+              {/* Slug hidden (Houzs 2026-06-24) — owner: the tiny gray machine
+                  code next to each name is unnecessary clutter + misaligned.
+                  Slug stays the stable machine value; just no longer shown. */}
               <span
                 className={cn(
                   "rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider",

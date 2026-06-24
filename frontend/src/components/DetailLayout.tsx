@@ -117,7 +117,7 @@ export function DetailLayout({
           <div className="hidden flex-1 lg:block" />
 
           {actions && (
-            <div className="flex shrink-0 items-center gap-1.5">{actions}</div>
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5">{actions}</div>
           )}
         </div>
       </div>

@@ -716,7 +716,7 @@ const SupplierCard = ({
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(4, 1fr)',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
               gap: 'var(--space-3) var(--space-4)',
               fontFamily: 'var(--font-sans)',
               fontSize: 'var(--fs-13)',
@@ -797,7 +797,7 @@ const SupplierCard = ({
               border: '1px solid var(--line)',
               borderRadius: 'var(--radius-md)',
               display: 'grid',
-              gridTemplateColumns: 'repeat(4, 1fr)',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
               gap: 'var(--space-3) var(--space-4)',
               fontFamily: 'var(--font-sans)',
               fontSize: 'var(--fs-13)',

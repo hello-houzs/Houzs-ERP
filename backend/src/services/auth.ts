@@ -5,6 +5,7 @@ import {
   loadPageAccessForPosition,
   fullAccessMap,
   type AccessLevel,
+  type PageAccessMeta,
 } from "./pageAccess";
 import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
 
@@ -124,6 +125,17 @@ export interface AuthUser {
    * pages migrate in follow-up slices.
    */
   page_access: Record<string, AccessLevel>;
+  /**
+   * True iff this user has AT LEAST ONE explicit `scm*` page-access row in
+   * the SAME matrix that hydrated `page_access` (position_page_access when
+   * the user has a position, else role_page_access). Drives the SAFE L2 SCM
+   * write-gate rollout: a user with NO explicit SCM config is NOT enforced
+   * by `scmAreaGuard` and falls back to the coarse `scm.access` umbrella
+   * (allow), so no current SCM user is locked out before the matrix is
+   * configured. Only users WITH explicit SCM rows get per-area enforcement.
+   * Owner (`*`) bypasses the guard entirely, so this stays false for them.
+   */
+  scm_l2_configured: boolean;
   joined_at?: string | null;
   last_login_at?: string | null;
   // Houzs Points (mig 055) — small per-user counters.
@@ -183,11 +195,18 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
   // Wildcard role → full everything. Else the 4-level position matrix when the
   // user has a position; else the legacy role matrix (fallback for users not
   // yet assigned a position during the rollout).
+  //
+  // `scmMeta.explicitScm` is filled in-place by whichever loader runs, from the
+  // SAME source that produces page_access — so the L2 SCM write-gate enforces
+  // ONLY users who have an explicit scm* row in that exact matrix. Owner (`*`)
+  // skips the loaders (fullAccessMap) and the guard bypasses them anyway, so it
+  // stays false there.
+  const scmMeta: PageAccessMeta = { explicitScm: false };
   const pageAccess = permissionsSet.has("*")
     ? fullAccessMap()
     : row.position_id != null
-      ? await loadPageAccessForPosition(env, row.position_id)
-      : await loadPageAccessForRole(env, row.role_id, permissionsSet);
+      ? await loadPageAccessForPosition(env, row.position_id, scmMeta)
+      : await loadPageAccessForRole(env, row.role_id, permissionsSet, scmMeta);
   return {
     id: row.id,
     email: row.email,
@@ -204,6 +223,7 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     department_id: row.department_id ?? null,
     brand_scope: brandScope,
     page_access: pageAccess,
+    scm_l2_configured: scmMeta.explicitScm,
     joined_at: row.joined_at ?? null,
     last_login_at: row.last_login_at ?? null,
     points_balance: row.points_balance ?? 0,

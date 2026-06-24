@@ -37,6 +37,7 @@ import { Hono } from 'hono';
 import type { SupabaseClient as SupabaseClientGeneric } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
+import { paginateAll } from '../lib/paginate-all';
 
 // scm-scoped, loosely-typed client (matches scm/env.ts Variables.supabase).
 type SupabaseClient = SupabaseClientGeneric<any, any, any>;
@@ -102,7 +103,8 @@ const emptyOptions = (): CatalogOptions => ({
 
 async function loadOptions(sb: SupabaseClient): Promise<CatalogOptions> {
   const options = emptyOptions();
-  const { data } = await sb
+  // Page through so PostgREST's 1000-row cap can't drop option rows.
+  const { data } = await paginateAll((from, to) => sb
     .from('so_dropdown_options')
     .select('category, value, label')
     .eq('active', true)
@@ -110,7 +112,7 @@ async function loadOptions(sb: SupabaseClient): Promise<CatalogOptions> {
     .order('category', { ascending: true })
     .order('sort_order', { ascending: true })
     .order('label', { ascending: true })
-    .limit(2000);
+    .range(from, to));
   for (const row of (data as Array<{ category: string; value: string; label: string }> | null) ?? []) {
     if ((OPTION_CATEGORIES as readonly string[]).includes(row.category)) {
       options[row.category as OptionCategory].push({ value: row.value, label: row.label });

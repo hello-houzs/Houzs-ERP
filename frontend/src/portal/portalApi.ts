@@ -23,6 +23,32 @@ export class PortalApiError extends Error {
   }
 }
 
+// No timeout here means a stalled Hyperdrive cold-start hangs the portal
+// forever (the customer stares at a spinner). Cap each fetch with an
+// AbortSignal — generous for binary uploads, tighter for JSON/blob — and turn
+// a timeout into a plain-language, retryable error.
+const PORTAL_UPLOAD_TIMEOUT_MS = 120_000;
+const PORTAL_TIMEOUT_MS = 60_000;
+
+function portalSignal(ms: number): AbortSignal | undefined {
+  try {
+    return AbortSignal.timeout(ms);
+  } catch {
+    return undefined; // pre-2022 browsers
+  }
+}
+
+async function portalFetch(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  try {
+    return await fetch(input, { ...init, signal: portalSignal(timeoutMs) });
+  } catch (e) {
+    if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
+      throw new PortalApiError(0, "The server took too long to respond. Please check your connection and try again.");
+    }
+    throw e;
+  }
+}
+
 async function req<T>(
   method: string,
   path: string,
@@ -33,11 +59,11 @@ async function req<T>(
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
   if (!isBinary && body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(url(path), {
+  const res = await portalFetch(url(path), {
     method,
     headers,
     body: isBinary ? (body as ArrayBuffer) : body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  }, isBinary ? PORTAL_UPLOAD_TIMEOUT_MS : PORTAL_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let msg = text;
@@ -53,20 +79,20 @@ export const portalApi = {
   post: <T>(path: string, token: string | null, body?: any) => req<T>("POST", path, token, body),
 
   putBinary: async <T>(path: string, token: string, body: ArrayBuffer, contentType: string): Promise<T> => {
-    const res = await fetch(url(path), {
+    const res = await portalFetch(url(path), {
       method: "PUT",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": contentType,
       },
       body,
-    });
+    }, PORTAL_UPLOAD_TIMEOUT_MS);
     if (!res.ok) throw new PortalApiError(res.status, await res.text());
     return (await res.json()) as T;
   },
 
   async fetchBlobUrl(path: string, token: string): Promise<string> {
-    const res = await fetch(url(path), { headers: { Authorization: `Bearer ${token}` } });
+    const res = await portalFetch(url(path), { headers: { Authorization: `Bearer ${token}` } }, PORTAL_TIMEOUT_MS);
     if (!res.ok) throw new PortalApiError(res.status, res.statusText);
     const blob = await res.blob();
     return URL.createObjectURL(blob);

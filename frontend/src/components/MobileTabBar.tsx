@@ -142,7 +142,7 @@ function ProfileTab() {
           />
           <span
             className={cn(
-              "font-mono text-[10.5px] font-semibold uppercase tracking-wider",
+              "font-mono text-[10.5px] font-semibold uppercase tracking-brand",
               isActive && "text-accent",
             )}
           >
@@ -181,7 +181,7 @@ function BottomTab({ tab }: { tab: Tab }) {
           />
           <span
             className={cn(
-              "font-mono text-[10.5px] font-semibold uppercase tracking-wider",
+              "font-mono text-[10.5px] font-semibold uppercase tracking-brand",
               isActive && "text-accent"
             )}
           >
@@ -254,7 +254,7 @@ function MenuModal({ onClose }: { onClose: () => void }) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="truncate text-[13px] font-bold text-ink">
+            <span className="whitespace-normal leading-tight text-[14.5px] font-extrabold text-ink">
               {t.label}
             </span>
             {badge != null && badge > 0 && (

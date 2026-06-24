@@ -190,7 +190,41 @@
 //   Edit-gate learning moved to Save; changed fields show a blue diff.
 // v44 — New SO: removed the Venue helper caption ("Defaults to the salesperson's
 //   venue…") per owner; the Venue dropdown stands on its own.
-const VERSION = "houzs-erp-v44";
+// v45 — MOBILE STANDARDIZATION to the Service-module card scale. Root fix: <main>
+//   + SCM shell now clamp width (overflow-x-hidden) -> no page-level sideways
+//   scroll anywhere. SO detail line-items / totals / payments reflow to stacked
+//   label-value cards on phone; SO-list KPI -> 2x2; button rows wrap; SCM menu
+//   labels no longer truncate; Project detail header/toolbar/doc-table/crew rows
+//   reflow; fonts aligned to the Service label(10.5px/0.18em)+value(12.5px) tokens.
+// v46 — fixed the Quality Metrics crash (null inner count -> guarded .toLocaleString
+//   on 8 tiles; system-wide scan found no other unguarded ones). SCM phone type
+//   scale shrunk ~15-20% (tokens scoped to .scm2990 @<=600px, headers capped at
+//   ~14.5px) per owner "整体太大". SO-detail redundant subtitle hidden on phone;
+//   maintenance internal slug codes hidden; line-item Description 2 now full-width.
+// v47 — module-by-module mobile overflow sweep: MRP filter row + warehouse dropdown
+//   + results table contained; SCM list/detail filter rows stack, selects/inputs
+//   max-w-100%, ~22 inline KPI grids -> auto-fit wrap, wide tables scroll inside
+//   their card. Maintenance: venues no longer show the state twice, remaining
+//   internal slugs hidden (event types / lead-time / lookup lists), names -> 13px.
+// v48 — SO OCR completeness: salesperson defaults to the logged-in creator (never
+//   blank), Customer SO Ref + full address (state/city/postcode, option-validated)
+//   extracted, variant/description SKU lines matched against fabrics+options (never
+//   invent). 2990 sync: stock-take counts/adjusts per (product_code, variant_key)
+//   [mig 0035 applied], SO->PO warehouse-drift detection + rebind guidance.
+// v49 — system-wide bug-audit fixes: d1-compat `?N` placeholder mistranslation
+//   (broke global search + every project create); 23 NOT-NULL cols got their
+//   dropped DEFAULTs restored (Service/ASSR/Projects/Sales creates were 500ing);
+//   scm.mfg_so_status enum gained DRAFT (Save-as-Draft was 500ing); /scm/slips
+//   route mounted; PO add-item keeps so_item_id; whole Purchase-Consignment family
+//   field-name mismatches fixed (blank doc-nos / RM 0.00 totals / broken deletes).
+// v50 — foundation hardening: applied migration 0036 (mrp warehouse_id, was a live
+//   prod 500); 9 SCM count+1 doc-no generators -> self-healing max+1; stock-transfer
+//   partial-failure now compensates + returns 422 (no silent stock loss); MRP lead-time
+//   read fails loud instead of zeroing; PostgREST 1000-row truncation killed via a shared
+//   paginate helper across catalog/inventory/OCR/reports/reconcile/analytics; frontend
+//   binary fetches get timeouts; System Health now sees SCM audit + R2/Anthropic/SCM probes;
+//   L2 per-area SCM write authorization (safe no-lockout fallback).
+const VERSION = "houzs-erp-v50";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

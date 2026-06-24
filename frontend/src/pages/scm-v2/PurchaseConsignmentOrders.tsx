@@ -49,6 +49,12 @@ const STATUS_CHIPS: { value: StatusFilter; label: string }[] = [
 const fmtMoney = (centi: number, currency: Currency): string =>
   `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// The backend PC-orders list returns pc_number (the consignment doc number),
+// but the shared PoHeaderRow type carries po_number. Read pc_number first with
+// a po_number fallback so the doc number renders instead of `undefined`.
+const pcNo = (po: PoHeaderRow): string =>
+  (po as { pc_number?: string }).pc_number ?? po.po_number ?? '';
+
 const summarizeItems = (items: PoHeaderRow['items']): string | null => {
   if (!items || items.length === 0) return null;
   const HEAD = 3;
@@ -63,10 +69,13 @@ const PC_ORDER_LIST_STORAGE_KEY = 'pc-order-list.layout.v1';
 
 const buildColumns = (): DataGridColumn<PoHeaderRow>[] => [
   {
-    key: 'po_number', label: 'P/CO No.', width: 150, sortable: true,
-    accessor: (po) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{po.po_number}</span>,
-    searchValue: (po) => po.po_number,
-    sortFn: (a, b) => a.po_number.localeCompare(b.po_number),
+    key: 'pc_number', label: 'P/CO No.', width: 150, sortable: true,
+    // Backend (purchase-consignment-orders list) returns pc_number, not the
+    // PO's po_number — the PoHeaderRow type is shared with real POs, so read
+    // pc_number with a po_number fallback.
+    accessor: (po) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{pcNo(po)}</span>,
+    searchValue: (po) => pcNo(po),
+    sortFn: (a, b) => pcNo(a).localeCompare(pcNo(b)),
   },
   {
     key: 'supplier', label: 'Supplier', width: 200, sortable: true, groupable: true,
@@ -156,7 +165,7 @@ export const PurchaseConsignmentOrders = () => {
 
   const doCancelPo = async (po: PoHeaderRow) => {
     if (!(await askConfirm({
-      title: `Cancel ${po.po_number}?`,
+      title: `Cancel ${pcNo(po)}?`,
       body: 'It will stop proceeding.',
       confirmLabel: 'Cancel order',
       danger: true,
@@ -329,7 +338,7 @@ const ExpandedLines = ({ po }: { po: PoHeaderRow }) => {
   if (detail.isLoading) {
     return (
       <div style={{ padding: 'var(--space-2) var(--space-3) var(--space-3) 40px', background: 'var(--c-cream)' }}>
-        <p style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)', margin: 0 }}>Loading lines for {po.po_number}…</p>
+        <p style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)', margin: 0 }}>Loading lines for {pcNo(po)}…</p>
       </div>
     );
   }

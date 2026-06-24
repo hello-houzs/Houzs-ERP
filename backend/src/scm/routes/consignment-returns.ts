@@ -29,6 +29,8 @@ import type { Env, Variables } from '../env';
 import { defaultWarehouseId, writeMovements, resolveWarehouseLotBatches, resolveWarehouseLotCosts } from '../lib/inventory-movements';
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
+import { nextMonthlyDocNo } from '../lib/doc-no';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const consignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 consignmentReturns.use('*', supabaseAuth);
@@ -54,8 +56,8 @@ const ITEM =
 const nextNum = async (sb: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('consignment_delivery_returns').select('id', { head: true, count: 'exact' }).like('return_number', `CRN-${yymm}-%`);
-  return `CRN-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  const { data: existing } = await sb.from('consignment_delivery_returns').select('return_number').like('return_number', `CRN-${yymm}-%`);
+  return nextMonthlyDocNo(`CRN-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 };
 
 /* Re-derive the return header's per-category totals + grand total from its line
@@ -346,21 +348,22 @@ consignmentReturns.get('/', async (c) => {
 // registered before /:id so 'returnable-note-lines' isn't read as an id.
 consignmentReturns.get('/returnable-note-lines', async (c) => {
   const sb = c.get('supabase');
-  const { data: notes, error: nErr } = await sb
+  const { data: notes, error: nErr } = await paginateAll<{ id: string; do_number: string; debtor_code: string | null; debtor_name: string | null }>((from, to) => sb
     .from('consignment_delivery_orders')
     .select('id, do_number, debtor_code, debtor_name')
     .order('do_number', { ascending: false })
-    .limit(1000);
+    .range(from, to));
   if (nErr) return c.json({ error: 'load_failed', reason: nErr.message }, 500);
   const noteList = (notes ?? []) as Array<{ id: string; do_number: string; debtor_code: string | null; debtor_name: string | null }>;
   if (noteList.length === 0) return c.json({ lines: [] });
   const noteById = new Map(noteList.map((n) => [n.id, n]));
   const noteIds = noteList.map((n) => n.id);
 
-  const { data: items, error: iErr } = await sb
+  const { data: items, error: iErr } = await chunkIn<Record<string, unknown>>(noteIds, (batch, from, to) => sb
     .from('consignment_delivery_order_items')
     .select('id, consignment_delivery_order_id, item_code, item_group, description, description2, uom, qty, unit_price_centi, discount_centi, unit_cost_centi, variants')
-    .in('consignment_delivery_order_id', noteIds);
+    .in('consignment_delivery_order_id', batch)
+    .range(from, to));
   if (iErr) return c.json({ error: 'load_failed', reason: iErr.message }, 500);
   const itemList = (items ?? []) as Array<Record<string, unknown>>;
   if (itemList.length === 0) return c.json({ lines: [] });
@@ -372,10 +375,11 @@ consignmentReturns.get('/returnable-note-lines', async (c) => {
     .select('id, status')
     .neq('status', 'CANCELLED');
   const liveReturnIds = new Set(((relRows ?? []) as Array<{ id: string }>).map((r) => r.id));
-  const { data: retItems } = await sb
+  const { data: retItems } = await chunkIn<{ consignment_delivery_return_id: string; consignment_do_item_id: string | null; qty_returned: number }>(itemIds, (batch, from, to) => sb
     .from('consignment_delivery_return_items')
     .select('consignment_delivery_return_id, consignment_do_item_id, qty_returned')
-    .in('consignment_do_item_id', itemIds);
+    .in('consignment_do_item_id', batch)
+    .range(from, to));
   const returnedByItem = new Map<string, number>();
   for (const r of ((retItems ?? []) as Array<{ consignment_delivery_return_id: string; consignment_do_item_id: string | null; qty_returned: number }>)) {
     if (!r.consignment_do_item_id || !liveReturnIds.has(r.consignment_delivery_return_id)) continue;

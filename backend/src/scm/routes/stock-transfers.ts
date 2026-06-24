@@ -24,6 +24,8 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements } from '../lib/inventory-movements';
+import { nextMonthlyDocNo } from '../lib/doc-no';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const stockTransfers = new Hono<{ Bindings: Env; Variables: Variables }>();
 stockTransfers.use('*', supabaseAuth);
@@ -39,10 +41,10 @@ const VALID_STATUS = new Set(['POSTED', 'CANCELLED']);
 const nextTransferNo = async (sb: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('stock_transfers')
-    .select('id', { head: true, count: 'exact' })
+  const { data: existing } = await sb.from('stock_transfers')
+    .select('transfer_no')
     .like('transfer_no', `ST-${yymm}-%`);
-  return `ST-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  return nextMonthlyDocNo(`ST-${yymm}`, ((existing ?? []) as Array<{ transfer_no: string }>).map((r) => r.transfer_no));
 };
 
 // ── List ──────────────────────────────────────────────────────────────
@@ -54,25 +56,24 @@ stockTransfers.get('/', async (c) => {
   const dateFrom          = c.req.query('dateFrom');
   const dateTo            = c.req.query('dateTo');
 
-  let q = sb.from('stock_transfers')
-    .select(
-      `${HEADER}, ` +
-      `from_warehouse:warehouses!stock_transfers_from_warehouse_id_fkey(id, code, name), ` +
-      `to_warehouse:warehouses!stock_transfers_to_warehouse_id_fkey(id, code, name)`,
-    )
-    .order('transfer_date', { ascending: false })
-    .order('created_at', { ascending: false })
-    // High bound so PostgREST's default 1000-row cap can't silently truncate
-    // the transfer list (filters above only narrow the set).
-    .limit(5000);
-
-  if (status && VALID_STATUS.has(status)) q = q.eq('status', status);
-  if (fromWarehouseId) q = q.eq('from_warehouse_id', fromWarehouseId);
-  if (toWarehouseId)   q = q.eq('to_warehouse_id',   toWarehouseId);
-  if (dateFrom)        q = q.gte('transfer_date', dateFrom);
-  if (dateTo)          q = q.lte('transfer_date', dateTo);
-
-  const { data, error } = await q;
+  // Page through so PostgREST's default 1000-row cap can't silently truncate
+  // the transfer list (filters below only narrow the set).
+  const { data, error } = await paginateAll((pFrom, pTo) => {
+    let q = sb.from('stock_transfers')
+      .select(
+        `${HEADER}, ` +
+        `from_warehouse:warehouses!stock_transfers_from_warehouse_id_fkey(id, code, name), ` +
+        `to_warehouse:warehouses!stock_transfers_to_warehouse_id_fkey(id, code, name)`,
+      )
+      .order('transfer_date', { ascending: false })
+      .order('created_at', { ascending: false });
+    if (status && VALID_STATUS.has(status)) q = q.eq('status', status);
+    if (fromWarehouseId) q = q.eq('from_warehouse_id', fromWarehouseId);
+    if (toWarehouseId)   q = q.eq('to_warehouse_id',   toWarehouseId);
+    if (dateFrom)        q = q.gte('transfer_date', dateFrom);
+    if (dateTo)          q = q.lte('transfer_date', dateTo);
+    return q.range(pFrom, pTo);
+  });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   // Add a `lineCount` per row via a follow-up query (cheap, no separate table needed
@@ -83,12 +84,14 @@ stockTransfers.get('/', async (c) => {
   const ids  = rows.map((r) => r.id as string);
   const countByXfer = new Map<string, number>();
   if (ids.length > 0) {
-    const { data: lineRows } = await sb.from('stock_transfer_lines')
+    // chunkIn — ids can exceed 1000 (un-truncated list) and lines across the
+    // listed transfers can exceed the 1000-row cap; batch + page so line_count
+    // is never understated.
+    const { data: lineRows } = await chunkIn<{ stock_transfer_id: string }>(ids, (batch, pFrom, pTo) => sb
+      .from('stock_transfer_lines')
       .select('stock_transfer_id')
-      .in('stock_transfer_id', ids)
-      // .limit(5000): lines across the listed transfers can exceed PostgREST's
-      // default 1000-row cap; truncation would understate line_count.
-      .limit(5000);
+      .in('stock_transfer_id', batch)
+      .range(pFrom, pTo));
     const lineList = (lineRows as unknown as Array<{ stock_transfer_id: string }>) ?? [];
     for (const l of lineList) {
       countByXfer.set(l.stock_transfer_id, (countByXfer.get(l.stock_transfer_id) ?? 0) + 1);
@@ -234,7 +237,32 @@ async function writeTransferMovements(
       performed_by:   userId,
       notes:          `Transfer from warehouse ${header.from_warehouse_id}`,
     }]);
-    if (!inOk.ok) movementErrors.push(`IN ${ln.product_code}: ${inOk.reason ?? 'unknown'}`);
+    if (!inOk.ok) {
+      movementErrors.push(`IN ${ln.product_code}: ${inOk.reason ?? 'unknown'}`);
+      /* CRITICAL — the OUT@from already committed (FIFO trigger consumed the
+         source lots). If the IN@to fails we must NOT leave the OUT standing:
+         that silently destroys stock (gone from source, never arrived at dest).
+         Immediately book a compensating IN@from for this line at the OUT's
+         consumed cost so the source bucket is made whole. The POST handler then
+         returns a non-201 because movementErrors is non-empty, so the UI cannot
+         treat this partial transfer as success. */
+      const compIn = await writeMovements(sb, [{
+        movement_type:  'IN',
+        warehouse_id:   header.from_warehouse_id,
+        product_code:   ln.product_code,
+        variant_key:    variantKey,
+        product_name:   ln.product_name,
+        qty:            ln.qty,
+        unit_cost_sen:  inUnitCost,
+        source_doc_type:'STOCK_TRANSFER',
+        source_doc_id:  header.id,
+        source_doc_no:  header.transfer_no,
+        ...(batchNo ? { batch_no: batchNo } : {}),
+        performed_by:   userId,
+        notes:          `Compensating reversal: IN@to failed, restoring source for transfer ${header.transfer_no}`,
+      }]);
+      if (!compIn.ok) movementErrors.push(`COMPENSATE ${ln.product_code}: ${compIn.reason ?? 'unknown'}`);
+    }
   }
   /* Stock Transfer = net-zero across warehouses, but B2C allocation sums all
      warehouses anyway so the totals don't change. Still re-walk in case any
@@ -313,10 +341,27 @@ stockTransfers.post('/', async (c) => {
   // Write inventory movements (paired OUT/IN) inline.
   const movementErrors = await writeTransferMovements(sb, header, user.id);
 
+  /* If ANY line's movement failed, the transfer did NOT fully complete. We
+     compensated the source side per-line above (so stock isn't destroyed), then
+     auto-cancel the header so it can't masquerade as a posted transfer, and
+     return a non-201 so the UI surfaces the failure instead of silently treating
+     a partial/destroyed transfer as success. */
+  if (movementErrors.length) {
+    await sb.from('stock_transfers')
+      .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString() })
+      .eq('id', header.id);
+    return c.json({
+      error: 'transfer_movements_failed',
+      id: header.id,
+      transferNo: header.transfer_no,
+      status: 'CANCELLED',
+      movementErrors,
+    }, 422);
+  }
+
   return c.json({
     id: header.id,
     transferNo: header.transfer_no,
-    movementErrors: movementErrors.length ? movementErrors : undefined,
   }, 201);
 });
 

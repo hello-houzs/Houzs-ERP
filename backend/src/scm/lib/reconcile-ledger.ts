@@ -22,6 +22,8 @@
 // alone never false-flags a doc that did move).
 // ----------------------------------------------------------------------------
 
+import { paginateAll } from './paginate-all';
+
 /** One flagged document — a posted/shipped doc with no matching movement. */
 export type LedgerIssue = { docType: string; id: string; docNo: string; status: string };
 
@@ -43,8 +45,14 @@ type DocRow = Record<string, string | null | undefined>;
  */
 export async function reconcileLedger(sb: any): Promise<ReconcileResult> {
   // All movements, indexed by `${type}::${doc_id}` so the per-doc check is O(1).
-  const { data: movRows, error: movErr } = await sb.from('inventory_movements')
-    .select('source_doc_type, source_doc_id').limit(200_000);
+  // Page through — PostgREST caps a single response at 1000 rows, so a bare
+  // .limit(200_000) silently truncated to the first 1000 movements, which would
+  // make EVERY document past that window look like it never moved stock (mass
+  // false-positives). paginateAll reads the full ledger.
+  const { data: movRows, error: movErr } = await paginateAll<{ source_doc_type: string | null; source_doc_id: string | null }>((from, to) => sb
+    .from('inventory_movements')
+    .select('source_doc_type, source_doc_id')
+    .range(from, to));
   if (movErr) throw new Error(movErr.message);
   const hasMov = new Set<string>();
   for (const m of (movRows ?? []) as Array<{ source_doc_type: string | null; source_doc_id: string | null }>) {
@@ -63,33 +71,37 @@ export async function reconcileLedger(sb: any): Promise<ReconcileResult> {
     }
   };
 
+  // Page through every header read too — a bare .limit(10_000) is still capped at
+  // PostgREST's 1000-row ceiling, so a busy month past 1000 docs would drop the
+  // overflow from the sweep (the dropped docs would simply never be checked). The
+  // status filter stays INSIDE each page query so every page is consistent.
   const [
     grnsR, dosR, prsR, drsR,
     transfersR, csNotesR, csReturnsR, pcReceivesR, pcReturnsR,
   ] = await Promise.all([
     // ── existing coverage (unchanged) ──────────────────────────────────────
-    sb.from('grns').select('id, grn_number, status').eq('status', 'POSTED').limit(10_000),
-    sb.from('delivery_orders').select('id, do_number, status').in('status', DO_SHIPPED).limit(10_000),
-    sb.from('purchase_returns').select('id, return_number, status').neq('status', 'CANCELLED').limit(10_000),
-    sb.from('delivery_returns').select('id, return_number, status').neq('status', 'CANCELLED').limit(10_000),
+    paginateAll<DocRow>((from, to) => sb.from('grns').select('id, grn_number, status').eq('status', 'POSTED').range(from, to)),
+    paginateAll<DocRow>((from, to) => sb.from('delivery_orders').select('id, do_number, status').in('status', DO_SHIPPED).range(from, to)),
+    paginateAll<DocRow>((from, to) => sb.from('purchase_returns').select('id, return_number, status').neq('status', 'CANCELLED').range(from, to)),
+    paginateAll<DocRow>((from, to) => sb.from('delivery_returns').select('id, return_number, status').neq('status', 'CANCELLED').range(from, to)),
     // ── new coverage (all stock-moving SCM document types) ─────────────────
     // Stock Transfer: only ever POSTED or CANCELLED (DRAFT removed in mig 0078);
     // a POSTED transfer with qty>0 lines always writes paired OUT/IN movements
     // labelled STOCK_TRANSFER on the header id.
-    sb.from('stock_transfers').select('id, transfer_no, status').eq('status', 'POSTED').limit(10_000),
+    paginateAll<DocRow>((from, to) => sb.from('stock_transfers').select('id, transfer_no, status').eq('status', 'POSTED').range(from, to)),
     // Consignment Note (dispatch, stock OUT): created directly at DISPATCHED and
     // only moves among DO_SHIPPED states or CANCELLED. The first ship-out writes
     // a CS_DO OUT on the header id (consignment_delivery_orders).
-    sb.from('consignment_delivery_orders').select('id, do_number, status').in('status', DO_SHIPPED).limit(10_000),
+    paginateAll<DocRow>((from, to) => sb.from('consignment_delivery_orders').select('id, do_number, status').in('status', DO_SHIPPED).range(from, to)),
     // Consignment Return (stock IN): posts immediately on create (no DRAFT),
     // status RECEIVED; first IN is labelled CS_DR on the header id.
-    sb.from('consignment_delivery_returns').select('id, return_number, status').neq('status', 'CANCELLED').limit(10_000),
+    paginateAll<DocRow>((from, to) => sb.from('consignment_delivery_returns').select('id, return_number, status').neq('status', 'CANCELLED').range(from, to)),
     // Purchase Consignment Receive (stock IN): posts immediately (no DRAFT),
     // status POSTED; first IN labelled PC_RECEIVE on the header id.
-    sb.from('purchase_consignment_receives').select('id, receive_number, status').neq('status', 'CANCELLED').limit(10_000),
+    paginateAll<DocRow>((from, to) => sb.from('purchase_consignment_receives').select('id, receive_number, status').neq('status', 'CANCELLED').range(from, to)),
     // Purchase Consignment Return (stock OUT): posts immediately (no DRAFT);
     // first OUT labelled PC_RETURN on the header id.
-    sb.from('purchase_consignment_returns').select('id, return_number, status').neq('status', 'CANCELLED').limit(10_000),
+    paginateAll<DocRow>((from, to) => sb.from('purchase_consignment_returns').select('id, return_number, status').neq('status', 'CANCELLED').range(from, to)),
   ]);
 
   // EXCLUDED — Stock Take (stock_takes): a posted take with NO counted variance

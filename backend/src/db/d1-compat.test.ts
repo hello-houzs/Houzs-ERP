@@ -35,6 +35,30 @@ describe("toPgPlaceholders", () => {
   it("is a no-op when there are no placeholders", () => {
     expect(toPgPlaceholders("SELECT 1")).toBe("SELECT 1");
   });
+
+  it("maps numbered ?N directly to $N, preserving reuse", () => {
+    // global search / projects.ts:2800 pattern — one bound arg reused.
+    expect(
+      toPgPlaceholders("WHERE code LIKE ?1 OR name LIKE ?1 OR venue LIKE ?1"),
+    ).toBe("WHERE code LIKE $1 OR name LIKE $1 OR venue LIKE $1");
+  });
+
+  it("maps mixed numbered placeholders with reuse (uniqueProjectCode)", () => {
+    // services/projects.ts — bind(base, prefix.length, prefix); ?2 reused.
+    expect(
+      toPgPlaceholders(
+        "WHERE code = ?1 OR (length(code) > ?2 AND substr(code, 1, ?2) = ?3)",
+      ),
+    ).toBe(
+      "WHERE code = $1 OR (length(code) > $2 AND substr(code, 1, $2) = $3)",
+    );
+  });
+
+  it("leaves numbered ?N inside string literals alone", () => {
+    expect(toPgPlaceholders("WHERE note = 'see ?1 ref' AND id = ?1")).toBe(
+      "WHERE note = 'see ?1 ref' AND id = $1",
+    );
+  });
 });
 
 describe("rewriteDialect LIKE handling", () => {

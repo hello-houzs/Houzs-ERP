@@ -76,6 +76,44 @@ app.get("/live", requirePermission("*"), async (c) => {
     }
   }
 
+  // R2 reachability — a cheap HEAD/GET of a probe key on the SCM slip/photo
+  // bucket (null object is fine; we time the round-trip). SO_ITEM_PHOTOS is the
+  // always-bound SCM bucket. Without this the page shows green while R2 (slip
+  // photos, SO-item photos) is unreachable.
+  const r2 = { bound: !!c.env.SO_ITEM_PHOTOS, ok: false, latency_ms: 0 };
+  if (c.env.SO_ITEM_PHOTOS) {
+    const r0 = Date.now();
+    try {
+      await c.env.SO_ITEM_PHOTOS.head("health:probe");
+      r2.ok = true;
+      r2.latency_ms = Date.now() - r0;
+    } catch {
+      r2.latency_ms = Date.now() - r0;
+    }
+  }
+
+  // Anthropic key presence — the SO-slip OCR /extract 503s when this secret is
+  // unset (a recurring cutover gap). Presence-only; we never call the API here.
+  const anthropic = { configured: !!c.env.ANTHROPIC_API_KEY };
+
+  // SCM-route liveness — the page must not show green while the SCM stack is
+  // 500ing. Probe ONE bounded SCM read straight through PostgREST (suppliers,
+  // head+count, zero rows) so a scm-schema / Supabase outage surfaces here.
+  const scm = { configured: isSupabaseConfigured(c.env), ok: false, latency_ms: 0, error: undefined as string | undefined };
+  if (scm.configured) {
+    const s0 = Date.now();
+    try {
+      const sb = getSupabaseService(c.env);
+      const { error } = await sb.from("suppliers").select("id", { count: "exact", head: true }).limit(1);
+      scm.latency_ms = Date.now() - s0;
+      if (error) scm.error = error.message;
+      else scm.ok = true;
+    } catch (e: any) {
+      scm.latency_ms = Date.now() - s0;
+      scm.error = e?.message || "SCM probe failed";
+    }
+  }
+
   // Counts — reuse the (now-warm) connection. Each wrapped so one failure
   // doesn't blank the rest of the payload.
   const counts = {
@@ -127,10 +165,16 @@ app.get("/live", requirePermission("*"), async (c) => {
   }
 
   return c.json({
-    ok: db.ok,
+    // Overall green requires DB up AND the SCM stack reachable (when configured)
+    // AND R2 reachable (when bound) — so the page can't show green while SCM is
+    // 500ing or slip-photo storage is down.
+    ok: db.ok && (!scm.configured || scm.ok) && (!r2.bound || r2.ok),
     time: new Date().toISOString(),
     db,
     kv,
+    r2,
+    anthropic,
+    scm,
     counts,
   });
 });
@@ -163,14 +207,58 @@ app.get("/audit-feed", requirePermission("*"), async (c) => {
       `SELECT entity_type, COUNT(*) AS n FROM audit_events WHERE created_at >= ?${filterSql} AND entity_type IS NOT NULL GROUP BY entity_type ORDER BY n DESC LIMIT 8`,
     )
       .bind(cutoff)
-      .all<{ entity_type: string; n: number }>();
+      .all();
+
+    // The public.audit_events feed is blind to SCM business mutations, which
+    // are written to scm.mfg_so_audit_log over PostgREST (supabase-js), not the
+    // public schema. Pull recent SCM SO-audit rows too and normalize them into
+    // the same shape so the operator sees ONE merged who-changed-what feed.
+    // Best-effort + bounded: a Supabase stall must not blank the core feed, and
+    // the sensitive-only filter intentionally hides these (no security-action
+    // taxonomy here) so the sensitive view stays a pure public.audit_events cut.
+    const coreRows = (rows.results ?? []) as any[];
+    let scmRows: any[] = [];
+    if (!sensitiveOnly && isSupabaseConfigured(c.env)) {
+      try {
+        const sb = getSupabaseService(c.env);
+        const { data: scm } = await sb
+          .from("mfg_so_audit_log")
+          .select(
+            "id, created_at, actor_id, actor_name_snapshot, action, so_doc_no, status_snapshot, note",
+          )
+          .gte("created_at", cutoff)
+          .order("created_at", { ascending: false })
+          .limit(limit);
+        scmRows = ((scm as any[]) ?? []).map((r) => ({
+          // Prefix the uuid so it can't collide with public.audit_events' numeric
+          // ids in the frontend's row key.
+          id: `scm:${r.id}`,
+          created_at: r.created_at,
+          actor_id: r.actor_id ?? null,
+          actor_email: r.actor_name_snapshot ?? null,
+          action: `scm.so.${String(r.action || "").toLowerCase()}`,
+          entity_type: "sales_order",
+          entity_id: r.so_doc_no ?? null,
+          summary:
+            r.note ||
+            [r.so_doc_no, r.status_snapshot].filter(Boolean).join(" "),
+        }));
+      } catch {
+        // Swallow — the SCM merge is additive; never fail the core feed on it.
+      }
+    }
+
+    // Merge by timestamp (desc), then cap to the requested limit.
+    const merged = [...coreRows, ...scmRows]
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+      .slice(0, limit);
 
     return c.json({
       success: true,
-      data: rows.results ?? [],
+      data: merged,
       summary: {
-        byAction: (byAction.results ?? []).map((r) => ({ action: r.action, n: Number(r.n) })),
-        byResource: (byResource.results ?? []).map((r) => ({
+        byAction: (byAction.results ?? []).map((r: any) => ({ action: r.action, n: Number(r.n) })),
+        byResource: (byResource.results ?? []).map((r: any) => ({
           resource: r.entity_type,
           n: Number(r.n),
         })),

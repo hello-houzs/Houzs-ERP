@@ -214,28 +214,28 @@ export function ServiceMetrics() {
       <DashboardGrid cols={4}>
         <StatCard
           label="Pending Review"
-          value={s ? s.pending_review_count.toLocaleString() : "—"}
+          value={s?.pending_review_count != null ? s.pending_review_count.toLocaleString() : "—"}
           subtitle="Cases awaiting triage"
           tone={(s?.pending_review_count ?? 0) > 0 ? "warning" : "default"}
           onClick={() => setDrill({ metric: "pending_review" })}
         />
         <StatCard
           label="Aging > 3 days"
-          value={s ? s.aging_count.toLocaleString() : "—"}
+          value={s?.aging_count != null ? s.aging_count.toLocaleString() : "—"}
           subtitle="Open cases stuck in a stage"
           tone={(s?.aging_count ?? 0) > 0 ? "warning" : "default"}
           onClick={() => setDrill({ metric: "aging" })}
         />
         <StatCard
           label="SLA Breached (now)"
-          value={s ? s.breach_count.toLocaleString() : "—"}
+          value={s?.breach_count != null ? s.breach_count.toLocaleString() : "—"}
           subtitle="Past deadline, not yet closed"
           tone={(s?.breach_count ?? 0) > 0 ? "error" : "default"}
           onClick={() => setDrill({ metric: "breach_now" })}
         />
         <StatCard
           label="Open"
-          value={h ? h.open_count.toLocaleString() : "—"}
+          value={h?.open_count != null ? h.open_count.toLocaleString() : "—"}
           subtitle="Still in progress"
           onClick={() => setDrill({ metric: "open_now" })}
         />
@@ -258,20 +258,20 @@ export function ServiceMetrics() {
       <DashboardGrid cols={4}>
         <StatCard
           label="Total Cases"
-          value={h ? h.total.toLocaleString() : "—"}
+          value={h?.total != null ? h.total.toLocaleString() : "—"}
           subtitle={`Period: ${m?.since_days ?? since} days`}
           onClick={() => setDrill({ metric: "total_period" })}
         />
         <StatCard
           label="Completion Rate"
           value={completionRate != null ? `${completionRate}%` : "—"}
-          subtitle={h ? `${h.closed.toLocaleString()} of ${h.total.toLocaleString()} closed` : " "}
+          subtitle={h && h.closed != null && h.total != null ? `${h.closed.toLocaleString()} of ${h.total.toLocaleString()} closed` : " "}
           tone={completionRate != null && completionRate >= 80 ? "success" : "default"}
           onClick={() => setDrill({ metric: "closed_period" })}
         />
         <StatCard
           label="SLA Breached"
-          value={h ? h.breached.toLocaleString() : "—"}
+          value={h?.breached != null ? h.breached.toLocaleString() : "—"}
           subtitle="Open cases past deadline"
           tone={(h?.breached ?? 0) > 0 ? "error" : "default"}
           onClick={() => setDrill({ metric: "breach_period" })}
@@ -286,7 +286,7 @@ export function ServiceMetrics() {
       <DashboardGrid cols={3}>
         <StatCard
           label="QA Passed"
-          value={h ? h.qa_passed.toLocaleString() : "—"}
+          value={h?.qa_passed != null ? h.qa_passed.toLocaleString() : "—"}
           subtitle="Cases with manager sign-off"
           onClick={() => setDrill({ metric: "qa_passed" })}
         />
@@ -921,7 +921,7 @@ function CsatTrend({ data }: { data: AssrSummaryV31["csat_trend"] }) {
               r={0.8}
               className="fill-accent"
             >
-              <title>{`${d.week}: ${d.avg_rating.toFixed(2)} avg (n=${d.n})`}</title>
+              <title>{`${d.week}: ${d.avg_rating != null ? d.avg_rating.toFixed(2) : "—"} avg (n=${d.n})`}</title>
             </circle>
           );
         })}

@@ -30,6 +30,7 @@
 import { Hono } from "hono";
 import { supabaseAuth } from "../middleware/auth";
 import type { Env, Variables } from "../env";
+import { paginateAll } from "../lib/paginate-all";
 
 export const outstanding = new Hono<{ Bindings: Env; Variables: Variables }>();
 outstanding.use("*", supabaseAuth);
@@ -52,20 +53,21 @@ for (const [slug, { view, dateCol }] of Object.entries(MODULES)) {
     const from = c.req.query("from");
     const to = c.req.query("to");
 
-    let q = sb.from(view).select("*").order(dateCol, { ascending: false });
-
-    // outstanding filter: default = true (only outstanding rows)
-    if (outstandingParam === "true" || outstandingParam == null) {
-      q = q.eq("is_outstanding", true);
-    } else if (outstandingParam === "false") {
-      q = q.eq("is_outstanding", false);
-    }
-    // else 'all' (or any other value) → no filter, return both
-
-    if (from) q = q.gte(dateCol, from);
-    if (to) q = q.lte(dateCol, to);
-
-    const { data, error } = await q.limit(1000);
+    // Page through so PostgREST's 1000-row cap can't silently truncate the
+    // outstanding list (an "all"/wide-range view can exceed 1000 docs).
+    const { data, error } = await paginateAll((pFrom, pTo) => {
+      let q = sb.from(view).select("*").order(dateCol, { ascending: false });
+      // outstanding filter: default = true (only outstanding rows)
+      if (outstandingParam === "true" || outstandingParam == null) {
+        q = q.eq("is_outstanding", true);
+      } else if (outstandingParam === "false") {
+        q = q.eq("is_outstanding", false);
+      }
+      // else 'all' (or any other value) → no filter, return both
+      if (from) q = q.gte(dateCol, from);
+      if (to) q = q.lte(dateCol, to);
+      return q.range(pFrom, pTo);
+    });
     if (error) {
       // The view is missing entirely → treat as "no data yet" so the page
       // renders an empty tab instead of 500ing.
@@ -91,10 +93,14 @@ outstanding.get("/summary", async (c) => {
     { count: number; total_centi?: number; total_outstanding_centi?: number }
   > = {};
   for (const [slug, { view, dateCol }] of Object.entries(MODULES)) {
-    let q = sb.from(view).select("*").eq("is_outstanding", true);
-    if (from) q = q.gte(dateCol, from);
-    if (to) q = q.lte(dateCol, to);
-    const { data } = await q;
+    // Page through — the count + totals reduce over EVERY row, so PostgREST's
+    // 1000-row cap would understate both on a large outstanding set.
+    const { data } = await paginateAll((pFrom, pTo) => {
+      let q = sb.from(view).select("*").eq("is_outstanding", true);
+      if (from) q = q.gte(dateCol, from);
+      if (to) q = q.lte(dateCol, to);
+      return q.range(pFrom, pTo);
+    });
     const rows = (data ?? []) as Array<Record<string, unknown>>;
     summary[slug] = {
       count: rows.length,

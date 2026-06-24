@@ -38,7 +38,7 @@ export function Layout({ children }: Props) {
         mobileOpen={false}
       />
 
-      <main className="paper-grain thin-scroll flex-1 overflow-y-auto">
+      <main className="paper-grain thin-scroll flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
         {/* Mobile top bar — brand + topbar chrome only. Hidden on lg+. */}
         <MobileTopBar />
 

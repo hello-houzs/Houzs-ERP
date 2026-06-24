@@ -43,6 +43,7 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { supabaseAuth } from '../middleware/auth';
+import { nextMonthlyDocNo } from '../lib/doc-no';
 import type { Env, Variables } from '../env';
 
 export const purchaseConsignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -268,7 +269,9 @@ purchaseConsignmentOrders.post('/', async (c) => {
   const currency = ((body.currency as string) ?? 'MYR').toUpperCase();
   if (!VALID_CURRENCIES.has(currency)) return c.json({ error: 'invalid_currency' }, 400);
 
-  // PC Order number. Format: PCO-YYMM-NNN (counts within month).
+  // PC Order number. Format: PCO-YYMM-NNN. max(suffix)+1 (NEVER count+1) so a
+  // deleted mid-month row can't make the counter re-mint a surviving number
+  // forever — see doc-no.ts.
   const supabase = c.get('supabase');
   const user = c.get('user');
 
@@ -277,11 +280,11 @@ purchaseConsignmentOrders.post('/', async (c) => {
     return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   })();
 
-  const { count: monthCount } = await supabase
+  const { data: existingPc } = await supabase
     .from('purchase_consignment_orders')
-    .select('id', { head: true, count: 'exact' })
+    .select('pc_number')
     .like('pc_number', `PCO-${yymm}-%`);
-  const pcNumber = `PCO-${yymm}-${String((monthCount ?? 0) + 1).padStart(3, '0')}`;
+  const pcNumber = nextMonthlyDocNo(`PCO-${yymm}`, ((existingPc ?? []) as Array<{ pc_number: string }>).map((r) => r.pc_number));
 
   // Compute totals.
   let subtotal = 0;

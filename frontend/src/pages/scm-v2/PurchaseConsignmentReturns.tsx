@@ -57,7 +57,7 @@ type PrRow = Record<string, unknown> & {
   refund_centi?: number;
   supplier?: { id: string; code: string; name: string } | null;
   purchase_order?: { id: string; po_number: string } | null;
-  grn?: { id: string; grn_number: string } | null;
+  pc_receive?: { id: string; receive_number: string } | null;
 };
 
 const buildColumns = (): DataGridColumn<PrRow>[] => [
@@ -76,10 +76,10 @@ const buildColumns = (): DataGridColumn<PrRow>[] => [
       (a.supplier?.name ?? a.supplier?.code ?? '').localeCompare(b.supplier?.name ?? b.supplier?.code ?? ''),
   },
   {
-    key: 'grn_number', label: 'Transfer From (Receive)', width: 170, sortable: true, groupable: true,
-    accessor: (r) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{r.grn?.grn_number ?? '—'}</span>,
-    searchValue: (r) => r.grn?.grn_number ?? '',
-    groupValue: (r) => r.grn?.grn_number ?? '(none)',
+    key: 'receive_number', label: 'Transfer From (Receive)', width: 170, sortable: true, groupable: true,
+    accessor: (r) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{r.pc_receive?.receive_number ?? '—'}</span>,
+    searchValue: (r) => r.pc_receive?.receive_number ?? '',
+    groupValue: (r) => r.pc_receive?.receive_number ?? '(none)',
   },
   {
     key: 'return_date', label: 'Return Date', width: 120, sortable: true,

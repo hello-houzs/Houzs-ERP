@@ -10,6 +10,7 @@ import {
 } from '../shared/so-line-display';
 import { reversePiAccounting, resyncPiAccounting } from './accounting';
 import { recostForPi, recostFromGrn } from '../lib/recost';
+import { nextMonthlyDocNo } from '../lib/doc-no';
 
 export const purchaseInvoices = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseInvoices.use('*', supabaseAuth);
@@ -26,8 +27,8 @@ const ITEM =
 const nextNum = async (sb: any, prefix: string): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('purchase_invoices').select('id', { head: true, count: 'exact' }).like('invoice_number', `${prefix}-${yymm}-%`);
-  return `${prefix}-${yymm}-${String((count ?? 0) + 1).padStart(3, '0')}`;
+  const { data: existing } = await sb.from('purchase_invoices').select('invoice_number').like('invoice_number', `${prefix}-${yymm}-%`);
+  return nextMonthlyDocNo(`${prefix}-${yymm}`, ((existing ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number));
 };
 
 /* ── Recompute PI header money rollups (mirror recomputeGrnTotals) ─────────
@@ -630,8 +631,11 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
   // Generate PI numbers sequentially within this batch.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { count } = await sb.from('purchase_invoices').select('id', { head: true, count: 'exact' }).like('invoice_number', `PI-${yymm}-%`);
-  let counter = count ?? 0;
+  // Seed from max(suffix), NOT count — count+1 is non-self-healing (a mid-month
+  // delete re-mints a surviving number → UNIQUE collision). Derive the next
+  // suffix via nextMonthlyDocNo, then counter starts one below it.
+  const { data: existingPiNos } = await sb.from('purchase_invoices').select('invoice_number').like('invoice_number', `PI-${yymm}-%`);
+  let counter = parseInt(nextMonthlyDocNo(`PI-${yymm}`, ((existingPiNos ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number)).slice(`PI-${yymm}-`.length), 10) - 1;
 
   const invoiceDate = body.invoiceDate ?? new Date().toISOString().slice(0, 10);
   const created: Array<{ id: string; invoiceNumber: string; supplierId: string; grnCount: number; lineCount: number }> = [];
@@ -679,9 +683,9 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
         .select('id, invoice_number').single();
       if (!hErr && header) { h = header as unknown as { id: string; invoice_number: string }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
-      const { count: live } = await sb.from('purchase_invoices')
-        .select('id', { head: true, count: 'exact' }).like('invoice_number', `PI-${yymm}-%`);
-      counter = (live ?? counter) + 1;
+      const { data: live } = await sb.from('purchase_invoices')
+        .select('invoice_number').like('invoice_number', `PI-${yymm}-%`);
+      counter = parseInt(nextMonthlyDocNo(`PI-${yymm}`, ((live ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number)).slice(`PI-${yymm}-`.length), 10);
     }
     if (!h) continue;
 

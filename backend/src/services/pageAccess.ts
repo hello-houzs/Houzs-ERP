@@ -624,10 +624,27 @@ export function computeBackfillLevel(
  * directly by `requirePageAccess` and the frontend `usePageAccess`
  * hook — no D1 round-trip on the hot path.
  */
+/**
+ * Optional out-parameter for the loaders below. Lets `hydrateAuthUser`
+ * learn — from the SAME source it hydrates page_access from (role vs
+ * position) — whether the user has ANY explicit `scm*` page-access row
+ * (vs the default "none"). This drives the SAFE L2 SCM write-gate rollout
+ * in `scmAreaGuard`: a user with NO explicit SCM config falls back to the
+ * coarse `scm.access` umbrella (allow), and only users WITH explicit SCM
+ * rows get the per-area enforcement. Populated in-place during the
+ * explicit-row scan, so no extra DB round-trip. Existing callers that
+ * don't care simply omit it.
+ */
+export interface PageAccessMeta {
+  /** True iff at least one explicit row had a page_key starting with "scm". */
+  explicitScm: boolean;
+}
+
 export async function loadPageAccessForRole(
   env: Env,
   roleId: number,
   rolePerms: ReadonlySet<string>,
+  meta?: PageAccessMeta,
 ): Promise<Record<string, AccessLevel>> {
   // Wildcard short-circuits — Owner / IT Admin always see 'full'.
   if (rolePerms.has("*")) {
@@ -644,6 +661,7 @@ export async function loadPageAccessForRole(
   for (const r of rows.results ?? []) {
     if (isValidPageKey(r.page_key) && isValidAccessLevel(r.level)) {
       explicit[r.page_key] = r.level;
+      if (meta && r.page_key.startsWith("scm")) meta.explicitScm = true;
     }
   }
 
@@ -685,6 +703,7 @@ export async function loadPageAccessForRole(
 export async function loadPageAccessForPosition(
   env: Env,
   positionId: number,
+  meta?: PageAccessMeta,
 ): Promise<Record<string, AccessLevel>> {
   const rows = await env.DB.prepare(
     `SELECT page_key, level FROM position_page_access WHERE position_id = ?`,
@@ -696,6 +715,7 @@ export async function loadPageAccessForPosition(
   for (const r of rows.results ?? []) {
     if (isValidPageKey(r.page_key) && isValidAccessLevel(r.level)) {
       explicit[r.page_key] = r.level;
+      if (meta && r.page_key.startsWith("scm")) meta.explicitScm = true;
     }
   }
 

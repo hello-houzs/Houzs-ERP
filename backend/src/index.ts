@@ -159,7 +159,7 @@ function humanizeError(err: Error): { status: 500 | 503; message: string } {
   if (TRANSIENT_CONN_RE.test(m))
     return { status: 503, message: "The database is briefly unavailable. Please try again in a moment." };
   if (/operator does not exist|column .* does not exist|relation .* does not exist|syntax error|invalid input syntax|violates .* constraint|duplicate key/i.test(m))
-    return { status: 500, message: "Something went wrong processing that request. Our team has been notified." };
+    return { status: 500, message: "Something went wrong processing that request. Please try again." };
   return { status: 500, message: "Something went wrong. Please try again." };
 }
 

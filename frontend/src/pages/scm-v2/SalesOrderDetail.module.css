@@ -73,6 +73,13 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  /* Phone (Houzs 2026-06-24) — the action group (Total rail + status pill +
+     History + RelationshipMap + Print) is wider than a phone viewport and was
+     overflowing the right edge. Allow it to wrap so the extra buttons drop onto
+     a new line under the title instead of pushing the page sideways. Harmless
+     on desktop — there's always enough width there for one row. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 /* PR — commander 2026-05-27 followup. Total badge moved out of the page
@@ -239,6 +246,12 @@
 
   /* Page chrome — less hero padding, tighter section gaps. */
   .page { gap: var(--space-2); padding: var(--space-2) var(--space-3) var(--space-3); }
+
+  /* Header subtitle (Houzs 2026-06-24) — the "SO date … · N lines · Current
+     SO-… · Customer SO Ref …" meta line is redundant clutter on a phone: the
+     doc no is already the title and the customer ref lives in the form below.
+     Hide it on phone only; desktop keeps the meta line. */
+  .subtitle { display: none; }
 
   /* Section header bar — step the title down from 13px/800 to a compact
      11px so it reads like the ASSR card eyebrow, not a headline. */
@@ -555,6 +568,20 @@
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: var(--space-3) var(--space-5);
+}
+
+/* Totals KPI strip (Revenue / Cost / Margin / Margin %). Moved off the inline
+   TOTALS_KPI_GRID_STYLE const (Houzs 2026-06-24) so the phone breakpoint can
+   override the column count — an inline style can't carry a media query. These
+   declarations are byte-identical to the old const; the phone override
+   (repeat(2,1fr)) lives in the @media(max-width:600px) block at end of file. */
+.totalsKpiGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--line);
 }
 
 .totalRow {
@@ -952,5 +979,132 @@
 .modeBtn[data-active='true'] {
   background: var(--c-ink);
   color: var(--c-cream);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PHONE REFLOW — line-items table → cards, totals KPI → 2×2 (Houzs 2026-06-24)
+
+   This block sits at the END of the file ON PURPOSE. CSS media queries do NOT
+   add specificity; ties break on source order. The base `.table`, `.totalLabel`,
+   `.totalValue`, `.totalsKpiGrid` rules are defined ABOVE — so an override
+   placed in the earlier @media block (line ~235) would LOSE the cascade to
+   them. Anchoring these phone rules last guarantees they win below 600px.
+   Desktop (>600px) is byte-identical.
+   ══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 600px) {
+  /* ── LINE ITEMS table → stacked cards ───────────────────────────────────
+     The 10-column line-items table is ~888px wide and forced the whole page
+     to scroll sideways on a phone. Reflow each ROW into a clean stacked card
+     matching the Service-module / MfgSalesOrdersList mobile card scale:
+       - the Item cell becomes the card title,
+       - every other cell becomes a label-value row (5.5rem 1fr),
+       - the data-label="…" attributes added in the TSX supply the labels.
+     Classic responsive-table technique — display:block the table parts, hide
+     the <thead>, chrome each <tr>. The desktop <table> markup is unchanged. */
+  .table,
+  .table thead,
+  .table tbody,
+  .table tr,
+  .table td {
+    display: block;
+    width: auto;
+  }
+  /* Hide the header row off-screen — labels now live per-cell. */
+  .table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  /* Each row → a card. */
+  .table tbody tr {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: var(--c-paper);
+    padding: var(--space-3);
+    margin: 0 0 var(--space-2);
+  }
+  .table tbody tr:last-child { margin-bottom: 0; }
+  /* Reset the desktop fixed-width nth-child rules — every cell is a full-width
+     block in a card, so the 56/96/104px widths must not apply. */
+  .table tbody td,
+  .table thead th {
+    width: auto !important;
+    min-width: 0 !important;
+  }
+  /* Cells 2-10 → label-value rows (5.5rem 1fr). */
+  .table tbody td {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr;
+    column-gap: 12px;
+    row-gap: 4px;
+    align-items: baseline;
+    padding: 4px 0;
+    border-bottom: none;
+    font-size: var(--fs-12);
+    text-align: left;
+  }
+  /* data-label → the label column. The Item cell carries no data-label, so
+     this paints only on the value rows. */
+  .table tbody td[data-label]::before {
+    content: attr(data-label);
+    font-family: var(--font-sans);
+    font-size: var(--fs-10);
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+    line-height: 1.3;
+    align-self: start;
+  }
+  /* Item title cell — full width, no label column, hairline under it. */
+  .table tbody td:first-child {
+    display: block;
+    padding-bottom: var(--space-2);
+    margin-bottom: var(--space-2);
+    border-bottom: 1px solid var(--line);
+  }
+  /* Numeric cells were right-aligned in the table — read left-aligned in the
+     value column now. The Total cell uses .priceCell (text-align:right +
+     nowrap) — reset both. */
+  .table tbody td.tableRight,
+  .table tbody td.priceCell { text-align: left; }
+  .table tbody td.priceCell { white-space: normal; }
+  /* Value spans wrap cleanly instead of forcing width. */
+  .table tbody td > span { white-space: normal; overflow-wrap: anywhere; }
+
+  /* Description 2 (Houzs 2026-06-24) — holds long compound text like
+     "PC151-01 / DIVAN 8\" + NO LEG / GAP 14\"" that gets crushed in the narrow
+     5.5rem 1fr value column. Break this one cell out of the label-value grid:
+     stack the label on its own line (top) and let the value span the FULL card
+     width below it. Other cells keep the 5.5rem 1fr row layout. */
+  .table tbody td[data-label="Description 2"] {
+    display: block;
+    padding: 4px 0;
+  }
+  .table tbody td[data-label="Description 2"]::before {
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  /* ── TOTALS · MARGIN KPI grid → 2×2 ─────────────────────────────────────
+     Revenue / Cost / Margin / Margin% rendered as repeat(4,1fr) — 4×~80px
+     columns clip "Margin %". Drop to two columns so each tile gets real
+     width. (.totalsKpiGrid replaces the old inline TOTALS_KPI_GRID_STYLE so
+     this breakpoint can reach it.) */
+  .totalsKpiGrid { grid-template-columns: repeat(2, 1fr); }
+
+  /* ── Totals label/value → Service tokens ────────────────────────────────
+     Align the per-category totals rows to the Service label/value scale. */
+  .totalLabel {
+    font-size: var(--fs-10);
+    letter-spacing: 0.18em;
+  }
+  .totalValue {
+    font-size: var(--fs-12);
+    overflow-wrap: anywhere;
+  }
 }
 

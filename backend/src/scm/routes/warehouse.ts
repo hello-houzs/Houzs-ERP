@@ -24,6 +24,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const warehouse = new Hono<{ Bindings: Env; Variables: Variables }>();
 warehouse.use('*', supabaseAuth);
@@ -86,11 +87,13 @@ warehouse.get('/', async (c) => {
   const sb = c.get('supabase');
   const warehouseId = c.req.query('warehouseId');
 
-  // High bound so PostgREST's default 1000-row cap can't silently truncate the
+  // Page through so PostgREST's default 1000-row cap can't silently truncate the
   // rack grid (a large warehouse can exceed 1000 racks).
-  let rackQ = sb.from('warehouse_racks').select(RACK_COLS).order('rack').limit(5000);
-  if (warehouseId) rackQ = rackQ.eq('warehouse_id', warehouseId);
-  const { data: racks, error: rackErr } = await rackQ;
+  const { data: racks, error: rackErr } = await paginateAll<{ id: string; warehouse_id: string; rack: string; position: string | null; reserved: boolean; notes: string | null }>((from, to) => {
+    let rackQ = sb.from('warehouse_racks').select(RACK_COLS).order('rack');
+    if (warehouseId) rackQ = rackQ.eq('warehouse_id', warehouseId);
+    return rackQ.range(from, to);
+  });
   if (rackErr) {
     if (/relation .* does not exist/i.test(rackErr.message)) {
       return c.json({ error: 'migration_pending', reason: 'Run migration 0094 against Supabase.' }, 500);
@@ -101,14 +104,15 @@ warehouse.get('/', async (c) => {
   const rackIds = (racks ?? []).map((r: { id: string }) => r.id);
   let items: RackItemRow[] = [];
   if (rackIds.length > 0) {
-    const { data: itemRows, error: itemErr } = await sb
+    // chunkIn — rackIds can exceed 1000 (un-truncated grid) and rack items
+    // across all racks can exceed the 1000-row cap; batch + page so no stock
+    // sitting on racks is hidden by truncation.
+    const { data: itemRows, error: itemErr } = await chunkIn<RackItemRow>(rackIds, (batch, from, to) => sb
       .from('warehouse_rack_items')
       .select(ITEM_COLS)
-      .in('rack_id', rackIds)
+      .in('rack_id', batch)
       .order('stocked_in_date', { ascending: true })
-      // .limit(5000): rack items across all racks can exceed PostgREST's default
-      // 1000-row cap; truncation would hide stock sitting on racks.
-      .limit(5000);
+      .range(from, to));
     if (itemErr) return c.json({ error: 'load_failed', reason: itemErr.message }, 500);
     items = (itemRows ?? []) as RackItemRow[];
   }

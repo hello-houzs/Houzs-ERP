@@ -45,6 +45,11 @@ import { authedFetch, humanApiError } from '../../vendor/scm/lib/authed-fetch';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { useAuth } from '../../vendor/scm/lib/auth';
+/* Houzs auth — the REAL logged-in user (name + id). The vendored 2990 auth
+   bridge (useAuth above) has no staff row for the owner (id:null), which left
+   Salesperson blank for anyone without a scm.staff row. We read the Houzs
+   AuthUser to default + name the creator so the field is never blank. */
+import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
@@ -109,6 +114,10 @@ export const SalesOrderNew = () => {
           venue_id — non-admin roles also can't change the salesperson, so
           the venue is fully locked to their home venue). */
   const { staff: currentStaff } = useAuth();
+  /* The REAL logged-in user (Houzs auth) — drives the never-blank Salesperson
+     default. The 2990 bridge's currentStaff is null/role-only for a user with
+     no scm.staff row (e.g. the owner), so we fall back to this for the name. */
+  const { user: currentUser } = useHouzsAuth();
   /* Roles that may swap the salesperson on an SO they're entering on
      behalf of someone else. Everyone else gets a read-only salesperson
      pinned to themselves. */
@@ -228,6 +237,7 @@ export const SalesOrderNew = () => {
     debtorName?: string; address1?: string; note?: string;
     deliveryDate?: string; processingDate?: string;
     customerType?: string; buildingType?: string; venueId?: string;
+    customerSoNo?: string; state?: string;
   };
   const [scanBaseline, setScanBaseline] = useState<ScanBaseline | null>(null);
   /* Per-line scan meta, keyed by the seeded line's rid: the verbatim slip row,
@@ -235,6 +245,12 @@ export const SalesOrderNew = () => {
      (so the chip can tell a still-AI match from an operator override). */
   type ScanLineMeta = { rawText: string; suggestedCode: string; confidence: number; seededCode: string };
   const [scanLineMeta, setScanLineMeta] = useState<Record<string, ScanLineMeta>>({});
+  /* Scanned city / postcode held until the localities cascade for the chosen
+     state has options to match against — they only land in the dropdowns when
+     they exist in the live my_localities list for that state (catalog-validated,
+     never free-text into a dropdown). Cleared after a successful apply. */
+  const [scanCity, setScanCity] = useState('');
+  const [scanPostcode, setScanPostcode] = useState('');
 
   /* Copy-to-new-SO seed — runs once when the source SO finishes loading.
      Fills customer + address + emergency + line items. Deliberately omits
@@ -313,6 +329,16 @@ export const SalesOrderNew = () => {
     if (payload.customerName) setDebtorName(payload.customerName);
     if (payload.phone) setPhone(payload.phone);
     if (payload.address1) setAddress1(payload.address1);
+    /* Customer's own order reference (e.g. "HC14032") from the slip top-right. */
+    if (payload.customerSoRef) setCustomerSoNo(payload.customerSoRef);
+    /* Structured address → State / City / Postcode. State is a server-validated
+       my_localities value; the city/postcode cascade depends on the chosen
+       state, so they're applied by the locality-reconcile effect below once the
+       localities list has loaded (setting them here directly would be cleared
+       by the State onChange cascade). */
+    if (payload.addressState) setState(payload.addressState);
+    if (payload.addressCity) setScanCity(payload.addressCity);
+    if (payload.addressPostcode) setScanPostcode(payload.addressPostcode);
     if (payload.note) setNote(payload.note);
     if (payload.deliveryDate) setDeliveryDate(payload.deliveryDate);
     if (payload.processingDate) setProcessingDate(payload.processingDate);
@@ -389,6 +415,8 @@ export const SalesOrderNew = () => {
       customerType:   payload.customerType || '',
       buildingType:   payload.buildingType || '',
       venueId:        payload.venueId || '',
+      customerSoNo:   payload.customerSoRef || '',
+      state:          payload.addressState || '',
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromScan, scanSeeded]);
@@ -548,6 +576,27 @@ export const SalesOrderNew = () => {
     [locRows, state, city],
   );
 
+  /* Scan address reconcile (fromScan only) — once the locality cascade for the
+     scanned State has options, snap the scanned City to a REAL my_localities
+     city for that state (case-insensitive), then snap the scanned Postcode to a
+     real postcode for that city. Catalog-validated: a city/postcode the live
+     localities list doesn't contain is dropped (never free-typed into a
+     dropdown). Each holder is cleared once consumed so a later manual edit
+     isn't clobbered. */
+  useEffect(() => {
+    if (!scanCity || !state || cities.length === 0) return;
+    const hit = cities.find((cc) => cc.toLowerCase() === scanCity.trim().toLowerCase());
+    if (hit) setCity((prev) => prev || hit);
+    setScanCity('');
+  }, [scanCity, state, cities]);
+  useEffect(() => {
+    if (!scanPostcode || !state || !city || postcodes.length === 0) return;
+    const want = scanPostcode.trim();
+    const hit = postcodes.find((p) => p === want);
+    if (hit) setPostcode((prev) => prev || hit);
+    setScanPostcode('');
+  }, [scanPostcode, state, city, postcodes]);
+
   /* Commander 2026-05-27 (Fix 5) — State → Sales Location cascade. Same
      rule as Edit SO: pick a state, the Sales Location auto-fills with the
      warehouse code from state_warehouse_mappings. No-op when the state has
@@ -580,13 +629,50 @@ export const SalesOrderNew = () => {
     [staffQ.data],
   );
 
-  /* Seed salespersonId once the current staff row arrives. We only seed
-     when the user hasn't already picked someone (otherwise we'd stomp on
-     an admin's manual choice on every re-render). */
+  /* Owner 2026-06-23 — the Salesperson must NEVER be blank for whoever creates
+     the order: the creator IS the salesperson. The 2990 bridge only knew the
+     creator when they had a scm.staff row, so a user without one (the owner)
+     got "Pick staff". We now resolve the creator from the staff list FIRST
+     (by id, then email, then name) so a real staff user keeps their canonical
+     id; when no staff row matches we synthesize a UI-only "self" option from
+     the Houzs auth user so their NAME is always selectable + shown. */
+  const SELF_SALESPERSON = '__self__';
+  const selfStaffMatch = useMemo(() => {
+    const byId = currentStaff?.id
+      ? staffList.find((s) => s.id === currentStaff.id)
+      : undefined;
+    if (byId) return byId;
+    const email = (currentUser?.email ?? '').trim().toLowerCase();
+    const byEmail = email
+      ? staffList.find((s) => (s.email ?? '').trim().toLowerCase() === email)
+      : undefined;
+    if (byEmail) return byEmail;
+    const name = (currentUser?.name ?? currentStaff?.name ?? '').trim().toLowerCase();
+    return name
+      ? staffList.find((s) => (s.name ?? '').trim().toLowerCase() === name)
+      : undefined;
+  }, [staffList, currentStaff?.id, currentStaff?.name, currentUser?.email, currentUser?.name]);
+
+  /* The creator's display name for the synthesized self-option (only used when
+     selfStaffMatch is undefined — i.e. they have no scm.staff row). */
+  const selfDisplayName =
+    (currentUser?.name ?? '').trim() ||
+    (currentStaff?.name ?? '').trim() ||
+    (currentUser?.email ?? '').trim() ||
+    'Me';
+
+  /* Seed salespersonId to the creator once auth/staff resolve. A real staff
+     row seeds its canonical id; a creator with NO staff row seeds the
+     SELF_SALESPERSON sentinel so the field shows their name (never blank).
+     Only seeds when the user hasn't already picked someone (don't stomp an
+     admin's manual choice on re-render). */
   useEffect(() => {
-    if (!currentStaff?.id) return;
-    setSalespersonId((prev) => prev || currentStaff.id!);
-  }, [currentStaff?.id]);
+    if (selfStaffMatch) {
+      setSalespersonId((prev) => prev || selfStaffMatch.id);
+    } else if (selfDisplayName) {
+      setSalespersonId((prev) => prev || SELF_SALESPERSON);
+    }
+  }, [selfStaffMatch, selfDisplayName]);
 
   /* Derive the resolved venue from whichever salesperson is currently
      picked. Falls back to the auth user's own venue_id if the staff list
@@ -767,7 +853,11 @@ export const SalesOrderNew = () => {
     let changed = false;
     const mark = (a: string, b: string) => { if (a !== b) changed = true; };
     mark(norm(debtorName), norm(ai.customerName));
-    mark(norm(address1), norm(ai.address));
+    mark(norm(address1), norm(ai.addressLine1 ?? ai.address));
+    mark(norm(state), norm(ai.addressStateMatch?.value));
+    mark(norm(city), norm(ai.city));
+    mark(norm(postcode), norm(ai.postcode));
+    mark(norm(customerSoNo), norm(ai.customerSoRef));
     mark(norm(customerType), norm(ai.customerTypeMatch?.value));
     mark(norm(buildingType), norm(ai.buildingTypeMatch?.value));
     mark(norm(paymentDrafts[0]?.methodLabel), norm(ai.paymentMethodMatch?.value));
@@ -788,11 +878,19 @@ export const SalesOrderNew = () => {
     const corrected: ExtractedSlip = {
       customerName: debtorName.trim() || null,
       address: address1.trim() || null,
+      /* Operator-final structured address — the form's State is a real
+         my_localities value, so it's a confirmed addressStateMatch; city /
+         postcode are the dropdown-validated picks. */
+      addressLine1: address1.trim() || null,
+      city: city.trim() || null,
+      postcode: postcode.trim() || null,
+      addressStateMatch: optMatch(state),
       phones,
       location: ai.location,
       deliveryDate: deliveryDate || ai.deliveryDate,
       processingDate: processingDate || ai.processingDate,
       salesRep: scanSalesperson || ai.salesRep,
+      customerSoRef: customerSoNo.trim() || ai.customerSoRef,
       paymentMethod: ai.paymentMethod,
       depositRm: ai.depositRm,
       totalRm: ai.totalRm,
@@ -933,7 +1031,13 @@ export const SalesOrderNew = () => {
         debtorCode: debtorCode || undefined,
         phone: phone || undefined,
         email: email || undefined,
-        salespersonId: salespersonId || undefined,
+        /* The SELF_SALESPERSON sentinel is a UI-only placeholder for a creator
+           with no scm.staff row — never send it as an id (it isn't one). A real
+           staff id submits normally; the sentinel is omitted so the backend
+           keeps its own caller-based resolution rather than choking on a fake
+           id. */
+        salespersonId:
+          salespersonId && salespersonId !== SELF_SALESPERSON ? salespersonId : undefined,
         customerType: customerType || undefined,
         customerSoNo: customerSoNo || undefined,
         /* Commander 2026-05-27: Venue is locked to the picked salesperson's
@@ -1136,7 +1240,7 @@ export const SalesOrderNew = () => {
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Customer SO Ref</span>
               <input
-                className={styles.fieldInput}
+                className={`${styles.fieldInput} ${editedClass('customerSoNo', customerSoNo)}`}
                 value={customerSoNo}
                 placeholder="Their PO / SO number"
                 onChange={(e) => setCustomerSoNo(e.target.value)}
@@ -1191,12 +1295,23 @@ export const SalesOrderNew = () => {
                   onChange={(e) => setSalespersonId(e.target.value)}
                   disabled={!canChangeSalesperson}
                 >
-                  {!canChangeSalesperson && currentStaff && (
-                    <option value={currentStaff.id ?? ''}>
-                      {currentStaff.name} ({currentStaff.staffCode})
+                  {/* Owner 2026-06-23 — the creator is ALWAYS a selectable
+                      option so Salesperson is never blank. When the creator has
+                      a scm.staff row, selfStaffMatch carries its canonical id +
+                      code; when they don't (e.g. the owner), a synthesized
+                      "self" option (SELF_SALESPERSON) shows their name and sits
+                      at the TOP of the list. */}
+                  {!selfStaffMatch && (
+                    <option value={SELF_SALESPERSON}>{selfDisplayName} (me)</option>
+                  )}
+                  {/* Non-admin roles are pinned to themselves: only the creator
+                      option renders. Admin / director / super-admin get the full
+                      pickable list (with the self option already on top). */}
+                  {!canChangeSalesperson && selfStaffMatch && (
+                    <option value={selfStaffMatch.id}>
+                      {selfStaffMatch.name} ({selfStaffMatch.staffCode})
                     </option>
                   )}
-                  {canChangeSalesperson && <option value="">— Pick staff —</option>}
                   {canChangeSalesperson && sortByText(staffList).map((s) => (
                     <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>
                   ))}
@@ -1424,7 +1539,7 @@ export const SalesOrderNew = () => {
               <span className={styles.fieldLabel}>State</span>
               <span className={styles.selectWrap}>
                 <select
-                  className={styles.fieldSelect}
+                  className={`${styles.fieldSelect} ${editedClass('state', state)}`}
                   value={state}
                   onChange={(e) => { setState(e.target.value); setCity(''); setPostcode(''); }}
                   disabled={loc.isLoading}

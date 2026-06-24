@@ -89,6 +89,16 @@ export type ScanPrefill = {
   phone:          string;        // first phone, raw string
   phones:         string[];      // all phones (carried so the edit-gate sees the full set)
   address1:       string;
+  /* Structured address parts → the New SO form's State / City / Postcode
+     dropdowns. addressState is a real my_localities state VALUE (validated
+     server-side; '' = no confident match → leave the dropdown alone). city /
+     postcode are reconciled against the form's locality cascade for the chosen
+     state ('' = none). */
+  addressState:    string;
+  addressCity:     string;
+  addressPostcode: string;
+  /* The customer's own order reference (e.g. "HC14032") → Customer SO Ref. */
+  customerSoRef:  string;
   note:           string;        // remarks + location + extra phones + non-date delivery text
   deliveryDate:   string | null; // only when a clean YYYY-MM-DD
   processingDate: string | null;
@@ -134,11 +144,22 @@ type OptionMatch = { value: string; confidence: number; reason: string };
 export type ExtractedSlip = {
   customerName: string | null;
   address: string | null;
+  /* Structured address parts (the New SO form fills State / City / Postcode
+     from these). addressStateMatch is snapped server-side to the live
+     my_localities state list (never-invent rule), city/postcode are free text
+     reconciled against the form's locality cascade. */
+  addressLine1: string | null;
+  city: string | null;
+  postcode: string | null;
+  addressStateMatch: OptionMatch | null;
   phones: string[];
   location: string | null;
   deliveryDate: string | null;
   processingDate: string | null;
   salesRep: string | null;
+  /* The customer's own order reference (top-right of the slip, e.g. "HC14032")
+     → seeds the form's Customer SO Ref field. */
+  customerSoRef: string | null;
   paymentMethod: string | null;
   depositRm: number | null;
   totalRm: number | null;
@@ -177,6 +198,9 @@ type ExtractResp = {
       skus: CatalogSku[];
       fabrics: Array<{ code: string; description: string | null }>;
       options?: CatalogOptions;
+      // Live my_localities state list the addressStateMatch was validated
+      // against — carried so the modal can pass the matched state forward.
+      states?: string[];
     };
     meta?: { repRules?: RepRulesMeta | null; sharedAliases?: boolean };
   };
@@ -350,7 +374,17 @@ export const ScanOrderModal = ({ onClose }: Props) => {
       customerName: ex.customerName ?? '',
       phone: phones[0] ?? '',
       phones,
-      address1: ex.address ?? '',
+      /* Prefer the parsed street-only addressLine1 so State/City/Postcode don't
+         double up in Address Line 1; fall back to the full address string when
+         the model didn't split it. */
+      address1: ex.addressLine1 ?? ex.address ?? '',
+      /* Structured address parts. addressState is a server-validated
+         my_localities state VALUE ('' = no confident match); city/postcode are
+         free text the form reconciles against the chosen state's cascade. */
+      addressState:    ex.addressStateMatch?.value ?? '',
+      addressCity:     ex.city ?? '',
+      addressPostcode: ex.postcode ?? '',
+      customerSoRef:   ex.customerSoRef ?? '',
       note: noteParts.join('\n'),
       deliveryDate: ex.deliveryDate && ISO_DATE_RE.test(ex.deliveryDate) ? ex.deliveryDate : null,
       processingDate: ex.processingDate && ISO_DATE_RE.test(ex.processingDate) ? ex.processingDate : null,

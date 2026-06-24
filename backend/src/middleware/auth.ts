@@ -27,6 +27,9 @@ const SERVICE_USER: AuthUser = {
   department_id: null,
   brand_scope: null,
   page_access: fullAccessMap(),
+  // Service user holds `*`, so scmAreaGuard bypasses it via the wildcard
+  // branch regardless of this flag.
+  scm_l2_configured: false,
 };
 
 declare module "hono" {

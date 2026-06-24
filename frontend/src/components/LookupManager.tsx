@@ -239,14 +239,12 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
                   const v = e.target.value.trim();
                   if (v && v !== row.name) patch(row, { name: v });
                 }}
-                className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[12.5px] font-semibold text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
+                className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
               />
-              <span
-                className="font-mono text-[10px] text-ink-muted"
-                title="Slug — stable machine value, not editable"
-              >
-                {row.slug}
-              </span>
+              {/* Slug hidden (Houzs 2026-06-24) — owner: the tiny gray machine
+                  code next to each name (e.g. product_defect, missing__short_items)
+                  is unnecessary clutter + misaligned. The slug stays the stable
+                  machine value on the row; it's just no longer shown in the UI. */}
               {extra && (
                 <input
                   type="number"

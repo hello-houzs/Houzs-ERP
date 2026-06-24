@@ -134,6 +134,10 @@ export const PurchaseConsignmentOrderDetail = () => {
   const notify = useNotify();
 
   const po = detail.data?.purchaseOrder ?? null;
+  /* Backend (purchase-consignment-orders detail) returns pc_number, not the
+     PO's po_number — the PoHeaderRow type is shared with real POs. Read
+     pc_number first with a po_number fallback so the doc number renders. */
+  const pcNo = (po as { pc_number?: string } | null)?.pc_number ?? po?.po_number ?? '';
   /* Memoised so the edit-mode seed + cost-recompute effects don't re-fire on
      every render. */
   const items = useMemo(() => detail.data?.items ?? [], [detail.data?.items]);
@@ -477,7 +481,7 @@ export const PurchaseConsignmentOrderDetail = () => {
           <div>
             <h1 className={styles.title}>
               <FileText size={14} strokeWidth={1.75} style={{ color: 'var(--c-burnt)' }} />
-              {po.po_number} — {po.supplier?.name ?? po.supplier?.code ?? '—'}
+              {pcNo} — {po.supplier?.name ?? po.supplier?.code ?? '—'}
             </h1>
           </div>
         </div>
@@ -495,7 +499,7 @@ export const PurchaseConsignmentOrderDetail = () => {
             <Button variant="ghost" size="md"
               onClick={async () => {
                 if (!(await askConfirm({
-                  title: `Cancel ${po.po_number}?`,
+                  title: `Cancel ${pcNo}?`,
                   body: 'This sets status to CANCELLED — line items + linked docs stay for audit.',
                   confirmLabel: 'Cancel PO',
                   danger: true,
@@ -513,7 +517,7 @@ export const PurchaseConsignmentOrderDetail = () => {
             <Button variant="ghost" size="md"
               onClick={async () => {
                 if (!(await askConfirm({
-                  title: `Permanently delete ${po.po_number}?`,
+                  title: `Permanently delete ${pcNo}?`,
                   body: 'This removes the header + all line items and cannot be undone.',
                   confirmLabel: 'Delete',
                   danger: true,
@@ -717,7 +721,7 @@ const SupplierCard = ({
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(4, 1fr)',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
               gap: 'var(--space-3) var(--space-4)',
               fontFamily: 'var(--font-sans)',
               fontSize: 'var(--fs-13)',
@@ -811,7 +815,7 @@ const SupplierCard = ({
               border: '1px solid var(--line)',
               borderRadius: 'var(--radius-md)',
               display: 'grid',
-              gridTemplateColumns: 'repeat(4, 1fr)',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
               gap: 'var(--space-3) var(--space-4)',
               fontFamily: 'var(--font-sans)',
               fontSize: 'var(--fs-13)',

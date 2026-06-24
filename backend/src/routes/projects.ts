@@ -188,7 +188,7 @@ app.post("/brands", requirePermission("projects.manage"), async (c) => {
   if (!name) return c.json({ error: "name is required" }, 400);
   const color = normaliseHex(body.color) ?? "64748b";
   const existing = await c.env.DB.prepare(
-    `SELECT id FROM project_brands WHERE name = ? COLLATE NOCASE`
+    `SELECT id FROM project_brands WHERE LOWER(name) = LOWER(?)`
   )
     .bind(name)
     .first<{ id: number }>();
@@ -565,7 +565,7 @@ app.post("/organizers", requirePermission("projects.write"), async (c) => {
   if (!name) return c.json({ error: "name required" }, 400);
   // Idempotent on (name) — return the existing row if it already exists.
   const existing = await c.env.DB.prepare(
-    `SELECT id, name FROM project_organizers WHERE name = ? COLLATE NOCASE`
+    `SELECT id, name FROM project_organizers WHERE LOWER(name) = LOWER(?)`
   )
     .bind(name)
     .first<{ id: number; name: string }>();
@@ -620,7 +620,7 @@ app.post("/venues", requirePermission("projects.write"), async (c) => {
   const name = (body.name || "").trim();
   if (!name) return c.json({ error: "name required" }, 400);
   const existing = await c.env.DB.prepare(
-    `SELECT id, name, state FROM project_venues WHERE name = ? COLLATE NOCASE`
+    `SELECT id, name, state FROM project_venues WHERE LOWER(name) = LOWER(?)`
   )
     .bind(name)
     .first<{ id: number; name: string; state: string | null }>();
@@ -2797,7 +2797,7 @@ app.get("/sales-rep-options", requirePermission("projects.write"), async (c) => 
       WHERE r.archived_at IS NULL
         AND r.status = 'active'
         AND p.slug = 'sales_person'
-        AND (?1 IS NULL OR UPPER(srb.brand) = UPPER(?1))
+        AND (?1::text IS NULL OR UPPER(srb.brand) = UPPER(?1))
       GROUP BY r.id
       ORDER BY r.code`
   )

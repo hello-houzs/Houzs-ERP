@@ -713,7 +713,7 @@ export const PurchaseInvoiceNew = () => {
                 )}
 
                 {/* Fields row — Qty · Unit Price · Line Total */}
-                <div className={styles.formGrid4} style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+                <div className={styles.formGrid4} style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))' }}>
                   <label className={styles.field}>
                     <span className={styles.fieldLabel}>Qty</span>
                     <input type="number" min={0} value={l.qty}

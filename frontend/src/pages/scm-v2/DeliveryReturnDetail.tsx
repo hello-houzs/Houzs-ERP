@@ -59,7 +59,7 @@ const fmtRm = (centi: number, currency = 'MYR'): string =>
 
 const TITLE_ICON_STYLE: CSSProperties = { color: 'var(--c-burnt)' };
 const TOTALS_KPI_GRID_STYLE: CSSProperties = {
-  display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 'var(--space-3)',
+  display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-3)',
   marginBottom: 'var(--space-3)', paddingBottom: 'var(--space-3)', borderBottom: '1px solid var(--line)',
 };
 const TOTALS_KPI_VALUE_STYLE: CSSProperties = { fontSize: 'var(--fs-15, 15px)' };

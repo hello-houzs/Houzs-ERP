@@ -7,6 +7,10 @@ import {
   RefreshCw,
   Clock,
   Users,
+  ClipboardCheck,
+  HardDrive,
+  KeyRound,
+  Boxes,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
@@ -30,6 +34,13 @@ type LivePayload = {
   time: string;
   db: { ok: boolean; latency_ms: number; error?: string };
   kv: { bound: boolean; ok: boolean; latency_ms: number };
+  // R2 slip/photo bucket, Anthropic-key presence, and the SCM-route probe — all
+  // fed by /live but previously ignored here, so the banner showed green while
+  // SCM or R2 was down. Optional-ish (older deploys may omit them) so the banner
+  // logic guards on presence.
+  r2?: { bound: boolean; ok: boolean; latency_ms: number };
+  anthropic?: { configured: boolean };
+  scm?: { configured: boolean; ok: boolean; latency_ms: number; error?: string };
   counts: {
     users_active: number;
     users_invited: number;
@@ -42,14 +53,27 @@ type LivePayload = {
 };
 
 type AuditRow = {
-  id: number;
+  // public.audit_events rows are numeric ids; merged SCM rows arrive as
+  // "scm:<uuid>" strings — so the key type is widened to string | number.
+  id: number | string;
   created_at: string;
-  actor_id: number | null;
+  actor_id: number | string | null;
   actor_email: string | null;
   action: string;
   entity_type: string | null;
   entity_id: string | null;
   summary: string | null;
+};
+
+type LedgerPayload = {
+  check: string;
+  label: string;
+  ok: boolean;
+  status: "ok" | "warn" | "unknown";
+  configured: boolean;
+  issueCount: number;
+  asOf?: string;
+  error?: string;
 };
 type AuditFeed = {
   success: boolean;
@@ -154,6 +178,10 @@ export function SystemHealth() {
   const [sensitiveOnly, setSensitiveOnly] = useState(false);
 
   const live = useQuery<LivePayload>(() => api.get("/api/admin/health/live"));
+  // Inventory-ledger integrity — the working corruption-check endpoint that was
+  // previously never called by the frontend. Surfaces silent partial stock
+  // writes as a count the operator can act on.
+  const ledger = useQuery<LedgerPayload>(() => api.get("/api/admin/health/ledger"));
   const feed = useQuery<AuditFeed>(
     () =>
       api.get(
@@ -174,7 +202,21 @@ export function SystemHealth() {
         label: `Database very slow (${fmtMs(d.db.latency_ms)}) — cold-connection stall`,
         detail,
       };
-    if (d.db.latency_ms >= SLOW_MS || (d.kv.bound && !d.kv.ok))
+    // SCM / R2 outages: the backend already flips d.ok for these, but surface the
+    // specific subsystem so the banner names what's down instead of silently
+    // staying green. SCM 500ing or slip-photo storage unreachable is red — those
+    // break document flows and photo/slip storage outright.
+    const scmDown = !!(d.scm && d.scm.configured && !d.scm.ok);
+    const r2Down = !!(d.r2 && d.r2.bound && !d.r2.ok);
+    if (scmDown || r2Down) {
+      const which = [scmDown && "SCM stack", r2Down && "R2 storage"].filter(Boolean).join(" + ");
+      return {
+        tone: "red",
+        label: `${which} unreachable`,
+        detail: (scmDown && d.scm?.error) || detail,
+      };
+    }
+    if (!d.ok || d.db.latency_ms >= SLOW_MS || (d.kv.bound && !d.kv.ok))
       return {
         tone: "amber",
         label: "Investigate — connection warming up",
@@ -198,6 +240,7 @@ export function SystemHealth() {
             onClick={() => {
               live.reload();
               feed.reload();
+              ledger.reload();
             }}
           >
             Refresh
@@ -245,6 +288,76 @@ export function SystemHealth() {
                 value={d.counts.audit_24h}
                 sub={`${d.counts.audit_7d} in 7d`}
                 tone={d.counts.sensitive_24h > 0 ? "warning" : "neutral"}
+              />
+              <StatCard
+                icon={<ClipboardCheck size={14} />}
+                label="Ledger integrity"
+                value={
+                  ledger.loading && !ledger.data
+                    ? "…"
+                    : !ledger.data || ledger.data.status === "unknown"
+                      ? "—"
+                      : ledger.data.issueCount
+                }
+                sub={
+                  !ledger.data
+                    ? ledger.error || "Checking…"
+                    : ledger.data.status === "unknown"
+                      ? ledger.data.error || "Not configured"
+                      : ledger.data.issueCount === 0
+                        ? "No silent stock writes"
+                        : `${ledger.data.issueCount} doc${ledger.data.issueCount === 1 ? "" : "s"} moved stock on paper only`
+                }
+                tone={
+                  !ledger.data || ledger.data.status === "unknown"
+                    ? "neutral"
+                    : ledger.data.issueCount > 0
+                      ? "error"
+                      : "accent"
+                }
+              />
+              {/* SCM-route probe — one bounded PostgREST read; red when the SCM
+                  stack is configured but 500ing (the page must not stay green). */}
+              <StatCard
+                icon={<Boxes size={14} />}
+                label="SCM stack"
+                value={d.scm ? (d.scm.configured ? fmtMs(d.scm.latency_ms) : "—") : "—"}
+                sub={
+                  !d.scm || !d.scm.configured
+                    ? "Not configured"
+                    : d.scm.ok
+                      ? "Reachable"
+                      : d.scm.error || "Unreachable"
+                }
+                tone={d.scm && d.scm.configured && !d.scm.ok ? "error" : "neutral"}
+              />
+              {/* R2 slip/photo bucket reachability. */}
+              <StatCard
+                icon={<HardDrive size={14} />}
+                label="R2 storage"
+                value={d.r2 ? (d.r2.bound ? fmtMs(d.r2.latency_ms) : "—") : "—"}
+                sub={
+                  !d.r2 || !d.r2.bound
+                    ? "Not bound"
+                    : d.r2.ok
+                      ? "Reachable"
+                      : "Unreachable"
+                }
+                tone={d.r2 && d.r2.bound && !d.r2.ok ? "error" : "neutral"}
+              />
+              {/* Anthropic key presence — SO-slip OCR /extract 503s when unset. */}
+              <StatCard
+                icon={<KeyRound size={14} />}
+                label="Anthropic key"
+                value={d.anthropic ? (d.anthropic.configured ? "Set" : "Missing") : "—"}
+                sub={
+                  !d.anthropic
+                    ? "Unknown"
+                    : d.anthropic.configured
+                      ? "OCR /extract enabled"
+                      : "OCR /extract will 503"
+                }
+                tone={d.anthropic && !d.anthropic.configured ? "warning" : "neutral"}
               />
             </div>
 

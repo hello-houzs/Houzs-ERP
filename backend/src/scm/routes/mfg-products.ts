@@ -19,6 +19,7 @@ import { Hono, type Context } from 'hono';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
+import { paginateAll } from '../lib/paginate-all';
 import { findSkuUsage } from '../lib/sku-usage';
 import { productToBindingPatch } from '../lib/cost-anchor-sync';
 import { moduleCodeFromSku, normalizeSofaTier, parseDefaultFreeGifts } from '../shared';
@@ -116,26 +117,30 @@ mfgProducts.get('/', async (c) => {
   // production_time_minutes / fabric_color from the public shape. The
   // columns still exist in the DB (historical data preserved) but
   // 2990's retail catalogue doesn't surface or write them anymore.
-  let q = supabase
-    .from('mfg_products')
-    .select(
-      'id, code, name, category, description, base_model, size_code, size_label, base_price_sen, price1_sen, sell_price_sen, pwp_price_sen, ' +
-        'unit_m3_milli, status, pos_active, one_shot, source_doc_no, included_addons, sku_code, model_id, ' +
-        'branding, barcode, sub_assemblies, pieces, seat_height_prices, default_variants, updated_at, ' +
-        // Commander 2026-05-29 — surface the Model's allowed_options so the SO
-        // line editor can hide variant choices the SKU doesn't allow (instead
-        // of letting them be picked and failing on save with variant_not_allowed).
-        'model:product_models(allowed_options)',
-    )
-    .eq('status', 'ACTIVE')
-    .order('code', { ascending: true });
-
-  if (category) q = q.eq('category', category);
-  // 0166 — barcode rides the same OR-chain so a scanner blast into the SKU
-  // Master search box finds the row (escapeForOr keeps the grammar safe).
-  if (search) { const s = escapeForOr(search); if (s) q = q.or(`code.ilike.%${s}%,name.ilike.%${s}%,description.ilike.%${s}%,barcode.ilike.%${s}%`); }
-
-  const { data, error } = await q;
+  // PostgREST caps a single response at 1000 rows even without a .limit(), so
+  // the ACTIVE SKU master (1141 rows live) was silently truncated to 1000.
+  // Page through with .range() and concatenate the lot.
+  const s = search ? escapeForOr(search) : '';
+  const { data, error } = await paginateAll((from, to) => {
+    let q = supabase
+      .from('mfg_products')
+      .select(
+        'id, code, name, category, description, base_model, size_code, size_label, base_price_sen, price1_sen, sell_price_sen, pwp_price_sen, ' +
+          'unit_m3_milli, status, pos_active, one_shot, source_doc_no, included_addons, sku_code, model_id, ' +
+          'branding, barcode, sub_assemblies, pieces, seat_height_prices, default_variants, updated_at, ' +
+          // Commander 2026-05-29 — surface the Model's allowed_options so the SO
+          // line editor can hide variant choices the SKU doesn't allow (instead
+          // of letting them be picked and failing on save with variant_not_allowed).
+          'model:product_models(allowed_options)',
+      )
+      .eq('status', 'ACTIVE')
+      .order('code', { ascending: true });
+    if (category) q = q.eq('category', category);
+    // 0166 — barcode rides the same OR-chain so a scanner blast into the SKU
+    // Master search box finds the row (escapeForOr keeps the grammar safe).
+    if (s) q = q.or(`code.ilike.%${s}%,name.ilike.%${s}%,description.ilike.%${s}%,barcode.ilike.%${s}%`);
+    return q.range(from, to);
+  });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   // Flatten the joined model → a plain allowed_options field on each product.
   const products = ((data ?? []) as unknown as Array<Record<string, unknown> & { model?: { allowed_options: unknown } | Array<{ allowed_options: unknown }> | null }>)

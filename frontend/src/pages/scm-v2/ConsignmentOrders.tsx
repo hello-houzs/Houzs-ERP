@@ -908,7 +908,7 @@ export const ConsignmentOrders = () => {
       {/* ── 4 KPI tiles (Houzs flat layout, scoped to current filters) ── */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(4, 1fr)',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
         gap: 'var(--space-2)',
       }}>
         {kpiTile('Total Orders', kpis.totalOrders.toLocaleString('en-MY'))}

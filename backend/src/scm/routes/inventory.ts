@@ -30,6 +30,7 @@ import {
 } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { reconcileLedger } from '../lib/reconcile-ledger';
 import type { Env, Variables } from '../env';
@@ -144,16 +145,18 @@ inventory.get('/', async (c) => {
     ? 'warehouse_id, warehouse_code, warehouse_name, product_code, product_name, category, size_label, qty, last_movement_at, value_sen, main_supplier_code, main_supplier_name'
     : 'warehouse_id, product_code, variant_key, product_name, qty, last_movement_at';
 
-  let q = sb.from(tableName).select(cols);
-  if (warehouseId) q = q.eq('warehouse_id', warehouseId);
-  if (search) { const s = escapeForOr(search); if (s) q = q.or(`product_code.ilike.%${s}%,product_name.ilike.%${s}%`); }
-  if (showAll && category && category !== 'all') q = q.eq('category', category);
-
-  // High bound (5000 ≫ catalog) so PostgREST's default 1000-row cap can't
-  // silently truncate stock balances — partial stock reads like MISSING stock.
-  // The limit caps the absolute max; any ?warehouseId/?search/?category filter
-  // applied above only narrows the set, so filtered views stay correct.
-  const { data, error } = await q.order('product_code').limit(5000);
+  // PostgREST's default 1000-row cap silently truncates stock balances —
+  // partial stock reads like MISSING stock (showAll returns 17,115 rows live).
+  // Page through with .range() so the full set comes back. Any ?warehouseId/
+  // ?search/?category filter only narrows the set, so filtered views stay correct.
+  const s = search ? escapeForOr(search) : '';
+  const { data, error } = await paginateAll((from, to) => {
+    let q = sb.from(tableName).select(cols);
+    if (warehouseId) q = q.eq('warehouse_id', warehouseId);
+    if (s) q = q.or(`product_code.ilike.%${s}%,product_name.ilike.%${s}%`);
+    if (showAll && category && category !== 'all') q = q.eq('category', category);
+    return q.order('product_code').range(from, to);
+  });
   if (error) {
     if (/relation .* does not exist/i.test(error.message) || /column .* does not exist/i.test(error.message)) {
       return c.json({ error: 'migration_pending', reason: 'Run migrations 0050 + 0053 against Supabase.' }, 500);
@@ -179,15 +182,16 @@ inventory.get('/products', async (c) => {
   const search = c.req.query('search');
   const category = c.req.query('category');
 
-  let q = sb.from('v_inventory_product_totals').select('*');
-  if (search) { const s = escapeForOr(search); if (s) q = q.or(`product_code.ilike.%${s}%,product_name.ilike.%${s}%`); }
-  if (category && category !== 'all') q = q.eq('category', category);
-
-  // High bound (5000 ≫ catalog) so PostgREST's default 1000-row cap can't
-  // silently truncate product totals — partial stock reads like MISSING stock.
-  // The limit caps the absolute max; any ?search/?category filter applied above
-  // only narrows the set, so filtered views stay correct.
-  const { data, error } = await q.order('product_code').limit(5000);
+  // PostgREST's default 1000-row cap silently truncates product totals — page
+  // through with .range() so the full catalogue comes back. Any ?search/?category
+  // filter only narrows the set, so filtered views stay correct.
+  const s = search ? escapeForOr(search) : '';
+  const { data, error } = await paginateAll((from, to) => {
+    let q = sb.from('v_inventory_product_totals').select('*');
+    if (s) q = q.or(`product_code.ilike.%${s}%,product_name.ilike.%${s}%`);
+    if (category && category !== 'all') q = q.eq('category', category);
+    return q.order('product_code').range(from, to);
+  });
   if (error) {
     if (/relation .* does not exist/i.test(error.message)) {
       return c.json({ error: 'migration_pending', reason: 'Run migrations 0050/0053/0054.' }, 500);
@@ -220,10 +224,12 @@ inventory.get('/products', async (c) => {
   const oldestLot = new Map<string, string>();
 
   if (codes.length > 0) {
-    const { data: demand } = await sb
+    // chunkIn — codes can now exceed 1000 (un-truncated catalogue), so batch the
+    // .in() lists and page each batch (PostgREST default cap is 1000 rows).
+    const { data: demand } = await chunkIn(codes, (batch, from, to) => sb
       .from('mfg_sales_order_items')
       .select('item_code, qty, line_delivery_date, cancelled, so:mfg_sales_orders!inner(status, customer_delivery_date)')
-      .in('item_code', codes).eq('cancelled', false).limit(5000);
+      .in('item_code', batch).eq('cancelled', false).range(from, to));
     for (const r of (demand ?? []) as Array<{ item_code: string; qty: number; line_delivery_date: string | null; so: { status: string; customer_delivery_date: string | null } | Array<{ status: string; customer_delivery_date: string | null }> | null }>) {
       const so = Array.isArray(r.so) ? r.so[0] : r.so;
       const qty = Number(r.qty ?? 0);
@@ -237,10 +243,10 @@ inventory.get('/products', async (c) => {
       }
     }
 
-    const { data: poItems } = await sb
+    const { data: poItems } = await chunkIn(codes, (batch, from, to) => sb
       .from('purchase_order_items')
       .select('material_code, qty, received_qty, po:purchase_orders!inner(status)')
-      .in('material_code', codes).limit(5000);
+      .in('material_code', batch).range(from, to));
     for (const r of (poItems ?? []) as Array<{ material_code: string; qty: number; received_qty: number | null; po: { status: string } | Array<{ status: string }> | null }>) {
       const po = Array.isArray(r.po) ? r.po[0] : r.po;
       if (!po || (po.status !== 'SUBMITTED' && po.status !== 'PARTIALLY_RECEIVED')) continue;
@@ -248,9 +254,9 @@ inventory.get('/products', async (c) => {
       if (left > 0) incoming.set(r.material_code, (incoming.get(r.material_code) ?? 0) + left);
     }
 
-    const { data: lots } = await sb
+    const { data: lots } = await chunkIn(codes, (batch, from, to) => sb
       .from('v_inventory_lots_open')
-      .select('product_code, received_at').in('product_code', codes).limit(5000);
+      .select('product_code, received_at').in('product_code', batch).range(from, to));
     for (const r of (lots ?? []) as Array<{ product_code: string; received_at: string | null }>) {
       if (!r.received_at) continue;
       const cur = oldestLot.get(r.product_code);
@@ -473,13 +479,16 @@ inventory.get('/cogs', async (c) => {
   const from = c.req.query('from');
   const to = c.req.query('to');
 
-  let q = sb.from('v_cogs_entries').select('*').limit(1000);
-  if (warehouseId) q = q.eq('warehouse_id', warehouseId);
-  if (productCode) q = q.eq('product_code', productCode);
-  if (from) q = q.gte('consumed_at', from);
-  if (to)   q = q.lte('consumed_at', `${to}T23:59:59Z`);
-
-  const { data, error } = await q;
+  // PostgREST's 1000-row cap silently truncated the COGS export — page through
+  // so a long date range exports every consumption row, not just the first 1000.
+  const { data, error } = await paginateAll((pFrom, pTo) => {
+    let q = sb.from('v_cogs_entries').select('*');
+    if (warehouseId) q = q.eq('warehouse_id', warehouseId);
+    if (productCode) q = q.eq('product_code', productCode);
+    if (from) q = q.gte('consumed_at', from);
+    if (to)   q = q.lte('consumed_at', `${to}T23:59:59Z`);
+    return q.range(pFrom, pTo);
+  });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ cogs: data ?? [] });
 });
@@ -507,20 +516,27 @@ inventory.get('/analytics', async (c) => {
   const nowMs = Date.now();
   const cutoffIso = new Date(nowMs - days * 86_400_000).toISOString();
 
-  // Open lots → aging buckets + per-product on-hand value + names.
-  let lotsQ = sb.from('v_inventory_lots_open')
-    .select('product_code, product_name, qty_remaining, remaining_value_sen, received_at, warehouse_id')
-    .limit(50_000);
-  if (warehouseId) lotsQ = lotsQ.eq('warehouse_id', warehouseId);
-  const { data: lots, error: lotsErr } = await lotsQ;
+  // Open lots → aging buckets + per-product on-hand value + names. Page through —
+  // a bare .limit(50_000) is still capped at PostgREST's 1000-row ceiling, so a
+  // warehouse with >1000 open lots would silently under-report on-hand value +
+  // aging. The optional warehouse filter stays inside the page query.
+  const { data: lots, error: lotsErr } = await paginateAll((from, to) => {
+    let lotsQ = sb.from('v_inventory_lots_open')
+      .select('product_code, product_name, qty_remaining, remaining_value_sen, received_at, warehouse_id');
+    if (warehouseId) lotsQ = lotsQ.eq('warehouse_id', warehouseId);
+    return lotsQ.range(from, to);
+  });
   if (lotsErr) return c.json({ error: 'load_failed', reason: lotsErr.message }, 500);
 
-  // Full COGS stream → trailing-window sales value per product + all-time last-sold date.
-  let cogsQ = sb.from('v_cogs_entries')
-    .select('product_code, total_cost_sen, consumed_at, warehouse_id')
-    .limit(100_000);
-  if (warehouseId) cogsQ = cogsQ.eq('warehouse_id', warehouseId);
-  const { data: cogs, error: cogsErr } = await cogsQ;
+  // Full COGS stream → trailing-window sales value per product + all-time last-sold
+  // date. Page through (same 1000-row cap as above) so turnover / dead-stock /
+  // ABC aren't computed off a truncated COGS window.
+  const { data: cogs, error: cogsErr } = await paginateAll((from, to) => {
+    let cogsQ = sb.from('v_cogs_entries')
+      .select('product_code, total_cost_sen, consumed_at, warehouse_id');
+    if (warehouseId) cogsQ = cogsQ.eq('warehouse_id', warehouseId);
+    return cogsQ.range(from, to);
+  });
   if (cogsErr) return c.json({ error: 'load_failed', reason: cogsErr.message }, 500);
 
   const lotRows = lots ?? [];

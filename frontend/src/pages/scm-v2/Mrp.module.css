@@ -521,3 +521,54 @@
   justify-content: flex-end;
   gap: var(--space-2);
 }
+
+/* ── Phone (Houzs 2026-06-24) — element-level overflow clamp ─────────────────
+   The page is already clamped by the SCM shell's global overflow-x-hidden, but
+   on a phone the filter row (DATE / FROM / TO / SHOW NO-DATE / ONLY SHORTAGES /
+   WAREHOUSE) overflowed and the WAREHOUSE dropdown was clipped on the right.
+   Stack the filter controls vertically full-width and make every select / date
+   input fill its row. The results table already scrolls inside .tableWrap
+   (overflow-x:auto), so it stays contained — it never pushes the page. */
+@media (max-width: 600px) {
+  /* Toolbar actions wrap and the primary CTA spans the row so it's tappable. */
+  .actions { width: 100%; }
+  .toolbarDivider { display: none; }
+  .primaryBtn { flex: 1 1 100%; justify-content: center; }
+
+  /* Tabs may overflow the narrow viewport — let them scroll within their bar
+     instead of pushing the page. */
+  .tabBar { overflow-x: auto; flex-wrap: nowrap; }
+  .tab { white-space: nowrap; }
+
+  /* Filter row → one control per line, each full-width. */
+  .filterRow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+  .filterField {
+    width: 100%;
+    justify-content: space-between;
+  }
+  /* Selects + date inputs fill their row so the WAREHOUSE dropdown can't clip.
+     The DateField renders a bordered inline-flex span as the filterField's
+     trailing child — let it grow into the row so the picker is comfortably
+     tappable, and cap it so it never pushes past the viewport edge. */
+  .filterSelect {
+    min-width: 0;
+    width: 100%;
+    flex: 1 1 auto;
+    max-width: 100%;
+  }
+  .filterField > :last-child {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* Summary chips wrap full-width. */
+  .summaryRow { width: 100%; }
+  .summaryChip { max-width: 100%; }
+
+  /* Keep the table contained inside its own scroll box (belt-and-braces). */
+  .tableWrap { max-width: 100%; }
+}

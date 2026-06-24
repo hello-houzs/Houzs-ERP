@@ -111,14 +111,9 @@ const DATES_XOR_WARN_STYLE: CSSProperties = {
 const EMERGENCY_HEADER_NOTE_STYLE: CSSProperties = {
   fontSize: 'var(--fs-12)', color: 'var(--fg-muted)',
 };
-const TOTALS_KPI_GRID_STYLE: CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(4, 1fr)',
-  gap: 'var(--space-3)',
-  marginBottom: 'var(--space-3)',
-  paddingBottom: 'var(--space-3)',
-  borderBottom: '1px solid var(--line)',
-};
+/* Houzs 2026-06-24 — the totals KPI grid moved from this inline const to the
+   .totalsKpiGrid CSS-module class so the phone breakpoint can collapse it to
+   2×2 (inline styles can't carry a media query). See SalesOrderDetail.module.css. */
 /* PR — Step KPI tile values from fs-18 → fs-15 so the totals card no longer
    reads as another hero. Margin / Margin % share this override. */
 const TOTALS_KPI_VALUE_STYLE: CSSProperties = { fontSize: 'var(--fs-15, 15px)' };
@@ -1213,7 +1208,7 @@ export const SalesOrderDetail = () => {
                       line. Older rows carried a STALE stored description2 (written
                       before the remark/RM display fixes) that made this VIEW
                       disagree with what the PO printed. */}
-                  <td>
+                  <td data-label="Description 2">
                     {(() => {
                       const live = buildVariantSummary(it.item_group, it.variants);
                       const desc2 = live || (it.description2 ?? '').trim();
@@ -1222,8 +1217,8 @@ export const SalesOrderDetail = () => {
                         : <span className={styles.muted}>—</span>;
                     })()}
                   </td>
-                  <td className={styles.tableRight}>{it.qty}</td>
-                  <td>
+                  <td className={styles.tableRight} data-label="Qty">{it.qty}</td>
+                  <td data-label="Transfer To">
                     {(() => {
                       const hasDeliveries = it.deliveries && it.deliveries.length > 0;
                       const notFullyDelivered = (it.remaining_qty ?? 1) > 0;
@@ -1265,9 +1260,9 @@ export const SalesOrderDetail = () => {
                       return coverage ?? <span className={styles.muted}>—</span>;
                     })()}
                   </td>
-                  <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, header.currency)}</td>
-                  <td className={styles.tableRight}>{it.discount_centi > 0 ? fmtRm(it.discount_centi, header.currency) : '—'}</td>
-                  <td className={styles.tableRight}>
+                  <td className={styles.tableRight} data-label="Unit">{fmtRm(it.unit_price_centi, header.currency)}</td>
+                  <td className={styles.tableRight} data-label="Disc">{it.discount_centi > 0 ? fmtRm(it.discount_centi, header.currency) : '—'}</td>
+                  <td className={styles.tableRight} data-label="Delivery">
                     {displayDate ? (
                       <span style={isAuto ? { color: 'var(--fg-muted)' } : undefined}>
                         {fmtDateOrDash(displayDate)}
@@ -1277,22 +1272,22 @@ export const SalesOrderDetail = () => {
                       </span>
                     ) : '—'}
                   </td>
-                  <td className={styles.priceCell}>{fmtRm(it.total_centi, header.currency)}</td>
+                  <td className={styles.priceCell} data-label="Total">{fmtRm(it.total_centi, header.currency)}</td>
                   {/* Task #114 — cost + margin columns. unit_cost_centi is
                       snapshotted server-side from mfg_products on insert.
                       Margin coloring rule matches Houzs: green > 0, red < 0,
                       grey when zero (typically a not-yet-priced item). */}
-                  <td className={styles.tableRight}>
+                  <td className={styles.tableRight} data-label="Unit Cost">
                     <span className={styles.muted}>
                       {it.unit_cost_centi > 0 ? fmtRm(it.unit_cost_centi, header.currency) : '—'}
                     </span>
                   </td>
-                  <td className={styles.tableRight}>
+                  <td className={styles.tableRight} data-label="Line Cost">
                     <span className={styles.muted}>
                       {it.line_cost_centi > 0 ? fmtRm(it.line_cost_centi, header.currency) : '—'}
                     </span>
                   </td>
-                  <td className={styles.tableRight}>
+                  <td className={styles.tableRight} data-label="Margin">
                     {it.total_centi > 0 ? (
                       <span className={
                         it.line_margin_centi > 0 ? styles.marginGood
@@ -2361,8 +2356,10 @@ const TotalsCard = ({ header }: { header: SoHeader }) => {
         <h2 className={styles.cardTitle}>Totals · Margin</h2>
       </header>
       <div className={styles.cardBody}>
-        {/* Top row — Revenue / Cost / Margin / Margin % as 4 KPI tiles */}
-        <div style={TOTALS_KPI_GRID_STYLE}>
+        {/* Top row — Revenue / Cost / Margin / Margin % as 4 KPI tiles.
+            Houzs 2026-06-24 — class (not inline const) so the phone breakpoint
+            can collapse 4 cols → 2×2 (Margin % was clipping at ~80px/col). */}
+        <div className={styles.totalsKpiGrid}>
           <div>
             <div className={styles.totalLabel}>Revenue</div>
             <div className={styles.grandTotal} style={TOTALS_KPI_VALUE_STYLE}>

@@ -202,6 +202,24 @@
   --w-black:    900;
 }
 
+/* Houzs 2026-06-24 (owner: "整体太大, 缩小 20-25%, 对标 Service/ASSR") — shrink the
+   SCM type scale on PHONE so dense SCM forms/cards read at the Service-card scale
+   instead of a size larger. Scoped to .scm2990 + phone only; desktop and the core
+   Service / Projects pages are untouched. Caps headers at ~14.5px (Service title
+   scale) while keeping inputs readable (~11px). */
+@media (max-width: 600px) {
+  .scm2990 {
+    --fs-12: 11px;
+    --fs-13: 11.5px;
+    --fs-14: 12px;
+    --fs-15: 12.5px;
+    --fs-16: 13px;
+    --fs-18: 14.5px;
+    --fs-20: 16px;
+    --fs-24: 18px;
+  }
+}
+
 /* =====================================================================
    SEMANTIC TYPE helpers — class-scoped only (the bare element selectors
    `body`/`h1`-`h5`/`p`/`button`/`small` from the original are intentionally
