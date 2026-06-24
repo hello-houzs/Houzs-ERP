@@ -839,6 +839,7 @@ const PROJECTS_LIST_FILTER_KEYS = [
   "brand",
   "year",
   "month",
+  "status",
   "page",
 ] as const;
 
@@ -856,6 +857,7 @@ function ProjectsListView() {
   const year = params.get("year") || "";
   const month = params.get("month") || "";
   const section = params.get("section") || "";
+  const status = params.get("status") || "";
   const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
   function patchParams(patch: Record<string, string>) {
     const next = new URLSearchParams(params);
@@ -870,6 +872,7 @@ function ProjectsListView() {
   const setYear = (v: string) => patchParams({ year: v, page: "1" });
   const setMonth = (v: string) => patchParams({ month: v, page: "1" });
   const setSection = (v: string) => patchParams({ section: v, page: "1" });
+  const setStatus = (v: string) => patchParams({ status: v, page: "1" });
   const setPage = (n: number) => patchParams({ page: String(n) });
 
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
@@ -907,14 +910,27 @@ function ProjectsListView() {
           exclude_done: excludeDoneParam,
           my_pending: myPending ? 1 : undefined,
           search,
-          page,
-          per_page: perPage,
+          // Status is filtered client-side (the list endpoint has no status
+          // param). To stay correct across pagination, pull the whole result
+          // set in one page while a status filter is active — there are only a
+          // few hundred projects, so this is cheap.
+          page: status ? 1 : page,
+          per_page: status ? 1000 : perPage,
           include_archived: showArchived ? 1 : undefined,
           ...sortParams,
         })}`
       ),
-    [brand, year, month, section, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir]
+    [brand, year, month, section, status, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir]
   );
+
+  // Client-side status filter (Confirmed / Pending / Cancelled), applied over
+  // the rows the list endpoint returns. When active, the query above loads the
+  // full set so this sees every matching project, not just the current page.
+  const rows = useMemo(() => {
+    const all = list.data?.data ?? null;
+    if (!all || !status) return all;
+    return all.filter((r) => r.status === status);
+  }, [list.data, status]);
 
   const summary = useQuery<{
     by_stage: { stage: string; count: number }[];
@@ -1211,6 +1227,19 @@ function ProjectsListView() {
             </option>
           ))}
         </select>
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          className="h-8 rounded-md border border-border bg-surface px-2 text-[12px]"
+          title="Filter by project status"
+        >
+          <option value="">All statuses</option>
+          {STATUS_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
         <label
           className="ml-auto inline-flex items-center gap-1.5 text-[11px] font-semibold text-ink-secondary"
           title="Show only projects with a task pending on your side (your role)"
@@ -1263,17 +1292,17 @@ function ProjectsListView() {
           placeholder: "Search code, name, venue, organizer…",
         }}
         resetFilters={{
-          active: !!(search || brand || year || month || section),
+          active: !!(search || brand || year || month || section || status),
           onReset: () => {
             const next = new URLSearchParams(params);
-            ["search", "brand", "year", "month", "section", "page"].forEach((k) =>
+            ["search", "brand", "year", "month", "section", "status", "page"].forEach((k) =>
               next.delete(k)
             );
             setParams(next, { replace: true });
           },
         }}
         columns={columns}
-        rows={list.data?.data ?? null}
+        rows={rows}
         loading={list.loading}
         error={list.error}
         emptyLabel="No projects yet"
@@ -1284,7 +1313,7 @@ function ProjectsListView() {
         onSortChange={handleSortChange}
       />
 
-      {list.data && (
+      {list.data && !status && (
         <Pagination
           page={page}
           perPage={perPage}
