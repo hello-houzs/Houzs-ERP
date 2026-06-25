@@ -4651,7 +4651,6 @@ function ProjectTeamSection({
   const reps = repsQ.data?.data ?? [];
   const takenRepIds = new Set(attendees.map((a) => a.sales_rep_id));
   const availableReps = reps.filter((r) => !takenRepIds.has(r.id));
-  const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function addRep(repId: number) {
@@ -4661,7 +4660,6 @@ function ProjectTeamSection({
       await api.post(`/api/projects/${projectId}/sales-attendees`, {
         sales_rep_id: repId,
       });
-      setPicking(false);
       onChanged();
     } catch (e: any) {
       toast.error(e?.message || "Failed to add");
@@ -4740,11 +4738,6 @@ function ProjectTeamSection({
             {attendees.length}
           </span>
         </div>
-        {attendees.length === 0 && !picking && (
-          <div className="text-[11px] italic text-ink-muted">
-            No sales reps assigned.
-          </div>
-        )}
         {attendees.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {attendees.map((a) => (
@@ -4776,52 +4769,35 @@ function ProjectTeamSection({
         )}
         {fullAccess && (
           <div className="mt-2">
-            {!picking ? (
-              <button
-                onClick={() => setPicking(true)}
-                className="inline-flex items-center gap-1 rounded-md border border-dashed border-border bg-surface px-2 py-1 text-[10.5px] font-semibold text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
-                title="Add a sales rep"
-              >
-                <Plus size={11} /> Add rep
-              </button>
-            ) : (
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <select
-                    autoFocus
-                    disabled={busy}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (v) addRep(parseInt(v, 10));
-                    }}
-                    className={SPEC_INPUT_CLASS}
-                  >
-                    <option value="">
-                      {repsQ.loading
-                        ? "Loading…"
-                        : availableReps.length === 0
-                        ? "No Sales Persons available"
-                        : "— pick a rep —"}
-                    </option>
-                    {availableReps.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.code} · {r.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => setPicking(false)}
-                    className="rounded p-1 text-ink-muted hover:text-ink"
-                    aria-label="Cancel"
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
-                {!repsQ.loading && reps.length === 0 && (
-                  <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
-                    No Sales Persons found. Add members to the Sales department in User Management.
-                  </div>
-                )}
+            {/* Picker shown directly (owner: no "Add rep" gate) — pick to add;
+                the rep moves to the chips above and the select resets. */}
+            <select
+              disabled={busy}
+              value=""
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v) addRep(parseInt(v, 10));
+              }}
+              className={SPEC_INPUT_CLASS}
+            >
+              <option value="">
+                {repsQ.loading
+                  ? "Loading…"
+                  : reps.length === 0
+                  ? "No Sales Persons available"
+                  : availableReps.length === 0
+                  ? "All sales reps added"
+                  : "— add a sales rep —"}
+              </option>
+              {availableReps.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.code} · {r.name}
+                </option>
+              ))}
+            </select>
+            {!repsQ.loading && reps.length === 0 && (
+              <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
+                No Sales Persons found. Add members to the Sales department in User Management.
               </div>
             )}
           </div>
