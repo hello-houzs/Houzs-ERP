@@ -31,8 +31,8 @@ export function StatCard({ label, value, subtitle, tone = "default", onClick, ac
       className={cn(
         "group relative h-full overflow-hidden rounded-lg border border-border bg-surface px-4 py-4 text-left shadow-stone transition-all duration-200 hover:-translate-y-px hover:shadow-slab sm:px-5 sm:py-5",
         onClick &&
-          "cursor-pointer hover:border-accent/40 focus:outline-none focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/30",
-        active && "border-accent/60 bg-accent-soft/30 ring-1 ring-accent/30"
+          "cursor-pointer hover:border-primary/40 focus:outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/30",
+        active && "border-primary/60 bg-primary-soft/50 ring-1 ring-primary/30"
       )}
     >
       {/* Brass top edge — thin by default, glows on hover (full when active) */}

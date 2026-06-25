@@ -668,7 +668,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
                     }
                   }}
                   placeholder="Add label…"
-                  className="h-7 w-28 rounded-md border border-border bg-surface px-2 text-xs text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  className="h-7 w-28 rounded-md border border-border bg-surface px-2 text-xs text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                 />
                 <button
                   disabled={!newLabel.trim() || mutating}
@@ -692,7 +692,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
                   value={thread.assignedToUserId != null ? String(thread.assignedToUserId) : ""}
                   onChange={(e) => handleAssign(e.target.value)}
                   disabled={assigning || users.length === 0}
-                  className="h-8 rounded-md border border-border bg-surface px-2 pr-7 text-xs text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="h-8 rounded-md border border-border bg-surface px-2 pr-7 text-xs text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <option value="">Unassigned</option>
                   {users.map((u) => (
@@ -828,7 +828,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
                     value={replyFrom}
                     onChange={(e) => setFromOverride(e.target.value)}
                     disabled={sending}
-                    className="h-8 max-w-full rounded-md border border-border bg-surface px-2 text-xs text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="h-8 max-w-full rounded-md border border-border bg-surface px-2 text-xs text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {threadMailbox &&
                       !activeAddresses.some((a) => a.address === threadMailbox) && (
@@ -853,7 +853,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
                 rows={6}
                 placeholder="Type your reply…"
                 disabled={sending}
-                className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-sm leading-relaxed text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-sm leading-relaxed text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
               />
 
               {files.length > 0 && (
@@ -912,7 +912,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
                   <button
                     disabled={sending || !replyText.trim()}
                     onClick={handleSend}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent px-3 py-1.5 text-[12px] font-bold text-white hover:bg-accent-hover disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-primary bg-primary px-3 py-1.5 text-[12px] font-bold text-white hover:bg-primary-ink disabled:opacity-50"
                   >
                     {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                     Send reply
@@ -970,7 +970,7 @@ function ToolbarButton({
       className={cn(
         "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-semibold transition disabled:opacity-50",
         primary
-          ? "border border-accent bg-accent text-white hover:bg-accent-hover"
+          ? "border border-primary bg-primary text-white hover:bg-primary-ink"
           : "border border-border bg-surface text-ink-secondary hover:text-ink",
         className,
       )}

@@ -185,7 +185,7 @@ export function Profile() {
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="h-9 flex-1 rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="h-9 flex-1 rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
               <Button
                 variant="primary"
@@ -450,7 +450,7 @@ function PasswordSection() {
             value={current}
             onChange={(e) => setCurrent(e.target.value)}
             autoComplete="current-password"
-            className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -463,7 +463,7 @@ function PasswordSection() {
               value={next}
               onChange={(e) => setNext(e.target.value)}
               autoComplete="new-password"
-              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
             <PasswordStrengthMeter password={next} email={user?.email} />
           </div>
@@ -476,7 +476,7 @@ function PasswordSection() {
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               autoComplete="new-password"
-              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           </div>
         </div>
@@ -677,7 +677,7 @@ function TwoFactorSection() {
               onChange={(e) => setCode(e.target.value)}
               placeholder="123456"
               autoComplete="one-time-code"
-              className="h-9 w-40 rounded-md border border-border bg-surface px-3 font-mono text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="h-9 w-40 rounded-md border border-border bg-surface px-3 font-mono text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           </div>
           {error && (

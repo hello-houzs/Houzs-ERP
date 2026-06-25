@@ -332,7 +332,7 @@ export function HeaderButton({
     ghost:
       "border border-border bg-surface text-ink-secondary hover:border-accent/40 hover:bg-accent-soft/40 hover:text-accent",
     primary:
-      "bg-accent text-white shadow-stone hover:bg-accent-hover",
+      "bg-primary text-white shadow-stone hover:bg-primary-ink",
     danger:
       "border border-err/40 bg-err/5 text-err hover:bg-err/10",
   } as const;

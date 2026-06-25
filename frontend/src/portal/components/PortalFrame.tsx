@@ -30,7 +30,7 @@ export function PortalFrame({ children }: { children: ReactNode }) {
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6 sm:py-4">
           <Link
             to="/track"
-            className="flex items-center gap-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 rounded"
+            className="flex items-center gap-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 rounded"
             aria-label="Houzs Century — service case tracking"
           >
             <img

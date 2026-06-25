@@ -380,7 +380,7 @@ export function ComposeDialog({
                     value={fromAddress}
                     onChange={(e) => setFromOverride(e.target.value)}
                     disabled={sending}
-                    className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {activeAddresses.map((a) => (
                       <option key={a.id} value={a.address}>
@@ -403,10 +403,10 @@ export function ComposeDialog({
                   disabled={sending}
                   aria-invalid={toError}
                   className={
-                    "h-10 w-full rounded-md border bg-surface px-3 text-[13px] text-ink outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-60 " +
+                    "h-10 w-full rounded-md border bg-surface px-3 text-[13px] text-ink outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60 " +
                     (toError
                       ? "border-err focus:border-err"
-                      : "border-border focus:border-accent")
+                      : "border-border focus:border-primary")
                   }
                 />
                 {toError && (
@@ -426,7 +426,7 @@ export function ComposeDialog({
                   onChange={(e) => setSubject(e.target.value)}
                   placeholder="Subject"
                   disabled={sending}
-                  className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:opacity-60"
+                  className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-60"
                 />
               </div>
 
@@ -441,7 +441,7 @@ export function ComposeDialog({
                   rows={8}
                   placeholder="Write your message…"
                   disabled={sending}
-                  className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-sm leading-relaxed text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-sm leading-relaxed text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
                 />
               </div>
 
@@ -536,7 +536,7 @@ export function ComposeDialog({
             <button
               disabled={!canSend}
               onClick={handleSend}
-              className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent px-3 py-1.5 text-[12px] font-bold text-white hover:bg-accent-hover disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md border border-primary bg-primary px-3 py-1.5 text-[12px] font-bold text-white hover:bg-primary-ink disabled:opacity-50"
             >
               {sending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

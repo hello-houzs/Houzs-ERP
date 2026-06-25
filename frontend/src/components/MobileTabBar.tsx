@@ -89,8 +89,8 @@ export function MobileTabBar() {
               aria-label="Open menu"
               className={cn(
                 "relative -translate-y-2 inline-flex h-12 w-12 items-center justify-center rounded-full",
-                "border-2 border-surface bg-accent text-white shadow-slab transition-transform active:scale-95",
-                "before:absolute before:inset-[-3px] before:-z-10 before:rounded-full before:bg-gradient-to-br before:from-accent/60 before:to-accent-hover/60 before:opacity-70 before:blur-sm"
+                "border-2 border-surface bg-primary text-white shadow-slab transition-transform active:scale-95",
+                "before:absolute before:inset-[-3px] before:-z-10 before:rounded-full before:bg-gradient-to-br before:from-primary/60 before:to-primary-ink/60 before:opacity-70 before:blur-sm"
               )}
             >
               <Grid3x3 size={20} strokeWidth={2.4} />
@@ -122,7 +122,7 @@ function ProfileTab() {
       className={({ isActive }) =>
         cn(
           "relative flex flex-1 flex-col items-center justify-center gap-0.5 px-1 text-ink-muted transition-colors active:bg-bg/50",
-          isActive && "text-accent",
+          isActive && "text-primary",
         )
       }
       aria-label="Profile"
@@ -130,7 +130,7 @@ function ProfileTab() {
       {({ isActive }) => (
         <>
           {isActive && (
-            <span className="pointer-events-none absolute inset-x-5 top-0 h-[2px] rounded-b-full bg-accent" />
+            <span className="pointer-events-none absolute inset-x-5 top-0 h-[2px] rounded-b-full bg-primary" />
           )}
           <Avatar
             userId={user?.id ?? null}
@@ -143,7 +143,7 @@ function ProfileTab() {
           <span
             className={cn(
               "font-mono text-[10.5px] font-semibold uppercase tracking-brand",
-              isActive && "text-accent",
+              isActive && "text-primary",
             )}
           >
             Profile
@@ -164,7 +164,7 @@ function BottomTab({ tab }: { tab: Tab }) {
       className={({ isActive }) =>
         cn(
           "relative flex flex-1 flex-col items-center justify-center gap-0.5 px-1 text-ink-muted transition-colors active:bg-bg/50",
-          isActive && "text-accent"
+          isActive && "text-primary"
         )
       }
       aria-label={tab.label}
@@ -172,7 +172,7 @@ function BottomTab({ tab }: { tab: Tab }) {
       {({ isActive }) => (
         <>
           {isActive && (
-            <span className="pointer-events-none absolute inset-x-5 top-0 h-[2px] rounded-b-full bg-accent" />
+            <span className="pointer-events-none absolute inset-x-5 top-0 h-[2px] rounded-b-full bg-primary" />
           )}
           <tab.icon
             size={19}
@@ -182,7 +182,7 @@ function BottomTab({ tab }: { tab: Tab }) {
           <span
             className={cn(
               "font-mono text-[10.5px] font-semibold uppercase tracking-brand",
-              isActive && "text-accent"
+              isActive && "text-primary"
             )}
           >
             {tab.label}
@@ -246,10 +246,10 @@ function MenuModal({ onClose }: { onClose: () => void }) {
         onClick={() => go(t.to!)}
         className={cn(
           "group flex items-center gap-3 rounded-xl border border-border bg-bg/40 p-3 text-left transition-all",
-          "hover:border-accent/40 hover:bg-accent-soft/30 active:scale-[0.98]",
+          "hover:border-primary/40 hover:bg-primary-soft active:scale-[0.98]",
         )}
       >
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-surface text-accent shadow-stone group-hover:bg-accent group-hover:text-white">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-surface text-primary shadow-stone group-hover:bg-primary group-hover:text-white">
           <Icon size={17} strokeWidth={2.2} />
         </span>
         <div className="min-w-0 flex-1">
@@ -322,7 +322,7 @@ function MenuModal({ onClose }: { onClose: () => void }) {
           <button
             onClick={onClose}
             aria-label="Close menu"
-            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border bg-surface text-ink-muted transition-colors hover:border-accent/40 hover:text-accent"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border bg-surface text-ink-muted transition-colors hover:border-primary/40 hover:text-primary"
           >
             <X size={14} />
           </button>

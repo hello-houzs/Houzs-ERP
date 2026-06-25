@@ -270,7 +270,7 @@ export function ProjectChat({
       {newCount > 0 && (
         <button
           onClick={scrollToBottom}
-          className="absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full bg-accent px-3 py-1 text-[10.5px] font-semibold text-white shadow-slab transition-all hover:bg-accent-hover"
+          className="absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full bg-primary px-3 py-1 text-[10.5px] font-semibold text-white shadow-slab transition-all hover:bg-primary-ink"
         >
           {newCount} new message{newCount === 1 ? "" : "s"} ↓
         </button>
@@ -316,12 +316,12 @@ export function ProjectChat({
             onKeyDown={onKey}
             placeholder="Message…"
             rows={1}
-            className="min-h-[36px] max-h-[120px] flex-1 resize-none rounded-full border border-border bg-bg px-3.5 py-2 text-[12.5px] text-ink outline-none placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="min-h-[36px] max-h-[120px] flex-1 resize-none rounded-full border border-border bg-bg px-3.5 py-2 text-[12.5px] text-ink outline-none placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
           <button
             onClick={send}
             disabled={sending || !draft.trim()}
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-stone transition-all hover:bg-accent-hover disabled:bg-surface-dim disabled:text-ink-muted disabled:shadow-none"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-white shadow-stone transition-all hover:bg-primary-ink disabled:bg-surface-dim disabled:text-ink-muted disabled:shadow-none"
             title="Send (Enter) · Shift+Enter for new line"
           >
             <Send size={14} />

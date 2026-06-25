@@ -39,7 +39,7 @@ export function UdfCell({ field, value, onSave }: Props) {
   }
 
   const baseInput =
-    "h-7 w-full min-w-[80px] rounded border border-border bg-surface px-2 text-[12px] text-ink outline-none transition-colors focus:border-accent focus:ring-1 focus:ring-accent/20";
+    "h-7 w-full min-w-[80px] rounded border border-border bg-surface px-2 text-[12px] text-ink outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20";
 
   let editor;
   if (field.type === "select" && field.options) {

@@ -17,8 +17,8 @@ body,
 }
 
 body {
-  background: #f1f1ec;
-  color: #1f211d;
+  background: #eef0ec;
+  color: #11140f;
   font-feature-settings: normal;
 }
 
@@ -28,7 +28,7 @@ body {
    without ever calling attention to itself.
    ────────────────────────────────────────────────────────── */
 .paper-grain {
-  background-color: #f1f1ec;
+  background-color: #eef0ec;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.067 0 0 0 0 0.094 0 0 0 0 0.063 0 0 0 0 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
   background-repeat: repeat;
 }
@@ -39,7 +39,7 @@ body {
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
 
-/* Skeleton — brass-tinted shimmer instead of plain gray. */
+/* Skeleton — cool-neutral shimmer (Theme C). */
 @keyframes shimmer {
   0% {
     background-position: -400px 0;
@@ -51,9 +51,9 @@ body {
 .skeleton {
   background: linear-gradient(
     90deg,
-    #e8e6da 0%,
-    #f5ecd9 50%,
-    #e8e6da 100%
+    #e3e6e0 0%,
+    #f4f6f3 50%,
+    #e3e6e0 100%
   );
   background-size: 800px 100%;
   animation: shimmer 1.6s linear infinite;
@@ -177,12 +177,12 @@ select.appearance-none:focus {
   background: transparent;
 }
 .thin-scroll::-webkit-scrollbar-thumb {
-  background: #cdc8b8;
+  background: #c2c6bd;
   border-radius: 6px;
-  border: 2px solid #f1f1ec;
+  border: 2px solid #eef0ec;
 }
 .thin-scroll::-webkit-scrollbar-thumb:hover {
-  background: #a16a2e;
+  background: #16695f;
 }
 
 /* ──────────────────────────────────────────────────────────

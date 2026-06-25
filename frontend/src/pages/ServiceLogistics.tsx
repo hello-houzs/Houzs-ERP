@@ -179,7 +179,7 @@ export function ServiceLogistics() {
             placeholder="Case no, customer, remark"
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            className="h-9 w-[260px] rounded-md border border-border bg-surface pl-8 pr-3 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="h-9 w-[260px] rounded-md border border-border bg-surface pl-8 pr-3 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
         </div>
       </div>

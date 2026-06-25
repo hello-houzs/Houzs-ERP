@@ -34,7 +34,7 @@ export function QuickActionsFAB() {
       aria-label="New Sales Order"
       title="New Sales Order"
       className={cn(
-        "fixed right-4 z-40 inline-flex items-center justify-center rounded-full bg-accent text-white shadow-slab transition-all duration-200 hover:scale-105 hover:bg-accent-hover active:scale-95",
+        "fixed right-4 z-40 inline-flex items-center justify-center rounded-full bg-primary text-white shadow-slab transition-all duration-200 hover:scale-105 hover:bg-primary-ink active:scale-95",
         "h-12 w-12 lg:h-14 lg:w-14 lg:right-5",
         "bottom-[calc(theme(spacing.24)+env(safe-area-inset-bottom))] lg:bottom-5",
       )}

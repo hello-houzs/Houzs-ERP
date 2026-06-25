@@ -75,10 +75,10 @@ export function RowActionsMenu({
         className={cn(
           "inline-flex items-center justify-center rounded-md border transition-colors",
           open
-            ? "border-accent/50 bg-accent-soft/40 text-accent"
+            ? "border-primary/50 bg-primary-soft text-primary"
             : "border-transparent text-ink-muted hover:border-border hover:bg-bg/60 hover:text-ink",
           indicator &&
-            "after:absolute after:right-1 after:top-1 after:h-1.5 after:w-1.5 after:rounded-full after:bg-accent"
+            "after:absolute after:right-1 after:top-1 after:h-1.5 after:w-1.5 after:rounded-full after:bg-primary"
         )}
       >
         <MoreVertical size={Math.round(size / 2)} />
@@ -117,7 +117,7 @@ export function RowActionsMenu({
                       isDanger
                         ? "border-err/30 bg-err/5 text-err"
                         : isToggle && it.active
-                        ? "border-accent bg-accent text-white"
+                        ? "border-primary bg-primary text-white"
                         : "border-border bg-bg/40 text-ink-muted"
                     )}
                   >

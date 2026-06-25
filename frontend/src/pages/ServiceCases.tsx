@@ -1886,7 +1886,7 @@ function CreatePanel({
             onChange={(e) => setDocNo(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && lookup()}
             placeholder="Enter SO number…"
-            className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
+            className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary"
           />
           <Button variant="secondary" icon={<Search size={14} />} onClick={lookup} disabled={lookingUp}>
             {lookingUp ? "…" : "Lookup"}
@@ -1935,7 +1935,7 @@ function CreatePanel({
             <div className="mt-2">
               <input
                 placeholder="Item code (manual)"
-                className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
+                className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary"
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.target as HTMLInputElement).value.trim()) {
                     const code = (e.target as HTMLInputElement).value.trim();
@@ -1956,7 +1956,7 @@ function CreatePanel({
           onChange={(e) => setIssue(e.target.value)}
           rows={4}
           placeholder="Describe the issue…"
-          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
+          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary"
         />
         <div className="mt-3">
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
@@ -1969,7 +1969,7 @@ function CreatePanel({
               setIssueCategory(v);
               if (v !== OTHER_SENTINEL) setCustomCategory("");
             }}
-            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           >
             <option value="">— select —</option>
             {(issueCatOptions.length ? issueCatOptions : [...ISSUE_CATEGORIES]).map((c) => (
@@ -1984,7 +1984,7 @@ function CreatePanel({
               value={customCategory}
               onChange={(e) => setCustomCategory(e.target.value)}
               placeholder="e.g. transport damage"
-              className="mt-1.5 w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="mt-1.5 w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           )}
         </div>
@@ -1997,7 +1997,7 @@ function CreatePanel({
           <select
             value={priority}
             onChange={(e) => setPriority(e.target.value)}
-            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           >
             {[...PRIORITY_OPTIONS].map((p) => (
               <option key={p} value={p}>
@@ -2433,7 +2433,7 @@ function DetailContent({
                     value={c.stage}
                     onChange={(e) => transition(e.target.value as AssrStage)}
                     disabled={transitioning}
-                    className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-accent disabled:opacity-60"
+                    className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-primary disabled:opacity-60"
                     title="Move this case to any stage"
                   >
                     <option value="pending_review">Pending Review</option>
@@ -2720,13 +2720,13 @@ function DetailContent({
                         value={manualCode}
                         onChange={(e) => setManualCode(e.target.value)}
                         placeholder="Item code"
-                        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+                        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
                       />
                       <input
                         value={manualDesc}
                         onChange={(e) => setManualDesc(e.target.value)}
                         placeholder="Description (optional)"
-                        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+                        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
                       />
                     </div>
                   </div>
@@ -3047,7 +3047,7 @@ function DetailContent({
                 Assigned To
               </div>
               <select
-                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
                 value={c.assigned_to ?? ""}
                 onChange={(e) => {
                   const v = e.target.value;
@@ -3125,7 +3125,7 @@ function DetailContent({
                     onChange={(e) =>
                       setNoteCategory(e.target.value as "purchasing" | "customer")
                     }
-                    className="rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-accent"
+                    className="rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-primary"
                     title="Where this note is visible"
                   >
                     <option value="purchasing">Purchasing (internal)</option>
@@ -3149,7 +3149,7 @@ function DetailContent({
                       : "Internal note…"
                   }
                   rows={2}
-                  className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] outline-none focus:border-accent"
+                  className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] outline-none focus:border-primary"
                 />
                 <div className="mt-2 flex items-center gap-2">
                   <button
@@ -3914,7 +3914,7 @@ function VerificationCard({
                 ? "Why this isn't our issue"
                 : "What's missing from the customer"
             }
-            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
           {outcome === "accepted" && !rootCause && isUnderVerification && (
             <div className="mt-1.5 text-[11px] text-ink-muted">
@@ -4153,7 +4153,7 @@ function LogisticsRow({
               type="date"
               value={draft.scheduled_date}
               onChange={(e) => setDraft((d) => ({ ...d, scheduled_date: e.target.value }))}
-              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary"
             />
           </label>
           <label className="block">
@@ -4163,7 +4163,7 @@ function LogisticsRow({
               placeholder="9:00 – 11:00"
               value={draft.scheduled_time_range}
               onChange={(e) => setDraft((d) => ({ ...d, scheduled_time_range: e.target.value }))}
-              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary"
             />
           </label>
           <label className="block">
@@ -4171,7 +4171,7 @@ function LogisticsRow({
             <select
               value={draft.assigned_to}
               onChange={(e) => setDraft((d) => ({ ...d, assigned_to: e.target.value }))}
-              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary"
             >
               <option value="">— Unassigned —</option>
               {users.map((u) => (
@@ -4184,7 +4184,7 @@ function LogisticsRow({
             <select
               value={draft.status}
               onChange={(e) => setDraft((d) => ({ ...d, status: e.target.value }))}
-              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary"
             >
               <option value="pending">Pending</option>
               <option value="scheduled">Scheduled</option>
@@ -4200,7 +4200,7 @@ function LogisticsRow({
             onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
             rows={2}
             placeholder="e.g. driver needs warehouse code; pickup gate B"
-            className="w-full rounded border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-accent"
+            className="w-full rounded border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary"
           />
         </label>
         <div className="mt-2 flex justify-end gap-2">
@@ -4558,7 +4558,7 @@ function IssueCategoryField({
       <select
         value={isCanonical ? (value as string) : showsOther ? OTHER_SENTINEL : ""}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
       >
         <option value="">— select —</option>
         {categories.map((c) => (
@@ -5124,7 +5124,7 @@ function ClosePrompt({
         onChange={(e) => setNotes(e.target.value)}
         placeholder="Satisfaction notes (optional)..."
         rows={2}
-        className="mb-3 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
+        className="mb-3 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-primary"
       />
 
       <div className="flex gap-2">
@@ -5192,7 +5192,7 @@ function LogisticsForm({
         <select
           value={type}
           onChange={(e) => setType(e.target.value as any)}
-          className="rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
         >
           <option value="pickup">Pickup</option>
           <option value="delivery">Delivery</option>
@@ -5201,19 +5201,19 @@ function LogisticsForm({
           type="date"
           value={date}
           onChange={(e) => setDate(e.target.value)}
-          className="flex-1 rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+          className="flex-1 rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
         />
       </div>
       <input
         value={timeRange}
         onChange={(e) => setTimeRange(e.target.value)}
         placeholder="Time range (e.g. 9AM-12PM)"
-        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
       />
       <select
         value={assignedTo}
         onChange={(e) => setAssignedTo(e.target.value)}
-        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
       >
         <option value="">Assign to...</option>
         {users.map((u) => (
@@ -5225,7 +5225,7 @@ function LogisticsForm({
         onChange={(e) => setNotes(e.target.value)}
         placeholder="Notes (optional)"
         rows={2}
-        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
       />
       <div className="flex gap-2">
         <button
@@ -5316,7 +5316,7 @@ function AttachmentThumb({ att, onClick, onVisibilityChange, onArchive }: {
         type="button"
         onClick={onClick}
         disabled={!isImage || !onClick}
-        className="block w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className="block w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
         aria-label={isImage ? "View full-size photo" : att.category}
       >
         {isImage && url ? (

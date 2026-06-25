@@ -365,7 +365,7 @@ function RowLead({
           checked={selected}
           onChange={() => onToggleSelect(t.id)}
           aria-label={`Select conversation with ${senderLabel(t)}`}
-          className="h-3.5 w-3.5 cursor-pointer rounded border-border text-accent focus:ring-accent/30"
+          className="h-3.5 w-3.5 cursor-pointer rounded border-border text-primary focus:ring-primary/30"
         />
       </label>
       <button
@@ -448,7 +448,7 @@ function CompactRow({
     >
       <RowLead t={t} selected={selected} onToggleSelect={onToggleSelect} onRowAction={onRowAction} />
       <span className="flex w-3 shrink-0 items-center justify-center">
-        {unread && <span className="h-2 w-2 rounded-full bg-accent" aria-hidden="true" />}
+        {unread && <span className="h-2 w-2 rounded-full bg-primary" aria-hidden="true" />}
       </span>
       <button
         onClick={() => onOpen(t.id)}
@@ -527,7 +527,7 @@ function ComfortableRow({
       >
         <div className="mt-1.5 flex h-4 w-4 shrink-0 items-center justify-center">
           {unread ? (
-            <span className="h-2.5 w-2.5 rounded-full bg-accent" />
+            <span className="h-2.5 w-2.5 rounded-full bg-primary" />
           ) : t.lastDirection === "outbound" ? (
             <ArrowUpRight className="h-3.5 w-3.5 text-ink-muted/50" />
           ) : (
@@ -1153,7 +1153,7 @@ export function MailInbox() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search mail…"
-          className="h-10 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          className="h-10 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
       </div>
 
@@ -1176,7 +1176,7 @@ export function MailInbox() {
                 ? "No mailbox assigned — ask an admin to assign an address"
                 : "Write a new email"
             }
-            className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-accent bg-accent py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-accent-hover disabled:opacity-50"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-primary bg-primary py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-primary-ink disabled:opacity-50"
           >
             <PenSquare className="h-4 w-4" />
             New email
@@ -1239,7 +1239,7 @@ export function MailInbox() {
                   className={cn(
                     "flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition",
                     labelFilter === l.name
-                      ? "bg-accent-soft font-medium text-accent-ink"
+                      ? "bg-accent-soft font-medium text-primary-ink"
                       : "text-ink/80 hover:bg-surface-dim",
                   )}
                 >
@@ -1331,7 +1331,7 @@ export function MailInbox() {
                   checked={allVisibleSelected}
                   aria-label="Select all"
                   onChange={() => (allVisibleSelected ? clearSelection() : selectAllVisible())}
-                  className="h-3.5 w-3.5 cursor-pointer rounded border-border text-accent focus:ring-accent/30"
+                  className="h-3.5 w-3.5 cursor-pointer rounded border-border text-primary focus:ring-primary/30"
                 />
                 {selectedCount > 0 ? `${selectedCount} selected` : "Select"}
               </label>
@@ -1570,7 +1570,7 @@ function OutboxPanel({ q }: { q: string }) {
             className={cn(
               "rounded-full px-2.5 py-0.5 text-[11px] font-medium transition",
               statusFilter === f.v
-                ? "bg-accent-soft text-accent-ink"
+                ? "bg-accent-soft text-primary-ink"
                 : "text-ink-muted hover:bg-surface-dim",
             )}
           >
@@ -1812,7 +1812,7 @@ function CategoryTabs({
             onClick={() => onSelect(t.id)}
             className={cn(
               "flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium transition",
-              on ? "border-accent text-accent-ink" : "border-transparent text-ink-muted hover:text-ink",
+              on ? "border-primary text-primary-ink" : "border-transparent text-ink-muted hover:text-ink",
             )}
           >
             <t.icon className="h-3.5 w-3.5" />
@@ -1821,7 +1821,7 @@ function CategoryTabs({
               <span
                 className={cn(
                   "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-                  on ? "bg-accent-soft text-accent-ink" : "bg-surface-dim text-ink-muted",
+                  on ? "bg-accent-soft text-primary-ink" : "bg-surface-dim text-ink-muted",
                 )}
               >
                 {t.count}
@@ -1897,7 +1897,7 @@ function ViewSettingsMenu({ prefs }: { prefs: MailViewPrefs }) {
             <span
               className={cn(
                 "flex h-4 w-7 items-center rounded-full px-0.5 transition",
-                prefs.categoryTabs ? "bg-accent" : "bg-ink-muted/30",
+                prefs.categoryTabs ? "bg-primary" : "bg-ink-muted/30",
               )}
             >
               <span className={cn("h-3 w-3 rounded-full bg-white transition-transform", prefs.categoryTabs && "translate-x-3")} />
@@ -1931,7 +1931,7 @@ function SegButton({
       onClick={onClick}
       className={cn(
         "flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-medium transition",
-        active ? "border-accent/40 bg-accent-soft text-accent-ink" : "border-border bg-surface text-ink/70 hover:bg-surface-dim",
+        active ? "border-accent/40 bg-accent-soft text-primary-ink" : "border-border bg-surface text-ink/70 hover:bg-surface-dim",
       )}
     >
       <Icon className="h-3.5 w-3.5" />
@@ -1961,11 +1961,11 @@ function FolderItem({
       onClick={onClick}
       className={cn(
         "flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm transition",
-        active ? "bg-accent-soft font-semibold text-accent-ink" : "text-ink/80 hover:bg-surface-dim",
+        active ? "bg-accent-soft font-semibold text-primary-ink" : "text-ink/80 hover:bg-surface-dim",
       )}
     >
       <span className="flex min-w-0 items-center gap-2.5">
-        <Icon className={cn("h-4 w-4 shrink-0", active ? "text-accent" : "text-ink-muted/60")} />
+        <Icon className={cn("h-4 w-4 shrink-0", active ? "text-primary" : "text-ink-muted/60")} />
         <span className="truncate">{label}</span>
       </span>
       {badge !== undefined && badge > 0 && (
@@ -1974,10 +1974,10 @@ function FolderItem({
             "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
             badgeTone === "accent"
               ? active
-                ? "bg-accent/20 text-accent-ink"
-                : "bg-accent-soft text-accent-ink"
+                ? "bg-primary/20 text-primary-ink"
+                : "bg-accent-soft text-primary-ink"
               : active
-                ? "bg-accent/20 text-accent-ink"
+                ? "bg-primary/20 text-primary-ink"
                 : "bg-surface-dim text-ink-muted",
           )}
         >
@@ -2013,8 +2013,8 @@ function BulkBar({
   onClear: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-1 border-b border-accent/30 bg-accent-soft/70 px-3 py-2">
-      <span className="mr-1 text-xs font-medium text-accent-ink">{count} selected</span>
+    <div className="flex flex-wrap items-center gap-1 border-b border-primary/30 bg-accent-soft/70 px-3 py-2">
+      <span className="mr-1 text-xs font-medium text-primary-ink">{count} selected</span>
       {folder === "archive" ? (
         <BulkButton icon={InboxIcon} label="Move to Inbox" onClick={onInbox} />
       ) : folder !== "trash" ? (
@@ -2026,7 +2026,7 @@ function BulkBar({
       {folder !== "trash" && <BulkButton icon={Trash2} label="Trash" onClick={onTrash} />}
       <button
         onClick={onClear}
-        className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-accent-ink transition hover:bg-accent/15"
+        className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-primary-ink transition hover:bg-primary/15"
       >
         <X className="h-3.5 w-3.5" />
         Clear
@@ -2077,7 +2077,7 @@ function BulkLabelMenu({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-surface px-2 py-1 text-xs font-medium text-accent-ink transition hover:bg-accent/15"
+        className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-surface px-2 py-1 text-xs font-medium text-primary-ink transition hover:bg-primary/15"
       >
         <Tag className="h-3.5 w-3.5" />
         Label
@@ -2113,7 +2113,7 @@ function BulkLabelMenu({
                 }
               }}
               placeholder="New label…"
-              className="h-7 flex-1 rounded-md border border-border bg-surface px-2 text-xs text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="h-7 flex-1 rounded-md border border-border bg-surface px-2 text-xs text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
             <button
               disabled={!draft.trim()}
@@ -2141,7 +2141,7 @@ function BulkButton({
   return (
     <button
       onClick={onClick}
-      className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-surface px-2 py-1 text-xs font-medium text-accent-ink transition hover:bg-accent/15"
+      className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-surface px-2 py-1 text-xs font-medium text-primary-ink transition hover:bg-primary/15"
     >
       <Icon className="h-3.5 w-3.5" />
       {label}
@@ -2169,18 +2169,18 @@ function MailboxItem({
       title={title}
       className={cn(
         "flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm transition",
-        active ? "bg-accent-soft font-medium text-accent-ink" : "text-ink/80 hover:bg-surface-dim",
+        active ? "bg-accent-soft font-medium text-primary-ink" : "text-ink/80 hover:bg-surface-dim",
       )}
     >
       <span className="flex min-w-0 items-center gap-2">
-        <CheckCheck className={cn("h-4 w-4 shrink-0", active ? "text-accent" : "text-ink-muted/60")} />
+        <CheckCheck className={cn("h-4 w-4 shrink-0", active ? "text-primary" : "text-ink-muted/60")} />
         <span className="truncate">{label}</span>
       </span>
       {unread > 0 && (
         <span
           className={cn(
             "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-            active ? "bg-accent/20 text-accent-ink" : "bg-surface-dim text-ink-muted",
+            active ? "bg-primary/20 text-primary-ink" : "bg-surface-dim text-ink-muted",
           )}
         >
           {unread}
@@ -2220,7 +2220,7 @@ function DeptGroup({
       <div
         className={cn(
           "flex w-full items-center gap-1 rounded-md pr-2 text-sm transition",
-          deptActive ? "bg-accent-soft font-medium text-accent-ink" : "text-ink/80 hover:bg-surface-dim",
+          deptActive ? "bg-accent-soft font-medium text-primary-ink" : "text-ink/80 hover:bg-surface-dim",
         )}
       >
         <button
@@ -2238,7 +2238,7 @@ function DeptGroup({
           className="flex min-w-0 flex-1 items-center justify-between gap-2 py-2 text-left"
         >
           <span className="flex min-w-0 items-center gap-2">
-            <Users className={cn("h-4 w-4 shrink-0", deptActive ? "text-accent" : "text-ink-muted/60")} />
+            <Users className={cn("h-4 w-4 shrink-0", deptActive ? "text-primary" : "text-ink-muted/60")} />
             <span className="truncate font-medium">{dept}</span>
             <span className="shrink-0 text-[11px] font-normal text-ink-muted/70">{realCount}</span>
           </span>
@@ -2246,7 +2246,7 @@ function DeptGroup({
             <span
               className={cn(
                 "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-                deptActive ? "bg-accent/20 text-accent-ink" : "bg-surface-dim text-ink-muted",
+                deptActive ? "bg-primary/20 text-primary-ink" : "bg-surface-dim text-ink-muted",
               )}
             >
               {unreadForDept}
@@ -2322,7 +2322,7 @@ function MissingMailboxItem({
     >
       <Mail className="h-3.5 w-3.5 shrink-0" />
       <span className="truncate">{address}</span>
-      <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent">
+      <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary-soft px-1.5 py-0.5 text-[10px] font-medium text-primary">
         <Plus className="h-2.5 w-2.5" />
         Set up
       </span>
@@ -2352,18 +2352,18 @@ function PersonItem({
       title={title}
       className={cn(
         "flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm transition",
-        active ? "bg-accent-soft font-medium text-accent-ink" : "text-ink/75 hover:bg-surface-dim",
+        active ? "bg-accent-soft font-medium text-primary-ink" : "text-ink/75 hover:bg-surface-dim",
       )}
     >
       <span className="flex min-w-0 items-center gap-2">
-        <Icon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-accent" : "text-ink-muted/50")} />
+        <Icon className={cn("h-3.5 w-3.5 shrink-0", active ? "text-primary" : "text-ink-muted/50")} />
         <span className="truncate">{label}</span>
       </span>
       {unread > 0 && (
         <span
           className={cn(
             "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-            active ? "bg-accent/20 text-accent-ink" : "bg-surface-dim text-ink-muted",
+            active ? "bg-primary/20 text-primary-ink" : "bg-surface-dim text-ink-muted",
           )}
         >
           {unread}
@@ -2499,12 +2499,12 @@ function LabelManagerDialog({
                   }
                 }}
                 placeholder="Label name"
-                className="h-8 flex-1 rounded-md border border-border bg-surface px-2 text-sm text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="h-8 flex-1 rounded-md border border-border bg-surface px-2 text-sm text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
               <button
                 disabled={!newName.trim() || busy}
                 onClick={handleCreate}
-                className="inline-flex h-8 items-center gap-1 rounded-md border border-accent bg-accent px-2.5 text-white hover:bg-accent-hover disabled:opacity-50"
+                className="inline-flex h-8 items-center gap-1 rounded-md border border-primary bg-primary px-2.5 text-white hover:bg-primary-ink disabled:opacity-50"
               >
                 <Plus className="h-3.5 w-3.5" />
                 Add
@@ -2579,7 +2579,7 @@ function LabelManagerRow({
           }
         }}
         disabled={busy}
-        className="h-7 flex-1 rounded-md border border-border bg-surface px-2 text-sm text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+        className="h-7 flex-1 rounded-md border border-border bg-surface px-2 text-sm text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
         aria-label={`Rename ${label.name}`}
       />
       <button

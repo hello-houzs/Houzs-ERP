@@ -181,7 +181,7 @@ function DialogShell({
   const confirmBtnCls =
     tone === "danger"
       ? "bg-err text-white hover:bg-err/90 border border-err"
-      : "bg-accent text-white hover:bg-accent-hover border border-accent";
+      : "bg-primary text-white hover:bg-primary-ink border border-primary";
 
   const requiredAndEmpty =
     item.kind === "prompt" && item.opts.required && !(draft || "").trim();
@@ -242,7 +242,7 @@ function DialogShell({
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder={item.opts.placeholder}
                 rows={3}
-                className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
             ) : (
               <input
@@ -251,7 +251,7 @@ function DialogShell({
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder={item.opts.placeholder}
-                className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
             )}
           </div>

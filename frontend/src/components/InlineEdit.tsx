@@ -42,7 +42,7 @@ export function InlineEdit({ label, value, type = "text", onSave, placeholder, t
 
   const inputClass = cn(
     "w-full rounded-md border bg-surface px-3 py-2 text-[13px] text-ink outline-none transition-colors",
-    "focus:border-accent focus:ring-2 focus:ring-accent/20",
+    "focus:border-primary focus:ring-2 focus:ring-primary/20",
     status === "error" ? "border-err" : "border-border"
   );
 

@@ -320,7 +320,7 @@ function RoleEditorPanel({
             onChange={(e) => setName(e.target.value)}
             disabled={readOnly}
             placeholder="e.g. Operations Lead"
-            className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:bg-bg disabled:text-ink-muted"
+            className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:bg-bg disabled:text-ink-muted"
           />
         </div>
         <div>
@@ -332,7 +332,7 @@ function RoleEditorPanel({
             onChange={(e) => setDescription(e.target.value)}
             disabled={readOnly}
             placeholder="What this role is for"
-            className="min-h-[60px] w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:bg-bg disabled:text-ink-muted"
+            className="min-h-[60px] w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:bg-bg disabled:text-ink-muted"
           />
         </div>
         <div>

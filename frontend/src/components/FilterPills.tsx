@@ -41,8 +41,8 @@ export function FilterPills<T extends string>({ options, value, onChange }: Prop
               className={cn(
                 "whitespace-nowrap rounded px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-all duration-150",
                 active
-                  ? "bg-accent text-white shadow-sm"
-                  : "text-ink-secondary hover:bg-accent-soft/50 hover:text-accent"
+                  ? "bg-primary text-white shadow-sm"
+                  : "text-ink-secondary hover:bg-primary-soft hover:text-primary"
               )}
             >
               {opt.label}

@@ -240,7 +240,7 @@ function PriorityCell({
           (e.target as HTMLInputElement).blur();
         }
       }}
-      className="h-7 w-16 rounded border border-border bg-surface px-1.5 text-right font-mono text-[12px] text-ink outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:opacity-50"
+      className="h-7 w-16 rounded border border-border bg-surface px-1.5 text-right font-mono text-[12px] text-ink outline-none focus:border-primary focus:ring-1 focus:ring-primary/30 disabled:opacity-50"
     />
   );
 }

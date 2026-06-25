@@ -731,7 +731,7 @@ function ProjectStatusSelect({
         onChange={(e) => onChange(e.target.value as ProjectStatus)}
         disabled={disabled}
         className={cn(
-          "appearance-none rounded-md border border-border bg-surface py-1.5 pl-6 pr-7 text-[12px] font-semibold uppercase tracking-wide text-ink outline-none transition-colors focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60",
+          "appearance-none rounded-md border border-border bg-surface py-1.5 pl-6 pr-7 text-[12px] font-semibold uppercase tracking-wide text-ink outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60",
           cur.chip
         )}
       >
@@ -2066,7 +2066,7 @@ function FinanceListView() {
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           />
         </FilterField>
         <FilterField label="To">
@@ -2074,14 +2074,14 @@ function FinanceListView() {
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           />
         </FilterField>
         <FilterField label="Brand">
           <select
             value={brand}
             onChange={(e) => setBrand(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           >
             <option value="">All</option>
             {(brandsQ.data?.data ?? []).map((b) => (
@@ -2095,7 +2095,7 @@ function FinanceListView() {
           <select
             value={stage}
             onChange={(e) => setStage(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           >
             <option value="">All</option>
             {FINANCE_STAGE_OPTIONS.map((s) => (
@@ -2112,7 +2112,7 @@ function FinanceListView() {
               setPerPage(parseInt(e.target.value, 10));
               setPage(1);
             }}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           >
             <option value={25}>25</option>
             <option value={50}>50</option>
@@ -3097,7 +3097,7 @@ function ProjectsCalendarView() {
           <select
             value={brand}
             onChange={(e) => setBrand(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
             title="Filter by brand"
           >
             <option value="">All brands</option>
@@ -3110,7 +3110,7 @@ function ProjectsCalendarView() {
           <select
             value={section}
             onChange={(e) => setSection(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
             title="Filter by current section (stage)"
           >
             <option value="">All sections</option>
@@ -3124,7 +3124,7 @@ function ProjectsCalendarView() {
           <select
             value={organizer}
             onChange={(e) => setOrganizer(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
             title="Filter by organizer"
           >
             <option value="">All organizers</option>
@@ -4133,7 +4133,7 @@ function CreateProjectPanel({
             <select
               value={eventTypeId}
               onChange={(e) => setEventTypeId(e.target.value)}
-              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             >
               <option value="">— none —</option>
               {eventTypes.map((t) => (
@@ -4150,7 +4150,7 @@ function CreateProjectPanel({
             <select
               value={brand}
               onChange={(e) => setBrand(e.target.value)}
-              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             >
               <option value="">— pick a brand —</option>
               {brands.map((b) => (
@@ -4225,7 +4225,7 @@ function CreateProjectPanel({
           <select
             value={stateName}
             onChange={(e) => setStateName(e.target.value)}
-            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           >
             <option value="">— pick a state —</option>
             {stateName && !(PROJECT_STATES as readonly string[]).includes(stateName) && (
@@ -4840,7 +4840,7 @@ function ProjectTeamSection({
 // Shared className for every editable input in the strip — keeps
 // dropdowns + text inputs + date inputs visually identical.
 const SPEC_INPUT_CLASS =
-  "w-full appearance-none rounded border border-border bg-surface px-2 py-1 text-[12.5px] font-medium text-ink outline-none transition-colors focus:border-accent focus:ring-1 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60";
+  "w-full appearance-none rounded border border-border bg-surface px-2 py-1 text-[12.5px] font-medium text-ink outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60";
 
 function ProjectSpecStrip({
   project: p,
@@ -4889,7 +4889,7 @@ function ProjectSpecStrip({
             className={cn(
               "inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-[10.5px] font-semibold transition-colors",
               editing
-                ? "border-accent bg-accent text-white hover:bg-accent-hover"
+                ? "border-primary bg-primary text-white hover:bg-primary-ink"
                 : "border-border bg-surface text-ink hover:border-accent/40 hover:text-accent"
             )}
             title={editing ? "Lock edits" : "Edit project details"}
@@ -5925,7 +5925,7 @@ function TasklistSections({
             }}
             placeholder="e.g. Pre-event, Setup, Live, Teardown"
             autoFocus
-            className="h-7 flex-1 rounded-md border border-border bg-surface px-2 text-[11.5px] outline-none focus:border-accent"
+            className="h-7 flex-1 rounded-md border border-border bg-surface px-2 text-[11.5px] outline-none focus:border-primary"
           />
           <button
             onClick={addSection}
@@ -6759,7 +6759,7 @@ function ChecklistRemark({
         onBlur={save}
         rows={2}
         placeholder="Theme / items / vendor notes…"
-        className="w-full resize-y rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] text-ink placeholder:text-ink-muted focus:border-accent/40 focus:outline-none"
+        className="w-full resize-y rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] text-ink placeholder:text-ink-muted focus:border-primary/40 focus:outline-none"
       />
       {dirty && (
         <div className="mt-1 text-[9.5px] text-ink-muted">
@@ -7151,7 +7151,7 @@ function ChecklistRow({
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="Management remark (required to reject)…"
-              className="min-w-[160px] flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-accent/40"
+              className="min-w-[160px] flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-primary/40"
             />
             <button
               onClick={async () => {
@@ -7204,7 +7204,7 @@ function ChecklistRow({
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder="Add a note…"
-              className="flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-accent"
+              className="flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-primary"
             />
             <button
               onClick={async () => {
@@ -7297,14 +7297,14 @@ function AddChecklistItem({
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Task title…"
-        className="mb-2 w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[12px] outline-none focus:border-accent"
+        className="mb-2 w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[12px] outline-none focus:border-primary"
       />
       <textarea
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         placeholder="Description (optional) — context, instructions, acceptance criteria…"
         rows={2}
-        className="mb-2 w-full resize-y rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+        className="mb-2 w-full resize-y rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
       />
       <div className="mb-2 flex items-center gap-2">
         <input
@@ -7317,7 +7317,7 @@ function AddChecklistItem({
         <select
           value={ownerId}
           onChange={(e) => setOwnerId(e.target.value)}
-          className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         >
           <option value="">— assign to —</option>
           {users.map((u) => (
@@ -7401,14 +7401,14 @@ function DateTimeField({
           value={datePart}
           onChange={(e) => setDatePart(e.target.value)}
           onBlur={commit}
-          className="flex-1 min-w-0 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          className="flex-1 min-w-0 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
         <input
           type="time"
           value={timePart}
           onChange={(e) => setTimePart(e.target.value)}
           onBlur={commit}
-          className="w-[88px] rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          className="w-[88px] rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
       </div>
       <div className="mt-1 font-mono text-[10px] text-ink-muted">
@@ -7709,7 +7709,7 @@ function AddStockTransferForm({
           type="datetime-local"
           value={transferredAt}
           onChange={(e) => setTransferredAt(e.target.value)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           type="file"
@@ -7721,7 +7721,7 @@ function AddStockTransferForm({
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="Notes (item list, qty, driver, etc.)"
-          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
       </div>
       <div className="mt-2 flex items-center gap-2">
@@ -8911,32 +8911,32 @@ function AddDefectForm({
           value={itemCode}
           onChange={(e) => setItemCode(e.target.value)}
           placeholder="Item code"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-primary"
         />
         <input
           value={size}
           onChange={(e) => setSize(e.target.value)}
           placeholder="Size"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           value={desc}
           onChange={(e) => setDesc(e.target.value)}
           placeholder="Description"
-          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           type="number"
           value={qty}
           onChange={(e) => setQty(e.target.value)}
           placeholder="Qty"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="Reason / notes"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
       </div>
       <div className="mt-2 flex items-center gap-2">
@@ -10223,7 +10223,7 @@ function SnapshotRow({
               if (e.key === "Enter") commit();
               else if (e.key === "Escape") setEditing(false);
             }}
-            className="w-32 rounded border border-accent bg-surface px-2 py-0.5 text-right font-mono tabular-nums outline-none focus:ring-2 focus:ring-accent/20"
+            className="w-32 rounded border border-accent bg-surface px-2 py-0.5 text-right font-mono tabular-nums outline-none focus:ring-2 focus:ring-primary/20"
           />
         ) : (
           <span
@@ -10561,7 +10561,7 @@ function AddFinanceLineForm({
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+            className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
           >
             {categories.map((c) => (
               <option key={c} value={c}>
@@ -10577,7 +10577,7 @@ function AddFinanceLineForm({
           onChange={(e) => setAmount(e.target.value)}
           placeholder="Amount (RM)"
           className={cn(
-            "rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-accent",
+            "rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-primary",
             categoryDefault && "col-span-2",
           )}
         />
@@ -10585,13 +10585,13 @@ function AddFinanceLineForm({
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Description"
-          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           type="date"
           value={occurredAt}
           onChange={(e) => setOccurredAt(e.target.value)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
           title="Payment date"
         />
         <input
@@ -10696,7 +10696,7 @@ function EditFinanceLineRow({
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         >
           {categories.map((c) => (
             <option key={c} value={c}>
@@ -10713,19 +10713,19 @@ function EditFinanceLineRow({
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           placeholder="Amount (RM)"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-primary"
         />
         <input
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Description"
-          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           type="date"
           value={occurredAt}
           onChange={(e) => setOccurredAt(e.target.value)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
           title="Payment date"
         />
         <div className="col-span-2">
@@ -11325,7 +11325,7 @@ function ImportCsvPanel({
           onChange={(e) => setText(e.target.value)}
           placeholder={"name,brand,event_type,start_date,end_date,venue,state\nPIKOM PC Fair 2026,AKEMI,exhibition,2026-05-10,2026-05-12,KLCC,Kuala Lumpur"}
           rows={14}
-          className="w-full rounded-md border border-border bg-surface px-3 py-2 font-mono text-[11px] outline-none focus:border-accent"
+          className="w-full rounded-md border border-border bg-surface px-3 py-2 font-mono text-[11px] outline-none focus:border-primary"
         />
       </PanelSection>
 

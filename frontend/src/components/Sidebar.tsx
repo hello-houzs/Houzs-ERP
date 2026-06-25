@@ -188,6 +188,10 @@ export const NAV_TABS: NavTab[] = [
     label: "Supply Chain",
     icon: Boxes,
     groupId: "scm",
+    // Points at the Hub landing page instead of expanding inline (the Hub
+    // surfaces every module one click deep). The children stay here as the
+    // single source of truth the Hub renders from + for visibility filtering.
+    to: "/scm",
     anyPerm: ["*", "scm.access"],
     // Umbrella shows if ANY SCM area is granted per-position (additive). The
     // recursive filter also hides this group when no child survives, so this
@@ -415,52 +419,86 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   function renderTab(tab: NavTab, depth = 0): React.ReactNode {
     const Icon = tab.icon;
 
-    // Group header (has children) — render as expandable section.
+    // Group header (has children) — expandable section. A group that ALSO
+    // carries its own `to` (Supply Chain → /scm Hub) makes its LABEL a link to
+    // the Hub while the chevron still toggles the inline subtree — so the
+    // sidebar keeps the submenu AND the Hub is one click away.
     if (tab.children && tab.children.length > 0) {
-      const open = isGroupOpen(tab.groupId || tab.label);
-      // Group is "active" if any child is active — keep the brass tint
-      // on the parent so the user knows where they are.
-      // Recurse so a group (incl. the Supply Chain umbrella whose direct
-      // children are sub-groups) stays tinted when any descendant is active.
+      const gid = tab.groupId || tab.label;
+      const open = isGroupOpen(gid);
       const hasActiveDescendant = (n: NavTab): boolean =>
         (n.to ? tabIsActive(n.to, n.end) : false) ||
         (n.children?.some(hasActiveDescendant) ?? false);
-      const childActive = tab.children.some(hasActiveDescendant);
+      const selfActive = tab.to ? tabIsActive(tab.to, tab.end) : false;
+      const headerActive = selfActive || tab.children.some(hasActiveDescendant);
       if (collapsed) {
-        // In collapsed mode, render children flat with no group header.
+        // Collapsed: children render flat. A Hub-linked group leads with its
+        // icon as a link to the Hub so it's still reachable.
         return (
-          <div key={tab.groupId || tab.label}>
+          <div key={gid}>
+            {tab.to && (
+              <NavLink
+                to={tab.to}
+                title={tab.label}
+                className={cn(
+                  "group relative my-0.5 flex items-center justify-center rounded-md px-2 py-2 transition-all duration-150",
+                  headerActive
+                    ? "bg-sidebar-active text-sidebar-ink"
+                    : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink",
+                )}
+              >
+                <Icon size={15} strokeWidth={headerActive ? 2.4 : 2} className={headerActive ? "text-primary" : ""} />
+              </NavLink>
+            )}
             {tab.children.map((k) => renderTab(k, depth))}
           </div>
         );
       }
+      const headerInner = (
+        <>
+          <Icon size={15} strokeWidth={headerActive ? 2.4 : 2} className={headerActive ? "text-primary" : ""} />
+          <span className="flex-1">{tab.label}</span>
+        </>
+      );
       return (
-        <div key={tab.groupId || tab.label} className="my-0.5">
-          {/* Group header. Click toggles only on lg+; on mobile the
-              chevron is hidden and children are always visible below. */}
-          <button
-            onClick={() => toggleGroup(tab.groupId || tab.label)}
+        <div key={gid} className="my-0.5">
+          {/* Header row: label = link (when `to`) or toggle; chevron always toggles. */}
+          <div
             className={cn(
-              "group relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-[12.5px] font-medium transition-all duration-150",
-              childActive
+              "group relative flex w-full items-center gap-3 rounded-md pl-3 pr-1.5 text-left text-[12.5px] font-medium transition-all duration-150",
+              headerActive
                 ? "text-sidebar-ink"
-                : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink"
+                : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink",
+              tab.to && selfActive && "bg-sidebar-active shadow-[inset_0_0_0_1px_rgba(231,234,228,0.12)]",
             )}
           >
-            <Icon
-              size={15}
-              strokeWidth={childActive ? 2.4 : 2}
-              className={childActive ? "text-accent" : ""}
-            />
-            <span className="flex-1">{tab.label}</span>
-            {open ? (
-              <ChevronDown size={12} className="hidden text-sidebar-ink-muted lg:inline" />
-            ) : (
-              <ChevronRight size={12} className="hidden text-sidebar-ink-muted lg:inline" />
+            {tab.to && selfActive && (
+              <span className="absolute -left-[10px] top-2 bottom-2 w-[2px] rounded-r bg-primary" />
             )}
-          </button>
-          {/* Children: always visible on mobile (no per-group expand);
-              on lg+ they obey the localStorage-backed `open` flag. */}
+            {tab.to ? (
+              <NavLink to={tab.to} className="flex min-w-0 flex-1 items-center gap-3 py-2">
+                {headerInner}
+              </NavLink>
+            ) : (
+              <button
+                onClick={() => toggleGroup(gid)}
+                className="flex min-w-0 flex-1 items-center gap-3 py-2 text-left"
+              >
+                {headerInner}
+              </button>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleGroup(gid);
+              }}
+              className="hidden shrink-0 rounded p-1 text-sidebar-ink-muted transition-colors hover:text-sidebar-ink lg:inline-flex"
+              aria-label={open ? "Collapse" : "Expand"}
+            >
+              {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+          </div>
+          {/* Children: always visible on mobile; on lg+ obey the `open` flag. */}
           <div
             className={cn(
               "ml-3 border-l border-sidebar-border pl-2",
@@ -487,19 +525,19 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
           cn(
             "group relative my-0.5 flex items-center gap-3 rounded-md px-3 py-2 text-[12.5px] font-medium transition-all duration-150",
             active
-              ? "bg-sidebar-active text-accent-ink shadow-[inset_0_0_0_1px_rgba(161,106,46,0.2)]"
+              ? "bg-sidebar-active text-sidebar-ink shadow-[inset_0_0_0_1px_rgba(231,234,228,0.12)]"
               : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink",
             collapsed && "mx-1 justify-center px-2"
           )
         }
       >
         {active && !collapsed && (
-          <span className="absolute -left-[10px] top-2 bottom-2 w-[2px] rounded-r bg-accent" />
+          <span className="absolute -left-[10px] top-2 bottom-2 w-[2px] rounded-r bg-primary" />
         )}
         <Icon
           size={15}
           strokeWidth={active ? 2.4 : 2}
-          className={active ? "text-accent" : ""}
+          className={active ? "text-primary" : ""}
         />
         {!collapsed && <span>{tab.label}</span>}
       </NavLink>
@@ -546,7 +584,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
           <img
             src={LOGO_MARK_SRC}
             alt={branding.companyName}
-            className="h-9 w-9 object-contain"
+            className="h-9 w-9 object-contain brightness-0 invert"
             draggable={false}
           />
         ) : (
@@ -555,7 +593,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
           <img
             src={LOGO_WORDMARK_SRC}
             alt={branding.companyName}
-            className="h-10 w-auto max-w-[160px] object-contain"
+            className="h-10 w-auto max-w-[160px] object-contain brightness-0 invert"
             draggable={false}
           />
         )}
@@ -643,7 +681,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
               aria-label="Profile"
               title={`${user.name || user.email} · Profile`}
             >
-              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-sidebar-active text-[9px] font-bold uppercase text-accent-ink">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-sidebar-active text-[9px] font-bold uppercase text-accent-bright">
                 {(user.name || user.email).slice(0, 2).toUpperCase()}
               </span>
             </NavLink>
@@ -654,7 +692,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
                 className="group flex min-w-0 flex-1 items-center gap-2.5"
                 title="Open profile"
               >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sidebar-active text-[10px] font-bold uppercase text-accent-ink shadow-[inset_0_0_0_1px_rgba(161,106,46,0.25)] group-hover:bg-accent group-hover:text-white">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sidebar-active text-[10px] font-bold uppercase text-accent-bright shadow-[inset_0_0_0_1px_rgba(161,106,46,0.25)] group-hover:bg-accent group-hover:text-white">
                   {(user.name || user.email).slice(0, 2).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">

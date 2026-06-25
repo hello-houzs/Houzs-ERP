@@ -176,7 +176,7 @@ export function SurveyPublic() {
           onChange={(e) => setNotes(e.target.value)}
           rows={4}
           placeholder="Tell us more about your experience…"
-          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           maxLength={1000}
         />
       </div>

@@ -173,7 +173,7 @@ export function ResetPassword() {
             autoFocus
             autoComplete="new-password"
             className={cn(
-              "h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+              "h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
             )}
           />
           <PasswordStrengthMeter password={password} email={state.email} />
@@ -187,7 +187,7 @@ export function ResetPassword() {
             value={confirmPwd}
             onChange={(e) => setConfirmPwd(e.target.value)}
             autoComplete="new-password"
-            className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
         </div>
         {submitError && (

@@ -728,7 +728,7 @@ export function DataTable<T>({
   // 44 px on mobile (touch-target floor), compresses to 32 px on sm+ where
   // mouse precision is available.
   const toolbarBtn =
-    "inline-flex h-11 sm:h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-surface disabled:hover:text-ink-secondary";
+    "inline-flex h-11 sm:h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-surface disabled:hover:text-ink-secondary";
 
   const rowCount = sortedRows?.length ?? 0;
   const visibleCount = chooserOptions.filter((o) => !effectiveHidden.has(o.key)).length;
@@ -748,7 +748,7 @@ export function DataTable<T>({
                 value={search.value}
                 onChange={(e) => search.onChange(e.target.value)}
                 placeholder={search.placeholder || "Search…"}
-                className="h-9 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20 sm:h-8 sm:text-[12px]"
+                className="h-9 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20 sm:h-8 sm:text-[12px]"
               />
             </div>
           )}
@@ -926,8 +926,8 @@ export function DataTable<T>({
                         // when there's no leading chevron column ahead of it.
                         i === 0 && !expandable && "pl-5",
                         i === displayColumns.length - 1 && "pr-5",
-                        sortable && "cursor-pointer select-none hover:text-accent",
-                        active && "text-accent",
+                        sortable && "cursor-pointer select-none hover:text-primary",
+                        active && "text-primary",
                         // Delineate the frozen region: a right border on the
                         // last sticky column reads as the freeze line.
                         isLastSticky && "border-r border-border"
@@ -941,7 +941,7 @@ export function DataTable<T>({
                             {pinnedSet.has(c.key) && (
                               <Pin
                                 size={9}
-                                className="shrink-0 text-accent"
+                                className="shrink-0 text-primary"
                                 aria-label="Pinned"
                               />
                             )}
@@ -982,7 +982,7 @@ export function DataTable<T>({
                           e.stopPropagation();
                           autoFitColumn(c.key);
                         }}
-                        className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize touch-none select-none opacity-0 transition-opacity hover:bg-accent/40 group-hover/th:opacity-100"
+                        className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize touch-none select-none opacity-0 transition-opacity hover:bg-primary/40 group-hover/th:opacity-100"
                       />
                     </th>
                   );
@@ -1104,7 +1104,7 @@ export function DataTable<T>({
                                 e.stopPropagation();
                                 if (expId != null) toggleExpand(expId);
                               }}
-                              className="inline-flex items-center justify-center rounded text-ink-muted transition-colors hover:text-accent"
+                              className="inline-flex items-center justify-center rounded text-ink-muted transition-colors hover:text-primary"
                             >
                               <ChevronRight
                                 size={14}
@@ -1277,13 +1277,13 @@ export function DataTable<T>({
                 className={cn(
                   "relative overflow-hidden rounded-lg border border-border bg-surface shadow-stone transition-colors",
                   onRowClick &&
-                    "cursor-pointer active:bg-[#3f6b53]/25 hover:border-accent/40",
+                    "cursor-pointer active:bg-primary/15 hover:border-primary/40",
                   customClass,
                 )}
               >
-                {/* Brass accent rail — subtle anchor on the left edge,
-                    matches the IdeaList card pattern. */}
-                <span className="pointer-events-none absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-accent/0 via-accent/55 to-accent/0" />
+                {/* Petrol accent rail — subtle anchor on the left edge of a
+                    clickable row card, matches the IdeaList card pattern. */}
+                <span className="pointer-events-none absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-primary/0 via-primary/55 to-primary/0" />
                 <div className="p-3">
                   {primaryCol && (
                     <div className="mb-1.5 flex items-start gap-3">

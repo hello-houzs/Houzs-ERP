@@ -152,7 +152,7 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
           placeholder="New name…"
-          className="h-9 flex-1 min-w-[160px] rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          className="h-9 flex-1 min-w-[160px] rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         />
         {extra && (
           <input
@@ -164,7 +164,7 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
             placeholder={extra.addLabel}
             title={extra.rowTitle ?? extra.addLabel}
             className={cn(
-              "h-9 rounded-md border border-border bg-surface px-3 font-mono text-[12px] outline-none focus:border-accent",
+              "h-9 rounded-md border border-border bg-surface px-3 font-mono text-[12px] outline-none focus:border-primary",
               extra.width ?? "w-24",
             )}
           />
@@ -239,7 +239,7 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
                   const v = e.target.value.trim();
                   if (v && v !== row.name) patch(row, { name: v });
                 }}
-                className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
+                className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-ink hover:border-border focus:border-primary focus:bg-surface focus:ring-1 focus:ring-primary/20 focus:outline-none"
               />
               {/* Slug hidden (Houzs 2026-06-24) — owner: the tiny gray machine
                   code next to each name (e.g. product_defect, missing__short_items)

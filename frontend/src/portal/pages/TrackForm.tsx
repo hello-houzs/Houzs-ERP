@@ -52,7 +52,7 @@ export function TrackForm() {
               value={assrNo}
               onChange={(e) => setAssrNo(e.target.value)}
               placeholder="ASSR/2604-001"
-              className="w-full rounded-md border border-border bg-surface px-3 py-2.5 font-mono text-sm uppercase outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="w-full rounded-md border border-border bg-surface px-3 py-2.5 font-mono text-sm uppercase outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
             <div className="mt-1 text-[10px] text-ink-muted">
               Format: ASSR/YYMM-NNN — found on your case receipt or WhatsApp message.
@@ -68,7 +68,7 @@ export function TrackForm() {
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               placeholder="012-345 6789"
-              className="w-full rounded-md border border-border bg-surface px-3 py-2.5 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="w-full rounded-md border border-border bg-surface px-3 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
             <div className="mt-1 text-[10px] text-ink-muted">
               The phone number you gave when the case was opened.

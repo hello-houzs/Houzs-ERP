@@ -278,7 +278,7 @@ export function PortalCaseDetailPage() {
             onChange={(e) => setComment(e.target.value)}
             rows={3}
             placeholder="Our team will see this on the case…"
-            className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             maxLength={2000}
           />
           <div className="mt-2 flex items-center justify-end">
@@ -353,7 +353,7 @@ function PortalPhoto({ token, attId, label, source, onClick, onRemove }: {
       <button
         type="button"
         onClick={onClick}
-        className="block w-full overflow-hidden rounded-md border border-border bg-bg text-left transition-all hover:border-accent/50 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2"
+        className="block w-full overflow-hidden rounded-md border border-border bg-bg text-left transition-all hover:border-accent/50 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2"
         aria-label={`View ${label} photo full-size`}
       >
         {url ? (
