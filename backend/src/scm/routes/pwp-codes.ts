@@ -11,7 +11,7 @@
 // AVAILABLE code. RLS (migration 0130) is defence-in-depth.
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { matchComboSubset } from '../shared';
+import { matchComboSubset, passesRefinementColumns } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 
@@ -123,21 +123,24 @@ pwpCodes.post('/reserve', async (c) => {
   // 1. The trigger product (category + model + base_model for sofa combos).
   const { data: prod } = await supabase
     .from('mfg_products')
-    .select('code, category, model_id, base_model')
+    .select('code, category, model_id, base_model, size_code')
     .eq('id', productId)
     .maybeSingle();
   if (!prod) return c.json({ codes: [] });  // unknown product → nothing to reserve
   const prodCat = String(prod.category).toUpperCase();
+  const triggerSizeCode = prod.size_code ? String(prod.size_code).toUpperCase() : null;
 
   // 2. Active rules.
   const { data: ruleRows } = await supabase
     .from('pwp_rules')
-    .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, qty_per_trigger, type')
+    .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type')
     .eq('active', true);
   const rules = (ruleRows ?? []) as Array<{
     id: string; trigger_category: string; trigger_eligible_model_ids: string[] | null;
     trigger_combo_ids: string[] | null; reward_category: string;
     eligible_reward_model_ids: string[] | null; reward_combo_ids: string[] | null; qty_per_trigger: number;
+    trigger_size_codes: string[] | null; trigger_compartments: string[] | null;
+    reward_size_codes: string[] | null; reward_compartments: string[] | null;
     type: string | null;
   }>;
 
@@ -165,7 +168,13 @@ pwpCodes.post('/reserve', async (c) => {
     }));
   } else {
     matching = rules.filter((r) =>
-      r.trigger_category === prodCat && inList(prod.model_id ?? null, r.trigger_eligible_model_ids ?? []),
+      r.trigger_category === prodCat
+      && inList(prod.model_id ?? null, r.trigger_eligible_model_ids ?? [])
+      // Size refinement (0182): a mattress/bedframe trigger may require a size.
+      && passesRefinementColumns(
+        { category: prodCat, modelId: prod.model_id ?? null, sizeCode: triggerSizeCode, builtCompartments: [] },
+        r.trigger_size_codes, r.trigger_compartments,
+      ),
     );
   }
 
@@ -197,6 +206,9 @@ pwpCodes.post('/reserve', async (c) => {
             reward_category:           rule.reward_category,
             eligible_reward_model_ids: rule.eligible_reward_model_ids ?? [],
             reward_combo_ids:          rule.reward_combo_ids ?? [],
+            // Snapshot the reward refinement (0182) so a claim enforces it later.
+            reward_size_codes:         rule.reward_size_codes ?? [],
+            reward_compartments:       rule.reward_compartments ?? [],
             type:                      rule.type ?? 'pwp',
             status:                    'RESERVED',
             owner_staff_id:            userId,

@@ -150,3 +150,34 @@ export function lineMatchesTargets(
   if (targets.length === 0) return true;
   return targets.some((t) => lineMatchesTarget(line, t, comboModulesById));
 }
+
+const NO_COMBOS: Map<string, string[][]> = new Map();
+
+/**
+ * PWP additive refinement gate (port of 2990 migration 0182). PWP rules/codes
+ * keep their model/combo arrays as the primary targeting and store an OPTIONAL
+ * flat refinement: `sizeCodes` (narrows a mattress/bedframe trigger/reward to
+ * specific sizes) and `compartments` (narrows an any-build sofa trigger to
+ * builds that contain a module). This gate is ANDed on top of the existing
+ * model/combo match.
+ *
+ *   - both empty  → no refinement → pass (legacy behavior).
+ *   - sizeCodes set → a non-sofa line passes iff its size_code is listed.
+ *   - compartments set → a sofa line passes iff its build contains one.
+ *   - both set (unusual; a rule is one category) → pass if EITHER matches.
+ *
+ * Reuses refinementMatchesLine so POS preview and the server mint/claim gates
+ * run identical logic (honest-pricing: no drift).
+ */
+export function passesRefinementColumns(
+  line: RuleLineInput,
+  sizeCodes: string[] | null | undefined,
+  compartments: string[] | null | undefined,
+): boolean {
+  const sc = (sizeCodes ?? []).filter((x) => typeof x === 'string' && x.trim() !== '');
+  const cp = (compartments ?? []).filter((x) => typeof x === 'string' && x.trim() !== '');
+  if (sc.length === 0 && cp.length === 0) return true;
+  if (sc.length > 0 && refinementMatchesLine(line, { scope: 'variant', sizeCodes: sc }, NO_COMBOS)) return true;
+  if (cp.length > 0 && refinementMatchesLine(line, { scope: 'compartment', compartments: cp }, NO_COMBOS)) return true;
+  return false;
+}

@@ -16,6 +16,7 @@ import {
   isFreeItemLine,
   resolveFabricTierOverride,
   type RuleLineInput,
+  passesRefinementColumns,
 } from '../shared';
 import { computeSoDeliveryFee, type SoDeliveryFeeResult } from '../shared/pricing';
 /* Special delivery fee rules (migration 0024, #691 RuleTarget) — the model |
@@ -1894,7 +1895,7 @@ mfgSalesOrders.post('/', async (c) => {
   if (allPwpCodes.length > 0) {
     const { data: codeRows, error: codeReadErr } = await sb
       .from('pwp_codes')
-      .select('code, status, owner_staff_id, reward_category, eligible_reward_model_ids, reward_combo_ids, customer_id, source_doc_no, redeemed_doc_no, type')
+      .select('code, status, owner_staff_id, reward_category, eligible_reward_model_ids, reward_combo_ids, reward_size_codes, reward_compartments, customer_id, source_doc_no, redeemed_doc_no, type')
       .in('code', allPwpCodes);
     if (codeReadErr) {
       // A failed read is NOT "code not found" (same honesty rule as the
@@ -1979,6 +1980,13 @@ mfgSalesOrders.post('/', async (c) => {
         reject("sofa build doesn't match the voucher's reward combo");
         continue;
       }
+      // Reward compartment refinement (0182) — the code snapshots the rule's
+      // reward refinement; the build must satisfy it.
+      if (!passesRefinementColumns(
+        { category: 'SOFA', modelId: product.model_id ?? null, sizeCode: null, builtCompartments: built },
+        (cRow.reward_size_codes as string[] | null) ?? null,
+        (cRow.reward_compartments as string[] | null) ?? null,
+      )) { reject("sofa build doesn't match the voucher's reward compartment"); continue; }
       grantSofaComboIds = rewardComboIds;
     } else {
       const pwpPrice = Math.round(Number(product.pwp_price_sen ?? 0));
@@ -1989,6 +1997,12 @@ mfgSalesOrders.post('/', async (c) => {
       const elig = (cRow.eligible_reward_model_ids as string[] | null) ?? [];
       const modelOk = elig.length === 0 || (product.model_id != null && elig.includes(product.model_id));
       if (!modelOk) { reject('code is not valid for this model'); continue; }
+      // Reward size refinement (0182).
+      if (!passesRefinementColumns(
+        { category: prodCat, modelId: product.model_id ?? null, sizeCode: product.size_code ? String(product.size_code).toUpperCase() : null, builtCompartments: [] },
+        (cRow.reward_size_codes as string[] | null) ?? null,
+        (cRow.reward_compartments as string[] | null) ?? null,
+      )) { reject('code is not valid for this size'); continue; }
       grantPwpPrice = pwpPrice;
     }
 
@@ -5556,9 +5570,9 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
   }
 
   const { data: prodRow } = await sb.from('mfg_products')
-    .select('code, name, category, status, pos_active, sell_price_sen, cost_price_sen, pwp_price_sen, model_id')
+    .select('code, name, category, status, pos_active, sell_price_sen, cost_price_sen, pwp_price_sen, model_id, size_code')
     .eq('code', newCode).maybeSingle();
-  const prod = prodRow as { code: string; name: string; category: string; status: string; pos_active: boolean; sell_price_sen: number | null; cost_price_sen: number | null; pwp_price_sen: number | null; model_id: string | null } | null;
+  const prod = prodRow as { code: string; name: string; category: string; status: string; pos_active: boolean; sell_price_sen: number | null; cost_price_sen: number | null; pwp_price_sen: number | null; model_id: string | null; size_code: string | null } | null;
   if (!prod) return c.json(unknownItemCodeResponse([newCode]), 409);
   if (String(prod.category).toUpperCase() === 'SOFA') {
     return c.json({ error: 'sofa_swap_not_supported', reason: 'A sofa build is added through the configurator, not a line swap.' }, 400);
@@ -5588,6 +5602,8 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
     id: string; trigger_category: string; trigger_eligible_model_ids: string[] | null;
     trigger_combo_ids: string[] | null; reward_category: string;
     eligible_reward_model_ids: string[] | null; reward_combo_ids: string[] | null;
+    trigger_size_codes: string[] | null; trigger_compartments: string[] | null;
+    reward_size_codes: string[] | null; reward_compartments: string[] | null;
     qty_per_trigger: number | null; type: string | null;
   };
   type SwapRewardRevertLine = {
@@ -5606,16 +5622,21 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
       return c.json({ error: 'pwp_line_locked', reason: 'This PWP reward carries no voucher code — ask the coordinator to exchange it.' }, 409);
     }
     const { data: codeRow } = await sb.from('pwp_codes')
-      .select('code, reward_category, eligible_reward_model_ids, type')
+      .select('code, reward_category, eligible_reward_model_ids, reward_size_codes, reward_compartments, type')
       .eq('code', rewardPwpCode).maybeSingle();
-    const codeTyped = codeRow as { code: string; reward_category: string; eligible_reward_model_ids: string[] | null; type: string } | null;
+    const codeTyped = codeRow as { code: string; reward_category: string; eligible_reward_model_ids: string[] | null; reward_size_codes: string[] | null; reward_compartments: string[] | null; type: string } | null;
     if (!codeTyped) {
       return c.json({ error: 'pwp_line_locked', reason: 'This PWP voucher could not be found — ask the coordinator to exchange it.' }, 409);
     }
     const inCategory = String(prod.category).toUpperCase() === String(codeTyped.reward_category).toUpperCase();
     const eligibleModels = codeTyped.eligible_reward_model_ids ?? [];
     const inModels = eligibleModels.length === 0 || (prod.model_id != null && eligibleModels.includes(prod.model_id));
-    if (!inCategory || !inModels) {
+    // 0182 reward refinement — a refined voucher's size narrowing applies to a swap too.
+    const inRefinement = passesRefinementColumns(
+      { category: String(prod.category), modelId: prod.model_id ?? null, sizeCode: prod.size_code ? String(prod.size_code).toUpperCase() : null, builtCompartments: [] },
+      codeTyped.reward_size_codes, codeTyped.reward_compartments,
+    );
+    if (!inCategory || !inModels || !inRefinement) {
       return c.json({
         error: 'pwp_swap_out_of_range',
         reason: 'A PWP reward can only be exchanged for another item inside the promotion\'s reward range.',
@@ -5647,19 +5668,24 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
     const anchors = (soCodes ?? []) as Array<{ code: string; rule_id: string | null; status: string; trigger_item_code: string | null; redeemed_doc_no: string | null }>;
     {
       const { data: ruleRows } = await sb.from('pwp_rules')
-        .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, qty_per_trigger, type')
+        .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type')
         .eq('active', true);
       const rules = (ruleRows ?? []) as SwapPwpRule[];
       const ruleById = new Map(rules.map((r) => [r.id, r]));
       const fitsTrigger = (r: SwapPwpRule | undefined,
-                           p: { category?: string | null; model_id?: string | null } | null): boolean => {
+                           p: { category?: string | null; model_id?: string | null; size_code?: string | null } | null): boolean => {
         if (!r || !p) return false;
         // Combo-defined (sofa) triggers can never be satisfied by a one-line
         // product swap; the category check below also excludes them.
         if ((r.trigger_combo_ids ?? []).length > 0) return false;
         const inCat = String(p.category ?? '').toUpperCase() === String(r.trigger_category).toUpperCase();
         const models = r.trigger_eligible_model_ids ?? [];
-        return inCat && (models.length === 0 || (p.model_id != null && models.includes(p.model_id)));
+        if (!inCat || !(models.length === 0 || (p.model_id != null && models.includes(p.model_id)))) return false;
+        // Size refinement (0182) — a one-line swap is non-sofa, so only size_codes apply.
+        return passesRefinementColumns(
+          { category: String(p.category ?? ''), modelId: p.model_id ?? null, sizeCode: p.size_code ? String(p.size_code).toUpperCase() : null, builtCompartments: [] },
+          r.trigger_size_codes, r.trigger_compartments,
+        );
       };
       if (anchors.length > 0) {
         const prevProd = await loadProductByCode(sb, prev.item_code);
@@ -5872,6 +5898,8 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
               reward_category: r.reward_category,
               eligible_reward_model_ids: r.eligible_reward_model_ids ?? [],
               reward_combo_ids: r.reward_combo_ids ?? [],
+              reward_size_codes: r.reward_size_codes ?? [],
+              reward_compartments: r.reward_compartments ?? [],
               type: r.type ?? 'pwp',
               status: 'AVAILABLE',
               owner_staff_id: user.id,
@@ -6262,6 +6290,8 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
     id: string; trigger_category: string; trigger_eligible_model_ids: string[] | null;
     trigger_combo_ids: string[] | null; reward_category: string;
     eligible_reward_model_ids: string[] | null; reward_combo_ids: string[] | null;
+    trigger_size_codes: string[] | null; trigger_compartments: string[] | null;
+    reward_size_codes: string[] | null; reward_compartments: string[] | null;
     qty_per_trigger: number | null; type: string | null; active: boolean;
   };
   type RewardRevertLine = {
@@ -6278,7 +6308,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   let rewardLinesToRevert: RewardRevertLine[] = [];
   {
     const { data: ruleRows } = await sb.from('pwp_rules')
-      .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, qty_per_trigger, type, active')
+      .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type, active')
       .eq('active', true);
     pwpRules = ((ruleRows ?? []) as PwpRuleRow[]);
     const comboById = new Map((combos ?? []).map((cb) => [cb.id, cb]));
@@ -6295,7 +6325,12 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
         });
       }
       return String(r.trigger_category).toUpperCase() === 'SOFA'
-        && inList(prodLite.model_id ?? null, r.trigger_eligible_model_ids ?? []);
+        && inList(prodLite.model_id ?? null, r.trigger_eligible_model_ids ?? [])
+        // Compartment refinement (0182) — an any-build sofa trigger may require a module.
+        && passesRefinementColumns(
+          { category: 'SOFA', modelId: prodLite.model_id ?? null, sizeCode: null, builtCompartments: newModuleIds },
+          r.trigger_size_codes, r.trigger_compartments,
+        );
     };
     const ruleById = new Map(pwpRules.map((r) => [r.id, r]));
 
@@ -6572,6 +6607,8 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
               reward_category: r.reward_category,
               eligible_reward_model_ids: r.eligible_reward_model_ids ?? [],
               reward_combo_ids: r.reward_combo_ids ?? [],
+              reward_size_codes: r.reward_size_codes ?? [],
+              reward_compartments: r.reward_compartments ?? [],
               type: r.type ?? 'pwp',
               status: 'AVAILABLE',
               owner_staff_id: user.id,

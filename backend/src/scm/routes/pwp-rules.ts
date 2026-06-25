@@ -25,6 +25,13 @@ const createSchema = z.object({
   rewardCategory:          CATEGORY,
   eligibleRewardModelIds:  z.array(z.string()).default([]),
   rewardComboIds:          z.array(z.string()).default([]),  // SOFA reward (Phase 2)
+  // Variant/compartment refinement (migration 0182). ADDITIVE: narrows the
+  // model/combo match by size (mattress/bedframe) or contained compartment
+  // (any-build sofa trigger). [] = no refinement.
+  triggerSizeCodes:        z.array(z.string()).default([]),
+  triggerCompartments:     z.array(z.string()).default([]),
+  rewardSizeCodes:         z.array(z.string()).default([]),
+  rewardCompartments:      z.array(z.string()).default([]),
   qtyPerTrigger:           z.number().int().min(1).default(1),
   type:                    z.enum(['pwp', 'promo']).default('pwp'),  // promo lets a 0 reward redeem free (migration 0145)
   active:                  z.boolean().default(true),
@@ -39,6 +46,10 @@ type RuleRow = {
   reward_category: string;
   eligible_reward_model_ids: string[] | null;
   reward_combo_ids: string[] | null;
+  trigger_size_codes: string[] | null;
+  trigger_compartments: string[] | null;
+  reward_size_codes: string[] | null;
+  reward_compartments: string[] | null;
   qty_per_trigger: number;
   type: string | null;
   active: boolean;
@@ -54,6 +65,10 @@ const toApi = (r: RuleRow) => ({
   rewardCategory:          r.reward_category,
   eligibleRewardModelIds:  r.eligible_reward_model_ids ?? [],
   rewardComboIds:          r.reward_combo_ids ?? [],
+  triggerSizeCodes:        r.trigger_size_codes ?? [],
+  triggerCompartments:     r.trigger_compartments ?? [],
+  rewardSizeCodes:         r.reward_size_codes ?? [],
+  rewardCompartments:      r.reward_compartments ?? [],
   qtyPerTrigger:           r.qty_per_trigger,
   type:                    (r.type ?? 'pwp') as 'pwp' | 'promo',
   active:                  r.active,
@@ -62,7 +77,7 @@ const toApi = (r: RuleRow) => ({
 });
 
 const SELECT =
-  'id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, qty_per_trigger, type, active, created_at, updated_at';
+  'id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type, active, created_at, updated_at';
 
 // Editors-only guard (server check; RLS is defence-in-depth, migration 0128).
 async function requireWrite(c: AppCtx) {
@@ -108,6 +123,10 @@ pwpRules.post('/', async (c) => {
       reward_category:            parsed.data.rewardCategory,
       eligible_reward_model_ids:  parsed.data.eligibleRewardModelIds,
       reward_combo_ids:           parsed.data.rewardComboIds,
+      trigger_size_codes:         parsed.data.triggerSizeCodes,
+      trigger_compartments:       parsed.data.triggerCompartments,
+      reward_size_codes:          parsed.data.rewardSizeCodes,
+      reward_compartments:        parsed.data.rewardCompartments,
       qty_per_trigger:            parsed.data.qtyPerTrigger,
       type:                       parsed.data.type,
       active:                     parsed.data.active,
@@ -141,6 +160,10 @@ pwpRules.patch('/:id', async (c) => {
   if (parsed.data.rewardCategory          !== undefined) patch.reward_category            = parsed.data.rewardCategory;
   if (parsed.data.eligibleRewardModelIds  !== undefined) patch.eligible_reward_model_ids  = parsed.data.eligibleRewardModelIds;
   if (parsed.data.rewardComboIds          !== undefined) patch.reward_combo_ids           = parsed.data.rewardComboIds;
+  if (parsed.data.triggerSizeCodes        !== undefined) patch.trigger_size_codes         = parsed.data.triggerSizeCodes;
+  if (parsed.data.triggerCompartments     !== undefined) patch.trigger_compartments       = parsed.data.triggerCompartments;
+  if (parsed.data.rewardSizeCodes         !== undefined) patch.reward_size_codes          = parsed.data.rewardSizeCodes;
+  if (parsed.data.rewardCompartments      !== undefined) patch.reward_compartments        = parsed.data.rewardCompartments;
   if (parsed.data.qtyPerTrigger           !== undefined) patch.qty_per_trigger            = parsed.data.qtyPerTrigger;
   if (parsed.data.type                    !== undefined) patch.type                       = parsed.data.type;
   if (parsed.data.active                  !== undefined) patch.active                     = parsed.data.active;
