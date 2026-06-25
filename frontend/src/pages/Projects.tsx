@@ -4652,14 +4652,40 @@ function ProjectTeamSection({
   const takenRepIds = new Set(attendees.map((a) => a.sales_rep_id));
   const availableReps = reps.filter((r) => !takenRepIds.has(r.id));
   const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const filteredAvailable = availableReps.filter((r) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      (r.code ?? "").toLowerCase().includes(q) ||
+      (r.name ?? "").toLowerCase().includes(q)
+    );
+  });
 
-  async function addRep(repId: number) {
-    if (!repId) return;
+  function toggleSelected(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // Owner 2026-06-25: multi-select — tick several reps + add them in one go
+  // (was one-at-a-time). POSTs each selected id sequentially, then reloads once.
+  async function addSelected() {
+    const ids = [...selected].filter((id) => availableReps.some((r) => r.id === id));
+    if (ids.length === 0) return;
     setBusy(true);
     try {
-      await api.post(`/api/projects/${projectId}/sales-attendees`, {
-        sales_rep_id: repId,
-      });
+      for (const repId of ids) {
+        await api.post(`/api/projects/${projectId}/sales-attendees`, {
+          sales_rep_id: repId,
+        });
+      }
+      setSelected(new Set());
+      setSearch("");
       onChanged();
     } catch (e: any) {
       toast.error(e?.message || "Failed to add");
@@ -4769,36 +4795,59 @@ function ProjectTeamSection({
         )}
         {fullAccess && (
           <div className="mt-2">
-            {/* Picker shown directly (owner: no "Add rep" gate) — pick to add;
-                the rep moves to the chips above and the select resets. */}
-            <select
-              disabled={busy}
-              value=""
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v) addRep(parseInt(v, 10));
-              }}
-              className={SPEC_INPUT_CLASS}
-            >
-              <option value="">
-                {repsQ.loading
-                  ? "Loading…"
-                  : reps.length === 0
-                  ? "No Sales Persons available"
-                  : availableReps.length === 0
-                  ? "All sales reps added"
-                  : "— add a sales rep —"}
-              </option>
-              {availableReps.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.code} · {r.name}
-                </option>
-              ))}
-            </select>
-            {!repsQ.loading && reps.length === 0 && (
-              <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
-                No Sales Persons found. Add members to the Sales department in User Management.
+            {/* Multi-select (owner 2026-06-25: "直接可以 multiselect 多选,不用
+                一个一个按") — filter + tick several + "Add N" in one go. */}
+            {reps.length === 0 ? (
+              !repsQ.loading && (
+                <div className="text-[9.5px] leading-snug text-warning-text">
+                  No Sales Persons found. Add members to the Sales department in User Management.
+                </div>
+              )
+            ) : availableReps.length === 0 ? (
+              <div className="text-[11px] italic text-ink-muted">
+                All sales reps added.
               </div>
+            ) : (
+              <>
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Filter reps…"
+                  className={SPEC_INPUT_CLASS}
+                />
+                <div className="mt-1 max-h-44 overflow-auto rounded-md border border-border">
+                  {filteredAvailable.length === 0 ? (
+                    <div className="px-2 py-2 text-[10.5px] text-ink-muted">
+                      No matches.
+                    </div>
+                  ) : (
+                    filteredAvailable.map((r) => (
+                      <label
+                        key={r.id}
+                        className="flex cursor-pointer items-center gap-2 border-t border-border px-2 py-1.5 text-[11px] first:border-t-0 hover:bg-bg/60"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected.has(r.id)}
+                          onChange={() => toggleSelected(r.id)}
+                        />
+                        <span className="font-mono text-[9px] text-ink-muted">
+                          {r.code}
+                        </span>
+                        <span className="truncate text-ink">{r.name}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+                <button
+                  onClick={addSelected}
+                  disabled={busy || selected.size === 0}
+                  className="mt-2 inline-flex w-full items-center justify-center gap-1 rounded-md border border-accent/40 bg-surface px-2 py-1.5 text-[11px] font-semibold text-accent hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Plus size={11} /> Add{selected.size > 0 ? ` ${selected.size} selected` : ""}
+                </button>
+              </>
             )}
           </div>
         )}
