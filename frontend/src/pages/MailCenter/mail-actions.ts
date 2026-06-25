@@ -310,6 +310,71 @@ export function fetchScopeLevels(): Promise<
   );
 }
 
+// ── Auto-sent outbox (read-only) ───────────────────────────────────────────
+// The system's auto-sent customer notices (Delivery Order, Invoice, etc.) go
+// out from a noreply sender, so there's no human "Sent" copy to read. The
+// "Auto-sent" folder lists this outbound log. These are READ-only fetchers —
+// the outbox is written by the backend dispatcher, never the client.
+
+export type OutboxRow = {
+  id: string;
+  toAddress: string;
+  subject: string;
+  status: "SENT" | "FAILED" | "PENDING";
+  attempts: number;
+  lastError: string | null;
+  sentAt: string | null;
+  createdAt: string;
+  snippet: string;
+  attachmentNames: string[];
+};
+
+export type OutboxCounts = { sent: number; failed: number; pending: number };
+
+export type OutboxList = {
+  rows: OutboxRow[];
+  counts: OutboxCounts;
+  hasMore: boolean;
+};
+
+export type OutboxDetail = {
+  id: string;
+  toAddress: string;
+  subject: string;
+  status: "SENT" | "FAILED" | "PENDING";
+  attempts: number;
+  lastError: string | null;
+  sentAt: string | null;
+  createdAt: string;
+  bodyHtml: string;
+  bodyText: string;
+  attachmentNames: string[];
+};
+
+// List the auto-sent outbound log. Optional status filter (SENT/FAILED/PENDING)
+// + free-text query + pagination.
+export function fetchOutbox(opts: {
+  status?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<OutboxList> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set("status", opts.status);
+  if (opts.q) params.set("q", opts.q);
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  if (opts.offset !== undefined) params.set("offset", String(opts.offset));
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return api.get<OutboxList>(`/api/mail-center/outbox${qs}`);
+}
+
+// Fetch one auto-sent email's full body + metadata for the reader modal.
+export function fetchOutboxDetail(id: string): Promise<OutboxDetail> {
+  return api.get<OutboxDetail>(
+    `/api/mail-center/outbox/${encodeURIComponent(id)}`,
+  );
+}
+
 // Upsert a user's visibility level. Note the singular path (write) vs the plural
 // GET /scope-levels (list).
 export function setScopeLevel(

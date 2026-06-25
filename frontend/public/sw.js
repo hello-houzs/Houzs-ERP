@@ -272,7 +272,12 @@
 //   no longer auto-sees every mailbox. GET /addresses?manage=1 = the all-list for
 //   the Mailboxes admin tab; sidebar + Compose stay scope-bound. Each member sees
 //   only their own personal mailbox + shared mailboxes explicitly granted.
-const VERSION = "houzs-erp-v64";
+// v65 — Mail Center -> Hookka parity: (1) "Auto-sent" folder + Outbox panel +
+//   reader modal — view system mail sent from no-reply@ (DO/invoice/CN/PO/invite)
+//   via GET /outbox(+/:id); (2) reply/compose attachments now actually delivered
+//   (Resend body carries them; were validated then dropped); (3) search box moved
+//   from the bottom of the left rail to a top full-width row (Gmail-style).
+const VERSION = "houzs-erp-v65";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

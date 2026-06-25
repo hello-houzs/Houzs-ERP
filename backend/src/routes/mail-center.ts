@@ -904,6 +904,142 @@ app.get("/addresses", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Auto-sent log (the "Auto-sent" folder). The system fires customer notices
+// (DO / invoice / document report / member+supplier invites) from no-reply@ via
+// the email outbox; there is no human "Sent" copy to look at — owner 2026-06-24
+// "因為是 noreply 所以看不到". These two read endpoints expose that durable log,
+// read-only, visible to a mail admin OR any user with a mailbox in scope (same
+// bar as the inbox). Ported from Hookka. Houzs `email_outbox` columns are
+// snake_case (read them snake here, like rowToThread/rowToAddress); statuses are
+// stored lowercase (pending/sent/failed) and surfaced UPPERCASE for the UI.
+// ---------------------------------------------------------------------------
+type OutboxRow = {
+  id: string;
+  to_address: string | null;
+  subject: string | null;
+  status: string | null;
+  attempts: number | string | null;
+  last_error: string | null;
+  sent_at: string | null;
+  created_at: string | null;
+  body_text: string | null;
+  body_html: string | null;
+};
+
+function outboxSnippet(text: string | null, html: string | null): string {
+  const t = (text && text.trim()) || (html ? html.replace(/<[^>]+>/g, " ") : "");
+  return t.replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+const OUTBOX_STATUSES = ["pending", "sent", "failed"];
+
+// GET /api/mail-center/outbox?status=&q=&limit=&offset= — the auto-sent log
+// (newest first) + a status roll-up for the panel header.
+app.get("/outbox", async (c) => {
+  const scope = await getMailScope(c);
+  const empty = { rows: [], counts: { sent: 0, failed: 0, pending: 0 }, hasMore: false };
+  if (!isMailAdmin(c.get("user")) && scope.addresses.length === 0) return c.json(empty);
+  c.header("Cache-Control", "no-store");
+
+  const status = (c.req.query("status") || "").trim().toLowerCase();
+  const q = (c.req.query("q") || "").trim().toLowerCase();
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") || "60", 10) || 60, 1), 200);
+  const offset = Math.max(parseInt(c.req.query("offset") || "0", 10) || 0, 0);
+
+  try {
+    const where: string[] = [];
+    const binds: (string | number)[] = [];
+    if (status && OUTBOX_STATUSES.includes(status)) {
+      where.push("status = ?");
+      binds.push(status);
+    }
+    if (q) {
+      where.push("(LOWER(to_address) LIKE ? OR LOWER(subject) LIKE ?)");
+      const like = `%${q}%`;
+      binds.push(like, like);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const res = await c.env.DB.prepare(
+      `SELECT id, to_address, subject, status, attempts, last_error,
+              sent_at, created_at, body_text, body_html
+         FROM email_outbox ${whereSql}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?`,
+    )
+      .bind(...binds, limit, offset)
+      .all<OutboxRow>();
+
+    const rows = (res.results ?? []).map((r) => ({
+      id: r.id,
+      toAddress: r.to_address ?? "",
+      subject: r.subject ?? "(no subject)",
+      status: (r.status ?? "pending").toUpperCase(),
+      attempts: Number(r.attempts ?? 0),
+      lastError: r.last_error ?? null,
+      sentAt: r.sent_at ?? null,
+      createdAt: r.created_at ?? "",
+      snippet: outboxSnippet(r.body_text, r.body_html),
+      attachmentNames: [] as string[],
+    }));
+
+    // Status roll-up over the WHOLE log so the header can flag failures.
+    const counts = { sent: 0, failed: 0, pending: 0 };
+    const countRes = await c.env.DB.prepare(
+      `SELECT status, COUNT(*) AS n FROM email_outbox GROUP BY status`,
+    ).all<{ status: string; n: number | string }>();
+    for (const row of countRes.results ?? []) {
+      const s = String(row.status || "").toLowerCase();
+      const n = Number(row.n ?? 0);
+      if (s === "sent") counts.sent += n;
+      else if (s === "failed") counts.failed += n;
+      else counts.pending += n;
+    }
+
+    return c.json({ rows, counts, hasMore: rows.length === limit });
+  } catch (e) {
+    // email_outbox may be absent on a very old deploy — degrade to empty.
+    console.error("[mail-center] outbox read failed:", e);
+    return c.json(empty);
+  }
+});
+
+// GET /api/mail-center/outbox/:id — one auto-sent email incl. the full body.
+app.get("/outbox/:id", async (c) => {
+  const scope = await getMailScope(c);
+  if (!isMailAdmin(c.get("user")) && scope.addresses.length === 0) {
+    return c.json({ error: "not found" }, 404);
+  }
+  const id = c.req.param("id");
+  try {
+    const r = await c.env.DB.prepare(
+      `SELECT id, to_address, subject, status, attempts, last_error,
+              sent_at, created_at, body_text, body_html
+         FROM email_outbox WHERE id = ? LIMIT 1`,
+    )
+      .bind(id)
+      .first<OutboxRow>();
+    if (!r) return c.json({ error: "not found" }, 404);
+    return c.json({
+      id: r.id,
+      toAddress: r.to_address ?? "",
+      subject: r.subject ?? "(no subject)",
+      status: (r.status ?? "pending").toUpperCase(),
+      attempts: Number(r.attempts ?? 0),
+      lastError: r.last_error ?? null,
+      sentAt: r.sent_at ?? null,
+      createdAt: r.created_at ?? "",
+      bodyText: r.body_text ?? "",
+      bodyHtml: r.body_html ?? "",
+      attachmentNames: [] as string[],
+    });
+  } catch (e) {
+    console.error("[mail-center] outbox detail read failed:", e);
+    return c.json({ error: "not found" }, 404);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Label catalogue. Reads are open to any authenticated mailbox user (the
 // sidebar needs colours); create/edit/delete require a mailbox in scope — the
 // SAME gate as labelling a thread, NOT a permission key.
@@ -1452,8 +1588,9 @@ function escapeHtml(s: string): string {
 //
 // NOTE: sendEmail has no custom In-Reply-To / References header support, so this
 // reply is NOT RFC-threaded on the recipient's side for v1 — local threading is
-// still correct. Attachments are validated for the FE caps but sendEmail does
-// not forward attachments to Resend, so they are NOT delivered (FE flags this).
+// still correct. Attachments ARE now forwarded to Resend on the immediate send
+// (contentBase64 -> base64 content); they are not persisted to the outbox row,
+// so a drained retry would send body-only.
 app.post("/threads/:id/reply", async (c) => {
   const id = c.req.param("id");
   const scope = await getMailScope(c);
@@ -1526,6 +1663,10 @@ app.post("/threads/:id/reply", async (c) => {
     purpose: "generic",
     from: fromAddress || undefined,
     replyTo: fromAddress || undefined,
+    attachments: attachments.map((a) => ({
+      filename: a.filename,
+      content: a.contentBase64.replace(/^data:[^;]+;base64,/, ""),
+    })),
   });
   if (result.status !== "sent") {
     return c.json(
@@ -1639,6 +1780,10 @@ app.post("/compose", async (c) => {
     purpose: "generic",
     from: fromAddress || undefined,
     replyTo: fromAddress || undefined,
+    attachments: attachments.map((a) => ({
+      filename: a.filename,
+      content: a.contentBase64.replace(/^data:[^;]+;base64,/, ""),
+    })),
   });
   if (result.status !== "sent") {
     return c.json(

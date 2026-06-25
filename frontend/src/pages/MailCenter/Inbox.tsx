@@ -65,6 +65,11 @@ import {
   updateLabel,
   deleteLabel,
   createDeptMailbox,
+  fetchOutbox,
+  fetchOutboxDetail,
+  type OutboxRow,
+  type OutboxCounts,
+  type OutboxDetail,
 } from "./mail-actions";
 import {
   type MailLabel,
@@ -159,6 +164,11 @@ type Folder =
   | "inbox"
   | "starred"
   | "sent"
+  // Auto-sent system notices (the outbox_emails log) — Delivery Order /
+  // Invoice / CN / PO notices the system sends from a noreply sender, so there
+  // is no human "Sent" copy to read. Rendered by its own OutboxPanel, not the
+  // thread list.
+  | "autosent"
   | "archive"
   | "drafts"
   | "trash"
@@ -1134,6 +1144,19 @@ export function MailInbox() {
         </div>
       )}
 
+      {/* Search — at the TOP (Gmail-style), full-width above the 3-pane grid.
+          Was previously buried at the bottom of the left rail, below the whole
+          folder list. */}
+      <div className="relative max-w-md">
+        <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search mail…"
+          className="h-10 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+        />
+      </div>
+
       <div
         className={cn(
           "grid grid-cols-1 gap-4 md:grid-cols-[210px_minmax(0,1fr)]",
@@ -1173,6 +1196,8 @@ export function MailInbox() {
               onClick={() => { setFolder("starred"); setLabelFilter(null); }} />
             <FolderItem icon={Send} label="Sent" active={folder === "sent"}
               onClick={() => { setFolder("sent"); setLabelFilter(null); }} />
+            <FolderItem icon={Bell} label="Auto-sent" active={folder === "autosent"}
+              onClick={() => { setFolder("autosent"); setLabelFilter(null); }} />
             <FolderItem icon={Archive} label="Archive" active={folder === "archive"}
               onClick={() => { setFolder("archive"); setLabelFilter(null); }} />
             <FolderItem icon={FileText} label="Drafts" active={folder === "drafts"} badge={drafts.length} badgeTone="muted"
@@ -1279,19 +1304,19 @@ export function MailInbox() {
               </>
             )}
           </div>
-
-          {/* Search */}
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search mail…"
-              className="h-10 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
-            />
-          </div>
         </aside>
 
+        {/* MIDDLE+RIGHT — "Auto-sent" renders the read-only outbox panel across
+            the content area; every other folder keeps the thread list (+ the
+            split reading pane). The left rail stays mounted either way. */}
+        {folder === "autosent" ? (
+          // Only span cols 2-3 when the 3-col SPLIT grid is active; in the 2-col
+          // grid a col-span-2 has no col 3 to land in and would wrap the panel.
+          <div className={cn("min-w-0", splitView && "lg:col-span-2")}>
+            <OutboxPanel q={q} />
+          </div>
+        ) : (
+          <>
         {/* MIDDLE */}
         <div className="overflow-hidden rounded-xl border border-border bg-surface">
           {prefs.categoryTabs && folder !== "drafts" && (
@@ -1371,6 +1396,8 @@ export function MailInbox() {
             )}
           </div>
         )}
+          </>
+        )}
       </div>
 
       <LabelManagerDialog
@@ -1397,6 +1424,362 @@ export function MailInbox() {
 }
 
 export default MailInbox;
+
+// ── Auto-sent panel (outbox) ─────────────────────────────────────────────────
+// Read-only view of the system's auto-sent customer notices (Delivery Order
+// dispatched, Invoice, etc.) — the emails that go out from a noreply sender so
+// there is no human "Sent" copy to read. Lists the org's sent log newest-first
+// with a per-row status, and opens the full body (+ recipient / time / failure
+// reason / attachment names) in a modal. Data via fetchOutbox / fetchOutboxDetail.
+function outboxStatusTone(status: string): string {
+  switch (status.toUpperCase()) {
+    case "SENT":
+      return "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200";
+    case "FAILED":
+      return "bg-err-bg text-err ring-1 ring-inset ring-err/20";
+    default:
+      return "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200"; // PENDING
+  }
+}
+
+function outboxStatusLabel(status: string): string {
+  switch (status.toUpperCase()) {
+    case "SENT":
+      return "Sent";
+    case "FAILED":
+      return "Failed";
+    default:
+      return "Pending";
+  }
+}
+
+function fmtMailTime(iso: string | null): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  return new Date(t).toLocaleString();
+}
+
+function OutboxPanel({ q }: { q: string }) {
+  const [items, setItems] = useState<OutboxRow[]>([]);
+  const [counts, setCounts] = useState<OutboxCounts>({
+    sent: 0,
+    failed: 0,
+    pending: 0,
+  });
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>("");
+  const [reloadKey, setReloadKey] = useState(0);
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  const needle = q.trim();
+
+  useEffect(() => {
+    // No synchronous setState in the effect body — `loading` starts true for
+    // the first load; reloads flip it true in the trigger handlers (filter
+    // chip / refresh button).
+    let alive = true;
+    (async () => {
+      try {
+        const data = await fetchOutbox({
+          status: statusFilter || undefined,
+          q: needle || undefined,
+        });
+        if (!alive) return;
+        setErr(null);
+        setItems(Array.isArray(data.rows) ? data.rows : []);
+        if (data.counts) setCounts(data.counts);
+      } catch {
+        if (alive) {
+          setErr("Couldn't load sent emails.");
+          setItems([]);
+        }
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [statusFilter, needle, reloadKey]);
+
+  const filters: { v: string; l: string }[] = [
+    { v: "", l: "All" },
+    { v: "SENT", l: "Sent" },
+    { v: "FAILED", l: "Failed" },
+    { v: "PENDING", l: "Pending" },
+  ];
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-surface">
+      {/* Header + status roll-up */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-surface-dim/30 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <Bell className="h-4 w-4 text-accent" />
+          <div>
+            <p className="text-sm font-semibold leading-tight text-ink">
+              Auto-sent emails
+            </p>
+            <p className="text-[11px] text-ink-muted">
+              Notices the system sent to customers — Delivery Order, Invoice,
+              etc. (from noreply)
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 text-[11px]">
+          <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
+            {counts.sent} sent
+          </span>
+          {counts.failed > 0 && (
+            <span className="rounded-full bg-err-bg px-2 py-0.5 font-semibold text-err ring-1 ring-inset ring-err/20">
+              {counts.failed} failed
+            </span>
+          )}
+          {counts.pending > 0 && (
+            <span className="rounded-full bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 ring-1 ring-inset ring-amber-200">
+              {counts.pending} pending
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true);
+              setReloadKey((k) => k + 1);
+            }}
+            className="ml-1 rounded p-1 text-ink-muted transition hover:bg-surface-dim hover:text-ink"
+            title="Refresh"
+            aria-label="Refresh"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+          </button>
+        </div>
+      </div>
+
+      {/* Status filter chips */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-1.5">
+        {filters.map((f) => (
+          <button
+            key={f.v || "all"}
+            type="button"
+            onClick={() => {
+              if (statusFilter === f.v) return;
+              setLoading(true);
+              setStatusFilter(f.v);
+            }}
+            className={cn(
+              "rounded-full px-2.5 py-0.5 text-[11px] font-medium transition",
+              statusFilter === f.v
+                ? "bg-accent-soft text-accent-ink"
+                : "text-ink-muted hover:bg-surface-dim",
+            )}
+          >
+            {f.l}
+          </button>
+        ))}
+      </div>
+
+      {err && <div className="px-3 py-2 text-sm text-err">{err}</div>}
+
+      {loading && items.length === 0 ? (
+        <div className="px-4 py-10 text-center text-sm text-ink-muted">
+          Loading…
+        </div>
+      ) : items.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-10 text-center">
+          <Bell className="h-6 w-6 text-ink-muted/40" />
+          <p className="text-sm text-ink-muted">
+            No auto-sent emails {statusFilter || needle ? "in this filter" : "yet"}.
+          </p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-border">
+          {items.map((it) => (
+            <li key={it.id}>
+              <button
+                type="button"
+                onClick={() => setOpenId(it.id)}
+                className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-surface-dim/50"
+              >
+                <span
+                  className={cn(
+                    "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                    outboxStatusTone(it.status),
+                  )}
+                >
+                  {outboxStatusLabel(it.status)}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-medium text-ink">
+                      {it.toAddress || "(no recipient)"}
+                    </span>
+                    <span className="shrink-0 text-[11px] text-ink-muted">
+                      {fmtMailTime(it.sentAt || it.createdAt)}
+                    </span>
+                  </span>
+                  <span className="block truncate text-xs text-ink-muted">
+                    {it.subject}
+                    {it.snippet && (
+                      <span className="text-ink-muted/70">
+                        {" — "}
+                        {it.snippet}
+                      </span>
+                    )}
+                    {it.attachmentNames.length > 0 && (
+                      <span className="ml-1 text-ink-muted/70">
+                        · {it.attachmentNames.length} attachment
+                        {it.attachmentNames.length === 1 ? "" : "s"}
+                      </span>
+                    )}
+                  </span>
+                  {it.status === "FAILED" && it.lastError && (
+                    <span className="block truncate text-[11px] text-err">
+                      {it.lastError}
+                    </span>
+                  )}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {openId && (
+        <OutboxReaderModal id={openId} onClose={() => setOpenId(null)} />
+      )}
+    </div>
+  );
+}
+
+function OutboxReaderModal({
+  id,
+  onClose,
+}: {
+  id: string;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<OutboxDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // No synchronous setState in the effect body; `loading` starts true and the
+    // modal mounts once per id, so the fetch just flips it false when done.
+    let alive = true;
+    (async () => {
+      try {
+        const j = await fetchOutboxDetail(id);
+        if (alive && j) setData(j);
+      } catch {
+        /* leave data null — body shows "(no content)" */
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[300] flex items-center justify-center bg-ink/40 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Auto-sent email"
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-slab"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-3">
+          <div className="min-w-0">
+            <p className="truncate text-base font-semibold text-ink">
+              {data?.subject ?? "…"}
+            </p>
+            <p className="truncate text-xs text-ink-muted">
+              To: {data?.toAddress ?? ""}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded p-1 text-ink-muted transition hover:bg-surface-dim hover:text-ink"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {data && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-dim/20 px-5 py-2 text-xs">
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 font-semibold",
+                outboxStatusTone(data.status),
+              )}
+            >
+              {outboxStatusLabel(data.status)}
+            </span>
+            {data.sentAt ? (
+              <span className="text-ink-muted">Sent {fmtMailTime(data.sentAt)}</span>
+            ) : (
+              <span className="text-ink-muted">
+                Queued {fmtMailTime(data.createdAt)}
+              </span>
+            )}
+            {data.attempts > 0 && (
+              <span className="text-ink-muted">
+                · {data.attempts} attempt{data.attempts === 1 ? "" : "s"}
+              </span>
+            )}
+            {data.attachmentNames.length > 0 && (
+              <span className="text-ink-muted">
+                · {data.attachmentNames.join(", ")}
+              </span>
+            )}
+          </div>
+        )}
+
+        {data?.status === "FAILED" && data.lastError && (
+          <div className="border-b border-err/20 bg-err-bg px-5 py-2 text-xs text-err">
+            Error: {data.lastError}
+          </div>
+        )}
+
+        <div className="min-h-0 flex-1 overflow-auto">
+          {loading ? (
+            <div className="px-5 py-10 text-center text-sm text-ink-muted">
+              Loading…
+            </div>
+          ) : data?.bodyHtml ? (
+            // Sandboxed iframe — renders the exact email the customer received,
+            // with no script/same-origin access (own templates, but sandbox
+            // keeps it safe regardless).
+            <iframe
+              title="email body"
+              sandbox=""
+              className="h-[60vh] w-full border-0 bg-white"
+              srcDoc={data.bodyHtml}
+            />
+          ) : (
+            <pre className="whitespace-pre-wrap px-5 py-4 text-sm text-ink">
+              {data?.bodyText || "(no content)"}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── Category tabs ───────────────────────────────────────────────────────────
 function CategoryTabs({

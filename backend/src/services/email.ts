@@ -52,6 +52,10 @@ export interface SendOptions {
   // must be on the verified Resend domain to deliver. Bare address (no "<>") —
   // the company display name is added here.
   from?: string | null;
+  // Optional attachments forwarded to the provider on the IMMEDIATE send (Mail
+  // Center reply/compose). `content` is base64. NOT persisted to the outbox row
+  // (email_outbox has no attachment column), so a drained retry sends body-only.
+  attachments?: Array<{ filename: string; content: string }>;
 }
 
 export interface SendResult {
@@ -158,7 +162,7 @@ function stripHtml(html: string): string {
 // outbox drain. Returns 'sent' | 'error' (caller pre-checks channel + key).
 async function deliverViaResend(
   env: Env,
-  m: { to: string; subject: string; html: string; text?: string | null; replyTo?: string | null; from?: string | null },
+  m: { to: string; subject: string; html: string; text?: string | null; replyTo?: string | null; from?: string | null; attachments?: Array<{ filename: string; content: string }> | null },
 ): Promise<SendResult> {
   // From-name + fallback sender address come from the central Branding config
   // (company name + email) so the outbound identity tracks Settings, not a
@@ -203,6 +207,7 @@ async function deliverViaResend(
         html: m.html,
         text: m.text || stripHtml(m.html),
         ...(replyTo ? { reply_to: replyTo } : {}),
+        ...(m.attachments?.length ? { attachments: m.attachments } : {}),
       }),
     });
     if (!resp.ok) {
@@ -259,6 +264,7 @@ export async function sendEmail(env: Env, opts: SendOptions): Promise<SendResult
     text: opts.text,
     replyTo: opts.replyTo,
     from: opts.from,
+    attachments: opts.attachments,
   });
   try {
     if (result.status === "sent") {
