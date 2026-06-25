@@ -39,6 +39,8 @@ import {
   PackageOpen,
   Reply,
   Mail,
+  Network,
+  Building2,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -335,13 +337,23 @@ export const NAV_TABS: NavTab[] = [
   },
 
   // ══ SYSTEM ═══════════════════════════════════════════════════
+  // ── Team — header links to the Team Hub; chevron expands the sub-pages
+  // (which are tabs on the Team page). Mirrors the Supply Chain pattern.
   {
     section: "system",
-    to: "/team",
     label: "Team",
     icon: Users,
+    groupId: "team",
+    to: "/team?tab=hub",
     anyPerm: ["users.read", "roles.read"],
     pageAccess: "team",
+    children: [
+      { to: "/team?tab=members", label: "Members", icon: Users, perm: "users.read", pageAccess: "team" },
+      { to: "/team?tab=positions", label: "Positions", icon: ShieldCheck, perm: "users.manage", pageAccess: "team" },
+      { to: "/team?tab=orgchart", label: "Org Chart", icon: Network, perm: "users.read", pageAccess: "team" },
+      { to: "/team?tab=departments", label: "Departments", icon: Building2, perm: "users.read", pageAccess: "team" },
+      { to: "/team?tab=mail", label: "Mailboxes", icon: Mail, perm: "mail_center.manage", pageAccess: "team" },
+    ],
   },
   {
     section: "system",

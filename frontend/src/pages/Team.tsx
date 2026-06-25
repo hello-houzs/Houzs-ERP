@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, AtSign, ArrowLeft, SlidersHorizontal, Eye, EyeOff } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, AtSign, ArrowLeft, SlidersHorizontal, Eye, EyeOff, Users, ShieldCheck, Network, Building2, type LucideIcon } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -27,6 +27,7 @@ import { PositionsTab } from "./Positions";
 import { MailboxesTab } from "./MailboxesTab";
 
 type TeamTabValue =
+  | "hub"
   | "members"
   | "positions"
   | "roles"
@@ -35,6 +36,15 @@ type TeamTabValue =
   | "mail";
 
 const TEAM_KEYS = ["tab"] as const;
+
+// Icons for the Team Hub landing cards (keyed by tab value).
+const TEAM_HUB_ICON: Partial<Record<TeamTabValue, LucideIcon>> = {
+  members: Users,
+  positions: ShieldCheck,
+  orgchart: Network,
+  departments: Building2,
+  mail: Mail,
+};
 
 // One-click member segments (label + key). Shared by the Filters popover
 // and the active-filter pill row.
@@ -113,7 +123,7 @@ export function Team() {
   const raw = params.get("tab") as TeamTabValue | null;
   const active: TeamTabValue =
     raw &&
-    ["members", "positions", "roles", "orgchart", "departments", "mail"].includes(
+    ["hub", "members", "positions", "roles", "orgchart", "departments", "mail"].includes(
       raw,
     )
       ? raw
@@ -145,6 +155,11 @@ export function Team() {
     TeamTabValue,
     { eyebrow: string; title: string; description: string }
   > = {
+    hub: {
+      eyebrow: "System · Team",
+      title: "Team",
+      description: "Members, positions, org chart, departments and mailboxes — pick a section to manage.",
+    },
     members: {
       eyebrow: "Workspace · Members",
       title: "Members",
@@ -217,18 +232,45 @@ export function Team() {
 
   return (
     <div>
-      <TabStrip<TeamTabValue>
-        value={active}
-        onChange={setTab}
-        options={tabs}
-      />
+      {active !== "hub" && (
+        <TabStrip<TeamTabValue>
+          value={active}
+          onChange={setTab}
+          options={tabs}
+        />
+      )}
 
       <PageHeader
         eyebrow={TAB_HEADER[active].eyebrow}
         title={TAB_HEADER[active].title}
         description={TAB_HEADER[active].description}
-        actions={actions}
+        actions={active === "hub" ? undefined : actions}
       />
+
+      {active === "hub" && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {tabs
+            .filter((t) => t.show !== false)
+            .map((t) => {
+              const Icon = TEAM_HUB_ICON[t.value] ?? Users;
+              return (
+                <button
+                  key={t.value}
+                  onClick={() => setTab(t.value)}
+                  className="group flex flex-col gap-2.5 rounded-xl border border-border bg-surface p-4 text-left shadow-stone transition-all duration-150 hover:-translate-y-px hover:border-primary hover:shadow-slab"
+                >
+                  <span className="grid h-9 w-9 place-items-center rounded-lg bg-surface-2 text-ink-secondary transition-colors group-hover:bg-primary-soft group-hover:text-primary">
+                    <Icon size={17} />
+                  </span>
+                  <span className="text-[13px] font-bold text-ink">{t.label}</span>
+                  <span className="text-[11px] leading-snug text-ink-muted">
+                    {TAB_HEADER[t.value].description}
+                  </span>
+                </button>
+              );
+            })}
+        </div>
+      )}
 
       {active === "members" && canUsers && (
         <MembersTab
