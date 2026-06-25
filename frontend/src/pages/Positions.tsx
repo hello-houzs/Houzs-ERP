@@ -584,6 +584,16 @@ function PositionMatrixEditor({
   const renderNode = (page: PageDef, depth: number) => {
     const kids = childrenOf(page.key);
     const isCollapsed = collapsed.has(page.key);
+    // Does any descendant carry a grant? Used to flag a parent that is itself
+    // "none" but has sub-pages granted (so a collapsed area shows it's not empty).
+    let hasGrantedDescendant = false;
+    if (kids.length > 0) {
+      let frontier = kids;
+      while (frontier.length && !hasGrantedDescendant) {
+        if (frontier.some((k) => (levels[k.key] ?? "none") !== "none")) hasGrantedDescendant = true;
+        frontier = frontier.flatMap((k) => childrenOf(k.key));
+      }
+    }
     return (
       <div key={page.key} className={depth > 0 ? "mt-1" : ""}>
         <LevelRow
@@ -594,6 +604,7 @@ function PositionMatrixEditor({
           collapsible={kids.length > 0}
           collapsed={isCollapsed}
           onToggleCollapse={() => toggleGroup(page.key)}
+          mixed={kids.length > 0 && (levels[page.key] ?? "none") === "none" && hasGrantedDescendant}
           dense={depth > 0}
         />
         {kids.length > 0 && !isCollapsed && (
@@ -676,6 +687,7 @@ function LevelRow({
   collapsible,
   collapsed,
   onToggleCollapse,
+  mixed,
 }: {
   page: PageDef;
   level: AccessLevel;
@@ -685,27 +697,45 @@ function LevelRow({
   collapsible?: boolean;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  mixed?: boolean;
 }) {
   return (
     <div className="group -mx-1 flex items-center justify-between gap-2 rounded px-1 transition-colors hover:bg-accent-soft/40">
-      {/* Label + key on one line keeps each page to a single dense row */}
-      <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        {collapsible && (
+      {/* Label row. For groups the WHOLE label toggles collapse (not just the
+          tiny chevron), so each area is easy to fold individually. */}
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        {collapsible ? (
           <button
             type="button"
             onClick={onToggleCollapse}
-            title={collapsed ? "Expand sub-pages" : "Collapse sub-pages"}
-            className="-ml-0.5 shrink-0 self-center rounded p-0.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
+            title={collapsed ? "Expand this area" : "Collapse this area"}
+            className="-ml-0.5 flex min-w-0 flex-1 items-center gap-1 rounded py-0.5 text-left transition-colors hover:text-accent"
           >
-            {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+            {collapsed ? (
+              <ChevronRight size={14} className="shrink-0 text-ink-muted" />
+            ) : (
+              <ChevronDown size={14} className="shrink-0 text-ink-muted" />
+            )}
+            <span className={cn("truncate font-semibold text-ink transition-colors group-hover:text-accent", dense ? "text-[12.5px]" : "text-[13.5px]")}>
+              {page.label}
+            </span>
+            {mixed && (
+              <span
+                title="Some sub-pages here are granted (this area isn't blanket-granted)"
+                className="shrink-0 rounded-full bg-accent/15 px-1.5 py-px text-[8.5px] font-bold uppercase tracking-wide text-accent"
+              >
+                sub
+              </span>
+            )}
           </button>
+        ) : (
+          <span
+            title={page.key}
+            className={cn("truncate font-semibold text-ink transition-colors group-hover:font-bold group-hover:text-accent", dense ? "text-[12.5px]" : "text-[13.5px]")}
+          >
+            {page.label}
+          </span>
         )}
-        <span
-          title={page.key}
-          className={cn("truncate font-semibold text-ink transition-colors group-hover:font-bold group-hover:text-accent", dense ? "text-[12.5px]" : "text-[13.5px]")}
-        >
-          {page.label}
-        </span>
         {dirty && (
           <span className="shrink-0 rounded bg-warning-bg px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning-text">
             unsaved
