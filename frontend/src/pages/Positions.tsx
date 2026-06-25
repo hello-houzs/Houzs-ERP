@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Pencil, Trash2, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import { Button } from "../components/Button";
 import { Panel, PanelSection } from "../components/Panel";
 import { Skeleton } from "../components/Skeleton";
@@ -37,6 +37,13 @@ export function PositionsTab() {
   const positions = positionsQ.data?.positions ?? [];
   const selected = positions.find((p) => p.id === selectedId) ?? null;
 
+  const deptList = deptsQ.data?.departments ?? [];
+  const deptByName = useMemo(() => {
+    const m = new Map<string, Department>();
+    for (const d of deptList) m.set(d.name, d);
+    return m;
+  }, [deptList]);
+
   const byDept = useMemo(() => {
     const m = new Map<string, Position[]>();
     for (const p of positions) {
@@ -44,8 +51,91 @@ export function PositionsTab() {
       if (!m.has(d)) m.set(d, []);
       m.get(d)!.push(p);
     }
-    return Array.from(m.entries());
-  }, [positions]);
+    // Order the department groups by their saved sort_order (drag-reorderable),
+    // then name; positions inside each come back from the API already ordered.
+    const ord = (name: string) => deptByName.get(name)?.sort_order ?? 9999;
+    return Array.from(m.entries()).sort(
+      (a, b) => ord(a[0]) - ord(b[0]) || a[0].localeCompare(b[0]),
+    );
+  }, [positions, deptByName]);
+
+  // ── Drag-and-drop reordering (Super Admin) ──────────────────
+  const [drag, setDrag] = useState<{ kind: "pos" | "dept"; id?: number; dept: string } | null>(null);
+  const [dragOverKey, setDragOverKey] = useState<string | null>(null);
+
+  async function persistPositions(
+    updates: { id: number; sort_order: number; department_id?: number | null }[],
+  ) {
+    try {
+      await Promise.all(
+        updates.map((u) =>
+          api.patch(`/api/positions/${u.id}`, {
+            sort_order: u.sort_order,
+            ...(u.department_id !== undefined ? { department_id: u.department_id } : {}),
+          }),
+        ),
+      );
+    } catch (e: any) {
+      toast.error(e?.message || "Reorder failed");
+    } finally {
+      positionsQ.reload();
+    }
+  }
+
+  function dropOnPosition(target: Position) {
+    const d = drag;
+    setDrag(null);
+    setDragOverKey(null);
+    if (!d || d.kind !== "pos" || d.id == null || d.id === target.id) return;
+    const dragged = positions.find((p) => p.id === d.id);
+    if (!dragged) return;
+    const targetDeptName = target.department_name ?? "No department";
+    const list = byDept.find(([name]) => name === targetDeptName)?.[1] ?? [];
+    const ids = list.filter((p) => p.id !== dragged.id).map((p) => p.id);
+    const at = ids.indexOf(target.id);
+    ids.splice(at < 0 ? ids.length : at, 0, dragged.id);
+    const targetDeptId = deptByName.get(targetDeptName)?.id ?? dragged.department_id ?? null;
+    persistPositions(
+      ids.map((id, i) => ({
+        id,
+        sort_order: (i + 1) * 10,
+        ...(id === dragged.id ? { department_id: targetDeptId } : {}),
+      })),
+    );
+  }
+
+  function dropOnDept(targetDeptName: string) {
+    const d = drag;
+    setDrag(null);
+    setDragOverKey(null);
+    if (!d) return;
+    if (d.kind === "pos" && d.id != null) {
+      // Move a position into this department (appended at the end).
+      const dragged = positions.find((p) => p.id === d.id);
+      if (!dragged || (dragged.department_name ?? "No department") === targetDeptName) return;
+      const list = byDept.find(([name]) => name === targetDeptName)?.[1] ?? [];
+      const targetDeptId = deptByName.get(targetDeptName)?.id ?? null;
+      persistPositions([
+        ...list.map((p, i) => ({ id: p.id, sort_order: (i + 1) * 10 })),
+        { id: dragged.id, sort_order: (list.length + 1) * 10, department_id: targetDeptId },
+      ]);
+    } else if (d.kind === "dept" && d.dept !== targetDeptName) {
+      const names = byDept.map(([n]) => n).filter((n) => n !== d.dept);
+      const at = names.indexOf(targetDeptName);
+      names.splice(at < 0 ? names.length : at, 0, d.dept);
+      const updates = names
+        .map((name, i) => ({ dep: deptByName.get(name), so: (i + 1) * 10 }))
+        .filter((x) => x.dep && x.dep.sort_order !== x.so);
+      if (updates.length === 0) return;
+      Promise.all(
+        updates.map((u) => api.patch(`/api/departments/${u.dep!.id}`, { sort_order: u.so })),
+      )
+        .then(() => {
+          deptsQ.reload();
+        })
+        .catch((e: any) => toast.error(e?.message || "Reorder failed"));
+    }
+  }
 
   async function deletePosition(p: Position) {
     if (p.member_count > 0) {
@@ -83,33 +173,83 @@ export function PositionsTab() {
           {byDept.map(([dept, list]) => {
             const collapsed = collapsedDepts.has(dept);
             return (
-            <div key={dept} className="break-inside-avoid">
-              <button
-                type="button"
-                onClick={() => toggleDept(dept)}
-                className="mb-1.5 flex w-full items-center gap-1 text-[13px] font-bold uppercase tracking-brand text-ink transition-colors hover:text-accent"
-              >
-                {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                <span className="truncate">{dept}</span>
-                <span className="ml-auto rounded bg-surface-dim px-1.5 text-[9px] font-semibold text-ink-muted">
-                  {list.length}
+            <div
+              key={dept}
+              className={cn(
+                "break-inside-avoid rounded",
+                dragOverKey === `dept:${dept}` && "ring-1 ring-accent ring-offset-1",
+              )}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOverKey(`dept:${dept}`);
+              }}
+              onDrop={() => dropOnDept(dept)}
+            >
+              <div className="mb-1.5 flex w-full items-center gap-1">
+                <span
+                  draggable
+                  onDragStart={() => setDrag({ kind: "dept", dept })}
+                  onDragEnd={() => {
+                    setDrag(null);
+                    setDragOverKey(null);
+                  }}
+                  title="Drag to reorder department"
+                  className="cursor-grab text-ink-muted/60 hover:text-accent active:cursor-grabbing"
+                >
+                  <GripVertical size={14} />
                 </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => toggleDept(dept)}
+                  className="flex flex-1 items-center gap-1 text-[13px] font-bold uppercase tracking-brand text-ink transition-colors hover:text-accent"
+                >
+                  {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                  <span className="truncate">{dept}</span>
+                  <span className="ml-auto rounded bg-surface-dim px-1.5 text-[9px] font-semibold text-ink-muted">
+                    {list.length}
+                  </span>
+                </button>
+              </div>
               {!collapsed && (
               <div className="space-y-0.5">
                 {list.map((p) => (
                   <div
                     key={p.id}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDragOverKey(`pos:${p.id}`);
+                    }}
+                    onDrop={(e) => {
+                      e.stopPropagation();
+                      dropOnPosition(p);
+                    }}
                     className={cn(
                       "group flex items-center gap-1 rounded-md border pr-1 transition-colors",
                       selectedId === p.id
                         ? "border-accent bg-accent-soft"
                         : "border-border bg-surface hover:border-accent/50",
+                      dragOverKey === `pos:${p.id}` && "ring-1 ring-accent",
                     )}
                   >
+                    <span
+                      draggable
+                      onDragStart={(e) => {
+                        e.stopPropagation();
+                        setDrag({ kind: "pos", id: p.id, dept });
+                      }}
+                      onDragEnd={() => {
+                        setDrag(null);
+                        setDragOverKey(null);
+                      }}
+                      title="Drag to reorder, or onto a department to move it"
+                      className="shrink-0 cursor-grab pl-1 text-ink-muted/40 transition-colors hover:text-accent active:cursor-grabbing"
+                    >
+                      <GripVertical size={12} />
+                    </span>
                     <button
                       onClick={() => setSelectedId(p.id)}
-                      className="flex min-w-0 flex-1 items-center justify-between gap-2 px-3 py-1.5 text-left text-[12px]"
+                      className="flex min-w-0 flex-1 items-center justify-between gap-2 py-1.5 pr-2 text-left text-[12px]"
                     >
                       <span
                         className={cn(
