@@ -24,6 +24,7 @@ import {
 } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
+import { resolveSalesScopeIds } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 import { signSoItemPhotoUrl, soItemPhotoBindings } from '../lib/r2';
 import {
@@ -216,7 +217,11 @@ const snapshotUnitCostSen = async (
 
 consignmentOrders.get('/', async (c) => {
   const sb = c.get('supabase');
+  const user = c.get('user');
+  // Row-level "own / subordinates" scope — see lib/salesScope.ts.
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, user.id);
   let q = sb.from('consignment_sales_orders').select(HEADER).order('so_date', { ascending: false }).limit(500);
+  if (scopeIds) q = q.in('salesperson_id', scopeIds);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const debtor = c.req.query('debtor'); if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
   const { data, error } = await q;

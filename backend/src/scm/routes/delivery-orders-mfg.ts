@@ -21,6 +21,7 @@ import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { computeVariantKey, isServiceLine, type VariantAttrs } from '../shared';
 import { syncSoDeliveredFromDo } from '../lib/so-delivery-sync';
 import { paginateAll } from '../lib/paginate-all';
+import { resolveSalesScopeIds } from '../lib/salesScope';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-availability';
 import { findSofaLinesWithoutCompleteBatch, sofaNoCompleteBatchResponse, findIncompleteSofaSets, sofaIncompleteSetResponse } from '../lib/sofa-batch-guard';
@@ -1239,7 +1240,11 @@ async function soRemainingByItemId(
 // ── List ────────────────────────────────────────────────────────────────
 deliveryOrdersMfg.get('/', async (c) => {
   const sb = c.get('supabase');
+  const user = c.get('user');
+  // Row-level "own / subordinates" scope — see lib/salesScope.ts.
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, user.id);
   let q = sb.from('delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
+  if (scopeIds) q = q.in('salesperson_id', scopeIds);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
