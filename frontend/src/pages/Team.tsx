@@ -154,7 +154,7 @@ export function Team() {
       eyebrow: "Workspace · Access by Position",
       title: "Positions",
       description:
-        "Set which pages each position can see (none / view / edit / full). This drives the menu and blocks direct-URL access — a member only ever sees their position's pages.",
+        "Set which pages each position can see (none / view / edit / full) — this drives the menu and blocks direct-URL access.",
     },
     orgchart: {
       eyebrow: "Workspace · Hierarchy",
@@ -3831,7 +3831,16 @@ export function InvitePanel({
     const preview = roles.find(
       (r) => r.name.trim().toLowerCase() === "position preview",
     );
-    const defaultRole = preview || roles.find((r) => !r.is_system) || roles[0];
+    // Prefer the neutral "Position Preview" role; else ANY zero-permission
+    // non-system role (so the invitee's access comes purely from their
+    // position); only then fall back to the first non-system role. Without the
+    // zero-perm guard the alphabetically-first non-system role (e.g. "BD Exec",
+    // which carries users.manage) was auto-assigned to every invitee.
+    const defaultRole =
+      preview ||
+      roles.find((r) => !r.is_system && (r.permissions?.length ?? 0) === 0) ||
+      roles.find((r) => !r.is_system) ||
+      roles[0];
     setRoleId(defaultRole.id);
   }, [roles, roleId]);
 

@@ -9,10 +9,26 @@ const installListeners = new Set<(canInstall: boolean) => void>();
 const onlineListeners = new Set<(online: boolean) => void>();
 
 export function registerPwa() {
-  // SW registration. Skipped when running on http (e.g. local dev
-  // without https) — service workers require a secure context except
-  // for localhost.
-  if ("serviceWorker" in navigator) {
+  // DEV: never run a service worker. On localhost the SW caches the vite
+  // module graph cache-first, so edits "don't show" after a refresh until the
+  // SW + caches are cleared by hand. Tear down any SW a previous prod/PWA visit
+  // left registered, and wipe its caches.
+  if (import.meta.env.DEV) {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .getRegistrations()
+        .then((regs) => regs.forEach((r) => r.unregister()))
+        .catch(() => {});
+    }
+    if (typeof caches !== "undefined") {
+      caches
+        .keys()
+        .then((keys) => keys.forEach((k) => caches.delete(k)))
+        .catch(() => {});
+    }
+  } else if ("serviceWorker" in navigator) {
+    // PROD: register the SW (secure-context only; localhost is exempt but dev
+    // is handled above).
     window.addEventListener("load", () => {
       navigator.serviceWorker
         .register("/sw.js")

@@ -235,9 +235,9 @@ export default function App() {
         <Route
           path="/system-health"
           element={
-            <Guard perm="*">
+            <PageGuard page="system_health">
               <SystemHealth />
-            </Guard>
+            </PageGuard>
           }
         />
         <Route

@@ -273,7 +273,7 @@ export const PAGES: PageDef[] = [
   // on scm.access, NOT on these keys), so legacy roles are unaffected.
   {
     key: "scm",
-    label: "Supply Chain",
+    label: "Supply Chain Management",
     partialMeaning: "Pick which Supply Chain areas this position can access.",
     supportsPartial: true,
     backfill: (p) => (isOwner(p) ? "full" : "none"),
@@ -288,7 +288,7 @@ export const PAGES: PageDef[] = [
   {
     key: "scm.sales",
     parent: "scm",
-    label: "Sales Orders / Delivery / Invoices / Returns",
+    label: "Sales",
     partialMeaning: "View the sales-side documents; write gating is per-route (later).",
     supportsPartial: true,
     backfill: (p) => (isOwner(p) ? "full" : "none"),
@@ -328,8 +328,7 @@ export const PAGES: PageDef[] = [
   {
     key: "scm.procurement",
     parent: "scm",
-    label:
-      "Products & Maintenance / Suppliers / MRP / Purchase Orders / Goods Receipt / Purchase Invoices / Purchase Returns",
+    label: "Procurement",
     partialMeaning: "View the procurement-side documents; write gating is per-route (later).",
     supportsPartial: true,
     backfill: (p) => (isOwner(p) ? "full" : "none"),
@@ -449,7 +448,7 @@ export const PAGES: PageDef[] = [
   {
     key: "scm.transportation",
     parent: "scm",
-    label: "Transportation / Drivers",
+    label: "Transportation",
     partialMeaning: "View the transportation pages; write gating is per-route (later).",
     supportsPartial: true,
     backfill: (p) => (isOwner(p) ? "full" : "none"),
@@ -465,7 +464,7 @@ export const PAGES: PageDef[] = [
   {
     key: "scm.warehouse",
     parent: "scm",
-    label: "Inventory / Adjustments / Transfers / Stock Take",
+    label: "Warehouse",
     partialMeaning: "View the warehouse pages; write gating is per-route (later).",
     supportsPartial: true,
     backfill: (p) => (isOwner(p) ? "full" : "none"),
@@ -507,7 +506,7 @@ export const PAGES: PageDef[] = [
   {
     key: "scm.finance",
     parent: "scm",
-    label: "Accounting / Outstanding",
+    label: "Finance",
     partialMeaning: "View the SCM finance pages; write gating is per-route (later).",
     supportsPartial: true,
     backfill: (p) => (isOwner(p) ? "full" : "none"),
@@ -526,6 +525,18 @@ export const PAGES: PageDef[] = [
     label: "Outstanding",
     partialMeaning: "View only; write gating is per-route (later).",
     supportsPartial: true,
+    backfill: (p) => (isOwner(p) ? "full" : "none"),
+  },
+
+  // ── System Health (infra health + org-wide audit trail) ─────
+  // High-privilege admin page (was Owner-only). Now configurable per position
+  // so an IT/ops position can be granted it; default stays Owner-only via the
+  // backfill (no role row → only `*` resolves to full).
+  {
+    key: "system_health",
+    label: "System Health",
+    partialMeaning: "(not used; full or none)",
+    supportsPartial: false,
     backfill: (p) => (isOwner(p) ? "full" : "none"),
   },
 ];

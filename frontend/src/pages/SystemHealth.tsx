@@ -232,7 +232,7 @@ export function SystemHealth() {
       <PageHeader
         eyebrow="System · Health"
         title="System Health"
-        description="Live database and connection health, plus the audit trail of who changed what. Owner-only."
+        description="Live database and connection health, plus the audit trail of who changed what. Restricted to positions granted System Health access."
         actions={
           <Button
             variant="secondary"

@@ -143,6 +143,10 @@ interface PageHeaderProps {
   secondaryActions?: MenuItem[];
   /** Optional small label rendered above the title — e.g. section name. */
   eyebrow?: string;
+  /** Tightens the header's bottom margin/padding for dense pages (e.g. the
+   *  Calendar, where the grid should sit high). Default keeps the roomy
+   *  spacing every other page uses. */
+  dense?: boolean;
 }
 
 export function PageHeader({
@@ -152,13 +156,20 @@ export function PageHeader({
   primaryAction,
   secondaryActions,
   eyebrow,
+  dense,
 }: PageHeaderProps) {
   const secondary = secondaryActions ?? [];
   const hasSecondary = secondary.length > 0;
   const hasActions = !!actions || !!primaryAction || hasSecondary;
 
   return (
-    <div className="mb-4 flex flex-col gap-3 border-b border-border pb-3 sm:mb-8 sm:gap-3 sm:pb-6 md:flex-row md:items-end md:justify-between">
+    <div
+      className={
+        dense
+          ? "mb-3 flex flex-col gap-2 border-b border-border pb-2 sm:mb-4 sm:pb-3 md:flex-row md:items-end md:justify-between"
+          : "mb-4 flex flex-col gap-3 border-b border-border pb-3 sm:mb-8 sm:gap-3 sm:pb-6 md:flex-row md:items-end md:justify-between"
+      }
+    >
       <div className="min-w-0">
         {eyebrow && (
           <div className="mb-1.5 flex items-center gap-2 sm:mb-2">
