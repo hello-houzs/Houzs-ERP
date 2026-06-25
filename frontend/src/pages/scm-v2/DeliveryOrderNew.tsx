@@ -22,6 +22,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
+import { DateField } from '../../vendor/scm/components/DateField';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import {
   useCreateMfgDeliveryOrder, useAddDeliveryOrderPayment,
@@ -454,8 +455,8 @@ export const DeliveryOrderNew = () => {
           <div className={styles.formGrid4}>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>DO Date</span>
-              <input type="date" className={styles.fieldInput} value={doDate}
-                onChange={(e) => setDoDate(e.target.value)} />
+              <DateField fullWidth className={styles.fieldInput} value={doDate ?? ''}
+                onChange={(iso) => setDoDate(iso)} />
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Driver</span>
@@ -494,11 +495,11 @@ export const DeliveryOrderNew = () => {
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Expected Delivery</span>
-              <input type="date" className={styles.fieldInput} value={expectedDeliveryAt} onChange={(e) => setExpectedDeliveryAt(e.target.value)} />
+              <DateField fullWidth className={styles.fieldInput} value={expectedDeliveryAt ?? ''} onChange={(iso) => setExpectedDeliveryAt(iso)} />
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Customer Delivery Date</span>
-              <input type="date" className={styles.fieldInput} value={customerDeliveryDate} onChange={(e) => setCustomerDeliveryDate(e.target.value)} />
+              <DateField fullWidth className={styles.fieldInput} value={customerDeliveryDate ?? ''} onChange={(iso) => setCustomerDeliveryDate(iso)} />
             </label>
             <label className={styles.field} style={{ gridColumn: 'span 2' }}>
               <span className={styles.fieldLabel}>Note</span>

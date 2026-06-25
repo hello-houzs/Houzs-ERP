@@ -65,6 +65,8 @@ const buildColumns = (): DataGridColumn<PrRow>[] => [
     key: 'return_number', label: 'Return No.', width: 150, sortable: true,
     accessor: (r) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{r.return_number}</span>,
     searchValue: (r) => r.return_number,
+    /* Accessor is JSX → export the raw doc-no string or the cell exports blank. */
+    exportValue: (r) => r.return_number,
     sortFn: (a, b) => a.return_number.localeCompare(b.return_number),
   },
   {
@@ -79,6 +81,8 @@ const buildColumns = (): DataGridColumn<PrRow>[] => [
     key: 'receive_number', label: 'Transfer From (Receive)', width: 170, sortable: true, groupable: true,
     accessor: (r) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{r.pc_receive?.receive_number ?? '—'}</span>,
     searchValue: (r) => r.pc_receive?.receive_number ?? '',
+    /* Accessor is JSX → export the source receive doc-no string. */
+    exportValue: (r) => r.pc_receive?.receive_number ?? '',
     groupValue: (r) => r.pc_receive?.receive_number ?? '(none)',
   },
   {
@@ -96,6 +100,8 @@ const buildColumns = (): DataGridColumn<PrRow>[] => [
       </span>
     ),
     searchValue: (r) => fmtMoney(Number(r.refund_centi ?? 0)),
+    /* Accessor is JSX → export the NUMBER in ringgit so Excel can SUM it. */
+    exportValue: (r) => Number(r.refund_centi ?? 0) / 100,
     sortFn: (a, b) => Number(a.refund_centi ?? 0) - Number(b.refund_centi ?? 0),
   },
   {
@@ -106,6 +112,8 @@ const buildColumns = (): DataGridColumn<PrRow>[] => [
       </span>
     ),
     searchValue: (r) => STATUS_LABEL[r.status] ?? r.status.replace('_', ' '),
+    /* Accessor is JSX → export the human status label, not blank. */
+    exportValue: (r) => STATUS_LABEL[r.status] ?? r.status.replace(/_/g, ' '),
     groupValue: (r) => STATUS_LABEL[r.status] ?? r.status,
     sortFn: (a, b) => a.status.localeCompare(b.status),
   },
@@ -289,6 +297,7 @@ export const PurchaseConsignmentReturns = () => {
         rows={rows}
         columns={columns}
         storageKey={PCT_LIST_STORAGE_KEY}
+        exportName="Purchase Consignment Returns"
         rowKey={(r) => r.id}
         searchPlaceholder="Search returns…"
         groupBanner={false}

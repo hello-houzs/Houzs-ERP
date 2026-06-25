@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
+import { DateField } from '../../vendor/scm/components/DateField';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -818,13 +819,13 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
           <div className={styles.formGrid4}>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Invoice Date</span>
-              <input type="date" className={styles.fieldInput} value={form.invoiceDate}
-                disabled={inputsDisabled} onChange={(e) => set('invoiceDate', e.target.value)} />
+              <DateField className={styles.fieldInput} fullWidth value={form.invoiceDate ?? ''}
+                disabled={inputsDisabled} onChange={(iso) => set('invoiceDate', iso)} />
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Due Date</span>
-              <input type="date" className={styles.fieldInput} value={form.dueDate}
-                disabled={inputsDisabled} onChange={(e) => set('dueDate', e.target.value)} />
+              <DateField className={styles.fieldInput} fullWidth value={form.dueDate ?? ''}
+                disabled={inputsDisabled} onChange={(iso) => set('dueDate', iso)} />
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Building Type</span>

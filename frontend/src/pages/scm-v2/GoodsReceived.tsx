@@ -16,8 +16,10 @@
 
 import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, ArrowRightLeft } from 'lucide-react';
+import { Plus, ArrowRightLeft, Printer } from 'lucide-react';
 import { Button } from '@2990s/design-system';
+import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
+import { useChoice } from '../../vendor/scm/components/ChoiceDialog';
 import {
   useGrns,
   usePurchaseReturnFromGrn,
@@ -69,6 +71,8 @@ const buildGrnColumns = (): DataGridColumn<GrnRow>[] => [
     key: 'grn_number', label: 'GRN No.', width: 150, sortable: true,
     accessor: (g) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{g.grn_number}</span>,
     searchValue: (g) => g.grn_number,
+    // accessor is JSX → export the raw GRN-no string so GRN No. isn't blank.
+    exportValue: (g) => g.grn_number,
     sortFn: (a, b) => a.grn_number.localeCompare(b.grn_number),
   },
   {
@@ -84,6 +88,8 @@ const buildGrnColumns = (): DataGridColumn<GrnRow>[] => [
     accessor: (g) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{g.purchase_order?.po_number ?? '—'}</span>,
     searchValue: (g) => g.purchase_order?.po_number ?? '',
     groupValue: (g) => g.purchase_order?.po_number ?? '(none)',
+    // accessor is JSX → export the source PO doc-no string.
+    exportValue: (g) => g.purchase_order?.po_number ?? '—',
   },
   {
     key: 'received_at', label: 'Received Date', width: 120, sortable: true,
@@ -105,6 +111,8 @@ const buildGrnColumns = (): DataGridColumn<GrnRow>[] => [
       </span>
     ),
     searchValue: (g) => fmtMoney(Number(g.total_centi ?? 0), g.currency),
+    // accessor is JSX money → export the NUMBER (currency units) so Excel SUMs it.
+    exportValue: (g) => Number(g.total_centi ?? 0) / 100,
     sortFn: (a, b) => Number(a.total_centi ?? 0) - Number(b.total_centi ?? 0),
   },
   {
@@ -112,6 +120,8 @@ const buildGrnColumns = (): DataGridColumn<GrnRow>[] => [
     accessor: (g) => <StatusPill docType="grn" status={g.status} />,
     searchValue: (g) => statusLabel('grn', g.status),
     groupValue: (g) => statusLabel('grn', g.status),
+    // accessor is a <StatusPill> JSX → export the plain status label text.
+    exportValue: (g) => statusLabel('grn', g.status),
     sortFn: (a, b) => a.status.localeCompare(b.status),
   },
 ];
@@ -258,6 +268,10 @@ export const GoodsReceived = () => {
   const navigate = useNavigate();
   const askConfirm = useConfirm();
   const notify = useNotify();
+  const askChoice = useChoice();
+  // Multi-select state — batch "Export PDF" (one combined or N separate files).
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = searchParams.get('status') ?? 'all';
   const setStatusChip = (s: string) => {
@@ -295,6 +309,53 @@ export const GoodsReceived = () => {
     cancelGrn.mutate(g.id, {
       onError: (e) => notify({ title: 'Cancel failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }),
     });
+  };
+
+  /* Batch "Export PDF" — fetch each selected GRN's full detail (the same
+     /grns/:id endpoint useGrnDetail reads: returns { grn, items }; the grn
+     header carries supplier + purchase_order the generator needs) and render
+     into one combined file or N separate files (operator picks via useChoice). */
+  const fetchGrnBundle = async (id: string): Promise<{ header: unknown; items: unknown[] }> => {
+    const res = await authedFetch<{ grn: unknown; items: unknown[] }>(`/grns/${id}`);
+    return { header: res.grn, items: res.items ?? [] };
+  };
+
+  const exportSelected = async () => {
+    const selectedRows = rows.filter((g) => sel.has(g.id));
+    if (selectedRows.length === 0 || exporting) return;
+    try {
+      if (selectedRows.length === 1) {
+        setExporting(true);
+        const bundle = await fetchGrnBundle(selectedRows[0]!.id);
+        const { generateGrnPdf } = await import('../../vendor/scm/lib/grn-pdf');
+        await generateGrnPdf(bundle.header as never, bundle.items as never);
+        return;
+      }
+      const how = await askChoice({
+        title: `Download ${selectedRows.length} documents`,
+        options: [
+          { value: 'one', label: 'One combined PDF' },
+          { value: 'many', label: 'Separate files', detail: 'One PDF per document' },
+        ],
+      });
+      if (how == null) return;
+      setExporting(true);
+      const bundles: Array<{ header: unknown; items: unknown[] }> = [];
+      for (const g of selectedRows) bundles.push(await fetchGrnBundle(g.id));
+      if (how === 'one') {
+        const { generateCombinedGrnPdf } = await import('../../vendor/scm/lib/grn-pdf');
+        await generateCombinedGrnPdf(bundles as never, {
+          fileName: `goods-received-${new Date().toISOString().slice(0, 10)}.pdf`,
+        });
+      } else {
+        const { generateGrnPdf } = await import('../../vendor/scm/lib/grn-pdf');
+        for (const b of bundles) await generateGrnPdf(b.header as never, b.items as never);
+      }
+    } catch (e) {
+      notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -342,12 +403,42 @@ export const GoodsReceived = () => {
         ))}
       </div>
 
+      {/* Batch action bar — shown only when rows are selected (mirrors the PO list). */}
+      {sel.size > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          gap: 'var(--space-3)',
+        }}>
+          <span style={{ fontWeight: 600, color: 'var(--c-burnt)' }}>{sel.size} selected</span>
+          <span style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+            <Button variant="ghost" size="sm" onClick={() => setSel(new Set())}>Clear</Button>
+            <Button variant="ghost" size="sm" onClick={() => void exportSelected()} disabled={exporting}>
+              <Printer size={14} strokeWidth={1.75} />
+              <span>{exporting ? 'Preparing…' : `Export PDF (${sel.size})`}</span>
+            </Button>
+          </span>
+        </div>
+      )}
+
       <DataGrid<GrnRow>
         rows={rows}
         columns={columns}
         storageKey={GRN_LIST_STORAGE_KEY}
         exportName="Goods Received"
         rowKey={(g) => g.id}
+        selectable={{
+          selectedKeys: sel,
+          onToggle: (k) => setSel((p) => { const n = new Set(p); if (n.has(k)) n.delete(k); else n.add(k); return n; }),
+          onToggleAll: (keys, allSel) => setSel((p) => {
+            const n = new Set(p);
+            if (allSel) { for (const k of keys) n.delete(k); } else { for (const k of keys) n.add(k); }
+            return n;
+          }),
+        }}
         searchPlaceholder="Search GRNs…"
         groupBanner={false}
         /* Open on DOUBLE-click; right-click → context menu (mirrors the PO list). */

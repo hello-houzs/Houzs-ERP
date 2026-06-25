@@ -23,6 +23,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
+import { DateField } from '../../vendor/scm/components/DateField';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import {
   useCreateSalesInvoice, useAddSalesInvoicePayment,
@@ -451,11 +452,11 @@ export const SalesInvoiceNew = () => {
           <div className={styles.formGrid4}>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Invoice Date</span>
-              <input type="date" className={styles.fieldInput} value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
+              <DateField className={styles.fieldInput} fullWidth value={invoiceDate ?? ''} onChange={(iso) => setInvoiceDate(iso)} />
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Due Date</span>
-              <input type="date" className={styles.fieldInput} value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+              <DateField className={styles.fieldInput} fullWidth value={dueDate ?? ''} onChange={(iso) => setDueDate(iso)} />
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Building Type</span>

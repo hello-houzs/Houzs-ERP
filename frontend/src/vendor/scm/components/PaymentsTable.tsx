@@ -31,6 +31,7 @@ import { sortByText } from '../lib/sort-options';
 import { fetchPaymentSlipUrl, scanPaymentReceipt, type SlipUrlResponse } from '../lib/slip';
 import { SlipUploadField } from './SlipUploadField';
 import { MoneyInput } from './MoneyInput';
+import { DateField } from './DateField';
 import { useNotify } from './NotifyDialog';
 import { useConfirm } from './ConfirmDialog';
 import { todayMyt } from '../lib/dates';
@@ -764,12 +765,11 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
             {drafts.map((d) => (
               <div className={paymentsStyles.row} key={d.uid}>
                 <span className={paymentsStyles.cell} data-label="Date">
-                  <input
-                    type="date"
+                  <DateField
                     className={paymentsStyles.inlineInput}
-                    value={d.paidAt}
+                    value={d.paidAt ?? ''}
                     disabled={locked}
-                    onChange={(e) => patchDraft(d.uid, { paidAt: e.target.value })}
+                    onChange={(iso) => patchDraft(d.uid, { paidAt: iso })}
                   />
                 </span>
                 <span className={paymentsStyles.cell} data-label="Method" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>

@@ -61,6 +61,8 @@ const buildColumns = (): DataGridColumn<GrnRow>[] => [
     key: 'receive_number', label: 'Receive No.', width: 150, sortable: true,
     accessor: (g) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{g.receive_number}</span>,
     searchValue: (g) => g.receive_number,
+    /* Accessor is JSX → export the raw doc-no string or the cell exports blank. */
+    exportValue: (g) => g.receive_number,
     sortFn: (a, b) => a.receive_number.localeCompare(b.receive_number),
   },
   {
@@ -75,6 +77,8 @@ const buildColumns = (): DataGridColumn<GrnRow>[] => [
     key: 'pc_number', label: 'Transfer From (Order)', width: 160, sortable: true, groupable: true,
     accessor: (g) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{g.purchase_consignment_order?.pc_number ?? '—'}</span>,
     searchValue: (g) => g.purchase_consignment_order?.pc_number ?? '',
+    /* Accessor is JSX → export the source order doc-no string. */
+    exportValue: (g) => g.purchase_consignment_order?.pc_number ?? '',
     groupValue: (g) => g.purchase_consignment_order?.pc_number ?? '(none)',
   },
   {
@@ -97,12 +101,16 @@ const buildColumns = (): DataGridColumn<GrnRow>[] => [
       </span>
     ),
     searchValue: (g) => fmtMoney(Number(g.total_centi ?? 0), g.currency),
+    /* Accessor is JSX → export the NUMBER in ringgit so Excel can SUM it. */
+    exportValue: (g) => Number(g.total_centi ?? 0) / 100,
     sortFn: (a, b) => Number(a.total_centi ?? 0) - Number(b.total_centi ?? 0),
   },
   {
     key: 'status', label: 'Status', width: 130, sortable: true, groupable: true,
     accessor: (g) => <StatusPill docType="grn" status={g.status} />,
     searchValue: (g) => statusLabel('grn', g.status),
+    /* Accessor is JSX → export the human status label, not blank. */
+    exportValue: (g) => statusLabel('grn', g.status),
     groupValue: (g) => statusLabel('grn', g.status),
     sortFn: (a, b) => a.status.localeCompare(b.status),
   },
@@ -303,6 +311,7 @@ export const PurchaseConsignmentReceives = () => {
         rows={rows}
         columns={columns}
         storageKey={PCR_LIST_STORAGE_KEY}
+        exportName="Purchase Consignment Receives"
         rowKey={(g) => g.id}
         searchPlaceholder="Search receives…"
         groupBanner={false}

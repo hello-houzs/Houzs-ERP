@@ -9,9 +9,9 @@
 // routes to /grns). A manual New Return page exists at /purchase-returns/new.
 // ----------------------------------------------------------------------------
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Undo2, ArrowRightLeft } from 'lucide-react';
+import { Plus, Undo2, ArrowRightLeft, Printer } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { usePurchaseReturns, useCancelPurchaseReturn, usePurchaseReturnDetail } from '../../vendor/scm/lib/purchase-return-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
@@ -19,6 +19,8 @@ import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import { statusLabel } from '../../vendor/scm/lib/status-pill';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { useChoice } from '../../vendor/scm/components/ChoiceDialog';
+import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
 import { fmtDateOrDash, buildVariantSummary } from '@2990s/shared';
 import styles from './Suppliers.module.css';
 
@@ -52,6 +54,8 @@ const buildPrColumns = (): DataGridColumn<PrRow>[] => [
     key: 'return_number', label: 'Return No.', width: 150, sortable: true,
     accessor: (r) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{r.return_number}</span>,
     searchValue: (r) => r.return_number,
+    // accessor is JSX → export the raw return-no string so Return No. isn't blank.
+    exportValue: (r) => r.return_number,
     sortFn: (a, b) => a.return_number.localeCompare(b.return_number),
   },
   {
@@ -67,6 +71,8 @@ const buildPrColumns = (): DataGridColumn<PrRow>[] => [
     accessor: (r) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{r.grn?.grn_number ?? '—'}</span>,
     searchValue: (r) => r.grn?.grn_number ?? '',
     groupValue: (r) => r.grn?.grn_number ?? '(none)',
+    // accessor is JSX → export the source GRN doc-no string.
+    exportValue: (r) => r.grn?.grn_number ?? '—',
   },
   {
     key: 'return_date', label: 'Return Date', width: 120, sortable: true,
@@ -83,6 +89,8 @@ const buildPrColumns = (): DataGridColumn<PrRow>[] => [
       </span>
     ),
     searchValue: (r) => fmtMoney(Number(r.refund_centi ?? 0)),
+    // accessor is JSX money → export the NUMBER (ringgit) so Excel SUMs it.
+    exportValue: (r) => Number(r.refund_centi ?? 0) / 100,
     sortFn: (a, b) => Number(a.refund_centi ?? 0) - Number(b.refund_centi ?? 0),
   },
   {
@@ -90,6 +98,8 @@ const buildPrColumns = (): DataGridColumn<PrRow>[] => [
     accessor: (r) => <StatusPill docType="pr" status={r.status} />,
     searchValue: (r) => statusLabel('pr', r.status),
     groupValue: (r) => statusLabel('pr', r.status),
+    // accessor is a <StatusPill> JSX → export the plain status label text.
+    exportValue: (r) => statusLabel('pr', r.status),
     sortFn: (a, b) => a.status.localeCompare(b.status),
   },
 ];
@@ -198,6 +208,10 @@ export const PurchaseReturns = () => {
   const navigate = useNavigate();
   const askConfirm = useConfirm();
   const notify = useNotify();
+  const askChoice = useChoice();
+  // Multi-select state — batch "Export PDF" for N selected returns.
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = searchParams.get('status') ?? 'all';
   const setStatusChip = (s: string) => {
@@ -223,6 +237,64 @@ export const PurchaseReturns = () => {
     cancelPr.mutate(r.id, {
       onError: (e) => notify({ title: 'Cancel failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' }),
     });
+  };
+
+  /* Fetch ONE return's full header + items — mirrors usePurchaseReturnDetail's
+     queryFn (GET /purchase-returns/:id → { purchaseReturn, items }). The PDF
+     generator needs the nested `supplier` + `supplier_id` off the full header,
+     which the list rows don't fully carry. */
+  const fetchPrBundle = async (id: string): Promise<{ header: unknown; items: unknown[] }> => {
+    const res = await authedFetch<{ purchaseReturn: unknown; items: unknown[] }>(`/purchase-returns/${id}`);
+    return { header: res.purchaseReturn, items: res.items ?? [] };
+  };
+
+  /* Batch "Export PDF" — one selected → its own file; many → ask combined vs
+     separate, fetch each detail sequentially, then render. */
+  const exportSelected = async () => {
+    const selectedRows = rows.filter((r) => sel.has(r.id));
+    if (selectedRows.length === 0 || exporting) return;
+
+    if (selectedRows.length === 1) {
+      setExporting(true);
+      try {
+        const bundle = await fetchPrBundle(selectedRows[0]!.id);
+        const { generatePurchaseReturnPdf } = await import('../../vendor/scm/lib/purchase-return-pdf');
+        await generatePurchaseReturnPdf(bundle.header as never, bundle.items as never);
+      } catch (e) {
+        notify({ title: 'Export failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' });
+      } finally {
+        setExporting(false);
+      }
+      return;
+    }
+
+    const how = await askChoice({
+      title: `Download ${selectedRows.length} documents`,
+      options: [
+        { value: 'one', label: 'One combined PDF', detail: 'All returns in a single file' },
+        { value: 'many', label: 'Separate files', detail: 'One PDF per return' },
+      ],
+    });
+    if (how == null) return;
+
+    setExporting(true);
+    try {
+      const bundles: Array<{ header: unknown; items: unknown[] }> = [];
+      for (const r of selectedRows) bundles.push(await fetchPrBundle(r.id));
+      if (how === 'one') {
+        const { generateCombinedPurchaseReturnPdf } = await import('../../vendor/scm/lib/purchase-return-pdf');
+        await generateCombinedPurchaseReturnPdf(bundles as never, {
+          fileName: `purchase-returns-${new Date().toISOString().slice(0, 10)}.pdf`,
+        });
+      } else {
+        const { generatePurchaseReturnPdf } = await import('../../vendor/scm/lib/purchase-return-pdf');
+        for (const b of bundles) await generatePurchaseReturnPdf(b.header as never, b.items as never);
+      }
+    } catch (e) {
+      notify({ title: 'Export failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' });
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -272,13 +344,46 @@ export const PurchaseReturns = () => {
         ))}
       </div>
 
+      {/* Batch toolbar — mirrors the PO list selected-row banner. */}
+      {sel.size > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          gap: 'var(--space-3)',
+        }}>
+          <span style={{ fontWeight: 600, color: 'var(--c-burnt)' }}>
+            {sel.size} selected
+          </span>
+          <span style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+            <Button variant="ghost" size="sm" onClick={() => setSel(new Set())}>Clear</Button>
+            <Button variant="ghost" size="sm" onClick={() => void exportSelected()} disabled={exporting}>
+              <Printer size={14} strokeWidth={1.75} />
+              <span>{exporting ? 'Preparing…' : `Export PDF (${sel.size})`}</span>
+            </Button>
+          </span>
+        </div>
+      )}
+
       <DataGrid<PrRow>
         rows={rows}
         columns={columns}
         storageKey={PR_LIST_STORAGE_KEY}
+        exportName="Purchase Returns"
         rowKey={(r) => r.id}
         searchPlaceholder="Search returns…"
         groupBanner={false}
+        selectable={{
+          selectedKeys: sel,
+          onToggle: (k) => setSel((p) => { const n = new Set(p); if (n.has(k)) n.delete(k); else n.add(k); return n; }),
+          onToggleAll: (keys, allSel) => setSel((p) => {
+            const n = new Set(p);
+            if (allSel) { for (const k of keys) n.delete(k); } else { for (const k of keys) n.add(k); }
+            return n;
+          }),
+        }}
         /* Open on DOUBLE-click; right-click → context menu (mirrors the GRN list). */
         onRowDoubleClick={(r) => navigate(`/scm/purchase-returns/${r.id}`)}
         /* Completed / cancelled returns grey out so they read as locked / done. */

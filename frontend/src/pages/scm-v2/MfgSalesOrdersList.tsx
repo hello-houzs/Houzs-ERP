@@ -29,12 +29,13 @@ import { useMemo, useState } from 'react';
 import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, X, Wrench, Camera } from 'lucide-react';
+import { Plus, X, Wrench, Camera, Printer } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { ListingPickerDialog, type ListingChoice } from '../../vendor/scm/components/ListingPickerDialog';
 import { ScanOrderModal } from '../../vendor/scm/components/ScanOrderModal';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
+import { useChoice } from '../../vendor/scm/components/ChoiceDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { formatPhone } from '@2990s/shared/phone';
 import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
@@ -683,7 +684,13 @@ const ExpandedSoLines = ({ docNo }: { docNo: string }) => {
 export const MfgSalesOrdersList = () => {
   const navigate = useNavigate();
   const askConfirm = useConfirm();
+  const askChoice = useChoice();
   const notify = useNotify();
+  /* Multi-select + batch Export PDF. Selection keys are doc_no strings
+     (DataGrid rowKey). `exporting` guards the toolbar button while bundles
+     fetch + the (combined) PDF renders. */
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   /* Task #120 — Outstanding filter overlay. `?outstanding=1` narrows the
      list to rows with live balance > 0; clear-chip restores. Same param
@@ -785,23 +792,30 @@ export const MfgSalesOrdersList = () => {
   const openDetail = (row: SoRow, edit = false) =>
     navigate(`/scm/sales-orders/${row.doc_no}${edit ? '?edit=1' : ''}`);
 
+  /* Fetch the full PDF bundle for one SO — detail (header + items + pwpCodes)
+     and the payments ledger. One-shot fetch when a PDF action fires; avoids
+     holding a TanStack query open for every list selection. Payments are
+     best-effort: a failed payments fetch yields [] so the PDF still renders
+     with an empty Payments table rather than blocking. Reused by the single-doc
+     renderPdf AND the batch exportSelected. Throws on a failed detail fetch.
+     HOUZS VENDOR: both reads repointed off the supabase session → the vendored
+     authedFetch (→ /api/scm). Same endpoints + shapes. */
+  const fetchSoBundle = async (
+    docNo: string,
+  ): Promise<{ header: unknown; items: unknown[]; payments: unknown[]; pwpCodes: unknown[] }> => {
+    const [detail, paymentsRes] = await Promise.all([
+      authedFetch<{ salesOrder: unknown; items: unknown[]; pwpCodes?: unknown[] }>(`/mfg-sales-orders/${docNo}`),
+      // Payments endpoint is best-effort: if it fails the PDF still renders
+      // with an empty Payments table rather than blocking Preview/Print.
+      authedFetch<{ payments?: unknown[] }>(`/mfg-sales-orders/${docNo}/payments`).catch(() => ({ payments: [] })),
+    ]);
+    return { header: detail.salesOrder, items: detail.items, payments: paymentsRes.payments ?? [], pwpCodes: detail.pwpCodes ?? [] };
+  };
+
   const renderPdf = async (row: SoRow, action: 'save' | 'print' | 'preview') => {
-    // One-shot fetch when the toolbar button fires — avoids holding a
-    // TanStack query open for every list selection.
-    // Followup #81: parallel-fetch payments from the ledger alongside the
-    // SO detail. HOUZS VENDOR: both reads repointed off the supabase session
-    // → the vendored authedFetch (→ /api/scm). Same endpoints + shapes.
-    let json: { salesOrder: unknown; items: unknown[]; pwpCodes?: unknown[] };
-    let payments: unknown[] = [];
+    let bundle: Awaited<ReturnType<typeof fetchSoBundle>>;
     try {
-      const [detail, paymentsRes] = await Promise.all([
-        authedFetch<{ salesOrder: unknown; items: unknown[]; pwpCodes?: unknown[] }>(`/mfg-sales-orders/${row.doc_no}`),
-        // Payments endpoint is best-effort: if it fails the PDF still renders
-        // with an empty Payments table rather than blocking Preview/Print.
-        authedFetch<{ payments?: unknown[] }>(`/mfg-sales-orders/${row.doc_no}/payments`).catch(() => ({ payments: [] })),
-      ]);
-      json = detail;
-      payments = paymentsRes.payments ?? [];
+      bundle = await fetchSoBundle(row.doc_no);
     } catch {
       notify({ title: `Failed to load SO ${row.doc_no}`, tone: 'error' });
       return;
@@ -810,9 +824,68 @@ export const MfgSalesOrdersList = () => {
        print / blob preview, instead of always downloading and asking the
        user to find the file. Payments arg from #81 is threaded through. */
     await generateSalesOrderPdf(
-      json.salesOrder as never, json.items as never, payments as never, action,
-      (json.pwpCodes ?? []) as never,
+      bundle.header as never, bundle.items as never, bundle.payments as never, action,
+      bundle.pwpCodes as never,
     );
+  };
+
+  /* Batch "Export PDF" for the multi-selected rows. One row → a single saved
+     PDF. Many → the operator picks one combined PDF (each SO on a new page) or
+     separate files (one save per SO). baseRows keeps the outstanding overlay. */
+  const exportSelected = async () => {
+    const docNos = baseRows.filter((r) => sel.has(r.doc_no)).map((r) => r.doc_no);
+    if (docNos.length === 0 || exporting) return;
+
+    if (docNos.length === 1) {
+      const row = baseRows.find((r) => r.doc_no === docNos[0]);
+      if (row) await renderPdf(row, 'save');
+      return;
+    }
+
+    const how = await askChoice({
+      title: `Download ${docNos.length} documents`,
+      options: [
+        { value: 'one', label: 'One combined PDF' },
+        { value: 'many', label: 'Separate files', detail: 'One PDF per document' },
+      ],
+    });
+    if (how == null) return;
+
+    setExporting(true);
+    try {
+      const bundles: Array<Awaited<ReturnType<typeof fetchSoBundle>>> = [];
+      for (const docNo of docNos) {
+        bundles.push(await fetchSoBundle(docNo));
+      }
+      if (how === 'one') {
+        const { generateCombinedSalesOrderPdf } = await import('../../vendor/scm/lib/sales-order-pdf');
+        await generateCombinedSalesOrderPdf(
+          bundles.map((b) => ({
+            header: b.header as never,
+            items: b.items as never,
+            payments: b.payments as never,
+            pwpCodes: b.pwpCodes as never,
+          })),
+          { fileName: `sales-orders-${new Date().toISOString().slice(0, 10)}.pdf` },
+        );
+      } else {
+        for (const b of bundles) {
+          await generateSalesOrderPdf(
+            b.header as never, b.items as never, b.payments as never, 'save',
+            b.pwpCodes as never,
+          );
+        }
+      }
+      setSel(new Set());
+    } catch (e) {
+      notify({
+        title: 'PDF generation failed',
+        body: e instanceof Error ? e.message : String(e),
+        tone: 'error',
+      });
+    } finally {
+      setExporting(false);
+    }
   };
 
   /* Soft-delete a SO row (sets status=CANCELLED). Fired from the row
@@ -986,6 +1059,29 @@ export const MfgSalesOrdersList = () => {
 
       {showScan && <ScanOrderModal onClose={() => setShowScan(false)} />}
 
+      {/* Batch toolbar — appears once any row is selected. Mirrors the PO
+          list's selected-row banner. Export PDF → single save, or (many) the
+          useChoice combined-vs-separate dialog. */}
+      {sel.size > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          gap: 'var(--space-3)',
+        }}>
+          <span style={{ fontWeight: 600, color: 'var(--c-burnt)' }}>{sel.size} selected</span>
+          <span style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+            <Button variant="ghost" size="sm" onClick={() => setSel(new Set())}>Clear</Button>
+            <Button variant="ghost" size="sm" disabled={exporting} onClick={() => void exportSelected()}>
+              <Printer size={14} strokeWidth={1.75} />
+              <span>{exporting ? 'Preparing…' : `Export PDF (${sel.size})`}</span>
+            </Button>
+          </span>
+        </div>
+      )}
+
       {/* Phone (Houzs 2026-06-23) — the wide AutoCount grid is unreadable on a
           phone, so below 600px we hide it (.gridWrap) and render the SO rows as
           clean stacked cards instead, mirroring the Service Case (ASSR) mobile
@@ -1042,6 +1138,21 @@ export const MfgSalesOrdersList = () => {
         exportName="Sales Orders"
         rowKey={(r) => r.doc_no}
         searchPlaceholder="Search SOs…"
+        /* Multi-select (doc_no keys) — drives the batch Export PDF toolbar. */
+        selectable={{
+          selectedKeys: sel,
+          onToggle: (k) => setSel((p) => {
+            const n = new Set(p);
+            if (n.has(k)) n.delete(k); else n.add(k);
+            return n;
+          }),
+          onToggleAll: (keys, allSel) => setSel((p) => {
+            const n = new Set(p);
+            if (allSel) { for (const k of keys) n.delete(k); }
+            else { for (const k of keys) n.add(k); }
+            return n;
+          }),
+        }}
         /* Houzs chrome — kill the "drag column header here to group by
            that column" banner; the page-level filter row replaces it. */
         groupBanner={false}
@@ -1186,6 +1297,7 @@ const buildColumns = (
     ),
     searchValue: (r) => r.current_doc_no ?? r.doc_no ?? '',
     filterValue: (r) => r.current_doc_no ?? r.doc_no ?? '—',
+    exportValue: (r) => r.current_doc_no ?? r.doc_no ?? '',
   },
   {
     key: 'so_date', label: 'Date', width: 110, sortable: true,
@@ -1247,6 +1359,7 @@ const buildColumns = (
     searchValue: (r) => deriveBranding(r),
     groupValue: (r) => deriveBranding(r) || '(none)',
     sortFn: (a, b) => deriveBranding(a).localeCompare(deriveBranding(b)),
+    exportValue: (r) => deriveBranding(r),
   },
   {
     key: 'venue', label: 'Venue', width: 180, sortable: true, groupable: true,
@@ -1266,6 +1379,7 @@ const buildColumns = (
     searchValue: (r) => fmtRm(r.local_total_centi),
     sortFn: (a, b) => a.local_total_centi - b.local_total_centi,
     filterType: 'number', numberValue: (r) => r.local_total_centi,
+    exportValue: (r) => (r.local_total_centi ?? 0) / 100,
   },
   {
     /* Commander 2026-05-30 — Stock Status column rebuilt around the operator's
@@ -1304,6 +1418,7 @@ const buildColumns = (
       );
     },
     searchValue: (r) => (r.stock_remark ?? '').toLowerCase(),
+    exportValue: (r) => (r.stock_remark ?? '').trim(),
     sortFn: (a, b) => {
       /* Sort: full READY first, then READY (PARTIAL), then pending (any
          categories shown), then blank. Within "pending" group, longer remark
@@ -1331,6 +1446,7 @@ const buildColumns = (
     },
     searchValue: (r) => fmtRm(r.mattress_sofa_centi ?? 0),
     sortFn: (a, b) => (a.mattress_sofa_centi ?? 0) - (b.mattress_sofa_centi ?? 0),
+    exportValue: (r) => (r.mattress_sofa_centi ?? 0) / 100,
   },
   {
     key: 'bedframe_centi', label: 'Bedframe', width: 120, sortable: true, align: 'right', groupable: false,
@@ -1344,6 +1460,7 @@ const buildColumns = (
     },
     searchValue: (r) => fmtRm(r.bedframe_centi ?? 0),
     sortFn: (a, b) => (a.bedframe_centi ?? 0) - (b.bedframe_centi ?? 0),
+    exportValue: (r) => (r.bedframe_centi ?? 0) / 100,
   },
   {
     key: 'accessories_centi', label: 'Accessories', width: 120, sortable: true, align: 'right', groupable: false,
@@ -1357,24 +1474,28 @@ const buildColumns = (
     },
     searchValue: (r) => fmtRm(r.accessories_centi ?? 0),
     sortFn: (a, b) => (a.accessories_centi ?? 0) - (b.accessories_centi ?? 0),
+    exportValue: (r) => (r.accessories_centi ?? 0) / 100,
   },
   {
     key: 'mattress_sofa_cost_centi', label: 'Mattress/Sofa Cost', width: 140, sortable: true, align: 'right', groupable: false,
     accessor: (r) => <span className={styles.money}>{fmtRm(r.mattress_sofa_cost_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.mattress_sofa_cost_centi ?? 0),
     sortFn: (a, b) => (a.mattress_sofa_cost_centi ?? 0) - (b.mattress_sofa_cost_centi ?? 0),
+    exportValue: (r) => (r.mattress_sofa_cost_centi ?? 0) / 100,
   },
   {
     key: 'bedframe_cost_centi', label: 'Bedframe Cost', width: 130, sortable: true, align: 'right', groupable: false,
     accessor: (r) => <span className={styles.money}>{fmtRm(r.bedframe_cost_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.bedframe_cost_centi ?? 0),
     sortFn: (a, b) => (a.bedframe_cost_centi ?? 0) - (b.bedframe_cost_centi ?? 0),
+    exportValue: (r) => (r.bedframe_cost_centi ?? 0) / 100,
   },
   {
     key: 'accessories_cost_centi', label: 'Accessories Cost', width: 140, sortable: true, align: 'right', groupable: false,
     accessor: (r) => <span className={styles.money}>{fmtRm(r.accessories_cost_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.accessories_cost_centi ?? 0),
     sortFn: (a, b) => (a.accessories_cost_centi ?? 0) - (b.accessories_cost_centi ?? 0),
+    exportValue: (r) => (r.accessories_cost_centi ?? 0) / 100,
   },
   {
     /* Task #91 — display the pretty Malaysian format. searchValue keeps the
@@ -1510,6 +1631,7 @@ const buildColumns = (
     accessor: (r) => <span className={styles.money}>{fmtRm(r.others_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.others_centi ?? 0),
     sortFn: (a, b) => (a.others_centi ?? 0) - (b.others_centi ?? 0),
+    exportValue: (r) => (r.others_centi ?? 0) / 100,
   },
   {
     key: 'others_cost_centi', label: 'Others Cost', width: 120, sortable: true, align: 'right', groupable: false,
@@ -1517,6 +1639,7 @@ const buildColumns = (
     accessor: (r) => <span className={styles.money}>{fmtRm(r.others_cost_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.others_cost_centi ?? 0),
     sortFn: (a, b) => (a.others_cost_centi ?? 0) - (b.others_cost_centi ?? 0),
+    exportValue: (r) => (r.others_cost_centi ?? 0) / 100,
   },
   /* Task #114 — Overall cost / margin / margin% on the SO header. */
   {
@@ -1525,6 +1648,7 @@ const buildColumns = (
     accessor: (r) => <span className={styles.money}>{fmtRm(r.total_cost_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.total_cost_centi ?? 0),
     sortFn: (a, b) => (a.total_cost_centi ?? 0) - (b.total_cost_centi ?? 0),
+    exportValue: (r) => (r.total_cost_centi ?? 0) / 100,
   },
   {
     key: 'total_margin_centi', label: 'Margin', width: 120, sortable: true, align: 'right', groupable: false,
@@ -1537,6 +1661,7 @@ const buildColumns = (
     },
     searchValue: (r) => fmtRm(r.total_margin_centi ?? 0),
     sortFn: (a, b) => (a.total_margin_centi ?? 0) - (b.total_margin_centi ?? 0),
+    exportValue: (r) => ((r.local_total_centi ?? 0) <= 0 ? '' : (r.total_margin_centi ?? 0) / 100),
   },
   {
     key: 'margin_pct_basis', label: 'Margin %', width: 100, sortable: true, align: 'right', groupable: false,
@@ -1554,6 +1679,7 @@ const buildColumns = (
     },
     searchValue: (r) => `${((r.margin_pct_basis ?? 0) / 100).toFixed(1)}%`,
     sortFn: (a, b) => (a.margin_pct_basis ?? 0) - (b.margin_pct_basis ?? 0),
+    exportValue: (r) => ((r.local_total_centi ?? 0) <= 0 ? '' : `${((r.margin_pct_basis ?? 0) / 100).toFixed(1)}%`),
   },
   {
     key: 'deposit_centi', label: 'Deposit', width: 110, sortable: true, align: 'right', groupable: false,
@@ -1561,6 +1687,7 @@ const buildColumns = (
     accessor: (r) => <span className={styles.money}>{fmtRm(r.deposit_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.deposit_centi ?? 0),
     sortFn: (a, b) => (a.deposit_centi ?? 0) - (b.deposit_centi ?? 0),
+    exportValue: (r) => (r.deposit_centi ?? 0) / 100,
   },
   {
     key: 'paid_total_centi', label: 'Paid', width: 110, sortable: true, align: 'right', groupable: false,
@@ -1568,6 +1695,7 @@ const buildColumns = (
     accessor: (r) => <span className={styles.money}>{fmtRm(r.paid_total_centi ?? r.paid_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.paid_total_centi ?? r.paid_centi ?? 0),
     sortFn: (a, b) => (a.paid_total_centi ?? a.paid_centi ?? 0) - (b.paid_total_centi ?? b.paid_centi ?? 0),
+    exportValue: (r) => (r.paid_total_centi ?? r.paid_centi ?? 0) / 100,
   },
   {
     /* Follow-up #83 — prefer the view's live balance. */
@@ -1576,6 +1704,7 @@ const buildColumns = (
     accessor: (r) => <span className={styles.money}>{fmtRm(liveBalance(r))}</span>,
     searchValue: (r) => fmtRm(liveBalance(r)),
     sortFn: (a, b) => liveBalance(a) - liveBalance(b),
+    exportValue: (r) => liveBalance(r) / 100,
   },
   {
     key: 'status', label: 'Status', width: 130, sortable: true, groupable: true,
@@ -1584,5 +1713,9 @@ const buildColumns = (
     searchValue: (r) => r.status,
     groupValue: (r) => r.status,
     sortFn: (a, b) => a.status.localeCompare(b.status),
+    exportValue: (r) => {
+      const eff = soStatusDisplay(r.status, r.delivery_state, r.lifecycle_state);
+      return eff.label ?? STATUS_LABEL[r.status] ?? r.status.replace(/_/g, ' ');
+    },
   },
 ];

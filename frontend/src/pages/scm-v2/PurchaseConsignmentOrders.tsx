@@ -75,6 +75,8 @@ const buildColumns = (): DataGridColumn<PoHeaderRow>[] => [
     // pc_number with a po_number fallback.
     accessor: (po) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{pcNo(po)}</span>,
     searchValue: (po) => pcNo(po),
+    /* Accessor is JSX → export the raw doc-no string or the cell exports blank. */
+    exportValue: (po) => pcNo(po),
     sortFn: (a, b) => pcNo(a).localeCompare(pcNo(b)),
   },
   {
@@ -107,6 +109,8 @@ const buildColumns = (): DataGridColumn<PoHeaderRow>[] => [
       );
     },
     searchValue: (po) => (po.items ?? []).map((it) => `${it.material_code} ${it.qty}`).join(' '),
+    /* Accessor is JSX → export the readable "code×qty · …" summary string. */
+    exportValue: (po) => summarizeItems(po.items) ?? '',
   },
   {
     key: 'po_date', label: 'Date', width: 120, sortable: true,
@@ -136,12 +140,17 @@ const buildColumns = (): DataGridColumn<PoHeaderRow>[] => [
       </span>
     ),
     searchValue: (po) => fmtMoney(po.total_centi, po.currency),
+    /* Accessor is JSX → export the NUMBER in ringgit (not "MYR 1,234.00") so
+       Excel can SUM the column. */
+    exportValue: (po) => (po.total_centi ?? 0) / 100,
     sortFn: (a, b) => a.total_centi - b.total_centi,
   },
   {
     key: 'status', label: 'Status', width: 160, sortable: true, groupable: true,
     accessor: (po) => <StatusPill docType="po" status={po.status} />,
     searchValue: (po) => poStatusLabel(po.status),
+    /* Accessor is JSX → export the human status label, not blank. */
+    exportValue: (po) => poStatusLabel(po.status),
     groupValue: (po) => poStatusLabel(po.status),
     sortFn: (a, b) => poStatusLabel(a.status).localeCompare(poStatusLabel(b.status)),
   },
@@ -227,6 +236,7 @@ export const PurchaseConsignmentOrders = () => {
         rows={rows}
         columns={columns}
         storageKey={PC_ORDER_LIST_STORAGE_KEY}
+        exportName="Purchase Consignment Orders"
         rowKey={(po) => po.id}
         searchPlaceholder="Search orders…"
         groupBanner={false}

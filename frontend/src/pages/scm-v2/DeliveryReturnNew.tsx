@@ -24,6 +24,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowRightLeft, ArrowLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
+import { DateField } from '../../vendor/scm/components/DateField';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import {
   useCreateDeliveryReturn, useMfgDeliveryOrderDetail,
@@ -368,7 +369,7 @@ export const DeliveryReturnNew = () => {
           <div className={styles.formGrid4}>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Return Date</span>
-              <input type="date" className={styles.fieldInput} value={returnDate} onChange={(e) => setReturnDate(e.target.value)} />
+              <DateField fullWidth className={styles.fieldInput} value={returnDate ?? ''} onChange={(iso) => setReturnDate(iso)} />
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Building Type</span>

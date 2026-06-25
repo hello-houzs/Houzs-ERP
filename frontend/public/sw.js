@@ -277,7 +277,14 @@
 //   via GET /outbox(+/:id); (2) reply/compose attachments now actually delivered
 //   (Resend body carries them; were validated then dropped); (3) search box moved
 //   from the bottom of the left rail to a top full-width row (Gmail-style).
-const VERSION = "houzs-erp-v65";
+// v66 — SCM frontend re-sync to 2990 (8-item drift fix): DataGrid row-click
+//   multi-select restored; exportValue/exportName + batch-PDF on all doc-list
+//   pages (Excel exports real numbers, not text); DateField restored on DO/SI/DR
+//   + PaymentsTable (DD/MM/YYYY, kills locale MM/DD); supplier Currency picker
+//   re-added; Warehouse master page + form drawer; PO supplier-revised delivery
+//   dates wired end-to-end. (Promo refinement UI deferred — Houzs has no PWP
+//   editor yet; backend reward_size/compartment columns are live.)
+const VERSION = "houzs-erp-v66";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

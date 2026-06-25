@@ -27,10 +27,10 @@
 // HOUZS VENDOR — verbatim from apps/backend/src/components/PoLineCard.tsx. Import
 // boundary only: ../lib/* + ./MoneyInput stay (the vendored siblings), the
 // @2990s/shared import is verbatim, and the SalesOrderDetail.module.css resolves
-// to pages/scm-v2/ (same path PcVariantEditor uses). NOTE: the Supplier Date 2/3/4
-// inputs (migration 0180) ride through on the draft only — Houzs's PoItemRow /
-// NewPoItem lack those columns, so the PO Detail page neither seeds nor sends
-// them. They render blank + harmless (display-only).
+// to pages/scm-v2/ (same path PcVariantEditor uses). The Supplier Date 2/3/4
+// inputs (Houzs mig 0026) write through the line draft; PurchaseOrderNew +
+// PurchaseOrderDetail now seed them from supplier_delivery_date_2/3/4 and send
+// supplierDeliveryDate2/3/4 on create + item add/update.
 // ----------------------------------------------------------------------------
 
 import { Trash2 } from 'lucide-react';
@@ -599,11 +599,10 @@ export const PoLineCard = ({
         )}
       </div>
 
-      {/* Supplier-revised delivery dates (migration 0180). The supplier pushes
+      {/* Supplier-revised delivery dates (Houzs mig 0026). The supplier pushes
           the delivery back; the latest non-empty date is the effective one used
           downstream (MRP / GRN / on-time). All optional. T12: PO-only — hidden
-          on the PI card. HOUZS: display-only — Houzs's PO schema lacks these
-          columns, so the page neither seeds nor persists them. */}
+          on the PI card. Seeded + persisted by PurchaseOrderNew/Detail. */}
       {!hidePoFields && (
       <div className={styles.formGrid4} style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
         <label className={styles.field}>

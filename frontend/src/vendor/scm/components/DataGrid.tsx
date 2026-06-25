@@ -1003,8 +1003,11 @@ function DataGridInner<T>({
       <Fragment key={`f-${key}-${idx}`}>
         <tr
           className={`${styles.tr} ${selectedKey === key ? styles.trSelected : ''}`}
-          style={{ ...(rowStyle?.(row)), ...(expandKey != null ? { cursor: 'pointer' } : {}) }}
-          onClick={() => { setSelectedKey(key); onRowClick?.(row); if (expandKey != null) toggleExpand(expandKey); }}
+          style={{ ...(rowStyle?.(row)), ...((selectable || onRowClick || expandKey != null) ? { cursor: 'pointer' } : {}) }}
+          /* Row-click = multi-select (Commander rule: "点行=multi-select"); L2
+             drill-down opens ONLY via the left ▸ chevron (its own handler below,
+             with stopPropagation). Row-click no longer expands. */
+          onClick={() => { setSelectedKey(key); onRowClick?.(row); if (selectable) selectable.onToggle(key); }}
           onDoubleClick={() => onRowDoubleClick?.(row)}
           onContextMenu={(e) => {
             if (!contextMenu) return;

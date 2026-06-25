@@ -11,10 +11,11 @@
 import { useMemo, useState } from 'react';
 import type { JSX } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, ArrowRightLeft } from 'lucide-react';
+import { Plus, ArrowRightLeft, Printer } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
+import { useChoice } from '../../vendor/scm/components/ChoiceDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { formatPhone } from '@2990s/shared/phone';
 import { buildVariantSummary } from '@2990s/shared';
@@ -347,9 +348,14 @@ const STORAGE_KEY = 'pr-g.do-list.layout.v1';
 export const MfgDeliveryOrdersList = () => {
   const navigate = useNavigate();
   const askConfirm = useConfirm();
+  const askChoice = useChoice();
   const notify = useNotify();
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = searchParams.get('status') ?? 'all';
+
+  /* Multi-select state — batch "Export PDF" of N DOs into one (or many) files. */
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
 
   const { data, isLoading, error } = useMfgDeliveryOrders(undefined);
   const allRows = useMemo<DoRow[]>(() => (data?.deliveryOrders ?? []) as DoRow[], [data]);
@@ -399,14 +405,60 @@ export const MfgDeliveryOrdersList = () => {
   const openDetail = (row: DoRow, edit = false) =>
     navigate(`/scm/delivery-orders/${row.id}${edit ? '?edit=1' : ''}`);
 
+  /* One DO's full detail for the PDF generator — shared by single-row Preview/
+     Print and the batch export. The deliveryOrder/items shapes are passed
+     verbatim to the generator (as never, like before). HOUZS VENDOR: reads via
+     the vendored authedFetch (→ /api/scm). Same endpoint + shape. */
+  const fetchDoBundle = async (row: DoRow): Promise<{ header: unknown; items: unknown[] }> => {
+    const json = await authedFetch<{ deliveryOrder: unknown; items: unknown[] }>(`/delivery-orders-mfg/${row.id}`);
+    return { header: json.deliveryOrder, items: json.items };
+  };
+
   const renderPdf = (row: DoRow) => {
     void (async () => {
-      // HOUZS VENDOR: repointed off the supabase session token → the vendored
-      // authedFetch (→ /api/scm). Same endpoint + shape.
-      const json = await authedFetch<{ deliveryOrder: unknown; items: unknown[] }>(`/delivery-orders-mfg/${row.id}`);
+      const bundle = await fetchDoBundle(row);
       const { generateDeliveryOrderPdf } = await import('../../vendor/scm/lib/delivery-order-pdf');
-      await generateDeliveryOrderPdf(json.deliveryOrder as never, json.items as never);
+      await generateDeliveryOrderPdf(bundle.header as never, bundle.items as never);
     })().catch((e) => notify({ title: 'PDF failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }));
+  };
+
+  /* Batch "Export PDF" — one selected DO downloads straight; several prompt
+     "One combined PDF" vs "Separate files", then fetch each bundle and render
+     into one combined file or one file per DO. */
+  const exportSelected = async () => {
+    const rows = baseRows.filter((r) => sel.has(r.id));
+    if (rows.length === 0 || exporting) return;
+    try {
+      const { generateDeliveryOrderPdf, generateCombinedDeliveryOrderPdf } = await import('../../vendor/scm/lib/delivery-order-pdf');
+      if (rows.length === 1) {
+        const bundle = await fetchDoBundle(rows[0]!);
+        await generateDeliveryOrderPdf(bundle.header as never, bundle.items as never);
+        return;
+      }
+      const how = await askChoice({
+        title: `Download ${rows.length} documents`,
+        options: [
+          { value: 'one', label: 'One combined PDF' },
+          { value: 'many', label: 'Separate files', detail: 'One PDF per document' },
+        ],
+      });
+      if (how == null) return;
+      setExporting(true);
+      const bundles: Array<{ header: unknown; items: unknown[] }> = [];
+      for (const r of rows) bundles.push(await fetchDoBundle(r));
+      if (how === 'one') {
+        await generateCombinedDeliveryOrderPdf(
+          bundles as never,
+          { fileName: `delivery-orders-${new Date().toISOString().slice(0, 10)}.pdf` },
+        );
+      } else {
+        for (const b of bundles) await generateDeliveryOrderPdf(b.header as never, b.items as never);
+      }
+    } catch (e) {
+      notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+    } finally {
+      setExporting(false);
+    }
   };
 
   const doCancel = async (row: DoRow) => {
@@ -476,14 +528,43 @@ export const MfgDeliveryOrdersList = () => {
         ))}
       </div>
 
+      {/* Batch action bar — appears once one or more rows are selected. */}
+      {sel.size > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          background: 'rgba(232, 107, 58, 0.08)', border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)', padding: 'var(--space-3) var(--space-4)',
+          gap: 'var(--space-3)',
+        }}>
+          <span style={{ fontWeight: 600, color: 'var(--c-burnt)' }}>{sel.size} selected</span>
+          <span style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+            <Button variant="ghost" size="sm" onClick={() => setSel(new Set())}>Clear</Button>
+            <Button variant="ghost" size="sm" disabled={exporting} onClick={() => void exportSelected()}>
+              <Printer size={14} strokeWidth={1.75} />
+              <span>{exporting ? 'Preparing…' : `Export PDF (${sel.size})`}</span>
+            </Button>
+          </span>
+        </div>
+      )}
+
       <DataGrid<DoRow>
         rows={baseRows}
         onFilteredRowsChange={setVisibleRows}
         columns={COLUMNS}
         storageKey={STORAGE_KEY}
+        exportName="Delivery Orders"
         rowKey={(r) => r.id}
         searchPlaceholder="Search DOs…"
         groupBanner={false}
+        selectable={{
+          selectedKeys: sel,
+          onToggle: (k) => setSel((p) => { const n = new Set(p); if (n.has(k)) n.delete(k); else n.add(k); return n; }),
+          onToggleAll: (keys, allSel) => setSel((p) => {
+            const n = new Set(p);
+            if (allSel) { for (const k of keys) n.delete(k); } else { for (const k of keys) n.add(k); }
+            return n;
+          }),
+        }}
         onRowDoubleClick={(r) => openDetail(r)}
         rowStyle={(r) => r.status === 'CANCELLED' ? { opacity: 0.55, filter: 'grayscale(0.6)' } : undefined}
         isLoading={isLoading}
@@ -612,6 +693,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<DoRow>[] =
     searchValue: (r) => deriveBranding(r),
     groupValue: (r) => deriveBranding(r) || '(none)',
     sortFn: (a, b) => deriveBranding(a).localeCompare(deriveBranding(b)),
+    exportValue: (r) => deriveBranding(r),
   },
   {
     key: 'venue', label: 'Venue', width: 180, sortable: true, groupable: true,
@@ -633,6 +715,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<DoRow>[] =
     searchValue: (r) => fmtRm(r.local_total_centi),
     sortFn: (a, b) => a.local_total_centi - b.local_total_centi,
     filterType: 'number', numberValue: (r) => r.local_total_centi,
+    exportValue: (r) => (r.local_total_centi ?? 0) / 100,
   },
   {
     key: 'mattress_sofa_centi', label: 'Mattress/Sofa', width: 130, sortable: true, align: 'right',
@@ -643,6 +726,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<DoRow>[] =
     },
     searchValue: (r) => fmtRm(r.mattress_sofa_centi ?? 0),
     sortFn: (a, b) => (a.mattress_sofa_centi ?? 0) - (b.mattress_sofa_centi ?? 0),
+    exportValue: (r) => (r.mattress_sofa_centi ?? 0) / 100,
   },
   {
     key: 'bedframe_centi', label: 'Bedframe', width: 120, sortable: true, align: 'right',
@@ -653,6 +737,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<DoRow>[] =
     },
     searchValue: (r) => fmtRm(r.bedframe_centi ?? 0),
     sortFn: (a, b) => (a.bedframe_centi ?? 0) - (b.bedframe_centi ?? 0),
+    exportValue: (r) => (r.bedframe_centi ?? 0) / 100,
   },
   {
     key: 'accessories_centi', label: 'Accessories', width: 120, sortable: true, align: 'right',
@@ -663,6 +748,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<DoRow>[] =
     },
     searchValue: (r) => fmtRm(r.accessories_centi ?? 0),
     sortFn: (a, b) => (a.accessories_centi ?? 0) - (b.accessories_centi ?? 0),
+    exportValue: (r) => (r.accessories_centi ?? 0) / 100,
   },
   {
     key: 'phone', label: 'Phone', width: 130, sortable: true,
@@ -744,18 +830,21 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<DoRow>[] =
     accessor: (r) => <span className={styles.money}>{fmtRm(r.mattress_sofa_cost_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.mattress_sofa_cost_centi ?? 0),
     sortFn: (a, b) => (a.mattress_sofa_cost_centi ?? 0) - (b.mattress_sofa_cost_centi ?? 0),
+    exportValue: (r) => (r.mattress_sofa_cost_centi ?? 0) / 100,
   },
   {
     key: 'bedframe_cost_centi', label: 'Bedframe Cost', width: 130, sortable: true, align: 'right', defaultHidden: true,
     accessor: (r) => <span className={styles.money}>{fmtRm(r.bedframe_cost_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.bedframe_cost_centi ?? 0),
     sortFn: (a, b) => (a.bedframe_cost_centi ?? 0) - (b.bedframe_cost_centi ?? 0),
+    exportValue: (r) => (r.bedframe_cost_centi ?? 0) / 100,
   },
   {
     key: 'total_cost_centi', label: 'Cost Total', width: 120, sortable: true, align: 'right', defaultHidden: true,
     accessor: (r) => <span className={styles.money}>{fmtRm(r.total_cost_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.total_cost_centi ?? 0),
     sortFn: (a, b) => (a.total_cost_centi ?? 0) - (b.total_cost_centi ?? 0),
+    exportValue: (r) => (r.total_cost_centi ?? 0) / 100,
   },
   {
     key: 'total_margin_centi', label: 'Margin', width: 120, sortable: true, align: 'right', defaultHidden: true,
@@ -767,5 +856,6 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<DoRow>[] =
     },
     searchValue: (r) => fmtRm(r.total_margin_centi ?? 0),
     sortFn: (a, b) => (a.total_margin_centi ?? 0) - (b.total_margin_centi ?? 0),
+    exportValue: (r) => ((r.local_total_centi ?? 0) <= 0 ? '' : (r.total_margin_centi ?? 0) / 100),
   },
 ];

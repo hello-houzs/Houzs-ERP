@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
+import { DateField } from '../../vendor/scm/components/DateField';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -1011,8 +1012,8 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
           <div className={styles.formGrid4}>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>DO Date</span>
-              <input type="date" className={styles.fieldInput} value={form.doDate}
-                disabled={inputsDisabled} onChange={(e) => set('doDate', e.target.value)} />
+              <DateField className={styles.fieldInput} fullWidth value={form.doDate ?? ''}
+                disabled={inputsDisabled} onChange={(iso) => set('doDate', iso)} />
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Driver</span>
@@ -1058,13 +1059,13 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Expected Delivery</span>
-              <input type="date" className={styles.fieldInput} value={form.expectedDeliveryAt}
-                disabled={inputsDisabled} onChange={(e) => set('expectedDeliveryAt', e.target.value)} />
+              <DateField className={styles.fieldInput} fullWidth value={form.expectedDeliveryAt ?? ''}
+                disabled={inputsDisabled} onChange={(iso) => set('expectedDeliveryAt', iso)} />
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Customer Delivery Date</span>
-              <input type="date" className={styles.fieldInput} value={form.customerDeliveryDate}
-                disabled={inputsDisabled} onChange={(e) => set('customerDeliveryDate', e.target.value)} />
+              <DateField className={styles.fieldInput} fullWidth value={form.customerDeliveryDate ?? ''}
+                disabled={inputsDisabled} onChange={(iso) => set('customerDeliveryDate', iso)} />
             </label>
             <label className={styles.field} style={{ gridColumn: 'span 2' }}>
               <span className={styles.fieldLabel}>Note</span>

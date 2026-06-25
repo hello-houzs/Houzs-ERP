@@ -404,6 +404,7 @@ export const ConsignmentReturns = () => {
         onFilteredRowsChange={setVisibleRows}
         columns={COLUMNS}
         storageKey={STORAGE_KEY}
+        exportName="Consignment Returns"
         rowKey={(r) => r.id}
         searchPlaceholder="Search returns…"
         groupBanner={false}
@@ -497,6 +498,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<CrnRow>[] 
       return b ? <BrandingPill branding={b} /> : <span style={{ color: 'var(--fg-muted)' }}>—</span>;
     },
     searchValue: (r) => deriveBranding(r),
+    exportValue: (r) => deriveBranding(r),
     groupValue: (r) => deriveBranding(r) || '(none)',
     sortFn: (a, b) => deriveBranding(a).localeCompare(deriveBranding(b)),
   },
@@ -512,6 +514,8 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<CrnRow>[] 
       <span style={{ fontWeight: 700, color: 'var(--c-ink)', fontVariantNumeric: 'tabular-nums' }}>{fmtRm(r.local_total_centi)}</span>
     ),
     searchValue: (r) => fmtRm(r.local_total_centi),
+    /* Export the NUMBER in ringgit so Excel can SUM the column. */
+    exportValue: (r) => (r.local_total_centi ?? 0) / 100,
     sortFn: (a, b) => a.local_total_centi - b.local_total_centi,
     filterType: 'number', numberValue: (r) => r.local_total_centi,
   },
@@ -529,6 +533,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<CrnRow>[] 
     key: 'status', label: 'Status', width: 130, sortable: true, groupable: true,
     accessor: (r) => <StatusPill status={r.status} />,
     searchValue: (r) => STATUS_LABEL[r.status] ?? r.status,
+    exportValue: (r) => STATUS_LABEL[r.status] ?? r.status.replace(/_/g, ' '),
     groupValue: (r) => r.status,
     sortFn: (a, b) => a.status.localeCompare(b.status),
   },
@@ -582,6 +587,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<CrnRow>[] 
     key: 'total_cost_centi', label: 'Cost Total', width: 120, sortable: true, align: 'right', defaultHidden: true,
     accessor: (r) => <span className={styles.money}>{fmtRm(r.total_cost_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.total_cost_centi ?? 0),
+    exportValue: (r) => (r.total_cost_centi ?? 0) / 100,
     sortFn: (a, b) => (a.total_cost_centi ?? 0) - (b.total_cost_centi ?? 0),
   },
   {
@@ -593,6 +599,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<CrnRow>[] 
       return <span className={styles.money} style={{ color, fontWeight: 600 }}>{fmtRm(m)}</span>;
     },
     searchValue: (r) => fmtRm(r.total_margin_centi ?? 0),
+    exportValue: (r) => (r.total_margin_centi ?? 0) / 100,
     sortFn: (a, b) => (a.total_margin_centi ?? 0) - (b.total_margin_centi ?? 0),
   },
 ];

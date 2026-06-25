@@ -86,12 +86,15 @@ const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string => {
 };
 
 /* Draft state shapes (#194). HeaderDraft mirrors the editable header fields.
-   HOUZS: the migration-0180 supplier-revised header delivery dates are omitted —
-   Houzs's PurchaseOrderRow lacks those columns. */
+   Mig 0026 — supplier-revised header delivery dates ride through on save and
+   fan down to lines that don't carry their own revised date. */
 type HeaderDraft = {
   supplierId: string;
   poDate: string;
   expectedAt: string;
+  supplierDeliveryDate2: string;
+  supplierDeliveryDate3: string;
+  supplierDeliveryDate4: string;
   currency: string;
   notes: string;
   purchaseLocationId: string;
@@ -104,18 +107,21 @@ type HeaderDraft = {
 type EditLine = PoLineDraft & { itemId?: string };
 
 const headerSnapshot = (p: any): HeaderDraft => ({
-  supplierId:         p.supplier_id ?? '',
-  poDate:             p.po_date ?? '',
-  expectedAt:         p.expected_at ?? '',
-  currency:           p.currency ?? 'MYR',
-  notes:              p.notes ?? '',
-  purchaseLocationId: p.purchase_location_id ?? '',
+  supplierId:            p.supplier_id ?? '',
+  poDate:                p.po_date ?? '',
+  expectedAt:            p.expected_at ?? '',
+  supplierDeliveryDate2: p.supplier_delivery_date_2 ?? '',
+  supplierDeliveryDate3: p.supplier_delivery_date_3 ?? '',
+  supplierDeliveryDate4: p.supplier_delivery_date_4 ?? '',
+  currency:              p.currency ?? 'MYR',
+  notes:                 p.notes ?? '',
+  purchaseLocationId:    p.purchase_location_id ?? '',
 });
 
 /* Map a persisted PO line → an editable PoLineCard draft. item_group is the
    PO's lowercase category convention; variants ride through untouched so the
-   variant editor + Description-2 recompute see the full spec. HOUZS: the
-   migration-0180 per-line supplier-revised dates are not read (no columns). */
+   variant editor + Description-2 recompute see the full spec. Mig 0026 — the
+   per-line supplier-revised dates are read so they round-trip on edit. */
 const draftFromItem = (it: PoItemRow): EditLine => ({
   rid:            `i${it.id}`,
   itemId:         it.id,
@@ -128,6 +134,9 @@ const draftFromItem = (it: PoItemRow): EditLine => ({
   unitPriceCenti: it.unit_price_centi,
   discountCenti:  it.discount_centi ?? 0,
   deliveryDate:   it.delivery_date ?? undefined,
+  supplierDeliveryDate2: it.supplier_delivery_date_2 ?? undefined,
+  supplierDeliveryDate3: it.supplier_delivery_date_3 ?? undefined,
+  supplierDeliveryDate4: it.supplier_delivery_date_4 ?? undefined,
   warehouseId:    it.warehouse_id ?? undefined,
   category:       it.item_group ?? undefined,
   variants:       (it.variants as Record<string, unknown> | null) ?? {},
@@ -382,6 +391,17 @@ export const PurchaseOrderDetail = () => {
     if (k === 'expectedAt') {
       setEditLines((prev) => prev.map((d) => ({ ...d, deliveryDate: v || undefined })));
     }
+    /* Mig 0026 — header supplier-revised dates fan down to every line that
+       doesn't already carry its own value for that slot. */
+    if (k === 'supplierDeliveryDate2') {
+      setEditLines((prev) => prev.map((d) => (d.supplierDeliveryDate2 ? d : { ...d, supplierDeliveryDate2: v || undefined })));
+    }
+    if (k === 'supplierDeliveryDate3') {
+      setEditLines((prev) => prev.map((d) => (d.supplierDeliveryDate3 ? d : { ...d, supplierDeliveryDate3: v || undefined })));
+    }
+    if (k === 'supplierDeliveryDate4') {
+      setEditLines((prev) => prev.map((d) => (d.supplierDeliveryDate4 ? d : { ...d, supplierDeliveryDate4: v || undefined })));
+    }
   };
 
   /* Patch one editLine by rid (mirrors Create's setLine). */
@@ -492,6 +512,10 @@ export const PurchaseOrderDetail = () => {
             bindingId:      d.bindingId,
             discountCenti:  d.discountCenti,
             deliveryDate:   d.deliveryDate || undefined,
+            /* Mig 0026 — per-line supplier-revised delivery dates. */
+            supplierDeliveryDate2: d.supplierDeliveryDate2 || undefined,
+            supplierDeliveryDate3: d.supplierDeliveryDate3 || undefined,
+            supplierDeliveryDate4: d.supplierDeliveryDate4 || undefined,
             warehouseId:    d.warehouseId  || undefined,
             itemGroup:      d.category,
             variants:       Object.keys(d.variants).length ? d.variants : undefined,
@@ -510,6 +534,9 @@ export const PurchaseOrderDetail = () => {
           d.unitPriceCenti !== it.unit_price_centi ||
           (d.discountCenti ?? 0) !== (it.discount_centi ?? 0) ||
           (d.deliveryDate ?? null) !== (it.delivery_date ?? null) ||
+          (d.supplierDeliveryDate2 ?? null) !== (it.supplier_delivery_date_2 ?? null) ||
+          (d.supplierDeliveryDate3 ?? null) !== (it.supplier_delivery_date_3 ?? null) ||
+          (d.supplierDeliveryDate4 ?? null) !== (it.supplier_delivery_date_4 ?? null) ||
           (d.warehouseId ?? null) !== (it.warehouse_id ?? null) ||
           JSON.stringify(d.variants ?? {}) !== JSON.stringify((it.variants as Record<string, unknown> | null) ?? {});
         if (!changed) continue;
@@ -522,6 +549,10 @@ export const PurchaseOrderDetail = () => {
           unitPriceCenti: d.unitPriceCenti,
           discountCenti:  d.discountCenti ?? 0,
           deliveryDate:   d.deliveryDate ?? null,
+          /* Mig 0026 — per-line supplier-revised delivery dates. */
+          supplierDeliveryDate2: d.supplierDeliveryDate2 ?? null,
+          supplierDeliveryDate3: d.supplierDeliveryDate3 ?? null,
+          supplierDeliveryDate4: d.supplierDeliveryDate4 ?? null,
           warehouseId:    d.warehouseId ?? null,
           itemGroup:      d.category,
           variants:       d.variants ?? {},
@@ -985,6 +1016,11 @@ const SupplierCard = ({
             <div />
             <InfoCell label="PO Date" value={po.po_date || null} />
             <InfoCell label="Expected Delivery" value={po.expected_at || null} />
+            {/* Mig 0026 — supplier-revised header delivery dates (shown only
+                when the supplier has pushed a revised date). */}
+            {po.supplier_delivery_date_2 && <InfoCell label="Supplier Date 2" value={po.supplier_delivery_date_2} />}
+            {po.supplier_delivery_date_3 && <InfoCell label="Supplier Date 3" value={po.supplier_delivery_date_3} />}
+            {po.supplier_delivery_date_4 && <InfoCell label="Supplier Date 4" value={po.supplier_delivery_date_4} />}
             <InfoCell label="Purchase Location"
               value={(() => {
                 const wh = warehouses.find((w) => w.id === po.purchase_location_id);
@@ -1041,6 +1077,23 @@ const SupplierCard = ({
                 Delivery Date (handled in the page's setHeaderField). */}
             <input type="date" className={styles.fieldInput} value={draft.expectedAt} disabled={locked}
               onChange={(e) => onField('expectedAt', e.target.value)} />
+          </label>
+          {/* Mig 0026 — supplier-revised header delivery dates. Each fans down
+              to lines without their own value (handled in setHeaderField). */}
+          <label className={styles.field}>
+            <span className={styles.fieldLabel}>Supplier Date 2</span>
+            <input type="date" className={styles.fieldInput} value={draft.supplierDeliveryDate2} disabled={locked}
+              onChange={(e) => onField('supplierDeliveryDate2', e.target.value)} />
+          </label>
+          <label className={styles.field}>
+            <span className={styles.fieldLabel}>Supplier Date 3</span>
+            <input type="date" className={styles.fieldInput} value={draft.supplierDeliveryDate3} disabled={locked}
+              onChange={(e) => onField('supplierDeliveryDate3', e.target.value)} />
+          </label>
+          <label className={styles.field}>
+            <span className={styles.fieldLabel}>Supplier Date 4</span>
+            <input type="date" className={styles.fieldInput} value={draft.supplierDeliveryDate4} disabled={locked}
+              onChange={(e) => onField('supplierDeliveryDate4', e.target.value)} />
           </label>
           {/* PR #77 — Purchase Location: default ship-to warehouse for
               every line on this PO. */}

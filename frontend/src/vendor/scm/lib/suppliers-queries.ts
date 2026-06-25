@@ -121,6 +121,10 @@ export type PoHeaderRow = {
   status: PoStatus;
   po_date: string;
   expected_at: string | null;
+  /** Mig 0026 — supplier-revised header delivery dates. */
+  supplier_delivery_date_2?: string | null;
+  supplier_delivery_date_3?: string | null;
+  supplier_delivery_date_4?: string | null;
   currency: Currency;
   subtotal_centi: number;
   tax_centi: number;
@@ -197,6 +201,12 @@ export type PoItemRow = {
       PO header when null). */
   delivery_date?: string | null;
   warehouse_id?: string | null;
+  /** Mig 0026 — supplier-revised per-line delivery dates. All optional; the
+      supplier pushes the date back. Effective line date = MAX over non-null of
+      [delivery_date, date2, date3, date4]. */
+  supplier_delivery_date_2?: string | null;
+  supplier_delivery_date_3?: string | null;
+  supplier_delivery_date_4?: string | null;
   /** Per-line GR breakdown (which goods receipt took how much) — set by
       GET /:id so the PO list expansion can show a "Received" column identical
       to the SO "Delivered" column. Cancelled GRNs excluded server-side. */
@@ -502,6 +512,10 @@ export type NewPoItem = {
   /* PR #77 — per-line ship-to overrides; both null = inherit from PO header */
   deliveryDate?: string | null;
   warehouseId?: string | null;
+  /* Mig 0026 — supplier-revised per-line delivery dates (optional). */
+  supplierDeliveryDate2?: string | null;
+  supplierDeliveryDate3?: string | null;
+  supplierDeliveryDate4?: string | null;
   /* Commander 2026-05-29 (BUG 1) — source SO line id for lines added via the
      "From SO" picker. The generic create handler increments this SO line's
      po_qty_picked so it drops from the picker. NULL for manual PO lines. */
@@ -756,6 +770,11 @@ export function useCreatePurchaseOrder() {
       currency?: Currency;
       poDate?: string;
       expectedAt?: string;
+      /** Mig 0026 — supplier-revised header delivery dates; fan down to lines
+          that don't carry their own revised date. */
+      supplierDeliveryDate2?: string;
+      supplierDeliveryDate3?: string;
+      supplierDeliveryDate4?: string;
       notes?: string;
       items?: NewPoItem[];                     // PR #41 — optional, allow blank-draft
       /** PR #97 — AutoCount Purchase Location at create time. NULL → can be
@@ -780,6 +799,10 @@ export function useUpdatePurchaseOrderHeader() {
     mutationFn: ({ id, ...body }: {
       id: string; poDate?: string; expectedAt?: string;
       currency?: Currency; notes?: string; supplierId?: string;
+      /** Mig 0026 — supplier-revised header delivery dates. */
+      supplierDeliveryDate2?: string | null;
+      supplierDeliveryDate3?: string | null;
+      supplierDeliveryDate4?: string | null;
       /** PR #77 — default ship-to warehouse for every line on this PO. */
       purchaseLocationId?: string | null;
     }) => authedFetch<{ purchaseOrder: PoHeaderRow }>(`/mfg-purchase-orders/${id}`, {

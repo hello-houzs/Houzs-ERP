@@ -25,6 +25,7 @@ import { useEffect, type ReactNode } from 'react';
 import { NotifyProvider, useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { ConfirmProvider, useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { PromptProvider } from '../../vendor/scm/components/PromptDialog';
+import { ChoiceProvider } from '../../vendor/scm/components/ChoiceDialog';
 import { registerDialogService } from '../../vendor/scm/lib/dialog-service';
 
 /** Registers the live confirm + notify fns with the module-level dialog-service
@@ -44,8 +45,10 @@ export function Scm2990Shell({ children }: { children: ReactNode }) {
     <NotifyProvider>
       <ConfirmProvider>
         <PromptProvider>
-          <DialogServiceBridge />
-          <div className="scm2990 max-w-full overflow-x-hidden">{children}</div>
+          <ChoiceProvider>
+            <DialogServiceBridge />
+            <div className="scm2990 max-w-full overflow-x-hidden">{children}</div>
+          </ChoiceProvider>
         </PromptProvider>
       </ConfirmProvider>
     </NotifyProvider>

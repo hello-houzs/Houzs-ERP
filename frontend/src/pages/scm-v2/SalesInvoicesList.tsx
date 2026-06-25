@@ -13,10 +13,11 @@
 import { useMemo, useState } from 'react';
 import type { JSX } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, ArrowRightLeft } from 'lucide-react';
+import { Plus, ArrowRightLeft, Printer } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
+import { useChoice } from '../../vendor/scm/components/ChoiceDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { formatPhone } from '@2990s/shared/phone';
 import { buildVariantSummary } from '@2990s/shared';
@@ -300,9 +301,15 @@ const STORAGE_KEY = 'pr-g.si-list.layout.v1';
 export const SalesInvoicesList = () => {
   const navigate = useNavigate();
   const askConfirm = useConfirm();
+  const askChoice = useChoice();
   const notify = useNotify();
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = searchParams.get('status') ?? 'all';
+
+  /* Multi-select + batch "Export PDF" — the operator filters/searches, ticks
+     rows, then downloads them as one combined file or separate per-invoice files. */
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
 
   const { data, isLoading, error } = useSalesInvoices(undefined);
   const allRows = useMemo<SiRow[]>(() => (data?.salesInvoices ?? []) as SiRow[], [data]);
@@ -355,14 +362,61 @@ export const SalesInvoicesList = () => {
   const openDetail = (row: SiRow, edit = false) =>
     navigate(`/scm/sales-invoices/${row.id}${edit ? '?edit=1' : ''}`);
 
+  /* Fetch ONE invoice's full detail (header + lines) for the PDF generator.
+     Shared by the single-row Preview/Print and the batch Export PDF.
+     HOUZS VENDOR: the read is repointed off the supabase session → the
+     vendored authedFetch (→ /api/scm). Same endpoint + shape. */
+  const fetchSiBundle = async (row: SiRow): Promise<{ header: unknown; items: unknown[] }> => {
+    const json = await authedFetch<{ salesInvoice: unknown; items: unknown[] }>(`/sales-invoices/${row.id}`);
+    return { header: json.salesInvoice, items: json.items };
+  };
+
   const renderPdf = (row: SiRow) => {
     void (async () => {
-      // HOUZS VENDOR: the read is repointed off the supabase session → the
-      // vendored authedFetch (→ /api/scm). Same endpoint + shape.
-      const json = await authedFetch<{ salesInvoice: unknown; items: unknown[] }>(`/sales-invoices/${row.id}`);
+      const bundle = await fetchSiBundle(row);
       const { generateSalesInvoicePdf } = await import('../../vendor/scm/lib/sales-invoice-pdf');
-      await generateSalesInvoicePdf(json.salesInvoice as never, json.items as never);
+      await generateSalesInvoicePdf(bundle.header as never, bundle.items as never);
     })().catch((e) => notify({ title: 'PDF failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }));
+  };
+
+  /* Batch "Export PDF" — one combined file (each invoice a page) or N separate
+     files. >1 row asks how; a single row goes straight to its own file. */
+  const exportSelected = async () => {
+    const rows = baseRows.filter((r) => sel.has(r.id));
+    if (rows.length === 0 || exporting) return;
+    try {
+      if (rows.length === 1) {
+        const bundle = await fetchSiBundle(rows[0]!);
+        const { generateSalesInvoicePdf } = await import('../../vendor/scm/lib/sales-invoice-pdf');
+        await generateSalesInvoicePdf(bundle.header as never, bundle.items as never);
+        return;
+      }
+      const how = await askChoice({
+        title: `Download ${rows.length} documents`,
+        options: [
+          { value: 'one', label: 'One combined PDF' },
+          { value: 'many', label: 'Separate files', detail: 'One PDF per document' },
+        ],
+      });
+      if (how == null) return;
+      setExporting(true);
+      const bundles: Array<{ header: unknown; items: unknown[] }> = [];
+      for (const row of rows) bundles.push(await fetchSiBundle(row));
+      if (how === 'one') {
+        const { generateCombinedSalesInvoicePdf } = await import('../../vendor/scm/lib/sales-invoice-pdf');
+        await generateCombinedSalesInvoicePdf(
+          bundles as never,
+          { fileName: `sales-invoices-${new Date().toISOString().slice(0, 10)}.pdf` },
+        );
+      } else {
+        const { generateSalesInvoicePdf } = await import('../../vendor/scm/lib/sales-invoice-pdf');
+        for (const b of bundles) await generateSalesInvoicePdf(b.header as never, b.items as never);
+      }
+    } catch (e) {
+      notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+    } finally {
+      setExporting(false);
+    }
   };
 
   const doCancel = async (row: SiRow) => {
@@ -432,12 +486,47 @@ export const SalesInvoicesList = () => {
         ))}
       </div>
 
+      {/* Batch action bar — shown only when rows are ticked. */}
+      {sel.size > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          background: 'rgba(232,107,58,0.08)', border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)', padding: 'var(--space-3) var(--space-4)', gap: 'var(--space-3)',
+        }}>
+          <span style={{ fontWeight: 600, color: 'var(--c-burnt)' }}>{sel.size} selected</span>
+          <div style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+            <Button variant="ghost" size="sm" onClick={() => setSel(new Set())}>
+              <span>Clear</span>
+            </Button>
+            <Button variant="ghost" size="sm" disabled={exporting} onClick={() => void exportSelected()}>
+              <Printer size={14} strokeWidth={1.75} />
+              <span>{exporting ? 'Preparing…' : `Export PDF (${sel.size})`}</span>
+            </Button>
+          </div>
+        </div>
+      )}
+
       <DataGrid<SiRow>
         rows={baseRows}
         onFilteredRowsChange={setVisibleRows}
         columns={COLUMNS}
         storageKey={STORAGE_KEY}
+        exportName="Sales Invoices"
         rowKey={(r) => r.id}
+        selectable={{
+          selectedKeys: sel,
+          onToggle: (k) => setSel((p) => {
+            const n = new Set(p);
+            if (n.has(k)) n.delete(k); else n.add(k);
+            return n;
+          }),
+          onToggleAll: (keys, allSel) => setSel((p) => {
+            const n = new Set(p);
+            if (allSel) { for (const k of keys) n.delete(k); }
+            else { for (const k of keys) n.add(k); }
+            return n;
+          }),
+        }}
         searchPlaceholder="Search invoices…"
         groupBanner={false}
         onRowDoubleClick={(r) => openDetail(r)}
@@ -541,6 +630,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     searchValue: (r) => deriveBranding(r),
     groupValue: (r) => deriveBranding(r) || '(none)',
     sortFn: (a, b) => deriveBranding(a).localeCompare(deriveBranding(b)),
+    exportValue: (r) => deriveBranding(r),
   },
   {
     key: 'venue', label: 'Venue', width: 180, sortable: true, groupable: true,
@@ -556,6 +646,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     searchValue: (r) => fmtRm(r.local_total_centi || r.total_centi || 0),
     sortFn: (a, b) => (a.local_total_centi || a.total_centi || 0) - (b.local_total_centi || b.total_centi || 0),
     filterType: 'number', numberValue: (r) => r.local_total_centi || r.total_centi || 0,
+    exportValue: (r) => (r.local_total_centi || r.total_centi || 0) / 100,
   },
   {
     key: 'paid_centi', label: 'Paid', width: 110, sortable: true, align: 'right',
@@ -566,6 +657,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     },
     searchValue: (r) => fmtRm(r.paid_centi ?? 0),
     sortFn: (a, b) => (a.paid_centi ?? 0) - (b.paid_centi ?? 0),
+    exportValue: (r) => (r.paid_centi ?? 0) / 100,
   },
   {
     key: 'outstanding', label: 'Outstanding', width: 120, sortable: true, align: 'right',
@@ -577,6 +669,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     searchValue: (r) => fmtRm(Math.max(0, (r.total_centi ?? 0) - (r.paid_centi ?? 0))),
     sortFn: (a, b) =>
       Math.max(0, (a.total_centi ?? 0) - (a.paid_centi ?? 0)) - Math.max(0, (b.total_centi ?? 0) - (b.paid_centi ?? 0)),
+    exportValue: (r) => Math.max(0, (r.total_centi ?? (r.local_total_centi || 0)) - (r.paid_centi ?? 0)) / 100,
   },
   {
     key: 'mattress_sofa_centi', label: 'Mattress/Sofa', width: 130, sortable: true, align: 'right',
@@ -587,6 +680,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     },
     searchValue: (r) => fmtRm(r.mattress_sofa_centi ?? 0),
     sortFn: (a, b) => (a.mattress_sofa_centi ?? 0) - (b.mattress_sofa_centi ?? 0),
+    exportValue: (r) => (r.mattress_sofa_centi ?? 0) / 100,
   },
   {
     key: 'bedframe_centi', label: 'Bedframe', width: 120, sortable: true, align: 'right',
@@ -597,6 +691,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     },
     searchValue: (r) => fmtRm(r.bedframe_centi ?? 0),
     sortFn: (a, b) => (a.bedframe_centi ?? 0) - (b.bedframe_centi ?? 0),
+    exportValue: (r) => (r.bedframe_centi ?? 0) / 100,
   },
   {
     key: 'accessories_centi', label: 'Accessories', width: 120, sortable: true, align: 'right',
@@ -607,6 +702,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     },
     searchValue: (r) => fmtRm(r.accessories_centi ?? 0),
     sortFn: (a, b) => (a.accessories_centi ?? 0) - (b.accessories_centi ?? 0),
+    exportValue: (r) => (r.accessories_centi ?? 0) / 100,
   },
   {
     key: 'phone', label: 'Phone', width: 130, sortable: true,
@@ -619,6 +715,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     searchValue: (r) => r.status,
     groupValue: (r) => r.status,
     sortFn: (a, b) => a.status.localeCompare(b.status),
+    exportValue: (r) => STATUS_LABEL[r.status] ?? r.status.replace(/_/g, ' '),
   },
   /* ── Default-hidden long-tail ── */
   {
@@ -671,6 +768,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     accessor: (r) => <span className={styles.money}>{fmtRm(r.total_cost_centi ?? 0)}</span>,
     searchValue: (r) => fmtRm(r.total_cost_centi ?? 0),
     sortFn: (a, b) => (a.total_cost_centi ?? 0) - (b.total_cost_centi ?? 0),
+    exportValue: (r) => (r.total_cost_centi ?? 0) / 100,
   },
   {
     key: 'total_margin_centi', label: 'Margin', width: 120, sortable: true, align: 'right', defaultHidden: true,
@@ -682,5 +780,6 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     },
     searchValue: (r) => fmtRm(r.total_margin_centi ?? 0),
     sortFn: (a, b) => (a.total_margin_centi ?? 0) - (b.total_margin_centi ?? 0),
+    exportValue: (r) => ((r.local_total_centi ?? 0) <= 0 ? '' : (r.total_margin_centi ?? 0) / 100),
   },
 ];
