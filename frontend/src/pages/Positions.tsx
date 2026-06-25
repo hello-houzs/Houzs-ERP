@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Pencil, Trash2, ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import { Button } from "../components/Button";
 import { Panel, PanelSection } from "../components/Panel";
@@ -510,6 +510,18 @@ function PositionMatrixEditor({
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
+  // Open tidy: collapse NESTED groups by default (a group that is itself a
+  // sub-page of another), so SCM shows its 6 areas instead of all ~30 rows.
+  // Top-level groups stay open. Runs once when the catalogue first loads.
+  const collapseInited = useRef(false);
+  useEffect(() => {
+    if (collapseInited.current || pages.length === 0) return;
+    collapseInited.current = true;
+    const nested = pages
+      .filter((p) => p.parent && pages.some((c) => c.parent === p.key))
+      .map((p) => p.key);
+    if (nested.length) setCollapsed(new Set(nested));
+  }, [pages]);
 
   useEffect(() => {
     if (!accessQ.data) return;
@@ -688,11 +700,11 @@ function LevelRow({
             {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
           </button>
         )}
-        <span className={cn("truncate font-semibold text-ink transition-colors group-hover:font-bold group-hover:text-accent", dense ? "text-[12.5px]" : "text-[13.5px]")}>
+        <span
+          title={page.key}
+          className={cn("truncate font-semibold text-ink transition-colors group-hover:font-bold group-hover:text-accent", dense ? "text-[12.5px]" : "text-[13.5px]")}
+        >
           {page.label}
-        </span>
-        <span className="hidden shrink-0 truncate font-mono text-[10px] text-ink-muted sm:inline">
-          {page.key}
         </span>
         {dirty && (
           <span className="shrink-0 rounded bg-warning-bg px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning-text">
