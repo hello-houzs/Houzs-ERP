@@ -8,6 +8,7 @@ import {
   type AccessLevel,
 } from "../services/pageAccess";
 import { requirePermission } from "../middleware/auth";
+import { setSetting } from "../services/email";
 import { audit } from "../services/audit";
 import { getDb } from "../db/client";
 import { positions, position_page_access, users, departments } from "../db/schema";
@@ -66,12 +67,54 @@ app.get("/", requirePermission("users.read"), async (c) => {
 });
 
 /**
+ * Read the admin-defined display order for the matrix (a flat list of page
+ * keys). Stored in app_settings under POSITION_PAGE_ORDER_KEY. Returns [] when
+ * unset or unreadable — callers then fall back to the catalogue's own order.
+ */
+const POSITION_PAGE_ORDER_KEY = "position_page_order";
+async function getPageOrder(env: Env): Promise<string[]> {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT value FROM app_settings WHERE key = ?",
+    )
+      .bind(POSITION_PAGE_ORDER_KEY)
+      .first<{ value: string }>();
+    if (!row?.value) return [];
+    const parsed = JSON.parse(row.value);
+    return Array.isArray(parsed) ? parsed.filter((k) => typeof k === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Sort the catalogue by a stored key order (stable). Keys absent from the
+ * order keep their catalogue position (they sort after ordered ones, in
+ * original sequence). Display-only — the cascade in loadPageAccessForPosition
+ * still reads PAGES in code order, so parent-before-child is never disturbed.
+ */
+function orderPages<T extends { key: string }>(list: T[], order: string[]): T[] {
+  if (order.length === 0) return list;
+  const rank = new Map(order.map((k, i) => [k, i]));
+  return list
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => {
+      const ra = rank.has(a.p.key) ? rank.get(a.p.key)! : Number.MAX_SAFE_INTEGER;
+      const rb = rank.has(b.p.key) ? rank.get(b.p.key)! : Number.MAX_SAFE_INTEGER;
+      return ra - rb || a.i - b.i;
+    })
+    .map((x) => x.p);
+}
+
+/**
  * GET /api/positions/pages
- * Page catalogue for the matrix editor (same payload as /api/roles/pages).
+ * Page catalogue for the matrix editor (same payload as /api/roles/pages),
+ * sorted by the admin's saved matrix order when one exists.
  */
 app.get("/pages", requirePermission("users.read"), async (c) => {
+  const order = await getPageOrder(c.env);
   return c.json({
-    pages: PAGES.map((p) => ({
+    pages: orderPages([...PAGES], order).map((p) => ({
       key: p.key,
       label: p.label,
       partialMeaning: p.partialMeaning,
@@ -79,6 +122,31 @@ app.get("/pages", requirePermission("users.read"), async (c) => {
       parent: p.parent ?? null,
     })),
   });
+});
+
+/**
+ * PATCH /api/positions/page-order
+ * Save the matrix display order (drag-reorder). Body: { order: string[] } —
+ * a flat list of valid page keys. Global (affects every position's matrix);
+ * gated on users.manage like the rest of the position admin surface.
+ * Registered before "/:id" so the literal path wins over the id param.
+ */
+app.patch("/page-order", requirePermission("users.manage"), async (c) => {
+  const body = await c.req.json<{ order?: unknown }>().catch(() => ({}) as any);
+  if (!Array.isArray(body.order)) {
+    return c.json({ error: "order[] is required" }, 400);
+  }
+  const order = body.order.filter(
+    (k: unknown): k is string => typeof k === "string" && isValidPageKey(k),
+  );
+  const userId = (c.get("user") as { id?: number } | undefined)?.id ?? null;
+  await setSetting(c.env, POSITION_PAGE_ORDER_KEY, order, userId);
+  await audit(c, {
+    action: "positions.page_order.update",
+    summary: `Reordered the position matrix (${order.length} pages)`,
+    meta: { count: order.length },
+  });
+  return c.json({ ok: true, count: order.length });
 });
 
 /** POST /api/positions  Body: { department_id, name, slug?, level?, sort_order? } */

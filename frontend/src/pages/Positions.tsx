@@ -303,6 +303,7 @@ export function PositionsTab() {
               key={selected.id}
               position={selected}
               pages={pagesQ.data?.pages ?? []}
+              reloadPages={pagesQ.reload}
               onEdit={() => setEditing(selected)}
             />
           ) : (
@@ -487,10 +488,12 @@ function PositionEditPanel({
 function PositionMatrixEditor({
   position,
   pages,
+  reloadPages,
   onEdit,
 }: {
   position: Position;
   pages: PageDef[];
+  reloadPages: () => void;
   onEdit: () => void;
 }) {
   const toast = useToast();
@@ -510,6 +513,37 @@ function PositionMatrixEditor({
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
+  // Drag-reorder of matrix rows. Only siblings (same parent) may swap; the
+  // dragged key is moved just before the drop target in the GLOBAL page order
+  // and persisted, so the new order shows in every position's matrix.
+  const [rowDrag, setRowDrag] = useState<string | null>(null);
+  const [rowOver, setRowOver] = useState<string | null>(null);
+  const [reordering, setReordering] = useState(false);
+  const parentOf = (key: string) => pages.find((p) => p.key === key)?.parent ?? null;
+  async function reorderRow(targetKey: string) {
+    const src = rowDrag;
+    setRowDrag(null);
+    setRowOver(null);
+    if (!src || src === targetKey) return;
+    if (parentOf(src) !== parentOf(targetKey)) {
+      toast.error("Only items in the same group can be reordered");
+      return;
+    }
+    const keys = pages.map((p) => p.key).filter((k) => k !== src);
+    const at = keys.indexOf(targetKey);
+    if (at < 0) return;
+    keys.splice(at, 0, src);
+    setReordering(true);
+    try {
+      await api.patch("/api/positions/page-order", { order: keys });
+      reloadPages();
+    } catch (e: any) {
+      toast.error(e?.message || "Reorder failed");
+    } finally {
+      setReordering(false);
+    }
+  }
+
   // Open tidy: collapse NESTED groups by default (a group that is itself a
   // sub-page of another), so SCM shows its 6 areas instead of all ~30 rows.
   // Top-level groups stay open. Runs once when the catalogue first loads.
@@ -584,18 +618,53 @@ function PositionMatrixEditor({
   const renderNode = (page: PageDef, depth: number) => {
     const kids = childrenOf(page.key);
     const isCollapsed = collapsed.has(page.key);
+    // Does any descendant carry a grant? Used to flag a parent that is itself
+    // "none" but has sub-pages granted (so a collapsed area shows it's not empty).
+    let hasGrantedDescendant = false;
+    if (kids.length > 0) {
+      let frontier = kids;
+      while (frontier.length && !hasGrantedDescendant) {
+        if (frontier.some((k) => (levels[k.key] ?? "none") !== "none")) hasGrantedDescendant = true;
+        frontier = frontier.flatMap((k) => childrenOf(k.key));
+      }
+    }
+    const canDrop = rowDrag != null && rowDrag !== page.key && parentOf(rowDrag) === (page.parent ?? null);
     return (
       <div key={page.key} className={depth > 0 ? "mt-1" : ""}>
-        <LevelRow
-          page={page}
-          level={levels[page.key] ?? "none"}
-          dirty={dirty.has(page.key)}
-          onChange={(l) => change(page.key, l)}
-          collapsible={kids.length > 0}
-          collapsed={isCollapsed}
-          onToggleCollapse={() => toggleGroup(page.key)}
-          dense={depth > 0}
-        />
+        <div
+          onDragOver={(e) => {
+            if (!canDrop) return;
+            e.preventDefault();
+            if (rowOver !== page.key) setRowOver(page.key);
+          }}
+          onDragLeave={() => setRowOver((k) => (k === page.key ? null : k))}
+          onDrop={(e) => {
+            e.preventDefault();
+            reorderRow(page.key);
+          }}
+          className={cn(
+            "rounded transition-colors",
+            canDrop && rowOver === page.key && "ring-1 ring-accent bg-accent-soft/40",
+          )}
+        >
+          <LevelRow
+            page={page}
+            level={levels[page.key] ?? "none"}
+            dirty={dirty.has(page.key)}
+            onChange={(l) => change(page.key, l)}
+            collapsible={kids.length > 0}
+            collapsed={isCollapsed}
+            onToggleCollapse={() => toggleGroup(page.key)}
+            mixed={kids.length > 0 && (levels[page.key] ?? "none") === "none" && hasGrantedDescendant}
+            dense={depth > 0}
+            onDragStartRow={() => setRowDrag(page.key)}
+            onDragEndRow={() => {
+              setRowDrag(null);
+              setRowOver(null);
+            }}
+            dragging={rowDrag === page.key}
+          />
+        </div>
         {kids.length > 0 && !isCollapsed && (
           <div className="mt-1 space-y-1 border-l-2 border-border-subtle pl-2.5">
             {kids.map((kid) => renderNode(kid, depth + 1))}
@@ -676,6 +745,10 @@ function LevelRow({
   collapsible,
   collapsed,
   onToggleCollapse,
+  mixed,
+  onDragStartRow,
+  onDragEndRow,
+  dragging,
 }: {
   page: PageDef;
   level: AccessLevel;
@@ -685,27 +758,64 @@ function LevelRow({
   collapsible?: boolean;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  mixed?: boolean;
+  onDragStartRow?: () => void;
+  onDragEndRow?: () => void;
+  dragging?: boolean;
 }) {
   return (
-    <div className="group -mx-1 flex items-center justify-between gap-2 rounded px-1 transition-colors hover:bg-accent-soft/40">
-      {/* Label + key on one line keeps each page to a single dense row */}
-      <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        {collapsible && (
+    <div
+      className={cn(
+        "group -mx-1 flex items-center justify-between gap-1 rounded px-1 transition-colors hover:bg-accent-soft/40",
+        dragging && "opacity-40",
+      )}
+    >
+      {/* Grip — drag to reorder within the same group. Native HTML5 DnD; the
+          parent row is the drop target. */}
+      <span
+        draggable
+        onDragStart={onDragStartRow}
+        onDragEnd={onDragEndRow}
+        title="Drag to reorder"
+        className="shrink-0 cursor-grab self-center rounded p-0.5 text-ink-muted/40 opacity-0 transition-opacity hover:text-accent group-hover:opacity-100 active:cursor-grabbing"
+      >
+        <GripVertical size={13} />
+      </span>
+      {/* Label row. For groups the WHOLE label toggles collapse (not just the
+          tiny chevron), so each area is easy to fold individually. */}
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        {collapsible ? (
           <button
             type="button"
             onClick={onToggleCollapse}
-            title={collapsed ? "Expand sub-pages" : "Collapse sub-pages"}
-            className="-ml-0.5 shrink-0 self-center rounded p-0.5 text-ink-muted transition-colors hover:bg-accent-soft hover:text-accent"
+            title={collapsed ? "Expand this area" : "Collapse this area"}
+            className="-ml-0.5 flex min-w-0 flex-1 items-center gap-1 rounded py-0.5 text-left transition-colors hover:text-accent"
           >
-            {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+            {collapsed ? (
+              <ChevronRight size={14} className="shrink-0 text-ink-muted" />
+            ) : (
+              <ChevronDown size={14} className="shrink-0 text-ink-muted" />
+            )}
+            <span className={cn("truncate font-semibold text-ink transition-colors group-hover:text-accent", dense ? "text-[12.5px]" : "text-[13.5px]")}>
+              {page.label}
+            </span>
+            {mixed && (
+              <span
+                title="Some sub-pages here are granted (this area isn't blanket-granted)"
+                className="shrink-0 rounded-full bg-accent/15 px-1.5 py-px text-[8.5px] font-bold uppercase tracking-wide text-accent"
+              >
+                sub
+              </span>
+            )}
           </button>
+        ) : (
+          <span
+            title={page.key}
+            className={cn("truncate font-semibold text-ink transition-colors group-hover:font-bold group-hover:text-accent", dense ? "text-[12.5px]" : "text-[13.5px]")}
+          >
+            {page.label}
+          </span>
         )}
-        <span
-          title={page.key}
-          className={cn("truncate font-semibold text-ink transition-colors group-hover:font-bold group-hover:text-accent", dense ? "text-[12.5px]" : "text-[13.5px]")}
-        >
-          {page.label}
-        </span>
         {dirty && (
           <span className="shrink-0 rounded bg-warning-bg px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning-text">
             unsaved
