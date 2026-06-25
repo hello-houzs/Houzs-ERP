@@ -69,6 +69,11 @@ export type ScanPrefillLine = {
   fabricCode:     string;        // matched fabric ('' = none)
   suggestedCode:  string;        // the SKU code Claude suggested ('' = none)
   confidence:     number;        // 0-1 confidence of the suggested SKU
+  /* Configured SOFA special-add-on CODES the slip remark resolved to (already
+     validated server-side against the catalog + the line model's
+     allowed_options.specials). The New SO line-seed auto-checks these specials.
+     [] when none. */
+  specialCodes:   string[];
 };
 
 /* SO-Maintenance-matched payment block → seeds ONE PaymentDraft row in the
@@ -137,6 +142,10 @@ type ExtractedLine = {
   priceRmGuess: number | null;
   skuMatch: SkuMatch | null;
   fabricMatch: SkuMatch | null;
+  /* Configured SOFA special add-ons the row asks for (validated server-side
+     against the catalog + the line's model allowed_options.specials). [] when
+     none — seeds the New SO line's checked specials. */
+  specialsMatch: SkuMatch[];
   notes: string | null;
 };
 /* SO-Maintenance option match — value is a so_dropdown_options row VALUE,
@@ -444,6 +453,11 @@ export const ScanOrderModal = ({ onClose }: Props) => {
           fabricCode: l.fabricMatch?.code ?? '',
           suggestedCode: code,
           confidence: l.skuMatch?.confidence ?? 0,
+          /* OCR-matched configured specials (already model-gated server-side) →
+             the New SO line auto-checks them. */
+          specialCodes: Array.isArray(l.specialsMatch)
+            ? l.specialsMatch.map((s) => s.code).filter(Boolean)
+            : [],
         };
       }),
       // Original-slip R2 key → carried to the New SO create body.

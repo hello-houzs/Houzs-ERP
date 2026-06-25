@@ -267,7 +267,7 @@
 //   a person or a Houzs department + access matrix + view-level); replies now send
 //   FROM the chosen mailbox (hello@). OCR scan: 2nd phone -> Emergency Contact;
 //   removed the per-line "scanned · NN%" review chip from the create-SO page.
-const VERSION = "houzs-erp-v62";
+const VERSION = "houzs-erp-v63";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

@@ -227,6 +227,19 @@ type CatalogSku = {
   baseModel: string | null;
 };
 type CatalogFabric = { code: string; description: string | null };
+// SOFA Special Add-ons (scm.special_addons, migration 0134) — the configured
+// specials the SO line editor's accordion offers. ACTIVE rows only; injected
+// into the cached prompt prefix so the OCR can map a slip remark ("change nylon
+// cover") to a configured special CODE and mark it on the line instead of
+// dumping it in notes. allowedModels = the SOFA model_codes whose
+// allowed_options.specials includes this code (validateSlip uses it to keep a
+// matched special only when the line's resolved model actually offers it).
+type CatalogSpecial = {
+  code: string;
+  label: string;
+  soDescription: string | null;
+  categories: string[];
+};
 
 // SO Maintenance vocabularies (so_dropdown_options, migration 0081) — the
 // option groups the SO Maintenance page edits. ACTIVE rows only; injected
@@ -258,6 +271,13 @@ const emptyOptions = (): CatalogOptions => ({
 type Catalog = {
   skus: CatalogSku[];
   fabrics: CatalogFabric[];
+  // Configured SOFA Special Add-ons (active special_addons rows) — feeds the
+  // OCR's specialsMatch so a slip remark resolves to a configured special code.
+  specials: CatalogSpecial[];
+  // SKU code → the special CODES its Model offers (allowed_options.specials).
+  // validateSlip resolves a line's model from skuMatch.code and keeps only a
+  // matched special the model actually allows (else it would render "retired").
+  specialsByModelSku: Map<string, Set<string>>;
   sofaSizes: string[];
   sofaLegHeights: string[];
   options: CatalogOptions;
@@ -297,7 +317,7 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
   // catalogue (mfg_products is 1141 ACTIVE SKUs live, my_localities 2933) — a
   // truncated catalogue makes the OCR reject valid SKUs/states as "unknown".
   // Page each list read with .range(); cfgRes stays a single .maybeSingle().
-  const [prodRes, fabRes, cfgRes, optRes, locRes] = await Promise.all([
+  const [prodRes, fabRes, cfgRes, optRes, locRes, spcRes, modRes] = await Promise.all([
     paginateAll((from, to) => sb
       .from('mfg_products')
       .select('code, name, category, base_model')
@@ -338,6 +358,24 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
       .from('my_localities')
       .select('state')
       .order('state', { ascending: true })
+      .range(from, to)),
+    // Configured Special Add-ons (migration 0134) — ACTIVE rows only (a
+    // deactivated special must never re-enter on a NEW scanned order). The OCR
+    // maps a slip remark to one of these CODES via specialsMatch.
+    paginateAll((from, to) => sb
+      .from('special_addons')
+      .select('code, label, so_description, categories')
+      .eq('active', true)
+      .order('sort_order', { ascending: true })
+      .order('code', { ascending: true })
+      .range(from, to)),
+    // SOFA Models — allowed_options.specials is the per-model ON/OFF authority
+    // for which specials each model offers. Used to build the SKU→allowed-codes
+    // map so validateSlip keeps only a special the line's model actually allows.
+    paginateAll((from, to) => sb
+      .from('product_models')
+      .select('model_code, allowed_options')
+      .eq('category', 'SOFA')
       .range(from, to)),
   ]);
 
@@ -389,7 +427,39 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
   }
   states.sort((a, b) => a.localeCompare(b));
 
-  return { skus, fabrics, sofaSizes, sofaLegHeights, options, states };
+  const specials: CatalogSpecial[] = ((spcRes.data as Array<{
+    code: string; label: string; so_description: string | null; categories: string[] | null;
+  }> | null) ?? []).map((s) => ({
+    code: s.code,
+    label: s.label,
+    soDescription: s.so_description ?? null,
+    categories: Array.isArray(s.categories) ? s.categories : [],
+  }));
+
+  // model_code → the special CODES that model's allowed_options.specials lists
+  // (uppercased for case-insensitive lookup). allowed_options is jsonb; PostgREST
+  // may return it camelCased — dual-read either casing.
+  const specialsByModelCode = new Map<string, Set<string>>();
+  for (const row of (modRes.data as Array<Record<string, unknown>> | null) ?? []) {
+    const modelCode = (row.modelCode ?? row.model_code) as string | undefined;
+    if (!modelCode) continue;
+    const opts = (row.allowedOptions ?? row.allowed_options) as { specials?: unknown } | null;
+    const list = Array.isArray(opts?.specials) ? (opts!.specials as unknown[]) : [];
+    const set = new Set<string>();
+    for (const v of list) if (typeof v === 'string' && v.trim() !== '') set.add(v.toUpperCase());
+    specialsByModelCode.set(modelCode.toUpperCase(), set);
+  }
+  // SKU code → its Model's allowed special codes. SOFA SKUs are
+  // `{model_code}-{compartment}` with base_model = model_code; resolve each
+  // SKU's allowed set off base_model so validateSlip can gate per line.
+  const specialsByModelSku = new Map<string, Set<string>>();
+  for (const s of skus) {
+    if (!s.baseModel) continue;
+    const allowed = specialsByModelCode.get(s.baseModel.toUpperCase());
+    if (allowed) specialsByModelSku.set(s.code.toUpperCase(), allowed);
+  }
+
+  return { skus, fabrics, specials, specialsByModelSku, sofaSizes, sofaLegHeights, options, states };
 }
 
 function formatCatalog(c: Catalog): string {
@@ -417,6 +487,13 @@ function formatCatalog(c: Catalog): string {
 
   lines.push('=== FABRICS (code | description) ===');
   for (const f of c.fabrics) lines.push(`${f.code} | ${f.description ?? ''}`);
+  lines.push('');
+
+  // Configured SOFA Special Add-ons — the specialsMatch rule (LINE ITEMS) maps a
+  // slip remark to one of these CODES (left side), copied character-for-character.
+  lines.push('=== SOFA SPECIAL ADD-ONS (code | label) ===');
+  if (c.specials.length === 0) lines.push('—');
+  for (const s of c.specials) lines.push(`${s.code} | ${s.label}`);
   lines.push('');
 
   lines.push('=== SOFA SIZES (seat sizes) ===');
@@ -627,7 +704,13 @@ For EVERY handwritten row in the item table output one lines[] entry:
     • DIRECTION (LHF = left-hand-facing / RHF = right-hand-facing) — read it from the drawing and from "左/右" or "X left Y right" notes (the box+TV sketch encodes which arm sits where). BE CONSERVATIVE: if the side is genuinely ambiguous, emit the compartment WITHOUT forcing a wrong direction — pick the {base_model}-{compartment} SKU without the (LHF/RHF) suffix (or set skuMatch=null with the compartment in notes) and lower confidence so the operator picks the side. Never guess a side confidently.
     Example: "8030 (2R+1R)(28\") Col BO315-22" → TWO lines: line 1 skuMatch="8030-2A(LHF)", line 2 skuMatch="8030-1A(RHF)"; BOTH carry size 28" in notes and fabricMatch.code="BO315-22"; rawText on each line is the verbatim row.
 - fabricMatch — match against the FABRICS catalog whenever the row (or a margin note, or a "Col:" / "Color" / "Fabric" prefix) names a fabric/colour code (e.g. "PC151-01", "Col: PC151-01"). The fabric code is frequently the FIRST token on a bedframe/sofa variant line; always look for it there. null when the row names no fabric. Same never-invent rule — the code must be copied character-for-character from the FABRICS list.
-- notes — anything else on the row the operator should see (free gifts, "FOC", sizes that don't match the catalog, unreadable words flagged as "[illegible]").
+- specialsMatch — an array of CONFIGURED SOFA SPECIAL ADD-ONS the row's free-text descriptor asks for. The catalog has a "SOFA SPECIAL ADD-ONS (code | label)" section; when a phrase on the row (or a margin note attached to the row) DESCRIBES one of those add-ons, emit it here as { "code": <exact catalog special code>, "confidence": 0-1, "reason": <short why> } INSTEAD of dumping that phrase into notes/remarks. Map by MEANING against each special's label:
+    • "change nylon cover" / "nylon bottom" / "nylon fabric" / "尼龙布底" → the NYLON-fabric special.
+    • "short backrest" / "lower backrest" / "矮靠背" / "短靠背" → the short/low-backrest special.
+    • "extend 5\"" / "lengthen seat" / "加长" → the seat-extension special.
+    • "no bracket" / "remove bracket" / "免支架" → the no-bracket special.
+  Match AGGRESSIVELY by keyword against the special LABELS, the same way skuMatch fuzzes the SKU names. A row may carry MORE THAN ONE special (emit one array entry each); most rows carry none (emit []). KEEP the original phrase verbatim in rawText regardless — specialsMatch is in ADDITION to rawText, and the matched phrase must NOT also be copied into notes/remarks. Same never-invent rule as skuMatch: the code MUST be copied character-for-character from the SOFA SPECIAL ADD-ONS list; when no add-on label defensibly matches the phrase, leave it OUT of specialsMatch (do not invent a code) and let rawText/notes carry it. Only SOFA lines carry specials; for non-sofa rows return [].
+- notes — anything else on the row the operator should see (free gifts, "FOC", sizes that don't match the catalog, unreadable words flagged as "[illegible]"). Do NOT put a phrase here that you already emitted in specialsMatch.
 
 Delivery fees, disposal fees and lift/stair-carry charges written as rows ARE line items — match them against the SERVICE SKUS section.
 
@@ -683,6 +766,7 @@ Return STRICT JSON, no markdown fences, no prose:
     "priceRmGuess": number | null,
     "skuMatch": { "code": string, "confidence": number, "reason": string } | null,
     "fabricMatch": { "code": string, "confidence": number, "reason": string } | null,
+    "specialsMatch": [{ "code": string, "confidence": number, "reason": string }],
     "notes": string | null
   }]
 }`;
@@ -705,6 +789,10 @@ type ExtractedLine = {
   priceRmGuess: number | null;
   skuMatch: SkuMatch | null;
   fabricMatch: SkuMatch | null;
+  // Configured SOFA special add-ons the row asks for (active special_addons
+  // codes; validateSlip drops any not in the catalog or not allowed by the
+  // line's resolved model). [] when none.
+  specialsMatch: SkuMatch[];
   notes: string | null;
 };
 type ExtractedSlip = {
@@ -802,6 +890,15 @@ function normalizeSlip(raw: unknown): ExtractedSlip {
           priceRmGuess: num(li.priceRmGuess),
           skuMatch: match(li.skuMatch),
           fabricMatch: match(li.fabricMatch),
+          // specialsMatch — keep only well-formed { code, confidence, reason }
+          // entries (same shape/coercion as skuMatch); a missing/garbled array
+          // normalises to []. validateSlip then enforces never-invent + the
+          // line's model allowed_options.specials gate.
+          specialsMatch: Array.isArray(li.specialsMatch)
+            ? (li.specialsMatch as unknown[])
+                .map((s) => match(s))
+                .filter((s): s is SkuMatch => s !== null)
+            : [],
           notes: str(li.notes),
         };
       })
@@ -859,6 +956,7 @@ function validateSlip(slip: ExtractedSlip, catalog: Catalog): Warning[] {
   const warnings: Warning[] = [];
   const skuCanon = new Map(catalog.skus.map((s) => [s.code.toUpperCase(), s.code]));
   const fabricCanon = new Map(catalog.fabrics.map((f) => [f.code.toUpperCase(), f.code]));
+  const specialCanon = new Map(catalog.specials.map((s) => [s.code.toUpperCase(), s.code]));
 
   slip.lines.forEach((line, i) => {
     if (line.skuMatch) {
@@ -888,6 +986,43 @@ function validateSlip(slip: ExtractedSlip, catalog: Catalog): Warning[] {
         });
         line.fabricMatch = null;
       }
+    }
+    // specialsMatch — same never-invent enforcement as skuMatch, PLUS a model
+    // gate. Drop any special whose code is not in catalog.specials (case-
+    // insensitive snap on hit), then keep only specials the line's resolved
+    // Model actually offers (allowed_options.specials). The model is resolved
+    // off the line's skuMatch.code via catalog.specialsByModelSku; with no
+    // resolved SKU there is no model authority, so all matched specials are
+    // dropped (a special can't render checked on a line with no product).
+    if (Array.isArray(line.specialsMatch) && line.specialsMatch.length > 0) {
+      const allowedForModel = line.skuMatch
+        ? catalog.specialsByModelSku.get(line.skuMatch.code.toUpperCase()) ?? null
+        : null;
+      const kept: SkuMatch[] = [];
+      for (const sp of line.specialsMatch) {
+        const canon = specialCanon.get(sp.code.toUpperCase());
+        if (!canon) {
+          warnings.push({
+            field: 'specialsMatch',
+            value: sp.code,
+            message: `Line ${i + 1}: suggested special not in catalog — dropped.`,
+            lineIdx: i,
+          });
+          continue;
+        }
+        if (!allowedForModel || !allowedForModel.has(canon.toUpperCase())) {
+          warnings.push({
+            field: 'specialsMatch',
+            value: canon,
+            message: `Line ${i + 1}: special "${canon}" not offered by this line's model — dropped.`,
+            lineIdx: i,
+          });
+          continue;
+        }
+        sp.code = canon;
+        kept.push(sp);
+      }
+      line.specialsMatch = kept;
     }
   });
 

@@ -66,6 +66,11 @@ import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } fr
    being dropped. */
 import { useFabricColoursActive } from '../../vendor/scm/lib/fabric-queries';
 import { useFabricLibrary } from '../../vendor/scm/lib/queries';
+/* OCR specials seed — the active special_addons pool resolves a scanned
+   specialCode to its label + required option groups, so the seeded line writes
+   the SAME variant keys SoLineCard.toggleSpecial does and the special renders
+   checked on the New SO line. */
+import { useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import {
   SCAN_PREFILL_KEY, type ScanPrefill, type ExtractedSlip,
 } from '../../vendor/scm/components/ScanOrderModal';
@@ -134,6 +139,7 @@ export const SalesOrderNew = () => {
      fabricId / colour label / hex before it lands on the seeded line. */
   const scanFabricColoursQ = useFabricColoursActive();
   const scanFabricLibQ     = useFabricLibrary();
+  const scanSpecialsQ      = useSpecialAddons();
   /* Commander 2026-05-27: "他们都要有自己的account... 用自己的account开单
      都是自己的名字...salesperson 还是可以换 只是default跳出来 venue就不能换
      自动跳出来". The current logged-in staff drives:
@@ -454,6 +460,34 @@ export const SalesOrderNew = () => {
             ...(colour?.swatchHex ? { colourHex: colour.swatchHex } : {}),
           };
         }
+        /* OCR specials seed — write the SAME variant keys SoLineCard.toggleSpecial
+           does (specials = codes; specialChoices = required option-group defaults
+           [first choice]; specialLabels = display snapshot), so a "nylon" slip
+           renders the special CHECKED on the line. Codes are already model-gated
+           server-side; we just resolve labels + required groups from the live
+           special_addons pool. Keep only codes that resolve to a known add-on. */
+        const specialCodes = (l.specialCodes ?? []).filter((code) =>
+          (scanSpecialsQ.data ?? []).some((d) => d.code === code),
+        );
+        let specialVariants: Record<string, unknown> = {};
+        if (specialCodes.length > 0) {
+          const choices: Record<string, string[]> = {};
+          for (const code of specialCodes) {
+            const def = (scanSpecialsQ.data ?? []).find((d) => d.code === code);
+            if (def && def.optionGroups.length > 0) {
+              choices[code] = def.optionGroups.map((g) =>
+                g.required && g.choices[0] ? g.choices[0].label : '',
+              );
+            }
+          }
+          specialVariants = {
+            specials: specialCodes,
+            specialChoices: choices,
+            specialLabels: specialCodes.map(
+              (code) => (scanSpecialsQ.data ?? []).find((d) => d.code === code)?.label ?? code,
+            ),
+          };
+        }
         return {
           ...seeded,
           itemCode:       l.itemCode,
@@ -462,7 +496,9 @@ export const SalesOrderNew = () => {
           qty:            l.qty > 0 ? l.qty : 1,
           unitPriceCenti: l.unitPriceCenti,
           remark:         l.remark,
-          ...(fabricCode ? { variants: { ...seeded.variants, ...fabricVariants } } : {}),
+          ...((fabricCode || specialCodes.length > 0)
+            ? { variants: { ...seeded.variants, ...fabricVariants, ...specialVariants } }
+            : {}),
         };
       }));
     }
@@ -998,6 +1034,14 @@ export const SalesOrderNew = () => {
               }
             : null,
           fabricMatch: null,
+          /* Operator-confirmed specials on this line (variants.specials carries
+             the checked codes) → the distiller learns the corrected set. */
+          specialsMatch: (Array.isArray(l.variants.specials)
+            ? (l.variants.specials as unknown[]).filter(
+                (c): c is string => typeof c === 'string' && c.trim() !== '',
+              )
+            : []
+          ).map((code) => ({ code, confidence: 1, reason: 'operator-confirmed' })),
           notes: null,
         };
       }),

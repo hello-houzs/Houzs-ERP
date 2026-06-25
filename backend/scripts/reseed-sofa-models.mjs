@@ -255,11 +255,43 @@ try {
     );
   }
 
+  // --- (2b) Resolve the per-model picker pools the upsert must PRESERVE -----
+  // The SoLineCard Specials accordion + Fabrics dropdown read these off the
+  // Model's allowed_options: `specials` (special_addons.code) and `fabrics`
+  // (fabric_colours.colour_id). A re-run that wrote ONLY { compartments } would
+  // BLANK both — the per-model picker would silently stop offering specials and
+  // fabrics. Query them at runtime so the upsert keeps the linkage durable.
+  //   • specials  = active SOFA special_addons codes (categories @> 'SOFA').
+  //   • fabrics   = active fabric_colours.colour_id (the colour codes the
+  //                 SoLineCard Fabrics dropdown filters allowed_options.fabrics
+  //                 against). All active colours = the full offer for every
+  //                 model; the picker still gates by is_active at render.
+  // Fail-soft on --dry when the DB is unreachable (empty pools, never throw).
+  let sofaSpecials = [];
+  let sofaFabrics = [];
+  try {
+    sofaSpecials = (
+      await sql`SELECT code FROM scm.special_addons WHERE active AND 'SOFA' = ANY(categories) ORDER BY code`
+    ).map((r) => r.code);
+    sofaFabrics = (
+      await sql`SELECT colour_id FROM scm.fabric_colours WHERE active ORDER BY colour_id`
+    ).map((r) => r.colourId ?? r.colour_id);
+  } catch (e) {
+    if (!dry) throw e; // a real run MUST resolve the live picker pools
+    console.log(`\n  [dry] DB unreachable (${e.message}); specials/fabrics pools left empty.`);
+  }
+  console.log(
+    `\nPer-model picker pools to preserve : specials=${sofaSpecials.length} ` +
+      `(${sofaSpecials.join(", ") || "—"}) fabrics=${sofaFabrics.length}`
+  );
+
   let inserted = 0,
     updated = 0;
   if (!dry) {
     for (const m of MODELS) {
-      const allowed = { compartments: m.compartments };
+      // Keep `compartments` as-is; ALSO write `specials` + `fabrics` so a
+      // re-run can't drop the per-model picker linkage (the bug this hardens).
+      const allowed = { compartments: m.compartments, specials: sofaSpecials, fabrics: sofaFabrics };
       // Idempotent upsert on (category, model_code). No price columns exist
       // on product_models — pricing is separate (seat_height_prices on the
       // generated mfg_products SKUs, task #84), so nothing price-related is
