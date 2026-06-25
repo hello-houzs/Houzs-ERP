@@ -308,7 +308,7 @@ export const SoFromProducts = () => {
         ),
         searchValue: (p) => p.code,
         filterValue: (p) => p.code,
-        sortFn: (a, b) => a.code.localeCompare(b.code),
+        sortFn: (a, b) => (a.code ?? '').localeCompare(b.code ?? ''),
       },
       {
         key: 'name',
@@ -316,7 +316,7 @@ export const SoFromProducts = () => {
         width: 280,
         accessor: (p) => p.name,
         filterValue: (p) => p.name,
-        sortFn: (a, b) => a.name.localeCompare(b.name),
+        sortFn: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
       },
       {
         key: 'qty',

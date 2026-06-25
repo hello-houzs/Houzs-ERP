@@ -714,7 +714,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<SiRow>[] =
     accessor: (r) => <StatusPill status={r.status} />,
     searchValue: (r) => r.status,
     groupValue: (r) => r.status,
-    sortFn: (a, b) => a.status.localeCompare(b.status),
+    sortFn: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
     exportValue: (r) => STATUS_LABEL[r.status] ?? r.status.replace(/_/g, ' '),
   },
   /* ── Default-hidden long-tail ── */

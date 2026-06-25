@@ -1270,60 +1270,6 @@ mfgSalesOrders.get('/customer-search', async (c) => {
   return c.json({ customers: [...byKey.values()].slice(0, 8) });
 });
 
-// Houzs — resolve the logged-in salesperson's ACTIVE exhibition project venue
-// so the New-SO / OCR form can auto-select it in the Venue dropdown. MUST be
-// registered BEFORE "/:docNo" (single-segment static path, else Hono treats
-// "active-venue" as a docNo). Returns the project venue NAME + the matching
-// project_venues id (string, by name; null if the venue isn't in the master) +
-// the project name (for the FE hint). Resolution = the latest project (by
-// start_date <= date) the user is the PIC of OR a Sales Attending rep of.
-mfgSalesOrders.get('/active-venue', async (c) => {
-  const hu = c.get('houzsUser');
-  const uid = hu?.id != null ? Number(hu.id) : NaN;
-  const dateRaw = c.req.query('date');
-  const soDate =
-    typeof dateRaw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateRaw)
-      ? dateRaw.slice(0, 10)
-      : new Date().toISOString().slice(0, 10);
-  if (!Number.isFinite(uid)) {
-    return c.json({ venueId: null, venueName: null, projectName: null });
-  }
-  try {
-    const row = await c.env.DB.prepare(
-      `SELECT p.venue AS venue, p.name AS projectname, v.id AS masterid
-         FROM projects p
-         LEFT JOIN project_venues v
-           ON lower(trim(v.name)) = lower(trim(p.venue)) AND v.active = 1
-        WHERE p.start_date IS NOT NULL
-          AND p.start_date <= ?
-          AND p.venue IS NOT NULL AND p.venue <> ''
-          AND (
-            p.pic_id = ?
-            OR EXISTS (
-              SELECT 1 FROM project_sales_attendees psa
-                JOIN sales_reps sr ON sr.id = psa.sales_rep_id
-               WHERE psa.project_id = p.id AND sr.user_id = ?
-            )
-          )
-        ORDER BY p.start_date DESC
-        LIMIT 1`,
-    )
-      .bind(soDate, uid, uid)
-      .first<{ venue?: string | null; projectname?: string | null; masterid?: number | null }>();
-    const venueName = typeof row?.venue === 'string' && row.venue.trim() ? row.venue.trim() : null;
-    const projectName =
-      typeof row?.projectname === 'string' && row.projectname.trim() ? row.projectname.trim() : null;
-    const masterId = row?.masterid ?? null;
-    return c.json({
-      venueId: masterId != null ? String(masterId) : null,
-      venueName,
-      projectName,
-    });
-  } catch {
-    return c.json({ venueId: null, venueName: null, projectName: null });
-  }
-});
-
 mfgSalesOrders.get('/:docNo', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo');
   const user = c.get('user');
@@ -1814,67 +1760,6 @@ mfgSalesOrders.post('/', async (c) => {
       .from('venues').select('name').eq('id', venueIdToStamp).maybeSingle();
     resolvedVenueName = (venueRow as { name?: string } | null)?.name ?? null;
   }
-
-  /* Houzs venue-by-project (owner 2026-06-25) — scm.staff is unused in Houzs, so
-     the home-venue logic above always leaves venue NULL. Fall back to the
-     LOGGED-IN salesperson's currently-active exhibition project: the latest
-     project (by start_date, <= the SO date) they are the PIC of OR a Sales
-     Attending rep of (owner 2026-06-25: "PIC 或 Sales Attending 都算"). The
-     over-assigned PICs in Houzs data are NON-salespeople (user 1 = the HOUZS
-     CENTURY system account; orphan pic_ids with no users row) who never log in
-     to create SOs, so they don't mis-resolve; real salesperson-PICs are clean.
-     Stamps the venue
-     TEXT only (the project venue isn't a scm.venues row, so venue_id stays
-     NULL); an explicit body.venue still wins. Reads the PUBLIC schema via
-     c.env.DB — the scm supabase client can't reach public. */
-  if (!resolvedVenueName) {
-    const houzsUser = c.get('houzsUser');
-    const uid = houzsUser?.id != null ? Number(houzsUser.id) : NaN;
-    if (Number.isFinite(uid)) {
-      const soDateForVenue =
-        typeof body.soDate === 'string' && body.soDate.trim()
-          ? body.soDate.trim().slice(0, 10)
-          : new Date().toISOString().slice(0, 10);
-      try {
-        const projRow = await c.env.DB.prepare(
-          `SELECT p.venue AS venue
-             FROM projects p
-            WHERE p.start_date IS NOT NULL
-              AND p.start_date <= ?
-              AND p.venue IS NOT NULL AND p.venue <> ''
-              AND (
-                p.pic_id = ?
-                OR EXISTS (
-                  SELECT 1 FROM project_sales_attendees psa
-                    JOIN sales_reps sr ON sr.id = psa.sales_rep_id
-                   WHERE psa.project_id = p.id AND sr.user_id = ?
-                )
-              )
-            ORDER BY p.start_date DESC
-            LIMIT 1`,
-        )
-          .bind(soDateForVenue, uid, uid)
-          .first<{ venue?: string | null }>();
-        const v = projRow?.venue ?? null;
-        if (typeof v === 'string' && v.trim()) resolvedVenueName = v.trim();
-      } catch {
-        /* non-fatal — leave venue NULL if the project lookup fails */
-      }
-    }
-  }
-
-  /* Houzs venue_id guard — the New-SO Venue dropdown is sourced from
-     public.project_venues (INTEGER ids, mapped to string in the FE), but
-     mfg_sales_orders.venue_id is a UUID FK to the (empty/unused) scm.venues.
-     Writing a project_venues integer id into the uuid column 500s the insert
-     ("invalid input syntax for type uuid"). So only stamp venue_id when it is a
-     real uuid (a legacy scm.venues id); else NULL it — the venue TEXT column
-     (resolvedVenueName) is the source of truth for the venue. */
-  const venueIdUuid =
-    typeof venueIdToStamp === 'string' &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(venueIdToStamp)
-      ? venueIdToStamp
-      : null;
 
   // Compute totals + category breakdown
   let mattressSofa = 0, bedframe = 0, accessories = 0, others = 0, total = 0, totalCost = 0;
@@ -3085,10 +2970,8 @@ mfgSalesOrders.post('/', async (c) => {
     /* SO-SKU spec P5 — the resolved venue NAME (explicit body.venue wins,
        else looked up from the stamped venue_id) so the column finally lights. */
     venue: resolvedVenueName,
-    /* Migration 0086 — venue master FK (separate from legacy `venue` text).
-       Guarded to a real uuid; project_venues integer ids are nulled (the venue
-       TEXT carries the value). See the venueIdUuid guard above. */
-    venue_id: venueIdUuid,
+    /* Migration 0086 — venue master FK (separate from legacy `venue` text). */
+    venue_id: venueIdToStamp,
     address1: (body.address1 as string) ?? null,
     address2: (body.address2 as string) ?? null,
     address3: (body.address3 as string) ?? null,

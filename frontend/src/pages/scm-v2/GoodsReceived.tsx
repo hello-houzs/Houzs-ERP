@@ -73,7 +73,7 @@ const buildGrnColumns = (): DataGridColumn<GrnRow>[] => [
     searchValue: (g) => g.grn_number,
     // accessor is JSX → export the raw GRN-no string so GRN No. isn't blank.
     exportValue: (g) => g.grn_number,
-    sortFn: (a, b) => a.grn_number.localeCompare(b.grn_number),
+    sortFn: (a, b) => (a.grn_number ?? '').localeCompare(b.grn_number ?? ''),
   },
   {
     key: 'supplier', label: 'Supplier', width: 220, sortable: true, groupable: true,
@@ -122,7 +122,7 @@ const buildGrnColumns = (): DataGridColumn<GrnRow>[] => [
     groupValue: (g) => statusLabel('grn', g.status),
     // accessor is a <StatusPill> JSX → export the plain status label text.
     exportValue: (g) => statusLabel('grn', g.status),
-    sortFn: (a, b) => a.status.localeCompare(b.status),
+    sortFn: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
   },
 ];
 

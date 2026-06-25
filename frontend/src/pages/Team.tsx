@@ -2928,7 +2928,7 @@ function clusterByPosition(
   }
   const clusters = [...byPos.entries()].map(([label, ms]) => ({
     label,
-    members: ms.sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email)),
+    members: ms.sort((a, b) => (a.name || a.email || "").localeCompare(b.name || b.email || "")),
   }));
   clusters.sort(
     (a, b) =>

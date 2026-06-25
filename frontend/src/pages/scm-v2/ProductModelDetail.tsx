@@ -128,7 +128,7 @@ export const ProductModelDetail = ({
     const rows = (specialAddonsQ.data ?? [])
       .filter((r) => r.active)
       .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
+      .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''));
     const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => r.code);
     return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
   }, [specialAddonsQ.data]);

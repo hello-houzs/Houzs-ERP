@@ -574,7 +574,7 @@ const SkuMasterTab = () => {
         ),
         searchValue: (r) => r.code,
         filterValue: (r) => r.code,
-        sortFn: (a, b) => a.code.localeCompare(b.code),
+        sortFn: (a, b) => (a.code ?? '').localeCompare(b.code ?? ''),
       },
       {
         key: 'desc',
@@ -599,7 +599,7 @@ const SkuMasterTab = () => {
         ),
         searchValue: (r) => `${r.name} ${r.description ?? ''}${r.one_shot ? ' one-shot' : ''}`,
         filterValue: (r) => r.name,
-        sortFn: (a, b) => a.name.localeCompare(b.name),
+        sortFn: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
       },
     ];
     if (isSofaView) {

@@ -12,13 +12,13 @@ async function seedRep(
   id: number,
   userId: number | null,
   uplineId: number | null,
-  opts: { archived?: string; isAdmin?: boolean } = {},
+  opts: { archived?: string } = {},
 ): Promise<void> {
   await env.DB.prepare(
-    `INSERT INTO sales_reps (id, code, name, user_id, upline_id, status, archived_at, is_admin)
-     VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`,
+    `INSERT INTO sales_reps (id, code, name, user_id, upline_id, status, archived_at)
+     VALUES (?, ?, ?, ?, ?, 'active', ?)`,
   )
-    .bind(id, `SR-${id}`, `Rep ${id}`, userId, uplineId, opts.archived ?? null, opts.isAdmin ? 1 : 0)
+    .bind(id, `SR-${id}`, `Rep ${id}`, userId, uplineId, opts.archived ?? null)
     .run();
 }
 
@@ -67,12 +67,6 @@ describe("sales visibility subtree", () => {
   test("a user who is not a sales rep is unrestricted (null)", async () => {
     await seedRep(1, 101, null);
     expect(await salesVisibilityUserIds(env, 999)).toBeNull();
-  });
-
-  test("an is_admin rep (Sales Director) sees everyone despite having a subtree", async () => {
-    await seedRep(1, 101, null, { isAdmin: true }); // director, root of a branch
-    await seedRep(2, 102, 1); // a report under the director
-    expect(await salesVisibilityUserIds(env, 101)).toBeNull(); // unrestricted, not just [101,102]
   });
 
   test("archived downline reps are excluded from the subtree", async () => {

@@ -28,12 +28,6 @@ export const supabaseAuth = createMiddleware<{ Bindings: Env; Variables: Variabl
     // Supabase-User shape the ported routes read. user.id is the scm.staff uuid
     // (system staff); email stays the real Houzs user's for display.
     const hu = c.get("user") as unknown as { id?: number | string; email?: string } | undefined;
-    // Stash the real Houzs user (integer id) for per-user PUBLIC-schema lookups
-    // (the next line overwrites `user` with the scm.staff system identity).
-    c.set(
-      "houzsUser",
-      hu && hu.id != null ? { id: Number(hu.id), email: hu.email } : undefined,
-    );
     c.set("user", {
       id: SCM_SYSTEM_STAFF_ID,
       email: hu?.email ?? "",

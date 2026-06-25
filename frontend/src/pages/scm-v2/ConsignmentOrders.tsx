@@ -1495,6 +1495,6 @@ const buildColumns = (
       return eff.label ?? STATUS_LABEL[r.status] ?? r.status.replace(/_/g, ' ');
     },
     groupValue: (r) => r.status,
-    sortFn: (a, b) => a.status.localeCompare(b.status),
+    sortFn: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
   },
 ];

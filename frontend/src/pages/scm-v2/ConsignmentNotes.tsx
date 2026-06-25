@@ -544,7 +544,7 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<CnRow>[] =
     searchValue: (r) => STATUS_LABEL[r.status] ?? r.status,
     exportValue: (r) => STATUS_LABEL[r.status] ?? r.status.replace(/_/g, ' '),
     groupValue: (r) => r.status,
-    sortFn: (a, b) => a.status.localeCompare(b.status),
+    sortFn: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
   },
   /* ── Default-hidden long-tail ── */
   {

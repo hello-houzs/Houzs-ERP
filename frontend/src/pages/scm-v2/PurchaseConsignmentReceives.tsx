@@ -63,7 +63,7 @@ const buildColumns = (): DataGridColumn<GrnRow>[] => [
     searchValue: (g) => g.receive_number,
     /* Accessor is JSX → export the raw doc-no string or the cell exports blank. */
     exportValue: (g) => g.receive_number,
-    sortFn: (a, b) => a.receive_number.localeCompare(b.receive_number),
+    sortFn: (a, b) => (a.receive_number ?? '').localeCompare(b.receive_number ?? ''),
   },
   {
     key: 'supplier', label: 'Supplier', width: 220, sortable: true, groupable: true,
@@ -112,7 +112,7 @@ const buildColumns = (): DataGridColumn<GrnRow>[] => [
     /* Accessor is JSX → export the human status label, not blank. */
     exportValue: (g) => statusLabel('grn', g.status),
     groupValue: (g) => statusLabel('grn', g.status),
-    sortFn: (a, b) => a.status.localeCompare(b.status),
+    sortFn: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
   },
 ];
 

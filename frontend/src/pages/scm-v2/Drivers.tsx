@@ -39,14 +39,14 @@ export const Drivers = () => {
       accessor: (d) => <span className={styles.codeChip}>{d.driver_code}</span>,
       searchValue: (d) => d.driver_code,
       filterValue: (d) => d.driver_code,
-      sortFn: (a, b) => a.driver_code.localeCompare(b.driver_code),
+      sortFn: (a, b) => (a.driver_code ?? '').localeCompare(b.driver_code ?? ''),
     },
     {
       key: 'name',
       label: 'Name',
       width: 200,
       accessor: (d) => d.name,
-      sortFn: (a, b) => a.name.localeCompare(b.name),
+      sortFn: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
     },
     {
       key: 'phone',
