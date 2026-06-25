@@ -9104,13 +9104,34 @@ function ProjectSalesEntriesSection({
   const totals = list.data?.totals;
   const projectLabel = projectCode ? `${projectCode} · ${projectName}` : projectName;
 
+  // When an event has no individual sales entries, fall back to the project's
+  // lump-sum total (project_finance.total_sales) so this box matches the
+  // Project List + dashboard instead of showing RM 0.00. Individual sales
+  // (any status) take over the moment they exist.
+  const salesEntryCount = totals
+    ? totals.by_status.draft + totals.by_status.submitted + totals.by_status.pushed
+    : 0;
+  const showLumpTotal = salesEntryCount === 0 && currentTotalSales != null;
+
   return (
     <PanelSection title={`Sales (${rows.length})`}>
       {/* Toolbar: totals · status filter · new-sale */}
       <div className="mb-2 flex flex-col gap-3 rounded-md border border-border-subtle bg-bg/30 px-3 py-2 text-[10.5px] sm:flex-row sm:flex-wrap sm:items-center">
         {totals && (
           <div className="flex flex-wrap items-center gap-3">
-            <Stat label="Total" value={formatCurrency(totals.amount)} accent />
+            <Stat
+              label="Total"
+              value={formatCurrency(showLumpTotal ? (currentTotalSales ?? 0) : totals.amount)}
+              accent
+            />
+            {showLumpTotal && (
+              <span
+                className="rounded bg-emerald-100 px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-emerald-700"
+                title="Final lump-sum total for this event (no individual sales logged yet). Logging individual sales will replace this."
+              >
+                final total
+              </span>
+            )}
             <Stat label="Drafts" value={String(totals.by_status.draft)} />
             <Stat label="Submitted" value={String(totals.by_status.submitted)} />
             <Stat label="Pushed" value={String(totals.by_status.pushed)} />
