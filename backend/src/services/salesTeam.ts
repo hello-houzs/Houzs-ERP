@@ -84,7 +84,11 @@ export async function subtreeRepIds(env: Env, rootRepId: number): Promise<Set<nu
 //   • Exec / Person (leaf)  → subtree = {self} → sees only own
 // A user who is NOT a sales rep (ops, admins, owner) reaches these
 // lists via SCM access rather than as a salesperson, so they are
-// unrestricted — the function returns null ("no WHERE filter").
+// unrestricted — the function returns null ("no WHERE filter"). A rep
+// flagged is_admin (a Sales Director / sales-team admin) is likewise
+// unrestricted: they see EVERY salesperson's documents, not just their
+// own subtree — Directors run parallel branches but each oversees the
+// whole sales floor.
 //
 // salesperson_id (integer) and sales_reps.user_id (bigint) share the
 // numeric user-id domain, so the returned ids filter directly.
@@ -93,11 +97,12 @@ export async function salesVisibilityUserIds(
   userId: number | string,
 ): Promise<number[] | null> {
   const rep = await env.DB.prepare(
-    `SELECT id FROM sales_reps WHERE user_id = ? AND archived_at IS NULL LIMIT 1`,
+    `SELECT id, is_admin FROM sales_reps WHERE user_id = ? AND archived_at IS NULL LIMIT 1`,
   )
     .bind(userId)
-    .first<{ id: number }>();
+    .first<{ id: number; is_admin: number }>();
   if (!rep) return null; // not a scoped salesperson → unrestricted
+  if (rep.is_admin) return null; // Sales Director / sales-team admin → sees everyone
 
   const repIds = await subtreeRepIds(env, rep.id);
   const placeholders = [...repIds].map(() => "?").join(",");
