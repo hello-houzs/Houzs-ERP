@@ -71,16 +71,22 @@ async function recomputeGrnInvoiced(sb: any, grnItemIds: Array<string | null | u
       .in('grn_item_id', ids);
     const rows = (plines ?? []) as Array<{ grn_item_id: string; qty: number; purchase_invoice_id: string }>;
     const piIds = [...new Set(rows.map((r) => r.purchase_invoice_id).filter(Boolean))];
-    const cancelled = new Set<string>();
+    /* LEAK GUARD (DRAFT, PI two-state — 2026-06-25 anchoring diff vs 2990) — exclude
+       DRAFT as well as CANCELLED PIs from the invoiced_qty recount. A DRAFT PI
+       consumes NO GRN qty until it's confirmed (the confirm transition flips it to
+       POSTED and re-runs this recount, at which point its lines DO count). Without
+       this, a sibling op recounting the same GRN line would silently consume the
+       line against a still-draft PI. */
+    const excluded = new Set<string>();
     if (piIds.length > 0) {
       const { data: pis } = await sb.from('purchase_invoices').select('id, status').in('id', piIds);
       for (const p of (pis ?? []) as Array<{ id: string; status: string }>) {
-        if (p.status === 'CANCELLED') cancelled.add(p.id);
+        if (p.status === 'CANCELLED' || p.status === 'DRAFT') excluded.add(p.id);
       }
     }
     const invByGrnItem = new Map<string, number>(ids.map((id) => [id, 0]));
     for (const r of rows) {
-      if (cancelled.has(r.purchase_invoice_id)) continue;
+      if (excluded.has(r.purchase_invoice_id)) continue;
       invByGrnItem.set(r.grn_item_id, (invByGrnItem.get(r.grn_item_id) ?? 0) + Number(r.qty ?? 0));
     }
 
@@ -122,21 +128,28 @@ async function verifyGrnLinesNotOverInvoiced(
     ((giRows ?? []) as Array<{ id: string; qty_accepted: number; returned_qty: number }>)
       .map((g) => [g.id, (g.qty_accepted ?? 0) - (g.returned_qty ?? 0)]),
   );
-  // Live invoiced per GRN line = sum(qty) across all non-cancelled PI lines.
+  // Live invoiced per GRN line = sum(qty) across all committed (non-cancelled,
+  // non-draft) PI lines.
   const { data: sib } = await sb.from('purchase_invoice_items')
     .select('grn_item_id, qty, purchase_invoice_id').in('grn_item_id', ids);
   const sibRows = (sib ?? []) as Array<{ grn_item_id: string; qty: number; purchase_invoice_id: string }>;
   const piIds = [...new Set(sibRows.map((r) => r.purchase_invoice_id).filter(Boolean))];
-  const cancelled = new Set<string>();
+  /* LEAK GUARD (DRAFT, PI two-state — 2026-06-25 anchoring diff vs 2990) — exclude
+     DRAFT as well as CANCELLED from the over-invoice cap re-sum: a DRAFT PI consumes
+     no GRN qty, so it never counts against the qty_accepted-returned cap. The cap is
+     re-checked at confirm (recomputeGrnInvoiced clamps to qty_accepted), so a DRAFT
+     that would over-bill is caught the moment it's confirmed, not while still a
+     draft. */
+  const excluded = new Set<string>();
   if (piIds.length > 0) {
     const { data: pis } = await sb.from('purchase_invoices').select('id, status').in('id', piIds);
     for (const p of (pis ?? []) as Array<{ id: string; status: string }>) {
-      if (p.status === 'CANCELLED') cancelled.add(p.id);
+      if (p.status === 'CANCELLED' || p.status === 'DRAFT') excluded.add(p.id);
     }
   }
   const liveByGrnItem = new Map<string, number>(ids.map((id) => [id, 0]));
   for (const r of sibRows) {
-    if (cancelled.has(r.purchase_invoice_id)) continue;
+    if (excluded.has(r.purchase_invoice_id)) continue;
     liveByGrnItem.set(r.grn_item_id, (liveByGrnItem.get(r.grn_item_id) ?? 0) + Number(r.qty ?? 0));
   }
   const over: Array<{ grnItemId: string; invoiced: number; cap: number }> = [];

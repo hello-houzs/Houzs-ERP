@@ -158,16 +158,22 @@ export async function recostFromGrn(sb: any, grnId: string) {
       .in('grn_item_id', giIds);
     const piList = (piRows ?? []) as Array<{ grn_item_id: string | null; qty: number; unit_price_centi: number | null; purchase_invoice_id: string }>;
     const piIds = [...new Set(piList.map((r) => r.purchase_invoice_id).filter(Boolean))];
-    const piCancelled = new Set<string>();
+    /* LEAK GUARD (DRAFT, PI two-state — 2026-06-25 anchoring diff vs 2990) — exclude
+       both CANCELLED AND DRAFT PIs from the authoritative-cost aggregate. A DRAFT PI
+       commits no money and is not yet a real bill, so its line price must NEVER
+       become the GRN lot's cost (which would silently flow into DO/SI margins). Only
+       a confirmed POSTED/PARTIALLY_PAID/PAID PI is authoritative. */
+    const piExcluded = new Set<string>();
     if (piIds.length > 0) {
       const { data: pis } = await sb.from('purchase_invoices').select('id, status').in('id', piIds);
       for (const p of (pis ?? []) as Array<{ id: string; status: string }>) {
-        if ((p.status ?? '').toUpperCase() === 'CANCELLED') piCancelled.add(p.id);
+        const st = (p.status ?? '').toUpperCase();
+        if (st === 'CANCELLED' || st === 'DRAFT') piExcluded.add(p.id);
       }
     }
     const piAgg = new Map<string, { qty: number; amt: number }>();
     for (const r of piList) {
-      if (!r.grn_item_id || piCancelled.has(r.purchase_invoice_id)) continue;
+      if (!r.grn_item_id || piExcluded.has(r.purchase_invoice_id)) continue;
       const a = piAgg.get(r.grn_item_id) ?? { qty: 0, amt: 0 };
       const q = Number(r.qty ?? 0);
       a.qty += q;
