@@ -1276,7 +1276,7 @@ mfgSalesOrders.get('/customer-search', async (c) => {
 // "active-venue" as a docNo). Returns the project venue NAME + the matching
 // project_venues id (string, by name; null if the venue isn't in the master) +
 // the project name (for the FE hint). Resolution = the latest project (by
-// start_date <= date) the user is a Sales Attending rep of.
+// start_date <= date) the user is the PIC of OR a Sales Attending rep of.
 mfgSalesOrders.get('/active-venue', async (c) => {
   const hu = c.get('houzsUser');
   const uid = hu?.id != null ? Number(hu.id) : NaN;
@@ -1297,15 +1297,18 @@ mfgSalesOrders.get('/active-venue', async (c) => {
         WHERE p.start_date IS NOT NULL
           AND p.start_date <= ?
           AND p.venue IS NOT NULL AND p.venue <> ''
-          AND EXISTS (
-            SELECT 1 FROM project_sales_attendees psa
-              JOIN sales_reps sr ON sr.id = psa.sales_rep_id
-             WHERE psa.project_id = p.id AND sr.user_id = ?
+          AND (
+            p.pic_id = ?
+            OR EXISTS (
+              SELECT 1 FROM project_sales_attendees psa
+                JOIN sales_reps sr ON sr.id = psa.sales_rep_id
+               WHERE psa.project_id = p.id AND sr.user_id = ?
+            )
           )
         ORDER BY p.start_date DESC
         LIMIT 1`,
     )
-      .bind(soDate, uid)
+      .bind(soDate, uid, uid)
       .first<{ venue?: string | null; projectname?: string | null; masterid?: number | null }>();
     const venueName = typeof row?.venue === 'string' && row.venue.trim() ? row.venue.trim() : null;
     const projectName =
@@ -1815,10 +1818,12 @@ mfgSalesOrders.post('/', async (c) => {
   /* Houzs venue-by-project (owner 2026-06-25) — scm.staff is unused in Houzs, so
      the home-venue logic above always leaves venue NULL. Fall back to the
      LOGGED-IN salesperson's currently-active exhibition project: the latest
-     project (by start_date, <= the SO date) they are a SALES ATTENDING rep of.
-     PIC is intentionally NOT used — in Houzs one coordinator is PIC of hundreds
-     of projects (several per day), so it can't pin a venue; the Sales Attending
-     list is the precise "this rep is at this event" signal. Stamps the venue
+     project (by start_date, <= the SO date) they are the PIC of OR a Sales
+     Attending rep of (owner 2026-06-25: "PIC 或 Sales Attending 都算"). The
+     over-assigned PICs in Houzs data are NON-salespeople (user 1 = the HOUZS
+     CENTURY system account; orphan pic_ids with no users row) who never log in
+     to create SOs, so they don't mis-resolve; real salesperson-PICs are clean.
+     Stamps the venue
      TEXT only (the project venue isn't a scm.venues row, so venue_id stays
      NULL); an explicit body.venue still wins. Reads the PUBLIC schema via
      c.env.DB — the scm supabase client can't reach public. */
@@ -1837,15 +1842,18 @@ mfgSalesOrders.post('/', async (c) => {
             WHERE p.start_date IS NOT NULL
               AND p.start_date <= ?
               AND p.venue IS NOT NULL AND p.venue <> ''
-              AND EXISTS (
-                SELECT 1 FROM project_sales_attendees psa
-                  JOIN sales_reps sr ON sr.id = psa.sales_rep_id
-                 WHERE psa.project_id = p.id AND sr.user_id = ?
+              AND (
+                p.pic_id = ?
+                OR EXISTS (
+                  SELECT 1 FROM project_sales_attendees psa
+                    JOIN sales_reps sr ON sr.id = psa.sales_rep_id
+                   WHERE psa.project_id = p.id AND sr.user_id = ?
+                )
               )
             ORDER BY p.start_date DESC
             LIMIT 1`,
         )
-          .bind(soDateForVenue, uid)
+          .bind(soDateForVenue, uid, uid)
           .first<{ venue?: string | null }>();
         const v = projRow?.venue ?? null;
         if (typeof v === 'string' && v.trim()) resolvedVenueName = v.trim();
