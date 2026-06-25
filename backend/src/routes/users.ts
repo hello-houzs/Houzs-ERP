@@ -11,6 +11,7 @@ import {
 } from "../services/email";
 import { syncSalesRepFromUser } from "../services/salesTeam";
 import { audit } from "../services/audit";
+import { getBranding } from "../services/branding";
 import { getDb } from "../db/client";
 import {
   departments,
@@ -27,6 +28,79 @@ import {
 } from "../db/schema";
 import { alias } from "drizzle-orm/pg-core";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+
+// Auto-provision a member's PERSONAL Mail Center mailbox when their email_alias
+// is set/changed to a company-domain address (owner: "成员设 alias 就自动建箱").
+// Idempotent: ensures one email_addresses row (assigned to the user, active) +
+// one email_address_access grant. Fires ONLY for an alias on the company's own
+// verified domain — a personal gmail/etc. can't send/receive through our IMAP +
+// Resend, so we never mint a dead mailbox. Raw SQL: the mail tables live outside
+// the Drizzle schema (managed the same way in routes/mail-center.ts).
+async function ensurePersonalMailbox(
+  env: Env,
+  userId: number,
+  aliasAddr: string,
+): Promise<void> {
+  const addr = (aliasAddr ?? "").trim().toLowerCase();
+  if (!addr || !addr.includes("@")) return;
+  let domain = "houzscentury.com";
+  try {
+    const b = await getBranding(env);
+    domain = (b.email.split("@")[1] || domain).trim().toLowerCase();
+  } catch {
+    /* fall back to the default company domain */
+  }
+  if (!addr.endsWith(`@${domain}`)) return;
+
+  const db = env.DB;
+  const nameRow = await db
+    .prepare(`SELECT name FROM users WHERE id = ? LIMIT 1`)
+    .bind(userId)
+    .first<{ name: string | null }>()
+    .catch(() => null);
+  const label = nameRow?.name?.trim() || null;
+
+  const existing = await db
+    .prepare(`SELECT id FROM email_addresses WHERE lower(address) = ? LIMIT 1`)
+    .bind(addr)
+    .first<{ id: string }>()
+    .catch(() => null);
+
+  let addressId: string;
+  if (existing?.id) {
+    addressId = existing.id;
+    await db
+      .prepare(
+        `UPDATE email_addresses SET assigned_user_id = ?, active = 1 WHERE id = ?`,
+      )
+      .bind(userId, addressId)
+      .run()
+      .catch(() => {});
+  } else {
+    addressId = crypto.randomUUID();
+    await db
+      .prepare(
+        `INSERT INTO email_addresses
+           (id, address, label, assigned_user_id, assigned_user_name,
+            assigned_dept, assigned_position, active, created_at, created_by)
+         VALUES (?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?)`,
+      )
+      .bind(addressId, addr, label, userId, label, new Date().toISOString(), userId)
+      .run()
+      .catch(() => {});
+  }
+
+  // Idempotent grant — a unique (address_id,user_id) collision just throws,
+  // which we swallow (the grant already exists).
+  await db
+    .prepare(
+      `INSERT INTO email_address_access (id, address_id, user_id, created_at, created_by)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .bind(crypto.randomUUID(), addressId, userId, new Date().toISOString(), userId)
+    .run()
+    .catch(() => {});
+}
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -848,6 +922,18 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   if (Object.keys(set).length > 0) {
     const result = await db.update(users).set(set).where(eq(users.id, id));
     if (!result.count) return c.json({ error: "User not found" }, 404);
+  }
+
+  // When the alias was set to a company-domain address, auto-provision the
+  // member's personal Mail Center mailbox + access grant (owner ask). Non-fatal.
+  if (
+    body.email_alias !== undefined &&
+    typeof set.email_alias === "string" &&
+    set.email_alias
+  ) {
+    await ensurePersonalMailbox(c.env, id, set.email_alias).catch((e) =>
+      console.error("[users] ensurePersonalMailbox failed:", e),
+    );
   }
 
   // Apply the membership change.
