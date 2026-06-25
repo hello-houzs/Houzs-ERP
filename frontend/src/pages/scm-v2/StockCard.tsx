@@ -143,7 +143,7 @@ export const StockCard = () => {
         accessor: (m) => <span className={styles.numCellZero}>{fmtDateTime(m.created_at)}</span>,
         searchValue: (m) => fmtDateTime(m.created_at),
         filterValue: (m) => fmtDateTime(m.created_at),
-        sortFn: (a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''),
+        sortFn: (a, b) => a.created_at.localeCompare(b.created_at),
       },
       {
         key: 'type',
@@ -166,7 +166,7 @@ export const StockCard = () => {
         ),
         searchValue: (m) => m.movement_type,
         filterValue: (m) => m.movement_type,
-        sortFn: (a, b) => (a.movement_type ?? '').localeCompare(b.movement_type ?? ''),
+        sortFn: (a, b) => a.movement_type.localeCompare(b.movement_type),
       },
       {
         key: 'sourceDoc',

@@ -101,7 +101,7 @@ const JE_COLUMNS: DataGridColumn<JournalEntry>[] = [
     accessor: (r) => <span className={styles.codeChip}>{r.je_no}</span>,
     searchValue: (r) => r.je_no,
     filterValue: (r) => r.je_no,
-    sortFn: (a, b) => (a.je_no ?? '').localeCompare(b.je_no ?? ''),
+    sortFn: (a, b) => a.je_no.localeCompare(b.je_no),
   },
   {
     key: 'date',

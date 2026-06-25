@@ -212,7 +212,7 @@ export const SpecialAddonsManager = ({ categoryFilter }: { categoryFilter?: stri
       ),
       searchValue: (row) => `${row.label} ${row.soDescription} ${row.code}`,
       filterValue: (row) => row.label,
-      sortFn: (a, b) => (a.label ?? '').localeCompare(b.label ?? ''),
+      sortFn: (a, b) => a.label.localeCompare(b.label),
     },
     {
       key: 'categories',
@@ -552,7 +552,7 @@ const OrderAddonsManager = () => {
       ),
       searchValue: (row) => `${row.label} ${row.description ?? ''} ${row.id}`,
       filterValue: (row) => row.label,
-      sortFn: (a, b) => (a.label ?? '').localeCompare(b.label ?? ''),
+      sortFn: (a, b) => a.label.localeCompare(b.label),
     },
     {
       key: 'kind',

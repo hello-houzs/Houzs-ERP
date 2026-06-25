@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { runStockItemsRefresh } from "../services/stockItems";
-import { requireAnyPermission } from "../middleware/auth";
 
 /**
  * Retained headless after the strip-to-core cutover ONLY for the ASSR
@@ -12,9 +11,7 @@ import { requireAnyPermission } from "../middleware/auth";
  */
 const app = new Hono<{ Bindings: Env }>();
 
-// Auth (2026-06-26 hardening): the AutoCount refresh is an expensive external
-// sync — gate it to ASSR managers / settings admins (SUPER_ADMIN/ADMIN bypass).
-app.post("/refresh", requireAnyPermission(["service_cases.manage", "settings.manage"]), async (c) => {
+app.post("/refresh", async (c) => {
   let body: { item_codes?: string[] } = {};
   try {
     body = await c.req.json();

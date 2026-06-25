@@ -440,7 +440,7 @@ const SoLineCardInner = ({
       priceSen: 0,
       display: c.colourId,
     }));
-    opts.sort((a, b) => (a.display ?? '').localeCompare(b.display ?? '', undefined, { sensitivity: 'base' }));
+    opts.sort((a, b) => a.display.localeCompare(b.display, undefined, { sensitivity: 'base' }));
     const current = String(draft.variants.fabricCode ?? '');
     if (current && !opts.some((o) => o.value === current)) {
       opts.unshift({ value: current, priceSen: 0, display: `${current} (current)` });

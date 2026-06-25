@@ -695,7 +695,7 @@ function DataGridInner<T>({
       // numeric-aware
       const na = Number(va), nb = Number(vb);
       if (Number.isFinite(na) && Number.isFinite(nb) && va !== '' && vb !== '') return na - nb;
-      return (va ?? '').localeCompare(vb ?? '');
+      return va.localeCompare(vb);
     });
     const dir = layout.sort.dir === 'asc' ? 1 : -1;
     return [...filteredRows].sort((a, b) => cmp(a, b) * dir);

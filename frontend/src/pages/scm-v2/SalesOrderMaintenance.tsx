@@ -186,7 +186,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
       csAgg.postcodeCount += 1;
     }
     return {
-      countries: Array.from(byCountry.values()).sort((a, b) => (a.country ?? '').localeCompare(b.country ?? '')),
+      countries: Array.from(byCountry.values()).sort((a, b) => a.country.localeCompare(b.country)),
       statesByCountry: byCountryState,
     };
   }, [localities.data]);
@@ -223,7 +223,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
         ex.warehouseId = null;
       }
     }
-    return Array.from(byCity.values()).sort((a, b) => (a.city ?? '').localeCompare(b.city ?? ''));
+    return Array.from(byCity.values()).sort((a, b) => a.city.localeCompare(b.city));
   }, [stateLocalities]);
 
   /* L4 = postcodes under (selectedState, selectedCity) — the actual leaf rows. */
@@ -231,7 +231,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
     if (!selectedCity) return [];
     return stateLocalities
       .filter((r) => r.city === selectedCity)
-      .sort((a, b) => (a.postcode ?? '').localeCompare(b.postcode ?? ''));
+      .sort((a, b) => a.postcode.localeCompare(b.postcode));
   }, [stateLocalities, selectedCity]);
 
   const addLocality = () => {
@@ -460,7 +460,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
           {(() => {
             const statesInCountry = Array.from(localityGroups.statesByCountry.values())
               .filter((s) => s.country === selectedCountry)
-              .sort((a, b) => (a.state ?? '').localeCompare(b.state ?? ''));
+              .sort((a, b) => a.state.localeCompare(b.state));
             if (statesInCountry.length === 0) {
               return <div className={styles.empty}>No states under {selectedCountry} — add one below.</div>;
             }

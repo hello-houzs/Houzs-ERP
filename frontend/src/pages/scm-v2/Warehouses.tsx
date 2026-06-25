@@ -36,14 +36,14 @@ export const Warehouses = () => {
       accessor: (w) => <span className={styles.codeChip}>{w.code}</span>,
       searchValue: (w) => w.code,
       filterValue: (w) => w.code,
-      sortFn: (a, b) => (a.code ?? '').localeCompare(b.code ?? ''),
+      sortFn: (a, b) => a.code.localeCompare(b.code),
     },
     {
       key: 'name',
       label: 'Name',
       width: 200,
       accessor: (w) => w.name,
-      sortFn: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
+      sortFn: (a, b) => a.name.localeCompare(b.name),
     },
     {
       key: 'location',

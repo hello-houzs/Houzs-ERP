@@ -1093,7 +1093,7 @@ function forwardBody(thread: MailThread, messages: MailMessage[]): string {
   const lines: string[] = ["", "---------- Forwarded message ----------"];
   const ordered = messages
     .slice()
-    .sort((a, b) => (b.sentAt || b.createdAt || "").localeCompare(a.sentAt || a.createdAt || ""));
+    .sort((a, b) => (b.sentAt || b.createdAt).localeCompare(a.sentAt || a.createdAt));
   for (const m of ordered) {
     const who = m.fromName ? `${m.fromName} <${m.fromAddress}>` : m.fromAddress;
     const when = fmtFull(m.sentAt || m.createdAt);

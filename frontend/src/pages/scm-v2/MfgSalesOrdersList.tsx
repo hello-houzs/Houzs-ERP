@@ -1712,7 +1712,7 @@ const buildColumns = (
     accessor: (r) => <StatusPill status={r.status} deliveryState={r.delivery_state} lifecycleState={r.lifecycle_state} />,
     searchValue: (r) => r.status,
     groupValue: (r) => r.status,
-    sortFn: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
+    sortFn: (a, b) => a.status.localeCompare(b.status),
     exportValue: (r) => {
       const eff = soStatusDisplay(r.status, r.delivery_state, r.lifecycle_state);
       return eff.label ?? STATUS_LABEL[r.status] ?? r.status.replace(/_/g, ' ');

@@ -406,7 +406,7 @@ const BALANCE_COLUMNS: DataGridColumn<InventoryProductTotal>[] = [
     ),
     searchValue: (r) => r.product_code,
     filterValue: (r) => r.product_code,
-    sortFn: (a, b) => (a.product_code ?? '').localeCompare(b.product_code ?? ''),
+    sortFn: (a, b) => a.product_code.localeCompare(b.product_code),
   },
   {
     key: 'desc',
@@ -420,7 +420,7 @@ const BALANCE_COLUMNS: DataGridColumn<InventoryProductTotal>[] = [
     ),
     searchValue: (r) => `${r.product_name} ${r.branding ?? ''}`,
     filterValue: (r) => r.product_name,
-    sortFn: (a, b) => (a.product_name ?? '').localeCompare(b.product_name ?? ''),
+    sortFn: (a, b) => a.product_name.localeCompare(b.product_name),
   },
   {
     key: 'category',
@@ -738,7 +738,7 @@ const BATCH_COLUMNS: DataGridColumn<InventoryBatch>[] = [
     searchValue: (b) =>
       `${b.batchNo} ${b.supplierName ?? ''} ${b.components.map((c) => `${c.productCode} ${c.productName ?? ''}`).join(' ')}`,
     filterValue: (b) => b.batchNo,
-    sortFn: (a, b) => (a.batchNo ?? '').localeCompare(b.batchNo ?? ''),
+    sortFn: (a, b) => a.batchNo.localeCompare(b.batchNo),
   },
   {
     key: 'warehouse',

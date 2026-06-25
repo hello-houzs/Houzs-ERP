@@ -232,7 +232,7 @@ async function resolveDrLineBatches(
   return out;
 }
 
-async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, performedBy: string): Promise<string[]> {
+async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, performedBy: string) {
   // Idempotency guard #1 — has this DR already written IN movements?
   const { count: existing } = await sb
     .from('inventory_movements')
@@ -240,7 +240,7 @@ async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, per
     .eq('source_doc_type', 'DR')
     .eq('source_doc_id', deliveryReturnId)
     .eq('movement_type', 'IN');
-  if ((existing ?? 0) > 0) return []; // already increased — no-op
+  if ((existing ?? 0) > 0) return; // already increased — no-op
 
   const { data: drHeader } = await sb.from('delivery_returns')
     .select('return_number, warehouse_id')
@@ -250,7 +250,7 @@ async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, per
     .eq('delivery_return_id', deliveryReturnId);
   const drHeaderWarehouseId = (drHeader as { warehouse_id: string | null } | null)?.warehouse_id ?? null;
   const drNo = (drHeader as { return_number: string } | null)?.return_number ?? deliveryReturnId;
-  if (!items) return [];
+  if (!items) return;
 
   // Per-line warehouse — each returned line re-enters the warehouse the DO line
   // shipped from (its SO line's warehouse, 0118), not a single DR-header default.
@@ -309,15 +309,7 @@ async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, per
     performed_by: performedBy,
     ...(m.batch_no ? { batch_no: m.batch_no } : {}),
   }));
-  const movementErrors: string[] = [];
-  if (movements.length > 0) {
-    /* Capture the best-effort write result so the caller can surface a failed
-       stock IN (was silently swallowed — DR created with goods NOT booked back
-       and the caller never told). No rollback; just make it loud. */
-    const res = await writeMovements(sb, movements);
-    if (!res.ok) movementErrors.push(`IN ${drNo}: ${res.reason ?? 'unknown'}`);
-  }
-  return movementErrors;
+  if (movements.length > 0) await writeMovements(sb, movements);
 }
 
 /* ── resyncInventoryForReturn (2026-06-01 — DR line-edit/delete/cancel rollback) ──
@@ -817,7 +809,7 @@ deliveryReturns.post('/', async (c) => {
   /* A DR = goods received back on creation → increase stock now (idempotent:
      the existence check + UNIQUE index mean this never double-increases even
      if the create is retried). */
-  const movementErrors = await increaseInventoryForReturn(sb, h.id, user.id);
+  await increaseInventoryForReturn(sb, h.id, user.id);
 
   /* B2C SO auto-allocation — returned goods re-enter stock; another customer's
      pending SO might now be fulfillable. Best-effort. */
@@ -831,7 +823,7 @@ deliveryReturns.post('/', async (c) => {
      re-ship the returned qty. Best-effort. */
   await reopenSoFromReturn(sb, h.id, user.id);
 
-  return c.json({ id: h.id, returnNumber: h.return_number, movementErrors: movementErrors.length ? movementErrors : undefined }, 201);
+  return c.json({ id: h.id, returnNumber: h.return_number }, 201);
 });
 
 // ── Convert picked DO LINES (partial qty) → ONE Delivery Return ────────────
@@ -1034,14 +1026,14 @@ const convertDoLinesToReturn = async (c: any) => {
   }
 
   // Goods received back → increase stock (idempotent).
-  const movementErrors = await increaseInventoryForReturn(sb, h.id, user.id);
+  await increaseInventoryForReturn(sb, h.id, user.id);
 
   /* DR 3B (Wei Siang 2026-06-01) — re-open the SO this return came from
      (DELIVERED → READY_TO_SHIP) so the returned qty can be re-shipped on a
      fresh DO. Best-effort. */
   await reopenSoFromReturn(sb, h.id, user.id);
 
-  return c.json({ id: h.id, returnNumber: h.return_number, lineCount: rows.length, movementErrors: movementErrors.length ? movementErrors : undefined }, 201);
+  return c.json({ id: h.id, returnNumber: h.return_number, lineCount: rows.length }, 201);
 };
 deliveryReturns.post('/from-do', convertDoLinesToReturn);
 deliveryReturns.post('/from-dos', convertDoLinesToReturn);

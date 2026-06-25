@@ -805,6 +805,32 @@ export const SalesOrderNew = () => {
     return (venuesQ.data ?? []).find((r) => r.id === effectiveVenueId)?.name ?? '';
   }, [effectiveVenueId, venuesQ.data]);
 
+  /* Houzs venue auto-fill (owner 2026-06-25) — the logged-in salesperson is
+     assigned to an exhibition project (Sales Attending), so the system already
+     knows that week's venue; the operator shouldn't have to type it. Resolve
+     the active project's venue (latest project by start_date <= today they
+     attend; attribution stays on the previous event until the next one starts)
+     and pre-select it in the Venue dropdown. A venue present in the
+     project_venues master gets its option auto-selected; one not in the master
+     is still stamped server-side on save (we show a hint). OCR / a manual pick
+     still wins — we only auto-apply while nothing is picked. */
+  const [autoVenue, setAutoVenue] = useState<{
+    venueId: string | null; venueName: string | null; projectName: string | null;
+  } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    authedFetch<{ venueId: string | null; venueName: string | null; projectName: string | null }>(
+      '/mfg-sales-orders/active-venue',
+    )
+      .then((r) => { if (alive) setAutoVenue(r); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  useEffect(() => {
+    if (autoVenue?.venueId && pickedVenueId == null) setPickedVenueId(autoVenue.venueId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoVenue]);
+
   /* Phone is compulsory on every SO; name too. We no longer pre-disable the Save
      button on these — onSave validates and tells the operator exactly what's
      missing (a silently-greyed button left them guessing). The server also
@@ -1549,6 +1575,16 @@ export const SalesOrderNew = () => {
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
+              {autoVenue?.venueId && autoVenue?.projectName && (
+                <span style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>
+                  Auto-filled from {autoVenue.projectName}
+                </span>
+              )}
+              {autoVenue && !autoVenue.venueId && autoVenue.venueName && (
+                <span style={{ fontSize: '11px', marginTop: '4px', color: 'var(--c-festive-b, #B8331F)' }}>
+                  Project venue {autoVenue.venueName} is not in the venue list yet — it is still saved on the order; add it in Project Maintenance to show it here.
+                </span>
+              )}
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Processing Date</span>

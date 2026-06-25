@@ -258,11 +258,11 @@ async function warehouseCodeMap(
   return out;
 }
 
-async function writePurchaseReturnMovements(sb: any, prId: string, returnNumber: string, grnId: string | null, userId: string): Promise<string[]> {
+async function writePurchaseReturnMovements(sb: any, prId: string, returnNumber: string, grnId: string | null, userId: string) {
   const { data: items } = await sb.from('purchase_return_items')
     .select('id, grn_item_id, material_code, material_name, qty_returned, item_group, variants')
     .eq('purchase_return_id', prId);
-  if (!items) return [];
+  if (!items) return;
   // Per-line warehouse — each line draws OUT of its source GRN line's warehouse,
   // not a single primary-GRN default (a batched PR can span warehouses).
   const lineWh = await resolvePrLineWarehouses(sb, items as Array<{ id: string; grn_item_id?: string | null }>, grnId);
@@ -332,13 +332,8 @@ async function writePurchaseReturnMovements(sb: any, prId: string, returnNumber:
       };
     })
     .filter((m): m is NonNullable<typeof m> => m !== null);
-  const movementErrors: string[] = [];
   if (movements.length > 0) {
-    /* Capture the best-effort write result so the caller can surface a failed
-       stock OUT (was silently swallowed — PR created with stock NOT returned to
-       the supplier and the caller never told). No rollback; just make it loud. */
-    const res = await writeMovements(sb, movements);
-    if (!res.ok) movementErrors.push(`OUT ${returnNumber}: ${res.reason ?? 'unknown'}`);
+    await writeMovements(sb, movements);
     /* PR post = stock OUT to supplier → other READY SOs that needed it may
        regress. Re-walk SO allocation. Best-effort. */
     try {
@@ -346,7 +341,6 @@ async function writePurchaseReturnMovements(sb: any, prId: string, returnNumber:
       await recomputeSoStockAllocation(sb);
     } catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] post-pr-post failed:', e); }
   }
-  return movementErrors;
 }
 
 /* ── writePrLineDeltaMovement (Commander 2026-06-01, audit fix #5) ───────────
@@ -507,7 +501,7 @@ purchaseReturns.post('/', async (c) => {
     return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500);
   }
 
-  const movementErrors = await writePurchaseReturnMovements(sb, h.id, h.return_number, grnId, user.id);
+  await writePurchaseReturnMovements(sb, h.id, h.return_number, grnId, user.id);
 
   /* Audit fix #3 — consume each GRN-linked line's returned_qty (0106). The
      bare-create path never did this, so a PR raised here didn't net down the
@@ -518,7 +512,7 @@ purchaseReturns.post('/', async (c) => {
     if (r.grn_item_id) await adjustGrnReturnedQty(sb, r.grn_item_id, Number(r.qty_returned));
   }
 
-  return c.json({ id: h.id, returnNumber: h.return_number, movementErrors: movementErrors.length ? movementErrors : undefined }, 201);
+  return c.json({ id: h.id, returnNumber: h.return_number }, 201);
 });
 
 // Batch-convert multiple POSTED GRNs into ONE Purchase Return. Aggregates
@@ -621,9 +615,9 @@ purchaseReturns.post('/from-grns', async (c) => {
     await adjustGrnReturnedQty(sb, it.id, it._qty);
   }
 
-  const movementErrors = await writePurchaseReturnMovements(sb, h.id, h.return_number, primaryGrnId, user.id);
+  await writePurchaseReturnMovements(sb, h.id, h.return_number, primaryGrnId, user.id);
 
-  return c.json({ id: h.id, returnNumber: h.return_number, grnCount: grnList.length, lineCount: rejectedItems.length, movementErrors: movementErrors.length ? movementErrors : undefined }, 201);
+  return c.json({ id: h.id, returnNumber: h.return_number, grnCount: grnList.length, lineCount: rejectedItems.length }, 201);
 });
 
 /* ── POST /from-grn ─────────────────────────────────────────────────────
@@ -707,11 +701,11 @@ purchaseReturns.post('/from-grn', async (c) => {
     await adjustGrnReturnedQty(sb, it.id, it._remaining);
   }
 
-  const movementErrors = await writePurchaseReturnMovements(sb, h.id, h.return_number, g.id, user.id);
+  await writePurchaseReturnMovements(sb, h.id, h.return_number, g.id, user.id);
   // Refresh header refund_centi from the inserted lines (parity with GRN).
   await recomputePrTotals(sb, h.id);
 
-  return c.json({ id: h.id, returnNumber: h.return_number, movementErrors: movementErrors.length ? movementErrors : undefined }, 201);
+  return c.json({ id: h.id, returnNumber: h.return_number }, 201);
 });
 
 purchaseReturns.patch('/:id/post', async (c) => {

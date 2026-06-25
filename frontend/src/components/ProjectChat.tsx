@@ -117,7 +117,7 @@ export function ProjectChat({
   // Chat UIs read oldest-at-top; stable-sort by created_at then id.
   const messages = useMemo(() => {
     return Array.from(liveById.values()).sort((a, b) => {
-      const t = (a.created_at ?? "").localeCompare(b.created_at ?? "");
+      const t = a.created_at.localeCompare(b.created_at);
       return t !== 0 ? t : a.id - b.id;
     });
   }, [liveById]);

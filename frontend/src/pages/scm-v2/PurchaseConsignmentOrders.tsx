@@ -285,7 +285,7 @@ const buildDrilldownColumns = (
     key: 'item_code', label: 'Item Code', width: 130,
     accessor: (it) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)' }}>{it.material_code}</span>,
     searchValue: (it) => it.material_code,
-    sortFn: (a, b) => (a.material_code ?? '').localeCompare(b.material_code ?? ''),
+    sortFn: (a, b) => a.material_code.localeCompare(b.material_code),
   },
   {
     key: 'description', label: 'Description', width: 240, minWidth: 180,

@@ -65,7 +65,7 @@ const buildPiColumns = (): DataGridColumn<PiRow>[] => [
     searchValue: (r) => r.invoice_number,
     // accessor is JSX → export the raw invoice-no string so Invoice No. isn't blank.
     exportValue: (r) => r.invoice_number,
-    sortFn: (a, b) => (a.invoice_number ?? '').localeCompare(b.invoice_number ?? ''),
+    sortFn: (a, b) => a.invoice_number.localeCompare(b.invoice_number),
   },
   {
     key: 'supplier', label: 'Supplier', width: 220, sortable: true, groupable: true,
@@ -118,7 +118,7 @@ const buildPiColumns = (): DataGridColumn<PiRow>[] => [
     groupValue: (r) => statusLabel('pi', r.status),
     // accessor is a <StatusPill> JSX → export the plain status label text.
     exportValue: (r) => statusLabel('pi', r.status),
-    sortFn: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
+    sortFn: (a, b) => a.status.localeCompare(b.status),
   },
 ];
 

@@ -794,9 +794,7 @@ export function MailInbox() {
         mailboxes: mailboxes
           .slice()
           .sort((x, y) =>
-            (x.assignedUserName || x.address || "").localeCompare(
-              y.assignedUserName || y.address || "",
-            ),
+            (x.assignedUserName || x.address).localeCompare(y.assignedUserName || y.address),
           ),
       }))
       .sort((a, b) => sortDepts(a.dept, b.dept));
@@ -855,10 +853,10 @@ export function MailInbox() {
     if (needle) {
       list = list.filter(
         (t) =>
-          (t.subject ?? "").toLowerCase().includes(needle) ||
-          (t.counterpartyEmail ?? "").toLowerCase().includes(needle) ||
-          (t.counterpartyName ?? "").toLowerCase().includes(needle) ||
-          (t.lastSnippet ?? "").toLowerCase().includes(needle),
+          t.subject.toLowerCase().includes(needle) ||
+          t.counterpartyEmail.toLowerCase().includes(needle) ||
+          t.counterpartyName.toLowerCase().includes(needle) ||
+          t.lastSnippet.toLowerCase().includes(needle),
       );
     }
     return list;
@@ -918,7 +916,7 @@ export function MailInbox() {
 
   const labels = useMemo(() => {
     const names = new Map<string, string>();
-    for (const l of labelCatalog ?? []) names.set((l.name ?? "").toLowerCase(), l.name);
+    for (const l of labelCatalog ?? []) names.set(l.name.toLowerCase(), l.name);
     for (const t of liveThreads) {
       for (const l of t.labels) {
         if (!names.has(l.toLowerCase())) names.set(l.toLowerCase(), l);

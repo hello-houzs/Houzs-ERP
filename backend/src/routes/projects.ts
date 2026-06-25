@@ -1071,6 +1071,27 @@ app.get("/analytics/profitability", requirePageAccess("projects.finances"), asyn
   });
 });
 
+// Project-scoped sales-attending picker source — active 'sales_person' reps,
+// brand-relaxed (owner: Option A). MUST be registered BEFORE the "/:id" detail
+// route below: it's a single-segment static path, so if "/:id" is matched
+// first Hono treats "sales-rep-options" as a project id -> parseInt NaN -> 400
+// "Invalid ID", which surfaced as the empty "No Sales Persons available"
+// dropdown. Gated on projects.write (not sales_team.read, which project roles
+// lack); legacy ?brand= accepted but ignored.
+app.get("/sales-rep-options", requirePermission("projects.write"), async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT r.id, r.code, r.name
+       FROM sales_reps r
+       JOIN sales_positions p ON p.id = r.position_id
+      WHERE r.archived_at IS NULL
+        AND r.status = 'active'
+        AND p.slug = 'sales_person'
+      GROUP BY r.id
+      ORDER BY r.code`
+  ).all<{ id: number; code: string; name: string }>();
+  return c.json({ data: rows.results ?? [] });
+});
+
 // ── Detail ────────────────────────────────────────────────────
 
 app.get("/:id", requirePageAccess("projects.list"), async (c) => {
@@ -2796,29 +2817,8 @@ app.delete("/team/:teamId", requirePermission("projects.write"), async (c) => {
 // project (booth duty etc). Separate from pic_id (a User) and the
 // generic project_team (also Users).
 
-// Project-scoped picker source. We deliberately don't reuse
-// /api/sales-team/reps because that endpoint is gated on
-// `sales_team.read` (which project roles don't carry) AND returns
-// PII (phone, email, NRIC) the picker doesn't need. This endpoint
-// is gated on `projects.write` (same as add/remove below) and filters
-// to position=sales_person (boss's call: that's the role that attends).
-//
-// Brand-relaxed (owner: Option A) — lists ALL active sales_person reps
-// regardless of brand. The legacy ?brand= query param is accepted but
-// ignored so the frontend doesn't need a coordinated change.
-app.get("/sales-rep-options", requirePermission("projects.write"), async (c) => {
-  const rows = await c.env.DB.prepare(
-    `SELECT r.id, r.code, r.name
-       FROM sales_reps r
-       JOIN sales_positions p ON p.id = r.position_id
-      WHERE r.archived_at IS NULL
-        AND r.status = 'active'
-        AND p.slug = 'sales_person'
-      GROUP BY r.id
-      ORDER BY r.code`
-  ).all<{ id: number; code: string; name: string }>();
-  return c.json({ data: rows.results ?? [] });
-});
+// (sales-rep-options GET route MOVED above the "/:id" detail route — it's a
+// single-segment static path that "/:id" would otherwise shadow with a 400.)
 
 app.post("/:id/sales-attendees", requirePermission("projects.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);

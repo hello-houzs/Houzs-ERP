@@ -16,6 +16,17 @@
 //     total   JS gzip  ~370  KB
 //     largest chunk    ~200  KB raw (Projects)
 //
+//   2026-06-25 (after the SCM 2990 cutover landed in full):
+//     initial JS gzip ~115.5 KB  (index 38.3 + react-vendor 77.3)
+//   react-vendor is pure framework — react + react-dom + react-router +
+//   @tanstack/react-query — every byte of which is eager by necessity
+//   (the QueryClientProvider/Router wrap the whole app). index is the app
+//   shell + the route table: the cutover registered ~50 new lazy routes,
+//   and while each PAGE is code-split, its lazy() declaration + <Route>
+//   live in the always-loaded shell. That growth is legitimate and not
+//   trimmable without lazy-loading the shell itself (which would flash on
+//   first paint), so the initial budget is raised to give ~2 KB headroom.
+//
 // Run locally: `npm run build && node scripts/check-bundle-size.mjs`
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -29,8 +40,11 @@ const ASSETS = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "asse
 const KB = 1000;
 const BUDGETS = {
   // Always-loaded path: the entry chunk + the shared react vendor chunk.
-  // This is what blocks first paint regardless of route.
-  INITIAL_JS_GZIP: 115 * KB,
+  // This is what blocks first paint regardless of route. Raised 115 -> 118
+  // on 2026-06-25: the SCM 2990 cutover grew the eager route table (see the
+  // baseline note above). The pieces here are framework + shell, not a stray
+  // heavy import — keep this tight so a real regression still trips it.
+  INITIAL_JS_GZIP: 118 * KB,
   // Everything the app can lazy-load (users only fetch the routes they
   // visit). Soft guard against unbounded total growth, not a first-paint
   // cost. Raised for the SCM "2990 cutover" — ~50 new lazy route chunks

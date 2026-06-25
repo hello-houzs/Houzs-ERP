@@ -153,7 +153,7 @@ const FABRIC_COLUMNS: DataGridColumn<FabricTrackingRow>[] = [
     // value stays searchable here so legacy supplier-code lookups still resolve.
     searchValue: (r) => `${r.fabric_code} ${r.supplier_code ?? ''}`,
     filterValue: (r) => r.fabric_code,
-    sortFn: (a, b) => (a.fabric_code ?? '').localeCompare(b.fabric_code ?? ''),
+    sortFn: (a, b) => a.fabric_code.localeCompare(b.fabric_code),
   },
   {
     key: 'series',

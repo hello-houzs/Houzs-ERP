@@ -122,7 +122,7 @@ const buildPoColumns = (
     searchValue: (po) => po.po_number,
     // accessor is JSX → export the raw doc-no string so PO No. isn't blank.
     exportValue: (po) => po.po_number,
-    sortFn: (a, b) => (a.po_number ?? '').localeCompare(b.po_number ?? ''),
+    sortFn: (a, b) => a.po_number.localeCompare(b.po_number),
   },
   {
     key: 'supplier', label: 'Supplier', width: 200, sortable: true, groupable: true,
@@ -572,7 +572,7 @@ const buildPoDrilldownColumns = (
     key: 'item_code', label: 'Item Code', width: 130,
     accessor: (it) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)' }}>{it.material_code}</span>,
     searchValue: (it) => it.material_code,
-    sortFn: (a, b) => (a.material_code ?? '').localeCompare(b.material_code ?? ''),
+    sortFn: (a, b) => a.material_code.localeCompare(b.material_code),
   },
   {
     /* Warehouse — the per-line ship-to that flowed from the SO line. "—" means

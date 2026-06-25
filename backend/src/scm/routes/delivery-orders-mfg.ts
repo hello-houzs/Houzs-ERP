@@ -311,7 +311,7 @@ async function warehouseCodeMap(
   return out;
 }
 
-async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedBy: string): Promise<string[]> {
+async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedBy: string) {
   // Idempotency guard #1 — has this DO already written OUT movements?
   const { count: existing } = await sb
     .from('inventory_movements')
@@ -319,7 +319,7 @@ async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedB
     .eq('source_doc_type', 'DO')
     .eq('source_doc_id', deliveryOrderId)
     .eq('movement_type', 'OUT');
-  if ((existing ?? 0) > 0) return []; // already deducted — no-op
+  if ((existing ?? 0) > 0) return; // already deducted — no-op
 
   const { data: doHeader } = await sb.from('delivery_orders')
     .select('do_number, warehouse_id')
@@ -329,7 +329,7 @@ async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedB
     .eq('delivery_order_id', deliveryOrderId);
   const headerWarehouseId = (doHeader as { warehouse_id: string | null } | null)?.warehouse_id ?? null;
   const doNo = (doHeader as { do_number: string } | null)?.do_number ?? deliveryOrderId;
-  if (!items) return [];
+  if (!items) return;
 
   // Per-line warehouse — each line ships from its SO line's warehouse (0118),
   // not a single DO-header default. Stock never crosses warehouses.
@@ -394,13 +394,8 @@ async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedB
     ...(m.batch_no ? { batch_no: m.batch_no } : {}),
     performed_by: performedBy,
   }));
-  const movementErrors: string[] = [];
   if (movements.length > 0) {
-    /* Capture the best-effort write result so the caller can surface a failed
-       stock OUT (was silently swallowed — DO flipped DISPATCHED with stock NOT
-       moved and the caller never told). No rollback; just make it loud. */
-    const res = await writeMovements(sb, movements);
-    if (!res.ok) movementErrors.push(`OUT ${doNo}: ${res.reason ?? 'unknown'}`);
+    await writeMovements(sb, movements);
     /* Costing C — the OUT rows now carry their real FIFO cost (trigger filled
        total_cost_sen). Restamp the DO lines from that actual cost so Margin is
        real, not the SO benchmark copy. */
@@ -412,7 +407,6 @@ async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedB
       await recomputeSoStockAllocation(sb);
     } catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] post-do-ship failed:', e); }
   }
-  return movementErrors;
 }
 
 /* ── resyncInventoryForDo (Commander 2026-05-30, TASK #24) ────────────────────
@@ -1522,9 +1516,8 @@ deliveryOrdersMfg.post('/', async (c) => {
      existence check + UNIQUE index mean this never double-deducts even if the
      status is later advanced). LEAK GUARD (DRAFT): a DRAFT DO has NOT shipped —
      skip the deduction AND the SO-delivered sync; both fire on Confirm. */
-  let movementErrors: string[] = [];
   if (body.asDraft !== true) {
-    movementErrors = await deductInventoryForDo(sb, h.id, user.id);
+    await deductInventoryForDo(sb, h.id, user.id);
 
     /* Requirement #3 (Loo 2026-05-30) — if this DO now fully covers its SO,
        auto-advance the SO to DELIVERED (best-effort, never blocks the DO). The
@@ -1532,7 +1525,7 @@ deliveryOrdersMfg.post('/', async (c) => {
     await syncSoDeliveredFromDo(sb, [(body.soDocNo as string) ?? null], user.id);
   }
 
-  return c.json({ id: h.id, doNumber: h.do_number, movementErrors: movementErrors.length ? movementErrors : undefined }, 201);
+  return c.json({ id: h.id, doNumber: h.do_number }, 201);
 });
 
 /* Build one delivery_order_items insert row from a client line payload.
@@ -1841,16 +1834,15 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
   //    (DRAFT): a DRAFT DO has not shipped — roll up totals but SKIP the stock
   //    OUT and the SO-delivered sync; both fire on Confirm.
   await recomputeTotals(sb, dh.id);
-  let movementErrors: string[] = [];
   if (body.asDraft !== true) {
-    movementErrors = await deductInventoryForDo(sb, dh.id, user.id);
+    await deductInventoryForDo(sb, dh.id, user.id);
 
     /* Requirement #3 — a multi-SO DO may complete several SOs at once; check each
        source SO for full coverage and auto-advance to DELIVERED (best-effort). */
     await syncSoDeliveredFromDo(sb, [...docNos], user.id);
   }
 
-  return c.json({ id: dh.id, doNumber: dh.do_number, movementErrors: movementErrors.length ? movementErrors : undefined }, 201);
+  return c.json({ id: dh.id, doNumber: dh.do_number }, 201);
 });
 
 // ── Header PATCH (editable SO-style fields) ───────────────────────────────
@@ -2358,9 +2350,8 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
      DRAFT CONFIRM (2026-06-24) — the Confirm action is exactly DRAFT→DISPATCHED:
      DISPATCHED ∈ SHIPPED_STATES so the deduction (skipped on draft create) fires
      HERE, the single chokepoint. This is the commit moving create→confirm. */
-  let movementErrors: string[] = [];
   if (SHIPPED_STATES.includes(body.status)) {
-    movementErrors = await deductInventoryForDo(sb, id, user.id);
+    await deductInventoryForDo(sb, id, user.id);
     /* Mirror the create path: once stock goes out, re-check the source SO for
        full coverage and auto-advance to DELIVERED (best-effort). A DRAFT confirm
        reaches this for the first time here, so the SO sync that was skipped on
@@ -2405,5 +2396,5 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
     } catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] post-do-cancel failed:', e); }
   }
 
-  return c.json({ deliveryOrder: data, movementErrors: movementErrors.length ? movementErrors : undefined });
+  return c.json({ deliveryOrder: data });
 });

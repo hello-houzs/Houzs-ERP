@@ -2850,8 +2850,7 @@ function ProjectsCalendarView() {
   // Group tasks by date for fast lookup
   const tasksByDate = new Map<string, CalendarTask[]>();
   for (const t of tasks) {
-    const key = (t.due_date ?? "").slice(0, 10);
-    if (!key) continue;
+    const key = t.due_date.slice(0, 10);
     const arr = tasksByDate.get(key) ?? [];
     arr.push(t);
     tasksByDate.set(key, arr);
@@ -3649,7 +3648,6 @@ function CalendarTaskPopover({
   const opt = STATUS_BY_VALUE[t.project_status ?? "pending"] ?? STATUS_BY_VALUE.pending;
   const overdue = t.is_overdue === 1;
   const due = (() => {
-    if (!t.due_date) return "—";
     const [y, m, d] = t.due_date.slice(0, 10).split("-");
     return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString(
       "en-GB",

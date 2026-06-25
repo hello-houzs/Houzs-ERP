@@ -56,7 +56,7 @@ const buildPrColumns = (): DataGridColumn<PrRow>[] => [
     searchValue: (r) => r.return_number,
     // accessor is JSX → export the raw return-no string so Return No. isn't blank.
     exportValue: (r) => r.return_number,
-    sortFn: (a, b) => (a.return_number ?? '').localeCompare(b.return_number ?? ''),
+    sortFn: (a, b) => a.return_number.localeCompare(b.return_number),
   },
   {
     key: 'supplier', label: 'Supplier', width: 220, sortable: true, groupable: true,
@@ -100,7 +100,7 @@ const buildPrColumns = (): DataGridColumn<PrRow>[] => [
     groupValue: (r) => statusLabel('pr', r.status),
     // accessor is a <StatusPill> JSX → export the plain status label text.
     exportValue: (r) => statusLabel('pr', r.status),
-    sortFn: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
+    sortFn: (a, b) => a.status.localeCompare(b.status),
   },
 ];
 
