@@ -22,7 +22,7 @@ import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
 import { AutoCountClient } from "../services/autocount";
-import { requirePermission } from "../middleware/auth";
+import { requirePermission, requireAnyPermission } from "../middleware/auth";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -769,7 +769,14 @@ app.get("/:id/customer-history", requirePermission("service_cases.read"), async 
 
 // ── Create ────────────────────────────────────────────────────
 
-app.post("/", requirePermission("service_cases.write"), async (c) => {
+app.post(
+  "/",
+  requireAnyPermission([
+    "service_cases.create",
+    "service_cases.write",
+    "service_cases.manage",
+  ]),
+  async (c) => {
   const userId = (c as any).get?.("userId") ?? 0;
   const body = await c.req.json<{
     doc_no: string;

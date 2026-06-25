@@ -10,7 +10,7 @@
 export interface PermissionDef {
   key: string;
   resource: string;
-  verb: "read" | "write" | "manage";
+  verb: "read" | "create" | "write" | "manage";
   label: string;
   description: string;
 }
@@ -18,6 +18,7 @@ export interface PermissionDef {
 export const PERMISSIONS: PermissionDef[] = [
   // Operational tabs
   { key: "service_cases.read",   resource: "Service Cases", verb: "read",   label: "View service cases",   description: "See the ASSR / Service Cases tab" },
+  { key: "service_cases.create", resource: "Service Cases", verb: "create", label: "Log service cases",     description: "Create a case (but not edit it afterward — for sales who only log complaints)" },
   { key: "service_cases.write",  resource: "Service Cases", verb: "write",  label: "Edit service cases",   description: "Create and update ASSR cases" },
   { key: "service_cases.manage", resource: "Service Cases", verb: "manage", label: "Manage service cases", description: "Triage, assign, schedule logistics for ASSR cases" },
   { key: "logs.read",     resource: "Activity Log", verb: "read", label: "View activity log", description: "See the system execution log" },

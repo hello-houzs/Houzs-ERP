@@ -60,6 +60,7 @@ import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { rangeBoundsMy } from '../lib/my-time';
 import { canViewAllSales, isSelfScopedSales } from '../lib/roles';
+import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
    generator + model-list matcher from the reserve route. */
@@ -556,13 +557,12 @@ mfgSalesOrders.get('/', async (c) => {
   const sb = c.get('supabase');
   const user = c.get('user');
 
-  /* TEMPORARY (Loo 2026-06-10, Backend SO emergency hatch) — POS selling
-     roles reaching this list through the hatch see ONLY their own orders
-     (salesperson_id = caller), like the POS My-orders board. One staff-role
-     lookup per request; Backend-native roles stay unfiltered. Remove with
-     the hatch (see lib/roles.ts isSelfScopedSales). */
-  const { data: caller } = await sb.from('staff').select('role').eq('id', user.id).maybeSingle();
-  const selfScopeId = isSelfScopedSales((caller as { role?: string } | null)?.role) ? user.id : null;
+  /* Row-level visibility scope — list of allowed salesperson_ids, or null =
+     unrestricted. Single source of truth in lib/salesScope.ts: view-all roles
+     → all; POS sellers → own; any other sales rep → self + downline subtree
+     (Manager sees their branch, leaf rep sees only themselves); non-reps → all.
+     Subsumes the old Backend SO emergency hatch (isSelfScopedSales → own). */
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, user.id);
 
   /* Dashboard summary mode (`?summary=1`): the landing page only needs to bucket
      SOs by status/proceeded_at and count "new today" — it does NOT need the
@@ -577,7 +577,7 @@ mfgSalesOrders.get('/', async (c) => {
       .neq('status', 'DRAFT')
       .order('so_date', { ascending: false })
       .limit(500);
-    if (selfScopeId) sq = sq.eq('salesperson_id', selfScopeId);
+    if (scopeIds) sq = sq.in('salesperson_id', scopeIds);
     const { data, error } = await sq;
     if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
     return c.json({ salesOrders: data ?? [] });
@@ -589,7 +589,7 @@ mfgSalesOrders.get('/', async (c) => {
      falls back to it if the view's `balance_centi_live` is absent). */
   const LIST_COLS = `${HEADER}, proceeded_at, paid_total_centi, balance_centi_live`;
   let q = sb.from('mfg_sales_orders_with_payment_totals').select(LIST_COLS).order('so_date', { ascending: false }).limit(500);
-  if (selfScopeId) q = q.eq('salesperson_id', selfScopeId);
+  if (scopeIds) q = q.in('salesperson_id', scopeIds);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const debtor = c.req.query('debtor'); if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
   const { data, error } = await q;
@@ -1295,11 +1295,11 @@ mfgSalesOrders.get('/:docNo', async (c) => {
      print/detail fetches carry salesperson_id = caller, so those still pass.
      Remove with the hatch (see lib/roles.ts isSelfScopedSales). */
   {
-    const { data: caller } = await sb.from('staff').select('role').eq('id', user.id).maybeSingle();
-    if (
-      isSelfScopedSales((caller as { role?: string } | null)?.role) &&
-      (h.data as { salesperson_id?: string | null }).salesperson_id !== user.id
-    ) {
+    // Same tiering as the list (lib/salesScope.ts): view-all roles pass; POS
+    // sellers pass only their own; other reps are held to their subtree. An
+    // out-of-scope doc_no answers 404 — indistinguishable from a missing one.
+    const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, user.id, sp)) {
       return c.json({ error: 'not_found' }, 404);
     }
   }

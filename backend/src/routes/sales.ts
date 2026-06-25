@@ -390,6 +390,107 @@ app.get("/entries/export", requirePageAccess("sales"), async (c) => {
   });
 });
 
+// ── Change-request queue (edit approval) ─────────────────────
+// Registered BEFORE "/entries/:id" so the literal segment wins over the param.
+//
+// GET   list requests (managers see all; a rep sees only their own)
+// POST  /:reqId/approve   re-applies the parked payload, marks approved
+// POST  /:reqId/reject    discards it with an optional note
+app.get("/entries/change-requests", requirePageAccess("sales"), async (c) => {
+  const user = c.get("user");
+  const canManage = c.get("access_level") === "full";
+  const status = c.req.query("status") ?? "pending";
+  let sql = `SELECT cr.id, cr.entry_id, cr.payload, cr.summary, cr.status,
+                    cr.requested_by, cr.decided_by, cr.decided_at, cr.decide_note,
+                    cr.created_at, e.doc_no, e.customer_name, e.status AS entry_status,
+                    ru.name AS requested_by_name, du.name AS decided_by_name
+               FROM sales_entry_change_requests cr
+               JOIN sales_entries e ON e.id = cr.entry_id
+          LEFT JOIN users ru ON ru.id = cr.requested_by
+          LEFT JOIN users du ON du.id = cr.decided_by
+              WHERE cr.status = ?`;
+  const binds: any[] = [status];
+  if (!canManage) {
+    sql += ` AND cr.requested_by = ?`;
+    binds.push(user?.id ?? 0);
+  }
+  sql += ` ORDER BY cr.created_at DESC LIMIT 200`;
+  const rows = await c.env.DB.prepare(sql).bind(...binds).all();
+  return c.json({ requests: rows.results ?? [] });
+});
+
+app.post("/entries/change-requests/:reqId/approve", requirePageAccess("sales", "full"), async (c) => {
+  const reqId = parseInt(c.req.param("reqId"), 10);
+  if (!reqId) return c.json({ error: "Bad id" }, 400);
+  const user = c.get("user");
+  const note = await c.req.json<{ note?: string }>().then((b) => b?.note ?? null).catch(() => null);
+
+  const cr = await c.env.DB.prepare(
+    `SELECT id, entry_id, payload, status, requested_by FROM sales_entry_change_requests WHERE id = ?`,
+  )
+    .bind(reqId)
+    .first<{ id: number; entry_id: number; payload: string; status: string; requested_by: number | null }>();
+  if (!cr) return c.json({ error: "Not found" }, 404);
+  if (cr.status !== "pending") {
+    return c.json({ error: `This request was already ${cr.status}` }, 409);
+  }
+
+  const entry = await c.env.DB.prepare(
+    `SELECT id, project_id FROM sales_entries WHERE id = ?`,
+  )
+    .bind(cr.entry_id)
+    .first<{ id: number; project_id: number | null }>();
+  if (!entry) return c.json({ error: "The entry no longer exists" }, 404);
+
+  let body: Record<string, any>;
+  try {
+    body = JSON.parse(cr.payload);
+  } catch {
+    return c.json({ error: "Stored change payload is corrupt" }, 500);
+  }
+  // Re-validate against the CURRENT row (amounts may have moved since queued).
+  const invalid = await validateEntryPatch(c.env, entry.id, body);
+  if (invalid) return c.json({ error: `Can't apply: ${invalid.error}` }, invalid.status as 400);
+
+  // Attribute the edit to the original requester; record the approver here.
+  await applyEntryPatch(c.env, entry.id, body, cr.requested_by ?? user?.id, entry.project_id);
+  await c.env.DB.prepare(
+    `UPDATE sales_entry_change_requests
+        SET status = 'approved', decided_by = ?, decided_at = datetime('now'), decide_note = ?
+      WHERE id = ?`,
+  )
+    .bind(user?.id ?? null, note, reqId)
+    .run();
+  await logSalesActivity(c.env, entry.id, user?.id, "change_approved", note);
+  return c.json({ ok: true });
+});
+
+app.post("/entries/change-requests/:reqId/reject", requirePageAccess("sales", "full"), async (c) => {
+  const reqId = parseInt(c.req.param("reqId"), 10);
+  if (!reqId) return c.json({ error: "Bad id" }, 400);
+  const user = c.get("user");
+  const note = await c.req.json<{ note?: string }>().then((b) => b?.note ?? null).catch(() => null);
+
+  const cr = await c.env.DB.prepare(
+    `SELECT id, entry_id, status FROM sales_entry_change_requests WHERE id = ?`,
+  )
+    .bind(reqId)
+    .first<{ id: number; entry_id: number; status: string }>();
+  if (!cr) return c.json({ error: "Not found" }, 404);
+  if (cr.status !== "pending") {
+    return c.json({ error: `This request was already ${cr.status}` }, 409);
+  }
+  await c.env.DB.prepare(
+    `UPDATE sales_entry_change_requests
+        SET status = 'rejected', decided_by = ?, decided_at = datetime('now'), decide_note = ?
+      WHERE id = ?`,
+  )
+    .bind(user?.id ?? null, note, reqId)
+    .run();
+  await logSalesActivity(c.env, cr.entry_id, user?.id, "change_rejected", note);
+  return c.json({ ok: true });
+});
+
 // ── Detail ───────────────────────────────────────────────────
 app.get("/entries/:id", requirePageAccess("sales"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
@@ -639,48 +740,86 @@ app.patch("/entries/:id", requirePageAccess("sales"), async (c) => {
     .first<{ id: number; created_by: number; status: string; project_id: number | null }>();
   if (!current) return c.json({ error: "Not found" }, 404);
 
-  // Writers can only edit their own drafts. Managers can edit anything.
-  if (!canManage) {
-    if (current.created_by !== user?.id) {
-      return c.json({ error: "You can only edit your own entries" }, 403);
-    }
-    if (current.status !== "draft") {
-      return c.json({ error: "Only draft entries are editable" }, 400);
-    }
+  const isOwner = current.created_by === user?.id;
+  if (!canManage && !isOwner) {
+    return c.json({ error: "You can only edit your own entries" }, 403);
   }
 
   const body = await c.req.json<Record<string, any>>();
 
-  // Validate payment type before queueing the SET. Cheaper than a 500
-  // from a CHECK and surfaces the real error to the form.
+  // Cheap field validation up front so the rep gets the same immediate
+  // feedback whether the edit applies now or goes to the approval queue.
+  const invalid = await validateEntryPatch(c.env, id, body);
+  if (invalid) return c.json({ error: invalid.error }, invalid.status as 400);
+
+  // Approval queue (Part B) — a non-manager editing their OWN entry once it
+  // has LEFT draft does not mutate it: the proposed change is parked as a
+  // pending request for a Sales Director to approve (re-apply) or reject.
+  // Managers (sales=full) and edits to a still-draft entry apply immediately.
+  if (!canManage && current.status !== "draft") {
+    const requestId = await queueEntryChange(c.env, id, body, user?.id);
+    await logSalesActivity(c.env, id, user?.id, "change_requested");
+    return c.json({ queued: true, request_id: requestId, status: current.status }, 202);
+  }
+
+  await applyEntryPatch(c.env, id, body, user?.id, current.project_id);
+  return c.json({ ok: true });
+});
+
+// ── Sales-entry edit helpers (shared by PATCH + the approval queue) ──────
+
+/** Cheap field validation for a sales-entry PATCH body. Returns an error
+ *  descriptor (mapped to a 400 by the caller) or null when the patch is OK. */
+async function validateEntryPatch(
+  env: Env,
+  id: number,
+  body: Record<string, any>,
+): Promise<{ error: string; status: number } | null> {
   if ("deposit_payment_type" in body && body.deposit_payment_type) {
     if (!PAYMENT_TYPES.has(String(body.deposit_payment_type))) {
-      return c.json(
-        { error: "deposit_payment_type must be one of cash, card_cc, card_db, epp" },
-        400
-      );
+      return { error: "deposit_payment_type must be one of cash, card_cc, card_db, epp", status: 400 };
     }
   }
-  // If both amount and deposit_amount land in the patch, enforce
-  // deposit ≤ amount. If only one moves, fall back to the existing
-  // value on the row.
+  // deposit ≤ amount — fall back to the stored amount when only one moves.
   if ("deposit_amount" in body && body.deposit_amount != null) {
     const d = Number(body.deposit_amount);
     if (!isFinite(d) || d < 0) {
-      return c.json({ error: "deposit_amount must be a non-negative number" }, 400);
+      return { error: "deposit_amount must be a non-negative number", status: 400 };
     }
     const amt =
       "amount" in body && body.amount != null
         ? Number(body.amount)
-        : await c.env.DB.prepare(`SELECT amount FROM sales_entries WHERE id = ?`)
+        : await env.DB.prepare(`SELECT amount FROM sales_entries WHERE id = ?`)
             .bind(id)
             .first<{ amount: number }>()
             .then((r) => r?.amount ?? 0);
-    if (d > amt) {
-      return c.json({ error: "deposit_amount cannot exceed amount" }, 400);
+    if (d > amt) return { error: "deposit_amount cannot exceed amount", status: 400 };
+  }
+  if (Array.isArray(body.payments)) {
+    for (const p of body.payments as SalesPaymentInput[]) {
+      if (!/^\d{4}-\d{2}-\d{2}/.test(String(p.paid_at || ""))) {
+        return { error: "payments[].paid_at must be yyyy-mm-dd", status: 400 };
+      }
+      if (!p.payment_method) return { error: "payments[].payment_method is required", status: 400 };
+      const a = Number(p.amount);
+      if (!isFinite(a) || a < 0) {
+        return { error: "payments[].amount must be a non-negative number", status: 400 };
+      }
     }
   }
+  return null;
+}
 
+/** Apply a (pre-validated) sales-entry PATCH body to the row — fields, items,
+ *  payments, custom fields, project-finance rollup, activity log. Called by the
+ *  direct PATCH path AND when a Director approves a queued change request. */
+async function applyEntryPatch(
+  env: Env,
+  id: number,
+  body: Record<string, any>,
+  actorId: number | null | undefined,
+  currentProjectId: number | null,
+): Promise<void> {
   const sets: string[] = [];
   const binds: any[] = [];
   const FIELDS = [
@@ -707,27 +846,14 @@ app.patch("/entries/:id", requirePageAccess("sales"), async (c) => {
     }
   }
 
-  // Items + payments — replace-all when arrays are supplied. Mirrors
-  // the deposit_amount / deposit_payment_type to keep the legacy list
-  // view rendering correctly for these rows.
+  // Items + payments — replace-all when arrays are supplied. Mirrors the
+  // deposit_amount / deposit_payment_type so the legacy list view renders.
   if (Array.isArray(body.items)) {
-    await replaceItems(c.env, id, body.items as SalesItemInput[]);
+    await replaceItems(env, id, body.items as SalesItemInput[]);
   }
   if (Array.isArray(body.payments)) {
     const pays = body.payments as SalesPaymentInput[];
-    for (const p of pays) {
-      if (!/^\d{4}-\d{2}-\d{2}/.test(String(p.paid_at || ""))) {
-        return c.json({ error: "payments[].paid_at must be yyyy-mm-dd" }, 400);
-      }
-      if (!p.payment_method) {
-        return c.json({ error: "payments[].payment_method is required" }, 400);
-      }
-      const a = Number(p.amount);
-      if (!isFinite(a) || a < 0) {
-        return c.json({ error: "payments[].amount must be a non-negative number" }, 400);
-      }
-    }
-    await replacePayments(c.env, id, pays);
+    await replacePayments(env, id, pays);
     const sum = summarisePayments(pays);
     if (!("deposit_amount" in body)) {
       sets.push("deposit_amount = ?");
@@ -742,31 +868,61 @@ app.patch("/entries/:id", requirePageAccess("sales"), async (c) => {
   if (sets.length) {
     sets.push("updated_at = datetime('now')");
     binds.push(id);
-    await c.env.DB.prepare(
-      `UPDATE sales_entries SET ${sets.join(", ")} WHERE id = ?`
-    )
+    await env.DB.prepare(`UPDATE sales_entries SET ${sets.join(", ")} WHERE id = ?`)
       .bind(...binds)
       .run();
   }
 
   if (body.custom) {
-    await writeCustomFields(c.env, id, body.custom);
+    await writeCustomFields(env, id, body.custom);
   }
 
-  // Roll up the new project (if any). If the patch re-targeted the entry
-  // to a different project, also refresh the old one so it doesn't keep
-  // double-counting the moved row.
-  const nextProjectId =
-    "project_id" in body ? (body.project_id ?? null) : current.project_id;
-  await bumpProjectFinance(c.env, nextProjectId);
-  if (current.project_id && current.project_id !== nextProjectId) {
-    await bumpProjectFinance(c.env, current.project_id);
+  // Roll up the new project; if the patch re-targeted the entry, refresh the
+  // old one too so it stops double-counting the moved row.
+  const nextProjectId = "project_id" in body ? (body.project_id ?? null) : currentProjectId;
+  await bumpProjectFinance(env, nextProjectId);
+  if (currentProjectId && currentProjectId !== nextProjectId) {
+    await bumpProjectFinance(env, currentProjectId);
   }
 
-  await logSalesActivity(c.env, id, user?.id, "edited");
+  await logSalesActivity(env, id, actorId, "edited");
+}
 
-  return c.json({ ok: true });
-});
+/** Short human-readable summary of which fields a change request touches. */
+export function summariseChange(body: Record<string, any>): string {
+  const parts: string[] = [];
+  for (const k of Object.keys(body)) {
+    if (k === "custom") parts.push("custom fields");
+    else if (k === "items" && Array.isArray(body.items)) parts.push(`items(${body.items.length})`);
+    else if (k === "payments" && Array.isArray(body.payments)) parts.push(`payments(${body.payments.length})`);
+    else parts.push(k);
+  }
+  return parts.slice(0, 12).join(", ");
+}
+
+/** Park a proposed PATCH body as a pending change request, superseding any
+ *  earlier pending request for the same entry (only the latest edit matters). */
+export async function queueEntryChange(
+  env: Env,
+  entryId: number,
+  body: Record<string, any>,
+  requestedBy: number | null | undefined,
+): Promise<number> {
+  await env.DB.prepare(
+    `UPDATE sales_entry_change_requests
+        SET status = 'superseded', decided_at = datetime('now')
+      WHERE entry_id = ? AND status = 'pending'`,
+  )
+    .bind(entryId)
+    .run();
+  const res = await env.DB.prepare(
+    `INSERT INTO sales_entry_change_requests (entry_id, payload, summary, requested_by)
+     VALUES (?, ?, ?, ?)`,
+  )
+    .bind(entryId, JSON.stringify(body), summariseChange(body), requestedBy ?? null)
+    .run();
+  return res.meta.last_row_id as number;
+}
 
 // ── Submit (lock as ready for push) ─────────────────────────
 app.post("/entries/:id/submit", requirePageAccess("sales"), async (c) => {

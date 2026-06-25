@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Pencil, Trash2, CheckSquare, Send, Settings as SettingsIcon, X } from "lucide-react";
+import { Plus, Pencil, Trash2, CheckSquare, Send, Settings as SettingsIcon, X, Check, Clock } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { TabStrip } from "../components/TabStrip";
@@ -21,6 +21,19 @@ const SALES_FILTER_KEYS = ["status", "search", "date_from", "date_to", "view"] a
 // ── Types ─────────────────────────────────────────────────────
 
 export type EntryStatus = "draft" | "submitted" | "pushed" | "void";
+
+// A queued edit awaiting Director approval (sales_entry_change_requests).
+type ChangeRequest = {
+  id: number;
+  entry_id: number;
+  summary: string | null;
+  status: string;
+  created_at: string;
+  doc_no: string | null;
+  customer_name: string | null;
+  entry_status: EntryStatus;
+  requested_by_name: string | null;
+};
 
 export type PaymentType = "cash" | "card_cc" | "card_db" | "epp" | "cheque" | "online";
 
@@ -147,7 +160,12 @@ export function Sales() {
   // ?view= drives the tab selector. "quicklogs" narrows to drafts on
   // the QUICK_LOG_SENTINEL; "all" (default) is the existing list with
   // quick-logs excluded so the dedicated tab owns those rows.
-  const view = params.get("view") === "quicklogs" ? "quicklogs" : "all";
+  const view =
+    params.get("view") === "quicklogs"
+      ? "quicklogs"
+      : params.get("view") === "approvals" && canManage
+        ? "approvals"
+        : "all";
   const status = view === "quicklogs" ? "draft" : params.get("status") || "";
   const search = params.get("search") || "";
   const dateFrom = params.get("date_from") || "";
@@ -182,6 +200,15 @@ export function Sales() {
   const list = useQuery<ListResponse>(
     () => api.get(`/api/sales/entries${qs ? `?${qs}` : ""}`),
     [qs]
+  );
+  // Pending edit-approval queue (managers only). Drives the Approvals tab +
+  // its badge; reps don't see this surface.
+  const approvals = useQuery<{ requests: ChangeRequest[] }>(
+    () =>
+      canManage
+        ? api.get(`/api/sales/entries/change-requests?status=pending`)
+        : Promise.resolve({ requests: [] }),
+    [canManage]
   );
   const udf = useUdf("sales_entries");
 
@@ -315,7 +342,11 @@ export function Sales() {
       align: "right",
       render: (e) => {
         const isMine = e.created_by === me?.id;
-        const canEdit = canManage || (isMine && e.status === "draft");
+        // Reps may edit their own draft OR submitted entries — a submitted-entry
+        // edit is routed to the Director approval queue by the backend (202).
+        const canEdit =
+          canManage || (isMine && (e.status === "draft" || e.status === "submitted"));
+        const needsApproval = !canManage && isMine && e.status === "submitted";
         const canSubmit = canEdit && e.status === "draft";
         return (
           <div className="flex items-center justify-end gap-0.5">
@@ -341,7 +372,7 @@ export function Sales() {
               <button
                 onClick={() => setEditing(e)}
                 className="rounded p-1.5 text-ink-muted hover:bg-surface-dim hover:text-ink"
-                title="Edit"
+                title={needsApproval ? "Edit (changes need Director approval)" : "Edit"}
               >
                 <Pencil size={13} />
               </button>
@@ -439,9 +470,29 @@ export function Sales() {
             label: "Quick Logs",
             count: list.data?.totals.quick_log_pending ?? 0,
           },
+          ...(canManage
+            ? [
+                {
+                  value: "approvals",
+                  label: "Approvals",
+                  count: approvals.data?.requests.length ?? 0,
+                },
+              ]
+            : []),
         ]}
       />
 
+      {view === "approvals" ? (
+        <ApprovalsView
+          requests={approvals.data?.requests ?? null}
+          loading={approvals.loading}
+          onChanged={() => {
+            approvals.reload();
+            list.reload();
+          }}
+        />
+      ) : (
+      <>
       {/* Filters */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
         {view === "all" && (
@@ -517,6 +568,8 @@ export function Sales() {
           getRowKey={(e) => e.id}
           exportName="sales"
         />
+      )}
+      </>
       )}
 
       {creating && (
@@ -840,8 +893,16 @@ export function EntryPanel({
         id = r.id;
         toast.success(`Created ${r.doc_no}`);
       } else if (entry) {
-        await api.patch(`/api/sales/entries/${entry.id}`, body);
+        const res = await api.patch<{ queued?: boolean }>(
+          `/api/sales/entries/${entry.id}`,
+          body,
+        );
         id = entry.id;
+        if (res?.queued) {
+          toast.success(`Change sent to your Sales Director for approval`);
+          onSaved();
+          return;
+        }
         toast.success(`Updated ${entry.doc_no || customerName}`);
       } else {
         return;
@@ -1701,5 +1762,88 @@ function FieldConfigPanel({
         </div>
       </PanelSection>
     </Panel>
+  );
+}
+
+// ── Approvals queue (Director) ───────────────────────────────
+// Pending edit-approval requests: each parked rep edit shows what it touches;
+// Approve re-applies it to the entry, Reject discards it.
+function ApprovalsView({
+  requests,
+  loading,
+  onChanged,
+}: {
+  requests: ChangeRequest[] | null;
+  loading: boolean;
+  onChanged: () => void;
+}) {
+  const toast = useToast();
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  async function decide(req: ChangeRequest, action: "approve" | "reject") {
+    setBusyId(req.id);
+    try {
+      await api.post(`/api/sales/entries/change-requests/${req.id}/${action}`);
+      toast.success(
+        action === "approve"
+          ? `Approved — ${req.doc_no || req.customer_name || "entry"} updated`
+          : "Change rejected",
+      );
+      onChanged();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  if (loading && !requests) {
+    return <div className="py-10 text-center text-[12px] text-ink-muted">Loading…</div>;
+  }
+  if (!requests || requests.length === 0) {
+    return (
+      <div className="rounded-lg border border-border bg-surface p-8 text-center text-[12px] text-ink-muted shadow-stone">
+        No edits are waiting for approval.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      {requests.map((req) => (
+        <div
+          key={req.id}
+          className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-4 py-3 shadow-stone"
+        >
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-[12.5px] font-semibold text-ink">
+              <Clock size={13} className="shrink-0 text-amber-500" />
+              <span className="truncate">
+                {req.doc_no || "—"} · {req.customer_name || "Unknown customer"}
+              </span>
+            </div>
+            <div className="mt-0.5 truncate text-[11px] text-ink-muted">
+              {req.requested_by_name || "A rep"} wants to change:{" "}
+              <span className="text-ink">{req.summary || "(no fields)"}</span>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              disabled={busyId === req.id}
+              onClick={() => decide(req, "reject")}
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-[11px] font-semibold text-ink-muted hover:border-err/40 hover:bg-err/10 hover:text-err disabled:opacity-50"
+            >
+              <X size={12} /> Reject
+            </button>
+            <button
+              disabled={busyId === req.id}
+              onClick={() => decide(req, "approve")}
+              className="inline-flex items-center gap-1 rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-accent/90 disabled:opacity-50"
+            >
+              <Check size={12} /> Approve
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
