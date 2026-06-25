@@ -49,7 +49,7 @@ export async function resolvePoBatchByItem(
    Pulled out of the PATCH /:id/post handler so both single-doc post and
    the multi-PO `/from-po-items` route can reuse the same logic.
    Best-effort inventory write (matches existing /post behaviour). */
-async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise<{ ok: true } | { ok: false; reason: string; status?: number }> {
+async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise<{ ok: true; movementErrors?: string[] } | { ok: false; reason: string; status?: number }> {
   const { data: grnHeader } = await sb.from('grns')
     .select('grn_number, warehouse_id')
     .eq('id', grnId).maybeSingle();
@@ -77,6 +77,7 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
   await recomputePoReceived(sb, touchedPoItemIds);
 
   // ── Inventory IN per item — best effort, doesn't roll back the post. ─
+  const movementErrors: string[] = [];
   const grnNo = (grnHeader as { grn_number: string } | null)?.grn_number ?? grnId;
   const warehouseId = (grnHeader as { warehouse_id: string | null } | null)?.warehouse_id
     ?? (await defaultWarehouseId(sb));
@@ -104,7 +105,13 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
         batch_no: it.purchase_order_item_id ? (batchByItem.get(it.purchase_order_item_id) ?? null) : null,
         performed_by: userId,
       }));
-    if (movements.length > 0) await writeMovements(sb, movements);
+    if (movements.length > 0) {
+      /* Capture the best-effort write result so the caller can surface a failed
+         stock IN (was silently swallowed — GRN flipped POSTED with stock NOT
+         booked and the caller never told). No rollback; just make it loud. */
+      const res = await writeMovements(sb, movements);
+      if (!res.ok) movementErrors.push(`IN ${grnNo}: ${res.reason ?? 'unknown'}`);
+    }
   }
   /* Physical rack placement — lines that chose a rack on the GRN form get
      placed onto that rack (separate ledger, migration 0151). Best-effort. */
@@ -118,7 +125,7 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
     const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
     await recomputeSoStockAllocation(sb);
   } catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] post-grn failed:', e); }
-  return { ok: true };
+  return { ok: true, movementErrors: movementErrors.length ? movementErrors : undefined };
 }
 
 const HEADER =
@@ -859,12 +866,14 @@ grns.post('/', async (c) => {
   /* LEAK GUARD (CRITICAL): a DRAFT GRN must NOT post — postGrnAndRollup is the
      single chokepoint that writes inventory IN + rolls up the PO received_qty.
      Skip it for a draft; the confirm transition (PATCH /:id/post) runs it. */
-  if (!asDraft) await postGrnAndRollup(sb, h.id, user.id);
+  let postRes: Awaited<ReturnType<typeof postGrnAndRollup>> | undefined;
+  if (!asDraft) postRes = await postGrnAndRollup(sb, h.id, user.id);
   // Migration 0101 — populate header money rollups from the inserted lines.
   // (Money only — no stock — so it's safe to run for a draft too.)
   await recomputeGrnTotals(sb, h.id);
 
-  return c.json({ id: h.id, grnNumber: h.grn_number }, 201);
+  const movementErrors = postRes && postRes.ok ? postRes.movementErrors : undefined;
+  return c.json({ id: h.id, grnNumber: h.grn_number, movementErrors: movementErrors?.length ? movementErrors : undefined }, 201);
 });
 
 // ── POST /from-pos ─────────────────────────────────────────────────────
@@ -998,11 +1007,12 @@ grns.post('/from-pos', async (c) => {
   }
 
   /* PR-DRAFT-removal — auto-rollup + inventory IN after items insert. */
-  await postGrnAndRollup(sb, h.id, user.id);
+  const postRes = await postGrnAndRollup(sb, h.id, user.id);
   // Migration 0101 — populate header money rollups from the inserted lines.
   await recomputeGrnTotals(sb, h.id);
 
-  return c.json({ id: h.id, grnNumber: h.grn_number, poCount: poList.length, lineCount: itemList.length }, 201);
+  const movementErrors = postRes.ok ? postRes.movementErrors : undefined;
+  return c.json({ id: h.id, grnNumber: h.grn_number, poCount: poList.length, lineCount: itemList.length, movementErrors: movementErrors?.length ? movementErrors : undefined }, 201);
 });
 
 grns.patch('/:id/post', async (c) => {
@@ -1045,7 +1055,7 @@ grns.patch('/:id/post', async (c) => {
   // Header money rollup (no stock) — keep it in sync on confirm.
   await recomputeGrnTotals(sb, id);
   const { data } = await sb.from('grns').select('id, status, posted_at').eq('id', id).single();
-  return c.json({ grn: data });
+  return c.json({ grn: data, movementErrors: res.movementErrors?.length ? res.movementErrors : undefined });
 });
 
 /* ── POST /from-po-items ────────────────────────────────────────────────
@@ -1144,7 +1154,7 @@ grns.post('/from-po-items', async (c) => {
   let counter = parseInt(firstNext.slice(`GRN-${yymm}-`.length), 10) - 1;
 
   const receivedAt = body.receivedDate ?? new Date().toISOString().slice(0, 10);
-  const created: Array<{ id: string; grnNumber: string; purchaseOrderId: string; poNumber: string; lineCount: number }> = [];
+  const created: Array<{ id: string; grnNumber: string; purchaseOrderId: string; poNumber: string; lineCount: number; posted?: boolean; postError?: string; movementErrors?: string[] }> = [];
   // Track any bucket rolled back by the post-insert over-receipt verification so
   // we can surface a 409 with the same error shape the add-line path uses.
   let overReceipt: { poItemId: string; requested: number; remaining: number } | null = null;
@@ -1247,10 +1257,19 @@ grns.post('/from-po-items', async (c) => {
       // Post failed — leave the GRN as DRAFT (it's created), report counts.
       // Don't delete — commander can inspect and post manually.
     }
+    /* Per-bucket posted/error flag — a bucket can post-succeed but still have its
+       inventory IN silently fail (writeMovements {ok:false}), or fail the post
+       outright. Surface both per entry so a partial multi-PO receive is LOUD
+       instead of the whole call returning a flat 201. */
+    const postFailReason = postRes.ok ? undefined : postRes.reason;
+    const bucketMovementErrors = postRes.ok ? postRes.movementErrors : undefined;
     created.push({
       id: h.id, grnNumber: h.grn_number,
       purchaseOrderId: bucket.primaryPoId, poNumber: [...bucket.poNumbers].join(', '),
       lineCount: bucket.lines.length,
+      posted: postRes.ok,
+      ...(postFailReason ? { postError: postFailReason } : {}),
+      ...(bucketMovementErrors?.length ? { movementErrors: bucketMovementErrors } : {}),
     });
   }
 

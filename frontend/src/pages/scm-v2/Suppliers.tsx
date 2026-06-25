@@ -137,14 +137,14 @@ export const Suppliers = () => {
       accessor: (r) => <span className={styles.codeChip}>{r.code}</span>,
       searchValue: (r) => r.code,
       filterValue: (r) => r.code,
-      sortFn: (a, b) => a.code.localeCompare(b.code),
+      sortFn: (a, b) => (a.code ?? '').localeCompare(b.code ?? ''),
     },
     {
       key: 'name',
       label: 'Name',
       width: 220,
       accessor: (r) => r.name,
-      sortFn: (a, b) => a.name.localeCompare(b.name),
+      sortFn: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
     },
     {
       key: 'category',

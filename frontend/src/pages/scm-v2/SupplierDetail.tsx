@@ -996,7 +996,7 @@ function bindingHeadColumns(
       accessor: (b) => <span className={styles.codeCell}>{b.material_code}</span>,
       searchValue: (b) => b.material_code,
       filterValue: (b) => b.material_code,
-      sortFn: (a, b) => a.material_code.localeCompare(b.material_code),
+      sortFn: (a, b) => (a.material_code ?? '').localeCompare(b.material_code ?? ''),
     },
     {
       key: 'name',
@@ -1015,7 +1015,7 @@ function bindingHeadColumns(
       ),
       searchValue: (b) => b.supplier_sku,
       filterValue: (b) => b.supplier_sku,
-      sortFn: (a, b) => a.supplier_sku.localeCompare(b.supplier_sku),
+      sortFn: (a, b) => (a.supplier_sku ?? '').localeCompare(b.supplier_sku ?? ''),
     },
   ];
 }

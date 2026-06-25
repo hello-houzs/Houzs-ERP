@@ -83,7 +83,7 @@ export const StockAdjustments = () => {
       accessor: (m) => <span className={styles.numCellZero}>{fmtDateTime(m.created_at)}</span>,
       searchValue: (m) => fmtDateTime(m.created_at),
       filterValue: (m) => fmtDateTime(m.created_at),
-      sortFn: (a, b) => a.created_at.localeCompare(b.created_at),
+      sortFn: (a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''),
       filterType: 'date', dateValue: (m) => m.created_at,
     },
     {
@@ -102,7 +102,7 @@ export const StockAdjustments = () => {
       accessor: (m) => <span className={styles.codeChip}>{m.product_code}</span>,
       searchValue: (m) => m.product_code,
       filterValue: (m) => m.product_code,
-      sortFn: (a, b) => a.product_code.localeCompare(b.product_code),
+      sortFn: (a, b) => (a.product_code ?? '').localeCompare(b.product_code ?? ''),
     },
     {
       key: 'name',

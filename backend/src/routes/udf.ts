@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
+import { requirePermission } from "../middleware/auth";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -81,7 +82,7 @@ app.get("/:table", async (c) => {
  * POST /api/udf/:table — create a new UDF field.
  * Body: { key, label, type, options? }
  */
-app.post("/:table", async (c) => {
+app.post("/:table", requirePermission("udf.manage"), async (c) => {
   const table = c.req.param("table");
   if (!validateTable(table)) return c.json({ error: "Invalid table" }, 400);
 
@@ -150,7 +151,7 @@ app.post("/:table", async (c) => {
 /**
  * DELETE /api/udf/:table/:key — remove a field and all its values.
  */
-app.delete("/:table/:key", async (c) => {
+app.delete("/:table/:key", requirePermission("udf.manage"), async (c) => {
   const table = c.req.param("table");
   const key = c.req.param("key");
   if (!validateTable(table)) return c.json({ error: "Invalid table" }, 400);
@@ -177,7 +178,7 @@ app.delete("/:table/:key", async (c) => {
  * Setting a value to null deletes the row's value for that field (so empty
  * cells don't accumulate dead rows).
  */
-app.put("/:table/values/:rowKey", async (c) => {
+app.put("/:table/values/:rowKey", requirePermission("udf.manage"), async (c) => {
   const table = c.req.param("table");
   const rowKey = c.req.param("rowKey");
   if (!validateTable(table)) return c.json({ error: "Invalid table" }, 400);

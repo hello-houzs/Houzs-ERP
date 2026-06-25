@@ -77,7 +77,7 @@ export const PcVariantEditor = ({
     return (specialAddonsQ.data ?? [])
       .filter((r) => r.active && r.categories.includes(cat))
       .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code))
+      .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''))
       .map((r) => ({ value: r.code }));
   }, [specialAddonsQ.data, category]);
 

@@ -85,7 +85,7 @@ export const StockTakes = () => {
       ),
       searchValue: (t) => t.take_no,
       filterValue: (t) => t.take_no,
-      sortFn: (a, b) => a.take_no.localeCompare(b.take_no),
+      sortFn: (a, b) => (a.take_no ?? '').localeCompare(b.take_no ?? ''),
     },
     {
       key: 'date',
@@ -94,7 +94,7 @@ export const StockTakes = () => {
       accessor: (t) => <span className={styles.numCellZero}>{fmtDate(t.take_date)}</span>,
       searchValue: (t) => fmtDate(t.take_date),
       filterValue: (t) => fmtDate(t.take_date),
-      sortFn: (a, b) => a.take_date.localeCompare(b.take_date),
+      sortFn: (a, b) => (a.take_date ?? '').localeCompare(b.take_date ?? ''),
       filterType: 'date', dateValue: (t) => t.take_date,
     },
     {
@@ -150,7 +150,7 @@ export const StockTakes = () => {
       },
       searchValue: (t) => STATUS_TONE[t.status].label,
       filterValue: (t) => STATUS_TONE[t.status].label,
-      sortFn: (a, b) => a.status.localeCompare(b.status),
+      sortFn: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
     },
     {
       key: 'lines',

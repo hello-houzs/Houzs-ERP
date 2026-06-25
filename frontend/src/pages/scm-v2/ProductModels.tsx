@@ -185,7 +185,7 @@ export const ProductModels = () => {
         ),
         searchValue: (m) => m.model_code,
         filterValue: (m) => m.model_code,
-        sortFn: (a, b) => a.model_code.localeCompare(b.model_code),
+        sortFn: (a, b) => (a.model_code ?? '').localeCompare(b.model_code ?? ''),
       },
       {
         key: 'name',
@@ -194,7 +194,7 @@ export const ProductModels = () => {
         accessor: (m) => <span className={styles.nameText}>{m.name}</span>,
         searchValue: (m) => m.name,
         filterValue: (m) => m.name,
-        sortFn: (a, b) => a.name.localeCompare(b.name),
+        sortFn: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
       },
       {
         key: 'active',
