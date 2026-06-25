@@ -242,9 +242,11 @@ export type CreateAddressInput = {
   assignedPosition?: string;
 };
 
-// List every mailbox address (admin sees all). GET is no-store server-side.
+// Management list (MailboxesTab): every mailbox, for assigning to people.
+// ?manage=1 makes a mail admin get ALL; the sidebar / Compose call the plain
+// endpoint and stay scope-bound (per-user isolation). GET is no-store server-side.
 export function fetchAddresses(): Promise<MailAddress[]> {
-  return api.get<MailAddress[]>("/api/mail-center/addresses");
+  return api.get<MailAddress[]>("/api/mail-center/addresses?manage=1");
 }
 
 // Create a mailbox — for a PERSON (pass assignedUserId + assignedUserName) or a

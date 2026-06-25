@@ -267,7 +267,12 @@
 //   a person or a Houzs department + access matrix + view-level); replies now send
 //   FROM the chosen mailbox (hello@). OCR scan: 2nd phone -> Emergency Contact;
 //   removed the per-line "scanned · NN%" review chip from the create-SO page.
-const VERSION = "houzs-erp-v63";
+// v64 — Mail Center per-user FULL isolation (incl. admins): visibility follows
+//   mail_user_scope.level for everyone; a mail admin keeps MANAGEMENT rights but
+//   no longer auto-sees every mailbox. GET /addresses?manage=1 = the all-list for
+//   the Mailboxes admin tab; sidebar + Compose stay scope-bound. Each member sees
+//   only their own personal mailbox + shared mailboxes explicitly granted.
+const VERSION = "houzs-erp-v64";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

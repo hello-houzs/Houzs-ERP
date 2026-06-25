@@ -576,10 +576,12 @@ async function getMailScope(c: Context<{ Bindings: Env }>): Promise<{
   addresses: string[];
   level: string;
 }> {
-  const user = c.get("user");
   const userId = c.get("userId") ?? null;
-  if (isMailAdmin(user))
-    return { isAdmin: true, userId, addresses: [], level: "company" };
+  // Visibility follows mail_user_scope.level for EVERYONE, admins included — a
+  // mail admin keeps MANAGEMENT rights (isMailAdmin: create/assign mailboxes,
+  // set scope) but no longer auto-sees every mailbox, which would defeat the
+  // per-user isolation the owner wants. An admin who needs the all-view is given
+  // an explicit 'company' scope level.
   if (!userId)
     return { isAdmin: false, userId: null, addresses: [], level: "personal" };
 
@@ -880,7 +882,10 @@ app.get("/attachments/:id", async (c) => {
 app.get("/addresses", async (c) => {
   c.header("Cache-Control", "no-store");
   const scope = await getMailScope(c);
-  if (scope.isAdmin) {
+  // ?manage=1 is the management view (MailboxesTab): a mail admin lists EVERY
+  // mailbox to assign them to people. The default (sidebar + Compose from-picker)
+  // is scope-bound so each user only sees their own + granted mailboxes.
+  if (c.req.query("manage") === "1" && isMailAdmin(c.get("user"))) {
     const res = await c.env.DB.prepare(
       `SELECT * FROM email_addresses ORDER BY address ASC`,
     ).all<AddressRow>();
