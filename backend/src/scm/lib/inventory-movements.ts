@@ -107,6 +107,8 @@ export async function defaultWarehouseId(sb: any): Promise<string | null> {
   const { data } = await sb.from('warehouses')
     .select('id')
     .eq('is_default', true)
+    .order('code', { ascending: true })
+    .limit(1)
     .maybeSingle();
   return (data as { id: string } | null)?.id ?? null;
 }

@@ -58,7 +58,7 @@ async function postPcReceiveAndRollup(sb: any, receiveId: string): Promise<{ ok:
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-  }).eq('id', receiveId).neq('status', 'CLOSED').select('id, status, posted_at').single();
+  }).eq('id', receiveId).neq('status', 'CLOSED').neq('status', 'CANCELLED').select('id, status, posted_at').single();
   if (error) return { ok: false, reason: error.message, status: 500 };
   if (!data) return { ok: false, reason: 'cannot_post', status: 409 };
 
@@ -871,6 +871,12 @@ purchaseConsignmentReceives.patch('/:id/post', async (c) => {
   const row = cur as { id: string; status: string; posted_at: string | null };
   if (row.status === 'POSTED') {
     return c.json({ receive: row });
+  }
+  /* Audit 2026-06-20 — a CANCELLED PC Receive is FINAL: its inventory IN was
+     already reversed by the cancel resync. Re-posting would re-book the stock IN
+     (on-hand permanently inflated). Create a new receive instead. */
+  if (row.status === 'CANCELLED') {
+    return c.json({ error: 'receive_cancelled_final', message: 'A cancelled PC Receive cannot be re-posted — its stock was already reversed. Create a new receive.' }, 409);
   }
   const res = await postPcReceiveAndRollup(sb, id);
   if (!res.ok) return c.json({ error: 'post_failed', reason: res.reason }, 500);

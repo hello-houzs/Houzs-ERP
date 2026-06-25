@@ -781,6 +781,14 @@ consignmentNotes.patch('/:id/status', async (c) => {
     return c.json({ consignmentNote: { id, status: 'CANCELLED' } });
   }
 
+  /* Audit 2026-06-20 — a CANCELLED Consignment Note is FINAL (mirrors
+     delivery-orders-mfg.ts do_cancelled_final + the consignment-returns/PC-receive
+     guards). Reactivating to a shipped state would re-book the CS_DO inventory OUT
+     (resyncNoteInventory re-ships the stock). Create a new note instead. */
+  if (prevStatus === 'CANCELLED') {
+    return c.json({ error: 'note_cancelled_final', message: 'A cancelled Consignment Note cannot be reactivated — its ship-out was already reversed. Create a new note.' }, 409);
+  }
+
   /* Downstream-lock — only the CANCELLED transition is gated. */
   if (body.status === 'CANCELLED') {
     const childLock = await noteHasDownstream(sb, id);

@@ -233,7 +233,7 @@ suppliers.get('/', async (c) => {
     .order('name', { ascending: true })
     // Bound the result so PostgREST's default 1000-row cap can't silently
     // truncate the supplier master — match the SO/DO/SI list convention.
-    .limit(500);
+    .limit(2000);
   if (status && SUPPLIER_STATUSES.has(status)) q = q.eq('status', status);
   if (search) { const s = escapeForOr(search); if (s) q = q.or(`code.ilike.%${s}%,name.ilike.%${s}%,contact_person.ilike.%${s}%`); }
 

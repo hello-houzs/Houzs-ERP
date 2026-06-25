@@ -680,6 +680,14 @@ consignmentReturns.patch('/:id/status', async (c) => {
   if (body.status === 'CANCELLED' && prevStatus === 'CANCELLED') {
     return c.json({ consignmentReturn: { id, status: 'CANCELLED' } });
   }
+  /* Audit 2026-06-20 — a CANCELLED Consignment Return is FINAL (mirrors
+     delivery-returns.ts dr_cancelled_final). The cancel already reversed the
+     return IN; reactivating to RECEIVED/INSPECTED/REFUNDED would re-arm a
+     double-IN on the next line edit (resyncReturnInventory then runs with a
+     non-cancelled status). Create a new return instead. */
+  if (prevStatus === 'CANCELLED') {
+    return c.json({ error: 'return_cancelled_final', message: 'A cancelled Consignment Return cannot be reactivated — create a new return.' }, 409);
+  }
 
   const now = new Date().toISOString();
   const ts: Record<string, string> = { updated_at: now, status: body.status };

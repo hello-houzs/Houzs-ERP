@@ -8,12 +8,12 @@ export const fmtMoney = (n: number): string =>
 /** Returns "RM 2,990" — for inline copy where PriceTag is overkill. */
 export const fmtRM = (n: number): string => `RM ${fmtMoney(n)}`;
 
-/** "2026/05/31" — zero-padded ISO-style, matches the processing-date format. */
+/** "31/05/2026" — day-first DD/MM/YYYY (Malaysian standard). System-wide
+ *  canonical display format (Commander 2026-06-18). Display-only — never feed
+ *  this to a date input or API; use ISO for those. */
 export const fmtDate = (d: Date | string | number): string => {
   const date = d instanceof Date ? d : new Date(d);
-  return date
-    .toLocaleDateString('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' })
-    .replace(/-/g, '/');
+  return date.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
 };
 
 /** "11:20 AM" — local 12h format. */

@@ -45,8 +45,7 @@ export const meetsProceedGate = (i: ProceedGateInput): boolean =>
   i.hasAddress &&
   i.hasPostcode &&
   i.hasDeliveryDate &&
-  i.total > 0 &&
-  i.paid / i.total >= PROCEED_PAID_THRESHOLD;
+  (i.total <= 0 || i.paid / i.total >= PROCEED_PAID_THRESHOLD);
 
 /** Total physical pieces in an order (for delivery slot allocation). */
 export const pieceCount = (_orderItems: unknown[]): number => {
