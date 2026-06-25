@@ -66,6 +66,9 @@ interface Props {
  * two never drift. Add a route here, it shows up in both places.
  */
 export interface NavTab {
+  /** Which sidebar section this TOP-LEVEL item sits in — drives the
+   *  Workspace / Operations / System grouping. Defaults to "operations". */
+  section?: "workspace" | "operations" | "system";
   /** Click target. Omit when this is a pure group header with `children`. */
   to?: string;
   label: string;
@@ -110,11 +113,27 @@ export interface NavTab {
  * filter recurses so groups with no visible kids hide entirely.
  */
 export const NAV_TABS: NavTab[] = [
-  // ── Service — quality + ASSR ─────────────────────────────────
+  // ══ WORKSPACE ════════════════════════════════════════════════
+  // Sales Orders promoted to a top-level shortcut (also reachable under
+  // Supply Chain → Sales Order). (Overview gets added here once built.)
   {
-    label: "Service",
+    section: "workspace",
+    to: "/scm/sales-orders",
+    label: "Sales Orders",
+    icon: ShoppingCart,
+    anyPerm: ["*", "scm.access"],
+    anyAccess: ["scm.sales.orders"],
+  },
+
+  // ══ OPERATIONS ═══════════════════════════════════════════════
+  // ── Service — quality + ASSR. Header links to the Cases page; the
+  // chevron still expands the sub-menu (Quality Metrics / Maintenance).
+  {
+    section: "operations",
+    label: "Service Cases",
     icon: Zap,
     groupId: "service",
+    to: "/assr?view=cases",
     anyPerm: ["service_cases.read"],
     children: [
       {
@@ -148,9 +167,11 @@ export const NAV_TABS: NavTab[] = [
   // Gated on page-access (mig 073). Each sub-tab uses `pageAccess`
   // so a role with calendar-only access only sees the Calendar entry.
   {
+    section: "operations",
     label: "Projects",
     icon: FolderKanban,
     groupId: "projects",
+    to: "/projects?view=list",
     pageAccess: "projects",
     children: [
       {
@@ -181,10 +202,9 @@ export const NAV_TABS: NavTab[] = [
   },
 
   // ── Supply Chain — ported 2990's furniture SCM (/api/scm) ────
-  // Gated on scm.access; Owner / IT Admin pass via their "*" wildcard. The
-  // server gates /api/scm/* with requireAnyPermission(["*","scm.access"]).
-  // New SCM modules get added here as they're ported.
+  // Header links to the /scm Hub; chevron expands the inline subtree.
   {
+    section: "operations",
     label: "Supply Chain",
     icon: Boxes,
     groupId: "scm",
@@ -304,33 +324,48 @@ export const NAV_TABS: NavTab[] = [
     ],
   },
 
-  // ── People — system health + user management ─────────────────
+  // ── Mail Center — in-ERP shared inbox (ported from Hookka). Flat entry;
+  // the page carries its own Inbox/Sent/folder rail.
   {
-    label: "People",
-    icon: Users,
-    groupId: "people",
-    anyPerm: ["users.read", "roles.read"],
-    children: [
-      { to: "/system-health", label: "System Health", icon: Activity, pageAccess: "system_health" },
-      { to: "/team", label: "User Management", icon: Users, anyPerm: ["users.read", "roles.read"], pageAccess: "team" },
-    ],
-  },
-
-  // ── Mail Center — in-ERP shared inbox (ported from Hookka) ───
-  // Single flat entry (matches Hookka): the page carries its own
-  // Inbox/Sent/Archive/folder rail, so the app sidebar shouldn't nest
-  // Inbox/Sent as children. Gated on mail_center.read; per-user mailbox
-  // scope is enforced server-side.
-  {
+    section: "operations",
     to: "/mail-center",
     label: "Mail Center",
     icon: Mail,
     anyPerm: ["mail_center.read"],
   },
 
-  // ── System — pinned to the bottom ───────────────────────────
-  { to: "/settings", label: "Settings", icon: SettingsIcon, perm: "settings.manage" },
+  // ══ SYSTEM ═══════════════════════════════════════════════════
+  {
+    section: "system",
+    to: "/team",
+    label: "Team",
+    icon: Users,
+    anyPerm: ["users.read", "roles.read"],
+    pageAccess: "team",
+  },
+  {
+    section: "system",
+    to: "/system-health",
+    label: "System Health",
+    icon: Activity,
+    pageAccess: "system_health",
+  },
+  {
+    section: "system",
+    to: "/settings",
+    label: "Settings",
+    icon: SettingsIcon,
+    perm: "settings.manage",
+  },
 ];
+
+// Section labels for the Workspace / Operations / System grouping.
+const SECTION_LABELS: Record<NonNullable<NavTab["section"]>, string> = {
+  workspace: "Workspace",
+  operations: "Operations",
+  system: "System",
+};
+const SECTION_ORDER = ["workspace", "operations", "system"] as const;
 
 // Brand assets — drop the source files into frontend/public/. The paths
 // below resolve to those files at runtime. If your files are .png instead
@@ -649,7 +684,20 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
 
       {/* ── Flat root nav ─────────────────────────────────────── */}
       <nav className="no-scrollbar flex-1 overflow-y-auto px-2 pb-4 pt-3">
-        {visibleTabs.map((tab) => renderTab(tab))}
+        {SECTION_ORDER.map((sec) => {
+          const items = visibleTabs.filter((t) => (t.section ?? "operations") === sec);
+          if (items.length === 0) return null;
+          return (
+            <div key={sec} className={collapsed ? "" : "mb-1"}>
+              {!collapsed && (
+                <div className="px-3 pb-1 pt-3 font-mono text-[9.5px] font-bold uppercase tracking-brand text-sidebar-ink-muted">
+                  {SECTION_LABELS[sec]}
+                </div>
+              )}
+              {items.map((tab) => renderTab(tab))}
+            </div>
+          );
+        })}
       </nav>
 
       {/* ── Notification bell (mobile drawer only; desktop nav bar owns it) */}
