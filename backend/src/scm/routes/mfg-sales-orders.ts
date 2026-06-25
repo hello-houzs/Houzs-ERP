@@ -1761,6 +1761,49 @@ mfgSalesOrders.post('/', async (c) => {
     resolvedVenueName = (venueRow as { name?: string } | null)?.name ?? null;
   }
 
+  /* Houzs venue-by-project (owner 2026-06-25) — scm.staff is unused in Houzs, so
+     the home-venue logic above always leaves venue NULL. Fall back to the
+     LOGGED-IN salesperson's currently-active exhibition project: the latest
+     project (by start_date, <= the SO date) they are a SALES ATTENDING rep of.
+     PIC is intentionally NOT used — in Houzs one coordinator is PIC of hundreds
+     of projects (several per day), so it can't pin a venue; the Sales Attending
+     list is the precise "this rep is at this event" signal. Stamps the venue
+     TEXT only (the project venue isn't a scm.venues row, so venue_id stays
+     NULL); an explicit body.venue still wins. Reads the PUBLIC schema via
+     c.env.DB — the scm supabase client can't reach public. */
+  if (!resolvedVenueName) {
+    const houzsUser = c.get('houzsUser');
+    const uid = houzsUser?.id != null ? Number(houzsUser.id) : NaN;
+    if (Number.isFinite(uid)) {
+      const soDateForVenue =
+        typeof body.soDate === 'string' && body.soDate.trim()
+          ? body.soDate.trim().slice(0, 10)
+          : new Date().toISOString().slice(0, 10);
+      try {
+        const projRow = await c.env.DB.prepare(
+          `SELECT p.venue AS venue
+             FROM projects p
+            WHERE p.start_date IS NOT NULL
+              AND p.start_date <= ?
+              AND p.venue IS NOT NULL AND p.venue <> ''
+              AND EXISTS (
+                SELECT 1 FROM project_sales_attendees psa
+                  JOIN sales_reps sr ON sr.id = psa.sales_rep_id
+                 WHERE psa.project_id = p.id AND sr.user_id = ?
+              )
+            ORDER BY p.start_date DESC
+            LIMIT 1`,
+        )
+          .bind(soDateForVenue, uid)
+          .first<{ venue?: string | null }>();
+        const v = projRow?.venue ?? null;
+        if (typeof v === 'string' && v.trim()) resolvedVenueName = v.trim();
+      } catch {
+        /* non-fatal — leave venue NULL if the project lookup fails */
+      }
+    }
+  }
+
   // Compute totals + category breakdown
   let mattressSofa = 0, bedframe = 0, accessories = 0, others = 0, total = 0, totalCost = 0;
   // Task #114 — also accumulate per-category COST so the four cost columns
