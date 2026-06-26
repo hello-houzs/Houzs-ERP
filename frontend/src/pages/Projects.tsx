@@ -786,7 +786,7 @@ export function Projects() {
     maintenance: usePageAccess("projects.maintenance"),
   };
   const allowed: ProjectsView[] = PROJECTS_VIEWS.filter(
-    (v) => access[v] !== "none"
+    (v) => access[v as keyof typeof access] !== "none"
   );
   const firstAllowed: ProjectsView | null = allowed[0] ?? null;
 
@@ -973,6 +973,9 @@ function ProjectsListView() {
     if (!all || !status) return all;
     return all.filter((r) => r.status === status);
   }, [list.data, status]);
+  // Non-null view of rows for the card list + right rail (rows itself stays
+  // nullable for the DataTable's loading state).
+  const cardRows = rows ?? [];
 
   const summary = useQuery<{
     by_stage: { stage: string; count: number }[];
@@ -1348,13 +1351,13 @@ function ProjectsListView() {
       {listMode === "cards" ? (
         list.loading && !list.data ? (
           <div className="py-10 text-center text-[12px] text-ink-muted">加载中…</div>
-        ) : rows.length === 0 ? (
+        ) : cardRows.length === 0 ? (
           <div className="rounded-xl border border-border bg-surface p-8 text-center text-[12px] text-ink-muted shadow-stone">
             No projects yet
           </div>
         ) : (
           <div className="space-y-2.5">
-            {rows.map((r) => {
+            {cardRows.map((r) => {
               const total = r.sections_total ?? 0;
               const active = r.active_section_name ?? null;
               const done = total > 0 && active == null;
@@ -1462,7 +1465,7 @@ function ProjectsListView() {
             <div className="mb-2.5 text-[13px] font-bold text-ink">即将交付</div>
             {(() => {
               const today = new Date().toISOString().slice(0, 10);
-              const upcoming = rows
+              const upcoming = cardRows
                 .filter((r) => r.start_date && r.start_date >= today)
                 .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""))
                 .slice(0, 6);
