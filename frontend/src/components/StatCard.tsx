@@ -10,6 +10,10 @@ interface Props {
   onClick?: () => void;
   /** Highlight the card as the currently-selected drill-down (brass border + tint). */
   active?: boolean;
+  /** Optional left colour rail (a Tailwind bg-* class, e.g. "bg-primary").
+   *  When set, a thin vertical bar runs down the card's left edge to colour-
+   *  code the metric. Omitted by default so existing callers are unchanged. */
+  rail?: string;
 }
 
 /**
@@ -21,7 +25,7 @@ interface Props {
  * type switches to <button> so it's keyboard-accessible; we also bump
  * hover affordance to make it read as clickable.
  */
-export function StatCard({ label, value, subtitle, tone = "default", onClick, active }: Props) {
+export function StatCard({ label, value, subtitle, tone = "default", onClick, active, rail }: Props) {
   const Tag = onClick ? "button" : "div";
   return (
     <Tag
@@ -35,6 +39,11 @@ export function StatCard({ label, value, subtitle, tone = "default", onClick, ac
         active && "border-primary/60 bg-primary-soft/50 ring-1 ring-primary/30"
       )}
     >
+      {/* Left colour rail — colour-codes the metric when `rail` is set. */}
+      {rail && (
+        <span className={cn("pointer-events-none absolute left-0 top-0 h-full w-1 rounded-l-lg", rail)} />
+      )}
+
       {/* Brass top edge — thin by default, glows on hover (full when active) */}
       <span
         className={cn(

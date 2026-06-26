@@ -170,6 +170,10 @@
      "code" chip across the app matches in one change. Column alignment that
      needs fixed-width digits uses `font-variant-numeric: tabular-nums`. */
   --font-mono:    var(--font-system);
+  /* Money / financial figures — IBM Plex Mono for ledger-grade tabular digits
+     so amounts align by decimal across rows and in detail drawers. The ONLY
+     web font reintroduced; used solely on amount cells via this token. */
+  --font-money:   "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 
   /* Base size */
   --fs-base: 16px;

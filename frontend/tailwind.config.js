@@ -76,6 +76,11 @@ export default {
         // name stays `mono` to avoid touching 440 call sites; the
         // *meaning* is now "data / labels / numbers".
         mono: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
+        // Money / financial figures only — IBM Plex Mono gives ledger-grade
+        // tabular digits so amounts line up by decimal across rows and in the
+        // detail drawers. Applied via `font-money` on amount cells ONLY; the
+        // rest of the ERP stays on the system typeface (owner's house style).
+        money: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
       },
       letterSpacing: {
         brand: "0.18em",

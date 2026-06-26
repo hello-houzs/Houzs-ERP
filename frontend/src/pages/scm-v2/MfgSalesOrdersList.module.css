@@ -87,6 +87,7 @@
 }
 
 .money {
+  font-family: var(--font-money);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   color: var(--c-burnt);

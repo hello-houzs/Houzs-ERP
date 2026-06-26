@@ -178,7 +178,7 @@ const buildPoColumns = (
   {
     key: 'total_centi', label: 'Total', width: 130, sortable: true, align: 'right', groupable: false,
     accessor: (po) => (
-      <span style={{ fontFamily: 'var(--font-mark)', color: 'var(--c-burnt)', fontWeight: 800 }}>
+      <span style={{ fontFamily: 'var(--font-money)', color: 'var(--c-burnt)', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
         {fmtMoney(po.total_centi, po.currency)}
       </span>
     ),

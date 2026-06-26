@@ -952,22 +952,26 @@ function StageStatStrip({
           label="Open Cases"
           value={ready ? openCount.toLocaleString() : "—"}
           subtitle={sub(`${allTotal.toLocaleString()} total`)}
+          rail="bg-primary"
         />
         <StatCard
           label="SLA Risk"
           value={ready ? breachTotal.toLocaleString() : "—"}
           subtitle={sub(breachTotal > 0 ? "needs attention" : "on track")}
           tone={ready && breachTotal > 0 ? "error" : "default"}
+          rail={ready && breachTotal > 0 ? "bg-err" : "bg-border-strong"}
         />
         <StatCard
           label="Avg Resolution"
           value={ready && q.data?.avg_e2e_days != null ? `${q.data.avg_e2e_days}d` : "—"}
           subtitle={sub("end-to-end")}
+          rail="bg-accent-bright"
         />
         <StatCard
           label="Completed"
           value={ready ? completedCount.toLocaleString() : "—"}
           subtitle={sub("closed cases")}
+          rail="bg-synced"
         />
       </div>
 

@@ -1260,6 +1260,7 @@ const buildColumns = (
     accessor: (r) => (
       <span style={{
         fontWeight: 700, color: 'var(--c-ink)',
+        fontFamily: 'var(--font-money)',
         fontVariantNumeric: 'tabular-nums',
       }}>{fmtRm(r.local_total_centi)}</span>
     ),
