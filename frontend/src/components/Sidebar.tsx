@@ -41,6 +41,7 @@ import {
   Mail,
   Network,
   Building2,
+  LayoutDashboard,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -116,8 +117,15 @@ export interface NavTab {
  */
 export const NAV_TABS: NavTab[] = [
   // ══ WORKSPACE ════════════════════════════════════════════════
+  {
+    section: "workspace",
+    to: "/",
+    label: "Overview",
+    icon: LayoutDashboard,
+    end: true,
+  },
   // Sales Orders promoted to a top-level shortcut (also reachable under
-  // Supply Chain → Sales Order). (Overview gets added here once built.)
+  // Supply Chain → Sales Order).
   {
     section: "workspace",
     to: "/scm/sales-orders",

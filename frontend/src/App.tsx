@@ -79,6 +79,8 @@ const ScmDriversV2 = lazy(() => import("./pages/scm-v2/Drivers").then((m) => ({ 
 // configurator + SoFromProducts come in a later wave. NOTE: 2990 uses :docNo
 // (not :id) for SO detail, and the literal /maintenance route MUST precede
 // /:docNo so 'maintenance' isn't read as a doc number.
+// Overview — Workspace home (P1 task-first dashboard).
+const Overview = lazy(() => import("./pages/Overview").then((m) => ({ default: m.Overview })));
 // Supply Chain Hub — section landing page (flattens the 3-level SCM nesting).
 const ScmHub = lazy(() => import("./pages/ScmHub").then((m) => ({ default: m.ScmHub })));
 const ScmSalesOrdersV2 = lazy(() => import("./pages/scm-v2/MfgSalesOrdersList").then((m) => ({ default: m.MfgSalesOrdersList })));
@@ -192,8 +194,8 @@ export default function App() {
         <ChunkReloadBoundary>
         <Suspense fallback={<PageSkeleton />}>
         <Routes>
-        {/* Landing → Service (QMS). No standalone Overview after the cutover. */}
-        <Route path="/" element={<Navigate to="/assr" replace />} />
+        {/* Landing → Overview workspace home (P1). */}
+        <Route path="/" element={<Overview />} />
         <Route
           path="/assr"
           element={
