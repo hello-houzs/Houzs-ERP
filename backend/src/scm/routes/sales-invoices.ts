@@ -141,6 +141,16 @@ function buildItemRow(salesInvoiceId: string, it: Record<string, unknown>, lineN
     line_cost_centi: lineCost,
     line_margin_centi: lineTotal - lineCost,
     variants,
+    /* Migration 0058 — carry the dedicated variant-breakdown columns onto the SI
+       line (sales_invoice_items has all 8). Source is the convert payload `it`. */
+    gap_inches: (it.gapInches as number | null) ?? null,
+    divan_height_inches: (it.divanHeightInches as number | null) ?? null,
+    divan_price_sen: Number(it.divanPriceSen ?? 0),
+    leg_height_inches: (it.legHeightInches as number | null) ?? null,
+    leg_price_sen: Number(it.legPriceSen ?? 0),
+    custom_specials: (it.customSpecials as unknown) ?? null,
+    line_suffix: (it.lineSuffix as string | null) ?? null,
+    special_order_price_sen: Number(it.specialOrderPriceSen ?? 0),
     notes: (it.notes as string) ?? null,
     ...(typeof lineNo === 'number' ? { line_no: lineNo } : {}),
   };
@@ -487,6 +497,15 @@ salesInvoices.post('/from-dos', async (c) => {
     discountCenti: line.discountCenti,
     unitCostCenti: line.unitCostCenti,
     variants: line.variants,
+    /* Migration 0058 — carry the dedicated variant-breakdown columns onto the SI line. */
+    gapInches: line.gapInches,
+    divanHeightInches: line.divanHeightInches,
+    divanPriceSen: line.divanPriceSen,
+    legHeightInches: line.legHeightInches,
+    legPriceSen: line.legPriceSen,
+    customSpecials: line.customSpecials,
+    lineSuffix: line.lineSuffix,
+    specialOrderPriceSen: line.specialOrderPriceSen,
   }, lineNo));
   const { error: iErr } = await sb.from('sales_invoice_items').insert(rows);
   if (iErr) {
@@ -553,7 +572,9 @@ salesInvoices.post('/:id/items/from-do/:doId', async (c) => {
 
   const { data: doItems } = await sb.from('delivery_order_items').select(
     'id, item_code, item_group, description, description2, uom, qty, ' +
-    'unit_price_centi, discount_centi, unit_cost_centi, variants, notes',
+    'unit_price_centi, discount_centi, unit_cost_centi, variants, notes, ' +
+    'gap_inches, divan_height_inches, divan_price_sen, leg_height_inches, leg_price_sen, ' +
+    'custom_specials, line_suffix, special_order_price_sen',
   ).eq('delivery_order_id', doId)
     .order('line_no', { ascending: true, nullsFirst: false })
     .order('created_at');
@@ -586,6 +607,16 @@ salesInvoices.post('/:id/items/from-do/:doId', async (c) => {
       unitCostCenti: it.unit_cost_centi,
       variants: it.variants,
       notes: it.notes,
+      /* Migration 0058 — carry the dedicated variant-breakdown columns (supabase-js
+         returns snake_case; dual-read stays safe either way). */
+      gapInches: it.gapInches ?? it.gap_inches ?? null,
+      divanHeightInches: it.divanHeightInches ?? it.divan_height_inches ?? null,
+      divanPriceSen: it.divanPriceSen ?? it.divan_price_sen ?? 0,
+      legHeightInches: it.legHeightInches ?? it.leg_height_inches ?? null,
+      legPriceSen: it.legPriceSen ?? it.leg_price_sen ?? 0,
+      customSpecials: it.customSpecials ?? it.custom_specials ?? null,
+      lineSuffix: it.lineSuffix ?? it.line_suffix ?? null,
+      specialOrderPriceSen: it.specialOrderPriceSen ?? it.special_order_price_sen ?? 0,
     }, baseLineNo === null ? null : baseLineNo + idx));
   if (rows.length === 0) return c.json({ error: 'do_fully_invoiced' }, 409);
 
