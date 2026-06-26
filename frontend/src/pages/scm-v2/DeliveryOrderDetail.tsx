@@ -47,7 +47,7 @@ import {
   PaymentsTable, labelToApi, draftMethodFields,
   newPaymentDraft, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
-import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
+import { buildVariantSummary, canonicalizeVariants, fmtDateOrDash } from '@2990s/shared';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
 } from '../../vendor/scm/lib/localities-queries';
@@ -377,7 +377,12 @@ export const DeliveryOrderDetail = () => {
         unitPriceCenti: line.unitPriceCenti,
         discountCenti: line.discountCenti,
         unitCostCenti: line.unitCostCenti,
-        variants: (line.variants as Record<string, unknown>) ?? {},
+        /* Canonicalise POS-vocabulary sofa keys (depth -> seatHeight,
+           sofaLegHeight -> legHeight) so the Add-from-SO line's Seat/Leg
+           dropdowns prefill instead of showing "Select...". Mirrors
+           SalesOrderDetail; the variants JSON is copied SO->DO, so without
+           this a POS-vocab line's Seat/Leg axes render blank. */
+        variants: canonicalizeVariants(line.itemGroup ?? 'others', (line.variants as Record<string, unknown>) ?? {}),
         remark: '',
       },
     }]);
