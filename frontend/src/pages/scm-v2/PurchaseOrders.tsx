@@ -67,6 +67,28 @@ const STATUS_COLOR: Record<PoStatus, string> = {
 const fmtMoney = (centi: number, currency: Currency): string =>
   `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+/* Readable house-style date — "23 Jun 2026" — for the Theme C card view. */
+const PO_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const readableDate = (iso: string | null | undefined): string => {
+  if (!iso) return '—';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return iso;
+  return `${m[3]} ${PO_MONTHS[Number(m[2]) - 1] ?? m[2]} ${m[1]}`;
+};
+
+/* PO receiving progress, derived from header status (the list endpoint carries
+   no per-line received qty, so we don't fake an "8/12" count — we read the
+   lifecycle: Draft → Submitted → Partially received → Received). */
+const poProgress = (s: PoStatus): { pct: number; dead: boolean } => {
+  switch (s) {
+    case 'SUBMITTED': return { pct: 33, dead: false };
+    case 'PARTIALLY_RECEIVED': return { pct: 66, dead: false };
+    case 'RECEIVED': return { pct: 100, dead: false };
+    case 'CANCELLED': return { pct: 0, dead: true };
+    default: return { pct: 0, dead: false }; // DRAFT
+  }
+};
+
 /** PR — Commander 2026-05-27: per-row items preview, AutoCount style. Shows
     first 3 items as `CODE×qty · CODE×qty · +N more`. Returns null when the
     PO has no items so caller can render the muted "—". */
@@ -212,6 +234,17 @@ export const PurchaseOrders = () => {
   // PR — default to Outstanding (the 95% view).
   const [status, setStatus] = useState<StatusFilter>('outstanding');
   const [drawer, setDrawer] = useState<Drawer>({ kind: 'closed' });
+  /* Desktop Table/Cards toggle (Theme C) — Table keeps the full grid; Cards is
+     a scannable list (avatar · readable date · Plex money · delivery-status
+     progress bar). Persisted. */
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>(() => {
+    try { return localStorage.getItem('scm:po:viewmode') === 'cards' ? 'cards' : 'table'; }
+    catch { return 'table'; }
+  });
+  const chooseView = (v: 'table' | 'cards') => {
+    setViewMode(v);
+    try { localStorage.setItem('scm:po:viewmode', v); } catch { /* private mode */ }
+  };
   const navigate = useNavigate();
   const askConfirm = useConfirm();
   const notify = useNotify();
@@ -397,27 +430,37 @@ export const PurchaseOrders = () => {
         </div>
       </div>
 
-      <div className={styles.statusChips}>
-        {STATUS_CHIPS.map((c) => (
-          <button
-            key={c.value}
-            type="button"
-            onClick={() => setStatus(c.value)}
-            style={{
-              fontFamily: 'var(--font-button)',
-              fontSize: 'var(--fs-13)',
-              fontWeight: 600,
-              padding: 'var(--space-2) var(--space-4)',
-              borderRadius: 'var(--radius-pill)',
-              border: status === c.value ? '1px solid var(--c-ink)' : '1px solid var(--line)',
-              background: status === c.value ? 'var(--c-ink)' : 'var(--c-paper)',
-              color: status === c.value ? 'var(--c-cream)' : 'var(--c-ink)',
-              cursor: 'pointer',
-            }}
-          >
-            {c.label}
-          </button>
-        ))}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+        <div className={styles.statusChips}>
+          {STATUS_CHIPS.map((c) => (
+            <button
+              key={c.value}
+              type="button"
+              onClick={() => setStatus(c.value)}
+              style={{
+                fontFamily: 'var(--font-button)',
+                fontSize: 'var(--fs-13)',
+                fontWeight: 600,
+                padding: 'var(--space-2) var(--space-4)',
+                borderRadius: 'var(--radius-pill)',
+                border: status === c.value ? '1px solid var(--c-ink)' : '1px solid var(--line)',
+                background: status === c.value ? 'var(--c-ink)' : 'var(--c-paper)',
+                color: status === c.value ? 'var(--c-cream)' : 'var(--c-ink)',
+                cursor: 'pointer',
+              }}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <div className={styles.viewToggle}>
+          {(['table', 'cards'] as const).map((v) => (
+            <button key={v} type="button" onClick={() => chooseView(v)}
+              className={viewMode === v ? styles.viewToggleOn : styles.viewToggleOff}>
+              {v === 'table' ? 'Table' : 'Cards'}
+            </button>
+          ))}
+        </div>
       </div>
 
       <p className={styles.eyebrow}>
@@ -464,6 +507,59 @@ export const PurchaseOrders = () => {
         </div>
       )}
 
+      {/* Desktop card view (Theme C) — shown only when "Cards" is picked. */}
+      {viewMode === 'cards' && (
+        <div className={styles.poCards}>
+          {!isLoading && rows.length === 0 && (
+            <div className={styles.bannerWarn} style={{ background: 'transparent', border: 'none', color: 'var(--fg-muted)' }}>
+              No purchase orders match this filter.
+            </div>
+          )}
+          {rows.map((po) => {
+            const name = po.supplier?.name || po.supplier?.code || '—';
+            const initial = (name.trim()[0] || '?').toUpperCase();
+            const prog = poProgress(po.status);
+            const lineCount = po.items?.length ?? 0;
+            const unitCount = (po.items ?? []).reduce((s, it) => s + (Number(it.qty) || 0), 0);
+            return (
+              <div
+                key={po.id}
+                className={`${styles.poCard} ${po.status === 'CANCELLED' ? styles.poCardCancelled : ''}`}
+                onClick={() => navigate(`/scm/purchase-orders/${po.id}`)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/scm/purchase-orders/${po.id}`); } }}
+              >
+                <div className={styles.poCardAvatar} aria-hidden="true">{initial}</div>
+                <div className={styles.poCardBody}>
+                  <div className={styles.poCardTop}>
+                    <span className={styles.poCardName} title={name}>{name}</span>
+                    <span className={styles.poCardMoney}>{fmtMoney(po.total_centi, po.currency)}</span>
+                  </div>
+                  <div className={styles.poCardMeta}>
+                    <span className={styles.poCardDoc}>{po.po_number}</span>
+                    <span className={styles.poCardDot}>·</span>
+                    <span>{readableDate(po.po_date)}</span>
+                    {po.expected_at && (<><span className={styles.poCardDot}>·</span><span title="Expected">ETA {readableDate(po.expected_at)}</span></>)}
+                    {lineCount > 0 && (<><span className={styles.poCardDot}>·</span><span>{lineCount} lines · {unitCount} units</span></>)}
+                  </div>
+                  <div className={styles.poCardFoot}>
+                    <div className={styles.poProgTrack}>
+                      <div className={styles.poProgFill}
+                        style={{ width: `${prog.pct}%`, background: prog.dead ? 'var(--fg-soft, #9aa093)' : undefined }} />
+                    </div>
+                    <span className={styles.statusPill} style={{ background: STATUS_COLOR[po.status] }}>
+                      {poStatusLabel(po.status)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={viewMode === 'cards' ? { display: 'none' } : undefined}>
       <DataGrid<PoHeaderRow>
         rows={rows}
         columns={columns}
@@ -519,6 +615,7 @@ export const PurchaseOrders = () => {
         isLoading={isLoading}
         emptyMessage='No POs yet — click "New Purchase Order" to start.'
       />
+      </div>
 
       {/* PR #97 — Create-PO drawer removed; full-page form at /scm/purchase-orders/new */}
       {drawer.kind === 'detail' && (

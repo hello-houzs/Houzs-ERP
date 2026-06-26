@@ -216,3 +216,131 @@
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+
+/* ── Theme C: Table/Cards view toggle ───────────────────────────────────────
+   A small segmented control on the right of the status-chip row. Petrol-filled
+   active segment; the toggle itself is desktop-only (phone always cards). */
+.viewToggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 8px);
+  overflow: hidden;
+  background: var(--c-cream, #fff);
+}
+.viewToggleOn,
+.viewToggleOff {
+  height: 28px;
+  padding: 0 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+}
+.viewToggleOn { background: var(--c-orange, #16695f); color: #fff; }
+.viewToggleOff { color: var(--fg-muted); }
+@media (max-width: 600px) { .viewToggle { display: none; } }
+
+/* ── Theme C: desktop SO card list ──────────────────────────────────────────
+   Shown only when the user picks "Cards" (gated in JSX). Hidden on phone so
+   the existing .mobileCards layout owns small screens. Two-column responsive
+   grid of avatar + body cards. */
+.desktopCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: var(--space-3);
+}
+@media (max-width: 600px) { .desktopCards { display: none; } }
+
+.soCard {
+  display: flex;
+  gap: var(--space-3);
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 10px);
+  background: var(--c-cream, #fff);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(17, 24, 16, 0.05));
+  padding: var(--space-3);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.soCard:hover {
+  border-color: var(--c-orange, #16695f);
+  box-shadow: var(--shadow-md, 0 6px 18px -10px rgba(17, 24, 16, 0.35));
+  transform: translateY(-1px);
+}
+
+.soCardAvatar {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mark);
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--c-orange, #16695f);
+  background: var(--c-paper, #f4f6f3);
+  border: 1px solid var(--line);
+}
+
+.soCardBody { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 5px; }
+
+.soCardTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.soCardName {
+  min-width: 0;
+  font-family: var(--font-title);
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--c-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.soCardMoney {
+  flex: 0 0 auto;
+  font-family: var(--font-money);
+  font-variant-numeric: tabular-nums;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--c-burnt, #0c3f39);
+}
+
+.soCardMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.soCardDoc { font-weight: 700; color: var(--c-burnt, #0c3f39); }
+.soCardDot { color: var(--line); }
+
+.soCardFoot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: 2px;
+}
+.soProgTrack {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--c-paper, #eef0ec);
+  overflow: hidden;
+}
+.soProgFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--c-orange, #16695f);
+  transition: width 0.3s ease;
+}

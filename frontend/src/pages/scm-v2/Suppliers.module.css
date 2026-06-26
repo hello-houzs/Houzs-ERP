@@ -501,3 +501,120 @@
   .bindingPrice { text-align: left; }
   .bindingMeta { text-align: left; }
 }
+
+/* ── Theme C: Table/Cards view toggle (PO list) ─────────────────────────── */
+.viewToggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 8px);
+  overflow: hidden;
+  background: var(--c-cream, #fff);
+}
+.viewToggleOn,
+.viewToggleOff {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+}
+.viewToggleOn { background: var(--c-orange, #16695f); color: #fff; }
+.viewToggleOff { color: var(--fg-muted); }
+
+/* ── Theme C: desktop PO card list ──────────────────────────────────────── */
+.poCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: var(--space-3);
+}
+.poCard {
+  display: flex;
+  gap: var(--space-3);
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 10px);
+  background: var(--c-cream, #fff);
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(17, 24, 16, 0.05));
+  padding: var(--space-3);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.poCard:hover {
+  border-color: var(--c-orange, #16695f);
+  box-shadow: var(--shadow-md, 0 6px 18px -10px rgba(17, 24, 16, 0.35));
+  transform: translateY(-1px);
+}
+.poCardCancelled { opacity: 0.55; filter: grayscale(0.6); }
+
+.poCardAvatar {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mark);
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--c-orange, #16695f);
+  background: var(--c-paper, #f4f6f3);
+  border: 1px solid var(--line);
+}
+.poCardBody { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 5px; }
+.poCardTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.poCardName {
+  min-width: 0;
+  font-family: var(--font-title);
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--c-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.poCardMoney {
+  flex: 0 0 auto;
+  font-family: var(--font-money);
+  font-variant-numeric: tabular-nums;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--c-burnt, #0c3f39);
+}
+.poCardMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.poCardDoc { font-weight: 700; color: var(--c-burnt, #0c3f39); }
+.poCardDot { color: var(--line); }
+.poCardFoot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: 2px;
+}
+.poProgTrack {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--c-paper, #eef0ec);
+  overflow: hidden;
+}
+.poProgFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--c-orange, #16695f);
+  transition: width 0.3s ease;
+}
