@@ -379,6 +379,24 @@ export const NAV_TABS: NavTab[] = [
   },
 ];
 
+// Accordion sibling map — each expandable group's same-level peers. Opening a
+// group collapses its siblings (top-level groups are mutually exclusive; so are
+// the SCM sub-groups) so the rail never piles up. Built once from NAV_TABS.
+const GROUP_SIBLINGS: Record<string, string[]> = (() => {
+  const m: Record<string, string[]> = {};
+  const walk = (tabs: NavTab[]) => {
+    const ids = tabs.filter((t) => t.children?.length && t.groupId).map((t) => t.groupId!);
+    for (const t of tabs) {
+      if (t.children?.length) {
+        if (t.groupId) m[t.groupId] = ids.filter((g) => g !== t.groupId);
+        walk(t.children);
+      }
+    }
+  };
+  walk(NAV_TABS);
+  return m;
+})();
+
 // Section labels for the Workspace / Operations / System grouping.
 const SECTION_LABELS: Record<NonNullable<NavTab["section"]>, string> = {
   workspace: "Workspace",
@@ -402,16 +420,35 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   // a desktop-only concept.
   const effectiveCollapsed = collapsed;
 
-  // Per-group (nested) collapsed memory. Defaults open.
+  // Per-group expanded memory (accordion). undefined = auto (open iff the group
+  // holds the current route); true/false = explicit after a click.
   const [groupExpanded, setGroupExpanded] = useLocalStorage<Record<string, boolean>>(
-    "sidebar:groups:expanded",
+    "sidebar:groups:v2-accordion",
     {}
   );
-  function toggleGroup(id: string) {
-    setGroupExpanded((prev) => ({ ...prev, [id]: prev[id] === false ? true : false }));
+  function isGroupOpen(id: string, active: boolean): boolean {
+    const v = groupExpanded[id];
+    return v === undefined ? active : v;
   }
-  function isGroupOpen(id: string): boolean {
-    return groupExpanded[id] !== false;
+  // Opening a group collapses its same-level siblings (accordion). `active`
+  // resolves the auto/default state before flipping.
+  function toggleGroup(id: string, active: boolean) {
+    setGroupExpanded((prev) => {
+      const cur = prev[id] === undefined ? active : prev[id];
+      const willOpen = !cur;
+      const next = { ...prev, [id]: willOpen };
+      if (willOpen) for (const sib of GROUP_SIBLINGS[id] ?? []) next[sib] = false;
+      return next;
+    });
+  }
+  // Force a group open + collapse siblings — used when clicking a group's own
+  // link (e.g. Supply Chain → Hub) so the tree settles to just that branch.
+  function openGroup(id: string) {
+    setGroupExpanded((prev) => {
+      const next = { ...prev, [id]: true };
+      for (const sib of GROUP_SIBLINGS[id] ?? []) next[sib] = false;
+      return next;
+    });
   }
 
   /** True when a tab's `to` matches the current pathname + relevant query
@@ -480,12 +517,12 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     // sidebar keeps the submenu AND the Hub is one click away.
     if (tab.children && tab.children.length > 0) {
       const gid = tab.groupId || tab.label;
-      const open = isGroupOpen(gid);
       const hasActiveDescendant = (n: NavTab): boolean =>
         (n.to ? tabIsActive(n.to, n.end) : false) ||
         (n.children?.some(hasActiveDescendant) ?? false);
       const selfActive = tab.to ? tabIsActive(tab.to, tab.end) : false;
       const headerActive = selfActive || tab.children.some(hasActiveDescendant);
+      const open = isGroupOpen(gid, headerActive);
       if (collapsed) {
         // Collapsed: children render flat. A Hub-linked group leads with its
         // icon as a link to the Hub so it's still reachable.
@@ -531,12 +568,16 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
               <span className="absolute -left-[10px] top-2 bottom-2 w-[2px] rounded-r bg-primary" />
             )}
             {tab.to ? (
-              <NavLink to={tab.to} className="flex min-w-0 flex-1 items-center gap-3 py-2">
+              <NavLink
+                to={tab.to}
+                onClick={() => openGroup(gid)}
+                className="flex min-w-0 flex-1 items-center gap-3 py-2"
+              >
                 {headerInner}
               </NavLink>
             ) : (
               <button
-                onClick={() => toggleGroup(gid)}
+                onClick={() => toggleGroup(gid, headerActive)}
                 className="flex min-w-0 flex-1 items-center gap-3 py-2 text-left"
               >
                 {headerInner}
@@ -545,7 +586,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                toggleGroup(gid);
+                toggleGroup(gid, headerActive);
               }}
               className="hidden shrink-0 rounded p-1 text-sidebar-ink-muted transition-colors hover:text-sidebar-ink lg:inline-flex"
               aria-label={open ? "Collapse" : "Expand"}
