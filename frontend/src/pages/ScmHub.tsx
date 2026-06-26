@@ -50,7 +50,7 @@ export function ScmHub() {
       <div className="mb-5 flex items-start gap-2 rounded-lg border border-warning-text/20 bg-warning-bg px-3.5 py-2.5 text-[12px] text-warning-text">
         <Info size={14} className="mt-0.5 shrink-0" />
         <span>
-          供应链导航已扁平化：所有模块在这里一站直达，不用再逐层展开。每个子页面也都带了返回路径。
+          Navigation is flattened — every module is one click away here, no more drilling through levels. Each sub-page keeps a path back.
         </span>
       </div>
 
@@ -71,7 +71,7 @@ export function ScmHub() {
                     {group.label}
                   </h2>
                   <span className="h-px flex-1 bg-border-subtle" />
-                  <span className="font-mono text-[10px] text-ink-muted">{kids.length} 模块</span>
+                  <span className="font-mono text-[10px] text-ink-muted">{kids.length} modules</span>
                 </div>
 
                 {/* Module cards — 4-col grid; hover lifts + petrol border. */}

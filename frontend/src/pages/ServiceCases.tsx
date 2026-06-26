@@ -472,14 +472,12 @@ function CasesView({
     {
       key: "assr_no",
       label: "ASSR No",
-      alwaysVisible: true,
       render: (r) => <span className="font-mono text-xs font-medium">{r.assr_no}</span>,
       getValue: (r) => r.assr_no,
     },
     {
       key: "stage",
       label: "Stage",
-      alwaysVisible: true,
       render: (r) => (
         // Single-line — `flex-wrap` removed (was the only thing
         // letting badges spill to a second row). Badges that overflow
@@ -507,47 +505,64 @@ function CasesView({
               SLA
             </Badge>
           )}
-          {r.stage !== "completed" && r.days_in_stage != null && r.days_in_stage > 3 && (
-            // Neutral aging hint — red is reserved for actual SLA breach
-            // (the badge above). Showing every >3-day case in red made the
-            // whole list look on-fire.
-            <Badge tone="neutral" variant="soft" title={`In this stage for ${r.days_in_stage} day(s)`}>
-              {r.days_in_stage}d
-            </Badge>
-          )}
+          {/* Dwell-days badge removed — the dedicated "Dwell" column now
+             carries the in-stage day count, so the Stage cell only shows the
+             stage name + the SLA flag. */}
         </div>
       ),
       getValue: (r) => stageLabel(r.stage),
     },
     {
-      key: "priority",
-      label: "Priority",
-      align: "center",
-      // Symbol-only — chevrons encode the level (most cases are Normal,
-      // so the word added noise). Urgent/High get a coloured chip so they
-      // pop; Normal/Low stay quiet. Hover for the label.
-      // One-character colour block — 高 (red) / 中 (amber) / 低 (grey).
+      key: "priority_dwell",
+      label: "Priority · Dwell",
+      align: "left",
+      // Merged signal, single colour axis = DWELL so dot and text always
+      // agree (no clashing two-colour cells). DWELL in the current stage:
+      // On track <7d (green) / Slow 7–29d (amber) / Stuck ≥30d (red). The
+      // dot carries the same tier colour as the text. PRIORITY rides along
+      // as a red ring around the dot, shown only for Urgent/High.
       render: (r) => {
-        const p = r.priority;
-        const meta =
-          p === "urgent" || p === "high"
-            ? { label: "高", cls: "bg-err/15 text-err" }
-            : p === "low"
-              ? { label: "低", cls: "bg-ink-muted/15 text-ink-muted" }
-              : { label: "中", cls: "bg-warning-bg text-warning-text" };
+        const d = r.days_in_stage;
+        const tier =
+          d == null || r.stage === "completed"
+            ? null
+            : d < 7
+              ? { label: "On track", text: "text-synced", dot: "bg-synced" }
+              : d < 30
+                ? { label: "Slow", text: "text-warning-text", dot: "bg-warning-text" }
+                : { label: "Stuck", text: "text-err font-semibold", dot: "bg-err" };
+        const dotColor = tier ? tier.dot : "bg-ink-muted/40";
+        const isHiPri = r.priority === "urgent" || r.priority === "high";
         return (
-          <span
-            title={p}
-            className={cn(
-              "inline-flex h-5 min-w-[22px] items-center justify-center rounded px-1.5 text-[10px] font-bold",
-              meta.cls,
+          <div className="flex items-center gap-2">
+            <span
+              title={isHiPri ? `${r.priority} priority${tier ? ` · ${tier.label}` : ""}` : tier?.label || undefined}
+              className="inline-flex shrink-0 items-center justify-center"
+            >
+              <span
+                className={cn(
+                  "h-2.5 w-2.5 rounded-full",
+                  dotColor,
+                  isHiPri && "ring-2 ring-offset-1 ring-offset-surface ring-err",
+                )}
+              />
+            </span>
+            {tier ? (
+              <span
+                className={cn("text-[11.5px] font-medium", tier.text)}
+                title={`In ${stageLabel(r.stage)} for ${d} day(s)`}
+              >
+                {tier.label} <span className="font-mono tabular-nums">{d}d</span>
+              </span>
+            ) : (
+              <span className="text-ink-muted">—</span>
             )}
-          >
-            {meta.label}
-          </span>
+          </div>
         );
       },
-      getValue: (r) => r.priority,
+      // Sort by dwell days — the actionable axis. Priority stays scannable
+      // via the dot colour even when sorted by dwell.
+      getValue: (r) => r.days_in_stage ?? -1,
     },
     {
       key: "doc_no",
@@ -616,33 +631,6 @@ function CasesView({
       defaultHidden: true,
       render: (r) => formatDate(r.items_ready_at),
       getValue: (r) => r.items_ready_at,
-    },
-    {
-      key: "stage_lead_days",
-      label: "停留",
-      align: "left",
-      // Dwell time in the CURRENT stage (today − entered_at). Coloured text:
-      // 正常 <7d (green) / 偏慢 7–29d (amber) / 滞留 ≥30d (red).
-      render: (r) => {
-        const d = r.days_in_stage;
-        if (d == null || r.stage === "completed")
-          return <span className="text-ink-muted">—</span>;
-        const meta =
-          d < 7
-            ? { label: "正常", cls: "text-synced" }
-            : d < 30
-              ? { label: "偏慢", cls: "text-warning-text" }
-              : { label: "滞留", cls: "text-err font-semibold" };
-        return (
-          <span
-            className={cn("text-[11.5px] font-medium", meta.cls)}
-            title={`In ${stageLabel(r.stage)} for ${d} day(s)`}
-          >
-            {meta.label} <span className="font-mono tabular-nums">{d}d</span>
-          </span>
-        );
-      },
-      getValue: (r) => r.days_in_stage,
     },
   ];
 
@@ -984,12 +972,12 @@ function StageStatStrip({
       </div>
 
       {/* Stage pipeline — compact horizontal funnel; click a stage to filter
-          the list/board/calendar, click again (or 全部) to clear. */}
+          the list/board/calendar, click again (or All) to clear. */}
       <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
-        <div className="mb-3 text-[13px] font-bold text-ink">阶段流程</div>
+        <div className="mb-3 text-[13px] font-bold text-ink">Stage Pipeline</div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           {[
-            { value: "ALL" as StageFilter, label: "全部", total: allTotal, breached: 0 },
+            { value: "ALL" as StageFilter, label: "All", total: allTotal, breached: 0 },
             ...stages.map((s) => ({
               value: s.value as StageFilter,
               label: s.label,

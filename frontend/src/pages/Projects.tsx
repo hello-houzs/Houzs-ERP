@@ -1335,13 +1335,13 @@ function ProjectsListView() {
             onClick={() => setListMode("cards")}
             className={cn("px-3 py-1.5 transition-colors", listMode === "cards" ? "bg-primary text-white" : "text-ink-secondary hover:bg-surface-dim")}
           >
-            卡片
+            Cards
           </button>
           <button
             onClick={() => setListMode("table")}
             className={cn("px-3 py-1.5 transition-colors", listMode === "table" ? "bg-primary text-white" : "text-ink-secondary hover:bg-surface-dim")}
           >
-            表格
+            Table
           </button>
         </div>
       </div>
@@ -1350,7 +1350,7 @@ function ProjectsListView() {
       <div className="min-w-0">
       {listMode === "cards" ? (
         list.loading && !list.data ? (
-          <div className="py-10 text-center text-[12px] text-ink-muted">加载中…</div>
+          <div className="py-10 text-center text-[12px] text-ink-muted">Loading…</div>
         ) : cardRows.length === 0 ? (
           <div className="rounded-xl border border-border bg-surface p-8 text-center text-[12px] text-ink-muted shadow-stone">
             No projects yet
@@ -1445,24 +1445,24 @@ function ProjectsListView() {
       {listMode === "cards" && (
         <aside className="space-y-4">
           <div className="rounded-xl border border-primary/30 bg-primary-soft p-4 shadow-stone">
-            <div className="font-mono text-[10px] font-bold uppercase tracking-brand text-primary-ink">本期合计</div>
+            <div className="font-mono text-[10px] font-bold uppercase tracking-brand text-primary-ink">Total</div>
             <div className="mt-1.5 font-display text-[28px] font-extrabold leading-none text-primary-ink">
               {list.data?.total ?? 0}
             </div>
-            <div className="mt-1 text-[11px] text-primary-ink/70">个项目（当前筛选）</div>
+            <div className="mt-1 text-[11px] text-primary-ink/70">projects (filtered)</div>
             <div className="mt-3 grid grid-cols-2 gap-2 border-t border-primary/20 pt-3">
               <div>
                 <div className="font-mono text-[16px] font-bold text-primary-ink">{summary.data?.live_count ?? 0}</div>
-                <div className="text-[11px] text-primary-ink/70">进行中</div>
+                <div className="text-[11px] text-primary-ink/70">Live</div>
               </div>
               <div>
                 <div className="font-mono text-[16px] font-bold text-primary-ink">{summary.data?.upcoming_30d ?? 0}</div>
-                <div className="text-[11px] text-primary-ink/70">30 天内</div>
+                <div className="text-[11px] text-primary-ink/70">Next 30d</div>
               </div>
             </div>
           </div>
           <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
-            <div className="mb-2.5 text-[13px] font-bold text-ink">即将交付</div>
+            <div className="mb-2.5 text-[13px] font-bold text-ink">Upcoming</div>
             {(() => {
               const today = new Date().toISOString().slice(0, 10);
               const upcoming = cardRows
@@ -1470,7 +1470,7 @@ function ProjectsListView() {
                 .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""))
                 .slice(0, 6);
               return upcoming.length === 0 ? (
-                <div className="py-3 text-center text-[11px] text-ink-muted">近期无即将开始的项目</div>
+                <div className="py-3 text-center text-[11px] text-ink-muted">No upcoming projects</div>
               ) : (
                 <ul className="space-y-2">
                   {upcoming.map((r) => (

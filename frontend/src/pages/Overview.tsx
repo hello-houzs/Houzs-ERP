@@ -27,9 +27,9 @@ interface InboxResp {
 
 // ── Helpers ──────────────────────────────────────────────────
 function greeting(h: number): string {
-  if (h < 12) return "早安";
-  if (h < 18) return "午安";
-  return "晚安";
+  if (h < 12) return "Good morning";
+  if (h < 18) return "Good afternoon";
+  return "Good evening";
 }
 const SEV_DOT: Record<string, string> = {
   task: "bg-primary",
@@ -38,10 +38,10 @@ const SEV_DOT: Record<string, string> = {
   week: "bg-synced",
 };
 const SEV_BADGE: Record<string, { tone: "accent" | "warning" | "error" | "success"; label: string }> = {
-  task: { tone: "accent", label: "待办" },
-  review: { tone: "warning", label: "待审" },
-  blocker: { tone: "error", label: "紧急" },
-  week: { tone: "success", label: "提醒" },
+  task: { tone: "accent", label: "To-do" },
+  review: { tone: "warning", label: "Review" },
+  blocker: { tone: "error", label: "Urgent" },
+  week: { tone: "success", label: "Reminder" },
 };
 
 export function Overview() {
@@ -81,11 +81,11 @@ export function Overview() {
   const review = c?.review_queue ?? 0;
 
   const kpis: { label: string; value: string; sub: string }[] = [
-    { label: "Revenue MTD", value: "—", sub: "暂无接口" },
-    { label: "Outstanding PO", value: "—", sub: "待接 SCM" },
-    { label: "Open Cases", value: assr.loading ? "…" : String(assr.data?.active_count ?? 0), sub: `${slaRisk} 个 SLA 风险` },
-    { label: "Trips Today", value: "—", sub: "Logistics 待建" },
-    { label: "Active Projects", value: projects.loading ? "…" : String(projects.data?.live_count ?? 0), sub: `${projects.data?.upcoming_30d ?? 0} 本月交付` },
+    { label: "Revenue MTD", value: "—", sub: "No source yet" },
+    { label: "Outstanding PO", value: "—", sub: "Pending SCM" },
+    { label: "Open Cases", value: assr.loading ? "…" : String(assr.data?.active_count ?? 0), sub: `${slaRisk} SLA risks` },
+    { label: "Trips Today", value: "—", sub: "Logistics TBD" },
+    { label: "Active Projects", value: projects.loading ? "…" : String(projects.data?.live_count ?? 0), sub: `${projects.data?.upcoming_30d ?? 0} due this month` },
   ];
 
   return (
@@ -102,26 +102,26 @@ export function Overview() {
               {dateLabel}
             </div>
             <h1 className="mt-1.5 font-display text-[26px] font-semibold leading-tight sm:text-[28px]">
-              {greeting(now.getHours())}，{name}
+              {greeting(now.getHours())}, {name}
             </h1>
             <p className="mt-1.5 text-[14px] text-sidebar-ink/90">
-              今天有 <b className="font-semibold text-sidebar-ink">{todoTotal} 件事</b> 需要处理
+              <b className="font-semibold text-sidebar-ink">{todoTotal} items</b> need you today
               {" · "}
-              <b className="font-semibold text-sidebar-ink">{slaRisk}</b> 个 SLA 风险
+              <b className="font-semibold text-sidebar-ink">{slaRisk}</b> SLA risks
               {" · "}
-              <b className="font-semibold text-sidebar-ink">{review}</b> 个待审
+              <b className="font-semibold text-sidebar-ink">{review}</b> pending review
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Button variant="primary" icon={<ArrowRight size={14} />} onClick={() => navigate("/assr?view=cases")}>
-              查看待办
+              View tasks
             </Button>
             <button
               disabled
-              title="AutoCount 同步即将开放"
+              title="AutoCount sync coming soon"
               className="inline-flex h-9 items-center gap-1.5 rounded-md border border-sidebar-border bg-white/5 px-4 text-[13px] font-semibold text-sidebar-ink/80 disabled:opacity-60"
             >
-              <RefreshCw size={14} /> 同步 AutoCount
+              <RefreshCw size={14} /> Sync AutoCount
             </button>
           </div>
         </div>
@@ -149,13 +149,13 @@ export function Overview() {
         {/* Needs me */}
         <div className="rounded-xl border border-border bg-surface p-4 shadow-stone sm:p-5">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-[15px] font-bold text-ink">需要你处理</h2>
-            <span className="font-mono text-[11px] text-ink-muted">{feed.length} 项</span>
+            <h2 className="text-[15px] font-bold text-ink">Needs you</h2>
+            <span className="font-mono text-[11px] text-ink-muted">{feed.length} items</span>
           </div>
           {inbox.loading && !inbox.data ? (
-            <div className="py-8 text-center text-[12px] text-ink-muted">加载中…</div>
+            <div className="py-8 text-center text-[12px] text-ink-muted">Loading…</div>
           ) : feed.length === 0 ? (
-            <div className="py-8 text-center text-[12px] text-ink-muted">收件箱清空了 — 没有待处理事项 🎉</div>
+            <div className="py-8 text-center text-[12px] text-ink-muted">Inbox zero — nothing needs you 🎉</div>
           ) : (
             <ul className="divide-y divide-border-subtle">
               {feed.map((item) => {
@@ -183,15 +183,15 @@ export function Overview() {
         {/* Pipeline + P&L (data sources pending — shown honestly) */}
         <div className="space-y-4">
           <div className="rounded-xl border border-border bg-surface p-4 shadow-stone sm:p-5">
-            <h2 className="mb-3 text-[15px] font-bold text-ink">销售管道</h2>
+            <h2 className="mb-3 text-[15px] font-bold text-ink">Sales Pipeline</h2>
             <div className="rounded-lg border border-dashed border-border bg-surface-2 px-4 py-6 text-center text-[12px] text-ink-muted">
-              暂无数据 — 销售管道接口接通后显示。
+              No data yet — shows once the pipeline API is wired.
             </div>
           </div>
           <div className="rounded-xl border border-primary/30 bg-primary-soft p-4 shadow-stone sm:p-5">
-            <div className="font-mono text-[10px] font-bold uppercase tracking-brand text-primary-ink">本月 P&amp;L</div>
+            <div className="font-mono text-[10px] font-bold uppercase tracking-brand text-primary-ink">P&amp;L This Month</div>
             <div className="mt-1.5 font-display text-[30px] font-extrabold leading-none text-primary-ink">—</div>
-            <div className="mt-1.5 text-[11px] text-primary-ink/70">财务接口接通后显示</div>
+            <div className="mt-1.5 text-[11px] text-primary-ink/70">Shows once the finance API is wired</div>
           </div>
         </div>
       </div>
