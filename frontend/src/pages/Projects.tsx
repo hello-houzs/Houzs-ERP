@@ -916,6 +916,8 @@ function ProjectsListView() {
   const setPage = (n: number) => patchParams({ page: String(n) });
 
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
+  // List render mode — cards (P2 design) vs the full data table. Default cards.
+  const [listMode, setListMode] = useLocalStorage<"cards" | "table">("projects:listMode", "cards");
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showArchived, setShowArchived] = useLocalStorage<boolean>("projects:showArchived", false);
@@ -1323,35 +1325,173 @@ function ProjectsListView() {
         </label>
       </div>
 
-      <DataTable
-        tableId="projects"
-        exportName="projects"
-        search={{
-          value: search,
-          onChange: (v) => setSearch(v),
-          placeholder: "Search code, name, venue, organizer…",
-        }}
-        resetFilters={{
-          active: !!(search || brand || year || month || section || status),
-          onReset: () => {
-            const next = new URLSearchParams(params);
-            ["search", "brand", "year", "month", "section", "status", "page"].forEach((k) =>
-              next.delete(k)
-            );
-            setParams(next, { replace: true });
-          },
-        }}
-        columns={columns}
-        rows={rows}
-        loading={list.loading}
-        error={list.error}
-        emptyLabel="No projects yet"
-        getRowKey={(r) => r.id}
-        getRowClassName={(r) => (r.archived_at ? "opacity-60" : undefined)}
-        onRowClick={(r) => navigate(`/projects/${r.id}`)}
-        serverSort
-        onSortChange={handleSortChange}
-      />
+      {/* View toggle — cards (P2 design) vs the full data table. */}
+      <div className="mb-3 flex justify-end">
+        <div className="inline-flex overflow-hidden rounded-md border border-border bg-surface text-[11px] font-semibold">
+          <button
+            onClick={() => setListMode("cards")}
+            className={cn("px-3 py-1.5 transition-colors", listMode === "cards" ? "bg-primary text-white" : "text-ink-secondary hover:bg-surface-dim")}
+          >
+            卡片
+          </button>
+          <button
+            onClick={() => setListMode("table")}
+            className={cn("px-3 py-1.5 transition-colors", listMode === "table" ? "bg-primary text-white" : "text-ink-secondary hover:bg-surface-dim")}
+          >
+            表格
+          </button>
+        </div>
+      </div>
+
+      <div className={cn(listMode === "cards" && "grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_300px]")}>
+      <div className="min-w-0">
+      {listMode === "cards" ? (
+        list.loading && !list.data ? (
+          <div className="py-10 text-center text-[12px] text-ink-muted">加载中…</div>
+        ) : rows.length === 0 ? (
+          <div className="rounded-xl border border-border bg-surface p-8 text-center text-[12px] text-ink-muted shadow-stone">
+            No projects yet
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {rows.map((r) => {
+              const total = r.sections_total ?? 0;
+              const active = r.active_section_name ?? null;
+              const done = total > 0 && active == null;
+              const rail = done ? "bg-synced" : active ? "bg-accent" : "bg-border-strong";
+              const meta = [
+                r.brand,
+                r.start_date ? `${formatDate(r.start_date)}–${formatDate(r.end_date)}` : null,
+                r.pic_name ? `PIC ${r.pic_name}` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <button
+                  key={r.id}
+                  onClick={() => navigate(`/projects/${r.id}`)}
+                  className={cn(
+                    "group relative flex w-full items-center gap-4 overflow-hidden rounded-xl border border-border bg-surface p-4 pl-5 text-left shadow-stone transition-all hover:-translate-y-px hover:border-primary hover:shadow-slab",
+                    r.archived_at && "opacity-60",
+                  )}
+                >
+                  <span className={cn("absolute left-0 top-0 h-full w-[3px]", rail)} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-[11px] font-bold text-accent">{r.code}</span>
+                      {done ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-synced bg-synced/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-synced">
+                          <CheckCircle2 size={10} /> Complete
+                        </span>
+                      ) : active ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
+                          <Circle size={9} /> {active}
+                          <span className="font-mono text-[9px] opacity-70">{r.sections_complete ?? 0}/{total}</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-full border border-dashed border-border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                          No sections
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 truncate font-display text-[15px] font-bold text-ink group-hover:text-primary">
+                      {r.name}
+                    </div>
+                    {meta && <div className="mt-0.5 truncate text-[11.5px] text-ink-muted">{meta}</div>}
+                    <div className="mt-2">
+                      <ProgressBar pct={r.progress_pct ?? 0} />
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )
+      ) : (
+        <DataTable
+          tableId="projects"
+          exportName="projects"
+          search={{
+            value: search,
+            onChange: (v) => setSearch(v),
+            placeholder: "Search code, name, venue, organizer…",
+          }}
+          resetFilters={{
+            active: !!(search || brand || year || month || section || status),
+            onReset: () => {
+              const next = new URLSearchParams(params);
+              ["search", "brand", "year", "month", "section", "status", "page"].forEach((k) =>
+                next.delete(k)
+              );
+              setParams(next, { replace: true });
+            },
+          }}
+          columns={columns}
+          rows={rows}
+          loading={list.loading}
+          error={list.error}
+          emptyLabel="No projects yet"
+          getRowKey={(r) => r.id}
+          getRowClassName={(r) => (r.archived_at ? "opacity-60" : undefined)}
+          onRowClick={(r) => navigate(`/projects/${r.id}`)}
+          serverSort
+          onSortChange={handleSortChange}
+        />
+      )}
+      </div>
+      {listMode === "cards" && (
+        <aside className="space-y-4">
+          <div className="rounded-xl border border-primary/30 bg-primary-soft p-4 shadow-stone">
+            <div className="font-mono text-[10px] font-bold uppercase tracking-brand text-primary-ink">本期合计</div>
+            <div className="mt-1.5 font-display text-[28px] font-extrabold leading-none text-primary-ink">
+              {list.data?.total ?? 0}
+            </div>
+            <div className="mt-1 text-[11px] text-primary-ink/70">个项目（当前筛选）</div>
+            <div className="mt-3 grid grid-cols-2 gap-2 border-t border-primary/20 pt-3">
+              <div>
+                <div className="font-mono text-[16px] font-bold text-primary-ink">{summary.data?.live_count ?? 0}</div>
+                <div className="text-[11px] text-primary-ink/70">进行中</div>
+              </div>
+              <div>
+                <div className="font-mono text-[16px] font-bold text-primary-ink">{summary.data?.upcoming_30d ?? 0}</div>
+                <div className="text-[11px] text-primary-ink/70">30 天内</div>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
+            <div className="mb-2.5 text-[13px] font-bold text-ink">即将交付</div>
+            {(() => {
+              const today = new Date().toISOString().slice(0, 10);
+              const upcoming = rows
+                .filter((r) => r.start_date && r.start_date >= today)
+                .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""))
+                .slice(0, 6);
+              return upcoming.length === 0 ? (
+                <div className="py-3 text-center text-[11px] text-ink-muted">近期无即将开始的项目</div>
+              ) : (
+                <ul className="space-y-2">
+                  {upcoming.map((r) => (
+                    <li key={r.id}>
+                      <button
+                        onClick={() => navigate(`/projects/${r.id}`)}
+                        className="group flex w-full items-center justify-between gap-2 text-left"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-ink group-hover:text-primary">
+                          {r.name}
+                        </span>
+                        <span className="shrink-0 font-mono text-[10.5px] text-ink-muted">
+                          {formatDate(r.start_date)}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              );
+            })()}
+          </div>
+        </aside>
+      )}
+      </div>
 
       {list.data && !status && (
         <Pagination
