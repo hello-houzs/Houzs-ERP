@@ -908,6 +908,8 @@ type StageFunnelRow = { stage: string; total: number; breached: number };
 type AssrSummary = {
   total?: number;
   active_count?: number;
+  breach_count?: number;
+  avg_e2e_days?: number | null;
   stage_funnel?: StageFunnelRow[];
 };
 
@@ -949,54 +951,83 @@ function StageStatStrip({
   const allTotal = (q.data?.stage_funnel ?? []).reduce((s, r) => s + r.total, 0);
   const openCount = q.data?.active_count ?? 0;
 
+  const completedCount = byStage.get("completed")?.total ?? 0;
+  const breachTotal = q.data?.breach_count ?? 0;
+  const sub = (s: string) => (!ready ? (q.loading ? "Loading…" : "Unavailable") : s);
+
   return (
-    <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
-      {/* All — clears the stage filter back to every case. */}
-      <StatCard
-        label="All Cases"
-        value={ready ? allTotal.toLocaleString() : "—"}
-        subtitle={
-          !ready
-            ? q.loading
-              ? "Loading…"
-              : "Unavailable"
-            : `${openCount.toLocaleString()} open`
-        }
-        active={stage === "ALL"}
-        onClick={() => onPick("ALL")}
-      />
-      {stages.map((s) => {
-        const row = byStage.get(s.value);
-        const total = row?.total ?? 0;
-        const breached = row?.breached ?? 0;
-        const isCompleted = s.value === "completed";
-        // `ready` (component scope) distinguishes loaded / loading /
-        // errored — don't paint a 500 as a genuine "0 cases" (the summary
-        // endpoint flakes during cutover).
-        return (
-          <StatCard
-            key={s.value}
-            label={s.label}
-            value={ready ? total.toLocaleString() : "—"}
-            subtitle={
-              !ready
-                ? q.loading
-                  ? "Loading…"
-                  : "Unavailable"
-                : isCompleted
-                ? "Closed cases"
-                : breached > 0
-                ? `${breached} SLA breached`
-                : total > 0
-                ? "On track"
-                : "No cases"
-            }
-            tone={ready && !isCompleted && breached > 0 ? "error" : "default"}
-            active={stage === s.value}
-            onClick={() => onPick(stage === s.value ? "ALL" : s.value)}
-          />
-        );
-      })}
+    <div className="mb-4 space-y-3">
+      {/* Summary KPIs — Open / SLA Risk / Avg Resolution / Completed. */}
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+        <StatCard
+          label="Open Cases"
+          value={ready ? openCount.toLocaleString() : "—"}
+          subtitle={sub(`${allTotal.toLocaleString()} total`)}
+        />
+        <StatCard
+          label="SLA Risk"
+          value={ready ? breachTotal.toLocaleString() : "—"}
+          subtitle={sub(breachTotal > 0 ? "needs attention" : "on track")}
+          tone={ready && breachTotal > 0 ? "error" : "default"}
+        />
+        <StatCard
+          label="Avg Resolution"
+          value={ready && q.data?.avg_e2e_days != null ? `${q.data.avg_e2e_days}d` : "—"}
+          subtitle={sub("end-to-end")}
+        />
+        <StatCard
+          label="Completed"
+          value={ready ? completedCount.toLocaleString() : "—"}
+          subtitle={sub("closed cases")}
+        />
+      </div>
+
+      {/* Stage pipeline — compact horizontal funnel; click a stage to filter
+          the list/board/calendar, click again (or 全部) to clear. */}
+      <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
+        <div className="mb-3 text-[13px] font-bold text-ink">阶段流程</div>
+        <div className="no-scrollbar flex gap-2 overflow-x-auto">
+          {[
+            { value: "ALL" as StageFilter, label: "全部", total: allTotal, breached: 0 },
+            ...stages.map((s) => ({
+              value: s.value as StageFilter,
+              label: s.label,
+              total: byStage.get(s.value)?.total ?? 0,
+              breached: byStage.get(s.value)?.breached ?? 0,
+            })),
+          ].map((s) => {
+            const isActive = stage === s.value;
+            return (
+              <button
+                key={s.value}
+                onClick={() => onPick(isActive ? "ALL" : s.value)}
+                className={cn(
+                  "flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 transition-colors",
+                  isActive
+                    ? "border-primary bg-primary-soft"
+                    : "border-border bg-surface-2 hover:border-primary/40",
+                )}
+              >
+                <span
+                  className={cn(
+                    "grid h-6 min-w-[24px] place-items-center rounded-full px-1.5 font-mono text-[11px] font-bold",
+                    isActive
+                      ? "bg-primary text-white"
+                      : s.breached > 0
+                        ? "bg-err/15 text-err"
+                        : "bg-surface text-ink-secondary",
+                  )}
+                >
+                  {ready ? s.total : "—"}
+                </span>
+                <span className="whitespace-nowrap text-[12px] font-semibold text-ink">
+                  {s.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
