@@ -526,29 +526,24 @@ function CasesView({
       // Symbol-only — chevrons encode the level (most cases are Normal,
       // so the word added noise). Urgent/High get a coloured chip so they
       // pop; Normal/Low stay quiet. Hover for the label.
+      // One-character colour block — 高 (red) / 中 (amber) / 低 (grey).
       render: (r) => {
         const p = r.priority;
-        const Icon =
-          p === "urgent" ? ChevronsUp : p === "high" ? ChevronUp : p === "low" ? ChevronDown : Minus;
-        const color =
-          p === "urgent"
-            ? "text-err"
-            : p === "high"
-            ? "text-[#c2740f]"
+        const meta =
+          p === "urgent" || p === "high"
+            ? { label: "高", cls: "bg-err/15 text-err" }
             : p === "low"
-            ? "text-ink-muted/50"
-            : "text-ink-muted";
-        const chip =
-          p === "urgent" ? "bg-err/12" : p === "high" ? "bg-[#c2740f]/12" : "";
+              ? { label: "低", cls: "bg-ink-muted/15 text-ink-muted" }
+              : { label: "中", cls: "bg-warning-bg text-warning-text" };
         return (
           <span
             title={p}
             className={cn(
-              "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full",
-              chip
+              "inline-flex h-5 min-w-[22px] items-center justify-center rounded px-1.5 text-[10px] font-bold",
+              meta.cls,
             )}
           >
-            <Icon size={16} strokeWidth={2.5} className={color} />
+            {meta.label}
           </span>
         );
       },
@@ -624,23 +619,29 @@ function CasesView({
     },
     {
       key: "stage_lead_days",
-      label: "Lead Time",
-      align: "right",
-      defaultHidden: true,
-      render: (r) =>
-        r.days_in_stage == null ? (
-          "—"
-        ) : (
+      label: "停留",
+      align: "left",
+      // Dwell time in the CURRENT stage (today − entered_at). Coloured text:
+      // 正常 <7d (green) / 偏慢 7–29d (amber) / 滞留 ≥30d (red).
+      render: (r) => {
+        const d = r.days_in_stage;
+        if (d == null || r.stage === "completed")
+          return <span className="text-ink-muted">—</span>;
+        const meta =
+          d < 7
+            ? { label: "正常", cls: "text-synced" }
+            : d < 30
+              ? { label: "偏慢", cls: "text-warning-text" }
+              : { label: "滞留", cls: "text-err font-semibold" };
+        return (
           <span
-            className={cn(
-              "font-mono tabular-nums text-[11px]",
-              r.days_in_stage > 3 && r.stage !== "completed" && "text-err font-semibold",
-            )}
-            title={`In ${stageLabel(r.stage)} for ${r.days_in_stage} day(s)`}
+            className={cn("text-[11.5px] font-medium", meta.cls)}
+            title={`In ${stageLabel(r.stage)} for ${d} day(s)`}
           >
-            {r.days_in_stage}d
+            {meta.label} <span className="font-mono tabular-nums">{d}d</span>
           </span>
-        ),
+        );
+      },
       getValue: (r) => r.days_in_stage,
     },
   ];
