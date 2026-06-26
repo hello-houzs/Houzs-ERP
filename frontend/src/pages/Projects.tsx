@@ -40,9 +40,13 @@ import {
   Play,
   UserCircle2,
   Users,
+  ClipboardList,
+  DollarSign,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
+import { HubGrid } from "../components/HubGrid";
 import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
 import { ProjectMaintenanceView } from "./ProjectMaintenance";
@@ -748,7 +752,7 @@ function ProjectStatusSelect({
 
 // ── Main page ────────────────────────────────────────────────
 
-type ProjectsView = "list" | "calendar" | "finances" | "maintenance";
+type ProjectsView = "hub" | "list" | "calendar" | "finances" | "maintenance";
 
 const PROJECTS_VIEWS: ProjectsView[] = [
   "list",
@@ -762,6 +766,7 @@ export function Projects() {
   // one entry per view, so the page itself doesn't render a tab strip
   // — view selection lives in the sidebar.
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   const [storedView, setStoredView] = useLocalStorage<ProjectsView>(
     "projects:view",
     "list"
@@ -792,7 +797,11 @@ export function Projects() {
   // view looked like "no response from the web". When there's no
   // explicit URL view, pick the first accessible one.
   const explicit: ProjectsView | null =
-    urlView && PROJECTS_VIEWS.includes(urlView) ? urlView : null;
+    urlView === "hub"
+      ? "hub"
+      : urlView && PROJECTS_VIEWS.includes(urlView)
+        ? urlView
+        : null;
   const fallback: ProjectsView | null = params.has("focus")
     ? allowed.includes("list")
       ? "list"
@@ -801,12 +810,14 @@ export function Projects() {
       ? storedView
       : firstAllowed;
   const view: ProjectsView | null = explicit ?? fallback;
-  const requestedDenied = explicit !== null && !allowed.includes(explicit);
+  const requestedDenied =
+    explicit !== null && explicit !== "hub" && !allowed.includes(explicit);
 
   // Persist whatever view was rendered so a bare `/projects` lands
   // back where the user left off — but only if it was accessible.
   useEffect(() => {
-    if (view && !requestedDenied && view !== storedView) setStoredView(view);
+    if (view && view !== "hub" && !requestedDenied && view !== storedView)
+      setStoredView(view);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, requestedDenied]);
 
@@ -815,6 +826,35 @@ export function Projects() {
   }
   if (!view) {
     return <Forbidden page="projects" />;
+  }
+
+  if (view === "hub") {
+    const hubCards = (
+      [
+        { key: "list", label: "Project List", description: "All projects — status, brand, dates, PIC, budget.", icon: ClipboardList, v: "list" },
+        { key: "calendar", label: "Calendar", description: "Projects & tasks on a month timeline.", icon: Calendar, v: "calendar" },
+        { key: "finances", label: "Finances", description: "Revenue, spend and margin across projects.", icon: DollarSign, v: "finances" },
+        { key: "maintenance", label: "Project Maintenance", description: "Templates, checklists and defaults.", icon: Wrench, v: "maintenance" },
+      ] as const
+    ).filter((c) => access[c.v] !== "none");
+    return (
+      <div>
+        <PageHeader
+          eyebrow="Operations · Projects"
+          title="Projects"
+          description="Pick a section — list, calendar, finances or maintenance."
+        />
+        <HubGrid
+          cards={hubCards.map((c) => ({
+            key: c.key,
+            label: c.label,
+            description: c.description,
+            icon: c.icon,
+            onClick: () => navigate(`/projects?view=${c.v}`),
+          }))}
+        />
+      </div>
+    );
   }
 
   return (

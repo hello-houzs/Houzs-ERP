@@ -135,7 +135,7 @@ export const NAV_TABS: NavTab[] = [
     label: "Service Cases",
     icon: Zap,
     groupId: "service",
-    to: "/assr?view=cases",
+    to: "/assr?view=hub",
     anyPerm: ["service_cases.read"],
     children: [
       {
@@ -173,7 +173,7 @@ export const NAV_TABS: NavTab[] = [
     label: "Projects",
     icon: FolderKanban,
     groupId: "projects",
-    to: "/projects?view=list",
+    to: "/projects?view=hub",
     pageAccess: "projects",
     children: [
       {

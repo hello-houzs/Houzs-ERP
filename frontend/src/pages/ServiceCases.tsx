@@ -32,7 +32,10 @@ import {
   Printer,
   Download,
   X,
+  ClipboardList,
+  Wrench,
 } from "lucide-react";
+import { HubGrid } from "../components/HubGrid";
 import { PageHeader } from "../components/Layout";
 import {
   DetailLayout,
@@ -216,9 +219,10 @@ function isoLocal(d: Date): string {
 // The metrics used to live at /service-metrics as its own sidebar
 // entry; it's just a report about cases so it belongs here alongside
 // them rather than as a top-level module.
-type ServiceView = "cases" | "metrics" | "lead_time" | "settings";
+type ServiceView = "hub" | "cases" | "metrics" | "lead_time" | "settings";
 
 const SERVICE_VIEWS: ServiceView[] = [
+  "hub",
   "cases",
   "metrics",
   "lead_time",
@@ -231,6 +235,10 @@ const VIEW_HEADER: Record<
   Exclude<ServiceView, "settings">,
   { title: string; description: string }
 > = {
+  hub: {
+    title: "Service",
+    description: "Cases, quality metrics and service maintenance — pick a section.",
+  },
   cases: {
     title: "Service Cases",
     description: "After-sales service request workflow.",
@@ -297,6 +305,16 @@ export function ServiceCases() {
               </Button>
             ) : undefined
           }
+        />
+      )}
+
+      {view === "hub" && (
+        <HubGrid
+          cards={[
+            { key: "cases", label: "Service Cases", description: VIEW_HEADER.cases.description, icon: ClipboardList, onClick: () => navigate("/assr?view=cases") },
+            { key: "metrics", label: "Quality Metrics", description: VIEW_HEADER.metrics.description, icon: ShieldCheck, onClick: () => navigate("/assr?view=metrics") },
+            { key: "settings", label: "Service Maintenance", description: "Picker lists, SLA lead-time targets and module defaults.", icon: Wrench, onClick: () => navigate("/assr?view=settings") },
+          ]}
         />
       )}
 
