@@ -24,12 +24,14 @@
   /* ------------------------------------------------------------------
      PRIMARY PALETTE — warm, clean, inviting
      ------------------------------------------------------------------ */
-  --c-cream:        #FFF9EB;   /* primary canvas — soft warm white     */
-  --c-beige:        #E3D0A6;   /* primary tan — packaging, blocks      */
-  --c-orange:       #E86B3A;   /* primary brand orange — accent only   */
-  --c-burnt:        #A6471E;   /* deep burnt orange — emphasis, type   */
-  --c-paper:        #F4F3F2;   /* studio white — backdrops, photo bg   */
-  --c-ink:          #221F20;   /* near-black — body type, contrast     */
+  /* Remapped to Theme C (2026-06-26) so the vendored SCM pages match the
+     main app — warm cream/orange → cool white/petrol. Originals in comments. */
+  --c-cream:        #ffffff;   /* was #FFF9EB — Theme C surface          */
+  --c-beige:        #e3e6e0;   /* was #E3D0A6 — Theme C surface-dim      */
+  --c-orange:       #16695f;   /* was #E86B3A — Theme C primary (petrol) */
+  --c-burnt:        #0c3f39;   /* was #A6471E — Theme C primary-ink      */
+  --c-paper:        #f4f6f3;   /* was #F4F3F2 — Theme C surface-2        */
+  --c-ink:          #11140f;   /* was #221F20 — Theme C ink             */
 
   /* Secondary, season-driven (swap A/B per campaign) */
   --c-secondary-a:  #2F5D4F;   /* default earth: forest/teal           */
@@ -47,8 +49,8 @@
   --bg-ink:         var(--c-ink);
 
   --fg:             var(--c-ink);
-  --fg-muted:       #5C5455;       /* warm grey, for secondary copy    */
-  --fg-soft:        #8B7E6A;       /* faded earthy grey                */
+  --fg-muted:       #767b6e;       /* was #5C5455 — Theme C ink-muted  */
+  --fg-soft:        #9aa093;       /* was #8B7E6A — Theme C soft grey   */
   --fg-on-orange:   var(--c-cream);
   --fg-on-ink:      var(--c-cream);
   --fg-accent:      var(--c-orange);
