@@ -635,13 +635,16 @@ export const SalesInvoiceDetail = () => {
 
       <TotalsCard header={header} costPending={items.some((it) => lineCostPending(it, isCancelled))} />
 
+      {/* DRAFT/Confirmed two-state (Owner 2026-06-25) — a DRAFT SI is not payable
+          (the server 409s any payment), so keep the payments ledger locked even in
+          edit mode. Confirm the invoice first, then record payments. */}
       <PaymentsTable
         docNo={null}
         payments={paymentDrafts}
         onChange={setPaymentDrafts}
         grandTotalCenti={grandTotal}
         currency={header.currency}
-        locked={isLocked || !isEditing}
+        locked={isLocked || isDraft || !isEditing}
       />
     </div>
   );

@@ -959,7 +959,9 @@ salesInvoices.patch('/:id/status', async (c) => {
       .select('id, status, invoice_number, debtor_code, debtor_name, total_centi, paid_centi')
       .maybeSingle();
     if (cErr) return c.json({ error: 'update_failed', reason: cErr.message }, 500);
-    if (!confirmed) return c.json({ error: 'not_found' }, 404);
+    // Lost the race — another submit already confirmed it. Idempotent echo, no
+    // second posting (postSiRevenue is idempotent anyway, but skip the work).
+    if (!confirmed) return c.json({ salesInvoice: { id, status: 'SENT' } });
     const d = confirmed as { id: string; status: string; invoice_number: string; debtor_code: string | null; debtor_name: string | null; total_centi: number | null; paid_centi: number | null };
 
     /* POST revenue now (was skipped on draft create). Idempotent + best-effort. */
