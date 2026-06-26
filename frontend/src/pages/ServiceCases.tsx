@@ -986,7 +986,7 @@ function StageStatStrip({
           the list/board/calendar, click again (or 全部) to clear. */}
       <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
         <div className="mb-3 text-[13px] font-bold text-ink">阶段流程</div>
-        <div className="no-scrollbar flex gap-2 overflow-x-auto">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           {[
             { value: "ALL" as StageFilter, label: "全部", total: allTotal, breached: 0 },
             ...stages.map((s) => ({
@@ -1002,7 +1002,7 @@ function StageStatStrip({
                 key={s.value}
                 onClick={() => onPick(isActive ? "ALL" : s.value)}
                 className={cn(
-                  "flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 transition-colors",
+                  "flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
                   isActive
                     ? "border-primary bg-primary-soft"
                     : "border-border bg-surface-2 hover:border-primary/40",
@@ -1010,7 +1010,7 @@ function StageStatStrip({
               >
                 <span
                   className={cn(
-                    "grid h-6 min-w-[24px] place-items-center rounded-full px-1.5 font-mono text-[11px] font-bold",
+                    "grid h-6 min-w-[24px] shrink-0 place-items-center rounded-full px-1.5 font-mono text-[11px] font-bold",
                     isActive
                       ? "bg-primary text-white"
                       : s.breached > 0
@@ -1020,7 +1020,7 @@ function StageStatStrip({
                 >
                   {ready ? s.total : "—"}
                 </span>
-                <span className="whitespace-nowrap text-[12px] font-semibold text-ink">
+                <span className="text-[12px] font-semibold leading-tight text-ink">
                   {s.label}
                 </span>
               </button>
