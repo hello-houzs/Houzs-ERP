@@ -100,3 +100,17 @@ export function isStandalone(): boolean {
     (window.navigator as any).standalone === true
   );
 }
+
+/** iOS Safari can't fire beforeinstallprompt — detect it so we can show a
+ *  manual "Share → Add to Home Screen" guide instead. True only on
+ *  iPhone/iPad Safari that ISN'T already installed (standalone). */
+export function isIosInstallable(): boolean {
+  const ua = window.navigator.userAgent;
+  const isIos = /iphone|ipad|ipod/i.test(ua) ||
+    // iPadOS 13+ reports as Mac; disambiguate by touch
+    (/macintosh/i.test(ua) && "ontouchend" in document);
+  // Exclude in-app webviews / Chrome-iOS (CriOS) / Firefox-iOS (FxiOS) where
+  // the Share→A2HS flow differs or is unavailable.
+  const isSafari = /safari/i.test(ua) && !/crios|fxios|edgios/i.test(ua);
+  return isIos && isSafari && !isStandalone();
+}
