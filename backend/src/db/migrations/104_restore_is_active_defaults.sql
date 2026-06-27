@@ -1,11 +1,16 @@
--- 104_restore_is_active_defaults.sql
--- The D1 -> Postgres migration dropped the `DEFAULT 1` on several is_active
--- columns (the documented "active DEFAULT 1 dropped -> inline-add 500s / rows
--- land NULL and active filters silently exclude them" class). These columns are
--- all bigint. Restore the default so inserts that omit the column don't fail
--- (NOT NULL ones) or land NULL (nullable ones). Applied to prod 2026-06-26; this
--- file keeps new environments in sync. No existing NULL rows at apply time.
-ALTER TABLE public.assr_lead_time_profiles ALTER COLUMN is_active SET DEFAULT 1;
-ALTER TABLE public.creditors             ALTER COLUMN is_active SET DEFAULT 1;
-ALTER TABLE public.lorries               ALTER COLUMN is_active SET DEFAULT 1;
-ALTER TABLE public.stock_items           ALTER COLUMN is_active SET DEFAULT 1;
+-- 104_restore_is_active_defaults.sql  (D1 / SQLite test mirror — intentional NO-OP)
+--
+-- The real change — restore `DEFAULT 1` on several is_active columns — is a
+-- Postgres-prod concern and now lives in
+--   migrations-pg/0054_restore_is_active_defaults.sql
+--
+-- It was originally written here as raw `ALTER TABLE … ALTER COLUMN … SET DEFAULT`,
+-- which is Postgres-only syntax. SQLite/D1 has no `ALTER COLUMN`, so this file
+-- crashed the D1 test-migration runner (tests/setup.ts) and with it the backend
+-- CI / deploy gate.
+--
+-- In the ephemeral D1 test database every table is recreated fresh from its
+-- CREATE TABLE in an earlier migration, so there is no column default to
+-- "restore" here. This file is intentionally a no-op, kept only so the D1
+-- numbered-migration sequence stays aligned with migrations-pg.
+SELECT 1;
