@@ -157,7 +157,7 @@ function DefaultAssigneeSection() {
               value={currentId}
               onChange={(e) => setDefault(e.target.value)}
               disabled={saving || users.loading}
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:bg-bg disabled:text-ink-muted"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:bg-bg disabled:text-ink-muted"
             >
               <option value="">— No default (cases stay unassigned) —</option>
               {(users.data?.users ?? []).map((u) => (

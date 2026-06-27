@@ -499,7 +499,7 @@ export function Sales() {
           <select
             value={status}
             onChange={(e) => patchParams({ status: e.target.value })}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           >
             <option value="">All statuses</option>
             <option value="draft">Draft</option>
@@ -528,7 +528,7 @@ export function Sales() {
           value={search}
           onChange={(e) => patchParams({ search: e.target.value })}
           placeholder="Search customer / phone / ref no…"
-          className="h-8 flex-1 min-w-[200px] max-w-[320px] rounded-md border border-border bg-surface px-3 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          className="h-8 flex-1 min-w-[200px] max-w-[320px] rounded-md border border-border bg-surface px-3 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         />
         {(status || search || dateFrom || dateTo) && (
           <button
@@ -983,7 +983,7 @@ export function EntryPanel({
   const headerStatus = (status1 || "Unchecked").toUpperCase();
   const fmtMoney = (n: number) => `RM ${n.toFixed(2)}`;
   const inputCls =
-    "h-9 w-full rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:bg-bg/40 disabled:text-ink-muted";
+    "h-9 w-full rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:bg-bg/40 disabled:text-ink-muted";
   const selectCls = inputCls + " appearance-none";
 
   return (

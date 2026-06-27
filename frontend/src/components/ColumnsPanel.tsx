@@ -157,7 +157,7 @@ export function ColumnsPanel({
                   onClick={() => onToggle(opt.key)}
                   className={cn(
                     "flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
-                    visible ? "border-accent bg-accent text-white" : "border-border bg-surface"
+                    visible ? "border-primary bg-primary text-white" : "border-border bg-surface"
                   )}
                   aria-label={visible ? "Hide column" : "Show column"}
                 >
@@ -318,7 +318,7 @@ function CustomFieldsSection({ udf, label }: { udf: UseUdfResult; label: string 
                 onChange={(e) => setFormLabel(e.target.value)}
                 placeholder="e.g. Internal Notes"
                 autoFocus
-                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
             </div>
             <div>
@@ -327,7 +327,7 @@ function CustomFieldsSection({ udf, label }: { udf: UseUdfResult; label: string 
                 value={key}
                 onChange={(e) => setKey(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""))}
                 placeholder="snake_case"
-                className="h-9 w-full rounded-md border border-border bg-surface px-3 font-mono text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="h-9 w-full rounded-md border border-border bg-surface px-3 font-mono text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
             </div>
             <div>
@@ -335,7 +335,7 @@ function CustomFieldsSection({ udf, label }: { udf: UseUdfResult; label: string 
               <select
                 value={type}
                 onChange={(e) => setType(e.target.value as UdfFieldType)}
-                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               >
                 {FIELD_TYPES.map((t) => (
                   <option key={t.value} value={t.value}>
@@ -351,7 +351,7 @@ function CustomFieldsSection({ udf, label }: { udf: UseUdfResult; label: string 
                   value={optionsRaw}
                   onChange={(e) => setOptionsRaw(e.target.value)}
                   placeholder="High&#10;Medium&#10;Low"
-                  className="min-h-[68px] w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                  className="min-h-[68px] w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
                 />
               </div>
             )}

@@ -9,14 +9,15 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANTS: Record<Variant, string> = {
-  // Primary — brass fill. The brand's "Colour X" hardware accent,
-  // same palette as TabStrip/FilterPills active states so every
-  // emphasis in the app reads as one family.
+  // Primary — petrol/teal fill (Theme C). The functional emphasis color,
+  // same family as active tabs / selected rows / links, so every CTA in
+  // the app reads as one. Brass is now brand-only (not a CTA fill).
   primary:
-    "bg-accent text-white hover:bg-accent-hover border border-accent shadow-brass disabled:bg-accent/40 disabled:border-accent/40",
-  // Brass — legacy alias kept for existing callers; identical to primary.
+    "bg-primary text-white hover:bg-primary-ink border border-primary shadow-sm disabled:bg-primary/40 disabled:border-primary/40",
+  // Brass — legacy alias kept for existing callers; now identical to
+  // primary (brass CTAs were demoted to the brand-only accent).
   brass:
-    "bg-accent text-white hover:bg-accent-hover border border-accent shadow-brass disabled:bg-accent/40 disabled:border-accent/40",
+    "bg-primary text-white hover:bg-primary-ink border border-primary shadow-sm disabled:bg-primary/40 disabled:border-primary/40",
   secondary:
     "bg-surface border border-border text-ink hover:bg-surface-dim hover:border-border-strong disabled:opacity-50",
   ghost: "bg-transparent text-ink-secondary hover:text-ink hover:bg-surface-dim",
@@ -49,7 +50,7 @@ export function IconButton({
     <button
       {...rest}
       className={cn(
-        "flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/50 hover:bg-accent-soft hover:text-accent",
+        "flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-primary/50 hover:bg-primary-soft hover:text-primary",
         className
       )}
     >
@@ -72,7 +73,7 @@ export function SearchInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="h-9 w-72 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent focus:ring-2 focus:ring-accent/20"
+      className="h-9 w-72 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
     />
   );
 }

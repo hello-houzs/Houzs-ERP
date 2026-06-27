@@ -64,7 +64,7 @@ export function TabStrip<V extends string>({
               className={cn(
                 "relative -mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-4 py-2.5 text-[12px] font-semibold transition-colors",
                 active
-                  ? "border-accent text-accent"
+                  ? "border-primary text-primary"
                   : "border-transparent text-ink-secondary hover:text-ink"
               )}
             >
@@ -74,7 +74,7 @@ export function TabStrip<V extends string>({
                   className={cn(
                     "inline-flex h-4 min-w-[18px] items-center justify-center rounded-full px-1.5 font-mono text-[9px] font-bold",
                     active
-                      ? "bg-accent text-white"
+                      ? "bg-primary text-white"
                       : "bg-surface-dim text-ink-muted"
                   )}
                 >

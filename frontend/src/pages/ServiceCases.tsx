@@ -32,7 +32,10 @@ import {
   Printer,
   Download,
   X,
+  ClipboardList,
+  Wrench,
 } from "lucide-react";
+import { HubGrid } from "../components/HubGrid";
 import { PageHeader } from "../components/Layout";
 import {
   DetailLayout,
@@ -216,9 +219,10 @@ function isoLocal(d: Date): string {
 // The metrics used to live at /service-metrics as its own sidebar
 // entry; it's just a report about cases so it belongs here alongside
 // them rather than as a top-level module.
-type ServiceView = "cases" | "metrics" | "lead_time" | "settings";
+type ServiceView = "hub" | "cases" | "metrics" | "lead_time" | "settings";
 
 const SERVICE_VIEWS: ServiceView[] = [
+  "hub",
   "cases",
   "metrics",
   "lead_time",
@@ -231,6 +235,10 @@ const VIEW_HEADER: Record<
   Exclude<ServiceView, "settings">,
   { title: string; description: string }
 > = {
+  hub: {
+    title: "Service",
+    description: "Cases, quality metrics and service maintenance — pick a section.",
+  },
   cases: {
     title: "Service Cases",
     description: "After-sales service request workflow.",
@@ -297,6 +305,16 @@ export function ServiceCases() {
               </Button>
             ) : undefined
           }
+        />
+      )}
+
+      {view === "hub" && (
+        <HubGrid
+          cards={[
+            { key: "cases", label: "Service Cases", description: VIEW_HEADER.cases.description, icon: ClipboardList, onClick: () => navigate("/assr?view=cases") },
+            { key: "metrics", label: "Quality Metrics", description: VIEW_HEADER.metrics.description, icon: ShieldCheck, onClick: () => navigate("/assr?view=metrics") },
+            { key: "settings", label: "Service Maintenance", description: "Picker lists, SLA lead-time targets and module defaults.", icon: Wrench, onClick: () => navigate("/assr?view=settings") },
+          ]}
         />
       )}
 
@@ -454,14 +472,12 @@ function CasesView({
     {
       key: "assr_no",
       label: "ASSR No",
-      alwaysVisible: true,
       render: (r) => <span className="font-mono text-xs font-medium">{r.assr_no}</span>,
       getValue: (r) => r.assr_no,
     },
     {
       key: "stage",
       label: "Stage",
-      alwaysVisible: true,
       render: (r) => (
         // Single-line — `flex-wrap` removed (was the only thing
         // letting badges spill to a second row). Badges that overflow
@@ -489,52 +505,64 @@ function CasesView({
               SLA
             </Badge>
           )}
-          {r.stage !== "completed" && r.days_in_stage != null && r.days_in_stage > 3 && (
-            // Neutral aging hint — red is reserved for actual SLA breach
-            // (the badge above). Showing every >3-day case in red made the
-            // whole list look on-fire.
-            <Badge tone="neutral" variant="soft" title={`In this stage for ${r.days_in_stage} day(s)`}>
-              {r.days_in_stage}d
-            </Badge>
-          )}
+          {/* Dwell-days badge removed — the dedicated "Dwell" column now
+             carries the in-stage day count, so the Stage cell only shows the
+             stage name + the SLA flag. */}
         </div>
       ),
       getValue: (r) => stageLabel(r.stage),
     },
     {
-      key: "priority",
-      label: "Priority",
-      align: "center",
-      // Symbol-only — chevrons encode the level (most cases are Normal,
-      // so the word added noise). Urgent/High get a coloured chip so they
-      // pop; Normal/Low stay quiet. Hover for the label.
+      key: "priority_dwell",
+      label: "Priority · Dwell",
+      align: "left",
+      // Merged signal, single colour axis = DWELL so dot and text always
+      // agree (no clashing two-colour cells). DWELL in the current stage:
+      // On track <7d (green) / Slow 7–29d (amber) / Stuck ≥30d (red). The
+      // dot carries the same tier colour as the text. PRIORITY rides along
+      // as a red ring around the dot, shown only for Urgent/High.
       render: (r) => {
-        const p = r.priority;
-        const Icon =
-          p === "urgent" ? ChevronsUp : p === "high" ? ChevronUp : p === "low" ? ChevronDown : Minus;
-        const color =
-          p === "urgent"
-            ? "text-err"
-            : p === "high"
-            ? "text-[#c2740f]"
-            : p === "low"
-            ? "text-ink-muted/50"
-            : "text-ink-muted";
-        const chip =
-          p === "urgent" ? "bg-err/12" : p === "high" ? "bg-[#c2740f]/12" : "";
+        const d = r.days_in_stage;
+        const tier =
+          d == null || r.stage === "completed"
+            ? null
+            : d < 7
+              ? { label: "On track", text: "text-synced", dot: "bg-synced" }
+              : d < 30
+                ? { label: "Slow", text: "text-warning-text", dot: "bg-warning-text" }
+                : { label: "Stuck", text: "text-err font-semibold", dot: "bg-err" };
+        const dotColor = tier ? tier.dot : "bg-ink-muted/40";
+        const isHiPri = r.priority === "urgent" || r.priority === "high";
         return (
-          <span
-            title={p}
-            className={cn(
-              "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full",
-              chip
+          <div className="flex items-center gap-2">
+            <span
+              title={isHiPri ? `${r.priority} priority${tier ? ` · ${tier.label}` : ""}` : tier?.label || undefined}
+              className="inline-flex shrink-0 items-center justify-center"
+            >
+              <span
+                className={cn(
+                  "h-2.5 w-2.5 rounded-full",
+                  dotColor,
+                  isHiPri && "ring-2 ring-offset-1 ring-offset-surface ring-err",
+                )}
+              />
+            </span>
+            {tier ? (
+              <span
+                className={cn("text-[11.5px] font-medium", tier.text)}
+                title={`In ${stageLabel(r.stage)} for ${d} day(s)`}
+              >
+                {tier.label} <span className="font-mono tabular-nums">{d}d</span>
+              </span>
+            ) : (
+              <span className="text-ink-muted">—</span>
             )}
-          >
-            <Icon size={16} strokeWidth={2.5} className={color} />
-          </span>
+          </div>
         );
       },
-      getValue: (r) => r.priority,
+      // Sort by dwell days — the actionable axis. Priority stays scannable
+      // via the dot colour even when sorted by dwell.
+      getValue: (r) => r.days_in_stage ?? -1,
     },
     {
       key: "doc_no",
@@ -603,27 +631,6 @@ function CasesView({
       defaultHidden: true,
       render: (r) => formatDate(r.items_ready_at),
       getValue: (r) => r.items_ready_at,
-    },
-    {
-      key: "stage_lead_days",
-      label: "Lead Time",
-      align: "right",
-      defaultHidden: true,
-      render: (r) =>
-        r.days_in_stage == null ? (
-          "—"
-        ) : (
-          <span
-            className={cn(
-              "font-mono tabular-nums text-[11px]",
-              r.days_in_stage > 3 && r.stage !== "completed" && "text-err font-semibold",
-            )}
-            title={`In ${stageLabel(r.stage)} for ${r.days_in_stage} day(s)`}
-          >
-            {r.days_in_stage}d
-          </span>
-        ),
-      getValue: (r) => r.days_in_stage,
     },
   ];
 
@@ -890,6 +897,8 @@ type StageFunnelRow = { stage: string; total: number; breached: number };
 type AssrSummary = {
   total?: number;
   active_count?: number;
+  breach_count?: number;
+  avg_e2e_days?: number | null;
   stage_funnel?: StageFunnelRow[];
 };
 
@@ -931,54 +940,87 @@ function StageStatStrip({
   const allTotal = (q.data?.stage_funnel ?? []).reduce((s, r) => s + r.total, 0);
   const openCount = q.data?.active_count ?? 0;
 
+  const completedCount = byStage.get("completed")?.total ?? 0;
+  const breachTotal = q.data?.breach_count ?? 0;
+  const sub = (s: string) => (!ready ? (q.loading ? "Loading…" : "Unavailable") : s);
+
   return (
-    <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
-      {/* All — clears the stage filter back to every case. */}
-      <StatCard
-        label="All Cases"
-        value={ready ? allTotal.toLocaleString() : "—"}
-        subtitle={
-          !ready
-            ? q.loading
-              ? "Loading…"
-              : "Unavailable"
-            : `${openCount.toLocaleString()} open`
-        }
-        active={stage === "ALL"}
-        onClick={() => onPick("ALL")}
-      />
-      {stages.map((s) => {
-        const row = byStage.get(s.value);
-        const total = row?.total ?? 0;
-        const breached = row?.breached ?? 0;
-        const isCompleted = s.value === "completed";
-        // `ready` (component scope) distinguishes loaded / loading /
-        // errored — don't paint a 500 as a genuine "0 cases" (the summary
-        // endpoint flakes during cutover).
-        return (
-          <StatCard
-            key={s.value}
-            label={s.label}
-            value={ready ? total.toLocaleString() : "—"}
-            subtitle={
-              !ready
-                ? q.loading
-                  ? "Loading…"
-                  : "Unavailable"
-                : isCompleted
-                ? "Closed cases"
-                : breached > 0
-                ? `${breached} SLA breached`
-                : total > 0
-                ? "On track"
-                : "No cases"
-            }
-            tone={ready && !isCompleted && breached > 0 ? "error" : "default"}
-            active={stage === s.value}
-            onClick={() => onPick(stage === s.value ? "ALL" : s.value)}
-          />
-        );
-      })}
+    <div className="mb-4 space-y-3">
+      {/* Summary KPIs — Open / SLA Risk / Avg Resolution / Completed. */}
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+        <StatCard
+          label="Open Cases"
+          value={ready ? openCount.toLocaleString() : "—"}
+          subtitle={sub(`${allTotal.toLocaleString()} total`)}
+          rail="bg-primary"
+        />
+        <StatCard
+          label="SLA Risk"
+          value={ready ? breachTotal.toLocaleString() : "—"}
+          subtitle={sub(breachTotal > 0 ? "needs attention" : "on track")}
+          tone={ready && breachTotal > 0 ? "error" : "default"}
+          rail={ready && breachTotal > 0 ? "bg-err" : "bg-border-strong"}
+        />
+        <StatCard
+          label="Avg Resolution"
+          value={ready && q.data?.avg_e2e_days != null ? `${q.data.avg_e2e_days}d` : "—"}
+          subtitle={sub("end-to-end")}
+          rail="bg-accent-bright"
+        />
+        <StatCard
+          label="Completed"
+          value={ready ? completedCount.toLocaleString() : "—"}
+          subtitle={sub("closed cases")}
+          rail="bg-synced"
+        />
+      </div>
+
+      {/* Stage pipeline — compact horizontal funnel; click a stage to filter
+          the list/board/calendar, click again (or All) to clear. */}
+      <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
+        <div className="mb-3 text-[13px] font-bold text-ink">Stage Pipeline</div>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          {[
+            { value: "ALL" as StageFilter, label: "All", total: allTotal, breached: 0 },
+            ...stages.map((s) => ({
+              value: s.value as StageFilter,
+              label: s.label,
+              total: byStage.get(s.value)?.total ?? 0,
+              breached: byStage.get(s.value)?.breached ?? 0,
+            })),
+          ].map((s) => {
+            const isActive = stage === s.value;
+            return (
+              <button
+                key={s.value}
+                onClick={() => onPick(isActive ? "ALL" : s.value)}
+                className={cn(
+                  "flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
+                  isActive
+                    ? "border-primary bg-primary-soft"
+                    : "border-border bg-surface-2 hover:border-primary/40",
+                )}
+              >
+                <span
+                  className={cn(
+                    "grid h-6 min-w-[24px] shrink-0 place-items-center rounded-full px-1.5 font-mono text-[11px] font-bold",
+                    isActive
+                      ? "bg-primary text-white"
+                      : s.breached > 0
+                        ? "bg-err/15 text-err"
+                        : "bg-surface text-ink-secondary",
+                  )}
+                >
+                  {ready ? s.total : "—"}
+                </span>
+                <span className="text-[12px] font-semibold leading-tight text-ink">
+                  {s.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1886,7 +1928,7 @@ function CreatePanel({
             onChange={(e) => setDocNo(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && lookup()}
             placeholder="Enter SO number…"
-            className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
+            className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary"
           />
           <Button variant="secondary" icon={<Search size={14} />} onClick={lookup} disabled={lookingUp}>
             {lookingUp ? "…" : "Lookup"}
@@ -1935,7 +1977,7 @@ function CreatePanel({
             <div className="mt-2">
               <input
                 placeholder="Item code (manual)"
-                className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
+                className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary"
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.target as HTMLInputElement).value.trim()) {
                     const code = (e.target as HTMLInputElement).value.trim();
@@ -1956,7 +1998,7 @@ function CreatePanel({
           onChange={(e) => setIssue(e.target.value)}
           rows={4}
           placeholder="Describe the issue…"
-          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
+          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary"
         />
         <div className="mt-3">
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
@@ -1969,7 +2011,7 @@ function CreatePanel({
               setIssueCategory(v);
               if (v !== OTHER_SENTINEL) setCustomCategory("");
             }}
-            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           >
             <option value="">— select —</option>
             {(issueCatOptions.length ? issueCatOptions : [...ISSUE_CATEGORIES]).map((c) => (
@@ -1984,7 +2026,7 @@ function CreatePanel({
               value={customCategory}
               onChange={(e) => setCustomCategory(e.target.value)}
               placeholder="e.g. transport damage"
-              className="mt-1.5 w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="mt-1.5 w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           )}
         </div>
@@ -1997,7 +2039,7 @@ function CreatePanel({
           <select
             value={priority}
             onChange={(e) => setPriority(e.target.value)}
-            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           >
             {[...PRIORITY_OPTIONS].map((p) => (
               <option key={p} value={p}>
@@ -2433,7 +2475,7 @@ function DetailContent({
                     value={c.stage}
                     onChange={(e) => transition(e.target.value as AssrStage)}
                     disabled={transitioning}
-                    className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-accent disabled:opacity-60"
+                    className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-primary disabled:opacity-60"
                     title="Move this case to any stage"
                   >
                     <option value="pending_review">Pending Review</option>
@@ -2720,13 +2762,13 @@ function DetailContent({
                         value={manualCode}
                         onChange={(e) => setManualCode(e.target.value)}
                         placeholder="Item code"
-                        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+                        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
                       />
                       <input
                         value={manualDesc}
                         onChange={(e) => setManualDesc(e.target.value)}
                         placeholder="Description (optional)"
-                        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+                        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
                       />
                     </div>
                   </div>
@@ -3047,7 +3089,7 @@ function DetailContent({
                 Assigned To
               </div>
               <select
-                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
                 value={c.assigned_to ?? ""}
                 onChange={(e) => {
                   const v = e.target.value;
@@ -3125,7 +3167,7 @@ function DetailContent({
                     onChange={(e) =>
                       setNoteCategory(e.target.value as "purchasing" | "customer")
                     }
-                    className="rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-accent"
+                    className="rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-primary"
                     title="Where this note is visible"
                   >
                     <option value="purchasing">Purchasing (internal)</option>
@@ -3149,7 +3191,7 @@ function DetailContent({
                       : "Internal note…"
                   }
                   rows={2}
-                  className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] outline-none focus:border-accent"
+                  className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] outline-none focus:border-primary"
                 />
                 <div className="mt-2 flex items-center gap-2">
                   <button
@@ -3914,7 +3956,7 @@ function VerificationCard({
                 ? "Why this isn't our issue"
                 : "What's missing from the customer"
             }
-            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
           {outcome === "accepted" && !rootCause && isUnderVerification && (
             <div className="mt-1.5 text-[11px] text-ink-muted">
@@ -4153,7 +4195,7 @@ function LogisticsRow({
               type="date"
               value={draft.scheduled_date}
               onChange={(e) => setDraft((d) => ({ ...d, scheduled_date: e.target.value }))}
-              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary"
             />
           </label>
           <label className="block">
@@ -4163,7 +4205,7 @@ function LogisticsRow({
               placeholder="9:00 – 11:00"
               value={draft.scheduled_time_range}
               onChange={(e) => setDraft((d) => ({ ...d, scheduled_time_range: e.target.value }))}
-              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary"
             />
           </label>
           <label className="block">
@@ -4171,7 +4213,7 @@ function LogisticsRow({
             <select
               value={draft.assigned_to}
               onChange={(e) => setDraft((d) => ({ ...d, assigned_to: e.target.value }))}
-              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary"
             >
               <option value="">— Unassigned —</option>
               {users.map((u) => (
@@ -4184,7 +4226,7 @@ function LogisticsRow({
             <select
               value={draft.status}
               onChange={(e) => setDraft((d) => ({ ...d, status: e.target.value }))}
-              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+              className="h-8 w-full rounded border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary"
             >
               <option value="pending">Pending</option>
               <option value="scheduled">Scheduled</option>
@@ -4200,7 +4242,7 @@ function LogisticsRow({
             onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
             rows={2}
             placeholder="e.g. driver needs warehouse code; pickup gate B"
-            className="w-full rounded border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-accent"
+            className="w-full rounded border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary"
           />
         </label>
         <div className="mt-2 flex justify-end gap-2">
@@ -4558,7 +4600,7 @@ function IssueCategoryField({
       <select
         value={isCanonical ? (value as string) : showsOther ? OTHER_SENTINEL : ""}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
       >
         <option value="">— select —</option>
         {categories.map((c) => (
@@ -5124,7 +5166,7 @@ function ClosePrompt({
         onChange={(e) => setNotes(e.target.value)}
         placeholder="Satisfaction notes (optional)..."
         rows={2}
-        className="mb-3 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
+        className="mb-3 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-primary"
       />
 
       <div className="flex gap-2">
@@ -5192,7 +5234,7 @@ function LogisticsForm({
         <select
           value={type}
           onChange={(e) => setType(e.target.value as any)}
-          className="rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
         >
           <option value="pickup">Pickup</option>
           <option value="delivery">Delivery</option>
@@ -5201,19 +5243,19 @@ function LogisticsForm({
           type="date"
           value={date}
           onChange={(e) => setDate(e.target.value)}
-          className="flex-1 rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+          className="flex-1 rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
         />
       </div>
       <input
         value={timeRange}
         onChange={(e) => setTimeRange(e.target.value)}
         placeholder="Time range (e.g. 9AM-12PM)"
-        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
       />
       <select
         value={assignedTo}
         onChange={(e) => setAssignedTo(e.target.value)}
-        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+        className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
       >
         <option value="">Assign to...</option>
         {users.map((u) => (
@@ -5225,7 +5267,7 @@ function LogisticsForm({
         onChange={(e) => setNotes(e.target.value)}
         placeholder="Notes (optional)"
         rows={2}
-        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-accent"
+        className="w-full rounded-md border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-primary"
       />
       <div className="flex gap-2">
         <button
@@ -5316,7 +5358,7 @@ function AttachmentThumb({ att, onClick, onVisibilityChange, onArchive }: {
         type="button"
         onClick={onClick}
         disabled={!isImage || !onClick}
-        className="block w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className="block w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
         aria-label={isImage ? "View full-size photo" : att.category}
       >
         {isImage && url ? (

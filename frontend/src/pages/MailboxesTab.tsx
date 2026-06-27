@@ -55,7 +55,7 @@ import {
 } from "./MailCenter/mail-actions";
 
 const inputCls =
-  "h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60";
+  "h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60";
 const labelCls =
   "mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted";
 
@@ -480,7 +480,7 @@ function NewMailboxModal({
           <button
             onClick={save}
             disabled={!canSave}
-            className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent px-3 py-1.5 text-[12px] font-bold text-white hover:bg-accent-hover disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md border border-primary bg-primary px-3 py-1.5 text-[12px] font-bold text-white hover:bg-primary-ink disabled:opacity-50"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             Create
@@ -574,7 +574,7 @@ function EditMailboxPanel({
           <button
             onClick={save}
             disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent px-3 py-1.5 text-[12px] font-bold text-white hover:bg-accent-hover disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md border border-primary bg-primary px-3 py-1.5 text-[12px] font-bold text-white hover:bg-primary-ink disabled:opacity-50"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
             Save
@@ -875,7 +875,7 @@ function AccessMatrix({
                 type="button"
                 onClick={save}
                 disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-md border border-accent bg-accent px-2.5 py-1 text-[11px] font-bold text-white hover:bg-accent-hover disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-md border border-primary bg-primary px-2.5 py-1 text-[11px] font-bold text-white hover:bg-primary-ink disabled:opacity-50"
               >
                 {busy ? (
                   <Loader2 size={12} className="animate-spin" />
@@ -944,7 +944,7 @@ function AccessMatrix({
                           setDraftLevel(u.id, e.target.value as MailScopeLevel)
                         }
                         disabled={busy}
-                        className="h-8 cursor-pointer rounded-md border border-border bg-surface px-2 text-[11.5px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+                        className="h-8 cursor-pointer rounded-md border border-border bg-surface px-2 text-[11.5px] text-ink outline-none hover:border-accent/50 focus:border-primary"
                       >
                         {SCOPE_LEVELS.map((l) => (
                           <option key={l.value} value={l.value}>

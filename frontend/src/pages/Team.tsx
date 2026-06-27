@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, AtSign, ArrowLeft, SlidersHorizontal, Eye, EyeOff } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, AtSign, ArrowLeft, SlidersHorizontal, Eye, EyeOff, Users, ShieldCheck, Network, Building2, type LucideIcon } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -27,6 +27,7 @@ import { PositionsTab } from "./Positions";
 import { MailboxesTab } from "./MailboxesTab";
 
 type TeamTabValue =
+  | "hub"
   | "members"
   | "positions"
   | "roles"
@@ -35,6 +36,15 @@ type TeamTabValue =
   | "mail";
 
 const TEAM_KEYS = ["tab"] as const;
+
+// Icons for the Team Hub landing cards (keyed by tab value).
+const TEAM_HUB_ICON: Partial<Record<TeamTabValue, LucideIcon>> = {
+  members: Users,
+  positions: ShieldCheck,
+  orgchart: Network,
+  departments: Building2,
+  mail: Mail,
+};
 
 // One-click member segments (label + key). Shared by the Filters popover
 // and the active-filter pill row.
@@ -113,7 +123,7 @@ export function Team() {
   const raw = params.get("tab") as TeamTabValue | null;
   const active: TeamTabValue =
     raw &&
-    ["members", "positions", "roles", "orgchart", "departments", "mail"].includes(
+    ["hub", "members", "positions", "roles", "orgchart", "departments", "mail"].includes(
       raw,
     )
       ? raw
@@ -145,6 +155,11 @@ export function Team() {
     TeamTabValue,
     { eyebrow: string; title: string; description: string }
   > = {
+    hub: {
+      eyebrow: "System · Team",
+      title: "Team",
+      description: "Members, positions, org chart, departments and mailboxes — pick a section to manage.",
+    },
     members: {
       eyebrow: "Workspace · Members",
       title: "Members",
@@ -217,18 +232,45 @@ export function Team() {
 
   return (
     <div>
-      <TabStrip<TeamTabValue>
-        value={active}
-        onChange={setTab}
-        options={tabs}
-      />
+      {active !== "hub" && (
+        <TabStrip<TeamTabValue>
+          value={active}
+          onChange={setTab}
+          options={tabs}
+        />
+      )}
 
       <PageHeader
         eyebrow={TAB_HEADER[active].eyebrow}
         title={TAB_HEADER[active].title}
         description={TAB_HEADER[active].description}
-        actions={actions}
+        actions={active === "hub" ? undefined : actions}
       />
+
+      {active === "hub" && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {tabs
+            .filter((t) => t.show !== false)
+            .map((t) => {
+              const Icon = TEAM_HUB_ICON[t.value] ?? Users;
+              return (
+                <button
+                  key={t.value}
+                  onClick={() => setTab(t.value)}
+                  className="group flex flex-col gap-2.5 rounded-xl border border-border bg-surface p-4 text-left shadow-stone transition-all duration-150 hover:-translate-y-px hover:border-primary hover:shadow-slab"
+                >
+                  <span className="grid h-9 w-9 place-items-center rounded-lg bg-surface-2 text-ink-secondary transition-colors group-hover:bg-primary-soft group-hover:text-primary">
+                    <Icon size={17} />
+                  </span>
+                  <span className="text-[13px] font-bold text-ink">{t.label}</span>
+                  <span className="text-[11px] leading-snug text-ink-muted">
+                    {TAB_HEADER[t.value].description}
+                  </span>
+                </button>
+              );
+            })}
+        </div>
+      )}
 
       {active === "members" && canUsers && (
         <MembersTab
@@ -934,7 +976,7 @@ function MembersTab({
                 value={searchQ}
                 onChange={(e) => setSearchQ(e.target.value)}
                 placeholder="Search name or email…"
-                className="h-7 w-48 rounded-md border border-border bg-surface pl-7 pr-2 text-[11px] text-ink outline-none placeholder:text-ink-muted hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="h-7 w-48 rounded-md border border-border bg-surface pl-7 pr-2 text-[11px] text-ink outline-none placeholder:text-ink-muted hover:border-accent/50 focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
             </div>
 
@@ -976,7 +1018,7 @@ function MembersTab({
                             setFilterDept(e.target.value ? Number(e.target.value) : "");
                             setFilterPos("");
                           }}
-                          className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+                          className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-primary"
                         >
                           <option value="">All departments</option>
                           {depts.data?.departments.map((d) => (
@@ -995,7 +1037,7 @@ function MembersTab({
                           onChange={(e) =>
                             setFilterPos(e.target.value ? Number(e.target.value) : "")
                           }
-                          className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+                          className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-primary"
                         >
                           <option value="">All positions</option>
                           {(positions.data?.positions ?? [])
@@ -1021,7 +1063,7 @@ function MembersTab({
                           onChange={(e) =>
                             setFilterRole(e.target.value ? Number(e.target.value) : "")
                           }
-                          className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+                          className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-primary"
                         >
                           <option value="">All roles</option>
                           {(roles.data?.roles ?? []).map((r) => (
@@ -1039,7 +1081,7 @@ function MembersTab({
                           <select
                             value={filterBrand}
                             onChange={(e) => setFilterBrand(e.target.value)}
-                            className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+                            className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-primary"
                           >
                             <option value="">All brands</option>
                             {allBrands.map((b) => (
@@ -1098,7 +1140,7 @@ function MembersTab({
                 value={gridSort}
                 onChange={(e) => setGridSort(e.target.value as "name" | "recent" | "status")}
                 title="Sort cards"
-                className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+                className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-primary"
               >
                 <option value="name">Sort: Name</option>
                 <option value="recent">Sort: Recently active</option>
@@ -1235,7 +1277,7 @@ function MembersTab({
                   e.target.value = "";
                 }
               }}
-              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-primary"
             >
               <option value="" disabled>
                 Set department…
@@ -1254,7 +1296,7 @@ function MembersTab({
                   e.target.value = "";
                 }
               }}
-              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-accent"
+              className="h-7 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] text-ink outline-none hover:border-accent/50 focus:border-primary"
             >
               <option value="" disabled>
                 Set position…
@@ -1989,7 +2031,7 @@ function EditMemberPanel({
   }
 
   const inputCls =
-    "h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20";
+    "h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20";
   const labelCls =
     "mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted";
   const actionCls =
@@ -3418,7 +3460,7 @@ function OrgCard({
                 const v = e.target.value;
                 onPickManager(user.id, v ? Number(v) : null);
               }}
-              className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent"
+              className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-primary"
             >
               <option value="">— No manager —</option>
               {users
@@ -3440,7 +3482,7 @@ function OrgCard({
                 const v = e.target.value;
                 onChangeDept(user.id, v ? Number(v) : null);
               }}
-              className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent"
+              className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-primary"
             >
               <option value="">— No department —</option>
               {departments.map((d) => (
@@ -3463,7 +3505,7 @@ function OrgCard({
                 onKeyDown={(e) => {
                   if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                 }}
-                className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-accent"
+                className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] text-ink outline-none focus:border-primary"
               />
               {divisionOptions && divisionOptions.length > 0 && (
                 <datalist id="org-division-options">
@@ -3714,7 +3756,7 @@ function DepartmentEditor({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Sales, Operations, Finance"
-            className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             autoFocus
           />
         </div>
@@ -3726,7 +3768,7 @@ function DepartmentEditor({
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="What this team owns"
-            className="min-h-[60px] w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="min-h-[60px] w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
         </div>
         <div>
@@ -3931,7 +3973,7 @@ export function InvitePanel({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Full name"
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               autoFocus
             />
           </div>
@@ -3944,7 +3986,7 @@ export function InvitePanel({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="member@houzscentury.com"
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           </div>
           <div>
@@ -3958,7 +4000,7 @@ export function InvitePanel({
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Set an initial password (min 12 chars)"
                 autoComplete="new-password"
-                className="h-10 w-full rounded-md border border-border bg-surface px-3 pr-10 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="h-10 w-full rounded-md border border-border bg-surface px-3 pr-10 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
               <button
                 type="button"
@@ -3984,7 +4026,7 @@ export function InvitePanel({
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               placeholder="e.g. 012-345 6789 (optional)"
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           </div>
           <div>
@@ -3997,7 +4039,7 @@ export function InvitePanel({
                 setDeptId(e.target.value ? Number(e.target.value) : "");
                 setPositionId(""); // positions are department-scoped — reset
               }}
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             >
               <option value="">— Select department —</option>
               {departments.map((d) => (
@@ -4014,7 +4056,7 @@ export function InvitePanel({
             <select
               value={positionId}
               onChange={(e) => setPositionId(e.target.value ? Number(e.target.value) : "")}
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             >
               <option value="">— Select position —</option>
               {positions
@@ -4042,7 +4084,7 @@ export function InvitePanel({
             <select
               value={roleId}
               onChange={(e) => setRoleId(e.target.value ? Number(e.target.value) : "")}
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             >
               <option value="">— Select role —</option>
               {roles.map((r) => (
@@ -4068,7 +4110,7 @@ export function InvitePanel({
                   setManagerId("");
                 }}
                 placeholder="Search a member… (optional)"
-                className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
               {managerQuery.trim() !== "" && !managerId && (
                 <div className="absolute z-20 mt-1 max-h-48 w-full overflow-auto rounded-md border border-border bg-surface shadow-slab">

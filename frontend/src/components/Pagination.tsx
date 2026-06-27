@@ -45,7 +45,7 @@ export function Pagination({
               value={perPage}
               onChange={(e) => onPerPageChange(Number(e.target.value))}
               aria-label="Rows per page"
-              className="h-8 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] font-semibold text-ink outline-none transition-colors hover:border-accent/50 focus:border-accent focus:ring-2 focus:ring-accent/20 sm:h-7"
+              className="h-8 cursor-pointer rounded-md border border-border bg-surface pl-2 pr-6 text-[11px] font-semibold text-ink outline-none transition-colors hover:border-accent/50 focus:border-primary focus:ring-2 focus:ring-primary/20 sm:h-7"
             >
               {perPageOptions.map((n) => (
                 <option key={n} value={n}>

@@ -185,7 +185,7 @@ function OrganizerManager() {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
           placeholder="Add organizer name…"
-          className="h-9 flex-1 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          className="h-9 flex-1 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         />
         <Button variant="primary" onClick={add} disabled={adding || !name.trim()}>
           Add
@@ -334,13 +334,13 @@ function VenueManager() {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
           placeholder="Venue name…"
-          className="h-9 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          className="h-9 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         />
         <select
           value={stateField}
           onChange={(e) => setStateField(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
-          className="h-9 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          className="h-9 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         >
           <option value="">— state —</option>
           {MY_STATES.map((s) => (
@@ -389,7 +389,7 @@ function VenueManager() {
                   patch(v.id, { state: next || null });
                 }
               }}
-              className="h-7 w-32 rounded-md border border-border bg-surface px-1.5 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+              className="h-7 w-32 rounded-md border border-border bg-surface px-1.5 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
             >
               <option value="">— state —</option>
               {/* Preserve any legacy value not in the canonical list so
@@ -490,7 +490,7 @@ function ChecklistManager() {
                       e.target.value ? parseInt(e.target.value, 10) : null
                     )
                   }
-                  className="h-7 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent"
+                  className="h-7 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary"
                 >
                   <option value="">— None —</option>
                   {templates.map((t) => (
@@ -512,7 +512,7 @@ function ChecklistManager() {
         <select
           value={currentTemplateId ?? ""}
           onChange={(e) => setActiveTemplate(parseInt(e.target.value, 10) || null)}
-          className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent"
+          className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary"
         >
           {templates.map((t) => (
             <option key={t.id} value={t.id}>
@@ -920,7 +920,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
             onChange={(e) => setNewSectionName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addSection()}
             placeholder="New section…"
-            className="h-7 w-44 rounded-md border border-dashed border-border bg-surface px-2 text-[11.5px] outline-none focus:border-accent focus:ring-1 focus:ring-accent/20"
+            className="h-7 w-44 rounded-md border border-dashed border-border bg-surface px-2 text-[11.5px] outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
           />
           <button
             onClick={addSection}
@@ -1103,7 +1103,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                                 if (e.target.value !== item.title)
                                   patchItem(item.id, { title: e.target.value });
                               }}
-                              className="h-7 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                              className="h-7 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
                             />
                             <input
                               defaultValue={item.role_label ?? ""}
@@ -1115,7 +1115,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                               }}
                               placeholder="Role"
                               title="Display-only owner tag (e.g. DRIVER, SALES PIC, BD, PURCHASER)"
-                              className="h-7 w-full rounded-md border border-border bg-surface px-2 text-[11px] uppercase tracking-wider outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                              className="h-7 w-full rounded-md border border-border bg-surface px-2 text-[11px] uppercase tracking-wider outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
                             />
                             <input
                               defaultValue={item.due_offset_days ?? ""}
@@ -1130,7 +1130,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                               type="number"
                               placeholder="±d"
                               title="Days from project start_date (negative = before)"
-                              className="h-7 w-full rounded-md border border-border bg-surface px-2 text-[11px] tabular-nums outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                              className="h-7 w-full rounded-md border border-border bg-surface px-2 text-[11px] tabular-nums outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
                             />
                             {/* State strip — visible chips for the
                                 review-required and crew-visible flags
@@ -1207,7 +1207,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                             }}
                             placeholder="New task title…"
                             autoFocus
-                            className="h-8 rounded-md border border-accent/40 bg-surface px-2 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                            className="h-8 rounded-md border border-accent/40 bg-surface px-2 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
                           />
                           <input
                             value={newOffset}
@@ -1218,7 +1218,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
                             placeholder="Days from start"
                             title="Days from project start_date (negative = before)"
                             type="number"
-                            className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+                            className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
                           />
                           <Button
                             variant="primary"
@@ -1357,7 +1357,7 @@ function BrandManager() {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
           placeholder="New brand name…"
-          className="h-9 min-w-[200px] flex-1 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          className="h-9 min-w-[200px] flex-1 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         />
         <Button variant="primary" onClick={add} disabled={adding || !name.trim()}>
           Add
@@ -1436,7 +1436,7 @@ function BrandManager() {
                 const v = e.target.value.trim();
                 if (v && v !== b.name) patch(b, { name: v });
               }}
-              className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
+              className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-ink hover:border-border focus:border-primary focus:bg-surface focus:ring-1 focus:ring-primary/20 focus:outline-none"
             />
             <span
               className={cn(
@@ -1565,7 +1565,7 @@ function EventTypeManager() {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
           placeholder="New event type name…"
-          className="h-9 flex-1 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+          className="h-9 flex-1 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         />
         <Button variant="primary" onClick={add} disabled={adding || !name.trim()}>
           Add
@@ -1644,7 +1644,7 @@ function EventTypeManager() {
                   const v = e.target.value.trim();
                   if (v && v !== t.name) patch(t, { name: v });
                 }}
-                className="flex-1 min-w-[160px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-ink hover:border-border focus:border-accent focus:bg-surface focus:ring-1 focus:ring-accent/20 focus:outline-none"
+                className="flex-1 min-w-[160px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-ink hover:border-border focus:border-primary focus:bg-surface focus:ring-1 focus:ring-primary/20 focus:outline-none"
               />
               {/* Slug hidden (Houzs 2026-06-24) — owner: the tiny gray machine
                   code next to each name is unnecessary clutter + misaligned.
@@ -1889,7 +1889,7 @@ function RateField({
         min="0"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="rounded-md border border-border bg-surface px-2 py-1 font-mono text-[12px] outline-none focus:border-accent"
+        className="rounded-md border border-border bg-surface px-2 py-1 font-mono text-[12px] outline-none focus:border-primary"
         placeholder={optional ? "—" : "0"}
       />
     </label>

@@ -40,9 +40,13 @@ import {
   Play,
   UserCircle2,
   Users,
+  ClipboardList,
+  DollarSign,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
+import { HubGrid } from "../components/HubGrid";
 import { Button } from "../components/Button";
 import { FilterPills } from "../components/FilterPills";
 import { ProjectMaintenanceView } from "./ProjectMaintenance";
@@ -731,7 +735,7 @@ function ProjectStatusSelect({
         onChange={(e) => onChange(e.target.value as ProjectStatus)}
         disabled={disabled}
         className={cn(
-          "appearance-none rounded-md border border-border bg-surface py-1.5 pl-6 pr-7 text-[12px] font-semibold uppercase tracking-wide text-ink outline-none transition-colors focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60",
+          "appearance-none rounded-md border border-border bg-surface py-1.5 pl-6 pr-7 text-[12px] font-semibold uppercase tracking-wide text-ink outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-60",
           cur.chip
         )}
       >
@@ -748,7 +752,7 @@ function ProjectStatusSelect({
 
 // ── Main page ────────────────────────────────────────────────
 
-type ProjectsView = "list" | "calendar" | "finances" | "maintenance";
+type ProjectsView = "hub" | "list" | "calendar" | "finances" | "maintenance";
 
 const PROJECTS_VIEWS: ProjectsView[] = [
   "list",
@@ -762,6 +766,7 @@ export function Projects() {
   // one entry per view, so the page itself doesn't render a tab strip
   // — view selection lives in the sidebar.
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   const [storedView, setStoredView] = useLocalStorage<ProjectsView>(
     "projects:view",
     "list"
@@ -781,7 +786,7 @@ export function Projects() {
     maintenance: usePageAccess("projects.maintenance"),
   };
   const allowed: ProjectsView[] = PROJECTS_VIEWS.filter(
-    (v) => access[v] !== "none"
+    (v) => access[v as keyof typeof access] !== "none"
   );
   const firstAllowed: ProjectsView | null = allowed[0] ?? null;
 
@@ -792,7 +797,11 @@ export function Projects() {
   // view looked like "no response from the web". When there's no
   // explicit URL view, pick the first accessible one.
   const explicit: ProjectsView | null =
-    urlView && PROJECTS_VIEWS.includes(urlView) ? urlView : null;
+    urlView === "hub"
+      ? "hub"
+      : urlView && PROJECTS_VIEWS.includes(urlView)
+        ? urlView
+        : null;
   const fallback: ProjectsView | null = params.has("focus")
     ? allowed.includes("list")
       ? "list"
@@ -801,12 +810,14 @@ export function Projects() {
       ? storedView
       : firstAllowed;
   const view: ProjectsView | null = explicit ?? fallback;
-  const requestedDenied = explicit !== null && !allowed.includes(explicit);
+  const requestedDenied =
+    explicit !== null && explicit !== "hub" && !allowed.includes(explicit);
 
   // Persist whatever view was rendered so a bare `/projects` lands
   // back where the user left off — but only if it was accessible.
   useEffect(() => {
-    if (view && !requestedDenied && view !== storedView) setStoredView(view);
+    if (view && view !== "hub" && !requestedDenied && view !== storedView)
+      setStoredView(view);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, requestedDenied]);
 
@@ -815,6 +826,35 @@ export function Projects() {
   }
   if (!view) {
     return <Forbidden page="projects" />;
+  }
+
+  if (view === "hub") {
+    const hubCards = (
+      [
+        { key: "list", label: "Project List", description: "All projects — status, brand, dates, PIC, budget.", icon: ClipboardList, v: "list" },
+        { key: "calendar", label: "Calendar", description: "Projects & tasks on a month timeline.", icon: Calendar, v: "calendar" },
+        { key: "finances", label: "Finances", description: "Revenue, spend and margin across projects.", icon: DollarSign, v: "finances" },
+        { key: "maintenance", label: "Project Maintenance", description: "Templates, checklists and defaults.", icon: Wrench, v: "maintenance" },
+      ] as const
+    ).filter((c) => access[c.v] !== "none");
+    return (
+      <div>
+        <PageHeader
+          eyebrow="Operations · Projects"
+          title="Projects"
+          description="Pick a section — list, calendar, finances or maintenance."
+        />
+        <HubGrid
+          cards={hubCards.map((c) => ({
+            key: c.key,
+            label: c.label,
+            description: c.description,
+            icon: c.icon,
+            onClick: () => navigate(`/projects?view=${c.v}`),
+          }))}
+        />
+      </div>
+    );
   }
 
   return (
@@ -876,6 +916,8 @@ function ProjectsListView() {
   const setPage = (n: number) => patchParams({ page: String(n) });
 
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
+  // List render mode — cards (P2 design) vs the full data table. Default cards.
+  const [listMode, setListMode] = useLocalStorage<"cards" | "table">("projects:listMode", "cards");
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showArchived, setShowArchived] = useLocalStorage<boolean>("projects:showArchived", false);
@@ -931,6 +973,9 @@ function ProjectsListView() {
     if (!all || !status) return all;
     return all.filter((r) => r.status === status);
   }, [list.data, status]);
+  // Non-null view of rows for the card list + right rail (rows itself stays
+  // nullable for the DataTable's loading state).
+  const cardRows = rows ?? [];
 
   const summary = useQuery<{
     by_stage: { stage: string; count: number }[];
@@ -1283,35 +1328,173 @@ function ProjectsListView() {
         </label>
       </div>
 
-      <DataTable
-        tableId="projects"
-        exportName="projects"
-        search={{
-          value: search,
-          onChange: (v) => setSearch(v),
-          placeholder: "Search code, name, venue, organizer…",
-        }}
-        resetFilters={{
-          active: !!(search || brand || year || month || section || status),
-          onReset: () => {
-            const next = new URLSearchParams(params);
-            ["search", "brand", "year", "month", "section", "status", "page"].forEach((k) =>
-              next.delete(k)
-            );
-            setParams(next, { replace: true });
-          },
-        }}
-        columns={columns}
-        rows={rows}
-        loading={list.loading}
-        error={list.error}
-        emptyLabel="No projects yet"
-        getRowKey={(r) => r.id}
-        getRowClassName={(r) => (r.archived_at ? "opacity-60" : undefined)}
-        onRowClick={(r) => navigate(`/projects/${r.id}`)}
-        serverSort
-        onSortChange={handleSortChange}
-      />
+      {/* View toggle — cards (P2 design) vs the full data table. */}
+      <div className="mb-3 flex justify-end">
+        <div className="inline-flex overflow-hidden rounded-md border border-border bg-surface text-[11px] font-semibold">
+          <button
+            onClick={() => setListMode("cards")}
+            className={cn("px-3 py-1.5 transition-colors", listMode === "cards" ? "bg-primary text-white" : "text-ink-secondary hover:bg-surface-dim")}
+          >
+            Cards
+          </button>
+          <button
+            onClick={() => setListMode("table")}
+            className={cn("px-3 py-1.5 transition-colors", listMode === "table" ? "bg-primary text-white" : "text-ink-secondary hover:bg-surface-dim")}
+          >
+            Table
+          </button>
+        </div>
+      </div>
+
+      <div className={cn(listMode === "cards" && "grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_300px]")}>
+      <div className="min-w-0">
+      {listMode === "cards" ? (
+        list.loading && !list.data ? (
+          <div className="py-10 text-center text-[12px] text-ink-muted">Loading…</div>
+        ) : cardRows.length === 0 ? (
+          <div className="rounded-xl border border-border bg-surface p-8 text-center text-[12px] text-ink-muted shadow-stone">
+            No projects yet
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {cardRows.map((r) => {
+              const total = r.sections_total ?? 0;
+              const active = r.active_section_name ?? null;
+              const done = total > 0 && active == null;
+              const rail = done ? "bg-synced" : active ? "bg-accent" : "bg-border-strong";
+              const meta = [
+                r.brand,
+                r.start_date ? `${formatDate(r.start_date)}–${formatDate(r.end_date)}` : null,
+                r.pic_name ? `PIC ${r.pic_name}` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <button
+                  key={r.id}
+                  onClick={() => navigate(`/projects/${r.id}`)}
+                  className={cn(
+                    "group relative flex w-full items-center gap-4 overflow-hidden rounded-xl border border-border bg-surface p-4 pl-5 text-left shadow-stone transition-all hover:-translate-y-px hover:border-primary hover:shadow-slab",
+                    r.archived_at && "opacity-60",
+                  )}
+                >
+                  <span className={cn("absolute left-0 top-0 h-full w-[3px]", rail)} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-[11px] font-bold text-accent">{r.code}</span>
+                      {done ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-synced bg-synced/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-synced">
+                          <CheckCircle2 size={10} /> Complete
+                        </span>
+                      ) : active ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
+                          <Circle size={9} /> {active}
+                          <span className="font-mono text-[9px] opacity-70">{r.sections_complete ?? 0}/{total}</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-full border border-dashed border-border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                          No sections
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 truncate font-display text-[15px] font-bold text-ink group-hover:text-primary">
+                      {r.name}
+                    </div>
+                    {meta && <div className="mt-0.5 truncate text-[11.5px] text-ink-muted">{meta}</div>}
+                    <div className="mt-2">
+                      <ProgressBar pct={r.progress_pct ?? 0} />
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )
+      ) : (
+        <DataTable
+          tableId="projects"
+          exportName="projects"
+          search={{
+            value: search,
+            onChange: (v) => setSearch(v),
+            placeholder: "Search code, name, venue, organizer…",
+          }}
+          resetFilters={{
+            active: !!(search || brand || year || month || section || status),
+            onReset: () => {
+              const next = new URLSearchParams(params);
+              ["search", "brand", "year", "month", "section", "status", "page"].forEach((k) =>
+                next.delete(k)
+              );
+              setParams(next, { replace: true });
+            },
+          }}
+          columns={columns}
+          rows={rows}
+          loading={list.loading}
+          error={list.error}
+          emptyLabel="No projects yet"
+          getRowKey={(r) => r.id}
+          getRowClassName={(r) => (r.archived_at ? "opacity-60" : undefined)}
+          onRowClick={(r) => navigate(`/projects/${r.id}`)}
+          serverSort
+          onSortChange={handleSortChange}
+        />
+      )}
+      </div>
+      {listMode === "cards" && (
+        <aside className="space-y-4">
+          <div className="rounded-xl border border-primary/30 bg-primary-soft p-4 shadow-stone">
+            <div className="font-mono text-[10px] font-bold uppercase tracking-brand text-primary-ink">Total</div>
+            <div className="mt-1.5 font-display text-[28px] font-extrabold leading-none text-primary-ink">
+              {list.data?.total ?? 0}
+            </div>
+            <div className="mt-1 text-[11px] text-primary-ink/70">projects (filtered)</div>
+            <div className="mt-3 grid grid-cols-2 gap-2 border-t border-primary/20 pt-3">
+              <div>
+                <div className="font-mono text-[16px] font-bold text-primary-ink">{summary.data?.live_count ?? 0}</div>
+                <div className="text-[11px] text-primary-ink/70">Live</div>
+              </div>
+              <div>
+                <div className="font-mono text-[16px] font-bold text-primary-ink">{summary.data?.upcoming_30d ?? 0}</div>
+                <div className="text-[11px] text-primary-ink/70">Next 30d</div>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
+            <div className="mb-2.5 text-[13px] font-bold text-ink">Upcoming</div>
+            {(() => {
+              const today = new Date().toISOString().slice(0, 10);
+              const upcoming = cardRows
+                .filter((r) => r.start_date && r.start_date >= today)
+                .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""))
+                .slice(0, 6);
+              return upcoming.length === 0 ? (
+                <div className="py-3 text-center text-[11px] text-ink-muted">No upcoming projects</div>
+              ) : (
+                <ul className="space-y-2">
+                  {upcoming.map((r) => (
+                    <li key={r.id}>
+                      <button
+                        onClick={() => navigate(`/projects/${r.id}`)}
+                        className="group flex w-full items-center justify-between gap-2 text-left"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-ink group-hover:text-primary">
+                          {r.name}
+                        </span>
+                        <span className="shrink-0 font-mono text-[10.5px] text-ink-muted">
+                          {formatDate(r.start_date)}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              );
+            })()}
+          </div>
+        </aside>
+      )}
+      </div>
 
       {list.data && !status && (
         <Pagination
@@ -2066,7 +2249,7 @@ function FinanceListView() {
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           />
         </FilterField>
         <FilterField label="To">
@@ -2074,14 +2257,14 @@ function FinanceListView() {
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           />
         </FilterField>
         <FilterField label="Brand">
           <select
             value={brand}
             onChange={(e) => setBrand(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           >
             <option value="">All</option>
             {(brandsQ.data?.data ?? []).map((b) => (
@@ -2095,7 +2278,7 @@ function FinanceListView() {
           <select
             value={stage}
             onChange={(e) => setStage(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           >
             <option value="">All</option>
             {FINANCE_STAGE_OPTIONS.map((s) => (
@@ -2112,7 +2295,7 @@ function FinanceListView() {
               setPerPage(parseInt(e.target.value, 10));
               setPage(1);
             }}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
           >
             <option value={25}>25</option>
             <option value={50}>50</option>
@@ -3098,7 +3281,7 @@ function ProjectsCalendarView() {
           <select
             value={brand}
             onChange={(e) => setBrand(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
             title="Filter by brand"
           >
             <option value="">All brands</option>
@@ -3111,7 +3294,7 @@ function ProjectsCalendarView() {
           <select
             value={section}
             onChange={(e) => setSection(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
             title="Filter by current section (stage)"
           >
             <option value="">All sections</option>
@@ -3125,7 +3308,7 @@ function ProjectsCalendarView() {
           <select
             value={organizer}
             onChange={(e) => setOrganizer(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
             title="Filter by organizer"
           >
             <option value="">All organizers</option>
@@ -4135,7 +4318,7 @@ function CreateProjectPanel({
             <select
               value={eventTypeId}
               onChange={(e) => setEventTypeId(e.target.value)}
-              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             >
               <option value="">— none —</option>
               {eventTypes.map((t) => (
@@ -4152,7 +4335,7 @@ function CreateProjectPanel({
             <select
               value={brand}
               onChange={(e) => setBrand(e.target.value)}
-              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             >
               <option value="">— pick a brand —</option>
               {brands.map((b) => (
@@ -4227,7 +4410,7 @@ function CreateProjectPanel({
           <select
             value={stateName}
             onChange={(e) => setStateName(e.target.value)}
-            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           >
             <option value="">— pick a state —</option>
             {stateName && !(PROJECT_STATES as readonly string[]).includes(stateName) && (
@@ -4867,7 +5050,7 @@ function ProjectTeamSection({
 // Shared className for every editable input in the strip — keeps
 // dropdowns + text inputs + date inputs visually identical.
 const SPEC_INPUT_CLASS =
-  "w-full appearance-none rounded border border-border bg-surface px-2 py-1 text-[12.5px] font-medium text-ink outline-none transition-colors focus:border-accent focus:ring-1 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60";
+  "w-full appearance-none rounded border border-border bg-surface px-2 py-1 text-[12.5px] font-medium text-ink outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60";
 
 function ProjectSpecStrip({
   project: p,
@@ -4916,7 +5099,7 @@ function ProjectSpecStrip({
             className={cn(
               "inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-[10.5px] font-semibold transition-colors",
               editing
-                ? "border-accent bg-accent text-white hover:bg-accent-hover"
+                ? "border-primary bg-primary text-white hover:bg-primary-ink"
                 : "border-border bg-surface text-ink hover:border-accent/40 hover:text-accent"
             )}
             title={editing ? "Lock edits" : "Edit project details"}
@@ -5952,7 +6135,7 @@ function TasklistSections({
             }}
             placeholder="e.g. Pre-event, Setup, Live, Teardown"
             autoFocus
-            className="h-7 flex-1 rounded-md border border-border bg-surface px-2 text-[11.5px] outline-none focus:border-accent"
+            className="h-7 flex-1 rounded-md border border-border bg-surface px-2 text-[11.5px] outline-none focus:border-primary"
           />
           <button
             onClick={addSection}
@@ -6786,7 +6969,7 @@ function ChecklistRemark({
         onBlur={save}
         rows={2}
         placeholder="Theme / items / vendor notes…"
-        className="w-full resize-y rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] text-ink placeholder:text-ink-muted focus:border-accent/40 focus:outline-none"
+        className="w-full resize-y rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] text-ink placeholder:text-ink-muted focus:border-primary/40 focus:outline-none"
       />
       {dirty && (
         <div className="mt-1 text-[9.5px] text-ink-muted">
@@ -7178,7 +7361,7 @@ function ChecklistRow({
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="Management remark (required to reject)…"
-              className="min-w-[160px] flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-accent/40"
+              className="min-w-[160px] flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-primary/40"
             />
             <button
               onClick={async () => {
@@ -7231,7 +7414,7 @@ function ChecklistRow({
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder="Add a note…"
-              className="flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-accent"
+              className="flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-primary"
             />
             <button
               onClick={async () => {
@@ -7324,14 +7507,14 @@ function AddChecklistItem({
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Task title…"
-        className="mb-2 w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[12px] outline-none focus:border-accent"
+        className="mb-2 w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-[12px] outline-none focus:border-primary"
       />
       <textarea
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         placeholder="Description (optional) — context, instructions, acceptance criteria…"
         rows={2}
-        className="mb-2 w-full resize-y rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+        className="mb-2 w-full resize-y rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
       />
       <div className="mb-2 flex items-center gap-2">
         <input
@@ -7344,7 +7527,7 @@ function AddChecklistItem({
         <select
           value={ownerId}
           onChange={(e) => setOwnerId(e.target.value)}
-          className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         >
           <option value="">— assign to —</option>
           {users.map((u) => (
@@ -7428,14 +7611,14 @@ function DateTimeField({
           value={datePart}
           onChange={(e) => setDatePart(e.target.value)}
           onBlur={commit}
-          className="flex-1 min-w-0 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          className="flex-1 min-w-0 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
         <input
           type="time"
           value={timePart}
           onChange={(e) => setTimePart(e.target.value)}
           onBlur={commit}
-          className="w-[88px] rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+          className="w-[88px] rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
       </div>
       <div className="mt-1 font-mono text-[10px] text-ink-muted">
@@ -7736,7 +7919,7 @@ function AddStockTransferForm({
           type="datetime-local"
           value={transferredAt}
           onChange={(e) => setTransferredAt(e.target.value)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           type="file"
@@ -7748,7 +7931,7 @@ function AddStockTransferForm({
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="Notes (item list, qty, driver, etc.)"
-          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
       </div>
       <div className="mt-2 flex items-center gap-2">
@@ -8938,32 +9121,32 @@ function AddDefectForm({
           value={itemCode}
           onChange={(e) => setItemCode(e.target.value)}
           placeholder="Item code"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-primary"
         />
         <input
           value={size}
           onChange={(e) => setSize(e.target.value)}
           placeholder="Size"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           value={desc}
           onChange={(e) => setDesc(e.target.value)}
           placeholder="Description"
-          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           type="number"
           value={qty}
           onChange={(e) => setQty(e.target.value)}
           placeholder="Qty"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="Reason / notes"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
       </div>
       <div className="mt-2 flex items-center gap-2">
@@ -10271,7 +10454,7 @@ function SnapshotRow({
               if (e.key === "Enter") commit();
               else if (e.key === "Escape") setEditing(false);
             }}
-            className="w-32 rounded border border-accent bg-surface px-2 py-0.5 text-right font-mono tabular-nums outline-none focus:ring-2 focus:ring-accent/20"
+            className="w-32 rounded border border-accent bg-surface px-2 py-0.5 text-right font-mono tabular-nums outline-none focus:ring-2 focus:ring-primary/20"
           />
         ) : (
           <span
@@ -10609,7 +10792,7 @@ function AddFinanceLineForm({
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+            className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
           >
             {categories.map((c) => (
               <option key={c} value={c}>
@@ -10625,7 +10808,7 @@ function AddFinanceLineForm({
           onChange={(e) => setAmount(e.target.value)}
           placeholder="Amount (RM)"
           className={cn(
-            "rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-accent",
+            "rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-primary",
             categoryDefault && "col-span-2",
           )}
         />
@@ -10633,13 +10816,13 @@ function AddFinanceLineForm({
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Description"
-          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           type="date"
           value={occurredAt}
           onChange={(e) => setOccurredAt(e.target.value)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
           title="Payment date"
         />
         <input
@@ -10744,7 +10927,7 @@ function EditFinanceLineRow({
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         >
           {categories.map((c) => (
             <option key={c} value={c}>
@@ -10761,19 +10944,19 @@ function EditFinanceLineRow({
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           placeholder="Amount (RM)"
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-primary"
         />
         <input
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Description"
-          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="col-span-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
         />
         <input
           type="date"
           value={occurredAt}
           onChange={(e) => setOccurredAt(e.target.value)}
-          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-accent"
+          className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] outline-none focus:border-primary"
           title="Payment date"
         />
         <div className="col-span-2">
@@ -11373,7 +11556,7 @@ function ImportCsvPanel({
           onChange={(e) => setText(e.target.value)}
           placeholder={"name,brand,event_type,start_date,end_date,venue,state\nPIKOM PC Fair 2026,AKEMI,exhibition,2026-05-10,2026-05-12,KLCC,Kuala Lumpur"}
           rows={14}
-          className="w-full rounded-md border border-border bg-surface px-3 py-2 font-mono text-[11px] outline-none focus:border-accent"
+          className="w-full rounded-md border border-border bg-surface px-3 py-2 font-mono text-[11px] outline-none focus:border-primary"
         />
       </PanelSection>
 

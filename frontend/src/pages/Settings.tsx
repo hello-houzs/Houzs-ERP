@@ -529,7 +529,7 @@ function BrandingTab() {
                     onChange={(e) => set(f.key, e.target.value)}
                     placeholder={f.placeholder}
                     rows={2}
-                    className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:opacity-60"
+                    className="w-full resize-y rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60"
                   />
                 ) : (
                   <input
@@ -538,7 +538,7 @@ function BrandingTab() {
                     disabled={!canEdit || saving}
                     onChange={(e) => set(f.key, e.target.value)}
                     placeholder={f.placeholder}
-                    className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15 disabled:opacity-60"
+                    className="h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60"
                   />
                 )}
                 {f.hint && (
@@ -648,7 +648,7 @@ function ActivityLog() {
   ];
 
   const selectClass =
-    "h-8 rounded-lg border border-border bg-surface px-2 text-[12px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15";
+    "h-8 rounded-lg border border-border bg-surface px-2 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15";
 
   return (
     <div>

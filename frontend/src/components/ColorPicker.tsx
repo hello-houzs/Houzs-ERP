@@ -97,7 +97,7 @@ export function ColorPicker({
               }}
               maxLength={7}
               spellCheck={false}
-              className="h-8 flex-1 rounded-md border border-border bg-surface px-2 font-mono text-[11.5px] uppercase tracking-wider text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+              className="h-8 flex-1 rounded-md border border-border bg-surface px-2 font-mono text-[11.5px] uppercase tracking-wider text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
               aria-label="Hex value"
             />
           </div>

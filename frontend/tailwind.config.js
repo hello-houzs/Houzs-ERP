@@ -4,58 +4,62 @@ export default {
   theme: {
     extend: {
       colors: {
+        // ── Theme C · "Ink & Petrol" ───────────────────────
+        // Visual refresh (2026-06-25). Cooler neutral canvas so white
+        // cards lift off the page; petrol/teal `primary` is the new
+        // FUNCTIONAL accent (buttons, active states, links, selected
+        // rows); brass `accent` is demoted to a brand-only accent
+        // (logo, eyebrows, doc numbers, soft backgrounds).
+
         // ── Canvas ─────────────────────────────────────────
-        // Warm cream paper canvas — slight green-yellow undertone
-        // pulled from the brand's "Nature" axis.
-        bg: "#f1f1ec",
+        bg: "#eef0ec",
         surface: "#ffffff",
-        "surface-dim": "#ecebe2",
+        "surface-2": "#f4f6f3", // table headers, nested/inset surfaces, search fields
+        "surface-dim": "#e3e6e0",
 
         border: {
-          DEFAULT: "#d2cdbf",
-          subtle: "#ecebe2",
-          strong: "#cdc8b8",
+          DEFAULT: "#d6d9d2",
+          subtle: "#e3e6e0",
+          strong: "#c2c6bd",
         },
 
         // ── Ink ────────────────────────────────────────────
-        // Nature Black is the brand anchor (#111810).
         ink: {
-          DEFAULT: "#1f211d", // brand: Nature Black (neutralised 2026-06-15 for eye comfort)
-          // Darkened 2026-06-14 for readability — owner reported low contrast
-          // (faint grays) causing eye strain. Old: secondary #4a534a, muted #8a8e85.
-          secondary: "#3b423a",
-          muted: "#6c7167",
+          DEFAULT: "#11140f",
+          secondary: "#414539",
+          muted: "#767b6e",
         },
 
-        // ── Brass accent ───────────────────────────────────
-        // Hand-rubbed brass — the "Colour X" pairing for Nature Black.
-        // Chosen to evoke furniture hardware, distinct from any other
-        // ERP green/blue/purple, and to leave the success/error semantic
-        // greens & reds free for status.
+        // ── Primary (petrol/teal) — NEW functional accent ──
+        primary: {
+          DEFAULT: "#16695f",
+          soft: "#e1efed", // selected-row bg, soft chips, month-P&L card
+          ink: "#0c3f39", // text on primary-soft
+        },
+
+        // ── Brass accent (brand only — not primary CTAs) ───
         accent: {
           DEFAULT: "#a16a2e",
-          soft: "#f5ecd9",
+          soft: "#f3ece0",
+          bright: "#d8a85a", // gold for text on dark sidebar/headers
           hover: "#8a5a26",
           ink: "#5a3a14",
         },
 
-        // ── Sidebar palette (cream slab — interior brand mode) ─
-        // Inverted from the cover-page direction so a dark/black logo
-        // sits naturally on a warm interior surface, matching the
-        // light pages in the Houzs Century brand book.
+        // ── Sidebar palette (dark ink-green slab) ──────────
         sidebar: {
-          DEFAULT: "#fafaf6",
-          ink: "#111810", // Nature Black for primary text
-          "ink-muted": "#6b7167",
-          "ink-soft": "#8a8e85",
-          border: "#e0ddd0",
-          hover: "#f1efe6",
-          active: "#f5ecd9", // pale brass tint
+          DEFAULT: "#13201c",
+          ink: "#e7eae4",
+          "ink-muted": "#8c968a",
+          "ink-soft": "#6f786d",
+          border: "rgba(231,234,228,0.12)",
+          hover: "rgba(231,234,228,0.06)",
+          active: "rgba(22,105,95,0.22)", // petrol 22%
         },
 
         // ── Semantic ───────────────────────────────────────
-        synced: { DEFAULT: "#3f7d4f", bg: "#eaf2ec" },
-        err: { DEFAULT: "#a83232", bg: "#f7e9e9" },
+        synced: { DEFAULT: "#2f8a5b", bg: "#e2f0e9" },
+        err: { DEFAULT: "#b23a3a", bg: "#f8eaea" },
         expired: { bg: "#f7e9e9", text: "#7a2222" },
         warning: { bg: "#f6efd9", text: "#6e4d12" },
       },
@@ -72,6 +76,11 @@ export default {
         // name stays `mono` to avoid touching 440 call sites; the
         // *meaning* is now "data / labels / numbers".
         mono: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
+        // Money / financial figures only — IBM Plex Mono gives ledger-grade
+        // tabular digits so amounts line up by decimal across rows and in the
+        // detail drawers. Applied via `font-money` on amount cells ONLY; the
+        // rest of the ERP stays on the system typeface (owner's house style).
+        money: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
       },
       letterSpacing: {
         brand: "0.18em",

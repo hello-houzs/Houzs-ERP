@@ -213,6 +213,29 @@ type SoRow = {
 const fmtRm = (centi: number): string =>
   (centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+/* Readable house-style date — "23 Jun 2026" — for the Theme C card view.
+   Reads the YYYY-MM-DD prefix verbatim (no timezone shift). */
+const SO_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const readableDate = (iso: string | null | undefined): string => {
+  if (!iso) return '—';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return iso;
+  return `${m[3]} ${SO_MONTHS[Number(m[2]) - 1] ?? m[2]} ${m[1]}`;
+};
+
+/* SO lifecycle → progress. Ordered fulfilment stages; the bar fills as the
+   order advances. Cancelled/returned read as inactive (no fill). */
+const SO_LIFECYCLE: string[] = [
+  'DRAFT', 'CONFIRMED', 'IN_PRODUCTION', 'READY_TO_SHIP', 'SHIPPED', 'DELIVERED', 'INVOICED', 'CLOSED',
+];
+const soProgress = (status: string): { pct: number; dead: boolean } => {
+  const up = (status || '').toUpperCase();
+  if (up === 'CANCELLED' || up === 'RETURNED') return { pct: 0, dead: true };
+  const i = SO_LIFECYCLE.indexOf(up);
+  const step = i < 0 ? 0 : i;
+  return { pct: Math.round((step / (SO_LIFECYCLE.length - 1)) * 100), dead: false };
+};
+
 /* Compact date — "2026/04/21". Falls back to the raw ISO string when the
    source isn't a parseable date so legacy data still shows. */
 const compactDate = (iso: string | null | undefined): string => {
@@ -789,6 +812,18 @@ export const MfgSalesOrdersList = () => {
   const onNew = () => navigate('/scm/sales-orders/new');
   /* Scan Order — handwritten slip OCR → prefilled New SO (ScanOrderModal). */
   const [showScan, setShowScan] = useState(false);
+  /* Desktop view toggle (Theme C) — Table keeps the full power-user grid;
+     Cards is a scannable list (avatar · readable date · Plex money · SO
+     lifecycle progress bar). Persisted so the choice sticks. Phone always
+     uses the .mobileCards layout regardless of this. */
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>(() => {
+    try { return localStorage.getItem('scm:so:viewmode') === 'cards' ? 'cards' : 'table'; }
+    catch { return 'table'; }
+  });
+  const chooseView = (v: 'table' | 'cards') => {
+    setViewMode(v);
+    try { localStorage.setItem('scm:so:viewmode', v); } catch { /* private mode */ }
+  };
   const openDetail = (row: SoRow, edit = false) =>
     navigate(`/scm/sales-orders/${row.doc_no}${edit ? '?edit=1' : ''}`);
 
@@ -1033,20 +1068,31 @@ export const MfgSalesOrdersList = () => {
       </div>
 
       {/* Draft/Confirmed tab bar — mirrors the DO/SI/PO/GRN/PI rollout so SO is
-          consistent. Each chip shows its live count; clicking sets ?status=. */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {STATUS_CHIPS.map((s) => (
-          <button key={s} type="button" onClick={() => setStatusChip(s)}
-            style={{
-              height: 28, padding: '0 12px', borderRadius: 999, cursor: 'pointer',
-              fontSize: 11, fontWeight: 600,
-              border: '1px solid ' + (statusChip === s ? 'var(--c-burnt)' : '#DDE5E5'),
-              background: statusChip === s ? 'rgba(232, 107, 58, 0.10)' : '#FFFFFF',
-              color: statusChip === s ? 'var(--c-burnt)' : 'var(--fg-muted)',
-            }}>
-            {(s === 'all' ? 'All' : STATUS_LABEL[s] ?? s)} ({statusCounts[s] ?? 0})
-          </button>
-        ))}
+          consistent. Each chip shows its live count; clicking sets ?status=.
+          The desktop Table/Cards toggle rides on the right of the same row. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {STATUS_CHIPS.map((s) => (
+            <button key={s} type="button" onClick={() => setStatusChip(s)}
+              style={{
+                height: 28, padding: '0 12px', borderRadius: 999, cursor: 'pointer',
+                fontSize: 11, fontWeight: 600,
+                border: '1px solid ' + (statusChip === s ? 'var(--c-burnt)' : '#DDE5E5'),
+                background: statusChip === s ? 'rgba(232, 107, 58, 0.10)' : '#FFFFFF',
+                color: statusChip === s ? 'var(--c-burnt)' : 'var(--fg-muted)',
+              }}>
+              {(s === 'all' ? 'All' : STATUS_LABEL[s] ?? s)} ({statusCounts[s] ?? 0})
+            </button>
+          ))}
+        </div>
+        <div className={styles.viewToggle}>
+          {(['table', 'cards'] as const).map((v) => (
+            <button key={v} type="button" onClick={() => chooseView(v)}
+              className={viewMode === v ? styles.viewToggleOn : styles.viewToggleOff}>
+              {v === 'table' ? 'Table' : 'Cards'}
+            </button>
+          ))}
+        </div>
       </div>
 
       <ListingPickerDialog
@@ -1129,7 +1175,59 @@ export const MfgSalesOrdersList = () => {
         })}
       </div>
 
-      <div className={styles.gridWrap}>
+      {/* Desktop card view (Theme C) — only when the user picks "Cards".
+          Hidden on phone (.desktopCards display:none ≤600px) so the existing
+          .mobileCards layout still owns small screens. */}
+      {viewMode === 'cards' && (
+        <div className={styles.desktopCards}>
+          {!isLoading && baseRows.length === 0 && (
+            <div className={styles.bannerWarn} style={{ background: 'transparent', border: 'none', color: 'var(--fg-muted)' }}>
+              No sales orders match this filter.
+            </div>
+          )}
+          {baseRows.map((r) => {
+            const name = r.debtor_name || '—';
+            const initial = (name.trim()[0] || '?').toUpperCase();
+            const prog = soProgress(r.status);
+            const ref = r.customer_so_no ?? r.po_doc_no ?? r.ref ?? null;
+            return (
+              <div
+                key={r.doc_no}
+                className={`${styles.soCard} ${r.status === 'CANCELLED' ? styles.cardCancelled : ''}`}
+                onClick={() => openDetail(r)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r); } }}
+              >
+                <div className={styles.soCardAvatar} aria-hidden="true">{initial}</div>
+                <div className={styles.soCardBody}>
+                  <div className={styles.soCardTop}>
+                    <span className={styles.soCardName} title={name}>{name}</span>
+                    <span className={styles.soCardMoney}>RM {fmtRm(r.local_total_centi)}</span>
+                  </div>
+                  <div className={styles.soCardMeta}>
+                    <span className={styles.soCardDoc}>{r.doc_no}</span>
+                    <span className={styles.soCardDot}>·</span>
+                    <span>{readableDate(r.so_date)}</span>
+                    {ref && (<><span className={styles.soCardDot}>·</span><span title="Reference">{ref}</span></>)}
+                  </div>
+                  <div className={styles.soCardFoot}>
+                    <div className={styles.soProgTrack}>
+                      <div
+                        className={styles.soProgFill}
+                        style={{ width: `${prog.dead ? 0 : prog.pct}%`, background: prog.dead ? 'var(--fg-soft, #9aa093)' : undefined }}
+                      />
+                    </div>
+                    <StatusPill status={r.status} deliveryState={r.delivery_state} lifecycleState={r.lifecycle_state} />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className={styles.gridWrap} style={viewMode === 'cards' ? { display: 'none' } : undefined}>
       <DataGrid<SoRow>
         rows={baseRows}
         onFilteredRowsChange={setVisibleRows}
@@ -1373,6 +1471,7 @@ const buildColumns = (
     accessor: (r) => (
       <span style={{
         fontWeight: 700, color: 'var(--c-ink)',
+        fontFamily: 'var(--font-money)',
         fontVariantNumeric: 'tabular-nums',
       }}>{fmtRm(r.local_total_centi)}</span>
     ),

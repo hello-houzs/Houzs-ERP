@@ -39,6 +39,9 @@ import {
   PackageOpen,
   Reply,
   Mail,
+  Network,
+  Building2,
+  LayoutDashboard,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -66,6 +69,9 @@ interface Props {
  * two never drift. Add a route here, it shows up in both places.
  */
 export interface NavTab {
+  /** Which sidebar section this TOP-LEVEL item sits in — drives the
+   *  Workspace / Operations / System grouping. Defaults to "operations". */
+  section?: "workspace" | "operations" | "system";
   /** Click target. Omit when this is a pure group header with `children`. */
   to?: string;
   label: string;
@@ -110,11 +116,34 @@ export interface NavTab {
  * filter recurses so groups with no visible kids hide entirely.
  */
 export const NAV_TABS: NavTab[] = [
-  // ── Service — quality + ASSR ─────────────────────────────────
+  // ══ WORKSPACE ════════════════════════════════════════════════
   {
-    label: "Service",
+    section: "workspace",
+    to: "/",
+    label: "Overview",
+    icon: LayoutDashboard,
+    end: true,
+  },
+  // Sales Orders promoted to a top-level shortcut (also reachable under
+  // Supply Chain → Sales Order).
+  {
+    section: "workspace",
+    to: "/scm/sales-orders",
+    label: "Sales Orders",
+    icon: ShoppingCart,
+    anyPerm: ["*", "scm.access"],
+    anyAccess: ["scm.sales.orders"],
+  },
+
+  // ══ OPERATIONS ═══════════════════════════════════════════════
+  // ── Service — quality + ASSR. Header links to the Cases page; the
+  // chevron still expands the sub-menu (Quality Metrics / Maintenance).
+  {
+    section: "operations",
+    label: "Service Cases",
     icon: Zap,
     groupId: "service",
+    to: "/assr?view=hub",
     anyPerm: ["service_cases.read"],
     children: [
       {
@@ -148,9 +177,11 @@ export const NAV_TABS: NavTab[] = [
   // Gated on page-access (mig 073). Each sub-tab uses `pageAccess`
   // so a role with calendar-only access only sees the Calendar entry.
   {
+    section: "operations",
     label: "Projects",
     icon: FolderKanban,
     groupId: "projects",
+    to: "/projects?view=hub",
     pageAccess: "projects",
     children: [
       {
@@ -181,13 +212,16 @@ export const NAV_TABS: NavTab[] = [
   },
 
   // ── Supply Chain — ported 2990's furniture SCM (/api/scm) ────
-  // Gated on scm.access; Owner / IT Admin pass via their "*" wildcard. The
-  // server gates /api/scm/* with requireAnyPermission(["*","scm.access"]).
-  // New SCM modules get added here as they're ported.
+  // Header links to the /scm Hub; chevron expands the inline subtree.
   {
+    section: "operations",
     label: "Supply Chain",
     icon: Boxes,
     groupId: "scm",
+    // Points at the Hub landing page instead of expanding inline (the Hub
+    // surfaces every module one click deep). The children stay here as the
+    // single source of truth the Hub renders from + for visibility filtering.
+    to: "/scm",
     anyPerm: ["*", "scm.access"],
     // Umbrella shows if ANY SCM area is granted per-position (additive). The
     // recursive filter also hides this group when no child survives, so this
@@ -301,33 +335,76 @@ export const NAV_TABS: NavTab[] = [
     ],
   },
 
-  // ── People — system health + user management ─────────────────
+  // ── Mail Center — in-ERP shared inbox (ported from Hookka). Flat entry;
+  // the page carries its own Inbox/Sent/folder rail.
   {
-    label: "People",
-    icon: Users,
-    groupId: "people",
-    anyPerm: ["users.read", "roles.read"],
-    children: [
-      { to: "/system-health", label: "System Health", icon: Activity, pageAccess: "system_health" },
-      { to: "/team", label: "User Management", icon: Users, anyPerm: ["users.read", "roles.read"], pageAccess: "team" },
-    ],
-  },
-
-  // ── Mail Center — in-ERP shared inbox (ported from Hookka) ───
-  // Single flat entry (matches Hookka): the page carries its own
-  // Inbox/Sent/Archive/folder rail, so the app sidebar shouldn't nest
-  // Inbox/Sent as children. Gated on mail_center.read; per-user mailbox
-  // scope is enforced server-side.
-  {
+    section: "operations",
     to: "/mail-center",
     label: "Mail Center",
     icon: Mail,
     anyPerm: ["mail_center.read"],
   },
 
-  // ── System — pinned to the bottom ───────────────────────────
-  { to: "/settings", label: "Settings", icon: SettingsIcon, perm: "settings.manage" },
+  // ══ SYSTEM ═══════════════════════════════════════════════════
+  // ── Team — header links to the Team Hub; chevron expands the sub-pages
+  // (which are tabs on the Team page). Mirrors the Supply Chain pattern.
+  {
+    section: "system",
+    label: "Team",
+    icon: Users,
+    groupId: "team",
+    to: "/team?tab=hub",
+    anyPerm: ["users.read", "roles.read"],
+    pageAccess: "team",
+    children: [
+      { to: "/team?tab=members", label: "Members", icon: Users, perm: "users.read", pageAccess: "team" },
+      { to: "/team?tab=positions", label: "Positions", icon: ShieldCheck, perm: "users.manage", pageAccess: "team" },
+      { to: "/team?tab=orgchart", label: "Org Chart", icon: Network, perm: "users.read", pageAccess: "team" },
+      { to: "/team?tab=departments", label: "Departments", icon: Building2, perm: "users.read", pageAccess: "team" },
+      { to: "/team?tab=mail", label: "Mailboxes", icon: Mail, perm: "mail_center.manage", pageAccess: "team" },
+    ],
+  },
+  {
+    section: "system",
+    to: "/system-health",
+    label: "System Health",
+    icon: Activity,
+    pageAccess: "system_health",
+  },
+  {
+    section: "system",
+    to: "/settings",
+    label: "Settings",
+    icon: SettingsIcon,
+    perm: "settings.manage",
+  },
 ];
+
+// Accordion sibling map — each expandable group's same-level peers. Opening a
+// group collapses its siblings (top-level groups are mutually exclusive; so are
+// the SCM sub-groups) so the rail never piles up. Built once from NAV_TABS.
+const GROUP_SIBLINGS: Record<string, string[]> = (() => {
+  const m: Record<string, string[]> = {};
+  const walk = (tabs: NavTab[]) => {
+    const ids = tabs.filter((t) => t.children?.length && t.groupId).map((t) => t.groupId!);
+    for (const t of tabs) {
+      if (t.children?.length) {
+        if (t.groupId) m[t.groupId] = ids.filter((g) => g !== t.groupId);
+        walk(t.children);
+      }
+    }
+  };
+  walk(NAV_TABS);
+  return m;
+})();
+
+// Section labels for the Workspace / Operations / System grouping.
+const SECTION_LABELS: Record<NonNullable<NavTab["section"]>, string> = {
+  workspace: "Workspace",
+  operations: "Operations",
+  system: "System",
+};
+const SECTION_ORDER = ["workspace", "operations", "system"] as const;
 
 // Brand assets — drop the source files into frontend/public/. The paths
 // below resolve to those files at runtime. If your files are .png instead
@@ -344,16 +421,35 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   // a desktop-only concept.
   const effectiveCollapsed = collapsed;
 
-  // Per-group (nested) collapsed memory. Defaults open.
+  // Per-group expanded memory (accordion). undefined = auto (open iff the group
+  // holds the current route); true/false = explicit after a click.
   const [groupExpanded, setGroupExpanded] = useLocalStorage<Record<string, boolean>>(
-    "sidebar:groups:expanded",
+    "sidebar:groups:v2-accordion",
     {}
   );
-  function toggleGroup(id: string) {
-    setGroupExpanded((prev) => ({ ...prev, [id]: prev[id] === false ? true : false }));
+  function isGroupOpen(id: string, active: boolean): boolean {
+    const v = groupExpanded[id];
+    return v === undefined ? active : v;
   }
-  function isGroupOpen(id: string): boolean {
-    return groupExpanded[id] !== false;
+  // Opening a group collapses its same-level siblings (accordion). `active`
+  // resolves the auto/default state before flipping.
+  function toggleGroup(id: string, active: boolean) {
+    setGroupExpanded((prev) => {
+      const cur = prev[id] === undefined ? active : prev[id];
+      const willOpen = !cur;
+      const next = { ...prev, [id]: willOpen };
+      if (willOpen) for (const sib of GROUP_SIBLINGS[id] ?? []) next[sib] = false;
+      return next;
+    });
+  }
+  // Force a group open + collapse siblings — used when clicking a group's own
+  // link (e.g. Supply Chain → Hub) so the tree settles to just that branch.
+  function openGroup(id: string) {
+    setGroupExpanded((prev) => {
+      const next = { ...prev, [id]: true };
+      for (const sib of GROUP_SIBLINGS[id] ?? []) next[sib] = false;
+      return next;
+    });
   }
 
   /** True when a tab's `to` matches the current pathname + relevant query
@@ -416,52 +512,90 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   function renderTab(tab: NavTab, depth = 0): React.ReactNode {
     const Icon = tab.icon;
 
-    // Group header (has children) — render as expandable section.
+    // Group header (has children) — expandable section. A group that ALSO
+    // carries its own `to` (Supply Chain → /scm Hub) makes its LABEL a link to
+    // the Hub while the chevron still toggles the inline subtree — so the
+    // sidebar keeps the submenu AND the Hub is one click away.
     if (tab.children && tab.children.length > 0) {
-      const open = isGroupOpen(tab.groupId || tab.label);
-      // Group is "active" if any child is active — keep the brass tint
-      // on the parent so the user knows where they are.
-      // Recurse so a group (incl. the Supply Chain umbrella whose direct
-      // children are sub-groups) stays tinted when any descendant is active.
+      const gid = tab.groupId || tab.label;
       const hasActiveDescendant = (n: NavTab): boolean =>
         (n.to ? tabIsActive(n.to, n.end) : false) ||
         (n.children?.some(hasActiveDescendant) ?? false);
-      const childActive = tab.children.some(hasActiveDescendant);
+      const selfActive = tab.to ? tabIsActive(tab.to, tab.end) : false;
+      const headerActive = selfActive || tab.children.some(hasActiveDescendant);
+      const open = isGroupOpen(gid, headerActive);
       if (collapsed) {
-        // In collapsed mode, render children flat with no group header.
+        // Collapsed: children render flat. A Hub-linked group leads with its
+        // icon as a link to the Hub so it's still reachable.
         return (
-          <div key={tab.groupId || tab.label}>
+          <div key={gid}>
+            {tab.to && (
+              <NavLink
+                to={tab.to}
+                title={tab.label}
+                className={cn(
+                  "group relative my-0.5 flex items-center justify-center rounded-md px-2 py-2 transition-all duration-150",
+                  headerActive
+                    ? "bg-sidebar-active text-sidebar-ink"
+                    : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink",
+                )}
+              >
+                <Icon size={15} strokeWidth={headerActive ? 2.4 : 2} className={headerActive ? "text-primary" : ""} />
+              </NavLink>
+            )}
             {tab.children.map((k) => renderTab(k, depth))}
           </div>
         );
       }
+      const headerInner = (
+        <>
+          <Icon size={15} strokeWidth={headerActive ? 2.4 : 2} className={headerActive ? "text-primary" : ""} />
+          <span className="flex-1">{tab.label}</span>
+        </>
+      );
       return (
-        <div key={tab.groupId || tab.label} className="my-0.5">
-          {/* Group header. Click toggles only on lg+; on mobile the
-              chevron is hidden and children are always visible below. */}
-          <button
-            onClick={() => toggleGroup(tab.groupId || tab.label)}
+        <div key={gid} className="my-0.5">
+          {/* Header row: label = link (when `to`) or toggle; chevron always toggles. */}
+          <div
             className={cn(
-              "group relative flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-[12.5px] font-medium transition-all duration-150",
-              childActive
+              "group relative flex w-full items-center gap-3 rounded-md pl-3 pr-1.5 text-left text-[12.5px] font-medium transition-all duration-150",
+              headerActive
                 ? "text-sidebar-ink"
-                : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink"
+                : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink",
+              tab.to && selfActive && "bg-sidebar-active shadow-[inset_0_0_0_1px_rgba(231,234,228,0.12)]",
             )}
           >
-            <Icon
-              size={15}
-              strokeWidth={childActive ? 2.4 : 2}
-              className={childActive ? "text-accent" : ""}
-            />
-            <span className="flex-1">{tab.label}</span>
-            {open ? (
-              <ChevronDown size={12} className="hidden text-sidebar-ink-muted lg:inline" />
-            ) : (
-              <ChevronRight size={12} className="hidden text-sidebar-ink-muted lg:inline" />
+            {tab.to && selfActive && (
+              <span className="absolute -left-[10px] top-2 bottom-2 w-[2px] rounded-r bg-primary" />
             )}
-          </button>
-          {/* Children: always visible on mobile (no per-group expand);
-              on lg+ they obey the localStorage-backed `open` flag. */}
+            {tab.to ? (
+              <NavLink
+                to={tab.to}
+                onClick={() => openGroup(gid)}
+                className="flex min-w-0 flex-1 items-center gap-3 py-2"
+              >
+                {headerInner}
+              </NavLink>
+            ) : (
+              <button
+                onClick={() => toggleGroup(gid, headerActive)}
+                className="flex min-w-0 flex-1 items-center gap-3 py-2 text-left"
+              >
+                {headerInner}
+              </button>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleGroup(gid, headerActive);
+              }}
+              className="hidden shrink-0 rounded p-1 text-sidebar-ink-muted transition-colors hover:text-sidebar-ink lg:inline-flex"
+              aria-label={open ? "Collapse" : "Expand"}
+            >
+              {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+          </div>
+          {/* Children: always visible on mobile; on lg+ obey the `open` flag. */}
           <div
             className={cn(
               "ml-3 border-l border-sidebar-border pl-2",
@@ -488,19 +622,19 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
           cn(
             "group relative my-0.5 flex items-center gap-3 rounded-md px-3 py-2 text-[12.5px] font-medium transition-all duration-150",
             active
-              ? "bg-sidebar-active text-accent-ink shadow-[inset_0_0_0_1px_rgba(161,106,46,0.2)]"
+              ? "bg-sidebar-active text-sidebar-ink shadow-[inset_0_0_0_1px_rgba(231,234,228,0.12)]"
               : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-sidebar-ink",
             collapsed && "mx-1 justify-center px-2"
           )
         }
       >
         {active && !collapsed && (
-          <span className="absolute -left-[10px] top-2 bottom-2 w-[2px] rounded-r bg-accent" />
+          <span className="absolute -left-[10px] top-2 bottom-2 w-[2px] rounded-r bg-primary" />
         )}
         <Icon
           size={15}
           strokeWidth={active ? 2.4 : 2}
-          className={active ? "text-accent" : ""}
+          className={active ? "text-primary" : ""}
         />
         {!collapsed && <span>{tab.label}</span>}
       </NavLink>
@@ -547,7 +681,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
           <img
             src={LOGO_MARK_SRC}
             alt={branding.companyName}
-            className="h-9 w-9 object-contain"
+            className="h-9 w-9 object-contain brightness-0 invert"
             draggable={false}
           />
         ) : (
@@ -556,7 +690,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
           <img
             src={LOGO_WORDMARK_SRC}
             alt={branding.companyName}
-            className="h-10 w-auto max-w-[160px] object-contain"
+            className="h-10 w-auto max-w-[160px] object-contain brightness-0 invert"
             draggable={false}
           />
         )}
@@ -612,7 +746,20 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
 
       {/* ── Flat root nav ─────────────────────────────────────── */}
       <nav className="no-scrollbar flex-1 overflow-y-auto px-2 pb-4 pt-3">
-        {visibleTabs.map((tab) => renderTab(tab))}
+        {SECTION_ORDER.map((sec) => {
+          const items = visibleTabs.filter((t) => (t.section ?? "operations") === sec);
+          if (items.length === 0) return null;
+          return (
+            <div key={sec} className={collapsed ? "" : "mb-1"}>
+              {!collapsed && (
+                <div className="px-3 pb-1 pt-3 font-mono text-[9.5px] font-bold uppercase tracking-brand text-sidebar-ink-muted">
+                  {SECTION_LABELS[sec]}
+                </div>
+              )}
+              {items.map((tab) => renderTab(tab))}
+            </div>
+          );
+        })}
       </nav>
 
       {/* ── Notification bell (mobile drawer only; desktop nav bar owns it) */}
@@ -644,7 +791,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
               aria-label="Profile"
               title={`${user.name || user.email} · Profile`}
             >
-              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-sidebar-active text-[9px] font-bold uppercase text-accent-ink">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-sidebar-active text-[9px] font-bold uppercase text-accent-bright">
                 {(user.name || user.email).slice(0, 2).toUpperCase()}
               </span>
             </NavLink>
@@ -655,7 +802,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
                 className="group flex min-w-0 flex-1 items-center gap-2.5"
                 title="Open profile"
               >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sidebar-active text-[10px] font-bold uppercase text-accent-ink shadow-[inset_0_0_0_1px_rgba(161,106,46,0.25)] group-hover:bg-accent group-hover:text-white">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sidebar-active text-[10px] font-bold uppercase text-accent-bright shadow-[inset_0_0_0_1px_rgba(161,106,46,0.25)] group-hover:bg-accent group-hover:text-white">
                   {(user.name || user.email).slice(0, 2).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">

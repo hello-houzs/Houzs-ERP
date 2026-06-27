@@ -69,18 +69,22 @@ export function parseDate(d: string | null | undefined): Date | null {
   return isNaN(date.getTime()) ? null : date;
 }
 
+// Short month names for the date-only branch (no Date/timezone parsing).
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 // Memoised Intl formatters — these are expensive to construct and we
-// call them on every row in long lists.
+// call them on every row in long lists. House style is the readable
+// "23 Jun 2026" (day month-abbrev year), not the old DD/MM/YYYY.
 const dateFmt = new Intl.DateTimeFormat("en-GB", {
   timeZone: APP_TZ,
   day: "2-digit",
-  month: "2-digit",
+  month: "short",
   year: "numeric",
 });
 const dateTimeFmt = new Intl.DateTimeFormat("en-GB", {
   timeZone: APP_TZ,
   day: "2-digit",
-  month: "2-digit",
+  month: "short",
   year: "numeric",
   hour: "2-digit",
   minute: "2-digit",
@@ -89,7 +93,7 @@ const dateTimeFmt = new Intl.DateTimeFormat("en-GB", {
 const timestampFmt = new Intl.DateTimeFormat("en-GB", {
   timeZone: APP_TZ,
   day: "2-digit",
-  month: "2-digit",
+  month: "short",
   year: "numeric",
   hour: "2-digit",
   minute: "2-digit",
@@ -110,7 +114,7 @@ export function formatDate(d: string | null | undefined): string {
   // Date-only fields don't carry a timezone — display verbatim.
   if (isDateOnly(d)) {
     const [y, m, day] = d.split("-");
-    return `${day}/${m}/${y}`;
+    return `${day} ${MONTHS[Number(m) - 1] ?? m} ${y}`;
   }
   // Wall-clock scheduling fields — slice the date portion, no conversion.
   if (isWallClockDateTime(d)) {

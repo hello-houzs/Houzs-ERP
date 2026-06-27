@@ -79,6 +79,10 @@ const ScmDriversV2 = lazy(() => import("./pages/scm-v2/Drivers").then((m) => ({ 
 // configurator + SoFromProducts come in a later wave. NOTE: 2990 uses :docNo
 // (not :id) for SO detail, and the literal /maintenance route MUST precede
 // /:docNo so 'maintenance' isn't read as a doc number.
+// Overview — Workspace home (P1 task-first dashboard).
+const Overview = lazy(() => import("./pages/Overview").then((m) => ({ default: m.Overview })));
+// Supply Chain Hub — section landing page (flattens the 3-level SCM nesting).
+const ScmHub = lazy(() => import("./pages/ScmHub").then((m) => ({ default: m.ScmHub })));
 const ScmSalesOrdersV2 = lazy(() => import("./pages/scm-v2/MfgSalesOrdersList").then((m) => ({ default: m.MfgSalesOrdersList })));
 const ScmSalesOrderMaintenanceV2 = lazy(() => import("./pages/scm-v2/SalesOrderMaintenance").then((m) => ({ default: m.SalesOrderMaintenance })));
 const ScmSalesOrderNewV2 = lazy(() => import("./pages/scm-v2/SalesOrderNew").then((m) => ({ default: m.SalesOrderNew })));
@@ -190,8 +194,8 @@ export default function App() {
         <ChunkReloadBoundary>
         <Suspense fallback={<PageSkeleton />}>
         <Routes>
-        {/* Landing → Service (QMS). No standalone Overview after the cutover. */}
-        <Route path="/" element={<Navigate to="/assr" replace />} />
+        {/* Landing → Overview workspace home (P1). */}
+        <Route path="/" element={<Overview />} />
         <Route
           path="/assr"
           element={
@@ -329,6 +333,8 @@ export default function App() {
         <Route path="/scm/inventory/stock-card/:productCode" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmStockCardV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/suppliers/:id" element={<ScmGuard area="scm.procurement.suppliers"><Scm2990Shell><ScmSupplierDetailV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/drivers" element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmDriversV2 /></Scm2990Shell></ScmGuard>} />
+        {/* Supply Chain Hub — section landing page (main app layout, NOT the 2990 shell). */}
+        <Route path="/scm" element={<ScmGuard area="scm"><ScmHub /></ScmGuard>} />
         {/* Sales Orders READ side (vendored). The literal /maintenance route
             MUST precede /:docNo so 'maintenance' isn't caught as a doc number.
             2990 uses :docNo (not :id) for the SO detail. */}
