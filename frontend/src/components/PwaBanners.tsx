@@ -8,15 +8,14 @@ import {
 } from "../pwa";
 
 /**
- * Two banner-style PWA UI bits:
- *   • Install prompt — surfaces when the browser fires
- *     beforeinstallprompt and the app isn't already installed.
- *     Dismissed state persists in localStorage so we don't nag.
- *   • Offline pill — appears when navigator goes offline; gives a
- *     clear "you are offline, reads come from cache, writes will
- *     fail" indicator.
+ * Two banner-style PWA UI bits (Theme C · Ink & Petrol):
+ *   • Install prompt — surfaces when the browser fires beforeinstallprompt
+ *     and the app isn't already installed. Dismissed state persists in
+ *     localStorage so we don't nag (7-day cool-off).
+ *   • Offline pill — appears when navigator goes offline.
  *
  * Mounted once at the app root, renders nothing the rest of the time.
+ * Visual only — install/dismiss/standalone logic is unchanged.
  */
 
 const DISMISS_KEY = "pwa:install:dismissed-at";
@@ -30,10 +29,6 @@ export function PwaBanners() {
   useEffect(() => onInstallAvailability(setCanInstall), []);
   useEffect(() => onOnline(setOnline), []);
 
-  // Decide install banner visibility:
-  //   - browser said it's installable
-  //   - app isn't already standalone
-  //   - user hasn't dismissed in the last NAG_AFTER_DAYS days
   useEffect(() => {
     if (!canInstall || isStandalone()) {
       setShowInstall(false);
@@ -65,38 +60,44 @@ export function PwaBanners() {
     <>
       {!online && (
         <div
-          className="fixed left-1/2 top-3 z-[100] flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber-500/40 bg-amber-50 px-3 py-1.5 text-[11px] font-semibold text-amber-900 shadow-lg"
+          className="fixed left-1/2 top-3 z-[100] flex -translate-x-1/2 items-center gap-2 rounded-full border border-warning-text/40 bg-warning-bg px-3 py-1.5 text-[11px] font-semibold text-warning-text shadow-lg"
           role="status"
           aria-live="polite"
         >
           <WifiOff size={12} />
-          You're offline — viewing cached data
+          当前离线 — 显示缓存数据 · You're offline
         </div>
       )}
 
       {showInstall && (
-        <div className="fixed inset-x-3 bottom-3 z-[100] mx-auto max-w-md rounded-xl border border-accent/40 bg-surface px-4 py-3 shadow-slab sm:bottom-6">
+        <div className="fixed inset-x-3 bottom-3 z-[100] mx-auto max-w-md rounded-2xl border border-border bg-surface px-[18px] py-4 shadow-slab sm:inset-x-auto sm:right-6 sm:bottom-6 sm:w-[340px]">
           <div className="flex items-start gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
-              <Download size={16} />
+            {/* Brand mark — dark slab tile with brass "H" (brand identity = brass) */}
+            <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl bg-ink">
+              <span className="flex h-5 w-5 items-center justify-center rounded bg-accent font-display text-[12px] font-semibold text-white">
+                H
+              </span>
             </div>
             <div className="flex-1">
-              <div className="text-[12.5px] font-bold text-ink">Install Houzs ERP</div>
-              <div className="mt-0.5 text-[11px] text-ink-secondary">
-                Add to your home screen for quick access and offline-friendly use.
+              <div className="text-[13.5px] font-bold text-ink">
+                安装 Houzs Century · ERP
               </div>
-              <div className="mt-2 flex items-center gap-2">
+              <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
+                装到桌面，一键打开、像原生 App 一样运行，弱网也能用。
+              </div>
+              <div className="mt-3 flex items-center gap-2">
                 <button
                   onClick={install}
-                  className="rounded-md bg-primary px-3 py-1.5 text-[11px] font-bold text-white hover:bg-primary-ink"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-[11.5px] font-bold text-white hover:bg-primary-ink"
                 >
-                  Install
+                  <Download size={14} strokeWidth={2} />
+                  安装 Install
                 </button>
                 <button
                   onClick={dismissInstall}
-                  className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-[11px] text-ink-secondary hover:text-ink"
+                  className="rounded-lg border border-border bg-surface px-3 py-2 text-[11.5px] font-semibold text-ink-secondary hover:text-ink"
                 >
-                  Not now
+                  暂不
                 </button>
               </div>
             </div>
