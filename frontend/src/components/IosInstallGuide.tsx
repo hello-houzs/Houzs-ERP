@@ -37,7 +37,7 @@ export function IosInstallGuide() {
     <div className="fixed inset-x-3 bottom-3 z-[100] mx-auto max-w-md rounded-2xl border border-border bg-surface px-[18px] py-4 shadow-slab">
       <div className="flex items-start gap-3">
         <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl bg-ink">
-          <span className="flex h-5 w-5 items-center justify-center rounded bg-accent font-display text-[12px] font-semibold text-white">
+          <span className="flex h-5 w-5 items-center justify-center rounded bg-primary font-display text-[12px] font-semibold text-white">
             H
           </span>
         </div>
