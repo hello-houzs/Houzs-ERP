@@ -1,13 +1,13 @@
 {
-  "name": "Houzs Century Operations",
+  "name": "Houzs Century · ERP",
   "short_name": "Houzs ERP",
   "description": "Houzs Century — internal operations console (Service, Projects, Trips, Suppliers).",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "theme_color": "#a16a2e",
-  "background_color": "#f5f4ee",
+  "theme_color": "#13201c",
+  "background_color": "#eef0ec",
   "categories": ["business", "productivity"],
   "lang": "en-MY",
   "icons": [
