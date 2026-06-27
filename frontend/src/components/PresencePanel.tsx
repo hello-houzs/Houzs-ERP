@@ -128,7 +128,7 @@ function Avatar({
     <div
       title={title}
       className={cn(
-        "flex items-center justify-center rounded-full bg-sidebar-active font-bold uppercase text-accent-ink shadow-[inset_0_0_0_1px_rgba(161,106,46,0.25)]",
+        "flex items-center justify-center rounded-full bg-sidebar-active font-bold uppercase text-accent-ink shadow-[inset_0_0_0_1px_rgba(22,105,95,0.25)]",
         small ? "h-6 w-6 text-[9px]" : "h-7 w-7 border-2 border-sidebar text-[10px]"
       )}
     >

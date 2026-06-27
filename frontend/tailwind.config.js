@@ -37,13 +37,17 @@ export default {
           ink: "#0c3f39", // text on primary-soft
         },
 
-        // ── Brass accent (brand only — not primary CTAs) ───
+        // ── Accent — brass retired (owner 2026-06-27 "不要黄铜了"). The
+        //    `accent` token now points at the petrol/teal family so every
+        //    legacy `*-accent*` utility reads as petrol in one change. Kept as
+        //    an alias (rather than find/replacing ~hundreds of call sites) so
+        //    the sweep is total and reversible.
         accent: {
-          DEFAULT: "#a16a2e",
-          soft: "#f3ece0",
-          bright: "#d8a85a", // gold for text on dark sidebar/headers
-          hover: "#8a5a26",
-          ink: "#5a3a14",
+          DEFAULT: "#16695f", // was brass #a16a2e → petrol
+          soft: "#e1efed", // was #f3ece0 → petrol soft
+          bright: "#7cc4b7", // was gold #d8a85a → light teal (legible on the dark sidebar/hero)
+          hover: "#0c3f39", // was #8a5a26 → petrol ink
+          ink: "#0c3f39", // was #5a3a14 → petrol ink (text on accent-soft)
         },
 
         // ── Sidebar palette (dark ink-green slab) ──────────

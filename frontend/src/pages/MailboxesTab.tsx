@@ -672,7 +672,7 @@ function EditMailboxPanel({
             checked={active}
             disabled={busy}
             onChange={(e) => setActive(e.target.checked)}
-            className="h-4 w-4 cursor-pointer accent-[#a16a2e]"
+            className="h-4 w-4 cursor-pointer accent-[#16695f]"
           />
         </label>
         <div className="text-[10px] text-ink-muted">
@@ -969,7 +969,7 @@ function AccessMatrix({
                           disabled={!editMode || busy}
                           onChange={() => toggleGrant(mb.id, u.id)}
                           aria-label={`${u.name || u.email} access to ${mb.address}`}
-                          className="h-4 w-4 cursor-pointer accent-[#a16a2e] disabled:cursor-default disabled:opacity-60"
+                          className="h-4 w-4 cursor-pointer accent-[#16695f] disabled:cursor-default disabled:opacity-60"
                         />
                       </td>
                     );

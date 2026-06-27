@@ -802,7 +802,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
                 className="group flex min-w-0 flex-1 items-center gap-2.5"
                 title="Open profile"
               >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sidebar-active text-[10px] font-bold uppercase text-accent-bright shadow-[inset_0_0_0_1px_rgba(161,106,46,0.25)] group-hover:bg-accent group-hover:text-white">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sidebar-active text-[10px] font-bold uppercase text-accent-bright shadow-[inset_0_0_0_1px_rgba(22,105,95,0.25)] group-hover:bg-accent group-hover:text-white">
                   {(user.name || user.email).slice(0, 2).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">

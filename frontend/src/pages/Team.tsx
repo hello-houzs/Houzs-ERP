@@ -757,7 +757,7 @@ function MembersTab({
                   }}
                   onChange={() => (all ? clearSelect() : selectAllFiltered())}
                   onClick={(e) => e.stopPropagation()}
-                  className="h-3.5 w-3.5 cursor-pointer accent-[#a16a2e]"
+                  className="h-3.5 w-3.5 cursor-pointer accent-[#16695f]"
                   aria-label="Select all members"
                   title="Select all"
                 />
@@ -772,7 +772,7 @@ function MembersTab({
                   checked={selectedIds.has(u.id)}
                   onChange={() => toggleSelect(u.id)}
                   onClick={(e) => e.stopPropagation()}
-                  className="h-3.5 w-3.5 cursor-pointer accent-[#a16a2e]"
+                  className="h-3.5 w-3.5 cursor-pointer accent-[#16695f]"
                   aria-label={`Select ${u.name || u.email}`}
                 />
               ),

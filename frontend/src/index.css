@@ -116,8 +116,8 @@ select.appearance-none {
 }
 select.appearance-none:hover,
 select.appearance-none:focus {
-  /* Brass #a16a2e on hover/focus — the chevron tracks the rest of the UI */
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a16a2e' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  /* Petrol #16695f on hover/focus — the chevron tracks the rest of the UI */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2316695f' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* Hide scrollbar for sidebar nav */
@@ -280,15 +280,15 @@ select.appearance-none:focus {
   animation: authDrift2 19s ease-in-out infinite;
 }
 
-/* Selection — brass tint */
+/* Selection — petrol tint */
 ::selection {
-  background: rgba(161, 106, 46, 0.22);
+  background: rgba(22, 105, 95, 0.20);
   color: #1f211d;
 }
 
-/* Focus ring — brass at low opacity, never blue browser default */
+/* Focus ring — petrol at low opacity, never blue browser default */
 *:focus-visible {
-  outline: 2px solid rgba(161, 106, 46, 0.55);
+  outline: 2px solid rgba(22, 105, 95, 0.55);
   outline-offset: 2px;
   border-radius: 6px;
 }
