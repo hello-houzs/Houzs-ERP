@@ -12,10 +12,13 @@
 // The Delivery Planning board: which live Sales Orders still need delivering,
 // bucketed into 4 DERIVED states (PENDING_DELIVERY / PENDING_SCHEDULE /
 // OVERDUE / DELIVERED) and grouped by delivery REGION — config-driven buckets
-// derived from the customer's STATE. One order can be split across TWO region
-// trips on two dates via delivery_legs (a transit leg then a final leg) — so it
-// surfaces under every leg's region tab (the leg's region maps from its warehouse
-// code) with that leg's date.
+// derived from the customer's STATE.
+//
+// NOTE: the "delivery leg" (multi-hop / dual-trip) sub-feature was REMOVED — it
+// only served the China-goods / China-PO transit flow (not in use yet) and had a
+// latent source_id bug (scm.delivery_legs.source_id is UUID NOT NULL but legs
+// were keyed by SO doc_no STRINGS). The scm.delivery_legs TABLE is left in place
+// (empty/unused) so it can be re-added later for the China-PO transit flow.
 //
 // delivery_state is DERIVED LIVE here (migration 0053 added a nullable
 // mfg_sales_orders.delivery_state / delivery_orders.delivery_state column, but
@@ -43,8 +46,7 @@
 //   to SEVERAL regions, so an order surfaces under several tabs. Both are loaded
 //   once per request (loadRegionConfig). An unmapped state falls back to the
 //   default bucket. CRUD for the config lives in the sibling route
-//   /delivery-planning-regions. Legs add a FURTHER bucket: a leg's region maps
-//   from its warehouse CODE (codeToRegion).
+//   /delivery-planning-regions.
 //
 // VIEW-TRAP (CoE): the new SO cols (delivery_state, HC fields, amend dates) are
 //   deliberately NOT in scm.mfg_sales_orders_with_payment_totals. This board
@@ -79,9 +81,7 @@ deliveryPlanning.use('*', supabaseAuth);
    union.
 
    stateToRegionsFromConfig() classifies an order's customer_state via the loaded
-   mapping (default fallback KL when unmapped). A leg's region is mapped from its
-   warehouse CODE (codeToRegion) so the dual-trip surfaces an order under a second
-   tab. */
+   mapping (default fallback KL when unmapped). */
 export type Region = string;
 
 /* The codes the fallback reproduces — used ONLY when the config tables are
@@ -197,22 +197,6 @@ function stateToRegionsFromConfig(
   return [fallback];
 }
 
-/* A leg's region bucket from its warehouse CODE (the dual-trip transit/final
-   hop). PORTED VERBATIM from 2990: SLGR + PJ → KL; PG → PENANG; SBH + SRK → EM.
-   CHINA + CONSIGN-OUT are skipped. NOTE: these returned codes ('KL'/'PENANG'/'EM')
-   are 2990's region codes and may not match the Houzs scm region seed (SELANGOR/
-   KL/NORTHERN/SOUTHERN/EAST_COAST/EAST_MY). A leg's region tab therefore only
-   matches when the owner's region set / warehouse codes align — see report. */
-function codeToRegion(code: string | null | undefined): Region | null {
-  const c = normState(code);   // upper + collapse spaces (reuse the normalizer)
-  if (c === '') return null;
-  if (c.startsWith('CHINA') || c.startsWith('CONSIGN')) return null;   // skip
-  if (c.startsWith('SLGR') || c.startsWith('PJ')) return 'KL';
-  if (c.startsWith('PG')) return 'PENANG';
-  if (c.startsWith('SBH') || c.startsWith('SRK')) return 'EM';
-  return null;   // unknown warehouse code → no leg region
-}
-
 /* ── Branding derivation (mirrors the SO list 1:1) ────────────────────────────
    The Delivery Planning Branding column must show the SAME derived value the SO
    list shows. Ported VERBATIM from 2990:
@@ -271,28 +255,12 @@ function daysBetween(fromISO: string, toISO: string | null | undefined): number 
   return Math.round((b - a) / 86_400_000);
 }
 
-/* A leg as returned to the client — surfaces an order under its region tab. */
-type LegOut = {
-  id: string;
-  source_type: 'SO' | 'DO';
-  source_id: string;
-  leg_no: number;
-  warehouse_id: string | null;
-  warehouse_code: string | null;
-  region: Region | null;     // the leg's bucket, mapped from its warehouse CODE
-  trip_id: string | null;
-  leg_date: string | null;
-  leg_kind: 'transit' | 'final';
-  notes: string | null;
-};
-
 /* ──────────────────────────────────────────────────────────────────────────
    GET /delivery-planning?region=<ALL|code>&state=<delivery_state|ALL>
    The board. Source = live (status NOT DRAFT/CANCELLED) mfg_sales_orders that
    need delivery (have a customer_delivery_date or internal_expected_dd) +
    their DOs. delivery_state derived LIVE per SO. Region classified from the
-   customer's STATE (stateToRegionsFromConfig). Legs let an order appear in a
-   SECOND bucket (mapped from the leg's warehouse code) with its own date.
+   customer's STATE (stateToRegionsFromConfig).
    ─────────────────────────────────────────────────────────────────────────*/
 deliveryPlanning.get('/', async (c) => {
   const sb = c.get('supabase');
@@ -306,8 +274,8 @@ deliveryPlanning.get('/', async (c) => {
         (the tabs) + each order's region(s) derive from this. */
   const regionCfg = await loadRegionConfig(sb);
 
-  /* 1. Warehouse master → code + name maps (read-only label lookup + the
-        leg-region mapping, which keys off the warehouse CODE). */
+  /* 1. Warehouse master → code + name maps (read-only label lookup for the
+        Warehouse column). */
   const { data: whRows, error: whErr } = await sb
     .from('warehouses')
     .select('id, code, name');
@@ -319,9 +287,6 @@ deliveryPlanning.get('/', async (c) => {
     whCode.set(w.id, code);
     whName.set(w.id, w.name ?? code);
   }
-  /* A leg's region maps from its warehouse CODE (null = no region / skipped). */
-  const regionForWarehouse = (id: string | null | undefined): Region | null =>
-    id ? codeToRegion(whCode.get(id)) : null;
 
   /* 2. Live SO headers needing delivery — NOT DRAFT / CANCELLED, and carrying a
         delivery date signal (customer_delivery_date or internal_expected_dd).
@@ -597,49 +562,12 @@ deliveryPlanning.get('/', async (c) => {
     }
   }
 
-  /* 6. Legs for these SOs — let one order surface in TWO region tabs/dates.
-        NOTE (port caveat): delivery_legs.source_id is UUID NOT NULL in the live
-        scm schema (migration 0053), but this query — like 2990's — filters it
-        with SO doc_no STRINGS. Ported 1:1; the read swallows any error and
-        yields no legs. See report for the source_id type mismatch. */
-  const legsByDoc = new Map<string, LegOut[]>();
-  {
-    const { data: legRows } = await paginateAll<{
-      id: string; source_type: string; source_id: string; leg_no: number;
-      warehouse_id: string | null; trip_id: string | null; leg_date: string | null;
-      leg_kind: string; notes: string | null;
-    }>((from, to) =>
-      sb.from('delivery_legs')
-        .select('id, source_type, source_id, leg_no, warehouse_id, trip_id, leg_date, leg_kind, notes')
-        .eq('source_type', 'SO')
-        .in('source_id', docNos)
-        .order('leg_no', { ascending: true })
-        .range(from, to),
-    );
-    for (const lg of (legRows ?? [])) {
-      const dn = lg.source_id;
-      const arr = legsByDoc.get(dn) ?? [];
-      arr.push({
-        id: lg.id,
-        source_type: lg.source_type === 'DO' ? 'DO' : 'SO',
-        source_id: lg.source_id,
-        leg_no: Number(lg.leg_no ?? 1),
-        warehouse_id: lg.warehouse_id,
-        warehouse_code: lg.warehouse_id ? (whCode.get(lg.warehouse_id) ?? null) : null,
-        region: regionForWarehouse(lg.warehouse_id),
-        trip_id: lg.trip_id,
-        leg_date: lg.leg_date,
-        leg_kind: lg.leg_kind === 'transit' ? 'transit' : 'final',
-        notes: lg.notes,
-      });
-    }
-  }
+  /* 6. (removed) delivery_legs read — the multi-hop / dual-trip "leg" feature was
+        removed (China-PO transit flow, not in use yet; re-add later). The
+        scm.delivery_legs table stays in place but is no longer read here. */
 
   /* 7. Assemble one board row per SO with its derived state + region. An SO's
-        "home" bucket = stateToRegionsFromConfig(customer_state, customer_country).
-        Legged orders ALSO carry each leg's bucket (mapped from the leg's
-        warehouse code) so the UI can place the same order under two tabs with two
-        dates. */
+        "home" bucket = stateToRegionsFromConfig(customer_state, customer_country). */
   const orders = soRows.map((r) => {
     const docNo = String(r.doc_no ?? '');
     /* Branding — derived 1:1 with the SO list (never the empty header field).
@@ -693,14 +621,10 @@ deliveryPlanning.get('/', async (c) => {
     }
 
     /* Region(s) for this SO = its customer-STATE bucket(s) from the config
-       mapping (a state can map to MANY). Legs add a FURTHER bucket (mapped from
-       each leg's warehouse code) so a legged order surfaces under its state
-       buckets AND its transit bucket. primaryRegion = the first mapped bucket. */
+       mapping (a state can map to MANY). primaryRegion = the first mapped bucket. */
     const stateRegions = stateToRegionsFromConfig(regionCfg, r.customer_state, r.customer_country);
     const primaryRegion = stateRegions[0] ?? FALLBACK_DEFAULT_REGION;
     const regionSet = new Set<Region>(stateRegions);
-    const legs = legsByDoc.get(docNo) ?? [];
-    for (const lg of legs) if (lg.region) regionSet.add(lg.region);
 
     const dos = doByDoc.get(docNo) ?? [];
     const crew = dos.length > 0 ? (crewByDo.get(dos[dos.length - 1]!.id) ?? null) : null;
@@ -766,8 +690,8 @@ deliveryPlanning.get('/', async (c) => {
       stock_status: readiness.isFullyReady ? 'READY' : readyToShip ? 'READY (PARTIAL)' : 'PENDING',
       stock_remark: readiness.stockRemark,
       is_main_ready: readiness.isMainReady,
-      // region(s): the customer-state bucket (primary) + any leg buckets; plus
-      // the warehouse label (kept for the Warehouse column, not the region).
+      // region(s): the customer-state bucket(s); plus the warehouse label (kept
+      // for the Warehouse column, not the region).
       region: primaryRegion,
       regions: [...regionSet],
       warehouse_id: primaryWh,
@@ -780,8 +704,6 @@ deliveryPlanning.get('/', async (c) => {
       // crew (from the latest DO) + the DOs themselves
       crew,
       delivery_orders: dos.map((d) => ({ id: d.id, do_number: d.doNumber, status: d.status })),
-      // legs — the dual-trip; each carries its own region + date
-      legs,
     };
   });
 
@@ -802,10 +724,10 @@ deliveryPlanning.get('/', async (c) => {
 });
 
 /* Region match: ALL → everything; else a configured region code → orders whose
-   region set (customer-state buckets + leg buckets) includes it. validCodes is
-   the active region master from the config; an unknown param is a defensive
-   no-op (so an old bookmarked tab never empties the board). The frontend tabs
-   send ALL | <any configured region code>. */
+   region set (customer-state buckets) includes it. validCodes is the active
+   region master from the config; an unknown param is a defensive no-op (so an
+   old bookmarked tab never empties the board). The frontend tabs send
+   ALL | <any configured region code>. */
 function matchesRegion(
   o: { regions: Region[] },
   regionParam: string,
@@ -822,106 +744,9 @@ function emptyCounts(): Record<'ALL' | DeliveryState, number> {
   return { ALL: 0, PENDING_DELIVERY: 0, PENDING_SCHEDULE: 0, OVERDUE: 0, DELIVERED: 0 };
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   LEGS CRUD — the dual-trip. A leg = (SO/DO) × region warehouse × date × kind.
-   Adding a transit leg (date A) + a final leg (date B) makes one order appear
-   under TWO region tabs with two dates.
-   ─────────────────────────────────────────────────────────────────────────*/
-const LEG_COLS =
-  'id, source_type, source_id, leg_no, warehouse_id, trip_id, leg_date, leg_kind, notes, created_at, updated_at';
-
-const legCreateSchema = z.object({
-  sourceType: z.enum(['SO', 'DO']).default('SO'),
-  sourceId: z.string().min(1),          // SO doc_no or DO id
-  legNo: z.number().int().positive().optional(),
-  warehouseId: z.string().uuid().nullable().optional(),
-  tripId: z.string().uuid().nullable().optional(),
-  legDate: z.string().nullable().optional(),    // YYYY-MM-DD
-  legKind: z.enum(['transit', 'final']).default('final'),
-  notes: z.string().nullable().optional(),
-});
-
-deliveryPlanning.post('/legs', async (c) => {
-  let body: unknown;
-  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
-  const parsed = legCreateSchema.safeParse(body);
-  if (!parsed.success) return c.json({ error: 'invalid_body', reason: parsed.error.message }, 400);
-  const p = parsed.data;
-  const sb = c.get('supabase');
-  const user = c.get('user');
-
-  /* Next leg_no for this order if the caller didn't pin one (1 = first hop).
-     The UNIQUE(source_type, source_id, leg_no) constraint keeps legs ordered. */
-  let legNo = p.legNo ?? null;
-  if (legNo == null) {
-    const { data: existing } = await sb.from('delivery_legs')
-      .select('leg_no').eq('source_type', p.sourceType).eq('source_id', p.sourceId);
-    const max = ((existing ?? []) as Array<{ leg_no: number | null }>)
-      .reduce((m, r) => Math.max(m, Number(r.leg_no ?? 0)), 0);
-    legNo = max + 1;
-  }
-
-  const { data, error } = await sb.from('delivery_legs').insert({
-    source_type: p.sourceType,
-    source_id: p.sourceId,
-    leg_no: legNo,
-    warehouse_id: p.warehouseId ?? null,
-    trip_id: p.tripId ?? null,
-    leg_date: p.legDate ?? null,
-    leg_kind: p.legKind,
-    notes: p.notes ?? null,
-    created_by: (user as { id?: string } | null)?.id ?? null,
-  }).select(LEG_COLS).single();
-  if (error) {
-    if (error.code === '23505') return c.json({ error: 'duplicate_leg', reason: 'A leg with that number already exists for this order.' }, 409);
-    if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
-    return c.json({ error: 'insert_failed', reason: error.message }, 500);
-  }
-  return c.json({ leg: data }, 201);
-});
-
-const legPatchSchema = z.object({
-  warehouseId: z.string().uuid().nullable().optional(),
-  tripId: z.string().uuid().nullable().optional(),
-  legDate: z.string().nullable().optional(),
-  legKind: z.enum(['transit', 'final']).optional(),
-  legNo: z.number().int().positive().optional(),
-  notes: z.string().nullable().optional(),
-});
-
-deliveryPlanning.patch('/legs/:id', async (c) => {
-  const id = c.req.param('id');
-  let body: unknown;
-  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
-  const parsed = legPatchSchema.safeParse(body);
-  if (!parsed.success) return c.json({ error: 'invalid_body', reason: parsed.error.message }, 400);
-  const p = parsed.data;
-
-  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
-  if (p.warehouseId !== undefined) updates.warehouse_id = p.warehouseId;
-  if (p.tripId !== undefined) updates.trip_id = p.tripId;
-  if (p.legDate !== undefined) updates.leg_date = p.legDate;
-  if (p.legKind !== undefined) updates.leg_kind = p.legKind;
-  if (p.legNo !== undefined) updates.leg_no = p.legNo;
-  if (p.notes !== undefined) updates.notes = p.notes;
-  if (Object.keys(updates).length === 1) return c.json({ error: 'no_changes' }, 400);
-
-  const sb = c.get('supabase');
-  const { data, error } = await sb.from('delivery_legs').update(updates).eq('id', id).select(LEG_COLS).single();
-  if (error) {
-    if (error.code === '23505') return c.json({ error: 'duplicate_leg' }, 409);
-    return c.json({ error: 'update_failed', reason: error.message }, 500);
-  }
-  return c.json({ leg: data });
-});
-
-deliveryPlanning.delete('/legs/:id', async (c) => {
-  const id = c.req.param('id');
-  const sb = c.get('supabase');
-  const { error } = await sb.from('delivery_legs').delete().eq('id', id);
-  if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
-  return c.json({ ok: true });
-});
+/* LEGS CRUD (POST/PATCH/DELETE /legs) was REMOVED along with the rest of the
+   "delivery leg" (multi-hop / dual-trip) sub-feature — China-PO transit flow,
+   not in use yet; re-add later. scm.delivery_legs is left in place (unused). */
 
 /* ──────────────────────────────────────────────────────────────────────────
    PATCH /delivery-planning/:type/:id/fields — set the HC delivery-sheet raw-data
@@ -1085,13 +910,13 @@ const scheduleSchema = z.object({
   // Scheduling an order onto a trip. Either tripId (append to an existing trip)
   // OR {lorryId, driverId, tripDate?} (find-or-create a trip for that lorry+date).
   // When given, a trip_stops row (stop_type DELIVERY, do_id/so_id, revenue from
-  // the DO/SO local_total_centi) is created and the matching delivery_leg's
-  // trip_id is set. With no trip info, behaviour is unchanged (date only).
+  // the DO/SO local_total_centi) is created. With no trip info, behaviour is
+  // unchanged (date only).
   tripId: z.string().uuid().nullable().optional(),
   lorryId: z.string().uuid().nullable().optional(),
   driverId: z.string().uuid().nullable().optional(),
   tripDate: z.string().nullable().optional(),       // trip date if creating (defaults to scheduleDate)
-  warehouseId: z.string().uuid().nullable().optional(),  // trip origin region (defaults from leg)
+  warehouseId: z.string().uuid().nullable().optional(),  // trip origin region (defaults from the DO warehouse)
 });
 
 /* is_outsourced derives from the lorry's is_internal (NOT is_internal). */
@@ -1163,7 +988,7 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
   }
   if (!data) return c.json({ error: 'not_found' }, 404);
 
-  // ── Trip wiring — find-or-create a trip, append a stop, link leg.
+  // ── Trip wiring — find-or-create a trip, append a stop.
   let trip: { id: string; trip_no: string } | null = null;
   if (wantsTrip) {
     trip = await scheduleOntoTrip(c, sb, type, id, p);
@@ -1173,12 +998,12 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
 });
 
 /* ──────────────────────────────────────────────────────────────────────────
-   scheduleOntoTrip — the trip integration. Find-or-create the trip, append a
-   DELIVERY trip_stop for this order (revenue from the DO/SO local_total_centi),
-   and set the matching delivery_leg's trip_id. Idempotent on re-schedule: an
-   existing stop for the same (trip, do_id|so_id) is reused, not duplicated.
-   Best-effort — a wiring failure does not fail the (already-committed) header
-   schedule; it returns null and the date still stands.
+   scheduleOntoTrip — the trip integration. Find-or-create the trip and append a
+   DELIVERY trip_stop for this order (revenue from the DO/SO local_total_centi).
+   Idempotent on re-schedule: an existing stop for the same (trip, do_id|so_id)
+   is reused, not duplicated. Best-effort — a wiring failure does not fail the
+   (already-committed) header schedule; it returns null and the date still stands.
+   (The delivery_leg trip-linking step was removed with the leg feature.)
    ─────────────────────────────────────────────────────────────────────────*/
 async function scheduleOntoTrip(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1200,7 +1025,7 @@ async function scheduleOntoTrip(
     let revenueCenti = 0;
     let customerName: string | null = null;
     let address: string | null = null;
-    let legWarehouseId: string | null = p.warehouseId ?? null;
+    let tripWarehouseId: string | null = p.warehouseId ?? null;
 
     if (type === 'do') {
       doId = id;
@@ -1211,7 +1036,7 @@ async function scheduleOntoTrip(
         revenueCenti = Number((r.localTotalCenti ?? r.local_total_centi) ?? 0);
         customerName = (r.debtorName ?? r.debtor_name ?? null) as string | null;
         address = [r.address1, r.address2].filter(Boolean).join(', ') || null;
-        if (!legWarehouseId) legWarehouseId = (r.warehouseId ?? r.warehouse_id ?? null) as string | null;
+        if (!tripWarehouseId) tripWarehouseId = (r.warehouseId ?? r.warehouse_id ?? null) as string | null;
       }
     } else {
       soDocNo = id;
@@ -1246,7 +1071,7 @@ async function scheduleOntoTrip(
         trip_date:     tripDate,
         lorry_id:      p.lorryId,
         driver_id:     p.driverId ?? null,
-        warehouse_id:  legWarehouseId,
+        warehouse_id:  tripWarehouseId,
         trip_type:     'DELIVERY',
         status:        'PLANNED',
         is_outsourced: isOutsourced,
@@ -1280,34 +1105,8 @@ async function scheduleOntoTrip(
       });
     }
 
-    /* Set the matching delivery_leg's trip_id. The leg keys off the SO doc_no
-       (source_type 'SO') — pick the final leg matching the trip's warehouse, else
-       the first leg, else create a leg so the order surfaces under the trip.
-       NOTE (port caveat): delivery_legs.source_id is UUID in the live scm schema
-       but a SO leg is keyed by doc_no here (ported 1:1 from 2990 — see report). */
-    const legSourceId = type === 'so' ? (soDocNo ?? id) : (doId ?? id);
-    const legSourceType = type === 'so' ? 'SO' : 'DO';
-    const { data: legs } = await sb.from('delivery_legs').select('id, warehouse_id, leg_no')
-      .eq('source_type', legSourceType).eq('source_id', legSourceId).order('leg_no', { ascending: true });
-    const legRows = (legs ?? []) as Array<{ id: string; warehouse_id?: string | null; warehouseId?: string | null; leg_no?: number }>;
-    const targetLeg = legWarehouseId
-      ? legRows.find((l) => (l.warehouseId ?? l.warehouse_id) === legWarehouseId)
-      : null;
-    const leg = targetLeg ?? legRows[0] ?? null;
-    if (leg) {
-      await sb.from('delivery_legs').update({ trip_id: tripIdStr, updated_at: new Date().toISOString() }).eq('id', leg.id);
-    } else {
-      await sb.from('delivery_legs').insert({
-        source_type: legSourceType,
-        source_id:   legSourceId,
-        leg_no:      1,
-        warehouse_id: legWarehouseId,
-        trip_id:     tripIdStr,
-        leg_date:    tripDate,
-        leg_kind:    'final',
-        created_by:  user?.id ?? null,
-      });
-    }
+    /* (removed) delivery_leg trip-linking — the leg feature was removed; the
+       order surfaces on the trip via its trip_stops row above. */
 
     /* Echo the trip_no for the response. */
     const { data: tNo } = await sb.from('trips').select('id, trip_no').eq('id', tripIdStr).maybeSingle();

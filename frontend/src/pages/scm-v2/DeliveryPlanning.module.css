@@ -139,21 +139,3 @@
 .daysSoon     { color: var(--c-burnt); font-weight: 700; }
 .daysOk       { color: var(--c-ink); }
 
-/* A small "split / legged" marker shown next to an order that has delivery
-   legs (it appears under more than one region with two dates). */
-.legBadge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  margin-left: 6px;
-  padding: 0 6px;
-  height: 16px;
-  border-radius: var(--radius-pill);
-  background: rgba(47, 93, 79, 0.10);
-  color: var(--c-secondary-a);
-  font-family: var(--font-button);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}

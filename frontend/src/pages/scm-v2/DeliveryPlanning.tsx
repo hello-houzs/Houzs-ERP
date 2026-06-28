@@ -7,14 +7,15 @@
 // FIXED buckets classified by customer STATE (All · KL · Penang · EM · SG).
 // Both the active state tab and the active region (bucket key) live in the URL
 // (useSearchParams) so a link / refresh keeps the view. The HC-sheet columns
-// render in the shared DataGrid; the delivery state shows as an inline pill, and
-// a legged order (one with delivery_legs) surfaces under each of its leg buckets
-// (mapped from the leg's warehouse code) with that leg's date.
+// render in the shared DataGrid; the delivery state shows as an inline pill.
 //
-// Backend-derived: delivery_state, region grouping, readiness, crew, legs, and
+// NOTE: the "delivery leg" (multi-hop / dual-trip) sub-feature was REMOVED —
+// China-PO transit flow, not in use yet; re-add later.
+//
+// Backend-derived: delivery_state, region grouping, readiness, crew, and
 // days_left all come from GET /delivery-planning — this page only filters by
-// the active state/region and renders. Schedule + leg editing call the
-// PATCH/POST endpoints via the queries hook.
+// the active state/region and renders. Schedule editing calls the PATCH
+// endpoints via the queries hook.
 //
 // Style: 2990 cream brand (CSS modules + design-system). Singapore region is
 // visually distinct (dashed teal chip + a teal row accent).
@@ -29,7 +30,7 @@
 
 import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Split, MapPinned, Truck } from 'lucide-react';
+import { MapPinned, Truck } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { fmtCenti, fmtDateOrDash, fmtDateTime, buildVariantSummary } from '@2990s/shared';
 import { formatPhone } from '@2990s/shared/phone';
@@ -358,27 +359,12 @@ export const DeliveryPlanning = () => {
     [allOrders, activeState],
   );
 
-  /* For a legged order under a specific region bucket, surface THAT leg's date
-     as the row's planned date. Helper: pick the leg whose bucket == the active
-     region so the same order shows its transit date in KL and its final date in
-     Penang/EM. (No SG warehouse exists, so SG never matches a leg.) */
-  const legDateForRegion = (o: PlanningOrder): string | null => {
-    if (activeRegion === 'ALL' || o.legs.length === 0) return null;
-    const leg = o.legs.find((l) => l.region === activeRegion);
-    return leg?.leg_date ?? null;
-  };
-
   const columns = useMemo<DataGridColumn<PlanningOrder>[]>(() => [
     {
       key: 'so_doc_no', label: 'SO No.', width: 150, sortable: true,
       accessor: (o) => (
         <span style={{ display: 'inline-flex', alignItems: 'center', fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>
           {o.so_doc_no}
-          {o.legs.length > 0 && (
-            <span className={styles.legBadge} title={`${o.legs.length} delivery legs (multi-region trip)`}>
-              <Split size={9} strokeWidth={2} />{o.legs.length}
-            </span>
-          )}
         </span>
       ),
       searchValue: (o) => o.so_doc_no,
@@ -481,17 +467,11 @@ export const DeliveryPlanning = () => {
     },
     {
       key: 'customer_delivery_date', label: 'Delivery Date', width: 130, sortable: true,
-      accessor: (o) => {
-        const legDate = legDateForRegion(o);
-        return (
-          <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-            {fmtDateOrDash(legDate ?? o.customer_delivery_date)}
-            {legDate && legDate !== o.customer_delivery_date && (
-              <span style={{ marginLeft: 4, fontSize: 'var(--fs-10)', color: 'var(--c-secondary-a)' }}>(leg)</span>
-            )}
-          </span>
-        );
-      },
+      accessor: (o) => (
+        <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+          {fmtDateOrDash(o.customer_delivery_date)}
+        </span>
+      ),
       searchValue: (o) => o.customer_delivery_date ?? '',
       sortFn: (a, b) => String(a.customer_delivery_date ?? '').localeCompare(String(b.customer_delivery_date ?? '')),
       filterType: 'date', dateValue: (o) => o.customer_delivery_date,
@@ -679,9 +659,9 @@ export const DeliveryPlanning = () => {
       sortFn: (a, b) => String(a.do_date ?? '').localeCompare(String(b.do_date ?? '')),
       filterType: 'date', dateValue: (o) => o.do_date,
     },
-  // legDateForRegion + the EM/SG cross-border default-show (isEmSg) depend on
-  // activeRegion → recompute the columns on region change. regionLabel feeds the
-  // Region column's display labels (from the config master).
+  // The EM/SG cross-border default-show (isEmSg) depends on activeRegion →
+  // recompute the columns on region change. regionLabel feeds the Region column's
+  // display labels (from the config master).
   ], [activeRegion, regionLabel]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (

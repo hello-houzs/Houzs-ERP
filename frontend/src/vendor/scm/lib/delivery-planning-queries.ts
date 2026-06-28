@@ -1,9 +1,12 @@
 // Vendored from apps/backend/src/lib/delivery-planning-queries.ts — Delivery
 // Planning queries (STAGE 4 of the Delivery / TMS module). Reads the planning
-// board (GET /delivery-planning) + manages delivery_legs (the dual-trip) and
-// the per-doc schedule date. Cloned from the drivers / lorries query pattern
-// (TanStack Query + authedFetch). Rows are snake_case as the API emits them;
-// consumers dual-read camelCase where the pg driver would camelCase a column.
+// board (GET /delivery-planning) + the per-doc schedule date. Cloned from the
+// drivers / lorries query pattern (TanStack Query + authedFetch). Rows are
+// snake_case as the API emits them; consumers dual-read camelCase where the pg
+// driver would camelCase a column.
+//
+// NOTE: the "delivery leg" (multi-hop / dual-trip) hooks were REMOVED — China-PO
+// transit flow, not in use yet; re-add later.
 //
 // HOUZS VENDOR NOTE: the source has NO `import { supabase } from './supabase'`
 // to drop (it only used authedFetch). Everything else is copied verbatim.
@@ -30,22 +33,6 @@ export const DELIVERY_STATE_LABEL: Record<DeliveryState, string> = {
 // (not a fixed union). 'ALL' is the no-filter param; the rest are bucket codes.
 export type RegionCode = string;
 export type RegionKey = 'ALL' | RegionCode;
-
-export type DeliveryLeg = {
-  id: string;
-  source_type: 'SO' | 'DO';
-  source_id: string;
-  leg_no: number;
-  warehouse_id: string | null;
-  warehouse_code: string | null;
-  // The leg's region bucket, mapped from its TRANSIT/FINAL warehouse code
-  // (SLGR/PJ→KL, PG→PENANG, SBH/SRK→EM; CHINA/CONSIGN-OUT → null/skip).
-  region: RegionCode | null;
-  trip_id: string | null;
-  leg_date: string | null;
-  leg_kind: 'transit' | 'final';
-  notes: string | null;
-};
 
 export type PlanningOrder = {
   so_doc_no: string;
@@ -120,7 +107,6 @@ export type PlanningOrder = {
     lorry_plate: string | null;
   } | null;
   delivery_orders: Array<{ id: string; do_number: string; status: string }>;
-  legs: DeliveryLeg[];
 };
 
 export type PlanningCounts = Record<'ALL' | DeliveryState, number>;
@@ -147,48 +133,6 @@ export function useDeliveryPlanning(opts: { region?: string; state?: string }) {
       return authedFetch<PlanningResponse>(`/delivery-planning${qs ? `?${qs}` : ''}`);
     },
     staleTime: 30_000,
-  });
-}
-
-export type NewLeg = {
-  sourceType?: 'SO' | 'DO';
-  sourceId: string;             // SO doc_no or DO id
-  legNo?: number;
-  warehouseId?: string | null;
-  tripId?: string | null;
-  legDate?: string | null;      // YYYY-MM-DD
-  legKind?: 'transit' | 'final';
-  notes?: string | null;
-};
-
-export function useCreateLeg() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: NewLeg) =>
-      authedFetch<{ leg: DeliveryLeg }>(`/delivery-planning/legs`, {
-        method: 'POST', body: JSON.stringify(body),
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['delivery-planning'] }),
-  });
-}
-
-export function useUpdateLeg() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, ...body }: Partial<Omit<NewLeg, 'sourceType' | 'sourceId'>> & { id: string }) =>
-      authedFetch<{ leg: DeliveryLeg }>(`/delivery-planning/legs/${id}`, {
-        method: 'PATCH', body: JSON.stringify(body),
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['delivery-planning'] }),
-  });
-}
-
-export function useDeleteLeg() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) =>
-      authedFetch<{ ok: true }>(`/delivery-planning/legs/${id}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['delivery-planning'] }),
   });
 }
 
