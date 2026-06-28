@@ -170,11 +170,11 @@ interface ProjectDetail {
     dismantle_end_at: string | null;
     setup_driver_user_id: number | null;
     setup_driver_name: string | null;
-    setup_lorry_id: number | null;
+    setup_lorry_id: string | null;
     setup_lorry_plate: string | null;
     dismantle_driver_user_id: number | null;
     dismantle_driver_name: string | null;
-    dismantle_lorry_id: number | null;
+    dismantle_lorry_id: string | null;
     dismantle_lorry_plate: string | null;
     // Phase helper crew (mig 083)
     setup_helper_1_id: number | null;
@@ -8233,8 +8233,8 @@ function LogisticsCrewSection({
   useEffect(() => {
     api.get<{ data: CrewMember[] }>("/api/fleet/staff").then((r) => setCrew(r.data ?? [])).catch(() => {});
     api
-      .get<{ data: { plate: string }[] }>("/api/lorries")
-      .then((r) => setLorryOptions((r.data ?? []).map((l) => l.plate).filter(Boolean)))
+      .get<{ lorries: { plate: string }[] }>("/api/scm/lorries")
+      .then((r) => setLorryOptions((r.lorries ?? []).map((l) => l.plate).filter(Boolean)))
       .catch(() => {});
   }, []);
   const isType = (u: CrewMember, kind: string) =>
@@ -8291,7 +8291,8 @@ function LogisticsScheduleSection({
   patch: (body: Record<string, any>) => Promise<void>;
 }) {
   const [crew, setCrew] = useState<CrewMember[]>([]);
-  const [lorries, setLorries] = useState<{ id: number; plate: string; size: string | null }[]>([]);
+  // Lorries from scm.lorries (UUID id, type enum replaces the old `size` text).
+  const [lorries, setLorries] = useState<{ id: string; plate: string; type: string | null }[]>([]);
   // /api/fleet/staff filters server-side by role.name IN ('Driver','Helper');
   // user_type is a parallel column that isn't always populated, so we
   // discriminate on role_name (the field the server already filters on).
@@ -8307,8 +8308,8 @@ function LogisticsScheduleSection({
       .then((r) => setCrew(r.data ?? []))
       .catch(() => {});
     api
-      .get<{ data: { id: number; plate: string; size: string | null }[] }>("/api/lorries")
-      .then((r) => setLorries(r.data ?? []))
+      .get<{ lorries: { id: string; plate: string; type: string | null }[] }>("/api/scm/lorries")
+      .then((r) => setLorries(r.lorries ?? []))
       .catch(() => {});
   }, []);
 
@@ -8379,7 +8380,7 @@ function LogisticsScheduleSection({
             value={project.setup_lorry_id ?? ""}
             onChange={(e) =>
               patch({
-                setup_lorry_id: e.target.value ? parseInt(e.target.value, 10) : null,
+                setup_lorry_id: e.target.value || null,
               })
             }
           >
@@ -8387,7 +8388,7 @@ function LogisticsScheduleSection({
             {lorries.map((l) => (
               <option key={l.id} value={l.id}>
                 {l.plate}
-                {l.size && ` · ${l.size}`}
+                {l.type && ` · ${l.type}`}
               </option>
             ))}
           </select>
@@ -8465,7 +8466,7 @@ function LogisticsScheduleSection({
             value={project.dismantle_lorry_id ?? ""}
             onChange={(e) =>
               patch({
-                dismantle_lorry_id: e.target.value ? parseInt(e.target.value, 10) : null,
+                dismantle_lorry_id: e.target.value || null,
               })
             }
           >
@@ -8473,7 +8474,7 @@ function LogisticsScheduleSection({
             {lorries.map((l) => (
               <option key={l.id} value={l.id}>
                 {l.plate}
-                {l.size && ` · ${l.size}`}
+                {l.type && ` · ${l.type}`}
               </option>
             ))}
           </select>

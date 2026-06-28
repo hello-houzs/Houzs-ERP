@@ -35,7 +35,11 @@ import sales from "./routes/sales";
 import finance from "./routes/finance";
 import stockItems from "./routes/stockItems";
 import fleet from "./routes/fleet";
-import lorries from "./routes/lorries";
+// `routes/lorries.ts` removed 2026-06-28 — old Houzs Fleet lorries CRUD retired
+// in favour of scm.lorries (mounted at /api/scm/lorries). public.lorries data
+// was migrated by mig 0055 then the dead table dropped. /api/fleet/staff stays
+// — it reads public.users by role for the project Setup/Dismantle crew picker
+// (distinct from the new SCM TMS crew records).
 import settings from "./routes/settings";
 import branding from "./routes/branding";
 import inbox from "./routes/inbox";
@@ -142,7 +146,6 @@ app.route("/api/sales", sales);
 app.route("/api/finance", finance);
 app.route("/api/stockitems", stockItems);
 app.route("/api/fleet", fleet);
-app.route("/api/lorries", lorries);
 app.route("/api/settings", settings);
 app.route("/api/branding", branding);
 app.route("/api/inbox", inbox);
