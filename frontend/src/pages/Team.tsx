@@ -22,6 +22,7 @@ import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { relativeTime, cn } from "../lib/utils";
 import type { TeamMember, Invitation, Role, Department, Position } from "../types";
+import { MemberOrgPerformance } from "./team/MemberOrgPerformance";
 import { RolesTab } from "./Roles";
 import { PositionsTab } from "./Positions";
 import { MailboxesTab } from "./MailboxesTab";
@@ -1598,6 +1599,20 @@ function MemberDetail({
     topRef.current?.scrollIntoView({ block: "start", behavior: "auto" });
   }, [user.id]);
 
+  /* Tab state · ?view=overview (default) | ?view=org-performance. URL-state
+     so a deep-link or refresh lands on the right tab; the existing default
+     (no query string) still lands on Overview. Brands & Commission stays on
+     the side-drawer (onEditBrands) — not promoted to a tab. */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const view: "overview" | "org-performance" =
+    searchParams.get("view") === "org-performance" ? "org-performance" : "overview";
+  const setView = (next: "overview" | "org-performance") => {
+    const sp = new URLSearchParams(searchParams);
+    if (next === "overview") sp.delete("view");
+    else sp.set("view", next);
+    setSearchParams(sp, { replace: true });
+  };
+
   return (
     <div ref={topRef}>
       <button
@@ -1608,6 +1623,58 @@ function MemberDetail({
         <ArrowLeft size={14} /> Back to members
       </button>
 
+      {/* Tab strip — Overview / Org & Performance. Brands & Commission stays a side-drawer. */}
+      <div className="mb-4 flex items-center gap-1 border-b border-border" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "overview"}
+          onClick={() => setView("overview")}
+          className={cn(
+            "px-3 py-2 text-[12.5px] font-semibold transition-colors",
+            view === "overview"
+              ? "text-primary shadow-[inset_0_-2px_0_var(--tw-color-primary,#16695f)]"
+              : "text-ink-muted hover:text-ink",
+          )}
+          style={
+            view === "overview"
+              ? { boxShadow: "inset 0 -2px 0 #16695f" }
+              : undefined
+          }
+        >
+          Overview
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "org-performance"}
+          onClick={() => setView("org-performance")}
+          className={cn(
+            "px-3 py-2 text-[12.5px] font-semibold transition-colors",
+            view === "org-performance"
+              ? "text-primary"
+              : "text-ink-muted hover:text-ink",
+          )}
+          style={
+            view === "org-performance"
+              ? { boxShadow: "inset 0 -2px 0 #16695f" }
+              : undefined
+          }
+        >
+          Org &amp; Performance
+        </button>
+      </div>
+
+      {view === "org-performance" && (
+        <MemberOrgPerformance
+          user={user}
+          members={members}
+          posName={posName}
+          onOpenMember={onOpenMember}
+        />
+      )}
+
+      {view === "overview" && (
       <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
         {/* Profile card */}
         <div className="self-start rounded-lg border border-border bg-surface p-5 shadow-stone">
@@ -1845,6 +1912,7 @@ function MemberDetail({
           </DetailCol>
         </div>
       </div>
+      )}
     </div>
   );
 }
