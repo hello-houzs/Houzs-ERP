@@ -89,6 +89,7 @@ const ScmSalesOrderMaintenanceV2 = lazy(() => import("./pages/scm-v2/SalesOrderM
 const ScmSalesOrderNewV2 = lazy(() => import("./pages/scm-v2/SalesOrderNew").then((m) => ({ default: m.SalesOrderNew })));
 const ScmSalesOrderNewGuidedV2 = lazy(() => import("./pages/scm-v2/SalesOrderNewGuided").then((m) => ({ default: m.SalesOrderNewGuided })));
 const ScmSalesOrderNewFromProductsV2 = lazy(() => import("./pages/scm-v2/SalesOrderNewFromProducts").then((m) => ({ default: m.SalesOrderNewFromProducts })));
+const ScmCategoriesV2 = lazy(() => import("./pages/scm-v2/Categories").then((m) => ({ default: m.Categories })));
 const ScmSoFromProductsV2 = lazy(() => import("./pages/scm-v2/SoFromProducts").then((m) => ({ default: m.SoFromProducts })));
 const ScmSalesOrderDetailV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetail").then((m) => ({ default: m.SalesOrderDetail })));
 const ScmSoDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetailListing").then((m) => ({ default: m.SalesOrderDetailListing })));
@@ -302,6 +303,7 @@ export default function App() {
         <Route path="/scm/fabric-tracking" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmFabricTrackingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/warehouses" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmWarehousesV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/products" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmProductsV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/categories" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmCategoriesV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/product-models" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmProductModelsV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/product-models/:id" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmProductModelDetailV2 /></Scm2990Shell></ScmGuard>} />
         {/* TEMP — vendored 2990's GRN + Purchase Invoice pages (wave 3), parallel

@@ -37,6 +37,7 @@ import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
+import { PhotoGallery as ProductModelPhotoGallery } from '../../components/scm-v2/PhotoGallery';
 
 // Staff #5 — reuse the proven multi-supplier assign dialog from the Models list,
 // scoped to this single model, so an operator can bind suppliers to an EXISTING
@@ -472,6 +473,16 @@ export const ProductModelDetail = ({
           </div>
         </div>
       </section>
+
+      {/* Photo gallery (multi-photo) — wires to the EXPECTED gallery endpoint
+          (POST/GET/DELETE/PATCH /product-models/:id/photos). Renders the
+          "Not yet wired · Setup notes" state until BACKEND-CHECKLIST A1 lands.
+          The legacy single photo above is unaffected. */}
+      {id && (
+        <section className={styles.card} style={{ padding: 0 }}>
+          <ProductModelPhotoGallery modelId={id} modelName={model.name} />
+        </section>
+      )}
 
       {/* Allowed options ------------------------------------------------ */}
       <section className={styles.card}>
