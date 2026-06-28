@@ -1,0 +1,374 @@
+// ----------------------------------------------------------------------------
+// /trips — the TRIPS scheduling layer (Delivery / TMS Stage 5A).
+//
+// A trip is a scheduled lorry-day: one lorry + a primary driver (+ up to 2
+// helpers) leaving an origin warehouse on a date, carrying an ordered list of
+// trip_stops. Each stop links a DO (or an SO before a DO is cut) with a
+// stop_type and the delivery value attributable to that stop (revenue_centi).
+// Σ revenue_centi per trip = the trip revenue the Stage 5B "Lorry Capacity"
+// dashboard aggregates; the dashboard route itself is NOT built here.
+//
+// is_outsourced is DERIVED from the lorry's is_internal at create time
+// (is_outsourced = NOT is_internal) and snapshotted on the trip, so a later
+// master flip doesn't rewrite history. trip_no is a human doc number
+// (TRIP-YYMM-NNN) minted server-side via nextMonthlyDocNo (max+1, never count+1).
+//
+// Money: DO/SO grand totals are local_total_centi (integer cents); a stop's
+// revenue_centi is sourced from that. Dual-read camelCase ?? snake_case on every
+// result column (the pg driver camelCases result columns).
+//
+// Houzs port of 2990's apps/api/src/routes/trips.ts — same plumbing as the
+// sibling SCM routes (supabaseAuth + scm-scoped c.get('supabase'); paginateAll
+// from ../lib/paginate-all, nextMonthlyDocNo from ../lib/doc-no). scm.trips /
+// scm.trip_stops already exist (migration 0053). Mounted at '/trips'.
+// ----------------------------------------------------------------------------
+
+import { Hono } from 'hono';
+import { z } from 'zod';
+import { supabaseAuth } from '../middleware/auth';
+import type { Env, Variables } from '../env';
+import { paginateAll } from '../lib/paginate-all';
+import { nextMonthlyDocNo } from '../lib/doc-no';
+
+export const trips = new Hono<{ Bindings: Env; Variables: Variables }>();
+trips.use('*', supabaseAuth);
+
+const TRIP_COLS =
+  'id, trip_no, trip_date, lorry_id, driver_id, helper_1_id, helper_2_id, warehouse_id, ' +
+  'trip_type, status, is_outsourced, clock_in_at, clock_out_at, total_distance_km, notes, ' +
+  'created_at, created_by, updated_at';
+
+const STOP_COLS =
+  'id, trip_id, stop_no, stop_type, do_id, so_id, customer_name, address, revenue_centi, notes, created_at';
+
+const TRIP_STATUSES = new Set(['PLANNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']);
+
+/* Dual-read a camelCased OR snake_cased field off a query result. The pg driver
+   camelCases result columns; reading the snake_case key alone returns undefined
+   (the #1 recurring 2990/Houzs bug). Always read both. */
+function dual<T = unknown>(row: Record<string, unknown>, snake: string): T {
+  const camel = snake.replace(/_([a-z])/g, (_, ch: string) => ch.toUpperCase());
+  return (row[camel] ?? row[snake]) as T;
+}
+
+/* Next TRIP-YYMM-NNN. Mirrors the sibling scm minters — max(suffix)+1 via
+   nextMonthlyDocNo (self-healing; never count+1). */
+async function nextTripNo(sb: any): Promise<string> {
+  const d = new Date();
+  const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const { data: existing } = await sb.from('trips').select('trip_no').like('trip_no', `TRIP-${yymm}-%`);
+  return nextMonthlyDocNo(`TRIP-${yymm}`, ((existing ?? []) as Array<{ trip_no: string }>).map((r) => dual<string>(r, 'trip_no')));
+}
+
+/* is_outsourced derives from the lorry's is_internal (NOT is_internal). A trip
+   with no lorry (or an unknown lorry) defaults to in-house (false). */
+async function deriveOutsourced(sb: any, lorryId: string | null): Promise<boolean> {
+  if (!lorryId) return false;
+  const { data } = await sb.from('lorries').select('is_internal').eq('id', lorryId).maybeSingle();
+  if (!data) return false;
+  const internal = dual<boolean | null>(data as Record<string, unknown>, 'is_internal');
+  return internal === false; // outsourced when explicitly not in-house
+}
+
+function toNumericOrNull(v: unknown): number | null {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   GET /trips?from=&to=&lorryId=&status= — list (paginated past the 1000 cap).
+   ─────────────────────────────────────────────────────────────────────────*/
+trips.get('/', async (c) => {
+  const sb = c.get('supabase');
+  const from = c.req.query('from');         // YYYY-MM-DD (inclusive)
+  const to = c.req.query('to');             // YYYY-MM-DD (inclusive)
+  const lorryId = c.req.query('lorryId');
+  const status = c.req.query('status');
+
+  const { data, error } = await paginateAll<Record<string, unknown>>((lo, hi) => {
+    // Inline literal select (not the TRIP_COLS const) so the PostgREST types
+    // resolve a concrete row shape that satisfies paginateAll's generic — the
+    // convention used by the paginated reads in delivery-planning.ts.
+    let q = sb.from('trips')
+      .select('id, trip_no, trip_date, lorry_id, driver_id, helper_1_id, helper_2_id, warehouse_id, trip_type, status, is_outsourced, clock_in_at, clock_out_at, total_distance_km, notes, created_at, created_by, updated_at')
+      .order('trip_date', { ascending: false }).range(lo, hi);
+    if (from) q = q.gte('trip_date', from);
+    if (to) q = q.lte('trip_date', to);
+    if (lorryId) q = q.eq('lorry_id', lorryId);
+    if (status && TRIP_STATUSES.has(status.toUpperCase())) q = q.eq('status', status.toUpperCase());
+    return q;
+  });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ trips: data ?? [] });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+   GET /trips/:id — one trip with its ordered stops.
+   ─────────────────────────────────────────────────────────────────────────*/
+trips.get('/:id', async (c) => {
+  const sb = c.get('supabase');
+  const id = c.req.param('id');
+  const [t, s] = await Promise.all([
+    sb.from('trips').select(TRIP_COLS).eq('id', id).maybeSingle(),
+    sb.from('trip_stops').select(STOP_COLS).eq('trip_id', id).order('stop_no', { ascending: true }),
+  ]);
+  if (t.error) return c.json({ error: 'load_failed', reason: t.error.message }, 500);
+  if (!t.data) return c.json({ error: 'not_found' }, 404);
+  return c.json({ trip: t.data, stops: s.data ?? [] });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+   POST /trips — create (lorry + driver + date + warehouse + type). is_outsourced
+   derived from the lorry's is_internal; trip_no auto-minted.
+   ─────────────────────────────────────────────────────────────────────────*/
+const tripCreateSchema = z.object({
+  tripDate: z.string().min(8),                          // YYYY-MM-DD
+  lorryId: z.string().uuid().nullable().optional(),
+  driverId: z.string().uuid().nullable().optional(),
+  helper1Id: z.string().uuid().nullable().optional(),
+  helper2Id: z.string().uuid().nullable().optional(),
+  warehouseId: z.string().uuid().nullable().optional(),
+  tripType: z.enum(['DELIVERY', 'SETUP', 'DISMANTLE', 'SG', 'MIXED']).default('DELIVERY'),
+  notes: z.string().nullable().optional(),
+});
+
+trips.post('/', async (c) => {
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = tripCreateSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'invalid_body', reason: parsed.error.message }, 400);
+  const p = parsed.data;
+
+  const sb = c.get('supabase');
+  const user = c.get('user');
+  const lorryId = p.lorryId ?? null;
+  const isOutsourced = await deriveOutsourced(sb, lorryId);
+  const tripNo = await nextTripNo(sb);
+
+  const { data, error } = await sb.from('trips').insert({
+    trip_no:       tripNo,
+    trip_date:     p.tripDate,
+    lorry_id:      lorryId,
+    driver_id:     p.driverId ?? null,
+    helper_1_id:   p.helper1Id ?? null,
+    helper_2_id:   p.helper2Id ?? null,
+    warehouse_id:  p.warehouseId ?? null,
+    trip_type:     p.tripType,
+    status:        'PLANNED',
+    is_outsourced: isOutsourced,
+    notes:         p.notes ?? null,
+    created_by:    (user as { id?: string } | null)?.id ?? null,
+  }).select(TRIP_COLS).single();
+  if (error) {
+    if (error.code === '23505') return c.json({ error: 'duplicate_trip_no', reason: error.message }, 409);
+    if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
+    return c.json({ error: 'insert_failed', reason: error.message }, 500);
+  }
+  return c.json({ trip: data }, 201);
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+   PATCH /trips/:id — edit header fields. Re-derives is_outsourced if the lorry
+   changes (unless an explicit isOutsourced is passed).
+   ─────────────────────────────────────────────────────────────────────────*/
+const tripPatchSchema = z.object({
+  tripDate: z.string().min(8).optional(),
+  lorryId: z.string().uuid().nullable().optional(),
+  driverId: z.string().uuid().nullable().optional(),
+  helper1Id: z.string().uuid().nullable().optional(),
+  helper2Id: z.string().uuid().nullable().optional(),
+  warehouseId: z.string().uuid().nullable().optional(),
+  tripType: z.enum(['DELIVERY', 'SETUP', 'DISMANTLE', 'SG', 'MIXED']).optional(),
+  isOutsourced: z.boolean().optional(),
+  clockInAt: z.string().nullable().optional(),
+  clockOutAt: z.string().nullable().optional(),
+  totalDistanceKm: z.union([z.number(), z.string()]).nullable().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+trips.patch('/:id', async (c) => {
+  const id = c.req.param('id');
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = tripPatchSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'invalid_body', reason: parsed.error.message }, 400);
+  const p = parsed.data;
+  const sb = c.get('supabase');
+
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (p.tripDate !== undefined) updates.trip_date = p.tripDate;
+  if (p.lorryId !== undefined) updates.lorry_id = p.lorryId;
+  if (p.driverId !== undefined) updates.driver_id = p.driverId;
+  if (p.helper1Id !== undefined) updates.helper_1_id = p.helper1Id;
+  if (p.helper2Id !== undefined) updates.helper_2_id = p.helper2Id;
+  if (p.warehouseId !== undefined) updates.warehouse_id = p.warehouseId;
+  if (p.tripType !== undefined) updates.trip_type = p.tripType;
+  if (p.clockInAt !== undefined) updates.clock_in_at = p.clockInAt;
+  if (p.clockOutAt !== undefined) updates.clock_out_at = p.clockOutAt;
+  if (p.totalDistanceKm !== undefined) updates.total_distance_km = toNumericOrNull(p.totalDistanceKm);
+  if (p.notes !== undefined) updates.notes = p.notes;
+  // is_outsourced: explicit value wins; else re-derive when the lorry changes.
+  if (p.isOutsourced !== undefined) {
+    updates.is_outsourced = p.isOutsourced;
+  } else if (p.lorryId !== undefined) {
+    updates.is_outsourced = await deriveOutsourced(sb, p.lorryId);
+  }
+  if (Object.keys(updates).length === 1) return c.json({ error: 'no_changes' }, 400);
+
+  const { data, error } = await sb.from('trips').update(updates).eq('id', id).select(TRIP_COLS).single();
+  if (error) {
+    if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
+    return c.json({ error: 'update_failed', reason: error.message }, 500);
+  }
+  if (!data) return c.json({ error: 'not_found' }, 404);
+  return c.json({ trip: data });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+   PATCH /trips/:id/status — flip the trip status (PLANNED/IN_PROGRESS/…).
+   Stamps clock_in_at on first IN_PROGRESS and clock_out_at on COMPLETED if not
+   already set (best-effort timeline, doesn't overwrite a manual clock).
+   ─────────────────────────────────────────────────────────────────────────*/
+trips.patch('/:id/status', async (c) => {
+  const id = c.req.param('id');
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const status = String(body.status ?? '').toUpperCase();
+  if (!TRIP_STATUSES.has(status)) return c.json({ error: 'invalid_status' }, 400);
+
+  const sb = c.get('supabase');
+  const { data: cur } = await sb.from('trips').select('clock_in_at, clock_out_at').eq('id', id).maybeSingle();
+  if (!cur) return c.json({ error: 'not_found' }, 404);
+  const now = new Date().toISOString();
+  const updates: Record<string, unknown> = { status, updated_at: now };
+  if (status === 'IN_PROGRESS' && !dual(cur as Record<string, unknown>, 'clock_in_at')) updates.clock_in_at = now;
+  if (status === 'COMPLETED' && !dual(cur as Record<string, unknown>, 'clock_out_at')) updates.clock_out_at = now;
+
+  const { data, error } = await sb.from('trips').update(updates).eq('id', id).select(TRIP_COLS).single();
+  if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  return c.json({ trip: data });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+   POST /trips/:id/stops — add a stop linking a DO/SO, with stop_type + revenue.
+   If revenueCenti is omitted and a do_id/so_id is given, the stop's revenue is
+   sourced from the DO/SO local_total_centi. customer_name/address default from
+   the DO/SO header when not supplied.
+   ─────────────────────────────────────────────────────────────────────────*/
+const stopCreateSchema = z.object({
+  stopNo: z.number().int().positive().optional(),
+  stopType: z.enum(['DELIVERY', 'PICKUP', 'SERVICE', 'SETUP', 'DISMANTLE']).default('DELIVERY'),
+  doId: z.string().uuid().nullable().optional(),
+  soId: z.string().uuid().nullable().optional(),
+  soDocNo: z.string().nullable().optional(),       // resolve a stop to an SO by its doc_no
+  customerName: z.string().nullable().optional(),
+  address: z.string().nullable().optional(),
+  revenueCenti: z.number().int().nullable().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+trips.post('/:id/stops', async (c) => {
+  const tripId = c.req.param('id');
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = stopCreateSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'invalid_body', reason: parsed.error.message }, 400);
+  const p = parsed.data;
+  const sb = c.get('supabase');
+
+  // Trip must exist (the FK would 500 anyway; this returns a clean 404).
+  const { data: trip } = await sb.from('trips').select('id').eq('id', tripId).maybeSingle();
+  if (!trip) return c.json({ error: 'trip_not_found' }, 404);
+
+  // Resolve revenue + customer/address snapshots from the linked DO / SO when
+  // not supplied. local_total_centi is the grand total on both headers.
+  let revenue = p.revenueCenti ?? null;
+  let customerName = p.customerName ?? null;
+  let address = p.address ?? null;
+  let soId = p.soId ?? null;
+
+  if (p.doId) {
+    const { data: doRow } = await sb.from('delivery_orders')
+      .select('local_total_centi, debtor_name, address1, address2').eq('id', p.doId).maybeSingle();
+    if (doRow) {
+      const r = doRow as Record<string, unknown>;
+      if (revenue == null) revenue = Number(dual(r, 'local_total_centi') ?? 0);
+      if (customerName == null) customerName = (dual<string>(r, 'debtor_name') ?? null);
+      if (address == null) address = [dual<string>(r, 'address1'), dual<string>(r, 'address2')].filter(Boolean).join(', ') || null;
+    }
+  } else if (p.soDocNo) {
+    // SO lookup by doc_no → its uuid id + snapshots + grand total.
+    const { data: soRow } = await sb.from('mfg_sales_orders')
+      .select('id, local_total_centi, debtor_name, address1, address2').eq('doc_no', p.soDocNo).maybeSingle();
+    if (soRow) {
+      const r = soRow as Record<string, unknown>;
+      if (soId == null) soId = dual<string>(r, 'id') ?? null;
+      if (revenue == null) revenue = Number(dual(r, 'local_total_centi') ?? 0);
+      if (customerName == null) customerName = (dual<string>(r, 'debtor_name') ?? null);
+      if (address == null) address = [dual<string>(r, 'address1'), dual<string>(r, 'address2')].filter(Boolean).join(', ') || null;
+    }
+  }
+
+  // Next stop_no for this trip if not pinned (1 = first stop).
+  let stopNo = p.stopNo ?? null;
+  if (stopNo == null) {
+    const { data: existing } = await sb.from('trip_stops').select('stop_no').eq('trip_id', tripId);
+    const max = ((existing ?? []) as Array<Record<string, unknown>>)
+      .reduce((m, r) => Math.max(m, Number(dual(r, 'stop_no') ?? 0)), 0);
+    stopNo = max + 1;
+  }
+
+  const { data, error } = await sb.from('trip_stops').insert({
+    trip_id:       tripId,
+    stop_no:       stopNo,
+    stop_type:     p.stopType,
+    do_id:         p.doId ?? null,
+    so_id:         soId,
+    customer_name: customerName,
+    address,
+    revenue_centi: Math.max(0, Math.round(Number(revenue ?? 0)) || 0),
+    notes:         p.notes ?? null,
+  }).select(STOP_COLS).single();
+  if (error) {
+    if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
+    return c.json({ error: 'insert_failed', reason: error.message }, 500);
+  }
+  return c.json({ stop: data }, 201);
+});
+
+/* DELETE /trips/:id/stops/:stopId — remove one stop. */
+trips.delete('/:id/stops/:stopId', async (c) => {
+  const tripId = c.req.param('id');
+  const stopId = c.req.param('stopId');
+  const sb = c.get('supabase');
+  const { error } = await sb.from('trip_stops').delete().eq('id', stopId).eq('trip_id', tripId);
+  if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  return c.json({ ok: true });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+   DELETE /trips/:id — cancel (default) or hard-delete (?hard=true). A cancel
+   flips status → CANCELLED (the legs FK is ON DELETE SET NULL, so a hard delete
+   orphans the legs back to unplanned rather than removing them). Idempotent.
+   ─────────────────────────────────────────────────────────────────────────*/
+trips.delete('/:id', async (c) => {
+  const id = c.req.param('id');
+  const hard = c.req.query('hard') === 'true';
+  const sb = c.get('supabase');
+
+  if (hard) {
+    const { error } = await sb.from('trips').delete().eq('id', id);
+    if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+    return c.json({ ok: true, deleted: true });
+  }
+
+  const { data, error } = await sb.from('trips')
+    .update({ status: 'CANCELLED', updated_at: new Date().toISOString() })
+    .eq('id', id).select(TRIP_COLS).maybeSingle();
+  if (error) return c.json({ error: 'cancel_failed', reason: error.message }, 500);
+  if (!data) return c.json({ error: 'not_found' }, 404);
+  return c.json({ trip: data, cancelled: true });
+});
+
+export default trips;

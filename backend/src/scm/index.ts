@@ -55,6 +55,12 @@ import { reports } from "./routes/reports";
 import { scanSo } from "./routes/scan-so";
 import { scanPayment } from "./routes/scan-payment";
 import { slips } from "./routes/slips";
+import { deliveryPlanning } from "./routes/delivery-planning";
+import { deliveryPlanningRegions } from "./routes/delivery-planning-regions";
+import { trips } from "./routes/trips";
+import { lorryCapacity } from "./routes/lorry-capacity";
+import { helpers } from "./routes/helpers";
+import { lorries } from "./routes/lorries";
 
 import { scmAreaGuard } from "./middleware/area-guard";
 
@@ -199,6 +205,21 @@ scm.route("/addons", addons);
 scm.route("/document-flow", documentFlow);
 scm.use("/drivers/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/drivers", drivers);
+// ── Delivery Planning + TMS (scm.transportation.*) — stage 2, ported 2026-06-28 ─
+// Mounted under the existing transportation area key; owner/* bypasses, no lockout.
+// Finer per-route L2 keys (planning / fleet / trips) can be added later.
+scm.use("/delivery-planning/*", scmAreaGuard("scm.transportation.drivers"));
+scm.route("/delivery-planning", deliveryPlanning);
+scm.use("/delivery-planning-regions/*", scmAreaGuard("scm.transportation.drivers"));
+scm.route("/delivery-planning-regions", deliveryPlanningRegions);
+scm.use("/trips/*", scmAreaGuard("scm.transportation.drivers"));
+scm.route("/trips", trips);
+scm.use("/lorry-capacity/*", scmAreaGuard("scm.transportation.drivers"));
+scm.route("/lorry-capacity", lorryCapacity);
+scm.use("/helpers/*", scmAreaGuard("scm.transportation.drivers"));
+scm.route("/helpers", helpers);
+scm.use("/lorries/*", scmAreaGuard("scm.transportation.drivers"));
+scm.route("/lorries", lorries);
 // Ported 2026-06-21 — SO Maintenance picklists (so_dropdown_options). Backs the
 // vendored SO Maintenance mini-tables (customer_type / building_type /
 // relationship / payment_method cascade / venue). Seeded by
