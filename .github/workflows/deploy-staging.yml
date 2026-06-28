@@ -1,0 +1,77 @@
+name: Deploy (Staging)
+
+# ── Trigger ─────────────────────────────────────────────────────────────────
+# Push-to-`staging` is the primary trigger. workflow_dispatch lets an operator
+# re-run a staging deploy from the Actions tab (e.g. after rotating the
+# STAGING_DATABASE_URL secret or after a Cloudflare incident) without an extra
+# commit.
+#
+# Prod's deploy.yml (push-to-`main`) is untouched — its trigger doesn't
+# overlap this one's, and `concurrency` is scoped per-environment so a
+# staging deploy never queues behind / cancels a prod deploy.
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    # GitHub Environment "Staging" — lets the repo owner add protection rules
+    # later (required reviewers, wait timer, secret scoping) without
+    # restructuring the workflow. The matching environment for prod is
+    # "Production" (see deploy.yml).
+    environment: Staging
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Apply pending Postgres migrations against the STAGING Supabase before
+      # the Worker swap. STAGING_DATABASE_URL is the staging-only direct
+      # connection string — separate secret from prod's DATABASE_URL so a
+      # mis-scoped run cannot reach prod. pg-migrate.mjs reads DATABASE_URL
+      # from env, so we rebind the env var to the staging secret for this
+      # one step only. Same script, isolated target.
+      #
+      # Migrations are idempotent by convention (IF NOT EXISTS / ON CONFLICT);
+      # a deploy with no pending migration files is a no-op against
+      # _pg_migrations and exits 0.
+      - run: node scripts/pg-migrate.mjs
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+      # Deploy the Worker to the staging env block in wrangler.toml
+      # ([env.staging] → name autocount-sync-api-staging, isolated Hyperdrive,
+      # crons=[]). Same Cloudflare account as prod, so the existing
+      # CLOUDFLARE_API_TOKEN works — the token's scope (Workers:Edit,
+      # Account:Read) already covers both env names.
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: backend
+          command: deploy --env staging
+      # Post-deploy smoke check. STAGING_SMOKE_URL repo VAR overrides the
+      # default workers.dev origin if the staging Worker is served from a
+      # custom domain. The authed SCM probes need DASHBOARD_API_KEY to run;
+      # without it the script logs a WARN and skips them — mirrors the prod
+      # behaviour so we don't introduce a new failure mode here.
+      - run: node scripts/smoke-check.mjs "${{ vars.STAGING_SMOKE_URL || 'https://autocount-sync-api-staging.houzs-erp.workers.dev' }}"
+
+  # NOTE: no frontend job. The staging Worker is the only artefact this
+  # workflow ships. If a staging frontend Pages project is needed later, add
+  # a second job here mirroring deploy.yml's `frontend` job — separate Pages
+  # project name (e.g. `houzs-erp-staging`) + VITE_API_URL pointing at the
+  # staging Worker URL.
