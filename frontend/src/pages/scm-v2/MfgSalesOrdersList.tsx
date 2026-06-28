@@ -29,7 +29,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ChevronDown, Plus, Sparkles, X, Wrench, Camera, Printer } from 'lucide-react';
+import { ChevronDown, Plus, ShoppingCart, Sparkles, X, Wrench, Camera, Printer } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { ListingPickerDialog, type ListingChoice } from '../../vendor/scm/components/ListingPickerDialog';
@@ -811,6 +811,7 @@ export const MfgSalesOrdersList = () => {
   //    right-click context menu, gated by status). ───────────────────
   const onNew = () => navigate('/scm/sales-orders/new');
   const onNewGuided = () => navigate('/scm/sales-orders/new/guided');
+  const onNewFromProducts = () => navigate('/scm/sales-orders/new/from-products');
   /* Split-button menu for New Sales Order — the full power form stays the
      default (primary click); the chevron pops a 2-choice menu so the showroom
      "Guided sofa" wizard can be reached without crowding the toolbar. */
@@ -1100,6 +1101,29 @@ export const MfgSalesOrdersList = () => {
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--c-ink-muted, #767b6e)', marginTop: 2 }}>
                     Showroom-floor 6 steps. Customer → Model → Modules → Fabric → Review.
+                  </div>
+                </button>
+                <div style={{ height: 1, background: 'var(--c-border-subtle, #e3e6e0)' }} />
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    onNewFromProducts();
+                  }}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left',
+                    padding: '10px 14px', background: 'transparent', border: 'none',
+                    cursor: 'pointer', font: 'inherit',
+                  }}
+                  onMouseOver={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--c-surface-2, #f4f6f3)'; }}
+                  onMouseOut={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--c-ink, #11140f)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <ShoppingCart size={13} /> From products
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--c-ink-muted, #767b6e)', marginTop: 2 }}>
+                    Pick from the catalogue · search, chips, sticky cart, one SO.
                   </div>
                 </button>
               </div>
