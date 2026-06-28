@@ -76,6 +76,11 @@ const ScmInventoryV2 = lazy(() => import("./pages/scm-v2/Inventory").then((m) =>
 const ScmStockCardV2 = lazy(() => import("./pages/scm-v2/StockCard").then((m) => ({ default: m.StockCard })));
 const ScmSupplierDetailV2 = lazy(() => import("./pages/scm-v2/SupplierDetail").then((m) => ({ default: m.SupplierDetail })));
 const ScmDriversV2 = lazy(() => import("./pages/scm-v2/Drivers").then((m) => ({ default: m.Drivers })));
+// Delivery Planning + TMS (Stage 3 — ported 2026-06-28 from 2990).
+const ScmDeliveryPlanningV2 = lazy(() => import("./pages/scm-v2/DeliveryPlanning").then((m) => ({ default: m.DeliveryPlanning })));
+const ScmDeliveryPlanningRegionsV2 = lazy(() => import("./pages/scm-v2/DeliveryPlanningRegions").then((m) => ({ default: m.DeliveryPlanningRegions })));
+const ScmFleetV2 = lazy(() => import("./pages/scm-v2/Fleet").then((m) => ({ default: m.Fleet })));
+const ScmLorryCapacityV2 = lazy(() => import("./pages/scm-v2/LorryCapacity").then((m) => ({ default: m.LorryCapacity })));
 // Sales Order READ side (vendored 2990 list + detail + maintenance). New-SO
 // configurator + SoFromProducts come in a later wave. NOTE: 2990 uses :docNo
 // (not :id) for SO detail, and the literal /maintenance route MUST precede
@@ -337,6 +342,11 @@ export default function App() {
         <Route path="/scm/inventory/stock-card/:productCode" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmStockCardV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/suppliers/:id" element={<ScmGuard area="scm.procurement.suppliers"><Scm2990Shell><ScmSupplierDetailV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/drivers" element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmDriversV2 /></Scm2990Shell></ScmGuard>} />
+        {/* Delivery Planning + TMS Stage 3 — all under the existing scm.transportation.drivers area. */}
+        <Route path="/scm/delivery-planning"         element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmDeliveryPlanningV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/delivery-planning-regions" element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmDeliveryPlanningRegionsV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/fleet"                     element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmFleetV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/lorry-capacity"            element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmLorryCapacityV2 /></Scm2990Shell></ScmGuard>} />
         {/* Supply Chain Hub — section landing page (main app layout, NOT the 2990 shell). */}
         <Route path="/scm" element={<ScmGuard area="scm"><ScmHub /></ScmGuard>} />
         {/* Sales Orders READ side (vendored). The literal /maintenance route

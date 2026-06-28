@@ -42,6 +42,8 @@ import {
   Network,
   Building2,
   LayoutDashboard,
+  BarChart3,
+  Map,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -302,7 +304,11 @@ export const NAV_TABS: NavTab[] = [
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.transportation", "scm.transportation.drivers"],
         children: [
+          { to: "/scm/delivery-planning", label: "Delivery Planning", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
+          { to: "/scm/fleet", label: "Fleet", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
+          { to: "/scm/lorry-capacity", label: "Lorry Capacity", icon: BarChart3, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
           { to: "/scm/drivers", label: "Drivers", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
+          { to: "/scm/delivery-planning-regions", label: "Regions", icon: Map, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
         ],
       },
       {

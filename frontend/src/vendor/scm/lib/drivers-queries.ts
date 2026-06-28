@@ -16,6 +16,10 @@ export type DriverRow = {
   phone: string;
   ic_number: string | null;
   vehicle: string | null;
+  // Migration 0195 — in-house staff driver vs outsourced/3rd-party. The pg
+  // driver camelCases result cols, so consumers dual-read `inHouse ?? in_house`.
+  in_house?: boolean;
+  inHouse?: boolean;
   active: boolean;
   created_at: string;
 };
@@ -26,6 +30,7 @@ export type NewDriver = {
   phone: string;
   icNumber?: string;
   vehicle?: string;
+  inHouse?: boolean;
   active?: boolean;
 };
 

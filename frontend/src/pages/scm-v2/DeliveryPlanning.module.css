@@ -1,0 +1,159 @@
+/* Delivery Planning — STAGE 4 of the Delivery / TMS module.
+   Two tab rows: the 4 state tabs (Pending Delivery / Pending Schedule /
+   Overdue / Delivered, with counts) and a region chip row (All · PJ·KL ·
+   Penang · Sabah · Sarawak · Singapore). 2990 cream brand styling. The page /
+   drawer / field scaffolding is reused from Suppliers.module.css. */
+
+/* ── State tab row (the 4 delivery-state tabs) ────────────────────────────── */
+.stateTabs {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 2px;
+}
+
+.stateTab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 34px;
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-family: var(--font-button);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.stateTab:hover { color: var(--c-ink); }
+
+.stateTabActive {
+  color: var(--c-burnt);
+  border-bottom-color: var(--c-burnt);
+}
+
+/* Count badge inside a state tab. */
+.tabCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: rgba(34, 31, 32, 0.08);
+  color: var(--fg-muted);
+  font-family: var(--font-mark);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.stateTabActive .tabCount {
+  background: rgba(232, 107, 58, 0.16);
+  color: var(--c-burnt);
+}
+
+/* Tone the OVERDUE tab so an overdue backlog reads at a glance. */
+.stateTabOverdue { color: var(--c-festive-b, #B8331F); }
+.stateTabOverdue.stateTabActive {
+  color: var(--c-festive-b, #B8331F);
+  border-bottom-color: var(--c-festive-b, #B8331F);
+}
+.stateTabOverdue.stateTabActive .tabCount {
+  background: rgba(184, 51, 31, 0.12);
+  color: var(--c-festive-b, #B8331F);
+}
+
+/* ── Region chip row ──────────────────────────────────────────────────────── */
+.regionChips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.regionChip {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  font-family: var(--font-button);
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--c-paper);
+  color: var(--fg-muted);
+}
+
+.regionChipActive {
+  border-color: var(--c-burnt);
+  background: rgba(232, 107, 58, 0.10);
+  color: var(--c-burnt);
+}
+
+/* Singapore region visually distinct (no MY warehouse — cross-border). A teal
+   tint + dashed border sets it apart from the MY warehouse regions. */
+.regionChipSg {
+  border-style: dashed;
+  border-color: var(--c-secondary-a);
+  color: var(--c-secondary-a);
+}
+.regionChipSg.regionChipActive {
+  border-color: var(--c-secondary-a);
+  background: rgba(47, 93, 79, 0.12);
+  color: var(--c-secondary-a);
+}
+
+/* ── Inline delivery-state pill (DataGrid cell) ───────────────────────────── */
+.dstatePill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-button);
+  font-size: var(--fs-10);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+
+.dstatePendingDelivery { background: rgba(34, 31, 32, 0.06); color: var(--fg-muted); }
+.dstatePendingSchedule { background: rgba(232, 107, 58, 0.12); color: var(--c-burnt); }
+.dstateOverdue         { background: rgba(184, 51, 31, 0.12); color: var(--c-festive-b, #B8331F); }
+.dstateDelivered       { background: rgba(47, 93, 79, 0.12);  color: var(--c-secondary-a); }
+
+/* Singapore row marker — a thin teal left accent so an SG order stands out in
+   the grid even under the "All" region. */
+.sgRow {
+  box-shadow: inset 3px 0 0 var(--c-secondary-a);
+}
+
+/* days_left tone — overdue (negative) reads red, due-soon (<=3) burnt. */
+.daysOverdue  { color: var(--c-festive-b, #B8331F); font-weight: 700; }
+.daysSoon     { color: var(--c-burnt); font-weight: 700; }
+.daysOk       { color: var(--c-ink); }
+
+/* A small "split / legged" marker shown next to an order that has delivery
+   legs (it appears under more than one region with two dates). */
+.legBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 0 6px;
+  height: 16px;
+  border-radius: var(--radius-pill);
+  background: rgba(47, 93, 79, 0.10);
+  color: var(--c-secondary-a);
+  font-family: var(--font-button);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}

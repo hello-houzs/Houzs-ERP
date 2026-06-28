@@ -1,0 +1,259 @@
+/* Lorry Capacity — STAGE 5B (final) of the Delivery / TMS module.
+   The fleet performance dashboard: a date-range segment + a fleet segment, a
+   row of summary metric cards, and the per-lorry metric table (utilisation
+   tinted, In-house inline checkbox, Repair Days inline number). 2990 cream
+   brand styling — CSS variables + design-system tokens only, no raw palette. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: var(--c-cream);
+  min-height: 100%;
+}
+
+.headerRow {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.title {
+  font-family: var(--font-title);
+  font-size: var(--fs-15, 15px);
+  font-weight: 600;
+  color: var(--c-ink);
+  margin: 0;
+}
+
+.subtitle {
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  color: var(--fg-muted);
+  margin: 2px 0 0;
+}
+
+/* ── Segmented controls (date range + fleet) ──────────────────────────────── */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.segment {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--c-paper);
+  overflow: hidden;
+}
+
+.segBtn {
+  height: 30px;
+  padding: 0 14px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--line);
+  font-family: var(--font-button);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.segBtn:last-child { border-right: none; }
+.segBtn:hover { color: var(--c-ink); }
+
+.segBtnActive {
+  background: rgba(232, 107, 58, 0.10);
+  color: var(--c-burnt);
+}
+
+/* Custom-range date inputs (shown when the Custom segment is active). */
+.customRange {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dateInput {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--c-paper);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--c-ink);
+}
+.rangeDash { color: var(--fg-muted); font-size: 12px; }
+
+/* ── Summary metric cards ─────────────────────────────────────────────────── */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-2);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--c-paper);
+}
+
+.cardLabel {
+  font-family: var(--font-button);
+  font-size: var(--fs-9, 9px);
+  font-weight: 600;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.cardValue {
+  font-family: var(--font-mark);
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--c-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Per-lorry metric table ───────────────────────────────────────────────── */
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--c-paper);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--c-paper);
+  text-align: right;
+  padding: 8px 10px;
+  font-family: var(--font-button);
+  font-size: var(--fs-9, 9px);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--line);
+}
+.table thead th.left { text-align: left; }
+.table thead th.center { text-align: center; }
+
+.table tbody td {
+  padding: 7px 10px;
+  text-align: right;
+  color: var(--c-ink);
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.table tbody td.left { text-align: left; }
+.table tbody td.center { text-align: center; }
+.table tbody tr:last-child td { border-bottom: none; }
+.table tbody tr:hover td { background: rgba(34, 31, 32, 0.02); }
+
+.plate {
+  font-family: var(--font-mark);
+  font-weight: 700;
+  color: var(--c-burnt);
+}
+.lorryType {
+  font-size: 10px;
+  color: var(--fg-muted);
+  margin-left: 6px;
+}
+
+.muted { color: var(--fg-muted); }
+
+/* In-house inline checkbox cell. */
+.checkCell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* Repair Days inline number input. */
+.repairInput {
+  width: 56px;
+  height: 26px;
+  padding: 0 6px;
+  text-align: right;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--c-cream);
+  font-family: var(--font-mark);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-ink);
+}
+.repairInput:focus {
+  outline: none;
+  border-color: var(--c-burnt);
+  background: var(--c-paper);
+}
+
+/* Utilisation tint — low utilisation reads red-ish, healthy reads green-ish.
+   Applied as a small pill so it stands out in the dense metric grid. */
+.utilPill {
+  display: inline-block;
+  min-width: 48px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mark);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.utilLow  { background: rgba(184, 51, 31, 0.12); color: var(--c-festive-b, #B8331F); }
+.utilMid  { background: rgba(232, 107, 58, 0.12); color: var(--c-burnt); }
+.utilHigh { background: rgba(47, 93, 79, 0.12);  color: var(--c-secondary-a); }
+
+/* Money cells — mark face, burnt when non-zero. */
+.money { font-family: var(--font-mark); font-weight: 600; }
+
+/* Totals footer row. */
+.table tfoot td {
+  padding: 8px 10px;
+  text-align: right;
+  border-top: 2px solid var(--line);
+  font-family: var(--font-mark);
+  font-weight: 700;
+  color: var(--c-ink);
+  background: rgba(232, 107, 58, 0.04);
+  font-variant-numeric: tabular-nums;
+}
+.table tfoot td.left { text-align: left; text-transform: uppercase; font-family: var(--font-button); font-size: var(--fs-9, 9px); letter-spacing: 0.06em; color: var(--fg-muted); }
+
+.emptyState {
+  padding: var(--space-5) var(--space-4);
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: var(--fs-12);
+}
+
+.bannerWarn {
+  background: rgba(232, 107, 58, 0.08);
+  border: 1px solid var(--c-orange);
+  color: var(--c-burnt);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-12);
+}
