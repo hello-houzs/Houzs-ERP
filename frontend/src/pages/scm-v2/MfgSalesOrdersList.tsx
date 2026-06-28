@@ -25,11 +25,11 @@
 // Action buttons (Issue DO / Issue SI / Cancel / Delete) appear in the
 // per-row context menu gated by current status.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, X, Wrench, Camera, Printer } from 'lucide-react';
+import { ChevronDown, Plus, Sparkles, X, Wrench, Camera, Printer } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { ListingPickerDialog, type ListingChoice } from '../../vendor/scm/components/ListingPickerDialog';
@@ -810,6 +810,22 @@ export const MfgSalesOrdersList = () => {
   // ── Row handlers (no toolbar — every action lives on the row's
   //    right-click context menu, gated by status). ───────────────────
   const onNew = () => navigate('/scm/sales-orders/new');
+  const onNewGuided = () => navigate('/scm/sales-orders/new/guided');
+  /* Split-button menu for New Sales Order — the full power form stays the
+     default (primary click); the chevron pops a 2-choice menu so the showroom
+     "Guided sofa" wizard can be reached without crowding the toolbar. */
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
+  const newMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!newMenuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (newMenuRef.current && !newMenuRef.current.contains(e.target as Node)) {
+        setNewMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [newMenuOpen]);
   /* Scan Order — handwritten slip OCR → prefilled New SO (ScanOrderModal). */
   const [showScan, setShowScan] = useState(false);
   /* Desktop view toggle (Theme C) — Table keeps the full power-user grid;
@@ -1009,10 +1025,86 @@ export const MfgSalesOrdersList = () => {
           </h1>
         </div>
         <div className={styles.actionRow}>
-          <Button variant="primary" size="sm" onClick={onNew}>
-            <Plus size={14} strokeWidth={1.75} />
-            <span>New Sales Order</span>
-          </Button>
+          <div ref={newMenuRef} style={{ position: 'relative', display: 'inline-flex', gap: 2 }}>
+            <Button variant="primary" size="sm" onClick={onNew}>
+              <Plus size={14} strokeWidth={1.75} />
+              <span>New Sales Order</span>
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setNewMenuOpen((v) => !v)}
+              aria-haspopup="menu"
+              aria-expanded={newMenuOpen}
+              aria-label="New Sales Order options"
+              style={{ padding: '0 8px' }}
+            >
+              <ChevronDown size={14} strokeWidth={1.75} />
+            </Button>
+            {newMenuOpen && (
+              <div
+                role="menu"
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 6px)',
+                  right: 0,
+                  zIndex: 30,
+                  minWidth: 260,
+                  background: 'var(--c-surface, #fff)',
+                  border: '1px solid var(--c-border, #d6d9d2)',
+                  borderRadius: 10,
+                  boxShadow: '0 12px 32px -16px rgba(17,24,16,.25), 0 1px 0 rgba(17,24,16,.06)',
+                  overflow: 'hidden',
+                }}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    onNew();
+                  }}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left',
+                    padding: '10px 14px', background: 'transparent', border: 'none',
+                    cursor: 'pointer', font: 'inherit',
+                  }}
+                  onMouseOver={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--c-surface-2, #f4f6f3)'; }}
+                  onMouseOut={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--c-ink, #11140f)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Plus size={13} /> Full form (default)
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--c-ink-muted, #767b6e)', marginTop: 2 }}>
+                    The complete create form — line items, payments, address, OCR scan, copy-from.
+                  </div>
+                </button>
+                <div style={{ height: 1, background: 'var(--c-border-subtle, #e3e6e0)' }} />
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    onNewGuided();
+                  }}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left',
+                    padding: '10px 14px', background: 'transparent', border: 'none',
+                    cursor: 'pointer', font: 'inherit',
+                  }}
+                  onMouseOver={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--c-surface-2, #f4f6f3)'; }}
+                  onMouseOut={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--c-ink, #11140f)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Sparkles size={13} /> Guided sofa wizard
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--c-ink-muted, #767b6e)', marginTop: 2 }}>
+                    Showroom-floor 6 steps. Customer → Model → Modules → Fabric → Review.
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
           {/* Scan Order — photo of a handwritten showroom slip → reviewed,
               prefilled New SO. The modal never creates the SO itself. */}
           <Button variant="secondary" size="sm" onClick={() => setShowScan(true)}>
