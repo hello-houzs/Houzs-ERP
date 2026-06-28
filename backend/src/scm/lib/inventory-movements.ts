@@ -194,6 +194,84 @@ export async function resolveWarehouseLotCosts(
 }
 
 /**
+ * Receipt-time drop-ship reconcile (migration 0057). After a GRN writes its IN
+ * movements (which the FIFO trigger turned into fresh batched lots), call this
+ * with the (warehouse, product_code, variant_key, batch_no) buckets that were
+ * just received. For each batched bucket it invokes fn_reconcile_dropship_batch,
+ * which consumes the outstanding drop-ship SHORTFALL (= Σ OUT(batch) − Σ
+ * already-consumed(batch)) from the new lots so coverage + valuation reflect
+ * only the truly-available remainder. Idempotent + ledger-driven: a second GRN
+ * for the same batch recomputes shortfall 0 and consumes nothing. Best-effort:
+ * a missing function (pre-0057) or any error is swallowed so the GRN post is
+ * never rolled back. Un-batched buckets are skipped (no drop-ship semantics).
+ */
+export async function reconcileDropshipBatches(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sb: any,
+  buckets: Array<{ warehouse_id: string; product_code: string; variant_key: string; batch_no: string | null }>,
+  performedBy: string | null,
+): Promise<{ ok: boolean; reconciled: number; affectedDoIds: string[]; reason?: string }> {
+  // Dedupe to one call per distinct batched bucket.
+  const seen = new Set<string>();
+  const distinct = buckets.filter((b) => {
+    if (!b.batch_no) return false;
+    const k = `${b.warehouse_id}::${b.product_code}::${b.variant_key ?? ''}::${b.batch_no}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  if (distinct.length === 0) return { ok: true, reconciled: 0, affectedDoIds: [] };
+  let reconciled = 0;
+  for (const b of distinct) {
+    try {
+      const { error } = await sb.rpc('fn_reconcile_dropship_batch', {
+        p_warehouse_id: b.warehouse_id,
+        p_product_code: b.product_code,
+        p_variant_key: b.variant_key ?? '',
+        p_batch_no: b.batch_no,
+        p_created_by: performedBy,
+      });
+      if (error) {
+        // Pre-0057 (function not created) — silently no-op; nothing to reconcile.
+        if (!(error.message ?? '').includes('fn_reconcile_dropship_batch')) {
+          // eslint-disable-next-line no-console
+          console.error('[dropship] reconcile failed:', error.message);
+        }
+      } else {
+        reconciled += 1;
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[dropship] reconcile exception:', e);
+    }
+  }
+  // Collect the DOs that have a (drop-ship) OUT movement for any reconciled
+  // batch+bucket, so the caller can restamp their actual COGS (the reconcile
+  // bumped those OUT movements' total_cost_sen from the arriving lots).
+  const affectedDoIds = new Set<string>();
+  if (reconciled > 0) {
+    try {
+      const batches = [...new Set(distinct.map((b) => b.batch_no).filter((x): x is string => !!x))];
+      const codes = [...new Set(distinct.map((b) => b.product_code))];
+      const { data: outs } = await sb
+        .from('inventory_movements')
+        .select('source_doc_type, source_doc_id, batch_no, product_code')
+        .eq('movement_type', 'OUT')
+        .in('batch_no', batches)
+        .in('product_code', codes);
+      for (const m of (outs ?? []) as Array<{ source_doc_type: string | null; source_doc_id: string | null }>) {
+        if ((m.source_doc_type ?? '').toUpperCase() !== 'DO' || !m.source_doc_id) continue;
+        affectedDoIds.add(m.source_doc_id);
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[dropship] affected-DO lookup failed:', e);
+    }
+  }
+  return { ok: true, reconciled, affectedDoIds: [...affectedDoIds] };
+}
+
+/**
  * Reverse EVERY inventory movement a document wrote, by posting an
  * opposite-direction movement (IN→OUT / OUT→IN) per original row. This is the
  * SAFE way to undo a posting: the FIFO trigger (migration 0095) treats the

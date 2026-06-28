@@ -4,7 +4,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
+import { writeMovements, defaultWarehouseId, reconcileDropshipBatches } from '../lib/inventory-movements';
 import { buildVariantSummary, computeVariantKey, effectiveDelivery, type VariantAttrs } from '../shared';
 import {
   orderSofaModuleRowsWithinBuilds,
@@ -111,6 +111,36 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
          booked and the caller never told). No rollback; just make it loud. */
       const res = await writeMovements(sb, movements);
       if (!res.ok) movementErrors.push(`IN ${grnNo}: ${res.reason ?? 'unknown'}`);
+      /* Drop-ship receipt reconcile (mig 0057) — the IN just created fresh
+         batched lots. If a sofa was drop-shipped against this batch before
+         receipt, its OUT consumed no lot; consume that outstanding shortfall
+         from the new lots now so coverage + valuation don't double-count the
+         already-shipped units. Ledger-driven + idempotent; best-effort (never
+         rolls back the post). Only batched (sofa) lines have drop-ship semantics. */
+      const reconcile = await reconcileDropshipBatches(
+        sb,
+        movements.map((m) => ({
+          warehouse_id: m.warehouse_id,
+          product_code: m.product_code,
+          variant_key: m.variant_key,
+          batch_no: m.batch_no ?? null,
+        })),
+        userId,
+      );
+      /* COGS — the reconcile bumped each drop-ship DO OUT movement's cost from
+         the arriving lot. Re-stamp those DO lines (+ their Sales Invoices) so
+         margins reflect the real cost, exactly like a normal short-ship that
+         later receives stock. Best-effort; restamp is idempotent + bucket-keyed. */
+      if (reconcile.affectedDoIds.length > 0) {
+        try {
+          const { restampDoActualCost } = await import('./delivery-orders-mfg');
+          const { restampSiFromDo } = await import('../lib/recost');
+          for (const doId of reconcile.affectedDoIds) {
+            await restampDoActualCost(sb, doId);
+            try { await restampSiFromDo(sb, doId); } catch { /* best-effort */ }
+          }
+        } catch (e) { /* eslint-disable-next-line no-console */ console.error('[dropship] DO restamp failed:', e); }
+      }
     }
   }
   /* Physical rack placement — lines that chose a rack on the GRN form get

@@ -55,6 +55,50 @@ async function fetchWithTimeout(url: string, init: RequestInit, path: string): P
   }
 }
 
+/* Drop-ship confirm (port of 2990 07c45728) — when a sofa ship is blocked
+   because no batch is received yet (sofa_no_batch) BUT every affected line is
+   bound to a PO (canDropship), the supplier can ship direct. Render the
+   approved "Ship as drop-ship?" dialog (incoming PO + ETA + affected codes)
+   and, on confirm, the caller replays the request with dropShip:true (stock
+   goes negative against the expected batch, nets out + stamps the batch on
+   receipt). Returns true on confirm. */
+type DropshipOffender = { itemCode: string; soItemId: string | null; poNumber: string | null; eta: string | null };
+async function confirmDropship(raw: string): Promise<boolean> {
+  try {
+    const jsonStart = raw.indexOf('{');
+    const body = JSON.parse(raw.slice(jsonStart)) as { dropship?: DropshipOffender[] };
+    const offenders = body.dropship ?? [];
+    // One bullet per distinct incoming PO: the bound batch + ETA + the sofa
+    // codes that ride it. Group by PO so a multi-line set reads as one
+    // incoming batch.
+    const byPo = new Map<string, { eta: string | null; codes: Set<string> }>();
+    for (const o of offenders) {
+      if (!o.poNumber) continue;
+      const g = byPo.get(o.poNumber) ?? { eta: o.eta, codes: new Set<string>() };
+      if (o.itemCode) g.codes.add(o.itemCode);
+      byPo.set(o.poNumber, g);
+    }
+    const poLines = [...byPo.entries()].map(([po, g]) => {
+      const eta = g.eta ? `ETA ${g.eta}` : 'ETA not set';
+      return `• Incoming PO ${po} (${eta})\n   Sofa: ${[...g.codes].join(', ')}`;
+    }).join('\n\n');
+    const codes = [...new Set(offenders.map((o) => o.itemCode).filter(Boolean))].join(', ');
+    return await serviceConfirm({
+      title: 'Ship as drop-ship?',
+      body:
+        `No batch has been received yet for this sofa set — the supplier ships ` +
+        `it direct to the customer.\n\n${poLines}\n\n` +
+        `Stock will go negative against ${byPo.size === 1 ? `batch ${[...byPo.keys()][0]}` : 'the incoming batches'}. ` +
+        `It nets out and the batch number stamps onto this Delivery Order when ` +
+        `the Goods Received Note arrives.\n\nAffected: ${codes}`,
+      confirmLabel: 'Confirm drop-ship',
+      danger: true,
+    });
+  } catch {
+    return false;
+  }
+}
+
 /* Edge #J — render the shortage detail out of a 409 short_stock body and ask
    the operator whether to ship anyway (stock goes negative). Returns true on
    confirm; replays the request with confirmShortStock:true. */
@@ -100,19 +144,43 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
   };
   let res = await fetchWithTimeout(`${API_URL}${path}`, { ...init, headers }, path);
 
-  /* Edge #J (systemic) — every ship path returns 409 short_stock unless the body
-     carries confirmShortStock:true. Catch it once: prompt, and on confirm replay
-     with the flag merged in. */
+  /* Confirmable-409 loop (port of 2990 c3068b28) — a single DO save can trip
+     MORE THAN ONE guard at once: short_stock (negative stock) AND sofa_no_batch
+     (drop-ship). Each confirm must STACK its flag onto the SAME body — earlier
+     one-shot blocks each spread the ORIGINAL init.body, so a drop-ship replay
+     dropped a just-confirmed confirmShortStock and the stock guard re-fired
+     ("Save failed: Stock not enough" right after Confirm drop-ship). Loop,
+     accumulating flags, until the server accepts, the operator declines, or a
+     non-confirmable 409 falls through to the terminal handling below. The
+     `!== true` guards stop a re-prompt if the flag is already set (a server
+     that STILL 409s despite the flag breaks out, no infinite loop); 4-iteration
+     cap is a backstop. Body-bearing (mutation) requests only. */
   if (res.status === 409 && typeof init?.body === 'string') {
-    const text = await res.clone().text();
-    if (text.includes('"short_stock"') && await confirmShortStock(text)) {
-      const retryBody = JSON.stringify({ ...JSON.parse(init.body), confirmShortStock: true });
-      res = await fetchWithTimeout(`${API_URL}${path}`, { ...init, headers, body: retryBody }, path);
+    let mergedBody: Record<string, unknown> | null = null;
+    try { mergedBody = JSON.parse(init.body) as Record<string, unknown>; } catch { mergedBody = null; }
+    for (let guard = 0; mergedBody && guard < 4 && res.status === 409; guard++) {
+      const text = await res.clone().text();
+      if (text.includes('"short_stock"') && mergedBody.confirmShortStock !== true) {
+        if (!(await confirmShortStock(text))) break;            // declined → terminal error below
+        mergedBody = { ...mergedBody, confirmShortStock: true };
+      } else if (
+        text.includes('"sofa_no_batch"') && text.includes('"canDropship":true') &&
+        mergedBody.dropShip !== true
+      ) {
+        // Declined drop-ship — deliberate operator choice. Throw a marker the
+        // page's onError swallows (mirrors the silent short_stock decline).
+        if (!(await confirmDropship(text))) throw new Error('declined_dropship:"sofa_no_batch"');
+        mergedBody = { ...mergedBody, dropShip: true };
+      } else {
+        break; // non-confirmable 409 (no-PO no-batch / partial_set / already-flagged)
+      }
+      res = await fetchWithTimeout(`${API_URL}${path}`, { ...init, headers, body: JSON.stringify(mergedBody) }, path);
     }
   }
 
   /* Sofa whole-set HARD block — a sofa set must ship complete from ONE batch.
-     No "ship anyway" retry; surface the server's plain-English reason. */
+     A no-PO sofa_no_batch (canDropship absent/false) can't drop-ship, so
+     surface the server's plain-English reason (no "ship anyway" retry). */
   if (res.status === 409) {
     const text = await res.clone().text();
     if (text.includes('"sofa_no_batch"')) {

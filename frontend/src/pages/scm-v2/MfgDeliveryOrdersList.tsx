@@ -79,6 +79,9 @@ type DoRow = {
   /* Document-driven status (latest event wins) — 'invoiced' | 'returned', else
      'shipped' baseline. Sent by the list endpoint. */
   lifecycle_state?: 'shipped' | 'invoiced' | 'returned';
+  /* Migration 0057 — drop-ship flag (dual-read camelCase from the pg driver). */
+  is_dropship?: boolean;
+  isDropship?: boolean;
 };
 
 const fmtRm = (centi: number): string =>
@@ -762,7 +765,21 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<DoRow>[] =
   },
   {
     key: 'status', label: 'Status', width: 130, sortable: true, groupable: true,
-    accessor: (r) => <StatusPill status={r.status} lifecycle={r.lifecycle_state} />,
+    accessor: (r) => (
+      <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+        <StatusPill status={r.status} lifecycle={r.lifecycle_state} />
+        {/* Drop-ship badge (mig 0057) — warning tone. Dual-read camelCase. */}
+        {(r.isDropship ?? r.is_dropship) && (
+          <span
+            className={soDetailStyles.statusPill}
+            title="Shipped supplier-direct before the batch was received — stock is negative against the expected PO batch and nets out when its GRN arrives."
+            style={{ background: 'var(--c-amber-bg, #FBEFD6)', color: 'var(--c-amber-ink, #8A5A00)', border: '1px solid var(--c-amber-line, #E3C27A)' }}
+          >
+            Drop-ship
+          </span>
+        )}
+      </span>
+    ),
     searchValue: (r) => STATUS_LABEL[doEffectiveKey(r.status, r.lifecycle_state)] ?? r.status,
     filterValue: (r) => STATUS_LABEL[doEffectiveKey(r.status, r.lifecycle_state)] ?? r.status,
     groupValue: (r) => doEffectiveKey(r.status, r.lifecycle_state),

@@ -353,6 +353,9 @@ export const DeliveryOrderNew = () => {
              re-throws the original 409) — they chose not to ship, so swallow
              the raw payload instead of dumping it. */
           if (raw.includes('"short_stock"')) return;
+          /* Operator declined the "Ship as drop-ship?" prompt — they chose not
+             to ship, so swallow the no-batch payload instead of showing an error. */
+          if (raw.includes('"sofa_no_batch"')) return;
           notify({ title: 'Save failed', body: raw, tone: 'error' });
         },
       },
