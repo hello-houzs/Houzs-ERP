@@ -20,6 +20,7 @@
 // ----------------------------------------------------------------------------
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Download,
   Upload,
@@ -95,17 +96,34 @@ import { SofaComboTab } from '../../vendor/scm/components/SofaComboTab';
 import { FabricTracking } from './FabricTracking';
 import { formatSizeRich, formatSizeRichWithCfg, resolveSizeInfo } from '../../vendor/scm/lib/size-info';
 import { ProductModels, NewModelDialog } from './ProductModels';
+import { VariantsTab } from './products/VariantsTab';
 import { useBrandingPool, useProjectBrands } from '../../vendor/scm/lib/product-models-queries';
 import { useQueryClient } from '@tanstack/react-query';
 import styles from './Products.module.css';
 
 const ICON_PROPS = { size: 16, strokeWidth: 1.75 } as const;
 
-type TopTab = 'sku' | 'modular' | 'maintenance' | 'combos' | 'fabric';
+type TopTab = 'sku' | 'modular' | 'maintenance' | 'combos' | 'variants' | 'fabric';
 
 
 export const Products = () => {
-  const [topTab, setTopTab] = useState<TopTab>('sku');
+  /* URL-state the top tab so deep-links land on the right view (the Variants
+     tab is the new entry — owners coming from the design handoff should be
+     able to bookmark /scm/products?tab=variants). Reads/writes ?tab on every
+     change; the legacy default (no query string) still lands on SKU Master. */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = (searchParams.get('tab') ?? 'sku') as TopTab;
+  const topTab: TopTab = ['sku', 'modular', 'maintenance', 'combos', 'variants', 'fabric'].includes(
+    tabFromUrl,
+  )
+    ? tabFromUrl
+    : 'sku';
+  const setTopTab = (next: TopTab) => {
+    const sp = new URLSearchParams(searchParams);
+    if (next === 'sku') sp.delete('tab');
+    else sp.set('tab', next);
+    setSearchParams(sp, { replace: true });
+  };
 
   return (
     <div className={styles.page}>
@@ -159,6 +177,20 @@ export const Products = () => {
             >
               Combo Pricing
             </button>
+            {/* PR — Variants editor (design handoff item 5). Lives next to
+                Combo Pricing because the two work together: combos set the
+                bundle, this tab tunes the per-SKU enable / price-override on
+                the underlying variants. Writes go through the same
+                /mfg-products PATCH the SKU Master grid uses. */}
+            <button
+              type="button"
+              role="tab"
+              data-active={topTab === 'variants'}
+              className={styles.tabSwitchBtn}
+              onClick={() => setTopTab('variants')}
+            >
+              Variants
+            </button>
             {/* Fabric Converter — moved out of the sidebar to sit next to
                 Combo Pricing (commander 2026-05-28). Renders the existing
                 FabricTracking page inline; the /fabric-tracking route is kept
@@ -180,6 +212,7 @@ export const Products = () => {
       {topTab === 'modular' && <ProductModels />}
       {topTab === 'maintenance' && <MaintenanceTab />}
       {topTab === 'combos' && <SofaComboTab />}
+      {topTab === 'variants' && <VariantsTab />}
       {topTab === 'fabric' && <FabricTracking />}
     </div>
   );
