@@ -15,6 +15,7 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Plus, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@2990s/design-system';
+import { fmtDate as fmtDateShared, fmtQty } from '@2990s/shared';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import {
@@ -41,7 +42,7 @@ const STATUS_TONE: Record<StockTakeStatus, { bg: string; fg: string; label: stri
 const fmtDate = (iso: string): string => {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return iso;
-  return d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  return fmtDateShared(d);
 };
 
 const scopeLabel = (scopeType: string, scopeValue: string | null): string => {
@@ -159,7 +160,7 @@ export const StockTakes = () => {
       align: 'right',
       accessor: (t) => (
         <span className={`${styles.numCell} ${styles.numCellZero}`}>
-          {(t.line_count ?? 0).toLocaleString('en-MY')}
+          {fmtQty(t.line_count ?? 0)}
         </span>
       ),
       searchValue: (t) => String(t.line_count ?? 0),
@@ -181,7 +182,7 @@ export const StockTakes = () => {
         return (
           <span className={`${styles.numCell} ${styles.numCellZero}`}
                 style={{ color: varianceColor, fontFamily: 'var(--font-mono)' }}>
-            {variance > 0 ? '+' : ''}{variance.toLocaleString('en-MY')}
+            {variance > 0 ? '+' : ''}{fmtQty(variance)}
           </span>
         );
       },

@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary, canonicalizeVariants, fmtDateOrDash, fmtDateTime, missingVariantAxes } from '@2990s/shared'; // Commander 2026-05-28
+import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDate, fmtDateOrDash, fmtDateTime, missingVariantAxes } from '@2990s/shared'; // Commander 2026-05-28
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import {
@@ -862,7 +862,7 @@ export const SalesOrderDetail = () => {
                 return (
                   <span style={{ color: 'var(--c-burnt)', fontWeight: 600 }}>
                     {' · Customer credit balance: '}
-                    RM {(credit / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    {fmtCenti(credit)}
                   </span>
                 );
               })()}
@@ -2602,7 +2602,7 @@ const MONEY_FIELDS = new Set(['unitPriceCenti', 'discountCenti', 'totalCenti', '
 const fmtField = (field: string, val: unknown): string => {
   if (val === null || val === undefined || val === '') return '—';
   if (MONEY_FIELDS.has(field) && typeof val === 'number') {
-    return `RM ${(val / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return fmtCenti(val);
   }
   if (typeof val === 'object') return JSON.stringify(val);
   return String(val).replace(/_/g, ' ');
@@ -2634,7 +2634,7 @@ const relTime = (iso: string): string => {
   if (h < 24) return `${h}h ago`;
   const d = Math.round(h / 24);
   if (d < 14) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  return fmtDate(iso);
 };
 
 /* Task #99 (UI perf) — Memoize the History drawer. It only mounts when

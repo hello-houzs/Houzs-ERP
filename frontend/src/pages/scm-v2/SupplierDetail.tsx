@@ -68,7 +68,7 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import { formatPhone } from '@2990s/shared/phone';
-import { maintValues } from '@2990s/shared';
+import { maintValues, fmtCenti, fmtDateOrDash, fmtQty } from '@2990s/shared';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import styles from './SupplierDetail.module.css';
@@ -91,15 +91,11 @@ const fmtCurrency = (centi: number, currency: Currency): string => {
   return currency === 'MYR' ? `RM ${v}` : `${v} ${currency}`;
 };
 
-const fmtDate = (iso: string | null): string => {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) return iso;
-  return d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
-};
-
-const fmtRm = (centi: number): string =>
-  `RM ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/* Display dates + RM totals use the shared `fmtDateOrDash` / `fmtCenti`
+   (Commander 2026-06-18 — one canonical format system-wide). The old local
+   fmtDate/fmtRm helpers were exact equivalents and have been retired. The
+   currency-aware `fmtCurrency` above stays — it renders non-MYR binding prices
+   (RMB/USD/SGD) which `fmtCenti` (MYR-only) cannot. */
 
 /* ────────────────────────────────────────────────────────────────────────
    usePersistedOpen — collapsible-panel state persisted per panel in
@@ -1815,22 +1811,36 @@ const AutoSuffixButton = ({
 /* ════════════════════════════════════════════════════════════════════════
    Bindings CSV Export + Import (Commander 2026-05-28).
 
-   One row per binding. Columns:
-     - internal_code, internal_description, supplier_sku
-     - unit_price_rm   (RM, 2dp — for non-sofa / non-bedframe bindings)
-     - sofa_{height}_P1/P2/P3  (only for sofa bindings, read from price_matrix)
-     - bedframe_P1, bedframe_P2  (only for bedframe bindings)
-     - lead_time_days, moq, is_main_supplier
+   EXPORT is tidy LONG format — header:
+     internal_code, supplier_sku, category, height, tier, price_rm,
+     lead_time_days, moq, is_main_supplier
+
+   Per binding kind:
+     • other (mattress/accessory/service) → ONE row: category=other, blank
+       height/tier, price_rm = unit_price.
+     • bedframe → one row per tier present (P1/P2): category=bedframe, blank
+       height, tier=P1|P2.
+     • sofa → one row per (height × tier) present: category=sofa, height=24…,
+       tier=P1|P2|P3.
+   A binding with no price set still emits ONE row (blank price) so it round-
+   trips and stays editable. The per-binding scalars (supplier_sku / lead /
+   moq / main) repeat on every row for that binding — standard long-format
+   redundancy; import reads them from the binding's rows (last non-blank wins).
 
    Sofa seat-heights come from the master maintenance config (same source the
-   sofa SKU mappings table reads), so the export always matches whatever pool
-   commander currently maintains.
+   sofa SKU mappings table reads), so the export always reflects the current
+   pool. Long format means adding a seat-height no longer changes the column
+   set — it just adds rows.
 
-   Import path is intentionally update-only: rows whose internal_code matches
-   an existing binding for this supplier get patched; rows whose code doesn't
-   match are tallied + reported in a "skipped N" summary. Auto-create would
-   need the new SKU's full descriptor + risks creating drift across N missing
-   codes if commander accidentally edits the wrong column.
+   IMPORT accepts BOTH formats (back-compat): the new LONG layout AND the old
+   WIDE matrix. We sniff the header — a `price_rm` column ⇒ long; any
+   `sofa_<h>_<t>` / `bedframe_P1` / `unit_price_rm` column ⇒ wide. Suppliers'
+   previously-exported wide CSVs still load unchanged.
+
+   Import is update-only: rows whose internal_code matches an existing binding
+   for this supplier get patched; unknown codes are tallied + reported in a
+   "skipped N" summary. Auto-create would need the new SKU's full descriptor +
+   risks drift across N missing codes if commander edits the wrong column.
 
    Bulk endpoint isn't worth the round-trip cost yet — loop sequential PATCH
    with a progress toast. Flag this as a follow-up to convert to a single
@@ -1878,6 +1888,19 @@ function bindingKindForCsv(
   return 'other';
 }
 
+/** Long-format header — fixed column set regardless of the seat-height pool. */
+const BINDINGS_LONG_HEADER: readonly string[] = [
+  'internal_code',
+  'supplier_sku',
+  'category',
+  'height',
+  'tier',
+  'price_rm',
+  'lead_time_days',
+  'moq',
+  'is_main_supplier',
+];
+
 function exportBindingsCsv(
   bindings: BindingRow[],
   supplierCode: string,
@@ -1888,63 +1911,56 @@ function exportBindingsCsv(
   const productByCode = new Map<string, MfgProductRow>(
     products.map((p) => [p.code, p]),
   );
-  /* Build a wide column set up-front: base columns + sofa matrix columns +
-     bedframe matrix columns + tail. We always emit every column even if a
-     given supplier only has e.g. bedframe bindings — keeps the import path
-     position-stable, and commander can re-upload a partial sheet without
-     losing other categories. */
-  // Only emit the price-column groups for the categories this supplier actually
-  // binds — a bedframe-only supplier no longer gets a wall of empty sofa_*
-  // columns. internal_description is dropped (read-only echo, never imported).
-  // Wei Siang 2026-06-15: keep the sheet to the match key + prices.
-  const kinds = new Set(bindings.map((b) => bindingKindForCsv(b, productByCode)));
-  const sofaCols: string[] = [];
-  if (kinds.has('sofa')) {
-    for (const h of sofaHeights) {
-      for (const t of SOFA_TIERS_FOR_EXPORT) {
-        sofaCols.push(`sofa_${h}_${t}`);
-      }
-    }
-  }
-  const header: string[] = [
-    'internal_code',
-    'supplier_sku',
-    ...(kinds.has('other') ? ['unit_price_rm'] : []),
-    ...sofaCols,
-    ...(kinds.has('bedframe') ? ['bedframe_P1', 'bedframe_P2'] : []),
-    'lead_time_days',
-    'moq',
-    'is_main_supplier',
-  ];
 
-  const lines: string[] = [header.map(csvCell).join(',')];
+  // Tidy LONG format — one row per binding × price-point. Adding a seat-height
+  // adds rows, never columns, so the file shape is stable across pool edits.
+  const lines: string[] = [BINDINGS_LONG_HEADER.map(csvCell).join(',')];
+  const scalar = (b: BindingRow) => ({
+    internal_code: b.material_code,
+    supplier_sku: b.supplier_sku,
+    lead_time_days: b.lead_time_days || '',
+    moq: b.moq || '',
+    is_main_supplier: b.is_main_supplier ? 'true' : 'false',
+  });
+  const emit = (
+    b: BindingRow,
+    category: string,
+    height: string,
+    tier: string,
+    priceRm: string,
+  ) => {
+    const row: Record<string, unknown> = {
+      ...scalar(b), category, height, tier, price_rm: priceRm,
+    };
+    lines.push(BINDINGS_LONG_HEADER.map((col) => csvCell(row[col])).join(','));
+  };
+
   for (const b of bindings) {
     const kind = bindingKindForCsv(b, productByCode);
-    const row: Record<string, unknown> = {
-      internal_code: b.material_code,
-      supplier_sku: b.supplier_sku,
-      // unit_price_rm only meaningful for non-matrix categories
-      unit_price_rm: kind === 'other' ? fmtRmCell(b.unit_price_centi) : '',
-      bedframe_P1: '',
-      bedframe_P2: '',
-      lead_time_days: b.lead_time_days || '',
-      moq: b.moq || '',
-      is_main_supplier: b.is_main_supplier ? 'true' : 'false',
-    };
     if (kind === 'sofa') {
       const matrix = (b.price_matrix ?? {}) as SofaPriceMatrix;
+      let emitted = 0;
       for (const h of sofaHeights) {
         const inner = matrix[h] ?? {};
         for (const t of SOFA_TIERS_FOR_EXPORT) {
-          row[`sofa_${h}_${t}`] = fmtRmCell(inner[t]);
+          const cell = fmtRmCell(inner[t]);
+          if (cell) { emit(b, 'sofa', h, t, cell); emitted += 1; }
         }
       }
+      // No prices set yet → still emit one anchor row so the binding round-trips.
+      if (emitted === 0) emit(b, 'sofa', '', '', '');
     } else if (kind === 'bedframe') {
       const matrix = (b.price_matrix ?? {}) as BedframePriceMatrix;
-      row.bedframe_P1 = fmtRmCell(matrix.P1);
-      row.bedframe_P2 = fmtRmCell(matrix.P2);
+      let emitted = 0;
+      for (const t of ['P1', 'P2'] as const) {
+        const cell = fmtRmCell(matrix[t]);
+        if (cell) { emit(b, 'bedframe', '', t, cell); emitted += 1; }
+      }
+      if (emitted === 0) emit(b, 'bedframe', '', '', '');
+    } else {
+      // mattress / accessory / service — a single flat unit price.
+      emit(b, 'other', '', '', fmtRmCell(b.unit_price_centi));
     }
-    lines.push(header.map((col) => csvCell(row[col])).join(','));
   }
 
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
@@ -2002,6 +2018,259 @@ function parseCsv(text: string): string[][] {
   return rows.filter((r) => r.some((c) => c.trim().length > 0));
 }
 
+/* ── Import format detection + per-format patch builders (#6 back-compat) ──
+   Both builders accumulate into a Map<bindingId, AccumPatch>, so the executor
+   below is format-agnostic. A binding's scalar fields take the last non-blank
+   value seen; the price matrix is layered cell-by-cell onto the binding's
+   CURRENT matrix (wholesale send) so a partial sheet never wipes other cells. */
+
+type ImportFormat = 'long' | 'wide';
+type AccumPatch = { binding: BindingRow; patch: Partial<NewBinding> };
+type CsvKind = 'sofa' | 'bedframe' | 'other';
+
+/** Sniff the format from the header. A `price_rm` column ⇒ the new long
+ *  layout; any wide price column (`unit_price_rm` / `sofa_*` / `bedframe_*`)
+ *  ⇒ the legacy wide matrix. Defaults to long (the current export). */
+function detectImportFormat(header: string[]): ImportFormat {
+  if (header.includes('price_rm')) return 'long';
+  if (
+    header.includes('unit_price_rm') ||
+    header.includes('bedframe_P1') ||
+    header.includes('bedframe_P2') ||
+    header.some((h) => /^sofa_.+_(P1|P2|P3)$/.test(h))
+  ) return 'wide';
+  return 'long';
+}
+
+function csvKindForProduct(product: MfgProductRow | undefined): CsvKind {
+  return product?.category === 'SOFA' ? 'sofa'
+    : product?.category === 'BEDFRAME' ? 'bedframe'
+      : 'other';
+}
+
+/** Apply the shared scalar columns (supplier_sku / lead / moq / main) from one
+ *  parsed row onto an accumulating patch. Diffs against the binding so no-op
+ *  values aren't sent. Returns true if anything changed. */
+function applyScalarCols(
+  r: string[],
+  cols: { supSku: number; lead: number; moq: number; main: number },
+  binding: BindingRow,
+  patch: Partial<NewBinding>,
+): boolean {
+  let changed = false;
+  if (cols.supSku >= 0) {
+    const v = (r[cols.supSku] ?? '').trim();
+    if (v && v !== binding.supplier_sku && patch.supplierSku !== v) { patch.supplierSku = v; changed = true; }
+  }
+  if (cols.lead >= 0) {
+    const raw = (r[cols.lead] ?? '').trim();
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0 && n !== binding.lead_time_days) { patch.leadTimeDays = Math.round(n); changed = true; }
+    }
+  }
+  if (cols.moq >= 0) {
+    const raw = (r[cols.moq] ?? '').trim();
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0 && n !== binding.moq) { patch.moq = Math.round(n); changed = true; }
+    }
+  }
+  if (cols.main >= 0) {
+    const raw = (r[cols.main] ?? '').trim().toLowerCase();
+    if (raw === 'true' || raw === '1') {
+      if (!binding.is_main_supplier) { patch.isMainSupplier = true; changed = true; }
+    } else if (raw === 'false' || raw === '0') {
+      if (binding.is_main_supplier) { patch.isMainSupplier = false; changed = true; }
+    }
+  }
+  return changed;
+}
+
+/** WIDE parser — one row per binding, per-height matrix columns. Mirrors the
+ *  legacy import exactly (kept for back-compat with previously-exported CSVs). */
+function buildWidePatches(
+  dataRows: string[][],
+  header: string[],
+  bindingByCode: Map<string, BindingRow>,
+  productByCode: Map<string, MfgProductRow>,
+  sofaHeights: string[],
+): { patches: Map<string, AccumPatch>; skippedUnknown: number } {
+  const idx = (col: string) => header.indexOf(col);
+  const colCode = idx('internal_code');
+  const sofaColIndex = new Map<string, Map<'P1' | 'P2' | 'P3', number>>();
+  for (const h of sofaHeights) {
+    const inner = new Map<'P1' | 'P2' | 'P3', number>();
+    for (const t of SOFA_TIERS_FOR_EXPORT) {
+      const i = idx(`sofa_${h}_${t}`);
+      if (i >= 0) inner.set(t, i);
+    }
+    sofaColIndex.set(h, inner);
+  }
+  const colBedP1 = idx('bedframe_P1');
+  const colBedP2 = idx('bedframe_P2');
+  const colUnitPriceRm = idx('unit_price_rm');
+  const scalarCols = { supSku: idx('supplier_sku'), lead: idx('lead_time_days'), moq: idx('moq'), main: idx('is_main_supplier') };
+
+  const patches = new Map<string, AccumPatch>();
+  let skippedUnknown = 0;
+
+  for (const r of dataRows) {
+    const code = (r[colCode] ?? '').trim();
+    if (!code) continue;
+    const binding = bindingByCode.get(code);
+    if (!binding) { skippedUnknown += 1; continue; }
+    const kind = csvKindForProduct(productByCode.get(code));
+
+    const patch: Partial<NewBinding> = {};
+    applyScalarCols(r, scalarCols, binding, patch);
+    if (kind === 'other' && colUnitPriceRm >= 0) {
+      const sen = parseRmCell(r[colUnitPriceRm]);
+      if (sen != null && sen !== binding.unit_price_centi) patch.unitPriceCenti = sen;
+    }
+
+    // Price matrix updates are wholesale (send the merged matrix) so a partial
+    // sheet doesn't wipe other categories' data.
+    if (kind === 'sofa') {
+      const next: SofaPriceMatrix = { ...((binding.price_matrix ?? {}) as SofaPriceMatrix) };
+      let changed = false;
+      for (const h of sofaHeights) {
+        const inner = { ...(next[h] ?? {}) } as { P1?: number; P2?: number; P3?: number };
+        let innerChanged = false;
+        const indices = sofaColIndex.get(h);
+        if (!indices) continue;
+        for (const t of SOFA_TIERS_FOR_EXPORT) {
+          const colIdx = indices.get(t);
+          if (colIdx == null) continue;
+          const sen = parseRmCell(r[colIdx]);
+          if (sen == null) {
+            if (inner[t] !== undefined) { delete inner[t]; innerChanged = true; }
+          } else if (inner[t] !== sen) { inner[t] = sen; innerChanged = true; }
+        }
+        if (innerChanged) {
+          if (Object.keys(inner).length === 0) delete next[h];
+          else next[h] = inner;
+          changed = true;
+        }
+      }
+      if (changed) patch.priceMatrix = Object.keys(next).length === 0 ? null : next;
+    } else if (kind === 'bedframe') {
+      const next: BedframePriceMatrix = { ...((binding.price_matrix ?? {}) as BedframePriceMatrix) };
+      let changed = false;
+      if (colBedP1 >= 0) {
+        const sen = parseRmCell(r[colBedP1]);
+        if (sen == null) { if (next.P1 !== undefined) { delete next.P1; changed = true; } }
+        else if (next.P1 !== sen) { next.P1 = sen; changed = true; }
+      }
+      if (colBedP2 >= 0) {
+        const sen = parseRmCell(r[colBedP2]);
+        if (sen == null) { if (next.P2 !== undefined) { delete next.P2; changed = true; } }
+        else if (next.P2 !== sen) { next.P2 = sen; changed = true; }
+      }
+      if (changed) patch.priceMatrix = Object.keys(next).length === 0 ? null : next;
+    }
+
+    if (Object.keys(patch).length > 0) patches.set(binding.id, { binding, patch });
+  }
+  return { patches, skippedUnknown };
+}
+
+/** LONG parser — one row per binding × price-point. Multiple rows for the same
+ *  internal_code merge: scalars take last non-blank; each row layers ONE matrix
+ *  cell (sofa height×tier, or bedframe tier, or the flat unit price) onto the
+ *  binding's current matrix. Blank price clears that cell. */
+function buildLongPatches(
+  dataRows: string[][],
+  header: string[],
+  bindingByCode: Map<string, BindingRow>,
+  productByCode: Map<string, MfgProductRow>,
+): { patches: Map<string, AccumPatch>; skippedUnknown: number } {
+  const idx = (col: string) => header.indexOf(col);
+  const colCode = idx('internal_code');
+  const colCategory = idx('category');
+  const colHeight = idx('height');
+  const colTier = idx('tier');
+  const colPriceRm = idx('price_rm');
+  const scalarCols = { supSku: idx('supplier_sku'), lead: idx('lead_time_days'), moq: idx('moq'), main: idx('is_main_supplier') };
+
+  const patches = new Map<string, AccumPatch>();
+  // Track the running merged matrix per binding so successive long rows layer
+  // onto the SAME object (not the binding's pristine matrix each time).
+  const sofaMatrices = new Map<string, SofaPriceMatrix>();
+  const bedMatrices = new Map<string, BedframePriceMatrix>();
+  const sofaTouched = new Set<string>();
+  const bedTouched = new Set<string>();
+  const skippedCodes = new Set<string>();
+
+  for (const r of dataRows) {
+    const code = (r[colCode] ?? '').trim();
+    if (!code) continue;
+    const binding = bindingByCode.get(code);
+    if (!binding) { skippedCodes.add(code); continue; }
+
+    const acc = patches.get(binding.id) ?? { binding, patch: {} as Partial<NewBinding> };
+    patches.set(binding.id, acc);
+    applyScalarCols(r, scalarCols, binding, acc.patch);
+
+    // Prefer the row's own `category` column; fall back to the product's kind
+    // (lets a hand-written sheet omit category for non-matrix items).
+    const catCell = colCategory >= 0 ? (r[colCategory] ?? '').trim().toLowerCase() : '';
+    const kind: CsvKind =
+      catCell === 'sofa' ? 'sofa'
+        : catCell === 'bedframe' ? 'bedframe'
+          : catCell === 'other' ? 'other'
+            : csvKindForProduct(productByCode.get(code));
+
+    const sen = colPriceRm >= 0 ? parseRmCell(r[colPriceRm]) : null;
+    const tier = (colTier >= 0 ? (r[colTier] ?? '').trim().toUpperCase() : '');
+    const height = colHeight >= 0 ? (r[colHeight] ?? '').trim() : '';
+
+    if (kind === 'other') {
+      // Flat unit price. Blank price on an "other" row = no change (don't zero
+      // a price just because an anchor row carried no value).
+      if (sen != null && sen !== binding.unit_price_centi) acc.patch.unitPriceCenti = sen;
+    } else if (kind === 'bedframe') {
+      if (tier === 'P1' || tier === 'P2') {
+        const m = bedMatrices.get(binding.id) ?? { ...((binding.price_matrix ?? {}) as BedframePriceMatrix) };
+        if (sen == null) delete m[tier]; else m[tier] = sen;
+        bedMatrices.set(binding.id, m);
+        bedTouched.add(binding.id);
+      }
+      // tier blank → anchor row for an empty binding; nothing to layer.
+    } else { // sofa
+      if (height && (tier === 'P1' || tier === 'P2' || tier === 'P3')) {
+        const m = sofaMatrices.get(binding.id) ?? { ...((binding.price_matrix ?? {}) as SofaPriceMatrix) };
+        const inner = { ...(m[height] ?? {}) } as { P1?: number; P2?: number; P3?: number };
+        if (sen == null) delete inner[tier]; else inner[tier] = sen;
+        if (Object.keys(inner).length === 0) delete m[height];
+        else m[height] = inner;
+        sofaMatrices.set(binding.id, m);
+        sofaTouched.add(binding.id);
+      }
+    }
+  }
+
+  // Fold the merged matrices into each binding's patch (wholesale send).
+  for (const id of sofaTouched) {
+    const acc = patches.get(id);
+    if (!acc) continue;
+    const m = sofaMatrices.get(id)!;
+    acc.patch.priceMatrix = Object.keys(m).length === 0 ? null : m;
+  }
+  for (const id of bedTouched) {
+    const acc = patches.get(id);
+    if (!acc) continue;
+    const m = bedMatrices.get(id)!;
+    acc.patch.priceMatrix = Object.keys(m).length === 0 ? null : m;
+  }
+
+  // Drop bindings whose accumulated patch ended up empty (anchor-only rows).
+  for (const [id, acc] of patches) {
+    if (Object.keys(acc.patch).length === 0) patches.delete(id);
+  }
+  return { patches, skippedUnknown: skippedCodes.size };
+}
+
 const ImportBindingsDialog = ({
   supplierId,
   bindings,
@@ -2047,154 +2316,40 @@ const ImportBindingsDialog = ({
       }
       if (rows.length < 2) { setSummary('File has no data rows.'); setRunning(false); return; }
       const header = rows[0]!.map((h) => h.trim());
-      const idx = (col: string) => header.indexOf(col);
-      const colCode = idx('internal_code');
-      if (colCode < 0) {
+      if (header.indexOf('internal_code') < 0) {
         setSummary('Missing required column: internal_code');
         setRunning(false);
         return;
       }
       const dataRows = rows.slice(1);
 
-      // Pre-classify which sofa columns are present in this CSV so we don't
-      // index out of bounds when an exported file only includes a subset.
-      const sofaColIndex = new Map<string, Map<'P1' | 'P2' | 'P3', number>>();
-      for (const h of sofaHeights) {
-        const inner = new Map<'P1' | 'P2' | 'P3', number>();
-        for (const t of SOFA_TIERS_FOR_EXPORT) {
-          const i = idx(`sofa_${h}_${t}`);
-          if (i >= 0) inner.set(t, i);
-        }
-        sofaColIndex.set(h, inner);
-      }
-      const colBedP1 = idx('bedframe_P1');
-      const colBedP2 = idx('bedframe_P2');
-      const colSupSku = idx('supplier_sku');
-      const colUnitPriceRm = idx('unit_price_rm');
-      const colLead = idx('lead_time_days');
-      const colMoq = idx('moq');
-      const colMain = idx('is_main_supplier');
+      // #6 back-compat — sniff the layout and dispatch to the matching builder.
+      // Both produce a Map<bindingId, { binding, patch }> so the executor below
+      // is identical regardless of format.
+      const format = detectImportFormat(header);
+      const { patches, skippedUnknown } =
+        format === 'long'
+          ? buildLongPatches(dataRows, header, bindingByCode, productByCode)
+          : buildWidePatches(dataRows, header, bindingByCode, productByCode, sofaHeights);
 
       let updated = 0;
-      let skippedUnknown = 0;
       let failed = 0;
-      const updates: Array<() => Promise<void>> = [];
-
-      for (const r of dataRows) {
-        const code = (r[colCode] ?? '').trim();
-        if (!code) continue;
-        const binding = bindingByCode.get(code);
-        if (!binding) { skippedUnknown += 1; continue; }
-        const product = productByCode.get(code);
-        const kind: 'sofa' | 'bedframe' | 'other' =
-          product?.category === 'SOFA' ? 'sofa'
-            : product?.category === 'BEDFRAME' ? 'bedframe'
-              : 'other';
-
-        const patch: Partial<NewBinding> = {};
-        if (colSupSku >= 0) {
-          const v = (r[colSupSku] ?? '').trim();
-          if (v && v !== binding.supplier_sku) patch.supplierSku = v;
+      const accs = Array.from(patches.values());
+      setProgress({ done: 0, total: accs.length });
+      for (let i = 0; i < accs.length; i++) {
+        const { binding, patch } = accs[i]!;
+        try {
+          await update.mutateAsync({ supplierId, bindingId: binding.id, ...patch });
+          updated += 1;
+        } catch {
+          failed += 1;
         }
-        if (kind === 'other' && colUnitPriceRm >= 0) {
-          const sen = parseRmCell(r[colUnitPriceRm]);
-          if (sen != null && sen !== binding.unit_price_centi) patch.unitPriceCenti = sen;
-        }
-        if (colLead >= 0) {
-          const raw = (r[colLead] ?? '').trim();
-          if (raw) {
-            const n = Number(raw);
-            if (Number.isFinite(n) && n >= 0 && n !== binding.lead_time_days) {
-              patch.leadTimeDays = Math.round(n);
-            }
-          }
-        }
-        if (colMoq >= 0) {
-          const raw = (r[colMoq] ?? '').trim();
-          if (raw) {
-            const n = Number(raw);
-            if (Number.isFinite(n) && n >= 0 && n !== binding.moq) patch.moq = Math.round(n);
-          }
-        }
-        if (colMain >= 0) {
-          const raw = (r[colMain] ?? '').trim().toLowerCase();
-          if (raw === 'true' || raw === '1') {
-            if (!binding.is_main_supplier) patch.isMainSupplier = true;
-          } else if (raw === 'false' || raw === '0') {
-            if (binding.is_main_supplier) patch.isMainSupplier = false;
-          }
-        }
-
-        // Price matrix updates are wholesale (we send the merged matrix) so
-        // partial CSVs don't wipe other categories' data.
-        if (kind === 'sofa') {
-          const next: SofaPriceMatrix = { ...((binding.price_matrix ?? {}) as SofaPriceMatrix) };
-          let changed = false;
-          for (const h of sofaHeights) {
-            const inner = { ...(next[h] ?? {}) } as { P1?: number; P2?: number; P3?: number };
-            let innerChanged = false;
-            const indices = sofaColIndex.get(h);
-            if (!indices) continue;
-            for (const t of SOFA_TIERS_FOR_EXPORT) {
-              const colIdx = indices.get(t);
-              if (colIdx == null) continue;
-              const sen = parseRmCell(r[colIdx]);
-              if (sen == null) {
-                if (inner[t] !== undefined) { delete inner[t]; innerChanged = true; }
-              } else if (inner[t] !== sen) {
-                inner[t] = sen;
-                innerChanged = true;
-              }
-            }
-            if (innerChanged) {
-              if (Object.keys(inner).length === 0) delete next[h];
-              else next[h] = inner;
-              changed = true;
-            }
-          }
-          if (changed) {
-            patch.priceMatrix = Object.keys(next).length === 0 ? null : next;
-          }
-        } else if (kind === 'bedframe') {
-          const next: BedframePriceMatrix = { ...((binding.price_matrix ?? {}) as BedframePriceMatrix) };
-          let changed = false;
-          if (colBedP1 >= 0) {
-            const sen = parseRmCell(r[colBedP1]);
-            if (sen == null) {
-              if (next.P1 !== undefined) { delete next.P1; changed = true; }
-            } else if (next.P1 !== sen) { next.P1 = sen; changed = true; }
-          }
-          if (colBedP2 >= 0) {
-            const sen = parseRmCell(r[colBedP2]);
-            if (sen == null) {
-              if (next.P2 !== undefined) { delete next.P2; changed = true; }
-            } else if (next.P2 !== sen) { next.P2 = sen; changed = true; }
-          }
-          if (changed) {
-            patch.priceMatrix = Object.keys(next).length === 0 ? null : next;
-          }
-        }
-
-        if (Object.keys(patch).length === 0) continue; // No-op row
-        const bindingId = binding.id;
-        updates.push(async () => {
-          try {
-            await update.mutateAsync({ supplierId, bindingId, ...patch });
-            updated += 1;
-          } catch {
-            failed += 1;
-          }
-        });
-      }
-
-      setProgress({ done: 0, total: updates.length });
-      for (let i = 0; i < updates.length; i++) {
-        await updates[i]!();
-        setProgress({ done: i + 1, total: updates.length });
+        setProgress({ done: i + 1, total: accs.length });
       }
 
       const parts: string[] = [];
       parts.push(`Updated ${updated} binding${updated === 1 ? '' : 's'}`);
+      parts.push(`${format} format`);
       if (skippedUnknown > 0) parts.push(`skipped ${skippedUnknown} unknown internal_code${skippedUnknown === 1 ? '' : 's'}`);
       if (failed > 0) parts.push(`${failed} row${failed === 1 ? '' : 's'} failed`);
       setSummary(parts.join(' · '));
@@ -2218,7 +2373,10 @@ const ImportBindingsDialog = ({
         </header>
         <div className={styles.modalBody}>
           <p style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', marginBottom: 'var(--space-3)' }}>
-            Upload a CSV or Excel file exported via <strong>Export Bindings</strong>. Rows whose
+            Upload a CSV or Excel file exported via <strong>Export Bindings</strong>. Both the
+            current <strong>long</strong> layout (one row per price-point:
+            <code> category / height / tier / price_rm</code>) and older
+            <strong> wide</strong> matrix sheets are accepted automatically. Rows whose
             <code> internal_code </code>matches an existing binding are
             <strong> updated</strong>; unknown codes are <strong>skipped</strong>
             (no auto-create — use the SKU Mappings dialog to add new bindings).
@@ -2312,11 +2470,11 @@ const LastTenPOsTable = ({ rows }: { rows: LastPo[] }) => {
                 </Link>
               </td>
               <td className={styles.muted}>{po.status}</td>
-              <td className={`${styles.tableRight} ${styles.muted}`}>{po.orderedQty}</td>
-              <td className={`${styles.tableRight} ${styles.muted}`}>{po.receivedQty}</td>
-              <td className={styles.priceCell}>{fmtRm(po.totalCenti)}</td>
-              <td className={styles.muted}>{fmtDate(po.expectedDate)}</td>
-              <td className={styles.muted}>{fmtDate(po.receivedDate)}</td>
+              <td className={`${styles.tableRight} ${styles.muted}`}>{fmtQty(po.orderedQty)}</td>
+              <td className={`${styles.tableRight} ${styles.muted}`}>{fmtQty(po.receivedQty)}</td>
+              <td className={styles.priceCell}>{fmtCenti(po.totalCenti)}</td>
+              <td className={styles.muted}>{fmtDateOrDash(po.expectedDate)}</td>
+              <td className={styles.muted}>{fmtDateOrDash(po.receivedDate)}</td>
               <td>
                 <span
                   className={
@@ -2435,6 +2593,27 @@ const SkuFormDialog = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.materialCode, draft.materialKind, products.data, editing]);
 
+  /* #5 — live "becomes →" preview (mirrors the New Models bulk form's
+     previewCodes banner). As the operator types the internal code, resolve it
+     against the mfg_products cache and show what composeSupplierSku() will
+     produce — the SAME suffix rule the auto-fill above applies — so the
+     generated Supplier SKU isn't a silent surprise. Only meaningful for
+     manufacturing SKUs that resolve to a known product. */
+  const skuPreview = useMemo(() => {
+    if (draft.materialKind !== 'mfg_product') return null;
+    const code = draft.materialCode.trim();
+    if (!code) return null;
+    const p = findProductByCode(code);
+    if (!p) return null;
+    const composed = composeSupplierSku(code, p);
+    if (!composed) return null;
+    // Has the operator typed a Supplier SKU that differs from the auto-rule?
+    const current = draft.supplierSku.trim();
+    const overridden = current.length > 0 && current !== composed;
+    return { composed, overridden, current };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- findProductByCode reads products.data
+  }, [draft.materialKind, draft.materialCode, draft.supplierSku, products.data]);
+
   const submit = () => {
     if (!draft.materialCode.trim() || !draft.materialName.trim() || !draft.supplierSku.trim()) {
       notify({ title: 'Internal code, description and supplier SKU are required.', tone: 'error' });
@@ -2529,6 +2708,29 @@ const SkuFormDialog = ({
                 onChange={(e) => set('supplierSku', e.target.value)}
               />
             </label>
+
+            {/* #5 — live code preview. Shows what composeSupplierSku() derives
+                from the typed internal code (same look as the New Models bulk
+                form's "Will create →" banner) so the auto-filled Supplier SKU
+                isn't silent. Flags when the operator has overridden the rule. */}
+            {skuPreview && (
+              <div
+                className={styles.formGridFull}
+                style={{
+                  fontSize: 'var(--fs-11)', color: 'var(--fg-muted)',
+                  padding: '6px 2px', lineHeight: 1.5,
+                }}
+              >
+                <span style={{
+                  fontFamily: 'var(--font-button)', fontSize: 'var(--fs-10)',
+                  letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--c-burnt)',
+                }}>Supplier SKU → </span>
+                <code style={{ fontWeight: 700, color: 'var(--c-ink)' }}>{skuPreview.composed}</code>
+                {skuPreview.overridden && (
+                  <span> · overridden (using <code style={{ fontWeight: 700, color: 'var(--c-ink)' }}>{skuPreview.current}</code>)</span>
+                )}
+              </div>
+            )}
 
             <label className={`${styles.field} ${styles.formGridFull}`}>
               <span className={styles.fieldLabel}>Internal Description *</span>
@@ -3376,6 +3578,29 @@ const ModelSkuPickerDialog = ({
                                 placeholder="Their code for the whole Model"
                                 style={smallInputStyle}
                               />
+                              {/* #5 — live code preview (mirrors the New Models
+                                  bulk form's "Will create →" banner). Shows the
+                                  per-SKU supplier_sku composeSupplierSku() will
+                                  generate as the code is typed, without needing
+                                  to expand the SKU list below. */}
+                              {previewMap && toMap.length > 0 && (
+                                <div style={{
+                                  marginTop: 4, fontSize: 'var(--fs-11)', color: 'var(--fg-muted)',
+                                  lineHeight: 1.4,
+                                }}>
+                                  <span style={{
+                                    fontFamily: 'var(--font-button)', fontSize: 'var(--fs-10)',
+                                    letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--c-burnt)',
+                                  }}>becomes → </span>
+                                  {toMap.slice(0, 2).map((c, i) => (
+                                    <span key={c}>
+                                      <code style={{ fontWeight: 700, color: 'var(--c-ink)' }}>{previewMap[c]}</code>
+                                      {i < Math.min(2, toMap.length) - 1 ? ', ' : ''}
+                                    </span>
+                                  ))}
+                                  {toMap.length > 2 && <span> … +{toMap.length - 2} more</span>}
+                                </div>
+                              )}
                             </td>
                             <td>
                               <input

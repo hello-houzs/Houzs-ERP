@@ -50,6 +50,8 @@ import {
   maintEntryWithActive,
   type MaintPoolEntry,
   type SofaQuickPreset,
+  fmtCenti,
+  fmtDate,
 } from '@2990s/shared';
 import {
   useMfgProducts,
@@ -231,13 +233,7 @@ const CATEGORIES: { value: MfgCategory | 'all'; label: string }[] = [
   { value: 'SERVICE', label: 'Service' },
 ];
 
-const fmtRm = (sen: number | null): string => {
-  if (sen == null) return '—';
-  return `RM ${(sen / 100).toLocaleString('en-MY', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-};
+const fmtRm = (sen: number | null): string => fmtCenti(sen);
 
 const fmtUnit = (milli: number): string =>
   (milli / 1000).toFixed(3);
@@ -4152,13 +4148,12 @@ const Field = ({
 const fmtDateTime = (iso: string): string => {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return iso;
-  const date = d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  const date = fmtDate(d);
   const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   return `${date} ${time}`;
 };
 
-const fmtRmCenti = (centi: number): string =>
-  `RM ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtRmCenti = (centi: number): string => fmtCenti(centi);
 
 const ProductSuppliersDrawer = ({
   row, onClose,

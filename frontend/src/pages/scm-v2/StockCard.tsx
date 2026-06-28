@@ -30,24 +30,20 @@ import {
   type InventoryMovement,
   type InventoryLot,
 } from '../../vendor/scm/lib/inventory-queries';
+import { fmtCenti, fmtDate as fmtDateShared, fmtQty } from '@2990s/shared';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import styles from './Inventory.module.css';
 import chrome from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
-const fmtRm = (sen: number | null | undefined): string => {
-  if (sen == null) return '—';
-  return `RM ${(sen / 100).toLocaleString('en-MY', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  })}`;
-};
+const fmtRm = (sen: number | null | undefined): string => fmtCenti(sen);
 
 const fmtDateTime = (iso: string | null | undefined): string => {
   if (!iso) return '—';
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return iso;
-  const date = d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  const date = fmtDateShared(d);
   const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   return `${date} ${time}`;
 };
@@ -56,7 +52,7 @@ const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return '—';
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return iso;
-  return d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  return fmtDateShared(d);
 };
 
 /** Best-effort route for a source doc on the ledger row. Inventory writes
@@ -212,7 +208,7 @@ export const StockCard = () => {
             : styles.numCellZero;
           return (
             <span className={`${styles.numCell} ${qtyClass}`}>
-              {qtySign}{Math.abs(m.qty).toLocaleString('en-MY')}
+              {qtySign}{fmtQty(Math.abs(m.qty))}
             </span>
           );
         },
@@ -241,7 +237,7 @@ export const StockCard = () => {
         align: 'right',
         accessor: (m) => (
           <span className={styles.numCell} style={{ fontWeight: 700 }}>
-            {m.runningBalance.toLocaleString('en-MY')}
+            {fmtQty(m.runningBalance)}
           </span>
         ),
         searchValue: (m) => String(m.runningBalance),
@@ -298,7 +294,7 @@ export const StockCard = () => {
       <div className={styles.statGrid}>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>Current Qty</span>
-          <span className={styles.statValue}>{totalQty.toLocaleString('en-MY')}</span>
+          <span className={styles.statValue}>{fmtQty(totalQty)}</span>
         </div>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>Warehouses</span>
@@ -381,7 +377,7 @@ export const StockCard = () => {
                     <td><span className={styles.codeChip}>{b.warehouse_code ?? '—'}</span></td>
                     <td>{b.warehouse_name ?? '—'}</td>
                     <td className={`${styles.numCell} ${qtyClass}`}>
-                      {b.qty.toLocaleString('en-MY')}
+                      {fmtQty(b.qty)}
                     </td>
                     <td className={`${styles.numCell} ${styles.numCellZero}`}>
                       {b.value_sen && b.value_sen > 0 ? fmtRm(b.value_sen) : '—'}
@@ -485,10 +481,10 @@ export const StockCard = () => {
                     </td>
                     <td>{l.warehouse_code ?? '—'}</td>
                     <td className={`${styles.numCell} ${styles.numCellZero}`}>
-                      {l.qty_received.toLocaleString('en-MY')}
+                      {fmtQty(l.qty_received)}
                     </td>
                     <td className={`${styles.numCell} ${closed ? styles.numCellZero : styles.numCellPos}`}>
-                      {l.qty_remaining.toLocaleString('en-MY')}
+                      {fmtQty(l.qty_remaining)}
                       {closed && (
                         <span style={{
                           marginLeft: 6, fontSize: 'var(--fs-11)',

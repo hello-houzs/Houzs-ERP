@@ -23,7 +23,7 @@ import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
-import { buildVariantSummary } from '@2990s/shared'; // Commander 2026-05-28 — Description 2
+import { buildVariantSummary, fmtDate as fmtDateShared, fmtQty } from '@2990s/shared'; // Commander 2026-05-28 — Description 2
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import {
@@ -44,7 +44,7 @@ const fmtDateTime = (iso: string | null): string => {
   if (!iso) return '—';
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return iso;
-  const date = d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  const date = fmtDateShared(d);
   const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   return `${date} ${time}`;
 };
@@ -240,7 +240,7 @@ export const StockTransferDetail = () => {
                     })()}
                   </td>
                   <td className={styles.tableRight} style={{ fontFamily: 'var(--font-mono)' }}>
-                    {ln.qty.toLocaleString('en-MY')}
+                    {fmtQty(ln.qty)}
                   </td>
                 </tr>
               ))}

@@ -20,7 +20,7 @@ import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataG
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary } from '@2990s/shared';
+import { buildVariantSummary, fmtQty } from '@2990s/shared';
 import {
   useConsignmentReturns, useUpdateConsignmentReturnStatus, useConsignmentReturnDetail,
 } from '../../vendor/scm/lib/consignment-return-queries';
@@ -306,6 +306,9 @@ export const ConsignmentReturns = () => {
   // DataGrid filters internally now; capture its on-screen rows so the KPI
   // strip reflects the active funnel filters (was the ColumnFilterBar output).
   const [visibleRows, setVisibleRows] = useState<CrnRow[]>(baseRows);
+  // Row-click multi-select (mirrors the DR / GRN lists) — ticks the row; the
+  // ▸ chevron still drills down via its own stopPropagation handler.
+  const [sel, setSel] = useState<Set<string>>(new Set());
 
   const kpis = useMemo(() => {
     let revenue = 0, cost = 0, margin = 0;
@@ -377,7 +380,7 @@ export const ConsignmentReturns = () => {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-2)' }}>
-        {kpiTile('Total Returns', kpis.totalReturns.toLocaleString('en-MY'))}
+        {kpiTile('Total Returns', fmtQty(kpis.totalReturns))}
         {kpiTile('Returned Value (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Cost (RM)', fmtRm(kpis.cost))}
         {kpiTile('Margin (RM)', fmtRm(kpis.margin), kpis.margin > 0 ? 'good' : kpis.margin < 0 ? 'bad' : undefined)}
@@ -406,6 +409,15 @@ export const ConsignmentReturns = () => {
         storageKey={STORAGE_KEY}
         exportName="Consignment Returns"
         rowKey={(r) => r.id}
+        selectable={{
+          selectedKeys: sel,
+          onToggle: (k) => setSel((p) => { const n = new Set(p); if (n.has(k)) n.delete(k); else n.add(k); return n; }),
+          onToggleAll: (keys, allSel) => setSel((p) => {
+            const n = new Set(p);
+            if (allSel) { for (const k of keys) n.delete(k); } else { for (const k of keys) n.add(k); }
+            return n;
+          }),
+        }}
         searchPlaceholder="Search returns…"
         groupBanner={false}
         onRowDoubleClick={(r) => openDetail(r)}

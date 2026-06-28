@@ -20,7 +20,7 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useChoice } from '../../vendor/scm/components/ChoiceDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary } from '@2990s/shared';
+import { buildVariantSummary, fmtQty } from '@2990s/shared';
 import {
   useSalesInvoices, useUpdateSalesInvoiceStatus, useSalesInvoiceDetail,
 } from '../../vendor/scm/lib/sales-invoice-queries';
@@ -464,7 +464,7 @@ export const SalesInvoicesList = () => {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-2)' }}>
-        {kpiTile('Total Invoices', kpis.totalInvoices.toLocaleString('en-MY'))}
+        {kpiTile('Total Invoices', fmtQty(kpis.totalInvoices))}
         {kpiTile('Revenue (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Outstanding (RM)', fmtRm(kpis.outstanding), kpis.outstanding > 0 ? 'bad' : 'good')}
         {kpiTile('Margin (RM)', fmtRm(kpis.margin), kpis.margin > 0 ? 'good' : kpis.margin < 0 ? 'bad' : undefined)}

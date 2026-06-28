@@ -23,7 +23,7 @@ import { useChoice } from '../../vendor/scm/components/ChoiceDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary } from '@2990s/shared';
+import { buildVariantSummary, fmtQty } from '@2990s/shared';
 import {
   useDeliveryReturns, useUpdateDeliveryReturnStatus, useDeliveryReturnDetail,
 } from '../../vendor/scm/lib/delivery-return-queries';
@@ -481,7 +481,7 @@ export const DeliveryReturnsList = () => {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-2)' }}>
-        {kpiTile('Total Returns', kpis.totalReturns.toLocaleString('en-MY'))}
+        {kpiTile('Total Returns', fmtQty(kpis.totalReturns))}
         {kpiTile('Returned Value (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Cost (RM)', fmtRm(kpis.cost))}
         {kpiTile('Margin (RM)', fmtRm(kpis.margin), kpis.margin > 0 ? 'good' : kpis.margin < 0 ? 'bad' : undefined)}

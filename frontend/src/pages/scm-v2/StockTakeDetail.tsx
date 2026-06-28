@@ -25,7 +25,7 @@ import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
-import { fmtDateOrDash } from '@2990s/shared';
+import { fmtDate as fmtDateShared, fmtDateOrDash, fmtQty } from '@2990s/shared';
 import {
   useStockTakeDetail,
   useUpdateStockTakeLines,
@@ -44,7 +44,7 @@ const fmtDateTime = (iso: string | null): string => {
   if (!iso) return '—';
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return iso;
-  const date = d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  const date = fmtDateShared(d);
   const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   return `${date} ${time}`;
 };
@@ -413,17 +413,17 @@ export const StockTakeDetail = () => {
             <SummaryStat label="Variance lines" value={totals.nonZeroVarianceLines.toString()} />
             <SummaryStat
               label="+ Found"
-              value={`+${totals.variancePos.toLocaleString('en-MY')}`}
+              value={`+${fmtQty(totals.variancePos)}`}
               tone={totals.variancePos > 0 ? 'positive' : 'muted'}
             />
             <SummaryStat
               label="− Lost"
-              value={totals.varianceNeg.toLocaleString('en-MY')}
+              value={fmtQty(totals.varianceNeg)}
               tone={totals.varianceNeg < 0 ? 'negative' : 'muted'}
             />
             <SummaryStat
               label="Net"
-              value={`${totals.varianceNet > 0 ? '+' : ''}${totals.varianceNet.toLocaleString('en-MY')}`}
+              value={`${totals.varianceNet > 0 ? '+' : ''}${fmtQty(totals.varianceNet)}`}
               tone={totals.varianceNet > 0 ? 'positive' : totals.varianceNet < 0 ? 'negative' : 'muted'}
             />
           </div>
@@ -516,7 +516,7 @@ export const StockTakeDetail = () => {
                     </td>
                     <td className={styles.tableRight}
                         style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-13)' }}>
-                      {ln.systemQty.toLocaleString('en-MY')}
+                      {fmtQty(ln.systemQty)}
                     </td>
                     <td className={styles.tableRight}>
                       {isDraft ? (
@@ -537,7 +537,7 @@ export const StockTakeDetail = () => {
                       ) : (
                         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-13)',
                           color: isUntouched ? 'var(--fg-muted)' : 'var(--c-ink)' }}>
-                          {isUntouched ? '—' : Number(ln.countedQtyInput).toLocaleString('en-MY')}
+                          {isUntouched ? '—' : fmtQty(Number(ln.countedQtyInput))}
                         </span>
                       )}
                     </td>
@@ -548,7 +548,7 @@ export const StockTakeDetail = () => {
                         }}>
                       {isUntouched
                         ? '—'
-                        : `${v! > 0 ? '+' : ''}${v!.toLocaleString('en-MY')}`}
+                        : `${v! > 0 ? '+' : ''}${fmtQty(v!)}`}
                     </td>
                     {isDraft && (
                       <td>

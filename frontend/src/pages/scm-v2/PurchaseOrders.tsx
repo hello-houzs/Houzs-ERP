@@ -33,6 +33,7 @@ import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { useChoice } from '../../vendor/scm/components/ChoiceDialog';
 import styles from './Suppliers.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -107,37 +108,12 @@ const summarizeItems = (items: PoHeaderRow['items']): string | null => {
    reloads — same persistence the SO list + GRN list already use. */
 const PO_LIST_STORAGE_KEY = 'po-list.layout.v1';
 
-/* buildPoColumns — declared as a function so the component can pass fresh
-   selection state (selectedIds + toggleSelect) every render. Memoized inside
-   the component so DataGrid's column memo only invalidates when the selection
-   set actually changes. Columns mirror the plain table this replaced:
-   leading checkbox · PO No. · Supplier · Items · Date · Expected · Currency ·
-   Total · Status. */
-const buildPoColumns = (
-  selectedIds: Set<string>,
-  toggleSelect: (id: string) => void,
-): DataGridColumn<PoHeaderRow>[] => [
-  {
-    /* Leading multi-select checkbox for batch GRN conversion. stopPropagation
-       so ticking a row doesn't also fire the grid's row-click navigation. */
-    key: 'select', label: '', width: 40, minWidth: 36,
-    sortable: false, groupable: false,
-    accessor: (po) => (
-      <input
-        type="checkbox"
-        aria-label={`Select PO ${po.po_number}`}
-        checked={selectedIds.has(po.id)}
-        onChange={() => toggleSelect(po.id)}
-        onClick={(e) => e.stopPropagation()}
-        style={{ cursor: 'pointer' }}
-      />
-    ),
-    searchValue: () => '',
-    /* Decorative selection checkbox — labelled "#" so the export header isn't a
-       blank column, and emits '' so the cell is empty (Wei Siang 2026-06-23). */
-    exportLabel: '#',
-    exportValue: () => '',
-  },
+/* buildPoColumns — the leading multi-select checkbox is now provided by
+   DataGrid's first-class `selectable` prop (synthetic `__select__` column +
+   row-click-to-tick), matching the SO / DO / GRN lists, so this builder no
+   longer hand-rolls a select column. Columns:
+   PO No. · Supplier · Items · Date · Expected · Currency · Total · Status. */
+const buildPoColumns = (): DataGridColumn<PoHeaderRow>[] => [
   {
     key: 'po_number', label: 'PO No.', width: 150, sortable: true,
     accessor: (po) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{po.po_number}</span>,
@@ -261,7 +237,9 @@ export const PurchaseOrders = () => {
   const navigate = useNavigate();
   const askConfirm = useConfirm();
   const notify = useNotify();
-  // Multi-select state — batch-convert N POs into one GRN.
+  const askChoice = useChoice();
+  // Multi-select state — batch-convert N POs into one GRN. Row-click ticks the
+  // row via DataGrid's `selectable` prop (the ▸ chevron still drills down).
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   // Bump to collapse every expanded drill-down in the list at once.
   const [collapseNonce, setCollapseNonce] = useState(0);
@@ -344,17 +322,31 @@ export const PurchaseOrders = () => {
       setPrintingDocs(false);
     }
   };
+  /* Single "Print all" button → prompt merge-vs-split, matching the SO / DO /
+     SI / GRN lists (one combined PDF vs one file per PO). A lone PO skips the
+     prompt and prints straight to one file; otherwise askChoice routes to the
+     existing combined / separate code paths in printDocs. */
+  const printDocsChoose = async (rowsToPrint: PoHeaderRow[]) => {
+    if (rowsToPrint.length === 0 || printingDocs) return;
+    if (rowsToPrint.length === 1) { await printDocs(rowsToPrint); return; }
+    const how = await askChoice({
+      title: `Print ${rowsToPrint.length} documents`,
+      options: [
+        { value: 'one', label: 'One combined PDF' },
+        { value: 'many', label: 'Separate files', detail: 'One PDF per document' },
+      ],
+    });
+    if (how == null) return;
+    await printDocs(rowsToPrint, how === 'many');
+  };
   const selectedSuppliers = useMemo(
     () => new Set(selectedRows.map((r) => r.supplier_id)),
     [selectedRows],
   );
 
-  // Memoized columns — only invalidates when the selection set changes, so
-  // DataGrid's prop-memo keeps the sort/filter/group pipeline warm on typing.
-  const columns = useMemo(
-    () => buildPoColumns(selectedIds, toggleSelect),
-    [selectedIds],
-  );
+  // Memoized columns — the select column is now DataGrid-managed (selectable
+  // prop), so the column set is static and never invalidates on selection.
+  const columns = useMemo(() => buildPoColumns(), []);
 
   /* Commander 2026-05-31 — "为什么点 Convert to GR 的时候它是直接 Create，而不是进入
      Draft 状态？" Convert no longer POSTs a posted GRN straight away. It routes to
@@ -412,22 +404,15 @@ export const PurchaseOrders = () => {
             <ChevronsDownUp {...ICON} />
             <span>Collapse all</span>
           </Button>
-          {/* Print all (filtered) — one combined PDF of EVERY PO currently shown.
-              Respects the search + column filters below (no row-ticking needed):
-              filter to a supplier/date → the count + the PDF follow. (2026-06-16) */}
-          <Button variant="ghost" size="sm" onClick={() => printDocs(visibleRows)}
+          {/* Print all (filtered) — prints EVERY PO currently shown (follows the
+              search + column filters below; no row-ticking needed). One button
+              that prompts merge-vs-split (one combined PDF vs one file per PO),
+              matching the SO / DO / SI / GRN lists (2026-06-16, unified). */}
+          <Button variant="ghost" size="sm" onClick={() => void printDocsChoose(visibleRows)}
             disabled={printingDocs || visibleRows.length === 0}
-            title="Print every PO currently shown (follows the filters below) into ONE combined PDF">
+            title="Print every PO currently shown (follows the filters below) — choose one combined PDF or separate files">
             <Printer {...ICON} />
-            <span>{printingDocs ? 'Preparing…' : `Print all · 1 PDF (${visibleRows.length})`}</span>
-          </Button>
-          {/* Separate mode (Commander 2026-06-16) — each shown PO as its OWN PDF
-              file, so you don't save them one by one. */}
-          <Button variant="ghost" size="sm" onClick={() => printDocs(visibleRows, true)}
-            disabled={printingDocs || visibleRows.length === 0}
-            title="Save each shown PO as its own separate PDF file">
-            <Printer {...ICON} />
-            <span>{`Print all · ${visibleRows.length} files`}</span>
+            <span>{printingDocs ? 'Preparing…' : `Print all (${visibleRows.length})`}</span>
           </Button>
           {/* PR — Phase 1: multi-SO → PO picker. Lets commander select
               outstanding SO lines (across customers + suppliers), input
@@ -502,14 +487,10 @@ export const PurchaseOrders = () => {
           </span>
           <span style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
             <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>Clear</Button>
-            <Button variant="ghost" size="sm" onClick={() => printDocs(selectedRows)} disabled={printingDocs}>
+            <Button variant="ghost" size="sm" onClick={() => void printDocsChoose(selectedRows)} disabled={printingDocs}
+              title="Print the selected POs — choose one combined PDF or separate files">
               <Printer {...ICON} />
-              <span>{printingDocs ? 'Preparing…' : `1 PDF (${selectedIds.size})`}</span>
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => printDocs(selectedRows, true)} disabled={printingDocs}
-              title="Save each selected PO as its own separate PDF file">
-              <Printer {...ICON} />
-              <span>{`${selectedIds.size} files`}</span>
+              <span>{printingDocs ? 'Preparing…' : `Print (${selectedIds.size})`}</span>
             </Button>
             <Button variant="primary" size="sm"
               onClick={convertToGrn}
@@ -580,15 +561,25 @@ export const PurchaseOrders = () => {
         storageKey={PO_LIST_STORAGE_KEY}
         exportName="Purchase Orders"
         rowKey={(po) => po.id}
+        selectable={{
+          selectedKeys: selectedIds,
+          onToggle: toggleSelect,
+          onToggleAll: (keys, allSel) => setSelectedIds((p) => {
+            const n = new Set(p);
+            if (allSel) { for (const k of keys) n.delete(k); } else { for (const k of keys) n.add(k); }
+            return n;
+          }),
+        }}
         searchPlaceholder="Search POs…"
         groupBanner={false}
         collapseAllNonce={collapseNonce}
         /* Commander 2026-05-29 — open on DOUBLE-click (single-click was too
            trigger-happy: "本来应该要点两次的嘛"). Right-click → context menu. */
         onRowDoubleClick={(po) => navigate(`/scm/purchase-orders/${po.id}`)}
-        /* Commander 2026-05-31 — click a PO row to reveal full line-item detail
-           with a per-line "Received" column showing which GR(s) took how much
-           (mirrors the SO list's expand drill-down + its Delivered column). */
+        /* Row-click ticks the row for batch GRN convert / print (DataGrid
+           `selectable`); the ▸ chevron reveals full line-item detail with a
+           per-line "Received" column showing which GR(s) took how much (mirrors
+           the SO list's expand drill-down + its Delivered column). */
         expandable={{
           renderExpansion: (po) => <ExpandedPoLines po={po} />,
           rowExpansionKey: (po) => po.id,

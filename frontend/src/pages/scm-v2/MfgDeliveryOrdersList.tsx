@@ -18,7 +18,7 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useChoice } from '../../vendor/scm/components/ChoiceDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary } from '@2990s/shared';
+import { buildVariantSummary, fmtQty } from '@2990s/shared';
 import {
   useMfgDeliveryOrders, useUpdateMfgDeliveryOrderStatus, useMfgDeliveryOrderDetail,
 } from '../../vendor/scm/lib/delivery-order-queries';
@@ -506,7 +506,7 @@ export const MfgDeliveryOrdersList = () => {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-2)' }}>
-        {kpiTile('Total DOs', kpis.totalOrders.toLocaleString('en-MY'))}
+        {kpiTile('Total DOs', fmtQty(kpis.totalOrders))}
         {kpiTile('Revenue (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Cost (RM)', fmtRm(kpis.cost))}
         {kpiTile('Margin (RM)', fmtRm(kpis.margin), kpis.margin > 0 ? 'good' : kpis.margin < 0 ? 'bad' : undefined)}

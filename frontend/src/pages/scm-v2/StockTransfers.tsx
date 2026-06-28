@@ -16,6 +16,7 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Plus, SlidersHorizontal, ArrowRight } from 'lucide-react';
 import { Button } from '@2990s/design-system';
+import { fmtDate as fmtDateShared, fmtQty } from '@2990s/shared';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import {
@@ -40,7 +41,7 @@ const STATUS_TONE: Record<StockTransferStatus, { bg: string; fg: string; label: 
 const fmtDate = (iso: string): string => {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return iso;
-  return d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  return fmtDateShared(d);
 };
 
 export const StockTransfers = () => {
@@ -145,7 +146,7 @@ export const StockTransfers = () => {
       align: 'right',
       accessor: (t) => (
         <span className={`${styles.numCell} ${styles.numCellZero}`}>
-          {(t.line_count ?? 0).toLocaleString('en-MY')}
+          {fmtQty(t.line_count ?? 0)}
         </span>
       ),
       searchValue: (t) => String(t.line_count ?? 0),

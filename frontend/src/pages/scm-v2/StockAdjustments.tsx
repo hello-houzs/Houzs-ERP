@@ -25,7 +25,7 @@ import {
   useInventoryMovements,
   type InventoryMovement,
 } from '../../vendor/scm/lib/stock-queries';
-import { adjustmentReasonLabel } from '@2990s/shared';
+import { adjustmentReasonLabel, fmtDate as fmtDateShared, fmtQty } from '@2990s/shared';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import styles from './Inventory.module.css';
 
@@ -35,7 +35,7 @@ const ICON_MD = { size: 16, strokeWidth: 1.75 } as const;
 const fmtDateTime = (iso: string): string => {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return iso;
-  const date = d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  const date = fmtDateShared(d);
   const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   return `${date} ${time}`;
 };
@@ -119,7 +119,7 @@ export const StockAdjustments = () => {
         const qtyClass = m.qty > 0 ? styles.numCellPos : m.qty < 0 ? styles.numCellNeg : styles.numCellZero;
         return (
           <span className={`${styles.numCell} ${qtyClass}`}>
-            {m.qty > 0 ? '+' : ''}{m.qty.toLocaleString('en-MY')}
+            {m.qty > 0 ? '+' : ''}{fmtQty(m.qty)}
           </span>
         );
       },

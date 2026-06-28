@@ -22,7 +22,7 @@ import {
   Warehouse as WarehouseIcon, ChevronRight, ChevronDown,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
-import { formatVariantKey } from '@2990s/shared';
+import { formatVariantKey, fmtCenti, fmtDate, fmtQty } from '@2990s/shared';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import {
@@ -76,10 +76,7 @@ const CATEGORIES: { value: Category; label: string }[] = [
   { value: 'SERVICE',   label: 'Service' },
 ];
 
-const fmtRm = (sen: number | null | undefined): string => {
-  if (sen == null) return '—';
-  return `RM ${(sen / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-};
+const fmtRm = (sen: number | null | undefined): string => fmtCenti(sen);
 
 /* Age of the stock — days since the oldest open FIFO lot was received
    (Commander 2026-05-29: "寿命" replaces Last Movement). */
@@ -222,7 +219,7 @@ const AnalyticsTab = ({ warehouseId }: { warehouseId: string | null }) => {
         </div>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>Distinct SKUs in stock</span>
-          <span className={styles.statValue}>{data.distinctSkus.toLocaleString('en-MY')}</span>
+          <span className={styles.statValue}>{fmtQty(data.distinctSkus)}</span>
         </div>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>Stock Turn (annualised)</span>
@@ -250,7 +247,7 @@ const AnalyticsTab = ({ warehouseId }: { warehouseId: string | null }) => {
             {data.aging.map((b) => (
               <tr key={b.key}>
                 <td>{b.label}</td>
-                <td className={`${styles.numCell} ${b.qty > 0 ? styles.numCellPos : styles.numCellZero}`}>{b.qty.toLocaleString('en-MY')}</td>
+                <td className={`${styles.numCell} ${b.qty > 0 ? styles.numCellPos : styles.numCellZero}`}>{fmtQty(b.qty)}</td>
                 <td className={styles.numCell} style={{ fontWeight: 700 }}>{b.valueSen > 0 ? fmtRm(b.valueSen) : '—'}</td>
                 <td>
                   <div style={{ height: 10, borderRadius: 5, background: 'var(--c-paper)', overflow: 'hidden' }}>
@@ -296,7 +293,7 @@ const AnalyticsTab = ({ warehouseId }: { warehouseId: string | null }) => {
             {data.deadStock.map((d) => (
               <tr key={d.product_code}>
                 <td><span className={styles.codeChip}>{d.product_code}</span> {d.product_name}</td>
-                <td className={`${styles.numCell} ${styles.numCellPos}`}>{d.qty.toLocaleString('en-MY')}</td>
+                <td className={`${styles.numCell} ${styles.numCellPos}`}>{fmtQty(d.qty)}</td>
                 <td className={styles.numCell} style={{ fontWeight: 700 }}>{fmtRm(d.valueSen)}</td>
                 <td className={styles.numCellZero}>{fmtDay(d.lastSoldAt)}</td>
               </tr>
@@ -336,7 +333,7 @@ const BalancesTab = ({
       <div className={styles.statGrid}>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>Total Qty</span>
-          <span className={styles.statValue}>{stats.totalQty.toLocaleString('en-MY')}</span>
+          <span className={styles.statValue}>{fmtQty(stats.totalQty)}</span>
         </div>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>Distinct SKUs</span>
@@ -439,7 +436,7 @@ const BALANCE_COLUMNS: DataGridColumn<InventoryProductTotal>[] = [
       const qtyClass = r.total_qty > 0 ? styles.numCellPos
         : r.total_qty < 0 ? styles.numCellNeg
         : styles.numCellZero;
-      return <span className={`${styles.numCell} ${qtyClass}`}>{r.total_qty.toLocaleString('en-MY')}</span>;
+      return <span className={`${styles.numCell} ${qtyClass}`}>{fmtQty(r.total_qty)}</span>;
     },
     searchValue: (r) => String(r.total_qty),
     filterValue: (r) => String(r.total_qty),
@@ -452,7 +449,7 @@ const BALANCE_COLUMNS: DataGridColumn<InventoryProductTotal>[] = [
     align: 'right',
     accessor: (r) => (
       <span className={`${styles.numCell} ${r.incoming_qty > 0 ? styles.numCellPos : styles.numCellZero}`}>
-        {r.incoming_qty > 0 ? `+${r.incoming_qty.toLocaleString('en-MY')}` : '—'}
+        {r.incoming_qty > 0 ? `+${fmtQty(r.incoming_qty)}` : '—'}
       </span>
     ),
     searchValue: () => '',
@@ -466,7 +463,7 @@ const BALANCE_COLUMNS: DataGridColumn<InventoryProductTotal>[] = [
     align: 'right',
     accessor: (r) => (
       <span className={`${styles.numCell} ${r.reserve_7d > 0 ? '' : styles.numCellZero}`}>
-        {r.reserve_7d > 0 ? r.reserve_7d.toLocaleString('en-MY') : '—'}
+        {r.reserve_7d > 0 ? fmtQty(r.reserve_7d) : '—'}
       </span>
     ),
     searchValue: () => '',
@@ -480,7 +477,7 @@ const BALANCE_COLUMNS: DataGridColumn<InventoryProductTotal>[] = [
     align: 'right',
     accessor: (r) => (
       <span className={`${styles.numCell} ${r.reserve_14d > 0 ? '' : styles.numCellZero}`}>
-        {r.reserve_14d > 0 ? r.reserve_14d.toLocaleString('en-MY') : '—'}
+        {r.reserve_14d > 0 ? fmtQty(r.reserve_14d) : '—'}
       </span>
     ),
     searchValue: () => '',
@@ -497,7 +494,7 @@ const BALANCE_COLUMNS: DataGridColumn<InventoryProductTotal>[] = [
         className={`${styles.numCell} ${r.available_qty < 0 ? styles.numCellNeg : r.available_qty > 0 ? styles.numCellPos : styles.numCellZero}`}
         title="Stock − reserved (open SO demand)"
       >
-        {r.available_qty.toLocaleString('en-MY')}
+        {fmtQty(r.available_qty)}
       </span>
     ),
     searchValue: () => '',
@@ -591,7 +588,7 @@ const SkuVariantPanel = ({ code }: { code: string }) => {
                 </span>
               </td>
               <td className={`${styles.numCell} ${qtyClass}`} style={{ width: 100, textAlign: 'right' }}>
-                {v.qty.toLocaleString('en-MY')}
+                {fmtQty(v.qty)}
               </td>
               <td className={`${styles.numCell} ${styles.numCellZero}`} style={{ width: 130, textAlign: 'right' }}>
                 {v.value > 0 ? fmtRm(v.value) : '—'}
@@ -684,7 +681,7 @@ const BatchesTab = ({
         </div>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>Modules On Hand</span>
-          <span className={styles.statValue}>{stats.totalQty.toLocaleString('en-MY')}</span>
+          <span className={styles.statValue}>{fmtQty(stats.totalQty)}</span>
         </div>
         <div className={styles.statCard}>
           <span className={styles.statLabel}>Distinct SKUs</span>
@@ -771,7 +768,7 @@ const BATCH_COLUMNS: DataGridColumn<InventoryBatch>[] = [
     align: 'right',
     accessor: (b) => (
       <span className={`${styles.numCell} ${b.totalRemaining > 0 ? styles.numCellPos : styles.numCellZero}`}>
-        {b.totalRemaining.toLocaleString('en-MY')}
+        {fmtQty(b.totalRemaining)}
       </span>
     ),
     searchValue: () => '',
@@ -820,7 +817,7 @@ const BatchComponentsPanel = ({ batch }: { batch: InventoryBatch }) => (
             {fmtRm(c.unitCostSen)}
           </td>
           <td className={`${styles.numCell} ${c.qtyRemaining > 0 ? styles.numCellPos : styles.numCellZero}`} style={{ width: 90, textAlign: 'right' }}>
-            {c.qtyRemaining.toLocaleString('en-MY')}
+            {fmtQty(c.qtyRemaining)}
           </td>
           <td className={styles.numCellZero} style={{ width: 90 }} title={c.receivedAt ?? undefined}>
             {fmtAgeDays(c.receivedAt)}
@@ -904,7 +901,7 @@ const ProductBreakdownDrawer = ({
         <div className={styles.statGrid} style={{ marginTop: 'var(--space-4)' }}>
           <div className={styles.statCard}>
             <span className={styles.statLabel}>Total Qty</span>
-            <span className={styles.statValue}>{totalQty.toLocaleString('en-MY')}</span>
+            <span className={styles.statValue}>{fmtQty(totalQty)}</span>
           </div>
           <div className={styles.statCard}>
             <span className={styles.statLabel}>Total Value</span>
@@ -942,7 +939,7 @@ const ProductBreakdownDrawer = ({
                     <td>{b.warehouse_code} · {b.warehouse_name}</td>
                     <td>{attrs || <span className={styles.numCellZero}>Standard</span>}</td>
                     <td className={`${styles.numCell} ${b.qty > 0 ? styles.numCellPos : styles.numCellZero}`}>
-                      {b.qty.toLocaleString('en-MY')}
+                      {fmtQty(b.qty)}
                     </td>
                     <td className={`${styles.numCell} ${styles.numCellZero}`}>
                       {avgCost > 0 ? fmtRm(avgCost) : '—'}
@@ -981,7 +978,7 @@ const ProductBreakdownDrawer = ({
                 <tr key={l.id}>
                   <td className={styles.numCellZero}>{fmtDateTime(l.received_at)}</td>
                   <td>{l.warehouse_code ?? '—'}</td>
-                  <td className={`${styles.numCell} ${styles.numCellPos}`}>{l.qty_remaining.toLocaleString('en-MY')}</td>
+                  <td className={`${styles.numCell} ${styles.numCellPos}`}>{fmtQty(l.qty_remaining)}</td>
                   <td className={`${styles.numCell} ${styles.numCellZero}`}>{fmtRm(l.unit_cost_sen)}</td>
                   <td className={styles.numCellZero}>{l.source_doc_no ?? '—'}</td>
                 </tr>
@@ -1036,9 +1033,9 @@ const ProductBreakdownDrawer = ({
                           : styles.movementAdj}`}>{m.movement_type}</span>
                       </td>
                       <td>{wh ? wh.code : (m.warehouse_id ? '—' : '—')}</td>
-                      <td className={`${styles.numCell} ${qtyClass}`}>{qtySign}{Math.abs(m.qty).toLocaleString('en-MY')}</td>
+                      <td className={`${styles.numCell} ${qtyClass}`}>{qtySign}{fmtQty(Math.abs(m.qty))}</td>
                       <td className={`${styles.numCell}`} style={{ fontWeight: 700 }}>
-                        {m.runningBalance.toLocaleString('en-MY')}
+                        {fmtQty(m.runningBalance)}
                       </td>
                       <td>
                         {m.source_doc_no ? (
@@ -1090,7 +1087,7 @@ const ProductBreakdownDrawer = ({
                   <tr key={c.id}>
                     <td className={styles.numCellZero}>{fmtDateTime(c.consumed_at)}</td>
                     <td><span className={styles.docLink}>{c.source_doc_no ?? '—'}</span></td>
-                    <td className={`${styles.numCell} ${styles.numCellNeg}`}>−{c.qty_consumed.toLocaleString('en-MY')}</td>
+                    <td className={`${styles.numCell} ${styles.numCellNeg}`}>−{fmtQty(c.qty_consumed)}</td>
                     <td className={`${styles.numCell} ${styles.numCellZero}`}>{fmtRm(c.unit_cost_sen)}</td>
                     <td className={styles.numCell} style={{ fontWeight: 700 }}>{fmtRm(c.total_cost_sen)}</td>
                     <td className={styles.numCellZero}>{c.lot_source_doc_no ?? '—'}</td>
@@ -1202,7 +1199,7 @@ const MovementsTab = ({
                   </td>
                   <td className={`${styles.numCell} ${m.movement_type === 'IN' ? styles.numCellPos : styles.numCellNeg}`}>
                     {m.movement_type === 'IN' ? '+' : m.movement_type === 'OUT' ? '−' : ''}
-                    {Math.abs(m.qty).toLocaleString('en-MY')}
+                    {fmtQty(Math.abs(m.qty))}
                   </td>
                   <td className={`${styles.numCell} ${styles.numCellZero}`}>
                     {m.unit_cost_sen && m.unit_cost_sen > 0 ? fmtRm(m.unit_cost_sen) : '—'}
@@ -1287,7 +1284,7 @@ const CogsTab = ({
                 <td className={styles.numCellZero}>{fmtDateTime(c.consumed_at)}</td>
                 <td>{c.warehouse_code}</td>
                 <td><span className={styles.codeChip}>{c.product_code}</span></td>
-                <td className={`${styles.numCell} ${styles.numCellNeg}`}>−{c.qty_consumed.toLocaleString('en-MY')}</td>
+                <td className={`${styles.numCell} ${styles.numCellNeg}`}>−{fmtQty(c.qty_consumed)}</td>
                 <td className={`${styles.numCell} ${styles.numCellZero}`}>{fmtRm(c.unit_cost_sen)}</td>
                 <td className={`${styles.numCell}`} style={{ fontWeight: 700 }}>{fmtRm(c.total_cost_sen)}</td>
                 <td>{c.source_doc_no ? <span className={styles.docLink}>{c.source_doc_no}</span> : '—'}</td>
@@ -1484,7 +1481,7 @@ const WarehouseDrawer = ({
 const fmtDateTime = (iso: string): string => {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return iso;
-  const date = d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  const date = fmtDate(d);
   const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   return `${date} ${time}`;
 };

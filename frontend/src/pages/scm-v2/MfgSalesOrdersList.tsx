@@ -38,7 +38,7 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useChoice } from '../../vendor/scm/components/ChoiceDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
+import { buildVariantSummary, fmtDateOrDash, fmtQty } from '@2990s/shared';
 import {
   useMfgSalesOrders, useUpdateMfgSalesOrderStatus,
   useMfgSalesOrderDetail,
@@ -1177,7 +1177,7 @@ export const MfgSalesOrdersList = () => {
       {/* ── 4 KPI tiles (Houzs flat layout, scoped to current filters) ──
           .kpiRow reflows to 2×2 at ≤600px so RM values don't clip on phone. */}
       <div className={styles.kpiRow}>
-        {kpiTile('Total Orders', kpis.totalOrders.toLocaleString('en-MY'))}
+        {kpiTile('Total Orders', fmtQty(kpis.totalOrders))}
         {kpiTile('Revenue (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Outstanding (RM)', fmtRm(kpis.outstanding), kpis.outstanding > 0 ? 'bad' : undefined)}
         {kpiTile('Paid (RM)', fmtRm(kpis.paid), kpis.paid > 0 ? 'good' : undefined)}
