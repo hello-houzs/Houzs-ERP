@@ -1,0 +1,12 @@
+/* Brand web fonts — mirrors src/index.css so design-sync preview cards render
+ * with IBM Plex + Noto SC (same as the live Houzs app). */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme C font-money applied to money cells (mirrors index.css usage) */
+.font-money {
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}

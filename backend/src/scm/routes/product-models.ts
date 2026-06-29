@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import { findModelUsage } from '../lib/sku-usage';
+import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
 
 export const productModels = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -62,6 +63,47 @@ productModels.get('/:id/photo/:key', async (c) => {
       'content-type': obj.httpMetadata?.contentType ?? 'application/octet-stream',
       // 1-hour browser cache — photos are immutable per key (new uploads
       // get a fresh UUID), so this is safe.
+      'cache-control': 'public, max-age=3600',
+    },
+  });
+});
+
+// ── Gallery photo proxy (PUBLIC) ─────────────────────────────────────────────
+// Multi-photo gallery (scm.product_model_photos, migration 0060). Same shape
+// as the single-photo proxy above: registered BEFORE supabaseAuth so <img>
+// tags work, validates the requested key against the gallery row, streams
+// the R2 object. Path is distinct from /:id/photo/:key so the two coexist.
+productModels.get('/:id/photo-gallery/:key', async (c) => {
+  const id = c.req.param('id');
+  const key = decodeURIComponent(c.req.param('key'));
+
+  if (!c.env.SO_ITEM_PHOTOS) {
+    return c.json({ error: 'photo_bucket_not_configured' }, 500);
+  }
+  // Defensive prefix check — keys we mint live under product-model-photos/.
+  if (!key.startsWith('product-model-photos/')) {
+    return c.json({ error: 'gallery_key_invalid' }, 400);
+  }
+
+  const sb = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data } = await sb
+    .schema('scm')
+    .from('product_model_photos')
+    .select('id')
+    .eq('model_id', id)
+    .eq('r2_key', key)
+    .maybeSingle();
+  if (!data) return c.json({ error: 'photo_not_in_model' }, 404);
+
+  const obj = await c.env.SO_ITEM_PHOTOS.get(key);
+  if (!obj) return c.json({ error: 'photo_not_found_in_r2' }, 404);
+
+  const contentType = obj.httpMetadata?.contentType ?? 'application/octet-stream';
+  return new Response(obj.body, {
+    headers: {
+      'content-type': contentType,
       'cache-control': 'public, max-age=3600',
     },
   });
@@ -926,3 +968,259 @@ function extractPhotoKey(photoUrl: string, modelId: string): string | null {
   if (!decoded.startsWith(`product-models/${modelId}/`)) return null;
   return decoded;
 }
+
+// ============================================================================
+// Multi-photo gallery (migration 0060_product_model_photos_and_hero_meta).
+//
+// Backs the 4a PhotoGallery component. Surface:
+//   GET    /:id/photos                       → { photos: PhotoRow[] }
+//   POST   /:id/photos        (multipart)    → { photo: PhotoRow }
+//   DELETE /:id/photos/:photoId              → { ok: true }
+//   PATCH  /:id/photos/:photoId              → { ok: true }
+//                                              body: { is_primary?, order? }
+//
+// PhotoRow = { id, key, url, is_primary, order }
+// `url` is a relative path to the PUBLIC hero/gallery proxy registered above
+// (/product-models/:id/photo-gallery/:key) so <img src> works without auth.
+//
+// Storage: R2 bucket SO_ITEM_PHOTOS (shared with SO item photos under a
+// different prefix). Keys are minted under product-model-photos/<modelId>/.
+// ============================================================================
+
+type PhotoCols = {
+  id: string;
+  r2_key: string;
+  thumb_key: string | null;
+  sort_order: number;
+  is_primary: boolean;
+  mime_type: string | null;
+  size_bytes: number | null;
+};
+
+function photoToWire(modelId: string, p: PhotoCols) {
+  return {
+    id: p.id,
+    key: p.r2_key,
+    url: `/api/scm/product-models/${modelId}/photo-gallery/${encodeURIComponent(p.r2_key)}`,
+    is_primary: p.is_primary,
+    order: p.sort_order,
+  };
+}
+
+const GALLERY_MAX_BYTES = 5 * 1024 * 1024; // 5 MB — matches the 4a frontend cap
+const GALLERY_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+productModels.get('/:id/photos', async (c) => {
+  const supabase = c.get('supabase');
+  const id = c.req.param('id');
+  const { data, error } = await supabase
+    .from('product_model_photos')
+    .select('id, r2_key, thumb_key, sort_order, is_primary, mime_type, size_bytes')
+    .eq('model_id', id)
+    .order('is_primary', { ascending: false })
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: true });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  const photos = (data ?? []).map((row) => photoToWire(id, row as PhotoCols));
+  return c.json({ photos });
+});
+
+productModels.post('/:id/photos', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  if (!c.env.SO_ITEM_PHOTOS) {
+    return c.json({ error: 'photo_bucket_not_configured' }, 500);
+  }
+  const supabase = c.get('supabase');
+  const id = c.req.param('id');
+
+  // Multipart upload — Hono parses FormData via c.req.parseBody().
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.parseBody();
+  } catch {
+    return c.json({ error: 'invalid_multipart' }, 400);
+  }
+  const file = body.file as File | undefined;
+  if (!file || typeof file === 'string') {
+    return c.json({ error: 'file_missing', expected: 'multipart field "file"' }, 400);
+  }
+  if (!GALLERY_MIME.has(file.type)) {
+    return c.json(
+      { error: 'unsupported_type', got: file.type, allowed: Array.from(GALLERY_MIME) },
+      400,
+    );
+  }
+  if (file.size > GALLERY_MAX_BYTES) {
+    return c.json({ error: 'too_large', max_bytes: GALLERY_MAX_BYTES }, 413);
+  }
+
+  // Confirm the model exists before minting a key / uploading.
+  const { data: model } = await supabase
+    .from('product_models')
+    .select('id')
+    .eq('id', id)
+    .maybeSingle();
+  if (!model) return c.json({ error: 'model_not_found' }, 404);
+
+  // Mint a unique key under this model's prefix. Use crypto.randomUUID for
+  // collision-safety; extension derived from MIME so the bucket reads back
+  // the right content-type.
+  const ext = file.type === 'image/png' ? 'png'
+            : file.type === 'image/webp' ? 'webp'
+            : 'jpg';
+  const r2Key = `product-model-photos/${id}/${crypto.randomUUID()}.${ext}`;
+  const buf = await file.arrayBuffer();
+  await c.env.SO_ITEM_PHOTOS.put(r2Key, buf, {
+    httpMetadata: { contentType: file.type },
+  });
+
+  // First photo for a model auto-marks itself primary. After that, primary
+  // stays sticky until the operator changes it.
+  const { count } = await supabase
+    .from('product_model_photos')
+    .select('id', { count: 'exact', head: true })
+    .eq('model_id', id);
+  const isFirst = (count ?? 0) === 0;
+
+  // sort_order = current MAX + 1 (or 0 if empty). NULL on the very first
+  // insert defaults to 0 per the table default.
+  const { data: maxRow } = await supabase
+    .from('product_model_photos')
+    .select('sort_order')
+    .eq('model_id', id)
+    .order('sort_order', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const nextOrder =
+    ((maxRow as { sort_order: number } | null)?.sort_order ?? -1) + 1;
+
+  const insertRow = {
+    model_id: id,
+    r2_key: r2Key,
+    sort_order: nextOrder,
+    is_primary: isFirst,
+    mime_type: file.type,
+    size_bytes: file.size,
+  };
+  const { data, error } = await supabase
+    .from('product_model_photos')
+    .insert(insertRow)
+    .select('id, r2_key, thumb_key, sort_order, is_primary, mime_type, size_bytes')
+    .single();
+  if (error) {
+    // Roll back the R2 object so a failed DB insert doesn't leak storage.
+    await c.env.SO_ITEM_PHOTOS.delete(r2Key).catch(() => {});
+    return c.json({ error: 'db_insert_failed', reason: error.message }, 500);
+  }
+  return c.json({ photo: photoToWire(id, data as PhotoCols) });
+});
+
+productModels.delete('/:id/photos/:photoId', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  const supabase = c.get('supabase');
+  const id = c.req.param('id');
+  const photoId = c.req.param('photoId');
+
+  // Load the row first so we know which R2 key to drop + can re-promote a
+  // new primary if we deleted the existing one.
+  const { data: row } = await supabase
+    .from('product_model_photos')
+    .select('id, r2_key, is_primary')
+    .eq('model_id', id)
+    .eq('id', photoId)
+    .maybeSingle();
+  if (!row) return c.json({ error: 'photo_not_found' }, 404);
+  const target = row as { id: string; r2_key: string; is_primary: boolean };
+
+  const { error: delErr } = await supabase
+    .from('product_model_photos')
+    .delete()
+    .eq('id', photoId);
+  if (delErr) return c.json({ error: 'db_delete_failed', reason: delErr.message }, 500);
+
+  // Best-effort R2 cleanup — if the bucket call fails we DON'T re-insert the
+  // row (delete intent was the operator's). Log via Workers tail if needed.
+  if (c.env.SO_ITEM_PHOTOS) {
+    await c.env.SO_ITEM_PHOTOS.delete(target.r2_key).catch(() => {});
+  }
+
+  // If the deleted row was the primary, promote the lowest-order remaining
+  // photo so the gallery never sits primary-less while photos exist.
+  if (target.is_primary) {
+    const { data: next } = await supabase
+      .from('product_model_photos')
+      .select('id')
+      .eq('model_id', id)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (next) {
+      await supabase
+        .from('product_model_photos')
+        .update({ is_primary: true })
+        .eq('id', (next as { id: string }).id);
+    }
+  }
+
+  return c.json({ ok: true });
+});
+
+productModels.patch('/:id/photos/:photoId', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; }
+  catch { return c.json({ error: 'invalid_json' }, 400); }
+  const supabase = c.get('supabase');
+  const id = c.req.param('id');
+  const photoId = c.req.param('photoId');
+
+  // Validate target exists + belongs to this model.
+  const { data: row } = await supabase
+    .from('product_model_photos')
+    .select('id, is_primary, sort_order')
+    .eq('model_id', id)
+    .eq('id', photoId)
+    .maybeSingle();
+  if (!row) return c.json({ error: 'photo_not_found' }, 404);
+  const target = row as { id: string; is_primary: boolean; sort_order: number };
+
+  // is_primary: setting true → demote the current primary on the same model
+  // first (the partial unique index would otherwise reject the insert).
+  if (body.is_primary === true) {
+    await supabase
+      .from('product_model_photos')
+      .update({ is_primary: false })
+      .eq('model_id', id)
+      .eq('is_primary', true);
+    const { error } = await supabase
+      .from('product_model_photos')
+      .update({ is_primary: true })
+      .eq('id', photoId);
+    if (error) return c.json({ error: 'patch_failed', reason: error.message }, 500);
+  }
+
+  // order: PATCH expects an absolute integer (the 4a frontend's move-up /
+  // move-down compute the new value client-side). Re-numbering siblings is
+  // intentionally out of scope here — the table tolerates ties (sort_order
+  // + created_at break ordering ties), so a simple absolute write is enough.
+  if (body.order !== undefined) {
+    const n = Number(body.order);
+    if (!Number.isInteger(n) || n < 0) {
+      return c.json({ error: 'order_invalid', expected: 'non-negative integer' }, 400);
+    }
+    const { error } = await supabase
+      .from('product_model_photos')
+      .update({ sort_order: n })
+      .eq('id', photoId);
+    if (error) return c.json({ error: 'patch_failed', reason: error.message }, 500);
+  }
+
+  return c.json({ ok: true });
+});

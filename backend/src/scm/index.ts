@@ -6,7 +6,7 @@ import type { Env } from "./env";
 // (owner-gated in the main index.ts). Paths mirror 2990's so the ported pages
 // can call them with just an /api/scm prefix.
 import { products } from "./routes/products";
-import { categoriesApi } from "./routes/categories";
+import { categoriesApi, publicCategoriesApi } from "./routes/categories";
 import { deliveryFees } from "./routes/delivery-fees";
 import { fabricTierAddonConfig } from "./routes/fabric-tier-addon";
 import { pwpRules } from "./routes/pwp-rules";
@@ -90,6 +90,12 @@ scm.use("/products/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/products", products);
 scm.use("/admin/categories/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/admin/categories", categoriesApi);
+// publicCategoriesApi — read-side surface (list + hero-meta + public hero-blob
+// proxy). Mounted at /categories (NO /admin) because the public hero-blob
+// child route serves <img src> with no auth header. Auth-required routes
+// inside publicCategoriesApi handle their own gating via supabaseAuth + a
+// flat-perm check (the area guard would block the public proxy too).
+scm.route("/categories", publicCategoriesApi);
 scm.use("/delivery-fees/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/delivery-fees", deliveryFees);
 scm.use("/fabric-tier-addon/*", scmAreaGuard("scm.procurement.products"));

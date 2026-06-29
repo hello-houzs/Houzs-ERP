@@ -64,22 +64,20 @@ export default {
         warning: { bg: "#f6efd9", text: "#6e4d12" },
       },
       fontFamily: {
-        // Unified to the native system font (Segoe UI on Windows, SF on macOS)
-        // per owner request — matches the vendored SCM's --font-system so the
-        // whole ERP reads as one normal system typeface. No web fonts.
-        body: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
-        display: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
-        // Was JetBrains Mono — replaced with Plus Jakarta Sans for the
-        // small uppercase eyebrow labels and numeric chips. Tabular
-        // alignment of figures is restored via a `font-variant-numeric:
-        // tabular-nums` rule on `.font-mono` in index.css. The alias
-        // name stays `mono` to avoid touching 440 call sites; the
-        // *meaning* is now "data / labels / numbers".
-        mono: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
+        // 2026-06-29 — unified to IBM Plex Sans (latin) + Noto Sans SC (CN
+        // glyphs auto-fall-through). One family across body, display, mono
+        // alias, and eyebrow labels keeps the whole ERP reading as one
+        // typeface; hierarchy comes from weight + size, not family. Web fonts
+        // loaded via @import url() in src/index.css.
+        body: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
+        display: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
+        // `font-mono` is the "data / labels / numbers" alias (not real mono).
+        // Tabular alignment of figures comes from `font-variant-numeric:
+        // tabular-nums` in index.css. Family matches body so eyebrows blend in.
+        mono: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
         // Money / financial figures only — IBM Plex Mono gives ledger-grade
         // tabular digits so amounts line up by decimal across rows and in the
-        // detail drawers. Applied via `font-money` on amount cells ONLY; the
-        // rest of the ERP stays on the system typeface (owner's house style).
+        // detail drawers. Applied via `font-money` on amount cells ONLY.
         money: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
       },
       letterSpacing: {
