@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme C font-money applied to money cells (mirrors index.css usage) */
+.font-money {
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
