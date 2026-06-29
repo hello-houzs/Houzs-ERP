@@ -6866,17 +6866,30 @@ function ThreeDApprovalBlock({
       {list.map((it, idx) => (
         <Fragment key={it.id}>
           <div className="flex flex-wrap items-center gap-2 px-1 py-1.5">
-            {it.status === "done" ? (
-              <CheckCircle2 size={16} className="shrink-0 text-synced" />
-            ) : (
-              <Circle
-                size={16}
-                className={cn(
-                  "shrink-0",
-                  it.status === "na" ? "text-ink-muted" : "text-warning-text"
-                )}
-              />
-            )}
+            <button
+              type="button"
+              onClick={() =>
+                canTick && onStatus(it, it.status === "done" ? "pending" : "done")
+              }
+              disabled={!canTick}
+              title={it.status === "done" ? "Mark as not done" : "Mark as done"}
+              aria-label={it.status === "done" ? "Mark as not done" : "Mark as done"}
+              className={cn(
+                "shrink-0 rounded-full",
+                canTick ? "cursor-pointer hover:opacity-70" : "cursor-not-allowed opacity-60"
+              )}
+            >
+              {it.status === "done" ? (
+                <CheckCircle2 size={16} className="text-synced" />
+              ) : (
+                <Circle
+                  size={16}
+                  className={cn(
+                    it.status === "na" ? "text-ink-muted" : "text-warning-text"
+                  )}
+                />
+              )}
+            </button>
             <span
               className={cn(
                 "flex-1 text-[12px] font-medium",
