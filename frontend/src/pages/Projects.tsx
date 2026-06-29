@@ -7122,6 +7122,9 @@ function ChecklistRow({
         ? [["none", "N/A"], ["unpaid", "PENDING"], ["fully_paid", "FULLY PAID"]]
         : [["none", "N/A"], ["unpaid", "PENDING"], ["refunded", "REFUNDED"]];
     const cur = item.pill_value || "unpaid";
+    // Terminal pill values (N/A, FULLY PAID, REFUNDED) = treat the row as done:
+    // green check + greyed title. Only PENDING ("unpaid") stays "not done".
+    const pillDone = cur !== "unpaid";
     const selTone = (v: string) =>
       v === "unpaid"
         ? "border-warning bg-warning-bg text-warning-text"
@@ -7143,8 +7146,14 @@ function ChecklistRow({
         data-task-id={item.id}
       >
         <div className="flex flex-wrap items-center gap-2">
-          <Circle size={16} className="shrink-0 text-ink-muted" />
-          <span className="text-[12px] font-medium">{item.title}</span>
+          {pillDone ? (
+            <CheckCircle2 size={16} className="shrink-0 text-synced" />
+          ) : (
+            <Circle size={16} className="shrink-0 text-ink-muted" />
+          )}
+          <span className={cn("text-[12px] font-medium", pillDone && "text-ink-muted")}>
+            {item.title}
+          </span>
           {item.role_label && (
             <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
               {item.role_label}
