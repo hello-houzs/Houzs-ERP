@@ -33,8 +33,8 @@ export function NewVersionBanner() {
         <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
       </span>
       <span className="truncate">
-        系统有新版本可用
-        <span className="ml-1.5 text-ink-muted">· A newer version is ready</span>
+        A newer version is ready
+        <span className="ml-1.5 text-ink-muted">· refresh to update</span>
       </span>
       <button
         type="button"
@@ -43,7 +43,7 @@ export function NewVersionBanner() {
         className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[11px] font-bold text-white hover:bg-primary-ink disabled:opacity-80"
       >
         <RefreshCw size={14} strokeWidth={2} className={reloading ? "animate-spin" : ""} />
-        {reloading ? "刷新中…" : "立即刷新"}
+        {reloading ? "Refreshing…" : "Refresh now"}
       </button>
     </div>
   );
