@@ -45,13 +45,18 @@ Logo, doc numbers, eyebrow labels, soft brand-tinted backgrounds.
 
 ### Type
 
-System sans is the default — `font-display` and `font-mono` both alias the
-OS UI font. **Money cells get `font-money`** — IBM Plex Mono, tabular nums,
-amounts line up by decimal across rows. Reach for it on any column or detail
-field showing currency or quantities.
+**One typeface across the whole ERP** — `font-display`, `font-body`, `font-mono`
+all resolve to **IBM Plex Sans** (latin) with **Noto Sans SC** for CN glyphs
+via the family stack. Hierarchy comes from `font-weight` + `font-size`, never
+from switching family. Loaded via `@import url(google fonts)` in styles.css.
 
-Eyebrow / numeric chips use `font-mono uppercase tracking-wider` (Plus Jakarta
-fallback). Brand wordmarks use `tracking-brand`.
+**Money cells get `font-money`** — IBM Plex Mono, tabular nums, amounts line
+up by decimal across rows. Reach for it on any column or detail field showing
+currency or quantities (the only place a different family is correct).
+
+Eyebrow / numeric chips use `font-mono uppercase tracking-wider` — `font-mono`
+is the "data / labels" alias (also IBM Plex Sans), not a real monospace face.
+Brand wordmarks use `tracking-brand`.
 
 ### Shape & elevation
 
