@@ -52,6 +52,7 @@ import { FilterPills } from "../components/FilterPills";
 import { ProjectMaintenanceView } from "./ProjectMaintenance";
 import { TabStrip } from "../components/TabStrip";
 import { getHolidaysOn } from "../lib/holidays";
+import { toCSV, downloadCSV } from "../lib/csv";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
 import { StatusDot } from "../components/StatusDot";
@@ -1329,7 +1330,27 @@ function ProjectsListView() {
       </div>
 
       {/* View toggle — cards (P2 design) vs the full data table. */}
-      <div className="mb-3 flex justify-end">
+      <div className="mb-3 flex items-center justify-end gap-2">
+        {/* Export is part of the Table toolbar; add it here so Cards view can
+            export too (same filtered rows + columns as the table). */}
+        {listMode === "cards" && (
+          <button
+            onClick={() => {
+              if (!cardRows.length) return;
+              const csvCols = columns
+                .filter((c) => typeof c.getValue === "function")
+                .map((c) => ({ key: c.key, label: c.label || c.key, getValue: c.getValue! }));
+              if (!csvCols.length) return;
+              const date = new Date().toISOString().slice(0, 10);
+              downloadCSV(`projects-${date}.csv`, toCSV(cardRows, csvCols));
+            }}
+            disabled={cardRows.length === 0}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent disabled:opacity-40"
+            title="Download CSV of the current projects"
+          >
+            <Download size={13} /> Export
+          </button>
+        )}
         <div className="inline-flex overflow-hidden rounded-md border border-border bg-surface text-[11px] font-semibold">
           <button
             onClick={() => setListMode("cards")}
