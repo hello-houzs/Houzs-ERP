@@ -43,18 +43,18 @@ export function IosInstallGuide() {
         </div>
         <div className="flex-1">
           <div className="text-[13.5px] font-bold text-ink">
-            添加到主屏幕 · Add to Home Screen
+            Add to Home Screen
           </div>
           <div className="mt-1 space-y-1.5 text-[11.5px] leading-relaxed text-ink-secondary">
             <div className="flex items-center gap-1.5">
               <span className="font-semibold text-ink">1.</span>
-              点底部
+              Tap the
               <Share size={14} className="text-primary" strokeWidth={2} />
-              分享
+              Share button at the bottom
             </div>
             <div className="flex items-center gap-1.5">
               <span className="font-semibold text-ink">2.</span>
-              选「加入主畫面 / Add to Home Screen」
+              Choose “Add to Home Screen”
               <Plus size={14} className="text-primary" strokeWidth={2} />
             </div>
           </div>

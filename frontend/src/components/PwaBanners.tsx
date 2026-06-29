@@ -65,7 +65,7 @@ export function PwaBanners() {
           aria-live="polite"
         >
           <WifiOff size={12} />
-          当前离线 — 显示缓存数据 · You're offline
+          You're offline — showing cached data
         </div>
       )}
 
@@ -80,10 +80,10 @@ export function PwaBanners() {
             </div>
             <div className="flex-1">
               <div className="text-[13.5px] font-bold text-ink">
-                安装 Houzs Century · ERP
+                Install Houzs Century · ERP
               </div>
               <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
-                装到桌面，一键打开、像原生 App 一样运行，弱网也能用。
+                Add it to your home screen — opens in one tap, runs like a native app, and works even on a weak connection.
               </div>
               <div className="mt-3 flex items-center gap-2">
                 <button
@@ -91,13 +91,13 @@ export function PwaBanners() {
                   className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 text-[11.5px] font-bold text-white hover:bg-primary-ink"
                 >
                   <Download size={14} strokeWidth={2} />
-                  安装 Install
+                  Install
                 </button>
                 <button
                   onClick={dismissInstall}
                   className="rounded-lg border border-border bg-surface px-3 py-2 text-[11.5px] font-semibold text-ink-secondary hover:text-ink"
                 >
-                  暂不
+                  Not now
                 </button>
               </div>
             </div>
