@@ -114,6 +114,33 @@ export async function findSofaLinesWithoutCompleteBatch(
   return offenders;
 }
 
+/** Return the subset of (itemCode, soItemId) rows that are SOFA lines (category
+ *  SOFA or item_group contains SOFA). Used by the drop-ship cost paths to decide
+ *  which lines should carry the expected batch — a STATE-INDEPENDENT detector
+ *  (unlike findSofaLinesWithoutCompleteBatch, which also depends on whether a
+ *  covering batch is currently on hand). */
+export async function detectSofaSoItemIds(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sb: any,
+  rows: Array<{ itemCode: string; itemGroup: string | null; soItemId: string | null }>,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (rows.length === 0) return out;
+  const codes = [...new Set(rows.map((r) => r.itemCode).filter(Boolean))];
+  const sofaCodes = new Set<string>();
+  if (codes.length > 0) {
+    const { data: cats } = await sb.from('mfg_products').select('code, category').in('code', codes);
+    for (const p of (cats ?? []) as Array<{ code: string; category: string | null }>) {
+      if ((p.category ?? '').toUpperCase() === 'SOFA') sofaCodes.add(p.code);
+    }
+  }
+  for (const r of rows) {
+    if (!r.soItemId) continue;
+    if (sofaCodes.has(r.itemCode) || (r.itemGroup ?? '').toUpperCase().includes('SOFA')) out.add(r.soItemId);
+  }
+  return out;
+}
+
 /** Identify sofa lines (category SOFA or item_group contains SOFA) among rows,
  *  using a product-category lookup over the rows' codes plus the item_group text. */
 async function detectSofa(
@@ -203,10 +230,35 @@ export function sofaIncompleteSetResponse(sets: IncompleteSofaSet[]) {
   };
 }
 
+/** Per-offender drop-ship eligibility — the bound PO (= the incoming dye-lot
+ *  batch) and its ETA. `poNumber` null = NO bound PO, so this line CANNOT
+ *  drop-ship (the incoming batch is unknown). The frontend renders this in the
+ *  "Ship as drop-ship?" confirm dialog. */
+export type SofaDropshipOffender = {
+  itemCode: string;
+  soItemId: string | null;
+  /** = the bound PO's number (= batch_no the GRN will stamp). null = no PO. */
+  poNumber: string | null;
+  /** Effective ETA of the bound PO, or null. */
+  eta: string | null;
+};
+
 /** Standard 409 body for a blocked sofa ship. English-only (operator UI). Keeps
- *  error code `sofa_no_batch` stable so the frontend chokepoint keeps matching. */
-export function sofaNoCompleteBatchResponse(offenders: SofaGuardOffender[]) {
+ *  error code `sofa_no_batch` stable so the frontend chokepoint keeps matching.
+ *
+ *  `dropship` (optional) enriches each offender with its bound PO + ETA so the
+ *  frontend can offer the "Ship as drop-ship?" confirm dialog. `canDropship` is
+ *  true only when EVERY affected sofa line has a bound PO (so the incoming
+ *  batch is known for each) — if any line has no PO, drop-ship is not offered
+ *  (the guardrail can't resolve an expected batch for it). */
+export function sofaNoCompleteBatchResponse(
+  offenders: SofaGuardOffender[],
+  dropship?: SofaDropshipOffender[],
+) {
   const codes = [...new Set(offenders.map((o) => o.itemCode))].join(', ');
+  const canDropship = Array.isArray(dropship)
+    && dropship.length > 0
+    && dropship.every((o) => !!o.poNumber);
   return {
     error: 'sofa_no_batch',
     message:
@@ -214,5 +266,6 @@ export function sofaNoCompleteBatchResponse(offenders: SofaGuardOffender[]) {
       `so it can't ship without splitting a dye lot or leaving an orphan. ` +
       `Wait until one complete batch is received. Affected: ${codes}.`,
     offenders,
+    ...(dropship ? { dropship, canDropship } : {}),
   };
 }

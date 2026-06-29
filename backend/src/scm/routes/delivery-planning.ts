@@ -336,6 +336,15 @@ deliveryPlanning.get('/', async (c) => {
         (mfg_sales_orders_with_payment_totals.balance_centi_live = local_total −
         Σpayments). Looked up by doc_no; the base-table balance_centi above stays
         as the fallback when the view row is absent. */
+  /* VIEW-TRAP (see backend/docs/scm-view-trap-coe.md): this select hits the
+     VIEW. STRUCTURALLY SAFE today — only 2 cols, both view-native (doc_no +
+     view-computed balance_centi_live), not a shared HEADER. KEEP IT THIS WAY:
+     do NOT extend this select with base-table cols added after the view was
+     last recreated (delivery_state, possession_date, house_type,
+     replacement_disposal, referral, amend_date_from_customer, amended_
+     delivery_date, amend_reason — all read off the BASE table mfg_sales_orders
+     in the .from('mfg_sales_orders') select 50 lines above, never through the
+     view). Adding any of those here will 500 the Delivery Planning board. */
   const liveBalanceByDoc = new Map<string, number>();
   {
     const { data: balRows } = await paginateAll<{ doc_no: string | null; balance_centi_live: number | null }>((from, to) =>

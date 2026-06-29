@@ -97,25 +97,14 @@ const doEffectiveKey = (status: string, lifecycle?: DoLifecycle): string => {
   return 'DISPATCHED';
 };
 
-/* Costing A (Commander 2026-06-01) — a DO ships (stock deducted) the moment it's
-   created, so the FIFO trigger has already booked the line's COGS. When that cost
-   is still 0 on a live (non-cancelled) line with qty, the goods were received with
-   NO price and no Purchase Invoice yet → cost is PENDING, not free. The recost
-   engine fills the real number the instant a price lands. */
-const lineCostPending = (
-  it: { qty: number; unit_cost_centi: number },
-  isCancelled: boolean,
-): boolean => !isCancelled && Number(it.qty) > 0 && Number(it.unit_cost_centi ?? 0) === 0;
-
-const fmtRm = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/* DO is QUANTITY-only (Owner 2026-06-26) — the line-cost `lineCostPending`
+   helper, the `fmtRm` money formatter and the Totals-card KPI style consts were
+   removed along with every money render on the Delivery Order (read-view money
+   columns + Totals · Margin card + header total rail). No amount is displayed on
+   a DO; the figures live on the Sales Invoice. The underlying *_centi data is
+   untouched. */
 
 const TITLE_ICON_STYLE: CSSProperties = { color: 'var(--c-burnt)' };
-const TOTALS_KPI_GRID_STYLE: CSSProperties = {
-  display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-3)',
-  marginBottom: 'var(--space-3)', paddingBottom: 'var(--space-3)', borderBottom: '1px solid var(--line)',
-};
-const TOTALS_KPI_VALUE_STYLE: CSSProperties = { fontSize: 'var(--fs-15, 15px)' };
 
 type DoHeader = {
   id: string;
@@ -172,6 +161,10 @@ type DoHeader = {
      DR / SI references the DO. Locks line edits + the Cancel transition;
      convert-to-DR / convert-to-SI remain available via the list. */
   has_children?: boolean;
+  /* Migration 0057 — drop-ship: a sofa was shipped supplier-direct before its
+     batch was received. Dual-read camelCase from the pg driver. */
+  is_dropship?: boolean;
+  isDropship?: boolean;
 };
 
 type DoItem = {
@@ -556,10 +549,10 @@ export const DeliveryOrderDetail = () => {
           </div>
         </div>
         <div className={styles.actions}>
-          <div className={styles.totalRail}>
-            <span className={styles.totalRailLabel}>Total</span>
-            <span className={styles.totalRailValue}>{fmtRm(header.local_total_centi, header.currency)}</span>
-          </div>
+          {/* DO is a QUANTITY-only document (Owner 2026-06-26) — no money shown.
+              The header total rail (grand total) was removed; amounts live on the
+              Sales Invoice. The underlying *_centi data is untouched and still
+              flows downstream. */}
           {(() => {
             const key = doEffectiveKey(header.status, (header as { lifecycle_state?: DoLifecycle }).lifecycle_state);
             return (
@@ -568,6 +561,16 @@ export const DeliveryOrderDetail = () => {
               </span>
             );
           })()}
+          {/* Drop-ship badge (mig 0057) — warning tone. Dual-read camelCase. */}
+          {(header.isDropship ?? header.is_dropship) && (
+            <span
+              className={styles.statusPill}
+              title="Shipped supplier-direct before the batch was received — stock is negative against the expected PO batch and nets out when its GRN arrives."
+              style={{ background: 'var(--c-amber-bg, #FBEFD6)', color: 'var(--c-amber-ink, #8A5A00)', border: '1px solid var(--c-amber-line, #E3C27A)' }}
+            >
+              Drop-ship · batch not received
+            </span>
+          )}
           <RelationshipMapButton type="do" id={id} />
           <Button variant="ghost" size="md" onClick={handlePrint}>
             <Printer {...ICON} /><span>Print PDF</span>
@@ -747,17 +750,14 @@ export const DeliveryOrderDetail = () => {
           <table className={styles.table}>
             <thead>
               <tr>
+                {/* DO is QUANTITY-only (Owner 2026-06-26) — money columns
+                    (Unit / Disc / Total / Unit Cost / Line Cost / Margin) were
+                    removed from this read-view. Qty stays. */}
                 <th>Item</th>
                 <th>Description 2</th>
                 <th>Sales Location</th>
                 <th className={styles.tableRight}>Qty</th>
                 <th>Transfer To</th>
-                <th className={styles.tableRight}>Unit</th>
-                <th className={styles.tableRight}>Disc</th>
-                <th className={styles.tableRight}>Total</th>
-                <th className={styles.tableRight}>Unit Cost</th>
-                <th className={styles.tableRight}>Line Cost</th>
-                <th className={styles.tableRight}>Margin</th>
               </tr>
             </thead>
             <tbody>
@@ -792,29 +792,9 @@ export const DeliveryOrderDetail = () => {
                           </div>
                         ))}
                   </td>
-                  <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, header.currency)}</td>
-                  <td className={styles.tableRight}>{it.discount_centi > 0 ? fmtRm(it.discount_centi, header.currency) : '—'}</td>
-                  <td className={styles.priceCell}>{fmtRm(it.line_total_centi, header.currency)}</td>
-                  <td className={styles.tableRight}>
-                    {lineCostPending(it, isCancelled)
-                      ? <span className={styles.pendingPill}>Pending</span>
-                      : <span className={styles.muted}>{it.unit_cost_centi > 0 ? fmtRm(it.unit_cost_centi, header.currency) : '—'}</span>}
-                  </td>
-                  <td className={styles.tableRight}>
-                    {lineCostPending(it, isCancelled)
-                      ? <span className={styles.pendingPill}>Pending</span>
-                      : <span className={styles.muted}>{it.line_cost_centi > 0 ? fmtRm(it.line_cost_centi, header.currency) : '—'}</span>}
-                  </td>
-                  <td className={styles.tableRight}>
-                    {lineCostPending(it, isCancelled) ? (
-                      <span className={styles.muted}>—</span>
-                    ) : it.line_total_centi > 0 ? (
-                      <span className={it.line_margin_centi > 0 ? styles.marginGood : it.line_margin_centi < 0 ? styles.marginBad : styles.muted}
-                        style={{ fontWeight: 600 }}>
-                        {fmtRm(it.line_margin_centi, header.currency)}
-                      </span>
-                    ) : <span className={styles.muted}>—</span>}
-                  </td>
+                  {/* DO is QUANTITY-only (Owner 2026-06-26) — the 6 money cells
+                      (Unit / Disc / Total / Unit Cost / Line Cost / Margin) were
+                      removed. The *_centi line data still persists + flows to the SI. */}
                 </tr>
               ))}
             </tbody>
@@ -822,7 +802,9 @@ export const DeliveryOrderDetail = () => {
         )}
       </section>
 
-      <TotalsCard header={header} costPending={items.some((it) => lineCostPending(it, isCancelled))} />
+      {/* DO is QUANTITY-only (Owner 2026-06-26) — the Totals · Margin card (grand
+          total, cost, margin, margin %, by-category money) was removed. Amounts
+          belong on the Sales Invoice. Underlying data is untouched. */}
 
       <PaymentsTable
         docNo={null}
@@ -1188,84 +1170,8 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
 CustomerCardInner.displayName = 'CustomerCardInner';
 const CustomerCard = memo(CustomerCardInner) as typeof CustomerCardInner;
 
-/* ════════════════════════════════════════════════════════════════════════
-   Totals card (mirror of SalesOrderDetail's TotalsCard)
-   ════════════════════════════════════════════════════════════════════════ */
-const TotalsCard = ({ header, costPending = false }: { header: DoHeader; costPending?: boolean }) => {
-  const marginPct = header.margin_pct_basis / 100;
-  const marginCls =
-    header.total_margin_centi <= 0 ? styles.marginBad
-    : marginPct >= 30 ? styles.marginGood
-    : marginPct >= 15 ? styles.marginWarn
-    : styles.marginBad;
-
-  const categories: Array<{ label: string; rev: number; cost: number }> = [
-    { label: 'Mattress / Sofa', rev: header.mattress_sofa_centi, cost: header.mattress_sofa_cost_centi ?? 0 },
-    { label: 'Bedframe',        rev: header.bedframe_centi,      cost: header.bedframe_cost_centi      ?? 0 },
-    { label: 'Accessories',     rev: header.accessories_centi,   cost: header.accessories_cost_centi   ?? 0 },
-    { label: 'Others',          rev: header.others_centi,        cost: header.others_cost_centi        ?? 0 },
-    /* SO-SKU spec P2 (D1, migration 0155) — SERVICE bucket (delivery fee /
-       dispose / lift lines); hidden when zero so legacy docs keep 4 rows. */
-    ...((((header as unknown as { service_centi?: number | null }).service_centi ?? 0) > 0)
-      ? [{
-          label: 'Services',
-          rev:  (header as unknown as { service_centi?: number | null }).service_centi ?? 0,
-          cost: (header as unknown as { service_cost_centi?: number | null }).service_cost_centi ?? 0,
-        }]
-      : []),
-  ];
-
-  const fmtMarginClass = (rev: number, marginCenti: number) => {
-    if (rev <= 0) return styles.muted;
-    if (marginCenti > 0) return styles.marginGood;
-    if (marginCenti < 0) return styles.marginBad;
-    return styles.muted;
-  };
-
-  return (
-    <section className={styles.card}>
-      <header className={styles.cardHeader}><h2 className={styles.cardTitle}>Totals · Margin</h2></header>
-      <div className={styles.cardBody}>
-        <div style={TOTALS_KPI_GRID_STYLE}>
-          <div>
-            <div className={styles.totalLabel}>Revenue</div>
-            <div className={styles.grandTotal} style={TOTALS_KPI_VALUE_STYLE}>{fmtRm(header.local_total_centi, header.currency)}</div>
-          </div>
-          <div>
-            <div className={styles.totalLabel}>Cost</div>
-            <div className={styles.totalValue} style={TOTALS_KPI_VALUE_STYLE}>
-              {fmtRm(header.total_cost_centi, header.currency)}
-              {costPending && <span className={styles.pendingPill} style={{ marginLeft: 'var(--space-2)' }}>Pending</span>}
-            </div>
-          </div>
-          <div>
-            <div className={styles.totalLabel}>Margin</div>
-            <div className={`${styles.totalValue} ${costPending ? styles.muted : marginCls}`} style={TOTALS_KPI_VALUE_STYLE}>
-              {costPending ? <span className={styles.pendingPill}>Pending</span> : fmtRm(header.total_margin_centi, header.currency)}
-            </div>
-          </div>
-          <div>
-            <div className={styles.totalLabel}>Margin %</div>
-            <div className={`${styles.totalValue} ${costPending ? styles.muted : marginCls}`} style={TOTALS_KPI_VALUE_STYLE}>
-              {costPending ? '—' : header.local_total_centi > 0 ? `${marginPct.toFixed(1)}%` : '—'}
-            </div>
-          </div>
-        </div>
-        <div className={styles.totalLabel} style={{ marginBottom: 'var(--space-2)' }}>By Category</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-          {categories.filter((c) => c.rev > 0 || c.cost > 0).map(({ label, rev, cost }) => {
-            const margin = rev - cost;
-            return (
-              <div key={label} style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr 1fr', gap: 'var(--space-3)', alignItems: 'baseline' }}>
-                <div className={styles.totalLabel} style={{ textTransform: 'none', letterSpacing: 0, fontSize: 'var(--fs-13)' }}>{label}</div>
-                <div className={styles.totalValue}>Revenue {fmtRm(rev, header.currency)}</div>
-                <div className={styles.totalValue} style={{ color: 'var(--fg-muted)' }}>Cost {fmtRm(cost, header.currency)}</div>
-                <div className={`${styles.totalValue} ${fmtMarginClass(rev, margin)}`}>Margin {fmtRm(margin, header.currency)}</div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </section>
-  );
-};
+/* DO is QUANTITY-only (Owner 2026-06-26) — the TotalsCard (Totals · Margin:
+   grand total, cost, margin, margin %, by-category money) was removed from the
+   Delivery Order. A delivery document shows quantities, not amounts; the money
+   lives on the Sales Invoice. The header *_centi fields still persist and flow
+   downstream — this was a display-only removal. */

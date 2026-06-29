@@ -17,7 +17,6 @@ import {
   drawInfoColumns,
   drawSignatureBoxes,
   fmtDocDate,
-  fmtRm,
   safeName,
 } from './pdf-common';
 import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
@@ -128,18 +127,20 @@ export async function renderDeliveryOrderInto(
   // as SO/DR/SI/consignment), so the line reads identically on every customer
   // document (Commander 2026-06-16).
   const fabric = await loadCustomerFabricMaps(items);
+  // DO is QUANTITY-only (Owner 2026-06-26) — the Unit Price column was removed
+  // from the DO PDF; a delivery doc shows quantity / volume, not money. The
+  // underlying unit_price_centi still flows to the Sales Invoice.
   const rows = items.map((it, idx) => [
     String(idx + 1),
     it.item_code,
     [it.description, docVariantLine(it, fabric.ext, fabric.desc)].filter(Boolean).join('\n') || '—',
     String(it.qty),
     it.m3_milli != null ? (it.m3_milli / 1000).toFixed(3) : '—',
-    fmtRm(it.unit_price_centi),
   ]);
 
   autoTable(doc, {
     startY: y,
-    head: [['#', 'Item Code', 'Description', 'Qty', 'm³', 'Unit Price']],
+    head: [['#', 'Item Code', 'Description', 'Qty', 'm³']],
     body: rows,
     theme: 'striped',
     rowPageBreak: 'avoid',
@@ -151,7 +152,6 @@ export async function renderDeliveryOrderInto(
       2: { cellWidth: 'auto' },
       3: { cellWidth: 14, halign: 'right', fontSize: 7.5 },
       4: { cellWidth: 18, halign: 'right', fontSize: 7.5 },
-      5: { cellWidth: 28, halign: 'right', fontSize: 7.5 },
     },
     margin: { left: margin, right: margin },
   });

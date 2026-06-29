@@ -98,6 +98,13 @@ import {
   loadProductsAndModels,
 } from '../lib/allowed-options-check';
 import { findIncompleteVariantLines } from '../lib/so-variant-check';
+/* Variants-vocabulary unification (port of 2990 73aeeb1e, 2026-06-26):
+   POS-handover sofa lines speak `depth`/`sofaLegHeight`/`fabricColor`, Backend
+   editors read `seatHeight`/`legHeight`/`fabricCode`. canonicalizeVariants
+   rewrites POS keys to canonical Backend keys at PERSIST time so every stored
+   row is canonical — used at all 4 SO persist seams (create, sofa-split shared,
+   add-line, add-line split, PATCH, sofa-exchange/tbc-swap-sofa) below. */
+import { canonicalizeVariants } from '../shared/so-variant-rule';
 /* Default Free Gift (migration 0170/0174, D9) — ONE per-Model trigger builder
    (in ../shared) is shared by the SO-create validator below and the
    placed-SO edit reconciler, so create and reconcile can never compute a
@@ -378,6 +385,16 @@ function extractSofaComboLookupArgs(
   return { modules, height, tier };
 }
 
+/* VIEW-TRAP (see backend/docs/scm-view-trap-coe.md): this HEADER feeds BOTH the
+   SO detail GET (reads BASE TABLE scm.mfg_sales_orders) AND the SO list GET
+   (reads the VIEW scm.mfg_sales_orders_with_payment_totals; LIST_COLS = HEADER
+   + 3). The view was created `SELECT so.*` from 2990 mig 0155 — Postgres FREEZES
+   that column set at CREATE VIEW, so new base-table columns are NOT visible
+   through it. Adding a column here REQUIRES a same-PR migration that recreates
+   the view (CREATE OR REPLACE VIEW … AS SELECT so.* …) — else the SO LIST 500s
+   ("Failed to load") in prod. For a field only the detail needs, append it on
+   the detail SELECT (see slip_image_key/receipt_image_key/proceeded_at at the
+   `/:docNo` handler), NOT here. 2990 hit this 2026-06-26 (their mig 0200). */
 const HEADER =
   'doc_no, transfer_to, so_date, branding, debtor_code, debtor_name, agent, sales_location, ref, po_doc_no, venue, venue_id, ' +
   'address1, address2, address3, address4, phone, ' +
@@ -587,6 +604,16 @@ mfgSalesOrders.get('/', async (c) => {
      Balance column is live (= local_total − sum(payments)). Header column
      `balance_centi` is still in the SELECT for backward compat (the grid
      falls back to it if the view's `balance_centi_live` is absent). */
+  /* VIEW-TRAP (see backend/docs/scm-view-trap-coe.md): this select hits the
+     VIEW `mfg_sales_orders_with_payment_totals`, which has a FROZEN column set
+     captured at CREATE VIEW time (2990 mig 0155, `SELECT so.*`). Any column you
+     add to HEADER above MUST already exist in the view — else this query 500s
+     the whole SO list page in prod. If you're adding a new base-table column,
+     ship a recreate-view migration in the SAME PR FIRST, or keep the col out
+     of HEADER (detail-only). proceeded_at + paid_total_centi + balance_centi_live
+     are all view-native (paid_total_centi/balance_centi_live are the view's
+     computed cols; proceeded_at was added to the base table BEFORE the view
+     was last recreated by the 2990-views script, so it IS present). */
   const LIST_COLS = `${HEADER}, proceeded_at, paid_total_centi, balance_centi_live`;
   let q = sb.from('mfg_sales_orders_with_payment_totals').select(LIST_COLS).order('so_date', { ascending: false }).limit(500);
   if (scopeIds) q = q.in('salesperson_id', scopeIds);
@@ -1332,8 +1359,12 @@ mfgSalesOrders.get('/:docNo', async (c) => {
        NOT the mfg_sales_orders_with_payment_totals view that the LIST route
        (LIST_COLS = HEADER + …) reads. Keeping it out of the shared HEADER and
        appending it only here means the detail page still gets the Proceed Date
-       while the list view query stays valid. */
-    sb.from('mfg_sales_orders').select(`${HEADER}, proceeded_at, signature_b64, slip_key, slip_state, slip_image_key, receipt_image_key`).eq('doc_no', docNo).maybeSingle(),
+       while the list view query stays valid. amend_date_from_customer /
+       amended_delivery_date / amend_reason (mig 0053, port of 2990 0199 + 0201)
+       are in the SAME boat — the payment-totals view's frozen column set
+       (see VIEW-TRAP note above) does NOT carry them, so they're appended on
+       the base-table detail read only. POST/PATCH persist them. */
+    sb.from('mfg_sales_orders').select(`${HEADER}, proceeded_at, amend_date_from_customer, amended_delivery_date, amend_reason, signature_b64, slip_key, slip_state, slip_image_key, receipt_image_key`).eq('doc_no', docNo).maybeSingle(),
     /* line_no = the persisted listing order (0165); NULLS LAST so pre-0165
        docs fall back to created_at + the rule re-derive below. */
     sb.from('mfg_sales_order_items').select(ITEM).eq('doc_no', docNo)
@@ -2556,7 +2587,13 @@ mfgSalesOrders.post('/', async (c) => {
       total_centi: lineTotal,
       total_inc_centi: lineTotal,
       balance_centi: lineTotal,
-      variants: (it.variants as unknown) ?? null,
+      /* Variants-vocabulary unification (port of 2990 73aeeb1e) — canonicalize
+         at the LAST step before the DB write. Every depth-keyed read
+         (recompute, split, fabricCode/fabricId loads) above ran on the raw
+         `it.variants`, so a POS-created sofa line ends up stored with the
+         canonical Backend keys (seatHeight/legHeight/fabricCode) and the read
+         seams in DO/SI/PO/GRN/PI/PR editors never render blank dropdowns. */
+      variants: canonicalizeVariants(String(it.itemGroup ?? ''), (it.variants as Record<string, unknown> | null) ?? null),
       unit_cost_centi: unitCost,
       line_cost_centi: lineCost,
       line_margin_centi: lineTotal - lineCost,
@@ -2623,8 +2660,13 @@ mfgSalesOrders.post('/', async (c) => {
       });
       if (split && split.length > 0) {
         const buildKey = `build-${idx + 1}`;
+        /* Variants-vocabulary unification (port of 2990 73aeeb1e) —
+           canonicalize BEFORE deriving the split's shared variants so every
+           module row stores seatHeight/legHeight/fabricCode. Safe: the split's
+           own depth read above ran on the raw `it.variants`, so dropping the
+           `depth` alias here does NOT change the geometry. */
         const { cells: _cells, ...sharedVariants } =
-          ((it.variants as Record<string, unknown> | null) ?? {});
+          canonicalizeVariants('sofa', (it.variants as Record<string, unknown> | null) ?? {});
         const moduleRows = split.map((s, i) => {
           const moduleVariants: Record<string, unknown> = {
             ...sharedVariants,
@@ -2916,7 +2958,10 @@ mfgSalesOrders.post('/', async (c) => {
         venue: resolvedVenueName,
         // Not goods — nothing to allocate; READY from birth (spec §4.6).
         stock_status: 'READY',
-      } as (typeof itemRows)[number]);
+        /* Variants-vocabulary unification (port of 2990 73aeeb1e) — goods rows
+           above now type `variants` as the non-null canonicalizeVariants
+           result, so a SERVICE row's null variants needs `unknown` widening. */
+      } as unknown as (typeof itemRows)[number]);
     }
   }
 
@@ -3155,6 +3200,17 @@ mfgSalesOrders.post('/', async (c) => {
        on the POST (create) — so the New SO form's Processing Date field
        never persisted; reopening the SO showed an empty field. */
     internal_expected_dd: (body.internalExpectedDd as string) ?? null,
+    /* Mig 0053 (port of 2990 0199 + 0201) — amendment carriers. The customer's
+       ORIGINAL `customer_delivery_date` above is NEVER overwritten by an
+       amend; the customer's REQUESTED-changed date lands here, the date WE
+       confirm goes to `amended_delivery_date`, and the free-text "why" goes to
+       `amend_reason`. The effective date for Days Left / OVERDUE is
+       amended_delivery_date ?? customer_delivery_date. Persisted on CREATE so
+       an amend captured at SO entry (e.g. customer asked for a date change
+       between quote + sign-off) doesn't get lost waiting for a follow-up PATCH. */
+    amend_date_from_customer: (body.amendDateFromCustomer as string) ?? null,
+    amended_delivery_date: (body.amendedDeliveryDate as string) ?? null,
+    amend_reason: (body.amendReason as string) ?? null,
     // PR #121 — POS-aligned Order Details fields
     customer_so_no: (body.customerSoNo as string) ?? null,
     customer_po: (body.customerPo as string) ?? null,
@@ -4031,6 +4087,16 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     ['hubId', 'hub_id'], ['hubName', 'hub_name'],
     ['customerDeliveryDate', 'customer_delivery_date'],
     ['internalExpectedDd', 'internal_expected_dd'],
+    /* Mig 0053 (port of 2990 0199 + 0201) — amendment carriers. The customer's
+       original `customer_delivery_date` above is NEVER overwritten by an amend;
+       these three columns hold the customer's REQUESTED-changed date, the date
+       WE confirm, and the free-text "why". Delivery Planning's `/fields` route
+       also writes `amend_date_from_customer` + `amended_delivery_date` (and the
+       `/schedule` action stamps `amended_delivery_date`); this PATCH lets the
+       SO Detail page edit any of them inline too, including the reason. */
+    ['amendDateFromCustomer', 'amend_date_from_customer'],
+    ['amendedDeliveryDate', 'amended_delivery_date'],
+    ['amendReason', 'amend_reason'],
     /* POS "Proceed" — sales-side done marker; stamp-once guard below. */
     ['proceededAt', 'proceeded_at'],
     ['linkedDoDocNo', 'linked_do_doc_no'],
@@ -4810,9 +4876,17 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
        Task 4: if freeItemCampaignId was validated above, re-stamp the server-
        resolved marker (campaignId + campaignName) after stripping. This is the
        same pattern as the create path (strip then re-add validated marker). */
-    variants: addLineFreeItem
-      ? { ...(stripFreeItem(it.variants) as Record<string, unknown> | null ?? {}), freeItem: addLineFreeItem }
-      : (stripFreeItem(it.variants) ?? null),
+    /* Variants-vocabulary unification (port of 2990 73aeeb1e) — canonicalize at
+       the LAST step before the DB write. Every depth-keyed read (recompute,
+       split, fabricCode/fabricId/pwpCode loads) above ran on the raw
+       variantsObj/it.variants, so dropping POS aliases here is safe; the
+       persisted single-row line stores seatHeight/legHeight/fabricCode. */
+    variants: canonicalizeVariants(
+      String(it.itemGroup ?? ''),
+      addLineFreeItem
+        ? { ...(stripFreeItem(it.variants) as Record<string, unknown> | null ?? {}), freeItem: addLineFreeItem }
+        : ((stripFreeItem(it.variants) as Record<string, unknown> | null) ?? null),
+    ),
     unit_cost_centi: unitCost,
     line_cost_centi: lineCost,
     line_margin_centi: lineTotal - lineCost,
@@ -4862,8 +4936,12 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
     });
     if (split && split.length > 0) {
       const buildKey = `build-add-${nextLineNo ?? crypto.randomUUID().slice(0, 8)}`;
+      /* Variants-vocabulary unification (port of 2990 73aeeb1e) — canonicalize
+         BEFORE deriving the split's shared variants so each module row stores
+         seatHeight/legHeight/fabricCode. Safe: the split's depth read above
+         ran on the raw it.variants. */
       const { cells: _cells, freeItem: _clientFreeItem, ...sharedVariants } =
-        ((it.variants as Record<string, unknown> | null) ?? {});
+        canonicalizeVariants('sofa', (it.variants as Record<string, unknown> | null) ?? {});
       const moduleRows = split.map((s, i) => {
         const moduleVariants: Record<string, unknown> = {
           ...sharedVariants,
@@ -5236,6 +5314,17 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
     updates['variants'] = prevFreeItem !== undefined
       ? { ...(clientVariants as Record<string, unknown> ?? {}), freeItem: prevFreeItem }
       : clientVariants ?? null;
+    /* Variants-vocabulary unification (port of 2990 73aeeb1e) — canonicalize
+       the FINAL persisted variants. The recompute + sofa depth loads above
+       already ran on the raw variantsAfter, so dropping aliases here is safe;
+       the persisted row stores seatHeight/legHeight/fabricCode and the
+       description2 block below (which reads updates['variants']) sees the
+       canonical object. */
+    const itemGroupAfter = String(it.itemGroup ?? prev.item_group ?? '');
+    updates['variants'] = canonicalizeVariants(
+      itemGroupAfter,
+      updates['variants'] as Record<string, unknown> | null,
+    );
   }
   /* Commander 2026-05-28 — "Description 2" is ALWAYS the server-generated
      variant summary; never trust a client-sent value. Recompute from the
@@ -6133,7 +6222,10 @@ async function planSofaRewardRevert(
       rot: typeof v.rot === 'number' ? v.rot : 0,
     };
   });
-  const depth = String(leadV.depth ?? '24');
+  /* Variants-vocabulary unification (port of 2990 73aeeb1e) — dual-read:
+     post-unification a persisted sofa row stores `seatHeight`; legacy rows
+     stored `depth`. */
+  const depth = String(leadV.depth ?? leadV.seatHeight ?? '24');
   const [cfg, prodLite, fabLite, combos, sellingTiers, addonCfg, specialDefs, modulePrices, modelOverridesLead, compartmentOverridesLead] = await Promise.all([
     loadMaintenanceConfig(sb),
     loadProductByCode(sb, lead.item_code),
@@ -6304,7 +6396,10 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   }
 
   /* Authoritative reprice — the SAME inputs as SO create / item PATCH. */
-  const depth = String((newVariants as { depth?: unknown }).depth ?? '24');
+  /* Variants-vocabulary unification (port of 2990 73aeeb1e) — dual-read: a
+     Backend-loaded swap build may carry the canonical `seatHeight`; POS posts
+     `depth`. recomputeFromSnapshot below also reads `depth ?? seatHeight`. */
+  const depth = String((newVariants as { depth?: unknown; seatHeight?: unknown }).depth ?? (newVariants as { seatHeight?: unknown }).seatHeight ?? '24');
   const [cfg, fabLite, combos, sellingTiers, fabricAddonCfg, specialDefs, modulePrices, moduleCostRows, modelOverridesSwap] = await Promise.all([
     loadMaintenanceConfig(sb),
     loadFabricByCode(sb, (newVariants.fabricCode as string | undefined) ?? null),
@@ -6377,6 +6472,16 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
     newVariants.pwp = true;
     newVariants.pwpCode = rewardCtx.code;
   }
+
+  /* Variants-vocabulary unification (port of 2990 73aeeb1e) — the sofa-exchange
+     path is a 4th persist seam (beyond create/add-line/PATCH). Canonicalize
+     the swap build's variants into a separate object that feeds ONLY the
+     persisted rows (split or single-line below), so they store seatHeight/
+     legHeight/fabricCode. Safe: the authoritative reprice (recomputeFromSnapshot
+     above, depth load further up) already ran on the raw POS-vocabulary
+     `newVariants`, and splitSofaBuildIntoModuleLines below doesn't read `depth`.
+     PWP markers added just above are preserved. */
+  const persistVariants = canonicalizeVariants('sofa', newVariants);
 
   /* Split into per-module lines (P3) — same decomposition as SO create. */
   const split = splitSofaBuildIntoModuleLines({
@@ -6535,7 +6640,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   };
   let rows: Array<Record<string, unknown>>;
   if (split && split.length > 0) {
-    const { cells: _cells, ...sharedVariants } = newVariants;
+    const { cells: _cells, ...sharedVariants } = persistVariants;
     rows = split.map((s, i) => {
       const moduleVariants: Record<string, unknown> = {
         ...sharedVariants, buildKey: newBuildKey, cellIndex: s.cellIndex, x: s.x, y: s.y, rot: s.rot,
@@ -6569,13 +6674,13 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
       ...baseRow,
       item_code: newCode,
       description: String(item.description ?? newCode),
-      description2: buildVariantSummary('sofa', newVariants) || null,
+      description2: buildVariantSummary('sofa', persistVariants) || null,
       unit_price_centi: unit,
       discount_centi: discount,
       total_centi: lineTotal,
       total_inc_centi: lineTotal,
       balance_centi: lineTotal,
-      variants: newVariants,
+      variants: persistVariants,
       unit_cost_centi: unitCost,
       line_cost_centi: unitCost * qty,
       line_margin_centi: lineTotal - (unitCost * qty),
