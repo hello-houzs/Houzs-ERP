@@ -345,6 +345,32 @@ const draftFromItem = (it: SoItem): SoLineDraft => ({
   lineDeliveryDateOverridden: it.line_delivery_date_overridden ?? false,
 });
 
+/* Serialised signature of exactly the fields a line PATCH persists. Two drafts
+   with the same signature need NO PATCH. Loo 2026-06-28 — entering edit mode
+   seeds a draft for every line, and Save used to re-commit them ALL, even ones
+   the user never touched. That re-runs the server-side recompute on each line
+   (which would, e.g., clobber a PWP reward line's grant price back to full
+   retail because the edit path passes no pwpBaseSen) and re-validates it against
+   the CURRENT allowed-options — so an unrelated header / customer / demographics
+   edit could fail (or silently corrupt a price) on a line nobody changed. Now
+   Save commits only the lines whose signature actually moved. Both sides are
+   draftFromItem output for an untouched line, so normalisation never false-
+   positives — only a genuine user edit flips the signature. */
+const lineCommitSig = (d: SoLineDraft): string => JSON.stringify({
+  itemCode:       d.itemCode,
+  itemGroup:      d.itemGroup,
+  description:    d.description,
+  uom:            d.uom,
+  qty:            d.qty,
+  unitPriceCenti: d.unitPriceCenti,
+  discountCenti:  d.discountCenti,
+  unitCostCenti:  d.unitCostCenti,
+  variants:       d.variants ?? null,
+  remark:         d.remark,
+  lineDeliveryDate:           d.lineDeliveryDate ?? null,
+  lineDeliveryDateOverridden: d.lineDeliveryDateOverridden ?? false,
+});
+
 export const SalesOrderDetail = () => {
   const { docNo } = useParams<{ docNo: string }>();
   const detail = useMfgSalesOrderDetail(docNo ?? null);
@@ -389,6 +415,9 @@ export const SalesOrderDetail = () => {
      inline SoLineCard at the bottom of the table (same component, same
      behavior as the New SO page — there is no modal flow at all). */
   const [editingDrafts, setEditingDrafts] = useState<Record<string, SoLineDraft>>({});
+  /* The drafts AS SEEDED (pristine) — Save diffs each current draft against this
+     so untouched lines are not re-committed (see lineCommitSig). */
+  const originalDraftsRef = useRef<Record<string, SoLineDraft>>({});
   const [addingDraft, setAddingDraft] = useState<SoLineDraft | null>(null);
   const [overriding, setOverriding] = useState<SoItem | null>(null);
   const [unlockOverride, setUnlockOverride] = useState(false);
@@ -484,7 +513,15 @@ export const SalesOrderDetail = () => {
 
     setSavingOrder(true);
     // Snapshot drafts up front so concurrent re-seeds don't shift the set.
-    const lineEntries = Object.entries(editingDrafts);
+    // Only commit lines the user actually changed — re-committing an untouched
+    // line re-runs the server recompute (which can clobber a PWP reward's grant
+    // price) and re-validates it against current allowed-options, so an edit to
+    // the header / customer / demographics alone must NOT touch the lines
+    // (Loo 2026-06-28). New lines have no pristine snapshot -> always committed.
+    const lineEntries = Object.entries(editingDrafts).filter(([id, d]) => {
+      const orig = originalDraftsRef.current[id];
+      return !orig || lineCommitSig(d) !== lineCommitSig(orig);
+    });
     const pendingAdd = addingDraft;
 
     /* Order matters: commit the line variants FIRST, then the header. The
@@ -622,13 +659,14 @@ export const SalesOrderDetail = () => {
     if (!isEditing) {
       setEditingDrafts({});
       setAddingDraft(null);
+      originalDraftsRef.current = {};
       return;
     }
-    setEditingDrafts(() => {
-      const next: Record<string, SoLineDraft> = {};
-      for (const it of items) next[it.id] = draftFromItem(it);
-      return next;
-    });
+    const next: Record<string, SoLineDraft> = {};
+    for (const it of items) next[it.id] = draftFromItem(it);
+    // Snapshot the pristine drafts so Save can skip lines the user never edits.
+    originalDraftsRef.current = next;
+    setEditingDrafts(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEditing, items]);
 
