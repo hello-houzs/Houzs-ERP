@@ -781,7 +781,7 @@ export function DataTable<T>({
             )}
           </div>
         </div>
-        <div className="mask-fade-r no-scrollbar -mx-4 flex items-center gap-2 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0">
+        <div className="flex flex-wrap items-center gap-2">
           {onImport && (
             <>
               <input
