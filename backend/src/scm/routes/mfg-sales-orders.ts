@@ -5145,14 +5145,35 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
     : ((prev as { variants?: MfgItemForRecompute['variants'] }).variants ?? null);
   const itemCodeAfter = it.itemCode !== undefined ? String(it.itemCode) : prev.item_code;
   const itemGroupAfter = it.itemGroup !== undefined ? String(it.itemGroup) : prev.item_group;
-  const shouldRecompute = it.variants !== undefined || it.unitPriceCenti !== undefined || it.itemCode !== undefined;
 
-  /* PR #216 — allowed_options check on PATCH. Only fires when the caller
-     touched variants OR itemCode (qty/price/discount alone don't move the
-     Model linkage). Uses the merged (prev+patch) shape so a partial PATCH
-     of just `specials: [...]` still validates against the existing item
-     code's Model. */
-  if (it.variants !== undefined || it.itemCode !== undefined) {
+  /* Did the caller actually CHANGE the priced shape of this line? Loo 2026-06-28:
+     the Backend SO Detail Save re-commits EVERY line, even untouched ones, so an
+     unrelated header / customer / demographics edit re-sends a line verbatim. We
+     must NOT re-validate or re-price a line whose itemCode + variants + price the
+     caller left identical — the Model's allowed_options can drift after the SO is
+     placed (a changed pool, or a stored value with a curly inch-mark "12“" while
+     the pool now lists the straight "12\"") and would wrongly reject (or silently
+     re-price) a line the user never touched. canonJson is key-order-independent
+     because Postgres jsonb reorders object keys, so a naive JSON.stringify of the
+     stored blob vs the incoming one would false-positive "changed". */
+  const canonJson = (o: unknown): string => {
+    if (o == null) return 'null';
+    if (typeof o !== 'object') return JSON.stringify(o);
+    if (Array.isArray(o)) return '[' + o.map(canonJson).join(',') + ']';
+    return '{' + Object.keys(o as Record<string, unknown>).sort()
+      .map((k) => JSON.stringify(k) + ':' + canonJson((o as Record<string, unknown>)[k]))
+      .join(',') + '}';
+  };
+  const variantsChanged = it.variants !== undefined
+    && canonJson(variantsAfter ?? null) !== canonJson((prev as { variants?: unknown }).variants ?? null);
+  const itemCodeChangedOnPatch = it.itemCode !== undefined && String(it.itemCode) !== prev.item_code;
+  const priceChanged = it.unitPriceCenti !== undefined && Number(it.unitPriceCenti) !== prev.unit_price_centi;
+  const shouldRecompute = variantsChanged || itemCodeChangedOnPatch || priceChanged;
+
+  /* PR #216 — allowed_options check on PATCH. Only when the caller actually
+     CHANGES variants or the item code (see above) — a genuine edit picks from
+     the CURRENT pool so it still validates; an untouched line is grandfathered. */
+  if (variantsChanged || itemCodeChangedOnPatch) {
     const { product, model } = await loadProductAndModel(sb, itemCodeAfter);
     const aoErr = checkAllowedOptions(
       product,
@@ -5212,7 +5233,12 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
        if the campaign has since been toggled off. Skip the drift check too —
        the client always sends 0 for a free-item line so there is no drift to
        gate against. */
-    if (!isFreeItemLine(prev.variants) && posTablet && recomputedPatch.drift) {
+    /* PWP reward lines are grandfathered too (Loo 2026-06-28). The grant price
+       was locked when the voucher was claimed; the edit path passes no
+       pwpBaseSen, so recompute returns FULL RETAIL — comparing the stored grant
+       price against it always "drifts". Skip the gate for a reward line exactly
+       like a free-item line; the unit below is forced back to the stored grant. */
+    if (!isFreeItemLine(prev.variants) && !prevIsReward && posTablet && recomputedPatch.drift) {
       return c.json({
         error:    'pricing_drift',
         reason:   'Client unitPriceCenti differs >0.5% from server compute.',
@@ -5229,6 +5255,12 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
      at RM 0 regardless of what the current recompute produced. */
   const unit = isFreeItemLine(prev.variants)
     ? 0
+    /* PWP reward — keep the grant price locked at claim time. Recompute (no
+       pwpBaseSen on the edit path) would reset it to full retail and the
+       Backend, not being a POS tablet, would save that silently — turning a
+       RM490 加购 into RM990 with no warning (Loo 2026-06-28). */
+    : prevIsReward
+    ? prev.unit_price_centi
     : (recomputedPatch ? recomputedPatch.unit_price_sen : clientUnit);
   /* Audit 2026-06-11 C-2 — same discount gate as POST /: the effective
      (patch-else-stored) discount must sit in [0, qty × unit] against the
