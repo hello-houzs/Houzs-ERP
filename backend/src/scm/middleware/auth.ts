@@ -27,12 +27,27 @@ export const supabaseAuth = createMiddleware<{ Bindings: Env; Variables: Variabl
     // Adapt the Houzs session user (set by the global /api/* auth) into the
     // Supabase-User shape the ported routes read. user.id is the scm.staff uuid
     // (system staff); email stays the real Houzs user's for display.
-    const hu = c.get("user") as unknown as { id?: number | string; email?: string } | undefined;
+    const hu = c.get("user") as unknown as {
+      id?: number | string;
+      email?: string;
+      permissions?: string[];
+      permissions_set?: Set<string>;
+    } | undefined;
     // Stash the real Houzs user (integer id) for per-user PUBLIC-schema lookups
     // (the next line overwrites `user` with the scm.staff system identity).
+    // Mirror permissions / permissions_set so route handlers can gate on flat
+    // permission keys against the REAL caller (vs scm.staff.role which is the
+    // pinned super_admin system row for every SCM call).
     c.set(
       "houzsUser",
-      hu && hu.id != null ? { id: Number(hu.id), email: hu.email } : undefined,
+      hu && hu.id != null
+        ? {
+            id: Number(hu.id),
+            email: hu.email,
+            permissions: hu.permissions,
+            permissions_set: hu.permissions_set,
+          }
+        : undefined,
     );
     c.set("user", {
       id: SCM_SYSTEM_STAFF_ID,

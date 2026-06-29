@@ -67,7 +67,7 @@ import {
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { soStatusDisplay, type DeliveryState, type SoLifecycle } from '../../vendor/scm/lib/so-status';
-import { useAuth } from '../../vendor/scm/lib/auth';
+import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
 import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
@@ -1546,7 +1546,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
   /* Commander 2026-05-27: Venue is locked to the picked salesperson's
      staff.venue_id; only admin / sales_director may swap the salesperson.
      useVenues drives the read-only Venue input's display name. */
-  const { staff: currentStaff } = useAuth();
+  const { can } = useHouzsAuth();
   const venuesQ = useVenues();
   /* Commander 2026-05-27 ("delivery 一点没有跟着跳"): Sales Location no longer
      just mirrors header.sales_location. When the user picks a delivery state
@@ -1554,10 +1554,10 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
      mapped warehouse code. The user can still leave it blank (no mapping
      exists for that state) or manually override on Maintenance. */
   const stateWarehousesQ = useStateWarehouseMappings();
-  const canChangeSalesperson =
-    currentStaff?.role === 'admin' ||
-    currentStaff?.role === 'sales_director' ||
-    currentStaff?.role === 'super_admin';
+  // Houzs-flavoured: gate on the flat permission key `scm.so.attribute_other`
+  // (the 2990 bridge always reports either super_admin or sales). Owner + IT
+  // Admin pass via `*`; grant to other positions via Team > Positions.
+  const canChangeSalesperson = can('scm.so.attribute_other');
 
   /* Task #118 — DB-backed dropdowns (was hardcoded). Falls back to the
      migration 0081 seed list when loading or when the DB has zero rows

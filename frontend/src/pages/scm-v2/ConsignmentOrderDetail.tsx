@@ -62,7 +62,7 @@ import {
   useSoDropdownOptions, optionsOrFallback,
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
-import { useAuth } from '../../vendor/scm/lib/auth';
+import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
 import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
@@ -702,13 +702,13 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
   const localityRows = useMemo(() => localities.data ?? [], [localities.data]);
   const staffQ = useStaff();
   const staffList = (staffQ.data ?? []).filter((s) => s.active);
-  const { staff: currentStaff } = useAuth();
+  const { can } = useHouzsAuth();
   const venuesQ = useVenues();
   const stateWarehousesQ = useStateWarehouseMappings();
-  const canChangeSalesperson =
-    currentStaff?.role === 'admin' ||
-    currentStaff?.role === 'sales_director' ||
-    currentStaff?.role === 'super_admin';
+  // Houzs-flavoured: gate on the flat permission key `scm.so.attribute_other`
+  // (the 2990 bridge always reports either super_admin or sales). Owner + IT
+  // Admin pass via `*`; grant to other positions via Team > Positions.
+  const canChangeSalesperson = can('scm.so.attribute_other');
 
   const customerTypeOptsQ = useSoDropdownOptions('customer_type');
   const buildingTypeOptsQ = useSoDropdownOptions('building_type');

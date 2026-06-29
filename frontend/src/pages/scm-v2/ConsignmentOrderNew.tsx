@@ -32,6 +32,7 @@ import {
 import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { useAuth } from '../../vendor/scm/lib/auth';
+import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
@@ -81,10 +82,11 @@ export const ConsignmentOrderNew = () => {
   const venuesQ  = useVenues();
   const loc      = useLocalities();
   const { staff: currentStaff } = useAuth();
-  const canChangeSalesperson =
-    currentStaff?.role === 'admin' ||
-    currentStaff?.role === 'sales_director' ||
-    currentStaff?.role === 'super_admin';
+  // Houzs-flavoured: gate on the flat permission key `scm.so.attribute_other`
+  // (the 2990 bridge always reports either super_admin or sales). Owner + IT
+  // Admin pass via `*`; grant to other positions via Team > Positions.
+  const { can } = useHouzsAuth();
+  const canChangeSalesperson = can('scm.so.attribute_other');
 
   const customerTypeOptsQ  = useSoDropdownOptions('customer_type');
   const buildingTypeOptsQ  = useSoDropdownOptions('building_type');

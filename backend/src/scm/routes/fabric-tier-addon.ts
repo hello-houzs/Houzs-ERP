@@ -4,6 +4,7 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
+import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
@@ -13,9 +14,10 @@ export const fabricTierAddonConfig = new Hono<{ Bindings: Env; Variables: Variab
 
 fabricTierAddonConfig.use('*', supabaseAuth);
 
-// super_admin added 2026-06-12 — the role (mig 0162) postdates this route (0124).
-// RLS counterpart: migration 0166 adds super_admin to the UPDATE policy.
-const WRITE_ROLES = new Set(['admin', 'super_admin', 'coordinator', 'sales_director']);
+// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
+// bridge pins every caller to one super_admin row). Owner + IT Admin pass via
+// `*`; grant individual positions via the Team > Positions matrix.
 
 const patchSchema = z.object({
   sofaTier2Delta:     z.number().int().nonnegative().optional(),
@@ -45,13 +47,11 @@ fabricTierAddonConfig.get('/', async (c) => {
 
 // PATCH — editors only. Server role check + RLS defence-in-depth (migration 0124).
 fabricTierAddonConfig.patch('/', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
+  }
   const userId   = c.get('user').id;
   const supabase = c.get('supabase');
-
-  const staffRes = await supabase.from('staff').select('role, active').eq('id', userId).maybeSingle();
-  if (staffRes.error) return c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500);
-  if (!staffRes.data || !staffRes.data.active) return c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403);
-  if (!WRITE_ROLES.has(staffRes.data.role)) return c.json({ error: 'forbidden', reason: 'fabric_tier_editor_only' }, 403);
 
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -86,14 +86,13 @@ const specialSchema = z.object({
   tier3Delta: z.number().int().nonnegative().nullable(),
 });
 
-// Reused role gate for the per-Model writes (mirrors the PATCH gate above).
+// Reused gate for the per-Model writes — Houzs flat-key permission.
 const requireFabricEditor = async (c: AppContext) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return { error: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
+  }
   const userId   = c.get('user').id;
   const supabase = c.get('supabase');
-  const staffRes = await supabase.from('staff').select('role, active').eq('id', userId).maybeSingle();
-  if (staffRes.error)                          return { error: c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500) };
-  if (!staffRes.data || !staffRes.data.active) return { error: c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403) };
-  if (!WRITE_ROLES.has(staffRes.data.role))    return { error: c.json({ error: 'forbidden', reason: 'fabric_tier_editor_only' }, 403) };
   return { userId, supabase };
 };
 

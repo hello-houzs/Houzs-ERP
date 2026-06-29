@@ -21,7 +21,7 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronRight, MapPin, Lock } from 'lucide-react';
 import { isCorePaymentMethodRow } from '@2990s/shared/payment-methods';
 import { Button } from '@2990s/design-system';
-import { useAuth } from '../../vendor/scm/lib/auth';
+import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { useToast } from '../../vendor/scm/components/Toast';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
@@ -56,8 +56,11 @@ import styles from './SalesOrderMaintenance.module.css';
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
 export const SalesOrderMaintenance = () => {
-  const { staff } = useAuth();
-  const canEdit = staff?.role === 'admin' || staff?.role === 'coordinator' || staff?.role === 'super_admin';
+  // Houzs-flavoured: gate on the flat permission key `scm.config.write` (the
+  // 2990 staff_role bridge always reports either super_admin or sales). Owner
+  // + IT Admin pass via `*`; grant to other positions via Team > Positions.
+  const { can } = useHouzsAuth();
+  const canEdit = can('scm.config.write');
 
   return (
     <div className={styles.page}>

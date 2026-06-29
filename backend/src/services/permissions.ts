@@ -40,6 +40,14 @@ export const PERMISSIONS: PermissionDef[] = [
   // gate: holding scm.access (or "*") unlocks every SCM module. Owner +
   // IT Admin already cover it via "*"; this lets non-admin roles in too.
   { key: "scm.access", resource: "Supply Chain", verb: "read", label: "Access Supply Chain", description: "See and use the Supply Chain (furniture SCM) modules" },
+  // Granular SCM write gates — replace the inherited 2990 staff_role checks
+  // (which trivially pass in Houzs because the SCM bridge pins every caller
+  // to one super_admin row). Owner + IT Admin already cover all four via "*";
+  // grant individual positions later via the Team > Positions matrix.
+  { key: "scm.config.write",        resource: "Supply Chain", verb: "write",  label: "Edit SCM master data",         description: "Edit SCM master data: products, sofa combos, delivery fees, fabric library + tier add-ons, PWP rules, sofa quick picks, special add-ons, Maintenance config, category hero images" },
+  { key: "scm.so.price_override",   resource: "Supply Chain", verb: "manage", label: "Override SO line unit price",  description: "Hand-override the unit price on a SCM Sales Order line (audited, admin-level)" },
+  { key: "scm.so.view_all",         resource: "Supply Chain", verb: "read",   label: "View all salespersons' SOs",   description: "View every salesperson's My-Orders board (bypass per-rep attribution scoping)" },
+  { key: "scm.so.attribute_other",  resource: "Supply Chain", verb: "manage", label: "Attribute SO to another rep",  description: "Create or edit a SCM Sales Order on behalf of another salesperson (stamp a different salesperson_id)" },
 
   // Mail Center — in-ERP shared inbox (/api/mail-center). mail_center.read is the
   // nav/page gate (grant broadly); mail_center.manage gates the alias / access /

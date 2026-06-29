@@ -29,6 +29,7 @@ import type { Env, Variables } from '../env';
 import { postSiRevenue, reverseSiRevenue, resyncSiRevenue } from '../lib/post-si-revenue';
 import { nextMonthlyDocNo } from '../lib/doc-no';
 import { resolveSalesScopeIds } from '../lib/salesScope';
+import { hasHouzsPerm } from '../lib/houzs-perms';
 import { doLineRemaining, doRemainingByItemId, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { applyCustomerCreditToSi, creditFromCancelledSi, reverseCancelledSiCredit, reconcileSiOverpay } from '../lib/customer-credits';
@@ -189,7 +190,7 @@ salesInvoices.get('/', async (c) => {
   const sb = c.get('supabase');
   const user = c.get('user');
   // Row-level "own / subordinates" scope — see lib/salesScope.ts.
-  const scopeIds = await resolveSalesScopeIds(sb, c.env, user.id);
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, user.id, hasHouzsPerm(c, 'scm.so.view_all'));
   let q = sb.from('sales_invoices').select(HEADER).order('invoice_date', { ascending: false }).limit(500);
   if (scopeIds) q = q.in('salesperson_id', scopeIds);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);

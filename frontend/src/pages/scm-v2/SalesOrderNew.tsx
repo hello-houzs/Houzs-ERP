@@ -151,14 +151,11 @@ export const SalesOrderNew = () => {
   /* The REAL logged-in user (Houzs auth) — drives the never-blank Salesperson
      default. The 2990 bridge's currentStaff is null/role-only for a user with
      no scm.staff row (e.g. the owner), so we fall back to this for the name. */
-  const { user: currentUser } = useHouzsAuth();
-  /* Roles that may swap the salesperson on an SO they're entering on
-     behalf of someone else. Everyone else gets a read-only salesperson
-     pinned to themselves. */
-  const canChangeSalesperson =
-    currentStaff?.role === 'admin' ||
-    currentStaff?.role === 'sales_director' ||
-    currentStaff?.role === 'super_admin';
+  const { user: currentUser, can } = useHouzsAuth();
+  /* Houzs-flavoured: gate on the flat permission key `scm.so.attribute_other`
+     (the 2990 bridge always reports either super_admin or sales). Owner + IT
+     Admin pass via `*`; grant to other positions via Team > Positions. */
+  const canChangeSalesperson = can('scm.so.attribute_other');
 
   /* Task #118 — these 3 dropdowns used to be `as const` arrays in this
      file. Now sourced from so_dropdown_options via TanStack. Each call

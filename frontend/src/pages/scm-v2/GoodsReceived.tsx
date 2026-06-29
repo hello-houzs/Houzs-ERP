@@ -299,7 +299,7 @@ export const GoodsReceived = () => {
   };
   const convertToPr = (g: GrnRow) => {
     prFromGrn.mutate(g.id, {
-      onSuccess: (res) => navigate(`/purchase-returns/${res.id}`),
+      onSuccess: (res) => navigate(`/scm/purchase-returns/${res.id}`),
       onError: (e) => notify({ title: 'To Purchase Return failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }),
     });
   };

@@ -1,43 +1,33 @@
 // ─────────────────────────────────────────────────────────────────────────
 // salesScope.ts — row-level "own / subordinates" visibility for the SCM
 // sales-side documents (sales orders, delivery orders, sales invoices,
-// consignment orders). Resolves WHICH salesperson_ids a caller may see by
-// layering two systems:
-//
-//   1. The staff-role tiers (lib/roles.ts):
-//        • canViewAllSales  (super_admin / sales_director / outlet_manager) → all
-//        • isSelfScopedSales (sales / sales_executive POS sellers)          → own
-//   2. The position-subtree tier (services/salesTeam.ts): any other caller
-//      who is a sales rep is held to their own id + their downline subtree —
-//      this is the "Manager sees their team, leaf rep sees only self" middle
-//      tier the role system alone could not express. Non-reps (backend
-//      coordinator / finance / ops / owner) stay unrestricted.
+// consignment orders). Houzs-flavoured: the original 2990 staff-role tier
+// lookup is dead in Houzs (the SCM bridge pins every caller to one
+// super_admin row) — so the view-all tier is now gated on the flat
+// permission key `scm.so.view_all` against the REAL caller, computed by the
+// caller via `hasHouzsPerm(c, 'scm.so.view_all')` and passed in as the
+// `canViewAll` flag. The position-subtree tier (services/salesTeam.ts)
+// continues to scope reps to their own id + downline.
 //
 // Keep this as the single source of truth so every sales-doc list/detail
 // scopes identically.
 // ─────────────────────────────────────────────────────────────────────────
 
 import type { Env } from "../../types";
-import { canViewAllSales, isSelfScopedSales } from "./roles";
 import { salesVisibilityUserIds } from "../../services/salesTeam";
 
 /**
  * The salesperson_ids a caller may see, or null for "no restriction".
- * One staff-role lookup, plus the rep subtree walk only when needed.
+ * `canViewAll` is computed by the caller via the Houzs `scm.so.view_all`
+ * permission (Owner + IT Admin pass via `*`).
  */
 export async function resolveSalesScopeIds(
-  sb: any,
+  _sb: any,
   env: Env,
   userId: number | string,
+  canViewAll: boolean,
 ): Promise<number[] | null> {
-  const { data: caller } = await sb
-    .from("staff")
-    .select("role")
-    .eq("id", userId)
-    .maybeSingle();
-  const role = (caller as { role?: string } | null)?.role;
-  if (canViewAllSales(role)) return null; // view-all tier
-  if (isSelfScopedSales(role)) return [Number(userId)]; // POS seller: own only
+  if (canViewAll) return null; // view-all tier
   return salesVisibilityUserIds(env, userId); // rep subtree, or null if not a rep
 }
 
@@ -50,9 +40,10 @@ export async function salesDocOutOfScope(
   sb: any,
   env: Env,
   userId: number | string,
+  canViewAll: boolean,
   salespersonId: number | string | null | undefined,
 ): Promise<boolean> {
-  const ids = await resolveSalesScopeIds(sb, env, userId);
+  const ids = await resolveSalesScopeIds(sb, env, userId, canViewAll);
   if (ids === null) return false; // unrestricted
   return salespersonId == null || !ids.includes(Number(salespersonId));
 }

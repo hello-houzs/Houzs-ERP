@@ -143,7 +143,7 @@ export function HeroImageEditor({
       // content-type from the file.
       const buf = await file.arrayBuffer();
       return authedFetch<{ ok: true; key: string }>(
-        `/categories/${categoryId}/hero-image`,
+        `/admin/categories/${categoryId}/hero-image`,
         {
           method: "POST",
           body: buf,
@@ -156,7 +156,7 @@ export function HeroImageEditor({
   });
   const deleteMut = useMutation({
     mutationFn: () =>
-      authedFetch<{ ok: true }>(`/categories/${categoryId}/hero-image`, {
+      authedFetch<{ ok: true }>(`/admin/categories/${categoryId}/hero-image`, {
         method: "DELETE",
       }),
     onSuccess: () =>
