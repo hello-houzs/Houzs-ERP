@@ -31,5 +31,21 @@ Starting without `cfg.provider` — will add as `[RENDER]` errors surface specif
 ## Fonts
 - IBM Plex Mono (used only via `font-money` for amounts) is **not shipped**; suppressed via `runtimeFontPrefixes: ["IBM Plex"]`. Money cells fall back to `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace` — acceptable substitute per owner.
 
+## Build-time @import hoist (manual post-step after rebuild)
+
+The Google Fonts `@import url(...)` lives at the top of
+`.design-sync/tailwind-src.css`, but `package-build.mjs` concatenates the
+compiled Tailwind CSS into `_ds_bundle.css` AFTER all per-component CSS, so
+the `@import` ends up mid-file and the browser silently ignores it.
+
+After every `package-build.mjs` run, re-hoist `@import` to the top:
+
+```bash
+node -e "const fs=require('fs'); const c=fs.readFileSync('ds-bundle/_ds_bundle.css','utf8'); const rx=/@import\\s+url\\([^)]+\\);?/g; const m=c.match(rx)||[]; fs.writeFileSync('ds-bundle/_ds_bundle.css', m.join('\\n')+'\\n'+c.replace(rx,''));"
+```
+
+(`resync.mjs` driver workflow needs the same step — add it to a wrapper script
+when the re-sync flow stabilizes.)
+
 ## Known render warns
 _(populated after first headless render check)_

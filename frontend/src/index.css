@@ -1,9 +1,15 @@
+/* Brand web fonts. Latin = IBM Plex (Sans/Serif/Mono), CN = Noto Sans/Serif SC.
+ * Loaded from Google Fonts CDN — offline/air-gapped installs must self-host
+ * and switch to local @font-face declarations. */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Resolves to IBM Plex Sans / Noto Sans SC via vendor tokens.css (--font-system) — see that file. */
+  font-family: var(--font-system, system-ui), sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: normal;

@@ -145,16 +145,17 @@
      Archivo Black w/ font-stretch when SVG isn't available.
      Chinese: Hiragino Sans GB → falls back to PingFang/Noto Sans SC.
      ------------------------------------------------------------------ */
-  /* Commander 2026-05-29 — switch the backend ERP to the NATIVE SYSTEM FONT
-     (Segoe UI on Windows, SF on macOS). The serif Merriweather titles + Poppins
-     body were straining the eyes; a system sans reads cleaner for dense data
-     screens and loads instantly (no web-font fetch). One token change re-skins
-     every page. (POS/marketing surfaces can keep brand fonts later if wanted.) */
-  --font-system:  system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* 2026-06-29 — switch from system-ui to a branded webfont stack: latin reads
+     in IBM Plex (Sans for body/UI, Serif for titles, Mono for amounts), CN
+     reads in Noto Sans/Serif SC. Browsers fall through the comma-separated
+     stack by glyph coverage, so latin chars get IBM Plex and CJK chars get
+     Noto SC automatically. @import url(…) lives in src/index.css (live app)
+     and .design-sync/tailwind-src.css (design-sync bundle). */
+  --font-system:  "IBM Plex Sans", "Noto Sans SC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   /* Body / paragraphs / general UI text */
   --font-sans:    var(--font-system);
-  /* Titles / headings — system sans (was serif Merriweather) */
-  --font-title:   var(--font-system);
+  /* Titles / headings — IBM Plex Serif (CN: Noto Serif SC) */
+  --font-title:   "IBM Plex Serif", "Noto Serif SC", Georgia, serif;
   /* Buttons, links, navigation, eyebrows */
   --font-button:  var(--font-system);
   /* Hand-written touches (offers, scribbled accents) */
@@ -163,7 +164,7 @@
   --font-mark:    "Archivo", "Arial Black", system-ui, sans-serif;
   /* Backwards-compat alias — some old components still reference --font-display */
   --font-display: var(--font-mark);
-  --font-cn:      "Hiragino Sans GB", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-cn:      "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   /* Commander 2026-05-29 — codes / SKUs / doc numbers should read in the same
      system font as everything else (the monospace face looked like a different,
      eye-straining typeface). Point --font-mono at the system stack so every
