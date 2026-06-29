@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
+import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
 
 // TODO(Task 18): add categories.test.ts when R2 mocking is set up.
@@ -8,16 +9,16 @@ export const categoriesApi = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 categoriesApi.use('*', supabaseAuth);
 
-const ADMIN_ROLES = new Set(['admin', 'coordinator']);
+// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
+// bridge pins every caller to one super_admin row, so the original gate
+// trivially passed for everyone).
 
 categoriesApi.post('/:id/hero-image', async (c) => {
-  const userId = c.get('user').id;
-  const supabase = c.get('supabase');
-
-  const staffRes = await supabase.from('staff').select('role').eq('id', userId).maybeSingle();
-  if (!staffRes.data || !ADMIN_ROLES.has(staffRes.data.role)) {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
     return c.json({ error: 'forbidden' }, 403);
   }
+  const supabase = c.get('supabase');
 
   const id = c.req.param('id');
   const contentType = c.req.header('content-type') ?? '';
@@ -49,13 +50,10 @@ categoriesApi.post('/:id/hero-image', async (c) => {
 // role like the put/delete here), Content-Type set from the stored object,
 // 404 when the category has no hero or the object is missing.
 categoriesApi.get('/:id/hero-image', async (c) => {
-  const userId = c.get('user').id;
-  const supabase = c.get('supabase');
-
-  const staffRes = await supabase.from('staff').select('role').eq('id', userId).maybeSingle();
-  if (!staffRes.data || !ADMIN_ROLES.has(staffRes.data.role)) {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
     return c.json({ error: 'forbidden' }, 403);
   }
+  const supabase = c.get('supabase');
 
   if (!c.env.PUBLIC_ASSETS) {
     return c.json({ error: 'public_assets_not_configured' }, 500);
@@ -79,13 +77,10 @@ categoriesApi.get('/:id/hero-image', async (c) => {
 });
 
 categoriesApi.delete('/:id/hero-image', async (c) => {
-  const userId = c.get('user').id;
-  const supabase = c.get('supabase');
-
-  const staffRes = await supabase.from('staff').select('role').eq('id', userId).maybeSingle();
-  if (!staffRes.data || !ADMIN_ROLES.has(staffRes.data.role)) {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
     return c.json({ error: 'forbidden' }, 403);
   }
+  const supabase = c.get('supabase');
 
   const id = c.req.param('id');
   const row = await supabase.from('categories').select('hero_image_key').eq('id', id).maybeSingle();

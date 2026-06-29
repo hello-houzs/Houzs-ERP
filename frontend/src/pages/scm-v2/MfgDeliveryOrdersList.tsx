@@ -602,14 +602,14 @@ export const MfgDeliveryOrdersList = () => {
             label: 'To Sales Invoice',
             onClick: () => {
               if (status === 'CANCELLED') { notify({ title: 'Nothing to be converted', body: 'this Delivery Order is cancelled.', tone: 'error' }); return; }
-              navigate(`/sales-invoices/new?fromDo=${row.id}`);
+              navigate(`/scm/sales-invoices/new?fromDo=${row.id}`);
             },
           });
           items.push({
             label: 'To Delivery Return',
             onClick: () => {
               if (status === 'CANCELLED') { notify({ title: 'Nothing to be converted', body: 'this Delivery Order is cancelled.', tone: 'error' }); return; }
-              navigate(`/delivery-returns/new?fromDo=${row.id}`);
+              navigate(`/scm/delivery-returns/new?fromDo=${row.id}`);
             },
           });
           items.push({ divider: true as const });

@@ -29,6 +29,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { canonicalizeComboModulesForStorage, comboSlotsKey, sofaComboCostSen, parseDefaultFreeGifts, type ComboSlots } from '../shared';
 import { loadModelSofaModuleCosts } from '../lib/mfg-pricing-recompute';
+import { hasHouzsPerm } from '../lib/houzs-perms';
 
 export const sofaCombos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -36,24 +37,17 @@ sofaCombos.use('*', supabaseAuth);
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
 
-// Combo pricing is staff-curated, not open to every authenticated user. Writers:
-//   · coordinator — Backend SofaComboTab COST entry + supplier-scoped PO combos
-//   · sales_director — POS Create Combo (SELLING)
-//   · admin / super_admin — full backend access
-// Mirrors delivery-fees.ts WRITE_ROLES (the cost-sell-split precedent) + the
-// admin superset. sofa_combo_pricing has no RLS, so this app-layer gate is the
-// only thing stopping a salesperson from rewriting combo prices (Phase 5
-// review — closes the pre-existing ungated-write gap). GET stays open (the POS
-// salesperson must read combos to price builds); only writes are gated.
-const WRITE_ROLES = new Set(['admin', 'super_admin', 'coordinator', 'sales_director']);
+// Combo pricing is staff-curated, not open to every authenticated user. Houzs
+// gates on the flat permission key `scm.config.write` against the REAL caller
+// (the 2990 staff_role lookup is dead in Houzs — the SCM bridge pins every
+// caller to one super_admin row). Owner + IT Admin pass via `*`; grant
+// individual positions via the Team > Positions matrix. GET stays open (the
+// POS salesperson must read combos to price builds); only writes are gated.
 
 async function requireWriteRole(c: AppContext): Promise<{ ok: true } | { ok: false; res: Response }> {
-  const supabase = c.get('supabase');
-  const userId = c.get('user').id;
-  const staffRes = await supabase.from('staff').select('role, active').eq('id', userId).maybeSingle();
-  if (staffRes.error) return { ok: false, res: c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500) };
-  if (!staffRes.data || !staffRes.data.active) return { ok: false, res: c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403) };
-  if (!WRITE_ROLES.has(staffRes.data.role)) return { ok: false, res: c.json({ error: 'forbidden', reason: 'combo_editor_only' }, 403) };
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return { ok: false, res: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
+  }
   return { ok: true };
 }
 

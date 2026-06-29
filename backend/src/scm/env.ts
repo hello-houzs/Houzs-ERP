@@ -15,5 +15,14 @@ export interface Variables {
   // `user` is overwritten with the scm.staff system identity. Lets handlers do
   // per-user lookups into the PUBLIC schema (e.g. the salesperson's active
   // exhibition project) without the (unbuilt) scm.staff identity bridge.
-  houzsUser: { id: number; email?: string } | undefined;
+  // `permissions` / `permissions_set` are mirrored from the AuthUser so SCM
+  // route handlers can gate on flat-key permissions (e.g. scm.config.write)
+  // against the REAL caller — never against scm.staff.role which the bridge
+  // hardcodes to one super_admin row.
+  houzsUser: {
+    id: number;
+    email?: string;
+    permissions?: string[];
+    permissions_set?: Set<string>;
+  } | undefined;
 }

@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { targetRefinementSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
+import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
@@ -10,10 +11,10 @@ export const deliveryFees = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 deliveryFees.use('*', supabaseAuth);
 
-// admin + coordinator (legacy) plus sales_director — cost/sell split Phase 2
-// moved the delivery fee onto the POS Master Account surface. Kept in lockstep
-// with the delivery_fee_config UPDATE RLS policy (migration 0112).
-const WRITE_ROLES = new Set(['admin', 'coordinator', 'sales_director', 'super_admin']);
+// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
+// bridge pins every caller to one super_admin row). Owner + IT Admin pass via
+// `*`; grant individual positions via the Team > Positions matrix.
 
 // Same form holds fees + lead days. Each field is independent so the PATCH
 // can partial-update either group without nuking the other.
@@ -47,19 +48,11 @@ deliveryFees.get('/', async (c) => {
 // role check + RLS as defence-in-depth (migrations 0029 + 0112 grant UPDATE to
 // exactly these roles).
 deliveryFees.patch('/', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
+  }
   const userId   = c.get('user').id;
   const supabase = c.get('supabase');
-
-  const staffRes = await supabase.from('staff').select('role, active').eq('id', userId).maybeSingle();
-  if (staffRes.error) {
-    return c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500);
-  }
-  if (!staffRes.data || !staffRes.data.active) {
-    return c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403);
-  }
-  if (!WRITE_ROLES.has(staffRes.data.role)) {
-    return c.json({ error: 'forbidden', reason: 'delivery_fee_editor_only' }, 403);
-  }
 
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -114,14 +107,13 @@ const specialRuleSchema = z.object({
   label:               z.string().optional(),
 });
 
-// Reused role gate for the special-fee writes.
+// Reused gate for the special-fee writes — Houzs flat-key permission.
 const requireFeeEditor = async (c: AppContext) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return { error: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
+  }
   const userId   = c.get('user').id;
   const supabase = c.get('supabase');
-  const staffRes = await supabase.from('staff').select('role, active').eq('id', userId).maybeSingle();
-  if (staffRes.error)                       return { error: c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500) };
-  if (!staffRes.data || !staffRes.data.active) return { error: c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403) };
-  if (!WRITE_ROLES.has(staffRes.data.role)) return { error: c.json({ error: 'forbidden', reason: 'delivery_fee_editor_only' }, 403) };
   return { userId, supabase };
 };
 

@@ -21,6 +21,7 @@
 
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
+import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
 
 export const maintenanceConfig = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -69,7 +70,9 @@ function genId(): string {
 // every caller to ONE super_admin system-staff row, so this gate always passes
 // today. It is kept for parity with 2990 + the sibling sofa-combos gate, as
 // defence-in-depth that turns real once per-user → scm.staff attribution lands.
-const WRITE_ROLES = new Set(['admin', 'super_admin', 'coordinator', 'sales_director']);
+// Houzs-flavoured: scm.staff lookups are dead (the SCM bridge pins every
+// caller to one super_admin row). Both writer routes now gate on the flat
+// permission key `scm.config.write` against the REAL Houzs caller.
 
 // ── GET /resolved ──────────────────────────────────────────────────────
 // Returns the currently-effective config for the given scope (newest row
@@ -152,11 +155,8 @@ maintenanceConfig.get('/history', async (c) => {
 // previously writable by ANY authed staff. Now gated app-side to WRITE_ROLES,
 // matching the sibling pricing editors. (RLS defence-in-depth can follow.)
 maintenanceConfig.post('/changes', async (c) => {
-  {
-    const staffRes = await c.get('supabase').from('staff').select('role, active').eq('id', c.get('user').id).maybeSingle();
-    if (staffRes.error) return c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500);
-    if (!staffRes.data || !staffRes.data.active) return c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403);
-    if (!WRITE_ROLES.has(staffRes.data.role)) return c.json({ error: 'forbidden', reason: 'maintenance_editor_only' }, 403);
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
   }
   let body: { scope?: string; config?: unknown; effectiveFrom?: string; notes?: string };
   try {
@@ -254,11 +254,8 @@ maintenanceConfig.post('/sofa-compartments/rename', async (c) => {
 // delete for the cancel-pending UX. Past-effective rows should not be
 // deleted in practice — the UI hides the trash icon on those.
 maintenanceConfig.delete('/changes/:id', async (c) => {
-  {
-    const staffRes = await c.get('supabase').from('staff').select('role, active').eq('id', c.get('user').id).maybeSingle();
-    if (staffRes.error) return c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500);
-    if (!staffRes.data || !staffRes.data.active) return c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403);
-    if (!WRITE_ROLES.has(staffRes.data.role)) return c.json({ error: 'forbidden', reason: 'maintenance_editor_only' }, 403);
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
   }
   const id = c.req.param('id');
   const supabase = c.get('supabase');

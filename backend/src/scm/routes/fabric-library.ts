@@ -3,15 +3,16 @@
 // (server role check + RLS defence-in-depth, migration 0124).
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
+import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
 
 export const fabricLibrary = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 fabricLibrary.use('*', supabaseAuth);
 
-// super_admin added 2026-06-12 — the role (mig 0162) postdates this route (0124);
-// without it Loo's tier clicks 403'd while the POS UI showed the buttons enabled.
-const WRITE_ROLES = new Set(['admin', 'super_admin', 'coordinator', 'sales_director']);
+// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
+// bridge pins every caller to one super_admin row).
 const VALID_TIER_FIELDS = new Set(['sofaTier', 'bedframeTier']);
 const VALID_TIERS = new Set(['PRICE_1', 'PRICE_2', 'PRICE_3']);
 const TIER_FIELD_TO_COL: Record<string, string> = { sofaTier: 'sofa_tier', bedframeTier: 'bedframe_tier' };
@@ -51,14 +52,11 @@ fabricLibrary.get('/', async (c) => {
 });
 
 fabricLibrary.patch('/:id/tier', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
+  }
   const id       = c.req.param('id');
-  const userId   = c.get('user').id;
   const supabase = c.get('supabase');
-
-  const staffRes = await supabase.from('staff').select('role, active').eq('id', userId).maybeSingle();
-  if (staffRes.error) return c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500);
-  if (!staffRes.data || !staffRes.data.active) return c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403);
-  if (!WRITE_ROLES.has(staffRes.data.role)) return c.json({ error: 'forbidden', reason: 'fabric_tier_editor_only' }, 403);
 
   let body: { field?: string; tier?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }

@@ -16,6 +16,7 @@
 
 import { Hono, type Context } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
+import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
 import { canonicalizeLayoutModulesForStorage, type ComboSlots } from '../shared';
 
@@ -25,8 +26,9 @@ export const sofaQuickPicks = new Hono<{ Bindings: Env; Variables: Variables }>(
 
 sofaQuickPicks.use('*', supabaseAuth);
 
-// Master Admin curates the global layer; backend admins may also manage it.
-const WRITE_ROLES = new Set(['admin', 'super_admin', 'sales_director']);
+// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
+// bridge pins every caller to one super_admin row).
 
 type Row = {
   id: string;
@@ -71,12 +73,9 @@ function validateModules(v: unknown): ComboSlots | null {
 }
 
 async function requireWriteRole(c: AppContext) {
-  const supabase = c.get('supabase');
-  const userId = c.get('user').id;
-  const staffRes = await supabase.from('staff').select('role, active').eq('id', userId).maybeSingle();
-  if (staffRes.error) return { ok: false as const, res: c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500) };
-  if (!staffRes.data || !staffRes.data.active) return { ok: false as const, res: c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403) };
-  if (!WRITE_ROLES.has(staffRes.data.role)) return { ok: false as const, res: c.json({ error: 'forbidden', reason: 'quick_pick_editor_only' }, 403) };
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return { ok: false as const, res: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
+  }
   return { ok: true as const };
 }
 

@@ -709,7 +709,7 @@ export const PurchaseOrderDetail = () => {
           {/* PR — Phase 2: "Receive Goods" → /grns/new?poId=X. */}
           {(po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED') && (
             <Button variant="primary" size="md"
-              onClick={() => navigate(`/grns/new?poId=${po.id}`)}>
+              onClick={() => navigate(`/scm/grns/new?poId=${po.id}`)}>
               <span>Receive Goods</span>
             </Button>
           )}
@@ -718,7 +718,7 @@ export const PurchaseOrderDetail = () => {
               supplier. */}
           {(po.status === 'PARTIALLY_RECEIVED' || po.status === 'RECEIVED') && (
             <Button variant="ghost" size="md"
-              onClick={() => navigate(`/purchase-returns/new?poId=${po.id}`)}>
+              onClick={() => navigate(`/scm/purchase-returns/new?poId=${po.id}`)}>
               <span>Raise Return</span>
             </Button>
           )}

@@ -11,6 +11,7 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
+import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
 
 type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
@@ -19,7 +20,9 @@ export const specialAddons = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 specialAddons.use('*', supabaseAuth);
 
-const WRITE_ROLES = new Set(['admin', 'super_admin', 'coordinator', 'sales_director']);
+// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
+// bridge pins every caller to one super_admin row).
 
 const CATEGORY = z.enum(['SOFA', 'BEDFRAME', 'ACCESSORY', 'MATTRESS', 'SERVICE']);
 
@@ -84,14 +87,12 @@ const toApi = (r: AddonRow) => ({
 const SELECT =
   'id, code, label, so_description, categories, selling_price_sen, cost_price_sen, option_groups, active, sort_order, created_at, updated_at';
 
-// Editors-only guard (server check; RLS is defence-in-depth, migration 0133).
+// Editors-only guard — Houzs flat-key permission.
 async function requireWrite(c: AppCtx) {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return { ok: false as const, res: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
+  }
   const userId = c.get('user').id;
-  const supabase = c.get('supabase');
-  const staffRes = await supabase.from('staff').select('role, active').eq('id', userId).maybeSingle();
-  if (staffRes.error) return { ok: false as const, res: c.json({ error: 'role_lookup_failed', reason: staffRes.error.message }, 500) };
-  if (!staffRes.data || !staffRes.data.active) return { ok: false as const, res: c.json({ error: 'forbidden', reason: 'no_active_staff' }, 403) };
-  if (!WRITE_ROLES.has(staffRes.data.role)) return { ok: false as const, res: c.json({ error: 'forbidden', reason: 'special_addon_editor_only' }, 403) };
   return { ok: true as const, userId };
 }
 

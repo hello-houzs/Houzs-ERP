@@ -59,7 +59,10 @@ import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { rangeBoundsMy } from '../lib/my-time';
-import { canViewAllSales, isSelfScopedSales } from '../lib/roles';
+// (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
+// gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
+// caller; see lib/houzs-perms.ts.)
+import { hasHouzsPerm } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
@@ -237,32 +240,35 @@ function norm(v: unknown): string {
    doctored low total). Returns true ONLY for those POS tablet callers; every
    Backend / office role (admin, super_admin, sales_director, coordinator, …)
    returns false and is trusted to author the price. */
-const POS_TABLET_ROLES = ['sales', 'sales_executive', 'outlet_manager'];
-async function isPosTabletCaller(sb: any, userId: string | null | undefined): Promise<boolean> {
-  if (!userId) return false;
-  const { data } = await sb.from('staff').select('role').eq('id', userId).maybeSingle();
-  return !!data && POS_TABLET_ROLES.includes(String(data.role));
+// Houzs has no POS tablet — every SCM caller hits this backend via the same
+// Houzs session auth. The 2990 staff_role lookup is dead here (the SCM bridge
+// pins every caller to one super_admin row) so this gate trivially passed for
+// nobody. Hardcode false; price-drift checks become office-trusted everywhere.
+// Signature kept for call-site compatibility — args ignored.
+async function isPosTabletCaller(_sb: any, _userId: string | null | undefined): Promise<boolean> {
+  return false;
 }
 
 /* SO-SKU spec P4 (D4, Loo 2026-06-05) — the SELLING price is locked to the
-   SKU Master; only admin-level roles may hand-override it (the audited
-   /override route). Mirrors the Backend UI's isAdminLevel (auth.tsx). */
-const PRICE_OVERRIDE_ROLES = ['admin', 'super_admin'];
-async function isPriceOverrideCaller(sb: any, userId: string | null | undefined): Promise<boolean> {
-  if (!userId) return false;
-  const { data } = await sb.from('staff').select('role').eq('id', userId).maybeSingle();
-  return !!data && PRICE_OVERRIDE_ROLES.includes(String(data.role));
+   SKU Master; only admin-level callers may hand-override it (the audited
+   /override route). Houzs-flavoured: gate on the flat permission key
+   `scm.so.price_override` against the REAL caller; the original
+   scm.staff.role lookup is dead in Houzs (bridge pins to one super_admin
+   row). Owner + IT Admin pass via `*`; grant to other positions via the
+   Team > Positions matrix. Signature takes the Hono context so we can read
+   the real user's permissions stash. */
+async function isPriceOverrideCaller(c: any): Promise<boolean> {
+  return hasHouzsPerm(c, 'scm.so.price_override');
 }
 
 /* TBC fill-in + hatch hardening (Loo 2026-06-11) — self-scoped selling roles
-   (lib/roles.ts isSelfScopedSales) may mutate only their OWN SO's lines.
-   Mirrors the detail GET's 404 (not 403) so another salesperson's doc_no is
-   indistinguishable from a nonexistent one. Backend-native roles pass. */
-async function selfScopedSalesBlocked(sb: any, userId: string, docNo: string): Promise<boolean> {
-  const { data: caller } = await sb.from('staff').select('role').eq('id', userId).maybeSingle();
-  if (!isSelfScopedSales((caller as { role?: string } | null)?.role)) return false;
-  const { data: so } = await sb.from('mfg_sales_orders').select('salesperson_id').eq('doc_no', docNo).maybeSingle();
-  return !so || (so as { salesperson_id?: string | null }).salesperson_id !== userId;
+   used to be gated by scm.staff.role. Houzs has NO POS-self-scoped sellers
+   (the SCM bridge pins every caller to one super_admin row, so this gate
+   trivially passed for nobody). Hardcode false; the every-line edit path is
+   already gated upstream by the Houzs session auth + the scm.access gate.
+   Signature kept for call-site compatibility — args ignored. */
+async function selfScopedSalesBlocked(_sb: any, _userId: string, _docNo: string): Promise<boolean> {
+  return false;
 }
 
 /* Anti-tamper (Task 6) — Strip variants.freeItem from a client-supplied
@@ -579,7 +585,7 @@ mfgSalesOrders.get('/', async (c) => {
      → all; POS sellers → own; any other sales rep → self + downline subtree
      (Manager sees their branch, leaf rep sees only themselves); non-reps → all.
      Subsumes the old Backend SO emergency hatch (isSelfScopedSales → own). */
-  const scopeIds = await resolveSalesScopeIds(sb, c.env, user.id);
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, user.id, hasHouzsPerm(c, 'scm.so.view_all'));
 
   /* Dashboard summary mode (`?summary=1`): the landing page only needs to bucket
      SOs by status/proceeded_at and count "new today" — it does NOT need the
@@ -921,11 +927,15 @@ mfgSalesOrders.get('/mine', async (c) => {
   let client = sb;
   let targetSalespersonId: string | null = user.id; // default: own orders only
   if (wantSalesperson) {
-    const admin = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-    const { data: me } = await admin.from('staff').select('role').eq('id', user.id).maybeSingle();
-    if (canViewAllSales((me as { role?: string } | null)?.role)) {
+    // Houzs-flavoured: gate on the flat permission key `scm.so.view_all`
+    // against the REAL caller (the 2990 staff_role lookup is dead in Houzs —
+    // the SCM bridge pins every caller to one super_admin row). Owner + IT
+    // Admin pass via `*`; grant to other positions via the Team > Positions
+    // matrix.
+    if (hasHouzsPerm(c, 'scm.so.view_all')) {
+      const admin = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
       client = admin;
       targetSalespersonId = wantSalesperson === 'all' ? null : wantSalesperson;
     }
@@ -1384,7 +1394,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
     // sellers pass only their own; other reps are held to their subtree. An
     // out-of-scope doc_no answers 404 — indistinguishable from a missing one.
     const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
-    if (await salesDocOutOfScope(sb, c.env, user.id, sp)) {
+    if (await salesDocOutOfScope(sb, c.env, user.id, hasHouzsPerm(c, 'scm.so.view_all'), sp)) {
       return c.json({ error: 'not_found' }, 404);
     }
   }
@@ -1596,8 +1606,8 @@ async function validateSoDropdownFields(
    unmapped State are skipped (they need a location set). Only NULL lines are
    touched — explicit per-line warehouses are never overwritten. */
 mfgSalesOrders.post('/backfill-warehouses', async (c) => {
-  const sb = c.get('supabase'); const user = c.get('user');
-  if (!(await isPriceOverrideCaller(sb, user?.id))) return c.json({ error: 'forbidden' }, 403);
+  const sb = c.get('supabase');
+  if (!(await isPriceOverrideCaller(c))) return c.json({ error: 'forbidden' }, 403);
 
   const { data: nullLines } = await sb
     .from('mfg_sales_order_items')
@@ -1792,17 +1802,17 @@ mfgSalesOrders.post('/', async (c) => {
     .select('role, venue_id')
     .eq('id', user.id)
     .maybeSingle();
-  /* Loo 2026-06-05 — a self-scoped sales caller (sales / sales_executive) can
-     only create orders under their OWN account: whatever salespersonId the
-     client sent is overridden with the caller's id (the POS locks the picker
-     too; this closes the API hole). Leads / managers / backend roles keep the
-     free pick — entering an SO on behalf of a salesperson is their job.
-     Audit 2026-06-20 — was `=== 'sales'`, which let a sales_executive stamp an
-     arbitrary salesperson (mis-attributing commission); now uses the same
-     read-scope predicate as the list/detail/line guards. */
-  const salespersonIdToStamp = isSelfScopedSales(callerStaff?.role)
-    ? user.id
-    : ((body.salespersonId as string) ?? null);
+  /* Loo 2026-06-05 — a self-scoped sales caller can only create orders under
+     their OWN account: whatever salespersonId the client sent is overridden
+     with the caller's id (the POS locks the picker too; this closes the API
+     hole). Houzs-flavoured: gate on the flat permission key
+     `scm.so.attribute_other` against the REAL caller (the 2990 scm.staff.role
+     lookup is dead in Houzs — the SCM bridge pins every caller to one
+     super_admin row). Owner + IT Admin pass via `*`; grant to other positions
+     via the Team > Positions matrix. */
+  const salespersonIdToStamp = hasHouzsPerm(c, 'scm.so.attribute_other')
+    ? ((body.salespersonId as string) ?? null)
+    : user.id;
 
   /* Migration 0086 + Loo 2026-06-06 — venue follows the SELECTED salesperson:
      an admin/coordinator entering an SO on behalf of a PJ salesperson stamps
@@ -3735,7 +3745,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/override', async (c) => {
      gets the SKU Master price (auto-filled in the UI, enforced by the server
      recompute on POST/PATCH); this audited side-door is the ONLY way to
      deviate, so it carries the role gate. */
-  if (!(await isPriceOverrideCaller(sb, user.id))) {
+  if (!(await isPriceOverrideCaller(c))) {
     return c.json({
       error: 'price_override_admin_only',
       message: 'Unit prices follow the SKU Master sell price. Only an admin can override a line price.',

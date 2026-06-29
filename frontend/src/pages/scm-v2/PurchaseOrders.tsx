@@ -360,7 +360,7 @@ export const PurchaseOrders = () => {
       return;
     }
     setSelectedIds(new Set());
-    navigate(`/grns/from-po?poId=${[...selectedIds].join(',')}`);
+    navigate(`/scm/grns/from-po?poId=${[...selectedIds].join(',')}`);
   };
 
   /* Commander 2026-05-29 — right-click context menu actions (mirrors the SO
@@ -373,7 +373,7 @@ export const PurchaseOrders = () => {
       notify({ title: 'Nothing to be converted', body: 'This Purchase Order has no goods left to receive (already fully received or cancelled).', tone: 'error' });
       return;
     }
-    navigate(`/grns/from-po?poId=${po.id}`);
+    navigate(`/scm/grns/from-po?poId=${po.id}`);
   };
   const doCancelPo = async (po: PoHeaderRow) => {
     if (!(await askConfirm({ title: `Cancel ${po.po_number}?`, body: 'It will stop proceeding and any converted SO lines are released back.', confirmLabel: 'Cancel', danger: true }))) return;

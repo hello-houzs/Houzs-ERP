@@ -969,7 +969,7 @@ export const MfgSalesOrdersList = () => {
       });
       return;
     }
-    navigate(`/mfg-delivery-orders/new?fromSo=${encodeURIComponent(row.doc_no)}`);
+    navigate(`/scm/delivery-orders/new?fromSo=${encodeURIComponent(row.doc_no)}`);
   };
 
   /* Copy to new SO: hand the source doc number to the New SO page, which
@@ -1412,7 +1412,7 @@ export const MfgSalesOrdersList = () => {
               // Fixed dead link (#378): the SI module was rebuilt as a DO clone
               // and lives at /sales-invoices/* in the router; /mfg-sales-invoices/*
               // never existed → was a 404.
-              onClick: () => navigate(`/sales-invoices/new?soDocNo=${row.doc_no}`),
+              onClick: () => navigate(`/scm/sales-invoices/new?soDocNo=${row.doc_no}`),
             });
           }
           items.push({ label: 'Copy to new Sales Order', onClick: () => copyToNewSo(row) });

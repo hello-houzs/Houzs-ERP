@@ -364,7 +364,7 @@ export const ConsignmentNoteDetail = () => {
           </Button>
           {!isCancelled && !isEditing && (
             <Button variant="ghost" size="md"
-              onClick={() => navigate(`/consignment-return/new?fromConsignmentNote=${id}`)}>
+              onClick={() => navigate(`/scm/consignment-returns/new?fromConsignmentNote=${id}`)}>
               <FileText {...ICON} /><span>Create Consignment Return</span>
             </Button>
           )}
