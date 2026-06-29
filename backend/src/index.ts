@@ -56,6 +56,9 @@ import supplierPortal from "./routes/supplierPortal";
 // read/reply/compose/label/address/access/scope router.
 import mailCenter from "./routes/mail-center";
 import mailInbound from "./routes/mail-inbound";
+// Announcements — office posts every logged-in user sees as a top banner with
+// a "Got it" ack. Ported from Hookka (single-tenant + office-only here).
+import announcements from "./routes/announcements";
 import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
@@ -154,6 +157,10 @@ app.route("/api/inbox", inbox);
 // the handlers (owner passes via "*"). The pre-auth /api/mail-center/inbound
 // route is mounted above, before the auth gate, and is not shadowed by this.
 app.route("/api/mail-center", mailCenter);
+// Announcements — the banner GET + ack POST are open to every authed user
+// (the route handles it internally); list/CRUD/remind/acks-readout are
+// announcements.read / announcements.write gated.
+app.route("/api/announcements", announcements);
 app.route("/api/projects-print", projectsPrint);
 app.route("/api/search", search);
 app.route("/api/assr-print", assrPrint);

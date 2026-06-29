@@ -7,6 +7,7 @@ import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
 import { NotificationsProvider } from "./hooks/useNotifications";
 import { BrowserPushSink } from "./components/BrowserPushSink";
+import { AnnouncementBanner } from "./components/AnnouncementBanner";
 import { QuickActionsFAB } from "./components/QuickActionsFAB";
 import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
 import { PageSkeleton, ChunkReloadBoundary } from "./components/RouteFallback";
@@ -24,6 +25,7 @@ const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m
 const ProjectDetail = lazy(() => import("./pages/Projects").then((m) => ({ default: m.ProjectDetail })));
 const Profile = lazy(() => import("./pages/Profile").then((m) => ({ default: m.Profile })));
 const Notifications = lazy(() => import("./pages/Notifications").then((m) => ({ default: m.Notifications })));
+const Announcements = lazy(() => import("./pages/Announcements").then((m) => ({ default: m.Announcements })));
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 const Team = lazy(() => import("./pages/Team").then((m) => ({ default: m.Team })));
 const SystemHealth = lazy(() => import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealth })));
@@ -197,6 +199,7 @@ export default function App() {
       <NotificationsProvider>
       <BreadcrumbsProvider>
       <BrowserPushSink />
+      <AnnouncementBanner />
       <QuickActionsFAB />
       <NewVersionBanner />
       <IosInstallGuide />
@@ -260,6 +263,17 @@ export default function App() {
             <PageGuard page="team">
               <Team />
             </PageGuard>
+          }
+        />
+        {/* ── Announcements — office-wide notices + read receipts. List page
+            gated on announcements.read; create/edit/remind/delete also need
+            announcements.write (enforced server-side). ── */}
+        <Route
+          path="/announcements"
+          element={
+            <Guard perm="announcements.read">
+              <Announcements />
+            </Guard>
           }
         />
         {/* ── Mail Center — shared inbox. Permission-gated on mail_center.read

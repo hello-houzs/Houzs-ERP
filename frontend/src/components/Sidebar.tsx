@@ -44,6 +44,7 @@ import {
   LayoutDashboard,
   BarChart3,
   Map,
+  Megaphone,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -349,6 +350,16 @@ export const NAV_TABS: NavTab[] = [
     label: "Mail Center",
     icon: Mail,
     anyPerm: ["mail_center.read"],
+  },
+
+  // ── Announcements — office-wide notices + read receipts (ported from Hookka).
+  // Flat entry; the page hosts the composer + list inline.
+  {
+    section: "operations",
+    to: "/announcements",
+    label: "Announcements",
+    icon: Megaphone,
+    anyPerm: ["announcements.read"],
   },
 
   // ══ SYSTEM ═══════════════════════════════════════════════════

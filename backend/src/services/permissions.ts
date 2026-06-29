@@ -50,6 +50,14 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "mail_center.read",   resource: "Mail Center", verb: "read",   label: "View Mail Center", description: "See the Mail Center inbox and work the mailboxes in your scope" },
   { key: "mail_center.manage", resource: "Mail Center", verb: "manage", label: "Manage Mail Center", description: "Create/assign email aliases, the shared-mailbox access matrix, and per-user visibility levels" },
 
+  // Announcements — office posts every logged-in user sees as a top-of-screen
+  // banner. announcements.read gates the list page + read-receipt visibility;
+  // announcements.write gates create / edit / hide / remind / delete. The
+  // banner GET + per-user ack POST live OUTSIDE the permission gate (every
+  // authed user can see + ack their own banner). Owner + IT Admin bypass via "*".
+  { key: "announcements.read",  resource: "Announcements", verb: "read",  label: "View announcements",  description: "Open the Announcements list page and see read-receipts" },
+  { key: "announcements.write", resource: "Announcements", verb: "write", label: "Manage announcements", description: "Post, edit, hide, remind, and delete announcements" },
+
   // System
   { key: "udf.manage", resource: "Custom Fields", verb: "manage", label: "Manage custom fields", description: "Add or remove user-defined fields on tables" },
   { key: "settings.manage", resource: "Settings", verb: "manage", label: "Manage settings", description: "Edit connection and sync configuration" },
