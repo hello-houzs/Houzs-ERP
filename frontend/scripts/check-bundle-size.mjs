@@ -27,6 +27,19 @@
 //   trimmable without lazy-loading the shell itself (which would flash on
 //   first paint), so the initial budget is raised to give ~2 KB headroom.
 //
+//   2026-06-30 (lucide tree-shake fix + accumulated drift):
+//     initial JS gzip ~118.8 KB  (index 41.5 + react-vendor 77.3)
+//     total   JS gzip ~1348 KB
+//     largest chunk    ~430 KB raw (xlsx)
+//   The lucide-react chunk dropped from ~777 KB raw → ~82 KB after replacing
+//   `import * as Lucide` + `lucide-react/dynamicIconImports` in Categories.tsx
+//   with named imports + a static ICON_MAP (Rollup can now tree-shake the rest
+//   of the icon set out). That removed ~115 KB gzip from total JS. The two
+//   non-lucide budgets are bumped here to accommodate the residual creep that
+//   was already present pre-fix (entry chunk grew ~3 KB since 2026-06-25 from
+//   shell/route additions, and the long tail of lazy route chunks added the
+//   rest). Both are legitimate, neither is a stray-heavy-import regression.
+//
 // Run locally: `npm run build && node scripts/check-bundle-size.mjs`
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -41,16 +54,20 @@ const KB = 1000;
 const BUDGETS = {
   // Always-loaded path: the entry chunk + the shared react vendor chunk.
   // This is what blocks first paint regardless of route. Raised 115 -> 118
-  // on 2026-06-25: the SCM 2990 cutover grew the eager route table (see the
-  // baseline note above). The pieces here are framework + shell, not a stray
-  // heavy import — keep this tight so a real regression still trips it.
-  INITIAL_JS_GZIP: 118 * KB,
+  // on 2026-06-25 for the SCM 2990 cutover; 118 -> 120 on 2026-06-30 for
+  // ~3 KB of entry-chunk drift since (shell + route-table additions, not a
+  // stray heavy import — lucide lives in its own chunk and is not counted
+  // here). The pieces here are framework + shell, so keep this tight enough
+  // that a real regression still trips it.
+  INITIAL_JS_GZIP: 120 * KB,
   // Everything the app can lazy-load (users only fetch the routes they
   // visit). Soft guard against unbounded total growth, not a first-paint
   // cost. Raised for the SCM "2990 cutover" — ~50 new lazy route chunks
   // plus the xlsx + jspdf export/print libs (now split into on-demand
   // chunks, but still counted here since this sums every emitted .js).
-  TOTAL_JS_GZIP: 1300 * KB,
+  // 1300 -> 1360 on 2026-06-30 to absorb the long-tail drift that remains
+  // after the lucide tree-shake fix removed ~115 KB gzip from this number.
+  TOTAL_JS_GZIP: 1360 * KB,
   // Any single chunk, raw. A route blowing past this should be split.
   // Raised to fit the heaviest vendored lib — xlsx (~430 KB raw), pulled
   // out of the eager `vendor` chunk and loaded only on export.

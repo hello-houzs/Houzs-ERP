@@ -16,7 +16,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import * as Lucide from "lucide-react";
+// Static named imports — every icon the Categories page might render is listed
+// here so Rollup can tree-shake the rest of lucide-react out of the bundle.
+// The earlier `import * as Lucide from "lucide-react"` (and the subsequent
+// `lucide-react/dynamicIconImports` map) both forced every icon module to be
+// reachable from this chunk, ballooning the lucide chunk to ~780–920 KB raw.
 import {
   AlertCircle,
   ArrowDown,
@@ -31,6 +35,40 @@ import {
   RotateCw,
   Trash2,
   X,
+  // ── Picker icons (kebab → PascalCase). Adding a new pick here means
+  // adding it to POPULAR_ICONS below AND to ICON_MAP. Names outside this
+  // map fall back to the Package icon at render time.
+  Armchair,
+  Baby,
+  Bath,
+  Bed,
+  BedDouble,
+  BedSingle,
+  Blocks,
+  Coffee,
+  CookingPot,
+  Lamp,
+  LampCeiling,
+  LampDesk,
+  LampFloor,
+  LampWallDown,
+  Microwave,
+  Monitor,
+  Package,
+  Package2,
+  Refrigerator,
+  School,
+  Shapes,
+  ShoppingBag,
+  ShowerHead,
+  Sofa,
+  Speaker,
+  Store,
+  Tag,
+  Toilet,
+  Tv,
+  Utensils,
+  type LucideIcon,
 } from "lucide-react";
 import { Button } from "../../components/Button";
 import { HeroImageEditor } from "../../components/scm-v2/HeroImageEditor";
@@ -61,15 +99,59 @@ type CategoryWire = {
 // Curated picks — lucide names that show up first in the icon picker. They
 // cover ~95% of real-world catalogue categories so the operator usually
 // doesn't need to drop into free-text. Free text below stays as the escape.
+// Each entry MUST also exist in ICON_MAP below; names outside the map render
+// as the Package fallback. (`sink` was previously listed but is not exported
+// by lucide-react 0.460, so the picker silently dropped it — omitted here.)
 const POPULAR_ICONS = [
   "sofa", "armchair", "bed", "bed-double", "bed-single",
   "lamp", "lamp-ceiling", "lamp-desk", "lamp-floor", "lamp-wall-down",
   "utensils", "coffee", "cooking-pot", "refrigerator", "microwave",
-  "bath", "shower-head", "toilet", "sink",
+  "bath", "shower-head", "toilet",
   "baby", "shapes", "school", "blocks",
   "package", "package-2", "shopping-bag", "tag", "store",
   "tv", "speaker", "monitor",
 ];
+
+const ICON_MAP: Record<string, LucideIcon> = {
+  armchair: Armchair,
+  baby: Baby,
+  bath: Bath,
+  bed: Bed,
+  "bed-double": BedDouble,
+  "bed-single": BedSingle,
+  blocks: Blocks,
+  coffee: Coffee,
+  "cooking-pot": CookingPot,
+  lamp: Lamp,
+  "lamp-ceiling": LampCeiling,
+  "lamp-desk": LampDesk,
+  "lamp-floor": LampFloor,
+  "lamp-wall-down": LampWallDown,
+  microwave: Microwave,
+  monitor: Monitor,
+  package: Package,
+  "package-2": Package2,
+  refrigerator: Refrigerator,
+  school: School,
+  shapes: Shapes,
+  "shopping-bag": ShoppingBag,
+  "shower-head": ShowerHead,
+  sofa: Sofa,
+  speaker: Speaker,
+  store: Store,
+  tag: Tag,
+  toilet: Toilet,
+  tv: Tv,
+  utensils: Utensils,
+};
+
+// Free-text icon names that aren't in the map fall back to the Package icon
+// so the data round-trips fine (the picker's text input + popular grid still
+// works); only the rendered glyph downgrades for unknown names.
+function resolveIcon(name: string | null | undefined): LucideIcon {
+  if (!name) return Package;
+  return ICON_MAP[name] ?? Package;
+}
 
 // ── Mutations ───────────────────────────────────────────────────────────────
 
@@ -344,10 +426,7 @@ function CategoryCard({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const Icon =
-    (Lucide as unknown as Record<string, React.ComponentType<{ size?: number; className?: string }>>)[
-      lucideKey(cat.slug)
-    ] ?? null;
+  const Icon = resolveIcon(cat.slug);
   return (
     <div className="group relative overflow-hidden rounded-xl border border-border bg-surface shadow-stone transition-all hover:-translate-y-px hover:border-primary/40">
       {/* Image area — clickable, opens hero editor */}
@@ -378,7 +457,7 @@ function CategoryCard({
           aria-label={`Edit category metadata for ${cat.name}`}
         >
           <div className="flex items-center gap-2">
-            {Icon && <Icon size={14} className="shrink-0 text-ink-muted" />}
+            <Icon size={14} className="shrink-0 text-ink-muted" />
             <span className="truncate font-display text-[14px] font-bold text-ink">
               {cat.name}
             </span>
@@ -561,7 +640,7 @@ function CategoryForm({
         />
       </Field>
 
-      <Field label="Icon" hint="Pick a lucide icon name. Free-text accepts any lucide icon.">
+      <Field label="Icon" hint="Pick from the curated set below. Free-text is stored as-is but unknown names render the Package fallback.">
         <IconPicker value={icon} onChange={setIcon} />
       </Field>
 
@@ -625,16 +704,13 @@ function IconPicker({
   value: string;
   onChange: (next: string) => void;
 }) {
-  const CurrentIcon =
-    (Lucide as unknown as Record<string, React.ComponentType<{ size?: number; className?: string }>>)[
-      lucideKey(value)
-    ] ?? null;
+  const CurrentIcon = resolveIcon(value);
   return (
     <div className="space-y-2">
       {/* Free-text input with current preview */}
       <div className="flex items-center gap-2">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-surface-2 text-ink">
-          {CurrentIcon ? <CurrentIcon size={20} /> : <span className="text-[10px] text-ink-muted">none</span>}
+          <CurrentIcon size={20} />
         </div>
         <input
           type="text"
@@ -653,10 +729,7 @@ function IconPicker({
         </div>
         <div className="mt-1.5 grid grid-cols-6 gap-1.5 sm:grid-cols-8">
           {POPULAR_ICONS.map((name) => {
-            const I =
-              (Lucide as unknown as Record<string, React.ComponentType<{ size?: number; className?: string }>>)[
-                lucideKey(name)
-              ];
+            const I = ICON_MAP[name];
             if (!I) return null;
             const isOn = value === name;
             return (
@@ -796,19 +869,6 @@ function DeleteConfirm({
       </div>
     </div>
   );
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-// Convert a lucide icon name ("bed-double") to the PascalCase export key
-// ("BedDouble") since lucide-react exports them as React components by that
-// name. Falls back to a Package fallback if missing.
-function lucideKey(name: string | null | undefined): string {
-  if (!name) return "Package";
-  return name
-    .split("-")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join("");
 }
 
 // ── Drawer ──────────────────────────────────────────────────────────────────
