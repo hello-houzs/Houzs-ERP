@@ -5676,7 +5676,7 @@ function ProjectStageStepper({
       <div className="mb-2 flex items-center gap-3 text-[9.5px] font-semibold uppercase tracking-wider text-ink-muted">
         <span>Auto-detected</span>
         <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-synced" /> Done</span>
-        <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-warning-text" /> Pending</span>
+        <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#f97316]" /> Pending</span>
         <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-err" /> Overdue</span>
       </div>
       <div className="flex min-w-fit items-start">
@@ -5691,14 +5691,14 @@ function ProjectStageStepper({
             : overdue
               ? "bg-err text-white border-err"
               : isCurrent
-                ? "bg-warning-text text-white border-warning-text"
+                ? "bg-[#f97316] text-white border-[#f97316]"
                 : "bg-surface text-ink-muted border-border";
           const txt = isDone
             ? "text-synced"
             : overdue
               ? "text-err"
               : isCurrent
-                ? "text-warning-text"
+                ? "text-[#f97316]"
                 : "text-ink-muted";
           return (
             <div key={st.label} className="flex min-w-[72px] flex-1 flex-col items-center text-center">
