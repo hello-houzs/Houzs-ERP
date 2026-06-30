@@ -1,26 +1,44 @@
 // ----------------------------------------------------------------------------
-// Categories — lightweight catalogue-category management at /scm/categories.
+// Categories — catalogue-category management at /scm/categories.
 //
-// Hosts the HeroImageEditor so the category covers (the hero photos shown on
-// front-of-house pages) can be uploaded + focal-point set + alt-text written
-// without needing a full categories CRUD page. The list is read-only here;
-// rows open a side drawer with the editor.
+// Reads + writes scm.categories via the publicCategoriesApi (backend
+// scm/routes/categories.ts). The grid is now editable:
+//   · Click the card image → hero editor (existing HeroImageEditor drawer).
+//   · Click the kebab on the card → Edit / Delete / Move up / Move down.
+//   · "+ New category" in the toolbar → create form drawer.
 //
-// Wires to:
-//   GET /scm/categories → { categories: CategoryRow[] }
-// Until the list endpoint ships, the "Not yet wired · Setup notes" treatment
-// is rendered so the page stays loadable.
+// Delete is gated server-side on product_models.category referencing this id;
+// the 409 response carries a count + sample model codes so we can offer a
+// "Go to Products" jump that pre-filters by category so the operator can
+// re-categorise before retrying the delete.
 // ----------------------------------------------------------------------------
 
-import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, FolderTree, Image as ImageIcon, RotateCw, X } from "lucide-react";
+import * as Lucide from "lucide-react";
+import {
+  AlertCircle,
+  ArrowDown,
+  ArrowLeft,
+  ArrowUp,
+  FolderTree,
+  Image as ImageIcon,
+  Loader2,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  RotateCw,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Button } from "../../components/Button";
 import { HeroImageEditor } from "../../components/scm-v2/HeroImageEditor";
 import { classifyLoadError, errMsg } from "../../components/scm-v2/PhotoGallery";
 import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { cn } from "../../lib/utils";
+
+// ── Types ───────────────────────────────────────────────────────────────────
 
 type CategoryRow = {
   id: string;
@@ -30,46 +48,159 @@ type CategoryRow = {
   hero_url?: string | null;
 };
 
+// The wire shape returned by POST/PATCH (label + icon, not the read-side
+// "name + slug" alias).
+type CategoryWire = {
+  id: string;
+  label: string;
+  icon: string;
+  sort_order: number;
+  hero_image_key: string | null;
+};
+
+// Curated picks — lucide names that show up first in the icon picker. They
+// cover ~95% of real-world catalogue categories so the operator usually
+// doesn't need to drop into free-text. Free text below stays as the escape.
+const POPULAR_ICONS = [
+  "sofa", "armchair", "bed", "bed-double", "bed-single",
+  "lamp", "lamp-ceiling", "lamp-desk", "lamp-floor", "lamp-wall-down",
+  "utensils", "coffee", "cooking-pot", "refrigerator", "microwave",
+  "bath", "shower-head", "toilet", "sink",
+  "baby", "shapes", "school", "blocks",
+  "package", "package-2", "shopping-bag", "tag", "store",
+  "tv", "speaker", "monitor",
+];
+
+// ── Mutations ───────────────────────────────────────────────────────────────
+
+const useCreateCategory = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { id: string; label: string; icon: string; sort_order?: number }) =>
+      authedFetch<{ category: CategoryWire }>("/categories", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["scm-categories"] }),
+  });
+};
+
+const useUpdateCategory = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...patch }: { id: string; label?: string; icon?: string; sort_order?: number }) =>
+      authedFetch<{ category: CategoryWire }>(`/categories/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["scm-categories"] }),
+  });
+};
+
+const useDeleteCategory = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      authedFetch<{ ok: true }>(`/categories/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["scm-categories"] }),
+  });
+};
+
+// ── Component ───────────────────────────────────────────────────────────────
+
 export function Categories() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const editId = searchParams.get("edit");
 
   const catsQ = useQuery({
     queryKey: ["scm-categories"],
     queryFn: () =>
       authedFetch<{ categories: CategoryRow[] }>(`/categories`).then((r) =>
-        r.categories.sort((a, b) => a.name.localeCompare(b.name)),
+        r.categories.slice().sort((a, b) => a.name.localeCompare(b.name)),
       ),
     retry: false,
     staleTime: 60_000,
   });
-
   const loadStatus = catsQ.error ? classifyLoadError(catsQ.error) : "ok";
   const cats = catsQ.data ?? [];
-  const editing = editId ? cats.find((c) => c.id === editId) ?? null : null;
 
-  const openEditor = (id: string) => {
+  // URL state · 3 modes: hero / meta / new. Only one drawer open at a time.
+  const heroId = searchParams.get("edit-hero");
+  const metaId = searchParams.get("edit-meta");
+  const isNew = searchParams.get("new") === "1";
+  const editingHero = heroId ? cats.find((c) => c.id === heroId) ?? null : null;
+  const editingMeta = metaId ? cats.find((c) => c.id === metaId) ?? null : null;
+
+  const openHero = (id: string) => {
     const sp = new URLSearchParams(searchParams);
-    sp.set("edit", id);
+    sp.set("edit-hero", id);
+    sp.delete("edit-meta");
+    sp.delete("new");
     setSearchParams(sp, { replace: true });
   };
-  const closeEditor = () => {
+  const openMeta = (id: string) => {
     const sp = new URLSearchParams(searchParams);
-    sp.delete("edit");
+    sp.set("edit-meta", id);
+    sp.delete("edit-hero");
+    sp.delete("new");
+    setSearchParams(sp, { replace: true });
+  };
+  const openNew = () => {
+    const sp = new URLSearchParams(searchParams);
+    sp.set("new", "1");
+    sp.delete("edit-hero");
+    sp.delete("edit-meta");
+    setSearchParams(sp, { replace: true });
+  };
+  const closeDrawer = () => {
+    const sp = new URLSearchParams(searchParams);
+    sp.delete("edit-hero");
+    sp.delete("edit-meta");
+    sp.delete("new");
     setSearchParams(sp, { replace: true });
   };
 
-  // Esc closes the drawer
+  // Esc closes whichever drawer is open
   useEffect(() => {
-    if (!editId) return;
+    if (!heroId && !metaId && !isNew) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeEditor();
+      if (e.key === "Escape") closeDrawer();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editId]);
+  }, [heroId, metaId, isNew]);
+
+  // Reorder via arrows — adjust this row's sort_order to one slot above or
+  // below its neighbour in display order.
+  const updateMut = useUpdateCategory();
+  const sortedByOrder = useMemo(
+    () =>
+      cats
+        .slice()
+        .sort((a, b) => {
+          // Surface the API's sort_order field (we read it via the same
+          // /categories list); fall back to name for stability.
+          const ao = (a as unknown as { sort_order?: number }).sort_order ?? 0;
+          const bo = (b as unknown as { sort_order?: number }).sort_order ?? 0;
+          if (ao !== bo) return ao - bo;
+          return a.name.localeCompare(b.name);
+        }),
+    [cats],
+  );
+  const move = (id: string, dir: -1 | 1) => {
+    const idx = sortedByOrder.findIndex((c) => c.id === id);
+    if (idx < 0) return;
+    const swap = sortedByOrder[idx + dir];
+    if (!swap) return;
+    const curOrder =
+      (sortedByOrder[idx] as unknown as { sort_order?: number }).sort_order ?? idx;
+    const swapOrder =
+      (swap as unknown as { sort_order?: number }).sort_order ?? idx + dir;
+    // Swap the two orders so they trade places. Backend just stores them.
+    updateMut.mutate({ id: swap.id, sort_order: curOrder });
+    updateMut.mutate({ id, sort_order: swapOrder });
+  };
 
   return (
     <div className="mx-auto max-w-[1280px] space-y-4 px-4 py-4 sm:px-6 sm:py-6">
@@ -90,18 +221,21 @@ export function Categories() {
             Categories
           </h1>
           <p className="mt-0.5 text-[12px] text-ink-muted">
-            Catalogue categories. Each one carries a cover image (hero) shown on
-            the front-of-house catalogue. Click a row to upload / replace the
-            cover and set its focal point.
+            Catalogue categories. Each one carries a cover image (hero) and a
+            sort position. Click the card image to set the cover; use the
+            menu for edit / delete / reorder.
           </p>
         </div>
+        <Button variant="primary" icon={<Plus size={14} />} onClick={openNew}>
+          New category
+        </Button>
       </div>
 
       {/* Loading */}
       {catsQ.isLoading && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="skeleton h-32 rounded-xl" />
+            <div key={i} className="skeleton h-48 rounded-xl" />
           ))}
         </div>
       )}
@@ -116,9 +250,7 @@ export function Categories() {
             Categories endpoint not yet live
           </div>
           <p className="mx-auto mt-1.5 max-w-[440px] text-[12px] leading-relaxed text-ink-muted">
-            The catalogue-categories list endpoint isn't registered yet. The
-            hero-image POST/GET/DELETE handlers exist, they just don't have
-            a list to drive the UI. Track at{" "}
+            The categories list endpoint isn't registered yet. Track at{" "}
             <span className="font-money">BACKEND-CHECKLIST · A2</span>.
           </p>
           <div className="mt-4">
@@ -132,77 +264,554 @@ export function Categories() {
           </div>
         </div>
       )}
-
       {loadStatus === "error" && !catsQ.isLoading && (
         <div className="rounded-md border border-err/40 bg-err/5 p-3 text-[12px] text-err">
           Couldn't load categories: {errMsg(catsQ.error)}
         </div>
       )}
 
-      {/* Empty (no categories registered) */}
+      {/* Empty */}
       {loadStatus === "ok" && !catsQ.isLoading && cats.length === 0 && (
-        <div className="rounded-md border border-border bg-surface-2 px-4 py-6 text-center text-[12px] text-ink-muted">
-          No categories registered yet.
+        <div className="rounded-md border border-dashed border-border bg-surface-2 px-4 py-12 text-center text-[12px] text-ink-muted">
+          No categories yet. Click <span className="font-semibold text-ink">+ New category</span> to add one.
         </div>
       )}
 
       {/* Grid */}
-      {loadStatus === "ok" && cats.length > 0 && (
+      {loadStatus === "ok" && sortedByOrder.length > 0 && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {cats.map((c) => (
-            <button
+          {sortedByOrder.map((c, idx) => (
+            <CategoryCard
               key={c.id}
-              type="button"
-              onClick={() => openEditor(c.id)}
-              className="group relative overflow-hidden rounded-xl border border-border bg-surface text-left shadow-stone transition-all hover:-translate-y-px hover:border-primary/40"
-            >
-              <div
-                className="relative aspect-[16/7] w-full bg-surface-2"
-                style={{
-                  backgroundImage: c.hero_url ? `url(${c.hero_url})` : undefined,
-                  backgroundSize: "cover",
-                  backgroundPosition: "center",
-                }}
-              >
-                {!c.hero_url && (
-                  <div className="absolute inset-0 flex items-center justify-center text-ink-muted">
-                    <ImageIcon size={28} className="opacity-60" />
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center justify-between px-4 py-3">
-                <div className="min-w-0">
-                  <div className="truncate font-display text-[14px] font-bold text-ink">
-                    {c.name}
-                  </div>
-                  {c.slug && (
-                    <div className="truncate font-money text-[10.5px] text-ink-muted">
-                      {c.slug}
-                    </div>
-                  )}
-                </div>
-                <span className="shrink-0 text-[11px] font-semibold text-primary group-hover:text-primary-ink">
-                  Edit hero →
-                </span>
-              </div>
-            </button>
+              cat={c}
+              isFirst={idx === 0}
+              isLast={idx === sortedByOrder.length - 1}
+              onOpenHero={() => openHero(c.id)}
+              onOpenMeta={() => openMeta(c.id)}
+              onMoveUp={() => move(c.id, -1)}
+              onMoveDown={() => move(c.id, +1)}
+            />
           ))}
         </div>
       )}
 
-      {/* Side drawer */}
-      {editing && (
-        <Drawer onClose={closeEditor} title={editing.name}>
+      {/* Drawers */}
+      {editingHero && (
+        <Drawer onClose={closeDrawer} title={`Edit hero · ${editingHero.name}`}>
           <HeroImageEditor
-            categoryId={editing.id}
-            categoryName={editing.name}
-            onClose={closeEditor}
+            categoryId={editingHero.id}
+            categoryName={editingHero.name}
+            onClose={closeDrawer}
           />
+        </Drawer>
+      )}
+      {editingMeta && (
+        <Drawer onClose={closeDrawer} title={`Edit category · ${editingMeta.name}`}>
+          <CategoryForm
+            mode="edit"
+            initial={editingMeta}
+            onClose={closeDrawer}
+          />
+        </Drawer>
+      )}
+      {isNew && (
+        <Drawer onClose={closeDrawer} title="New category">
+          <CategoryForm mode="create" onClose={closeDrawer} />
         </Drawer>
       )}
     </div>
   );
 }
+
+// ── Card with kebab menu ────────────────────────────────────────────────────
+
+function CategoryCard({
+  cat,
+  isFirst,
+  isLast,
+  onOpenHero,
+  onOpenMeta,
+  onMoveUp,
+  onMoveDown,
+}: {
+  cat: CategoryRow;
+  isFirst: boolean;
+  isLast: boolean;
+  onOpenHero: () => void;
+  onOpenMeta: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const Icon =
+    (Lucide as unknown as Record<string, React.ComponentType<{ size?: number; className?: string }>>)[
+      lucideKey(cat.slug)
+    ] ?? null;
+  return (
+    <div className="group relative overflow-hidden rounded-xl border border-border bg-surface shadow-stone transition-all hover:-translate-y-px hover:border-primary/40">
+      {/* Image area — clickable, opens hero editor */}
+      <button
+        type="button"
+        onClick={onOpenHero}
+        className="relative block aspect-[16/7] w-full bg-surface-2"
+        style={{
+          backgroundImage: cat.hero_url ? `url(${cat.hero_url})` : undefined,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+        }}
+        aria-label={`Edit hero for ${cat.name}`}
+      >
+        {!cat.hero_url && (
+          <div className="absolute inset-0 flex items-center justify-center text-ink-muted">
+            <ImageIcon size={28} className="opacity-60" />
+          </div>
+        )}
+      </button>
+
+      {/* Footer */}
+      <div className="flex items-center justify-between gap-2 px-4 py-3">
+        <button
+          type="button"
+          onClick={onOpenMeta}
+          className="min-w-0 flex-1 text-left"
+          aria-label={`Edit category metadata for ${cat.name}`}
+        >
+          <div className="flex items-center gap-2">
+            {Icon && <Icon size={14} className="shrink-0 text-ink-muted" />}
+            <span className="truncate font-display text-[14px] font-bold text-ink">
+              {cat.name}
+            </span>
+          </div>
+          {cat.slug && (
+            <div className="mt-0.5 truncate font-money text-[10.5px] text-ink-muted">
+              {cat.slug}
+            </div>
+          )}
+        </button>
+
+        {/* Kebab menu */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((v) => !v);
+            }}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-ink-muted hover:bg-surface-dim hover:text-ink"
+            aria-label="Open menu"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+          >
+            <MoreHorizontal size={14} />
+          </button>
+          {menuOpen && (
+            <>
+              <div
+                className="fixed inset-0 z-10"
+                onClick={() => setMenuOpen(false)}
+                aria-hidden
+              />
+              <div
+                role="menu"
+                className="absolute right-0 top-full z-20 mt-1 w-44 overflow-hidden rounded-md border border-border bg-surface shadow-slab"
+              >
+                <MenuItem icon={<Pencil size={12} />} onClick={() => { setMenuOpen(false); onOpenMeta(); }}>
+                  Edit metadata
+                </MenuItem>
+                <MenuItem
+                  icon={<ArrowUp size={12} />}
+                  onClick={() => { setMenuOpen(false); onMoveUp(); }}
+                  disabled={isFirst}
+                >
+                  Move up
+                </MenuItem>
+                <MenuItem
+                  icon={<ArrowDown size={12} />}
+                  onClick={() => { setMenuOpen(false); onMoveDown(); }}
+                  disabled={isLast}
+                >
+                  Move down
+                </MenuItem>
+                <div className="my-1 h-px bg-border-subtle" />
+                <MenuItem
+                  icon={<Trash2 size={12} />}
+                  tone="danger"
+                  onClick={() => { setMenuOpen(false); setDeleting(true); }}
+                >
+                  Delete…
+                </MenuItem>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {deleting && (
+        <DeleteConfirm cat={cat} onClose={() => setDeleting(false)} />
+      )}
+    </div>
+  );
+}
+
+function MenuItem({
+  icon,
+  children,
+  onClick,
+  disabled,
+  tone,
+}: {
+  icon: React.ReactNode;
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  tone?: "danger";
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-semibold transition-colors",
+        tone === "danger" ? "text-err hover:bg-err/10" : "text-ink-secondary hover:bg-primary-soft hover:text-primary-ink",
+        disabled && "cursor-not-allowed opacity-40 hover:bg-transparent",
+      )}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+// ── Category form (shared by new + edit) ────────────────────────────────────
+
+function CategoryForm({
+  mode,
+  initial,
+  onClose,
+}: {
+  mode: "create" | "edit";
+  initial?: CategoryRow;
+  onClose: () => void;
+}) {
+  const [id, setId] = useState(initial?.id ?? "");
+  const [label, setLabel] = useState(initial?.name ?? "");
+  const [icon, setIcon] = useState(initial?.slug ?? "package");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const createMut = useCreateCategory();
+  const updateMut = useUpdateCategory();
+  const submitting = createMut.isPending || updateMut.isPending;
+
+  const idValid = mode === "edit" || /^[a-z0-9][a-z0-9-]{0,49}$/.test(id);
+  const canSubmit = !submitting && idValid && label.trim().length > 0 && icon.trim().length > 0;
+
+  const onSubmit = async () => {
+    setFormError(null);
+    try {
+      if (mode === "create") {
+        await createMut.mutateAsync({ id, label: label.trim(), icon: icon.trim() });
+      } else if (initial) {
+        await updateMut.mutateAsync({ id: initial.id, label: label.trim(), icon: icon.trim() });
+      }
+      onClose();
+    } catch (e) {
+      setFormError(errMsg(e));
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* ID (create only) */}
+      {mode === "create" && (
+        <Field
+          label="ID / slug"
+          hint="Stable URL-safe identifier — lowercase letters, digits, hyphens. e.g. 'living-room'. Can't be changed later."
+          invalid={id.length > 0 && !idValid}
+        >
+          <input
+            type="text"
+            value={id}
+            onChange={(e) => setId(e.target.value.toLowerCase())}
+            placeholder="living-room"
+            className={cn(
+              "block w-full rounded-md border bg-surface px-3 py-2 font-money text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20",
+              id.length > 0 && !idValid ? "border-err" : "border-border",
+            )}
+            maxLength={50}
+          />
+          {id.length > 0 && !idValid && (
+            <div className="mt-1 text-[10.5px] font-semibold text-err">
+              Use lowercase letters / digits / hyphens, must start with alnum.
+            </div>
+          )}
+        </Field>
+      )}
+
+      <Field label="Label" hint="Shown on the catalogue card.">
+        <input
+          type="text"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="Living room"
+          className="block w-full rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+          maxLength={200}
+        />
+      </Field>
+
+      <Field label="Icon" hint="Pick a lucide icon name. Free-text accepts any lucide icon.">
+        <IconPicker value={icon} onChange={setIcon} />
+      </Field>
+
+      {formError && (
+        <div className="rounded-md border border-err/40 bg-err/5 p-3 text-[12px] text-err">
+          <div className="flex items-start gap-2">
+            <AlertCircle size={14} className="mt-0.5 shrink-0" />
+            <div>{formError}</div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center justify-end gap-2">
+        <Button variant="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          onClick={onSubmit}
+          disabled={!canSubmit}
+          icon={submitting ? <Loader2 size={14} className="animate-spin" /> : undefined}
+        >
+          {submitting ? "Saving…" : mode === "create" ? "Create category" : "Save changes"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  invalid,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  invalid?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+        {label}
+      </div>
+      {hint && (
+        <div className="mt-0.5 text-[10.5px] text-ink-muted">{hint}</div>
+      )}
+      <div className="mt-1.5">{children}</div>
+      {invalid && null}
+    </label>
+  );
+}
+
+// ── Icon picker ─────────────────────────────────────────────────────────────
+
+function IconPicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const CurrentIcon =
+    (Lucide as unknown as Record<string, React.ComponentType<{ size?: number; className?: string }>>)[
+      lucideKey(value)
+    ] ?? null;
+  return (
+    <div className="space-y-2">
+      {/* Free-text input with current preview */}
+      <div className="flex items-center gap-2">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-surface-2 text-ink">
+          {CurrentIcon ? <CurrentIcon size={20} /> : <span className="text-[10px] text-ink-muted">none</span>}
+        </div>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value.trim().toLowerCase())}
+          placeholder="sofa"
+          className="block w-full rounded-md border border-border bg-surface px-3 py-2 font-money text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+          spellCheck={false}
+          maxLength={40}
+        />
+      </div>
+      {/* Popular picks */}
+      <div>
+        <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+          Popular
+        </div>
+        <div className="mt-1.5 grid grid-cols-6 gap-1.5 sm:grid-cols-8">
+          {POPULAR_ICONS.map((name) => {
+            const I =
+              (Lucide as unknown as Record<string, React.ComponentType<{ size?: number; className?: string }>>)[
+                lucideKey(name)
+              ];
+            if (!I) return null;
+            const isOn = value === name;
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => onChange(name)}
+                title={name}
+                className={cn(
+                  "flex h-9 items-center justify-center rounded-md border transition-colors",
+                  isOn
+                    ? "border-primary bg-primary-soft text-primary-ink"
+                    : "border-border bg-surface text-ink-secondary hover:border-primary/40 hover:text-primary",
+                )}
+              >
+                <I size={16} />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Delete confirm ──────────────────────────────────────────────────────────
+
+function DeleteConfirm({
+  cat,
+  onClose,
+}: {
+  cat: CategoryRow;
+  onClose: () => void;
+}) {
+  const navigate = useNavigate();
+  const deleteMut = useDeleteCategory();
+  const [inUse, setInUse] = useState<{ count: number; sample: string[] } | null>(null);
+
+  const onConfirm = async () => {
+    setInUse(null);
+    try {
+      await deleteMut.mutateAsync(cat.id);
+      onClose();
+    } catch (e) {
+      // 409 carries the "category_in_use" payload; surface it inline.
+      const msg = errMsg(e);
+      // Best-effort extract — server returns the count + sample_models inside
+      // the error body. The vendored authedFetch stringifies error bodies; we
+      // look for the marker phrase to detect the gated 409.
+      if (/category_in_use/i.test(msg)) {
+        // Pull count + a few model codes from the message blob.
+        const countMatch = msg.match(/"count"\s*:\s*(\d+)/);
+        const samplesMatch = msg.match(/"sample_models"\s*:\s*\[([^\]]*)\]/);
+        const sample = samplesMatch
+          ? samplesMatch[1].split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean)
+          : [];
+        setInUse({ count: countMatch ? Number(countMatch[1]) : 0, sample });
+        return;
+      }
+      // Fallback — generic error toast.
+      setInUse({ count: 0, sample: [] });
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-surface shadow-slab"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="border-b border-border px-5 py-3">
+          <div className="font-display text-[14px] font-extrabold text-ink">
+            Delete category · {cat.name}
+          </div>
+        </div>
+        <div className="space-y-3 px-5 py-4">
+          {!inUse ? (
+            <>
+              <p className="text-[12px] text-ink-secondary">
+                This removes the category from the catalogue. If a hero image
+                is set, the R2 blob is removed too. This can't be undone.
+              </p>
+              <p className="text-[11px] text-ink-muted">
+                Product models that reference this category will block the
+                delete with a 409 — you'll see how many + sample codes here so
+                you can re-categorise first.
+              </p>
+            </>
+          ) : (
+            <div className="rounded-md border border-err/40 bg-err/5 p-3 text-[12px] text-err">
+              <div className="flex items-start gap-2">
+                <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                <div>
+                  <div className="font-semibold">
+                    Can't delete — {inUse.count > 0
+                      ? `${inUse.count} product model${inUse.count === 1 ? "" : "s"} still use this category.`
+                      : "category is referenced by product models."}
+                  </div>
+                  {inUse.sample.length > 0 && (
+                    <div className="mt-1 font-money text-[10.5px] text-ink-secondary">
+                      {inUse.sample.join(" · ")}
+                      {inUse.count > inUse.sample.length && ` … +${inUse.count - inUse.sample.length} more`}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/scm/product-models?category=${encodeURIComponent(cat.id)}`)}
+                    className="mt-2 inline-flex items-center gap-1 rounded-md border border-err/40 bg-surface px-2.5 py-1 text-[11px] font-semibold text-err hover:bg-err/10"
+                  >
+                    Go to Products to re-categorise →
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-border bg-surface-2 px-5 py-3">
+          <Button variant="secondary" onClick={onClose}>
+            {inUse ? "Close" : "Cancel"}
+          </Button>
+          {!inUse && (
+            <Button
+              variant="danger"
+              onClick={onConfirm}
+              disabled={deleteMut.isPending}
+              icon={deleteMut.isPending ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+            >
+              {deleteMut.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+// Convert a lucide icon name ("bed-double") to the PascalCase export key
+// ("BedDouble") since lucide-react exports them as React components by that
+// name. Falls back to a Package fallback if missing.
+function lucideKey(name: string | null | undefined): string {
+  if (!name) return "Package";
+  return name
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
+}
+
+// ── Drawer ──────────────────────────────────────────────────────────────────
 
 function Drawer({
   onClose,
@@ -218,20 +827,19 @@ function Drawer({
       className="fixed inset-0 z-40 bg-ink/40"
       role="dialog"
       aria-modal="true"
-      aria-label={`Edit hero for ${title}`}
+      aria-label={title}
       onClick={onClose}
     >
       <div
         className={cn(
           "ml-auto h-full w-full max-w-[640px] overflow-y-auto bg-surface shadow-slab",
-          // slide-in on desktop; full screen on small
           "animate-[rise_220ms_cubic-bezier(0.16,1,0.3,1)_both]",
         )}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border bg-surface px-5 py-3">
           <div className="font-display text-[14px] font-extrabold text-ink">
-            Edit hero · {title}
+            {title}
           </div>
           <button
             type="button"
