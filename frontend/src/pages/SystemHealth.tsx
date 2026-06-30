@@ -11,6 +11,9 @@ import {
   HardDrive,
   KeyRound,
   Boxes,
+  Timer,
+  ArrowUp,
+  X,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
@@ -176,6 +179,7 @@ function fmtMs(ms: number): string {
 export function SystemHealth() {
   const [range, setRange] = useState<Range>("24h");
   const [sensitiveOnly, setSensitiveOnly] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
 
   const live = useQuery<LivePayload>(() => api.get("/api/admin/health/live"));
   // Inventory-ledger integrity — the working corruption-check endpoint that was
@@ -234,21 +238,34 @@ export function SystemHealth() {
         title="System Health"
         description="Live database and connection health, plus the audit trail of who changed what. Restricted to positions granted System Health access."
         actions={
-          <Button
-            variant="secondary"
-            icon={<RefreshCw size={14} className={live.loading ? "animate-spin" : undefined} />}
-            onClick={() => {
-              live.reload();
-              feed.reload();
-              ledger.reload();
-            }}
-          >
-            Refresh
-          </Button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setShowSetup((v) => !v)}
+              aria-expanded={showSetup}
+              aria-controls="system-health-setup-notes"
+              className="text-[12px] font-semibold text-primary underline underline-offset-[3px] decoration-primary/40 hover:text-primary-ink hover:decoration-primary"
+            >
+              Setup notes
+            </button>
+            <Button
+              variant="secondary"
+              icon={<RefreshCw size={14} className={live.loading ? "animate-spin" : undefined} />}
+              onClick={() => {
+                live.reload();
+                feed.reload();
+                ledger.reload();
+              }}
+            >
+              Refresh
+            </Button>
+          </div>
         }
       />
 
       <HealthBanner tone={banner.tone} label={banner.label} detail={banner.detail} />
+
+      {showSetup && <SetupNotesCard onClose={() => setShowSetup(false)} />}
 
       {live.error && (
         <div className="rounded-md border border-err/40 bg-err/5 p-3 text-[12px] text-err">
@@ -486,13 +503,217 @@ export function SystemHealth() {
               )}
             </div>
 
-            <div className="text-[10.5px] text-ink-muted">
-              Latency percentiles, slow-SQL and front-end performance need Cloudflare Analytics
-              Engine (not wired yet) — staged for phase 2.
-            </div>
+            <PerformancePhase2 onOpenSetup={() => setShowSetup(true)} />
           </>
         )
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Performance & Slow Queries — placeholder.
+// Once a Cloudflare Analytics Engine endpoint exists, this becomes the
+// p50/p95/p99 + slow-SQL + Web Vitals panels (see Final design F1). Until then
+// we render the "AE not wired · Phase 2" empty state from the States design:
+// ghosted scaffolding for the 4 percentile stat cards + a latency chart card
+// with an overlay explaining what's needed.
+// ---------------------------------------------------------------------------
+
+// Eyebrow = bare metric name (per shared pattern); plain-language read goes in
+// the sub-label so the row reads at a glance.
+const PERCENTILE_SLOTS: Array<{
+  label: string;
+  sub: string;
+  bar: string;
+}> = [
+  { label: "p50", sub: "Median request time", bar: "bg-synced" },
+  { label: "p95", sub: "Tail latency · slowest 5%", bar: "bg-accent" },
+  { label: "p99", sub: "Outliers · cold-start range", bar: "bg-err" },
+  { label: "Requests · 7d", sub: "Window total · all routes", bar: "bg-border-strong" },
+];
+
+function PerformancePhase2({ onOpenSetup }: { onOpenSetup: () => void }) {
+  const scrollTop = () => {
+    if (typeof window === "undefined") return;
+    window.scrollTo({
+      top: 0,
+      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+    });
+  };
+  const handleOpenSetup = () => {
+    onOpenSetup();
+    scrollTop();
+  };
+  return (
+    <section aria-labelledby="perf-phase2" className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
+            System · Performance
+          </div>
+          <h2
+            id="perf-phase2"
+            className="mt-1 font-display text-[18px] font-extrabold tracking-tight text-ink"
+          >
+            Performance &amp; Slow Queries
+          </h2>
+        </div>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-warning-bg px-2.5 py-0.5 text-[10.5px] font-semibold text-warning-text">
+          <Clock size={11} /> AE not wired · Phase 2
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-hidden>
+        {PERCENTILE_SLOTS.map((s) => (
+          <div
+            key={s.label}
+            className="relative overflow-hidden rounded-lg border border-border bg-surface px-4 py-3 opacity-60 shadow-stone"
+          >
+            <span className={cn("absolute left-0 top-0 h-full w-[3px]", s.bar)} />
+            <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              {s.label}
+            </div>
+            <div className="mt-1.5 font-display text-[22px] font-extrabold leading-none tracking-tight text-ink-muted">
+              —
+            </div>
+            <div className="mt-1 text-[10.5px] text-ink-muted">{s.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="relative overflow-hidden rounded-xl border border-border bg-surface shadow-stone">
+        <div className="px-5 pt-5">
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Request latency · p50 / p95 / p99
+            </div>
+            <div className="flex gap-3 text-[10px] text-ink-muted">
+              <LegendDot color="bg-synced" label="p50" />
+              <LegendDot color="bg-accent-bright" label="p95" />
+              <LegendDot color="bg-err" label="p99" />
+            </div>
+          </div>
+          <div
+            className="mt-3 flex h-[120px] items-end gap-1.5 opacity-30 grayscale"
+            aria-hidden
+          >
+            {Array.from({ length: 14 }).map((_, i) => {
+              const seed = (i * 37) % 100;
+              return (
+                <div key={i} className="flex h-full flex-1 flex-col justify-end gap-[2px]">
+                  <div
+                    className="rounded-t-[2px] bg-err/80"
+                    style={{ height: `${10 + (seed % 22)}%` }}
+                  />
+                  <div className="bg-accent-bright" style={{ height: `${10 + (seed % 18)}%` }} />
+                  <div
+                    className="rounded-b-[2px] bg-synced"
+                    style={{ height: `${20 + (seed % 30)}%` }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-2 h-4" />
+        </div>
+
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-b from-surface/70 to-surface/95 px-6 text-center">
+          <div className="flex h-10 w-10 items-center justify-center rounded-[10px] border border-amber-300 bg-warning-bg text-warning-text">
+            <Timer size={18} />
+          </div>
+          <div className="mt-3 text-[14px] font-bold text-ink">
+            Latency percentiles · slow SQL · front-end performance
+          </div>
+          <p className="mt-1.5 max-w-[380px] text-[12px] leading-relaxed text-ink-muted">
+            These panels need{" "}
+            <span className="font-money text-accent">Cloudflare Analytics Engine</span>. Base DB
+            / KV / audit metrics work today; perf panels are staged for Phase 2.
+          </p>
+          <div className="pointer-events-auto mt-4 flex flex-wrap items-center justify-center gap-2">
+            <Button variant="primary" onClick={handleOpenSetup}>
+              Setup notes
+            </Button>
+            <Button
+              variant="secondary"
+              icon={<ArrowUp size={14} />}
+              onClick={scrollTop}
+            >
+              View base metrics
+            </Button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1">
+      <span className={cn("h-2 w-2 rounded-[2px]", color)} />
+      {label}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SetupNotesCard — petrol-tinted disclosure listing what's needed to take the
+// Performance & Slow Queries panel out of "Phase 2" mode. Stays present even
+// when AE is wired (per the shared "Setup notes" pattern: owners can always
+// find the infra notes for this page).
+// ---------------------------------------------------------------------------
+
+function SetupNotesCard({ onClose }: { onClose: () => void }) {
+  return (
+    <div
+      id="system-health-setup-notes"
+      className="rounded-lg border border-primary/30 bg-primary-soft px-4 py-3 text-[12px] text-primary-ink shadow-stone"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] font-semibold uppercase tracking-brand text-primary">
+            Setup notes · Analytics Engine
+          </div>
+          <p className="mt-1.5 leading-relaxed">
+            The Performance &amp; Slow Queries panel needs the{" "}
+            <span className="font-money">ERP_METRICS</span> Cloudflare Analytics Engine binding —
+            currently commented out in <span className="font-money">backend/wrangler.toml</span>.
+            Once wired, the worker writes per-request latency / route samples to AE; an admin
+            endpoint reads them back as p50 / p95 / p99 + slow-SQL.
+          </p>
+          <ul className="mt-2 list-disc space-y-1 pl-4">
+            <li>
+              Uncomment <span className="font-money">[[analytics_engine_datasets]]</span> for{" "}
+              <span className="font-money">ERP_METRICS</span> in{" "}
+              <span className="font-money">backend/wrangler.toml</span> and redeploy.
+            </li>
+            <li>
+              Add a request-path middleware that writes one AE row per request (path, status,
+              duration).
+            </li>
+            <li>
+              Ship a small <span className="font-money">/api/admin/health/perf</span> endpoint
+              that aggregates AE rows for the selected window.
+            </li>
+            <li>
+              Front-end Web Vitals: send a beacon to{" "}
+              <span className="font-money">/api/admin/health/rum</span> from{" "}
+              <span className="font-money">frontend/src/main.tsx</span>.
+            </li>
+          </ul>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close setup notes"
+          className="-m-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-primary hover:bg-primary/10"
+        >
+          <X size={14} />
+        </button>
+      </div>
     </div>
   );
 }
