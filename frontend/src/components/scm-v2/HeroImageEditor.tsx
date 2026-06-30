@@ -1,22 +1,25 @@
 // ----------------------------------------------------------------------------
 // HeroImageEditor — category hero image with a draggable focal-point.
 //
-// Backend (expected after BACKEND-CHECKLIST A2):
-//   POST   /scm/categories/:id/hero-image   (raw image body, content-type drives format)
-//                                            → already exists, errors 500
-//                                              public_assets_not_configured until
-//                                              the PUBLIC_ASSETS R2 binding lands
-//   GET    /scm/categories/:id/hero-image    → already exists, streams the blob
-//   DELETE /scm/categories/:id/hero-image    → already exists
-//   PATCH  /scm/categories/:id/hero-meta     (body: { focal_x, focal_y, alt })
-//                                            → NEW — lands with backend PR 4b
+// Backend endpoints (all live; PUBLIC_ASSETS R2 binding wired since 2026-06-18):
+//   POST   /scm/admin/categories/:id/hero-image   raw image body, content-type
+//                                                 drives format; writes to the
+//                                                 PUBLIC_ASSETS R2 bucket and
+//                                                 sets scm.categories.hero_image_key
+//   DELETE /scm/admin/categories/:id/hero-image   removes the R2 object and
+//                                                 nulls hero_image_key/focal/alt
+//   GET    /scm/categories/:id/hero-meta          { url, focal_x, focal_y, alt }
+//   PATCH  /scm/categories/:id/hero-meta          { focal_x, focal_y, alt }
+//   GET    /scm/categories/:id/hero-blob          streams the R2 blob. Loaded
+//                                                 via <img src>; the browser's
+//                                                 session cookie carries the
+//                                                 /api/scm auth (the route
+//                                                 lives under the same gated
+//                                                 tree — not truly public).
 //
-// Until A2 ships:
-//   · POST and PATCH return 500 / 404 → we render the "Not yet wired · Setup
-//     notes" state instead of crashing.
-//   · The focal-point and alt-text controls still work locally so the operator
-//     can see / pick a focal point; "Apply cover" surfaces the not-wired state
-//     when they press it.
+// The classifyLoadError-driven "not wired" fallback state is kept for defense
+// in depth: if the binding is ever unbound or the bucket is missing, the
+// hero-meta load surfaces a clear setup-notes UI instead of a blank crash.
 //
 // Layout (Final F4):
 //   · 16:7 preview area with a draggable crosshair (gold ring) at focal x,y
