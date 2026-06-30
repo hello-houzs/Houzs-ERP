@@ -1798,6 +1798,7 @@ function CreatePanel({
   const [submitting, setSubmitting] = useState(false);
   const [customerInfo, setCustomerInfo] = useState<{ name?: string; phone?: string; location?: string } | null>(null);
   const [files, setFiles] = useState<File[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   // Mig 065 — pull issue categories from the lookup endpoint so the
   // intake form mirrors what admins maintain in Service Maintenance.
@@ -1835,6 +1836,41 @@ function CreatePanel({
   function removeFile(index: number) {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   }
+
+  // Clipboard paste — when the panel is mounted, intercept any paste
+  // that carries file blobs (typically a screenshot or copied image)
+  // and route it through addFiles. Plain-text pastes are left alone
+  // so the Issue Description textarea still works.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (!e.clipboardData) return;
+      const blobs: File[] = [];
+      for (const item of Array.from(e.clipboardData.items)) {
+        if (item.kind !== "file") continue;
+        const blob = item.getAsFile();
+        if (!blob) continue;
+        // Clipboard files often arrive without a name (e.g. screenshot
+        // paste on Windows / macOS). Synthesize one whose extension
+        // matches the MIME so addFiles' extension check passes.
+        if (blob.name && blob.name.includes(".")) {
+          blobs.push(blob);
+        } else {
+          const sub = (blob.type.split("/")[1] || "bin").toLowerCase();
+          const ext = sub === "jpeg" ? "jpg" : sub;
+          blobs.push(new File([blob], `pasted-${Date.now()}.${ext}`, { type: blob.type }));
+        }
+      }
+      if (blobs.length === 0) return;
+      e.preventDefault();
+      const dt = new DataTransfer();
+      blobs.forEach((b) => dt.items.add(b));
+      addFiles(dt.files);
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+    // addFiles is stable enough — uses functional setFiles + constants.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function lookup() {
     if (!docNo.trim()) return;
@@ -2198,30 +2234,53 @@ function CreatePanel({
       </PanelSection>
 
       <PanelSection title={`Defect Photos / Videos (${files.length}/${MAX_FILES})`}>
-        {files.length > 0 && (
-          <div className="mb-2 grid grid-cols-3 gap-2">
-            {files.map((f, i) => (
-              <FilePreview key={i} file={f} onRemove={() => removeFile(i)} />
-            ))}
+        <div
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer.types).includes("Files")) {
+              e.preventDefault();
+              if (!dragActive) setDragActive(true);
+            }
+          }}
+          onDragLeave={(e) => {
+            // Ignore leave events triggered by entering a child node.
+            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+            setDragActive(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragActive(false);
+            addFiles(e.dataTransfer.files);
+          }}
+          className={cn(
+            "rounded-md border border-dashed p-2 transition-colors",
+            dragActive ? "border-accent bg-accent-soft/30" : "border-border bg-bg/30"
+          )}
+        >
+          {files.length > 0 && (
+            <div className="mb-2 grid grid-cols-3 gap-2">
+              {files.map((f, i) => (
+                <FilePreview key={i} file={f} onRemove={() => removeFile(i)} />
+              ))}
+            </div>
+          )}
+          <label className={cn(
+            "inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink hover:border-accent/40",
+            files.length >= MAX_FILES && "pointer-events-none opacity-50"
+          )}>
+            <Upload size={12} />
+            Add Photos / Videos
+            <input
+              type="file"
+              accept="image/*,video/mp4,.pdf"
+              multiple
+              className="hidden"
+              onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
+              disabled={files.length >= MAX_FILES}
+            />
+          </label>
+          <div className="mt-1.5 text-[10px] text-ink-muted">
+            JPG / PNG / WEBP / MP4 / PDF · 5MB each · up to {MAX_FILES} files · drag, drop, or paste
           </div>
-        )}
-        <label className={cn(
-          "inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink hover:border-accent/40",
-          files.length >= MAX_FILES && "pointer-events-none opacity-50"
-        )}>
-          <Upload size={12} />
-          Add Photos / Videos
-          <input
-            type="file"
-            accept="image/*,video/mp4,.pdf"
-            multiple
-            className="hidden"
-            onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
-            disabled={files.length >= MAX_FILES}
-          />
-        </label>
-        <div className="mt-1.5 text-[10px] text-ink-muted">
-          JPG / PNG / WEBP / MP4 / PDF · 5MB each · up to {MAX_FILES} files
         </div>
       </PanelSection>
 
