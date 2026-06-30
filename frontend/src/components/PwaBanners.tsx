@@ -72,11 +72,16 @@ export function PwaBanners() {
       {showInstall && (
         <div className="fixed inset-x-3 bottom-3 z-[100] mx-auto max-w-md rounded-2xl border border-border bg-surface px-[18px] py-4 shadow-slab sm:inset-x-auto sm:right-6 sm:bottom-6 sm:w-[340px]">
           <div className="flex items-start gap-3">
-            {/* Brand mark — dark slab tile with brass "H" (brand identity = brass) */}
-            <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl bg-ink">
-              <span className="flex h-5 w-5 items-center justify-center rounded bg-accent font-display text-[12px] font-semibold text-white">
-                H
-              </span>
+            {/* Brand mark — Houzs Century HC logo on a dark ink slab. The
+                brightness-0+invert filter pair flattens the black PNG to a
+                pure-white silhouette, matching the sidebar's logo treatment
+                (see Sidebar.tsx LOGO_MARK_SRC usage). */}
+            <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl bg-ink p-2">
+              <img
+                src="/logo-hc-mark.png"
+                alt="Houzs Century"
+                className="h-full w-full object-contain brightness-0 invert"
+              />
             </div>
             <div className="flex-1">
               <div className="text-[13.5px] font-bold text-ink">
