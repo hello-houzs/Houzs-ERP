@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo, useCallback, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useSearchParams, useNavigate, useParams, Navigate } from "react-router-dom";
 import {
@@ -1767,6 +1767,22 @@ function CreatePanel({
   toast: ReturnType<typeof useToast>;
 }) {
   const [docNo, setDocNo] = useState("");
+  // Typeahead state: search local SO mirror by partial DocNo /
+  // reference / customer name so staff don't have to remember the
+  // full SO number. `pickedDocNo` is the DocNo last chosen from a
+  // suggestion — used to suppress the dropdown once a selection is
+  // committed (re-typing reopens it).
+  const [soSuggestions, setSoSuggestions] = useState<
+    { doc_no: string; ref: string | null; debtor_name: string | null; phone: string | null; doc_date: string | null; sales_agent: string | null }[]
+  >([]);
+  const [pickedDocNo, setPickedDocNo] = useState<string | null>(null);
+  const [searchingSO, setSearchingSO] = useState(false);
+  // The dropdown is rendered through a portal because PanelSection
+  // wraps its body in `overflow-hidden` (Panel.tsx:193), which would
+  // otherwise clip suggestions extending below the section. Track the
+  // input's viewport rect and re-render dropdown in fixed coordinates.
+  const soInputRef = useRef<HTMLInputElement | null>(null);
+  const [dropdownRect, setDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const [lookupItems, setLookupItems] = useState<{ item_code: string; item_description: string | null; qty?: number }[] | null>(null);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [issue, setIssue] = useState("");
@@ -1824,7 +1840,6 @@ function CreatePanel({
     if (!docNo.trim()) return;
     setLookingUp(true);
     setLookupItems(null);
-    setCustomerInfo(null);
     try {
       const res = await api.get<{ items: { item_code: string; item_description: string | null; qty?: number }[] }>(
         `/api/assr/lookup-items/${encodeURIComponent(docNo.trim())}`
@@ -1836,6 +1851,81 @@ function CreatePanel({
     } finally {
       setLookingUp(false);
     }
+  }
+
+  // Debounced typeahead — fires whenever the input changes and the
+  // current value isn't an already-picked DocNo. Kept short so the
+  // dropdown feels live; the backend route is a single indexed-ish
+  // LIKE against the local mirror, so cost is low per call.
+  useEffect(() => {
+    const q = docNo.trim();
+    if (q.length < 2 || pickedDocNo === q) {
+      setSoSuggestions([]);
+      setSearchingSO(false);
+      return;
+    }
+    setSearchingSO(true);
+    const handle = setTimeout(async () => {
+      try {
+        const res = await api.get<{
+          results: { doc_no: string; ref: string | null; debtor_name: string | null; phone: string | null; doc_date: string | null; sales_agent: string | null }[];
+        }>(`/api/assr/search-so?q=${encodeURIComponent(q)}`);
+        setSoSuggestions(res.results);
+      } catch {
+        setSoSuggestions([]);
+      } finally {
+        setSearchingSO(false);
+      }
+    }, 200);
+    return () => clearTimeout(handle);
+  }, [docNo, pickedDocNo]);
+
+  // Sync the portaled dropdown's coords to the input rect whenever
+  // results or visibility change, and on scroll/resize so the menu
+  // tracks if the panel body scrolls.
+  useLayoutEffect(() => {
+    const open = soSuggestions.length > 0 && pickedDocNo !== docNo.trim();
+    if (!open || !soInputRef.current) {
+      setDropdownRect(null);
+      return;
+    }
+    const compute = () => {
+      if (!soInputRef.current) return;
+      const r = soInputRef.current.getBoundingClientRect();
+      setDropdownRect({ top: r.bottom + 4, left: r.left, width: r.width });
+    };
+    compute();
+    window.addEventListener("resize", compute);
+    window.addEventListener("scroll", compute, true);
+    return () => {
+      window.removeEventListener("resize", compute);
+      window.removeEventListener("scroll", compute, true);
+    };
+  }, [soSuggestions, pickedDocNo, docNo]);
+
+  function pickSuggestion(s: { doc_no: string; debtor_name: string | null; phone: string | null }) {
+    setDocNo(s.doc_no);
+    setPickedDocNo(s.doc_no);
+    setSoSuggestions([]);
+    setCustomerInfo({ name: s.debtor_name ?? undefined, phone: s.phone ?? undefined });
+    setLookupItems(null);
+    setSelectedItems(new Set());
+    // Auto-run the items lookup so the form proceeds in one click.
+    setTimeout(() => {
+      void (async () => {
+        setLookingUp(true);
+        try {
+          const res = await api.get<{ items: { item_code: string; item_description: string | null; qty?: number }[] }>(
+            `/api/assr/lookup-items/${encodeURIComponent(s.doc_no)}`
+          );
+          setLookupItems(res.items);
+        } catch (e: any) {
+          toast.error(`Lookup failed: ${e?.message || e}`);
+        } finally {
+          setLookingUp(false);
+        }
+      })();
+    }, 0);
   }
 
   async function submit() {
@@ -1922,18 +2012,75 @@ function CreatePanel({
   return (
     <Panel open onClose={onClose} title="New Service Case" width={480}>
       <PanelSection title="Sales Order">
-        <div className="flex gap-2">
+        <div className="relative flex gap-2">
           <input
+            ref={soInputRef}
             value={docNo}
-            onChange={(e) => setDocNo(e.target.value)}
+            onChange={(e) => {
+              setDocNo(e.target.value);
+              if (pickedDocNo && e.target.value.trim() !== pickedDocNo) {
+                setPickedDocNo(null);
+                setCustomerInfo(null);
+              }
+            }}
             onKeyDown={(e) => e.key === "Enter" && lookup()}
-            placeholder="Enter SO number…"
+            placeholder="SO #, reference, or customer name…"
             className="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary"
           />
           <Button variant="secondary" icon={<Search size={14} />} onClick={lookup} disabled={lookingUp}>
             {lookingUp ? "…" : "Lookup"}
           </Button>
         </div>
+        {/* Typeahead dropdown — portaled to body so PanelSection's
+            overflow-hidden doesn't clip suggestions extending below
+            the section. Coords are tracked in `dropdownRect`. */}
+        {dropdownRect && createPortal(
+          <div
+            style={{
+              position: "fixed",
+              top: dropdownRect.top,
+              left: dropdownRect.left,
+              width: dropdownRect.width,
+              zIndex: 60,
+            }}
+            className="max-h-72 overflow-auto rounded-md border border-border bg-surface shadow-lg"
+          >
+            {soSuggestions.map((s) => (
+              <button
+                key={s.doc_no}
+                type="button"
+                onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }}
+                className="flex w-full flex-col gap-0.5 border-b border-border/60 px-3 py-2 text-left text-[12px] last:border-b-0 hover:bg-accent-soft/20"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-semibold text-ink">{s.doc_no}</span>
+                  {s.ref && <span className="rounded bg-bg px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">ref: {s.ref}</span>}
+                  {s.doc_date && <span className="ml-auto text-[10px] text-ink-muted">{s.doc_date}</span>}
+                </div>
+                {(s.debtor_name || s.phone) && (
+                  <div className="text-[11px] text-ink-secondary">
+                    {s.debtor_name ?? ""}
+                    {s.debtor_name && s.phone ? " · " : ""}
+                    {s.phone ?? ""}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
+        {(searchingSO || customerInfo) && (
+          <div className="mt-1.5 text-[11px] text-ink-muted">
+            {searchingSO && pickedDocNo !== docNo.trim() ? (
+              "Searching…"
+            ) : customerInfo ? (
+              <>
+                Customer: <span className="text-ink">{customerInfo.name ?? "—"}</span>
+                {customerInfo.phone ? <> · {customerInfo.phone}</> : null}
+              </>
+            ) : null}
+          </div>
+        )}
       </PanelSection>
 
       {lookupItems !== null && (
