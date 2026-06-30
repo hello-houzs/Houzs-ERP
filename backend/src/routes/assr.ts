@@ -701,6 +701,29 @@ app.get("/lookup-items/:docNo", requirePermission("service_cases.read"), async (
   return c.json({ items });
 });
 
+// ── SO search (typeahead for create-case intake) ──────────────
+// Returns up to 20 SO candidates matched by partial DocNo,
+// reference number, or customer name (case-insensitive). Reads
+// the local mirror so the create form can suggest matches
+// without hitting AutoCount on every keystroke.
+app.get("/search-so", requirePermission("service_cases.read"), async (c) => {
+  const q = (c.req.query("q") ?? "").trim();
+  if (q.length < 2) return c.json({ results: [] });
+  const pattern = `%${q.toLowerCase()}%`;
+  const rows = await c.env.DB.prepare(
+    `SELECT doc_no, ref, debtor_name, phone, doc_date, sales_agent
+       FROM sales_orders
+      WHERE LOWER(doc_no) LIKE ?
+         OR LOWER(COALESCE(ref, '')) LIKE ?
+         OR LOWER(COALESCE(debtor_name, '')) LIKE ?
+      ORDER BY doc_date DESC
+      LIMIT 20`
+  )
+    .bind(pattern, pattern, pattern)
+    .all();
+  return c.json({ results: rows.results ?? [] });
+});
+
 // ── Detail ────────────────────────────────────────────────────
 
 // Numeric-only guard on the catch-all detail route. Hono's
