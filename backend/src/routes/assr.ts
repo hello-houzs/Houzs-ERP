@@ -724,6 +724,44 @@ app.get("/search-so", requirePermission("service_cases.read"), async (c) => {
   return c.json({ results: rows.results ?? [] });
 });
 
+// ── TEMP DEBUG — sales_orders mirror probe ────────────────────
+// Diagnoses whether the local mirror has data for the create-case
+// typeahead. Remove after the source of the empty search is
+// identified.
+app.get("/_debug-so-mirror", requirePermission("service_cases.read"), async (c) => {
+  const probe = c.req.query("probe") ?? "";
+  const total = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM sales_orders`
+  ).first<{ n: number }>();
+  const withRef = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM sales_orders WHERE ref IS NOT NULL AND ref <> ''`
+  ).first<{ n: number }>();
+  const recent = await c.env.DB.prepare(
+    `SELECT doc_no, ref, debtor_name, doc_date
+       FROM sales_orders
+      ORDER BY doc_date DESC
+      LIMIT 5`
+  ).all();
+  let exact: any = null;
+  if (probe) {
+    exact = await c.env.DB.prepare(
+      `SELECT doc_no, ref, debtor_name, phone, doc_date
+         FROM sales_orders
+        WHERE doc_no = ?
+           OR LOWER(doc_no) LIKE ?
+           OR LOWER(COALESCE(ref, '')) LIKE ?
+        LIMIT 10`
+    ).bind(probe, `%${probe.toLowerCase()}%`, `%${probe.toLowerCase()}%`).all();
+  }
+  return c.json({
+    total_rows: total?.n ?? 0,
+    rows_with_ref: withRef?.n ?? 0,
+    most_recent_by_doc_date: recent.results ?? [],
+    probe_query: probe || null,
+    probe_results: exact?.results ?? null,
+  });
+});
+
 // ── Detail ────────────────────────────────────────────────────
 
 // Numeric-only guard on the catch-all detail route. Hono's
