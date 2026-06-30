@@ -225,6 +225,161 @@ publicCategoriesApi.get('/:id/hero-meta', async (c) => {
   });
 });
 
+// ── Categories CRUD ────────────────────────────────────────────────────────
+// scm.categories columns: id text PK, label text, icon text, tbc bool,
+// hero_image_key text, sort_order int, hero_focal_x/y real, hero_alt text.
+// id is a URL-safe slug supplied at create time (it IS the FK target on
+// product_models.category, so it has to be stable). Owner-only writes.
+
+const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,49}$/;
+const isValidId = (v: unknown): v is string =>
+  typeof v === 'string' && ID_PATTERN.test(v);
+const trim200 = (v: unknown): string =>
+  typeof v === 'string' ? v.trim().slice(0, 200) : '';
+
+publicCategoriesApi.post('/', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; }
+  catch { return c.json({ error: 'invalid_json' }, 400); }
+
+  const id = typeof body.id === 'string' ? body.id.trim().toLowerCase() : '';
+  if (!isValidId(id)) {
+    return c.json({
+      error: 'invalid_id',
+      reason: 'Lowercase letters / digits / hyphens, must start with alnum, 1–50 chars.',
+    }, 400);
+  }
+  const label = trim200(body.label);
+  if (!label) return c.json({ error: 'label_required' }, 400);
+  const icon = trim200(body.icon) || 'package'; // safe lucide default
+  const sortOrder = Number.isInteger(body.sort_order) ? Number(body.sort_order) : null;
+
+  const supabase = c.get('supabase');
+  // Pre-flight: bounce duplicate id with a clear error (cheaper than a
+  // catch-the-constraint round-trip).
+  const { data: existing } = await supabase
+    .from('categories')
+    .select('id')
+    .eq('id', id)
+    .maybeSingle();
+  if (existing) return c.json({ error: 'id_taken', id }, 409);
+
+  // sort_order defaults to (max + 1) so a new category lands at the bottom.
+  let finalSort = sortOrder;
+  if (finalSort === null) {
+    const { data: top } = await supabase
+      .from('categories')
+      .select('sort_order')
+      .order('sort_order', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    finalSort = ((top as { sort_order: number } | null)?.sort_order ?? -1) + 1;
+  }
+
+  const { data, error } = await supabase
+    .from('categories')
+    .insert({ id, label, icon, sort_order: finalSort, tbc: false })
+    .select('id, label, icon, sort_order, hero_image_key')
+    .single();
+  if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
+
+  return c.json({ category: data });
+});
+
+publicCategoriesApi.patch('/:id', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; }
+  catch { return c.json({ error: 'invalid_json' }, 400); }
+  const supabase = c.get('supabase');
+  const id = c.req.param('id');
+
+  // Block accidental PATCH against the meta sub-route — that route lives
+  // separately at /:id/hero-meta. A "label" / "icon" body here on /:id is a
+  // category update; /:id/hero-meta handles focal + alt.
+  const patch: Record<string, unknown> = {};
+  if (body.label !== undefined) {
+    const label = trim200(body.label);
+    if (!label) return c.json({ error: 'label_blank' }, 400);
+    patch.label = label;
+  }
+  if (body.icon !== undefined) {
+    const icon = trim200(body.icon);
+    if (!icon) return c.json({ error: 'icon_blank' }, 400);
+    patch.icon = icon;
+  }
+  if (body.sort_order !== undefined) {
+    const n = Number(body.sort_order);
+    if (!Number.isInteger(n) || n < 0) {
+      return c.json({ error: 'sort_order_invalid', expected: 'non-negative integer' }, 400);
+    }
+    patch.sort_order = n;
+  }
+  if (Object.keys(patch).length === 0) {
+    return c.json({ error: 'nothing_to_patch' }, 400);
+  }
+
+  const { data, error } = await supabase
+    .from('categories')
+    .update(patch)
+    .eq('id', id)
+    .select('id, label, icon, sort_order, hero_image_key')
+    .single();
+  if (error) {
+    if (error.code === 'PGRST116') return c.json({ error: 'not_found' }, 404);
+    return c.json({ error: 'patch_failed', reason: error.message }, 500);
+  }
+  return c.json({ category: data });
+});
+
+publicCategoriesApi.delete('/:id', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  const supabase = c.get('supabase');
+  const id = c.req.param('id');
+
+  // Pre-flight: product_models.category references this id as a FK (well,
+  // logically — the column is a text enum-ish). Stop the delete and tell
+  // the operator how many models would be orphaned + a few sample codes so
+  // they can re-categorise in Products UI before retrying. 9 sample codes
+  // is enough to identify a manageable set without bloating the response.
+  const { data: refs, count } = await supabase
+    .from('product_models')
+    .select('model_code', { count: 'exact' })
+    .eq('category', id)
+    .limit(9);
+  if ((count ?? 0) > 0) {
+    return c.json({
+      error: 'category_in_use',
+      count: count ?? 0,
+      sample_models: (refs ?? []).map((r) => (r as { model_code: string }).model_code),
+    }, 409);
+  }
+
+  // Also clean up R2 hero (if any) — DELETE on the row alone would leave a
+  // stranded blob in PUBLIC_ASSETS.
+  const { data: row } = await supabase
+    .from('categories')
+    .select('hero_image_key')
+    .eq('id', id)
+    .maybeSingle();
+  const heroKey = (row as { hero_image_key: string | null } | null)?.hero_image_key;
+  if (heroKey && c.env.PUBLIC_ASSETS) {
+    await c.env.PUBLIC_ASSETS.delete(heroKey).catch(() => {});
+  }
+
+  const { error } = await supabase.from('categories').delete().eq('id', id);
+  if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+
+  return c.json({ ok: true });
+});
+
 // PATCH /:id/hero-meta — focal + alt update. Admin-only.
 publicCategoriesApi.patch('/:id/hero-meta', async (c) => {
   if (!hasHouzsPerm(c, 'scm.config.write')) {
