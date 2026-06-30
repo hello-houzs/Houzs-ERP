@@ -5521,14 +5521,19 @@ function TaskAttachmentRow({
   canManage,
   onDelete,
   toast,
+  viewOnly,
 }: {
   attachment: TaskAttachment;
   canManage?: boolean;
   onDelete: () => void;
   toast?: ReturnType<typeof useToast>;
+  /** View-only: medium preview (image opens a lightbox, other files open
+   *  inline in a new tab); no download button. */
+  viewOnly?: boolean;
 }) {
   const isImage = (attachment.content_type ?? "").startsWith("image/");
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   useEffect(() => {
     if (!isImage) return;
@@ -5562,6 +5567,76 @@ function TaskAttachmentRow({
     } catch (e: any) {
       toast?.error(e?.message || "Download failed");
     }
+  }
+
+  async function viewInTab() {
+    try {
+      const url = await api.fetchBlobUrl(`/api/projects/attachments/${attachment.r2_key}`);
+      window.open(url, "_blank", "noopener");
+    } catch (e: any) {
+      toast?.error(e?.message || "Failed to open");
+    }
+  }
+
+  // View-only: medium preview, no download. Images open a view-only
+  // lightbox; other files (PDF) open inline in a new tab.
+  if (viewOnly) {
+    return (
+      <>
+        <div className="border-t border-border-subtle px-2 py-1.5 text-[10.5px]">
+          {isImage && thumbUrl ? (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setPreviewing(true); }}
+              title="View only — click to enlarge"
+              className="block cursor-zoom-in"
+            >
+              <img
+                src={thumbUrl}
+                alt={attachment.file_name}
+                className="max-h-44 w-auto max-w-full rounded border border-border object-contain"
+                draggable={false}
+              />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); viewInTab(); }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-1 text-ink hover:border-accent/40 hover:text-accent"
+            >
+              <FileText size={12} /> View {attachment.file_name}
+            </button>
+          )}
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-ink-muted">
+            <span className="max-w-[220px] truncate">{attachment.file_name}</span>
+            <span>· {attachment.uploader_name || "—"}</span>
+            <span>· {formatDateTime(attachment.uploaded_at)}</span>
+            <span className="rounded bg-bg/60 px-1 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide text-ink-muted">
+              View only
+            </span>
+            {canManage && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(); }}
+                className="rounded p-0.5 text-ink-muted hover:bg-err/10 hover:text-err"
+                aria-label="Remove attachment"
+                title="Remove"
+              >
+                <Trash2 size={11} />
+              </button>
+            )}
+          </div>
+        </div>
+        {previewing && (
+          <MediaLightbox
+            items={[{ r2_key: attachment.r2_key, content_type: attachment.content_type, caption: attachment.file_name }]}
+            index={0}
+            onChange={() => {}}
+            onClose={() => setPreviewing(false)}
+            baseUrl="/api/projects/attachments"
+          />
+        )}
+      </>
+    );
   }
 
   return (
@@ -6423,6 +6498,14 @@ const REVIEWABLE_TITLES = new Set([
   "Exchange List",
 ]);
 
+// Documents that are view-only: a medium preview opens (image → lightbox,
+// other files → inline new tab) and there's no download button.
+const VIEW_ONLY_TITLES = new Set([
+  "Stock Out Transfer Record",
+  "3D Design",
+  "2D Design",
+]);
+
 // ── Document table (section display_mode = 'documents') ───────
 // Renders a section's items as a 6-column document table
 // (DOCUMENT / REMARKS / FILES / UPLOADED BY / APPROVAL / ACTIONS).
@@ -6780,6 +6863,7 @@ function DocRow({
                   canManage={canManage}
                   onDelete={() => removeAtt(a.id)}
                   toast={toast}
+                  viewOnly={VIEW_ONLY_TITLES.has(item.title)}
                 />
               ))}
             </div>
@@ -7328,6 +7412,7 @@ function ChecklistRow({
                         canManage={canManage}
                         onDelete={() => deleteAttachment(a.id)}
                         toast={toast}
+                        viewOnly={VIEW_ONLY_TITLES.has(item.title)}
                       />
                     ))}
                   </div>
