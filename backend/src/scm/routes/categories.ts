@@ -344,15 +344,21 @@ publicCategoriesApi.delete('/:id', async (c) => {
   const supabase = c.get('supabase');
   const id = c.req.param('id');
 
-  // Pre-flight: product_models.category references this id as a FK (well,
-  // logically — the column is a text enum-ish). Stop the delete and tell
-  // the operator how many models would be orphaned + a few sample codes so
-  // they can re-categorise in Products UI before retrying. 9 sample codes
-  // is enough to identify a manageable set without bloating the response.
+  // Pre-flight: product_models.category is an UPPERCASE Postgres enum
+  // (SOFA / BEDFRAME / MATTRESS / ACCESSORY / SERVICE) while categories.id
+  // is a lowercase slug ('sofa'), so the comparison has to upper-case the
+  // slug to land on the enum value. A direct .eq(id) silently matches 0
+  // rows for IDs that should be in use — the first version of this code
+  // let a legitimate 'sofa' delete through against prod, see Task #7.
+  // Slugs that don't correspond to an enum value ('kids', 'bathroom',
+  // 'dining', any custom id created via POST) won't match anything; for
+  // those the delete proceeds, which is the right semantics — they have
+  // no FK protection because there's no enum binding.
+  const enumValue = id.toUpperCase();
   const { data: refs, count } = await supabase
     .from('product_models')
     .select('model_code', { count: 'exact' })
-    .eq('category', id)
+    .eq('category', enumValue)
     .limit(9);
   if ((count ?? 0) > 0) {
     return c.json({
