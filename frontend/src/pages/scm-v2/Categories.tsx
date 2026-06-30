@@ -428,12 +428,15 @@ function CategoryCard({
   const [deleting, setDeleting] = useState(false);
   const Icon = resolveIcon(cat.slug);
   return (
-    <div className="group relative overflow-hidden rounded-xl border border-border bg-surface shadow-stone transition-all hover:-translate-y-px hover:border-primary/40">
-      {/* Image area — clickable, opens hero editor */}
+    <div className="group relative rounded-xl border border-border bg-surface shadow-stone transition-all hover:-translate-y-px hover:border-primary/40">
+      {/* Image area — clickable, opens hero editor. overflow-hidden lives
+          here (not on the card wrapper) so the kebab dropdown can extend
+          below the card without being clipped. rounded-t-xl keeps the
+          image's top corners flush with the card's rounded border. */}
       <button
         type="button"
         onClick={onOpenHero}
-        className="relative block aspect-[16/7] w-full bg-surface-2"
+        className="relative block aspect-[16/7] w-full overflow-hidden rounded-t-xl bg-surface-2"
         style={{
           backgroundImage: cat.hero_url ? `url(${cat.hero_url})` : undefined,
           backgroundSize: "cover",
