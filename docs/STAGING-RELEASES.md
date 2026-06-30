@@ -78,13 +78,19 @@ Staging is meant to fail fast and absorb the damage. If a staging deploy
 breaks something:
 
 - **Worker only**: `wrangler rollback --env staging` (one previous version).
-- **Schema**: every migration must ship a `down` step in the same file or a
-  paired `*_down.sql` per the migrations-pg convention. To revert:
+- **Schema**: `pg-migrate.mjs` is forward-only (no `--revert` flag — by
+  design, to keep the prod path one-directional). To unwind a staging
+  migration, run the paired down SQL directly against staging:
   ```bash
-  DATABASE_URL=$STAGING_DATABASE_URL node scripts/pg-migrate.mjs --revert <migration>
+  psql "$STAGING_DATABASE_URL" \
+    -f backend/src/db/migrations-pg/<NNN>_<name>_down.sql
+  # then drop the row from the bookkeeping table so the next deploy re-runs it:
+  psql "$STAGING_DATABASE_URL" \
+    -c "DELETE FROM _pg_migrations WHERE name = '<NNN>_<name>.sql';"
   ```
-  (Add `--revert` support to `pg-migrate.mjs` if not present, OR run the
-  down SQL directly against staging via `psql`.)
+  Convention: every migration that's not trivially reversible should ship a
+  `*_down.sql` sibling in `migrations-pg/`. If a migration has no down file,
+  the Supabase-snapshot path below is the only safe undo.
 - **Worst case**: restore from a Supabase snapshot taken before the staging
   deploy. **Take a snapshot before any migration that's not trivially
   reversible** — Supabase Dashboard → Database → Backups.
