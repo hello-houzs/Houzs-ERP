@@ -30,8 +30,8 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -57,7 +57,7 @@ jobs:
       # crons=[]). Same Cloudflare account as prod, so the existing
       # CLOUDFLARE_API_TOKEN works — the token's scope (Workers:Edit,
       # Account:Read) already covers both env names.
-      - uses: cloudflare/wrangler-action@v3
+      - uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
