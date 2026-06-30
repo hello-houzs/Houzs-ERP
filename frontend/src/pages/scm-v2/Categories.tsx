@@ -428,7 +428,17 @@ function CategoryCard({
   const [deleting, setDeleting] = useState(false);
   const Icon = resolveIcon(cat.slug);
   return (
-    <div className="group relative rounded-xl border border-border bg-surface shadow-stone transition-all hover:-translate-y-px hover:border-primary/40">
+    <div
+      className={cn(
+        "group relative rounded-xl border border-border bg-surface shadow-stone transition-all hover:-translate-y-px hover:border-primary/40",
+        // While the kebab dropdown is open, lift the card above its siblings.
+        // The card uses `hover:-translate-y-px`, and `transform` creates a
+        // stacking context that locks the absolutely-positioned dropdown
+        // inside the card. Without an explicit z-index, DOM-later sibling
+        // cards (next row in the grid) paint on top and clip the menu.
+        menuOpen && "z-30",
+      )}
+    >
       {/* Image area — clickable, opens hero editor. overflow-hidden lives
           here (not on the card wrapper) so the kebab dropdown can extend
           below the card without being clipped. rounded-t-xl keeps the
