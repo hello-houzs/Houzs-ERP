@@ -93,9 +93,11 @@ type BoardRow = {
   warehouse_name: string | null;
   customer_state: string | null;
   time_range?: string | null;
+  time_confirmed?: boolean | null;
   arrival_at?: string | null;
   departure_at?: string | null;
   customer_delivered_date?: string | null;
+  delivery_substatus?: string | null;
   crew: Crew;
   delivery_orders?: DeliveryOrderRef[];
 };
