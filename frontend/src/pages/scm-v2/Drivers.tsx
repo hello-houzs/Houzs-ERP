@@ -68,6 +68,33 @@ export const Drivers = () => {
       accessor: (d) => d.vehicle ?? '—',
     },
     {
+      // Migration 0195 — in-house company driver vs outsourced/3rd-party.
+      // Checked = In-house; uncheck to mark the driver as Outsource. Mirrors
+      // the Fleet page's in-house handling for lorries/helpers. stopPropagation
+      // so the toggle never reads as a row click.
+      key: 'type',
+      label: 'Type',
+      width: 150,
+      accessor: (d) => {
+        const inHouse = (d.inHouse ?? d.in_house) !== false;
+        return (
+          <label
+            onClick={(e) => e.stopPropagation()}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+          >
+            <input type="checkbox" checked={inHouse}
+              onChange={(e) => updateMutate({ id: d.id, inHouse: e.target.checked })} />
+            <span style={{ fontSize: 'var(--fs-12)', color: inHouse ? 'var(--fg-muted)' : 'var(--c-secondary-a)' }}>
+              {inHouse ? 'In-house' : 'Outsource'}
+            </span>
+          </label>
+        );
+      },
+      searchValue: (d) => ((d.inHouse ?? d.in_house) !== false ? 'In-house' : 'Outsource'),
+      filterValue: (d) => ((d.inHouse ?? d.in_house) !== false ? 'In-house' : 'Outsource'),
+      sortFn: (a, b) => Number((a.inHouse ?? a.in_house) !== false) - Number((b.inHouse ?? b.in_house) !== false),
+    },
+    {
       key: 'active',
       label: 'Active',
       width: 130,
@@ -131,6 +158,7 @@ const CreateDriverDrawer = ({ onClose }: { onClose: () => void }) => {
   const [form, setForm] = useState({
     driverCode: '', name: '', phone: '', icNumber: '', vehicle: '',
   });
+  const [inHouse, setInHouse] = useState(true);
   const set = <K extends keyof typeof form>(k: K, v: string) => setForm((s) => ({ ...s, [k]: v }));
 
   const submit = () => {
@@ -143,6 +171,7 @@ const CreateDriverDrawer = ({ onClose }: { onClose: () => void }) => {
       phone: form.phone.trim(),
       icNumber: form.icNumber.trim() || undefined,
       vehicle: form.vehicle.trim() || undefined,
+      inHouse,
       active: true,
     }, { onSuccess: onClose });
   };
@@ -162,6 +191,13 @@ const CreateDriverDrawer = ({ onClose }: { onClose: () => void }) => {
             <Field label="Phone *" value={form.phone} onChange={(v) => set('phone', v)} placeholder="+60 12-345-6789" />
             <Field label="IC Number" value={form.icNumber} onChange={(v) => set('icNumber', v)} />
             <Field label="Vehicle" value={form.vehicle} onChange={(v) => set('vehicle', v)} placeholder="e.g. Hilux WMN1234" />
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Type</span>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 'var(--fs-13)' }}>
+                <input type="checkbox" checked={inHouse} onChange={(e) => setInHouse(e.target.checked)} />
+                <span>{inHouse ? 'In-house' : 'Outsource'} (uncheck for outsourced)</span>
+              </label>
+            </label>
           </div>
         </div>
         <footer className={styles.drawerFooter}>
