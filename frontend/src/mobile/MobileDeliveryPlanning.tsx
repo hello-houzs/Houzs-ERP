@@ -385,50 +385,26 @@ export function MobileDeliveryPlanning({
       }}
     >
       <header className="hdr">
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <button
-            onClick={onBack}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 3,
-              fontSize: 12.5,
-              fontWeight: 600,
-              color: "#16695f",
-              cursor: "pointer",
-              border: "none",
-              background: "transparent",
-              fontFamily: "inherit",
-              padding: 0,
-            }}
-          >
-            <span style={{ fontSize: 17, lineHeight: 1 }}>‹</span> Menu
+        <div className="hdr-row">
+          <button className="back" onClick={onBack}>
+            <span className="chev">‹</span> Menu
           </button>
-          <span className="ey" style={{ color: "#a16a2e" }}>
-            Transportation
-          </span>
+          <span className="eyebrow">Transportation</span>
         </div>
-        <div
-          style={{
-            fontSize: 20,
-            fontWeight: 800,
-            color: "#11140f",
-            marginTop: 4,
-          }}
-        >
-          Delivery Planning
-        </div>
+        <div className="scr-title">Delivery Planning</div>
         <div
           className="tnum"
-          style={{ fontSize: 11.5, color: "#767b6e", marginTop: 2 }}
+          style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }}
         >
           {dayLabel} route
+          {crewLine && (crewLine.driver || crewLine.helper) ? (
+            <>
+              {" · "}
+              {crewLine.driver ?? ""}
+              {crewLine.driver && crewLine.helper ? " + " : ""}
+              {crewLine.helper ?? ""}
+            </>
+          ) : null}
         </div>
 
         {crewLine && (crewLine.driver || crewLine.helper) && (
@@ -439,7 +415,7 @@ export function MobileDeliveryPlanning({
               gap: 8,
               marginTop: 11,
               padding: "9px 11px",
-              background: "#eef4f2",
+              background: "var(--brand-bg)",
               border: "1px solid #cfe2dd",
               borderRadius: 11,
             }}
@@ -450,7 +426,7 @@ export function MobileDeliveryPlanning({
               style={{ flex: "none" }}
               viewBox="0 0 24 24"
               fill="none"
-              stroke="#16695f"
+              stroke="var(--brand)"
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -464,7 +440,7 @@ export function MobileDeliveryPlanning({
                 flex: 1,
                 minWidth: 0,
                 fontSize: 11.5,
-                color: "#0c3f39",
+                color: "var(--brand-d)",
                 lineHeight: 1.4,
               }}
             >
@@ -496,7 +472,7 @@ export function MobileDeliveryPlanning({
               flex: 1,
               height: 7,
               borderRadius: 4,
-              background: "#e3e6e0",
+              background: "var(--line)",
               overflow: "hidden",
             }}
           >
@@ -504,7 +480,7 @@ export function MobileDeliveryPlanning({
               style={{
                 height: "100%",
                 width: `${pct}%`,
-                background: "#16695f",
+                background: "var(--brand)",
                 borderRadius: 4,
               }}
             />
@@ -514,12 +490,24 @@ export function MobileDeliveryPlanning({
             style={{
               fontSize: 11,
               fontWeight: 700,
-              color: "#0c3f39",
+              color: "var(--brand-d)",
               whiteSpace: "nowrap",
             }}
           >
             {doneCount} / {total} delivered
           </span>
+        </div>
+
+        <div className="chips" style={{ marginTop: 11 }}>
+          {DAY_TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setDay(t.key)}
+              className={day === t.key ? "chip on" : "chip"}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
       </header>
 
@@ -532,36 +520,27 @@ export function MobileDeliveryPlanning({
           paddingBottom: 120,
         }}
       >
+        <span className="list-note">
+          Stops are in delivery sequence
+        </span>
         <div
           style={{
             fontSize: 10.5,
-            color: "#9aa093",
-            margin: "0 2px 10px",
+            color: "var(--mut2)",
+            margin: "8px 2px 10px",
             lineHeight: 1.4,
           }}
         >
-          Stops are in delivery order. Tap{" "}
-          <b style={{ color: "#16695f" }}>Take POD photo</b> when a stop is
+          Tap{" "}
+          <b style={{ color: "var(--brand)" }}>Take POD photo</b> when a stop is
           delivered — the photo time becomes the completion time.
-        </div>
-
-        <div style={{ display: "flex", gap: 7, marginBottom: 12 }}>
-          {DAY_TABS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setDay(t.key)}
-              className={day === t.key ? "sochip on" : "sochip"}
-            >
-              {t.label}
-            </button>
-          ))}
         </div>
 
         {isLoading && (
           <div
             style={{
               textAlign: "center",
-              color: "#9aa093",
+              color: "var(--mut2)",
               fontSize: 12,
               padding: "26px 0",
             }}
@@ -573,7 +552,7 @@ export function MobileDeliveryPlanning({
           <div
             style={{
               textAlign: "center",
-              color: "#b23a3a",
+              color: "var(--red)",
               fontSize: 12,
               padding: "26px 0",
             }}
@@ -594,19 +573,14 @@ export function MobileDeliveryPlanning({
               />
             ))}
             {!list.length && (
-              <div
-                style={{
-                  textAlign: "center",
-                  color: "#9aa093",
-                  fontSize: 12,
-                  padding: "30px 0",
-                }}
-              >
-                {day === "today"
-                  ? "No stops on today's run."
-                  : day === "tomorrow"
-                    ? "Nothing scheduled for tomorrow."
-                    : "No past deliveries."}
+              <div className="empty">
+                <div className="empty-t">
+                  {day === "today"
+                    ? "No stops on today's run."
+                    : day === "tomorrow"
+                      ? "Nothing scheduled for tomorrow."
+                      : "No past deliveries."}
+                </div>
               </div>
             )}
           </div>
@@ -616,26 +590,20 @@ export function MobileDeliveryPlanning({
   );
 }
 
-// ── Status pill — mirrors the design's chipHtml(planStatusText). ──
+// Track state → canonical badge variant (spec § States → badge).
+const BADGE_CLASS: Record<TrackState, string> = {
+  done: "b-green",
+  late: "b-red",
+  arrived: "b-brand",
+  otw: "b-brand",
+  sched: "b-amber",
+};
+
+// ── Status pill — canonical .badge tinted per track state. ──
 function StopPill({ o, isToday }: { o: BoardRow; isToday: boolean }) {
   const st = trackState(o, isToday);
-  const [bg, fg] = STATE_COLORS[st];
   return (
-    <span
-      style={{
-        fontSize: 9,
-        fontWeight: 800,
-        textTransform: "uppercase",
-        letterSpacing: ".05em",
-        padding: "3px 9px",
-        borderRadius: 20,
-        background: bg,
-        color: fg,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {STATE_LABELS[st]}
-    </span>
+    <span className={`badge ${BADGE_CLASS[st]}`}>{STATE_LABELS[st]}</span>
   );
 }
 
@@ -648,7 +616,7 @@ function MetaChip({ children }: { children: ReactNode }) {
         fontWeight: 700,
         color: "#5c6156",
         background: "#f0f1ed",
-        border: "1px solid #e3e6e0",
+        border: "1px solid var(--line)",
         padding: "3px 8px",
         borderRadius: 7,
         whiteSpace: "nowrap",
@@ -691,8 +659,8 @@ function StopCard({
       style={{
         textAlign: "left",
         width: "100%",
-        background: "#fff",
-        border: `1px solid ${st === "late" ? "#eccccc" : "#d6d9d2"}`,
+        background: "var(--card)",
+        border: `1px solid ${st === "late" ? "#eccccc" : "var(--line-card)"}`,
         borderRadius: 14,
         boxShadow:
           "0 1px 0 rgba(17,24,16,.04),0 4px 18px -8px rgba(17,24,16,.12)",
@@ -710,7 +678,7 @@ function StopCard({
             flex: "none",
             borderRadius: "50%",
             background: seqBg,
-            color: "#fff",
+            color: "var(--card)",
             fontSize: 12,
             fontWeight: 800,
             display: "flex",
@@ -725,7 +693,7 @@ function StopCard({
             style={{
               fontSize: 14,
               fontWeight: 800,
-              color: "#11140f",
+              color: "var(--ink)",
               lineHeight: 1.3,
               whiteSpace: "nowrap",
               overflow: "hidden",
@@ -736,7 +704,7 @@ function StopCard({
           </div>
           <div
             className="tnum"
-            style={{ fontSize: 11, color: "#767b6e", marginTop: 1 }}
+            style={{ fontSize: 11, color: "var(--mut)", marginTop: 1 }}
           >
             {subId}
           </div>
@@ -813,7 +781,7 @@ function StopCard({
             gap: 6,
             marginTop: 9,
             fontSize: 12,
-            color: "#414539",
+            color: "var(--ink2)",
           }}
         >
           <svg
@@ -822,7 +790,7 @@ function StopCard({
             style={{ flex: "none" }}
             viewBox="0 0 24 24"
             fill="none"
-            stroke="#a16a2e"
+            stroke="var(--gold)"
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -839,7 +807,7 @@ function StopCard({
           gap: 6,
           marginTop: 9,
           fontSize: 12,
-          color: "#414539",
+          color: "var(--ink2)",
         }}
       >
         <svg
@@ -848,7 +816,7 @@ function StopCard({
           style={{ flex: "none", marginTop: 1 }}
           viewBox="0 0 24 24"
           fill="none"
-          stroke="#a16a2e"
+          stroke="var(--gold)"
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -863,7 +831,7 @@ function StopCard({
               {" "}
               <span
                 className="tnum"
-                style={{ fontWeight: 700, color: "#11140f" }}
+                style={{ fontWeight: 700, color: "var(--ink)" }}
               >
                 {o.postcode}
               </span>
@@ -916,7 +884,7 @@ function StopCard({
           marginTop: 10,
           fontSize: 11.5,
           fontWeight: 700,
-          color: "#16695f",
+          color: "var(--brand)",
         }}
       >
         View &amp; deliver <span style={{ fontSize: 15, lineHeight: 1 }}>›</span>
@@ -932,29 +900,16 @@ function StopCard({
    (Start → Arrive → Done) wired to the DO status endpoint.
    ─────────────────────────────────────────────────────────────────────── */
 
-// pdRow — a label/value info row (mirrors the design's pdRow()).
+// pdRow — a canonical label:value row (.row / .row-l / .row-v). `last` drops
+// the divider (matches .row:last-child).
 function pdRow(label: string, val: ReactNode, strong?: boolean, last?: boolean) {
   return (
     <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "11px 13px",
-        borderBottom: last ? undefined : "1px solid #eceee9",
-      }}
+      className="row"
+      style={last ? { borderBottom: "none" } : undefined}
     >
-      <span style={{ fontSize: 11.5, color: "#767b6e" }}>{label}</span>
-      <span
-        style={{
-          fontSize: 13,
-          fontWeight: strong ? 700 : 600,
-          color: "#11140f",
-          textAlign: "right",
-        }}
-      >
-        {val}
-      </span>
+      <span className="row-l">{label}</span>
+      <span className={strong ? "row-v strong" : "row-v"}>{val}</span>
     </div>
   );
 }
@@ -975,16 +930,16 @@ function PdItem({
         display: "flex",
         gap: 10,
         padding: "11px 13px",
-        borderBottom: "1px solid #eceee9",
+        borderBottom: "1px solid var(--line2)",
       }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#11140f" }}>{n}</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{n}</div>
         {spec && (
           <div
             style={{
               fontSize: 11.5,
-              color: "#767b6e",
+              color: "var(--mut)",
               marginTop: 2,
               lineHeight: 1.4,
             }}
@@ -999,7 +954,7 @@ function PdItem({
           style={{
             fontSize: 12.5,
             fontWeight: 800,
-            color: "#0c3f39",
+            color: "var(--brand-d)",
             whiteSpace: "nowrap",
           }}
         >
@@ -1254,48 +1209,19 @@ function StopDetail({
       }}
     >
       <header className="hdr">
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <button
-            onClick={onBack}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 3,
-              fontSize: 12.5,
-              fontWeight: 600,
-              color: "#16695f",
-              cursor: "pointer",
-              border: "none",
-              background: "transparent",
-              fontFamily: "inherit",
-              padding: 0,
-            }}
-          >
-            <span style={{ fontSize: 17, lineHeight: 1 }}>‹</span> Delivery
-            Planning
+        <div className="hdr-row">
+          <button className="back" onClick={onBack}>
+            <span className="chev">‹</span> Delivery Planning
           </button>
           <StopPill o={order} isToday={isToday} />
         </div>
-        <div className="ey" style={{ color: "#a16a2e", marginTop: 7 }}>
+        <div className="eyebrow" style={{ marginTop: 7 }}>
           Stop {seq} ·{" "}
           <span className="tnum">
             {doRef?.do_number || order.so_doc_no || EM}
           </span>
         </div>
-        <div
-          style={{
-            fontSize: 20,
-            fontWeight: 800,
-            color: "#11140f",
-            marginTop: 2,
-          }}
-        >
+        <div className="scr-title">
           {order.debtor_name || order.so_doc_no || EM}
         </div>
       </header>
@@ -1464,18 +1390,13 @@ function StopDetail({
           )}
         </div>
 
-        {/* Delivery-info card (pdRow). */}
-        <div
-          style={{
-            background: "#fff",
-            border: "1px solid #d6d9d2",
-            borderRadius: 13,
-            overflow: "hidden",
-            marginBottom: 12,
-          }}
-        >
+        {/* Delivery-info card (spec: .card + "Delivery" header + .row list). */}
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="card-h">
+            <span className="card-t">Delivery</span>
+          </div>
           {pdRow(
-            "Delivery window",
+            "Window",
             timeWindow ? (
               <>
                 <span className="tnum">{timeWindow}</span> · {eff}
@@ -1504,24 +1425,22 @@ function StopDetail({
         {/* Goods to deliver (item list). The feed carries no line-level detail,
             so we surface one branded summary line; per-item spec/qty is not
             available from /delivery-planning. */}
-        <div className="so-card" style={{ marginBottom: 12 }}>
-          <div className="so-hd">
-            <h2 className="so-ti">Goods to deliver</h2>
-            <span className="so-sub">open order for lines</span>
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="card-h">
+            <span className="card-t">Goods to deliver</span>
+            <span className="card-sub">open order for lines</span>
           </div>
-          <div className="so-bd" style={{ gap: 0, padding: 0 }}>
-            <PdItem
-              n={
-                (order.branding && order.branding.trim()) ||
-                "Delivery order lines"
-              }
-              spec={
-                latestDo(order)?.do_number
-                  ? `Delivery order ${latestDo(order)?.do_number}`
-                  : `Sales order ${order.so_doc_no}`
-              }
-            />
-          </div>
+          <PdItem
+            n={
+              (order.branding && order.branding.trim()) ||
+              "Delivery order lines"
+            }
+            spec={
+              latestDo(order)?.do_number
+                ? `Delivery order ${latestDo(order)?.do_number}`
+                : `Sales order ${order.so_doc_no}`
+            }
+          />
         </div>
 
         {/* Disposal callout. */}
@@ -1579,12 +1498,12 @@ function StopDetail({
 
         {/* Setup & dismantle photo group + 3D floor plan (Setup jobs). */}
         {isSetup && (
-          <div className="so-card" style={{ marginBottom: 12 }}>
-            <div className="so-hd">
-              <h2 className="so-ti">Setup &amp; dismantle</h2>
-              <span className="so-sub">upload on site</span>
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="card-h">
+              <span className="card-t">Setup &amp; dismantle</span>
+              <span className="card-sub">upload on site</span>
             </div>
-            <div className="so-bd">
+            <div className="card-b">
               <PdPhotoGroup
                 title="Setup photos"
                 note="after install"
@@ -1606,15 +1525,7 @@ function StopDetail({
 
         {/* Sales-person + document rows. Sales-rep contact isn't in the feed,
             so that row is omitted; SO / DO / branding come straight off the row. */}
-        <div
-          style={{
-            background: "#fff",
-            border: "1px solid #d6d9d2",
-            borderRadius: 13,
-            overflow: "hidden",
-            marginBottom: 12,
-          }}
-        >
+        <div className="card" style={{ marginBottom: 12 }}>
           {pdRow(
             "Sales Order",
             <span className="tnum">{order.so_doc_no || EM}</span>,
@@ -1641,8 +1552,8 @@ function StopDetail({
               alignItems: "center",
               justifyContent: "space-between",
               padding: "12px 14px",
-              background: "#f4f6f3",
-              border: "1px solid #e3e6e0",
+              background: "var(--bg)",
+              border: "1px solid var(--line)",
               borderRadius: 12,
             }}
           >
@@ -1652,13 +1563,13 @@ function StopDetail({
                 fontWeight: 700,
                 textTransform: "uppercase",
                 letterSpacing: ".06em",
-                color: "#767b6e",
+                color: "var(--mut)",
               }}
             >
               Balance to collect
             </span>
-            <span style={{ fontSize: 13, fontWeight: 700, color: "#2f8a5b" }}>
-              Fully paid
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--green)" }}>
+              No balance — fully paid
             </span>
           </div>
         ) : (
@@ -1694,15 +1605,15 @@ function StopDetail({
         )}
 
         {/* Delivery tracking timeline — Start → Arrive → Done (planTracking). */}
-        <div className="so-card" style={{ marginTop: 12 }}>
-          <div className="so-hd">
-            <h2 className="so-ti">Delivery tracking</h2>
-            <span className="so-sub">On the way → Arrived → POD</span>
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="card-h">
+            <span className="card-t">Delivery tracking</span>
+            <span className="card-sub">On the way → Arrived → POD</span>
           </div>
-          <div className="so-bd" style={{ gap: 0 }}>
+          <div className="card-b">
             {(start.error || complete.error) && (
               <div
-                style={{ fontSize: 12, color: "#b23a3a", marginBottom: 9 }}
+                style={{ fontSize: 12, color: "var(--red)", marginBottom: 9 }}
               >
                 {(() => {
                   const e = start.error || complete.error;

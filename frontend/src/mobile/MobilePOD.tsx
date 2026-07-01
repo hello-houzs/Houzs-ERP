@@ -219,22 +219,22 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
   const notFound = !listQ.isLoading && !doId;
   const loadError = listQ.error || detailQ.error;
   const pillLabel = cancelled ? "Cancelled" : delivered ? "Delivered" : "Arrived";
-  const pillColors: [string, string] = cancelled
-    ? ["#f7e7e5", "#a13a34"]
-    : delivered
-    ? ["#e1f0e7", "#1c6b45"]
-    : ["#f6efd9", "#6e4d12"];
+  // Header status badge → canonical .badge variant (spec: DISPATCHED/arrived =
+  // brand, DELIVERED = green, cancelled = red).
+  const pillClass = cancelled ? "b-red" : delivered ? "b-green" : "b-brand";
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       {/* .hdr — back-to-DO + "Proof of Delivery" + status pill (design POD header) */}
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span onClick={onBack} style={{ fontSize: 22, color: "#16695f", cursor: "pointer" }}>{"‹"}</span>
-          <span style={{ fontSize: 15, fontWeight: 800, color: "#11140f" }}>Proof of Delivery</span>
-          <span className="spill" style={{ background: pillColors[0], color: pillColors[1] }}>{pillLabel}</span>
+        <div className="hdr-row">
+          <button className="back" onClick={onBack}>
+            <span className="chev">‹</span> Delivery Orders
+          </button>
+          <span className={`badge ${pillClass}`}>{pillLabel}</span>
         </div>
-        <div style={{ fontSize: 11.5, color: "#767b6e", marginTop: 6 }} className="money">
+        <div className="scr-title">Proof of Delivery</div>
+        <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }} className="tnum">
           {(h?.do_number ?? docNo)}
           {h?.debtor_name ? ` · ${h.debtor_name}` : ""}
           {h?.city || h?.state || h?.customer_state ? ` · ${h.city || h.state || h.customer_state}` : ""}
@@ -242,16 +242,20 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: "14px 16px", paddingBottom: 120 }}>
-        {loading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading{"…"}</div>}
-        {notFound && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>This delivery could not be found. Please refresh.</div>}
+        {loading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading{"…"}</div>}
+        {notFound && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>This delivery could not be found. Please refresh.</div>}
         {!loading && !notFound && loadError && (
-          <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn{"'"}t load this delivery. Please try again.</div>
+          <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn{"'"}t load this delivery. Please try again.</div>
         )}
 
         {!loading && !notFound && !loadError && h && (
           <>
-            {/* Items to deliver · N — .ey eyebrow + tickable .docrow-style checklist */}
-            <div className="ey" style={{ color: "#767b6e", marginBottom: 9 }}>Items to deliver · {items.length}{items.length > 0 ? ` · ${deliveredCount} of ${items.length} delivered` : ""}</div>
+            {/* Items to deliver · N — .fld-l label + list-note + tickable cards */}
+            <div className="fld-l" style={{ marginBottom: 8 }}>
+              Items to deliver · {items.length}
+              {items.length > 0 ? ` · ${deliveredCount} of ${items.length} delivered` : ""}
+            </div>
+            {items.length > 0 && <span className="list-note">Tick each item as it comes off the lorry</span>}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {items.length ? items.map((it) => {
                 const on = !!ticked[it.id];
@@ -259,32 +263,33 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                   <div
                     key={it.id}
                     onClick={() => setTicked((t) => ({ ...t, [it.id]: !t[it.id] }))}
-                    style={{ display: "flex", alignItems: "center", gap: 11, background: "#fff", border: on ? "1.5px solid #16695f" : "1px solid #d6d9d2", borderRadius: 12, padding: "11px 13px", cursor: "pointer" }}
+                    className="card"
+                    style={{ display: "flex", alignItems: "center", gap: 10, border: on ? "1.5px solid var(--brand)" : "1px solid var(--line-card)", padding: "11px 13px", cursor: "pointer" }}
                   >
-                    <span style={{ width: 26, height: 26, flex: "none", borderRadius: "50%", background: on ? "#16695f" : "transparent", border: on ? "none" : "1.5px solid #c2c6bd", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <span style={{ width: 22, height: 22, flex: "none", borderRadius: 6, background: on ? "var(--brand)" : "transparent", border: on ? "none" : "1.5px solid var(--brand)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                       {on && (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                           <path d="M20 6 9 17l-5-5" />
                         </svg>
                       )}
                     </span>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13.5, fontWeight: 700, color: "#11140f" }}>{it.description || it.item_code || "—"}</div>
-                      <div style={{ fontSize: 11, color: "#767b6e" }} className="money">{it.item_code || "—"} {"·"} {"×"}{it.qty ?? 0}</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{it.description || it.item_code || "—"}</div>
+                      <div style={{ fontSize: 11, color: "var(--mut)" }} className="tnum">{it.item_code || "—"} {"·"} {"×"}{it.qty ?? 0}</div>
                     </div>
                   </div>
                 );
-              }) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 2px" }}>No items on this delivery.</div>}
+              }) : <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "9px 2px" }}>No items on this delivery.</div>}
             </div>
 
-            {/* Delivery photo — captured locally (no server field yet). Design "Take photo" tile. */}
-            <div className="ey" style={{ color: "#767b6e", margin: "18px 0 9px" }}>Delivery photo</div>
-            <label style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, background: photoName ? "#fff" : "#16695f", border: photoName ? "1px solid #d6d9d2" : "none", borderRadius: 13, padding: 14, cursor: "pointer" }}>
+            {/* Delivery photos — captured locally (uploaded to R2 on Confirm). */}
+            <div className="fld-l" style={{ margin: "18px 0 8px" }}>Delivery photos</div>
+            <label style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, background: photoName ? "var(--card)" : "var(--brand)", border: photoName ? "1px solid var(--line-card)" : "none", borderRadius: 13, padding: 14, cursor: "pointer" }}>
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={photoName ? "#16695f" : "#fff"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
                 <circle cx="12" cy="13" r="3" />
               </svg>
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: photoName ? "#11140f" : "#fff" }}>{photoName ? "Photo attached — retake" : "Take photo"}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: photoName ? "var(--ink)" : "#fff" }}>{photoName ? "Photo attached — retake" : "Take photo"}</span>
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
@@ -311,26 +316,26 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                 }}
               />
             </label>
-            {photoName && <div style={{ fontSize: 10.5, color: "#767b6e", marginTop: 6 }} className="money">{photoName}</div>}
-            {photoError && <div style={{ fontSize: 10.5, color: "#b23a3a", marginTop: 6 }}>{photoError}</div>}
+            {photoName && <div style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 6 }} className="tnum">{photoName}</div>}
+            {photoError && <div style={{ fontSize: 10.5, color: "var(--red)", marginTop: 6 }}>{photoError}</div>}
 
             {/* Customer signature — design signature pad (canvas keeps the real capture). */}
-            <div className="ey" style={{ color: "#767b6e", margin: "18px 0 9px" }}>Customer signature</div>
+            <div className="fld-l" style={{ margin: "18px 0 8px" }}>Customer signature</div>
             <SignaturePad canvasRef={sigRef} onChange={setHasSignature} clearNonce={sigClearNonce} />
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
-              <span style={{ fontSize: 11, color: "#767b6e" }}>{hasSignature ? "Signed" : "Ask the customer to sign above"}</span>
+              <span style={{ fontSize: 11, color: "var(--mut)" }}>{hasSignature ? "Signed" : "Ask the customer to sign above"}</span>
               <span
                 onClick={() => { setHasSignature(false); setSigClearNonce((n) => n + 1); }}
-                style={{ fontSize: 11.5, fontWeight: 700, color: "#16695f", cursor: "pointer" }}
+                style={{ fontSize: 11.5, fontWeight: 700, color: "var(--brand)", cursor: "pointer" }}
               >
                 Clear &amp; re-sign
               </span>
             </div>
 
             {/* Delivery location — GPS captured locally (no server field yet). */}
-            <div className="ey" style={{ color: "#767b6e", margin: "18px 0 9px" }}>Delivery location</div>
-            <div style={{ background: "#fff", border: "1px solid #d6d9d2", borderRadius: 13, padding: "13px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <span className="money" style={{ fontSize: 12, color: gpsState === "ok" ? "#11140f" : "#767b6e", minWidth: 0 }}>
+            <div className="fld-l" style={{ margin: "18px 0 8px" }}>Delivery location</div>
+            <div style={{ background: "var(--card)", border: "1px solid var(--line-card)", borderRadius: 13, padding: "13px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span className="tnum" style={{ fontSize: 12, color: gpsState === "ok" ? "var(--ink)" : "var(--mut)", minWidth: 0 }}>
                 {gpsState === "ok" && gps
                   ? `${gps.lat.toFixed(5)}, ${gps.lng.toFixed(5)}`
                   : gpsState === "asking"
@@ -343,18 +348,18 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                 type="button"
                 onClick={captureGps}
                 disabled={gpsState === "asking"}
-                style={{ flex: "none", border: "1px solid #16695f", background: "#fff", color: "#16695f", borderRadius: 9, padding: "7px 13px", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: gpsState === "asking" ? "default" : "pointer", opacity: gpsState === "asking" ? 0.55 : 1 }}
+                style={{ flex: "none", border: "1px solid var(--brand)", background: "var(--card)", color: "var(--brand)", borderRadius: 9, padding: "7px 13px", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: gpsState === "asking" ? "default" : "pointer", opacity: gpsState === "asking" ? 0.55 : 1 }}
               >
                 {gpsState === "ok" ? "Recapture" : "Capture GPS"}
               </button>
             </div>
 
             {/* Collect balance — order total minus payments recorded so far (design balance row). */}
-            <div className="ey" style={{ color: "#767b6e", margin: "18px 0 9px" }}>Collect balance</div>
-            <div style={{ background: "#fff", border: "1px solid #d6d9d2", borderRadius: 13, padding: "13px 14px" }}>
+            <div className="fld-l" style={{ margin: "18px 0 8px" }}>Collect balance</div>
+            <div style={{ background: "var(--card)", border: "1px solid var(--line-card)", borderRadius: 13, padding: "13px 14px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: balance > 0 ? 11 : 0 }}>
-                <span style={{ fontSize: 12.5, color: "#414539" }}>Balance due</span>
-                <span className="money" style={{ fontSize: 17, fontWeight: 800, color: balance > 0 ? "#a16a2e" : "#1c6b45" }}>RM {rm(balance)}</span>
+                <span style={{ fontSize: 12.5, color: "var(--ink2)" }}>Balance due</span>
+                <span className="money" style={{ fontSize: 17, fontWeight: 800, color: balance > 0 ? "var(--gold)" : "var(--green)" }}>{balance > 0 ? `RM ${rm(balance)}` : "No balance — fully paid"}</span>
               </div>
               {balance > 0 && (
                 <>
@@ -365,7 +370,7 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                         <span
                           key={m}
                           onClick={() => setPayMethod(m)}
-                          style={{ fontSize: 11.5, fontWeight: on ? 700 : 600, color: on ? "#fff" : "#414539", background: on ? "#16695f" : "#f4f6f3", border: on ? "none" : "1px solid #d6d9d2", padding: "6px 13px", borderRadius: 9, cursor: "pointer" }}
+                          style={{ fontSize: 11.5, fontWeight: on ? 700 : 600, color: on ? "#fff" : "var(--ink2)", background: on ? "var(--brand)" : "var(--bg)", border: on ? "none" : "1px solid var(--line-card)", padding: "6px 13px", borderRadius: 9, cursor: "pointer" }}
                         >
                           {m}
                         </span>
@@ -382,7 +387,7 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                       onChange={(e) => setCollectBalance(e.target.checked)}
                       style={{ width: 18, height: 18, accentColor: "#16695f" }}
                     />
-                    <span style={{ fontSize: 12, color: "#414539" }}>
+                    <span style={{ fontSize: 12, color: "var(--ink2)" }}>
                       Record RM {rm(balance)} collected by {payMethod.toLowerCase()} now
                     </span>
                   </label>
@@ -390,7 +395,7 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
               )}
             </div>
 
-            {actionError && <div style={{ marginTop: 14, fontSize: 11.5, color: "#b23a3a", textAlign: "center" }}>{actionError}</div>}
+            {actionError && <div style={{ marginTop: 14, fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{actionError}</div>}
           </>
         )}
       </div>
@@ -403,13 +408,13 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
           </button>
         )}
         {!loading && !notFound && !loadError && h && delivered && (
-          <div style={{ textAlign: "center", fontSize: 11.5, color: "#1c6b45", padding: 6, fontWeight: 700 }}>This delivery is confirmed delivered.</div>
+          <div style={{ textAlign: "center", fontSize: 11.5, color: "var(--green)", padding: 6, fontWeight: 700 }}>This delivery is confirmed delivered.</div>
         )}
         {!loading && !notFound && !loadError && h && cancelled && (
-          <div style={{ textAlign: "center", fontSize: 11.5, color: "#9aa093", padding: 6 }}>This delivery order was cancelled.</div>
+          <div style={{ textAlign: "center", fontSize: 11.5, color: "var(--mut2)", padding: 6 }}>This delivery order was cancelled.</div>
         )}
         {(loading || notFound || (loadError && !h)) && (
-          <button type="button" className="btn" onClick={onBack} style={{ background: "#fff", color: "#16695f", border: "1.5px solid #16695f" }}>
+          <button type="button" className="btn-ghost" onClick={onBack}>
             Back
           </button>
         )}
@@ -503,7 +508,7 @@ function SignaturePad({ canvasRef, onChange, clearNonce }: {
         onPointerCancel={end}
         style={{ width: "100%", height: 64, touchAction: "none", display: "block" }}
       />
-      <div style={{ position: "absolute", left: 14, right: 14, bottom: 34, borderBottom: "1px dashed #c2c6bd" }} />
+      <div style={{ position: "absolute", left: 14, right: 14, bottom: 34, borderBottom: "1px dashed var(--mut2)" }} />
     </div>
   );
 }

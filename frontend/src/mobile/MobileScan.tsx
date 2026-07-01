@@ -288,16 +288,15 @@ export function MobileScan({
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
+      {/* Spec #scan: back "Cancel" chevron, screen-title, helper sub-line. */}
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <div className="ey" style={{ color: "#a16a2e" }}>Capture</div>
-            <div style={{ fontSize: 19, fontWeight: 800, color: "#11140f", marginTop: 2 }}>Scan order slip</div>
-          </div>
-          <span onClick={onBack} role="button" aria-label="Close" style={{ fontSize: 24, color: "#767b6e", cursor: "pointer", lineHeight: 1 }}>
-            &times;
-          </span>
+        <div className="hdr-row">
+          <button onClick={onBack} className="back" aria-label="Cancel">
+            <span className="chev">{"‹"}</span> Cancel
+          </button>
         </div>
+        <div className="scr-title" style={{ marginTop: 2 }}>Scan order slip</div>
+        <div style={{ fontSize: 11, color: "#767b6e", marginTop: 2 }}>Snap the slip — we OCR it in the background into a draft SO.</div>
       </header>
 
       <div className="scroll" style={{ padding: 14, paddingBottom: 120 }}>

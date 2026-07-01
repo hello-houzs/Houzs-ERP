@@ -328,61 +328,68 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 11 }}>
+        <div className="hdr-row">
           <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
             {onBack && (
-              <span onClick={onBack} role="button" aria-label="Back" style={{ fontSize: 22, lineHeight: 1, color: "#16695f", cursor: "pointer" }}>‹</span>
+              <span onClick={onBack} role="button" aria-label="Back" style={{ fontSize: 22, lineHeight: 1, color: "var(--brand)", cursor: "pointer" }}>‹</span>
             )}
             <div>
-              <div className="ey" style={{ color: "#a16a2e" }}>Exhibitions</div>
-              <div style={{ fontSize: 20, fontWeight: 800, color: "#11140f", marginTop: 2 }}>Projects</div>
+              <div className="eyebrow">PMS</div>
+              <div className="scr-title">Projects</div>
             </div>
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#f4f6f3", border: "1px solid #d6d9d2", borderRadius: 10, padding: "8px 11px" }}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search code · name · venue" style={{ flex: 1, minWidth: 0, border: "none", background: "transparent", outline: "none", fontFamily: "inherit", fontSize: 13, color: "#11140f" }} />
+        <div className="hdr-row" style={{ marginTop: 11 }}>
+          <div className="searchbar">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search project · venue" />
+          </div>
+        </div>
+        <div className="chips" style={{ marginTop: 11 }}>
+          {STATUS_FILTERS.map(([k, label]) => (
+            <button key={k} onClick={() => setStatus(k)} className={status === k ? "chip on" : "chip"}>{label}</button>
+          ))}
         </div>
       </header>
 
       <div className="scroll" style={{ padding: 14, paddingBottom: 120 }}>
-        <div style={{ display: "flex", gap: 7, overflowX: "auto", marginBottom: 12, paddingBottom: 2 }}>
-          {STATUS_FILTERS.map(([k, label]) => (
-            <button key={k} onClick={() => setStatus(k)} className={status === k ? "sochip on" : "sochip"}>{label}</button>
-          ))}
-        </div>
 
         {isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load projects. Pull to retry.</div>}
         {!isLoading && !error && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
             {rows.map((r) => {
               const cancelled = (r.status ?? "").toLowerCase() === "cancelled";
-              const chip = r.active_section_name || r.stage || "—";
-              const where = r.venue || r.state || "—";
+              const stage = r.active_section_name || r.stage || null;
+              const where = r.venue || r.state || null;
+              const dates = [dm(r.start_date), dm(r.end_date)].join(" – ");
               return (
-                <div key={r.id} onClick={() => onOpen(r.id)} className={cancelled ? "so-row cancelled" : "so-row"}>
-                  <div className="so-row-head">
-                    <span className="so-row-name" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name || "—"}</span>
-                    <StatusPill status={r.status} />
-                  </div>
-                  <div className="so-grid">
-                    <span className="so-k">Code</span>
-                    <span className="so-v money" style={{ fontWeight: 700, color: "#0c3f39" }}>{r.code || "—"}</span>
-                    {r.brand && (<><span className="so-k">Brand</span><span className="so-v">{r.brand}</span></>)}
-                    <span className="so-k">Venue</span>
-                    <span className="so-v">{where}</span>
-                    <span className="so-k">Stage</span>
-                    <span className="so-v" style={{ display: "flex", justifyContent: "flex-end" }}>
-                      <span className="rbadge" style={{ background: "#f3ece0", color: "#a16a2e" }}>{chip}</span>
-                    </span>
-                    <span className="so-k">PIC</span>
-                    <span className="so-v">{r.pic_name || "—"}</span>
+                <div key={r.id} onClick={() => onOpen(r.id)} className={cancelled ? "card cancelled" : "card"} style={{ cursor: "pointer", ...(cancelled ? { opacity: 0.55, filter: "grayscale(.5)" } : null) }}>
+                  <div className="card-b" style={{ padding: "12px 13px" }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 800, color: "var(--ink)", lineHeight: 1.3 }}>{r.name || "—"}</span>
+                      <StatusPill status={r.status} />
+                    </div>
+                    {(r.brand || where || stage) && (
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                        {r.brand && <ListChip>{r.brand}</ListChip>}
+                        {where && <ListChip>{where}</ListChip>}
+                        {stage && <ListChip>{stage}</ListChip>}
+                      </div>
+                    )}
+                    <div className="tnum" style={{ fontSize: 11, color: "var(--mut)", marginTop: 8, paddingTop: 8, borderTop: "1px solid #f0f1ed" }}>
+                      {dates} · {r.code || "—"}{r.pic_name ? ` · PIC ${r.pic_name}` : ""}
+                    </div>
                   </div>
                 </div>
               );
             })}
-            {!rows.length && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>No projects match.</div>}
+            {!rows.length && (
+              <div className="empty">
+                <div className="empty-t">No projects</div>
+                <div className="empty-s">No projects match this filter.</div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -503,9 +510,11 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      <header className="hdr" style={{ background: "#15161a", borderBottom: "none" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 7 }}>
-          <span onClick={onBack} role="button" aria-label="Back to list" style={{ fontSize: 22, color: "#d8a85a", cursor: "pointer", lineHeight: 1 }}>‹</span>
+      <header className="hdr" style={{ background: "var(--ink-dark)", borderBottom: "none" }}>
+        <div className="hdr-row" style={{ marginBottom: 10, gap: 7 }}>
+          <button className="back" onClick={onBack} aria-label="Back to list" style={{ color: "#d8a85a" }}>
+            <span className="chev">‹</span> Projects
+          </button>
           <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
             {p && canManage && (
               <button
@@ -1696,6 +1705,15 @@ function FinancialSnapshot({
 }
 
 // ── Small building blocks ──
+// List meta pill (spec project-list: branding / venue chips under the title).
+function ListChip({ children }: { children: ReactNode }) {
+  return (
+    <span style={{ fontSize: 10, fontWeight: 700, color: "#5c6156", background: "#f0f1ed", border: "1px solid var(--line)", padding: "3px 8px", borderRadius: 7 }}>
+      {children}
+    </span>
+  );
+}
+
 function CostRow({ label, value }: { label: string; value: number }) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 12px", borderTop: "1px solid #eceee9", fontSize: 12, color: "#414539" }}>

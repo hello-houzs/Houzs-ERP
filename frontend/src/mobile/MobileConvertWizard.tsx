@@ -21,7 +21,7 @@ import "./mobile.css";
  * Presentation ports the owner's mobile design classes VERBATIM (mobile.css):
  * the header is .hdr + .ey eyebrow; the source picker rows reuse the SO-list
  * idiom (.so-row / .so-row-head / .so-row-name / .so-grid / .so-k / .so-v /
- * .spill); the GRN supplier filters are .sochip; the line/qty step uses .card
+ * .spill); the GRN supplier filters are .chip; the line/qty step uses .card
  * rows with .fld / .fld-i qty inputs; the GRN review uses the .so-card /
  * .so-hd / .so-ti / .so-bd / .fld form idiom; and the create action is a
  * sticky .actbar / .btn. No redesign — same markup, owner's classes.
@@ -323,18 +323,17 @@ export function MobileConvertWizard({
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
+      {/* Spec #convert: back "Cancel" chevron, eyebrow, screen-title, source-doc
+          sub-line, then the 2-segment step-progress bar + "Step N of 2" label. */}
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span
-            onClick={onBack}
-            style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }}
-          >
-            <span style={{ fontSize: 17, lineHeight: 1 }}>{"‹"}</span> Back
-          </span>
+        <div className="hdr-row">
+          <button onClick={onBack} className="back" aria-label="Cancel">
+            <span className="chev">{"‹"}</span> Cancel
+          </button>
           <span style={{ fontSize: 11, color: "#767b6e" }}>Step {step} of 2</span>
         </div>
         <div className="ey" style={{ color: "#a16a2e", marginTop: 6 }}>{meta.eyebrow}</div>
-        <div style={{ fontSize: 19, fontWeight: 800, color: "#11140f", marginTop: 2 }}>{meta.title}</div>
+        <div className="scr-title" style={{ marginTop: 2 }}>{meta.title}</div>
         <div style={{ fontSize: 11.5, color: "#767b6e", marginTop: 3 }}>
           {step === 1
             ? `Convert from ${meta.source === "po" ? "one or more Purchase Orders" : `a ${meta.sourceNoun}`}`
@@ -342,19 +341,25 @@ export function MobileConvertWizard({
               ? "Choose the lines and quantities to convert"
               : "Review — the receipt takes every line of the selected orders"}
         </div>
+        {/* Step-progress bar (spec markup): filled brand segments up to the current step. */}
+        <div style={{ display: "flex", gap: 5, marginTop: 11 }}>
+          {[1, 2].map((s) => (
+            <div key={s} style={{ flex: 1, height: 4, borderRadius: 2, background: s <= step ? "var(--brand)" : "var(--line-card)" }} />
+          ))}
+        </div>
         {/* Search (source step only) */}
         {step === 1 && (
-          <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, background: "#f4f6f3", border: "1px solid #d6d9d2", borderRadius: 10, padding: "8px 11px" }}>
+          <div className="searchbar" style={{ marginTop: 10 }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Search ${meta.sourceNoun.toLowerCase()}`} style={{ flex: 1, minWidth: 0, border: "none", background: "transparent", outline: "none", fontFamily: "inherit", fontSize: 13, color: "#11140f" }} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Search ${meta.sourceNoun.toLowerCase()}`} />
           </div>
         )}
         {/* GRN supplier chips (source step only) */}
         {step === 1 && meta.source === "po" && suppliers.length > 0 && (
-          <div style={{ display: "flex", gap: 7, overflowX: "auto", marginTop: 10, paddingBottom: 2 }}>
-            <button onClick={() => setSupplierFilter(null)} className={!supplierFilter ? "sochip on" : "sochip"}>All suppliers</button>
+          <div className="chips" style={{ marginTop: 10, paddingBottom: 2 }}>
+            <button onClick={() => setSupplierFilter(null)} className={!supplierFilter ? "chip on" : "chip"}>All suppliers</button>
             {suppliers.map((s) => (
-              <button key={s.id} onClick={() => setSupplierFilter(s.id)} className={supplierFilter === s.id ? "sochip on" : "sochip"}>{s.name}</button>
+              <button key={s.id} onClick={() => setSupplierFilter(s.id)} className={supplierFilter === s.id ? "chip on" : "chip"}>{s.name}</button>
             ))}
           </div>
         )}

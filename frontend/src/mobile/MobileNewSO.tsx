@@ -684,13 +684,11 @@ export function MobileNewSO({
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }} onClick={onBack}>
-            <span style={{ fontSize: 17, lineHeight: 1 }}>{"‹"}</span> Sales Orders
-          </span>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "#767b6e", cursor: "pointer" }} onClick={onBack}>Cancel</span>
+        <div className="hdr-row">
+          <button className="back" onClick={onBack}><span className="chev">{"‹"}</span> Cancel</button>
+          {mode === "edit" ? null : <span className="badge b-grey">DRAFT</span>}
         </div>
-        <div id="nso-title" style={{ fontSize: 19, fontWeight: 800, color: "#11140f", marginTop: 6 }}>{title}</div>
+        <div id="nso-title" className="scr-title" style={{ marginTop: 6 }}>{title}</div>
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: 12, paddingBottom: 24 }}>
@@ -708,9 +706,9 @@ export function MobileNewSO({
             )}
 
             {/* Customer */}
-            <div className="so-card">
-              <div className="so-hd"><h2 className="so-ti">Customer</h2></div>
-              <div className="so-bd">
+            <div className="card" style={{ marginBottom: 11 }}>
+              <div className="card-h"><span className="card-t">Customer</span></div>
+              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 <Field label="Customer Name *" error={touched && nameErr} scanned={scanned("name", name)}>
                   <input className="fld-i" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Lim Mei Hua" />
                 </Field>
@@ -741,9 +739,9 @@ export function MobileNewSO({
             </div>
 
             {/* Order Info */}
-            <div className="so-card">
-              <div className="so-hd"><h2 className="so-ti">Order Info</h2></div>
-              <div className="so-bd">
+            <div className="card" style={{ marginBottom: 11 }}>
+              <div className="card-h"><span className="card-t">Order info</span></div>
+              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 <Field label="Building Type" scanned={scanned("buildingType", buildingType)}>
                   <select className="fld-i" value={buildingType} onChange={(e) => setBuildingType(e.target.value)}>
                     {BUILDING_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
@@ -765,9 +763,9 @@ export function MobileNewSO({
             </div>
 
             {/* Emergency Contact */}
-            <div className="so-card">
-              <div className="so-hd"><h2 className="so-ti">Emergency Contact</h2><span className="so-sub">If we can't reach the customer</span></div>
-              <div className="so-bd">
+            <div className="card" style={{ marginBottom: 11 }}>
+              <div className="card-h"><span className="card-t">Emergency Contact</span><span className="card-sub">If we can't reach the customer</span></div>
+              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 <Field label="Contact Name">
                   <input className="fld-i" value={ecName} onChange={(e) => setEcName(e.target.value)} placeholder="e.g. Lim Mei Hua" />
                 </Field>
@@ -786,9 +784,9 @@ export function MobileNewSO({
             </div>
 
             {/* Delivery Address */}
-            <div className="so-card">
-              <div className="so-hd"><h2 className="so-ti">Delivery Address</h2></div>
-              <div className="so-bd">
+            <div className="card" style={{ marginBottom: 11 }}>
+              <div className="card-h"><span className="card-t">Delivery address</span></div>
+              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: 11, background: "#f4f6f3", border: "1px solid rgba(34,31,32,.12)", borderRadius: 12, cursor: "pointer" }}>
                   <input type="checkbox" checked={addressLater} onChange={(e) => setAddressLater(e.target.checked)} style={{ marginTop: 2, width: 16, height: 16, accentColor: "#16695f" }} />
                   <span>
@@ -834,9 +832,9 @@ export function MobileNewSO({
             </div>
 
             {/* Line Items */}
-            <div className="so-card">
-              <div className="so-hd"><h2 className="so-ti">{`Line Items (${isEdit ? existingItems.length : lines.length})`}</h2></div>
-              <div className="so-bd">
+            <div className="card" style={{ marginBottom: 11 }}>
+              <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{`${isEdit ? existingItems.length : lines.length} ${(isEdit ? existingItems.length : lines.length) === 1 ? "line" : "lines"}`}</span></div>
+              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 {isEdit ? (
                   <>
                     {existingItems.length ? existingItems.map((it) => (
@@ -866,14 +864,14 @@ export function MobileNewSO({
                     <button className="addline" onClick={() => setLines((p) => [...p, newLine()])}>+ Add Line Item</button>
                   </>
                 )}
-                <div className="so-sub-row"><span style={{ fontSize: 11, color: "#767b6e" }}>Subtotal</span><span className="money" style={{ fontSize: 17, fontWeight: 800, color: "#0c3f39" }}>MYR {fmt(subtotal / 100)}</span></div>
+                <div className="so-sub-row"><span style={{ fontSize: 11, color: "var(--mut)" }}>Subtotal</span><span className="money" style={{ fontSize: 17, fontWeight: 800, color: "var(--brand-d)" }}>RM {fmt(subtotal / 100)}</span></div>
               </div>
             </div>
 
             {/* Payments */}
-            <div className="so-card">
-              <div className="so-hd"><h2 className="so-ti">Payments</h2><span className="so-sub">Method · amount · slip</span></div>
-              <div className="so-bd">
+            <div className="card" style={{ marginBottom: 11 }}>
+              <div className="card-h"><span className="card-t">Payments</span><span className="card-sub">Method · amount · slip</span></div>
+              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 {isEdit ? (
                   <>
                     {existingPays.length ? existingPays.map((p) => (
@@ -918,10 +916,10 @@ export function MobileNewSO({
       {!loading && (
         <footer className="actbar">
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
-            <span style={{ fontSize: 11.5, color: "#767b6e" }}>
-              Balance <span className="money" style={{ color: "#a16a2e", fontWeight: 700 }}>RM {fmt(balance / 100)}</span>
+            <span style={{ fontSize: 11.5, color: "var(--mut)" }}>
+              Balance <span className="money" style={{ color: "var(--gold)", fontWeight: 700 }}>RM {fmt(balance / 100)}</span>
             </span>
-            <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "#0c3f39" }}>MYR {fmt(subtotal / 100)}</span>
+            <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "var(--brand-d)" }}>RM {fmt(subtotal / 100)}</span>
           </div>
           <div id="nso-footer" style={{ display: "flex", gap: 9 }}>
             {isEdit ? (
@@ -930,7 +928,7 @@ export function MobileNewSO({
               </button>
             ) : (
               <>
-                <button className="btn" disabled={submitting} onClick={() => save(true)} style={{ flex: 1, background: "#fff", color: "#16695f", border: "1.5px solid #16695f", opacity: submitting ? 0.6 : 1 }}>
+                <button className="btn-ghost" disabled={submitting} onClick={() => save(true)} style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}>
                   {submitting ? "Saving…" : "Save as Draft"}
                 </button>
                 <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ flex: 1.4, opacity: submitting ? 0.6 : 1 }}>

@@ -175,7 +175,7 @@ function Attachments({ ann }: { ann: Announcement }) {
 
   return (
     <div>
-      <div className="ey" style={{ color: "#767b6e", margin: "0 2px 8px" }}>Attachments</div>
+      <div className="fld-l" style={{ margin: "0 2px 8px" }}>Attachments</div>
       {photos.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 7, marginBottom: 8 }}>
           {photos.map((p) => (
@@ -244,7 +244,7 @@ function Receipts({ ann }: { ann: Announcement }) {
 
   return (
     <div style={{ marginTop: 18 }}>
-      <div className="ey" style={{ color: "#767b6e", margin: "0 2px 8px" }}>Read receipts</div>
+      <div className="fld-l" style={{ margin: "0 2px 8px" }}>Read receipts</div>
       <div style={{ background: "#fff", border: "1px solid #e3e6e0", borderRadius: 12, padding: "12px 13px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
           <span style={{ fontSize: 12.5, fontWeight: 700, color: "#11140f" }}>Read {read} / {total}</span>
@@ -346,27 +346,28 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
+        <div className="hdr-row" style={{ marginBottom: 9 }}>
           {onBack ? (
-            <span onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }}>
-              <span style={{ fontSize: 17, lineHeight: 1 }}>‹</span> Menu
-            </span>
+            <button onClick={onBack} className="back">
+              <span className="chev">‹</span> Menu
+            </button>
           ) : (
             <span />
           )}
           {canCreate && (
-            <button onClick={() => setView("compose")} className="tinybtn" style={{ background: "#16695f", borderColor: "#16695f", color: "#fff", display: "flex", alignItems: "center", gap: 5 }}>
+            <button onClick={() => setView("compose")} className="tinybtn" style={{ background: "var(--brand)", borderColor: "var(--brand)", color: "#fff", display: "flex", alignItems: "center", gap: 5 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
               New
             </button>
           )}
         </div>
-        <div style={{ fontSize: 20, fontWeight: 800, color: "#11140f" }}>Announcements</div>
+        <div className="scr-title">Announcements</div>
+        <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 3 }}>Published by HQ · you only see ones sent to you</div>
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: 12, paddingBottom: 120 }}>
-        {isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
-        {error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load announcements. Pull to retry.</div>}
+        {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
+        {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load announcements. Pull to retry.</div>}
         {!isLoading && !error && (
           <div id="ann-list" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
             {list.map((a) => {
@@ -382,7 +383,7 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
                   }}
                   style={{
                     display: "flex", alignItems: "flex-start", gap: 11, width: "100%", textAlign: "left",
-                    background: "#fff", border: `1px solid ${unread ? "#bcdcd7" : "#e3e6e0"}`, borderRadius: 13,
+                    background: "var(--card)", border: `1px solid ${unread ? "#bcdcd7" : "var(--line)"}`, borderRadius: 13,
                     padding: "12px 13px", cursor: "pointer", fontFamily: "inherit",
                   }}
                 >
@@ -390,17 +391,17 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
                     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={col} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" /><path d="M16 8a4 4 0 0 1 0 8" /></svg>
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: unread ? 800 : 700, color: "#11140f", lineHeight: 1.25 }}>{a.title}</span>
-                      {unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "#16695f" }} />}
+                    <span style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: unread ? 800 : 700, color: "var(--ink)", lineHeight: 1.25 }}>{a.title}</span>
+                      {unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "var(--red)", marginTop: 5 }} />}
                     </span>
                     <span style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5 }}>
                       <CatChip ann={a} />
-                      <span style={{ fontSize: 11, color: "#767b6e" }}>{byLine(a)} · {dm(a.createdAt)}</span>
+                      <span style={{ fontSize: 11, color: "var(--mut)" }}>{byLine(a)} · {dm(a.createdAt)}</span>
                     </span>
                     {na > 0 && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6, fontSize: 10.5, color: "#9aa093" }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8 12 17a4 4 0 0 1-6-6l9-9a3 3 0 0 1 4 4l-9 9" /></svg>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6, fontSize: 10.5, color: "var(--mut2)" }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--mut2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8 12 17a4 4 0 0 1-6-6l9-9a3 3 0 0 1 4 4l-9 9" /></svg>
                         {na} attachment{na > 1 ? "s" : ""}
                       </span>
                     )}
@@ -408,7 +409,12 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
                 </button>
               );
             })}
-            {!list.length && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "40px 0" }}>No announcements yet.</div>}
+            {!list.length && (
+              <div className="empty">
+                <div className="empty-t">No announcements yet</div>
+                <div className="empty-s">Notices from HQ will appear here.</div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -449,21 +455,19 @@ function Detail({
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center" }}>
-          <span onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }}>
-            <span style={{ fontSize: 17, lineHeight: 1 }}>‹</span> Announcements
-          </span>
-        </div>
+        <button onClick={onBack} className="back">
+          <span className="chev">‹</span> Announcements
+        </button>
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 40 }}>
         <div id="ann-d-meta" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
           <CatChip ann={ann} />
-          <span style={{ fontSize: 11, color: "#9aa093", alignSelf: "center" }}>{dm(ann.createdAt)}</span>
+          <span style={{ fontSize: 11, color: "var(--mut2)", alignSelf: "center" }}>{dm(ann.createdAt)}</span>
         </div>
-        <div id="ann-d-title" style={{ fontSize: 21, fontWeight: 800, color: "#11140f", lineHeight: 1.25 }}>{ann.title}</div>
-        <div id="ann-d-by" style={{ fontSize: 11.5, color: "#767b6e", marginTop: 6 }}>Posted by {byLine(ann)}</div>
-        <div id="ann-d-body" style={{ fontSize: 13.5, lineHeight: 1.7, color: "#414539", marginTop: 14, whiteSpace: "pre-wrap" }}>{ann.body}</div>
+        <div id="ann-d-title" style={{ fontSize: 21, fontWeight: 800, color: "var(--ink)", lineHeight: 1.25 }}>{ann.title}</div>
+        <div id="ann-d-by" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 6 }}>Posted by {byLine(ann)}</div>
+        <div id="ann-d-body" style={{ fontSize: 13.5, lineHeight: 1.7, color: "var(--ink2)", marginTop: 14, whiteSpace: "pre-wrap" }}>{ann.body}</div>
         <div id="ann-d-atts" style={{ marginTop: 16 }}>
           <Attachments ann={ann} />
         </div>
@@ -476,8 +480,8 @@ function Detail({
 
       <footer className="actbar" id="ann-d-ackbar">
         {isAcked ? (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, fontSize: 13, fontWeight: 700, color: "#2f8a5b" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2f8a5b" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, fontSize: 13, fontWeight: 700, color: "var(--green)" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
             You acknowledged this
           </div>
         ) : (
@@ -556,12 +560,12 @@ function Compose({ onClose, onPublished }: { onClose: () => void; onPublished: (
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div className="hdr-row">
           <div>
-            <div className="ey" style={{ color: "#a16a2e" }}>Compose</div>
-            <div style={{ fontSize: 20, fontWeight: 800, color: "#11140f", marginTop: 2 }}>New announcement</div>
+            <div className="eyebrow">Compose</div>
+            <div className="scr-title">New announcement</div>
           </div>
-          <span onClick={onClose} style={{ fontSize: 24, color: "#767b6e", cursor: "pointer", lineHeight: 1 }}>×</span>
+          <span onClick={onClose} style={{ fontSize: 24, color: "var(--mut)", cursor: "pointer", lineHeight: 1 }}>×</span>
         </div>
       </header>
 

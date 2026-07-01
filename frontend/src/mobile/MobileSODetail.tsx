@@ -119,72 +119,86 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }}>
-            <span style={{ fontSize: 17, lineHeight: 1 }}>{"‹"}</span> Sales Orders
-          </span>
+        <div className="hdr-row">
+          <button className="back" onClick={onBack}><span className="chev">{"‹"}</span> Sales Orders</button>
           {h && <StatusPill status={h.status} />}
         </div>
-        <div className="money" style={{ fontSize: 11.5, fontWeight: 700, color: "#a16a2e", marginTop: 7 }}>{h?.doc_no ?? docNo}</div>
-        <div style={{ fontSize: 19, fontWeight: 800, color: "#11140f", marginTop: 2 }}>{h?.debtor_name || "—"}</div>
+        <div className="eyebrow" style={{ marginTop: 7, display: "flex", alignItems: "center", gap: 6 }}>
+          <span className="money">{h?.doc_no ?? docNo}</span>
+          {(h?.customer_so_no || h?.ref || h?.po_doc_no) && (<><span style={{ opacity: .5 }}>·</span><span className="money">{h?.customer_so_no || h?.ref || h?.po_doc_no}</span></>)}
+        </div>
+        <div className="scr-title">{h?.debtor_name || "—"}</div>
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: 14 }}>
-        {detail.isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading{"…"}</div>}
-        {detail.error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load this order. Please try again.</div>}
+        {detail.isLoading && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+            {[0, 1, 2].map((i) => (<div key={i} className="card"><div className="card-b ph" style={{ height: 70, borderRadius: 14 }} /></div>))}
+          </div>
+        )}
+        {detail.error && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "var(--red-bg)", border: "1px solid #e6cccc", borderRadius: 12, padding: "11px 13px" }}>
+            <span style={{ fontSize: 12, color: "var(--red)", fontWeight: 600 }}>Couldn't load this order</span>
+            <button onClick={() => detail.refetch()} style={{ border: "none", background: "transparent", color: "var(--red)", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Retry</button>
+          </div>
+        )}
 
         {!detail.isLoading && !detail.error && h && (
           <div>
-            <div className="pgrid2" style={{ marginBottom: 11 }}>
-              <div><div className="pkv-l">Processing</div><div className="pkv-v">{dm(h.processing_date)}</div></div>
-              <div><div className="pkv-l">Delivery</div><div className="pkv-v">{dm(h.customer_delivery_date || h.internal_expected_dd)}</div></div>
-              <div><div className="pkv-l">Phone</div><div className="pkv-v money">{h.phone || "—"}</div></div>
-              <div><div className="pkv-l">Location</div><div className="pkv-v">{h.sales_location || h.customer_state || "—"}</div></div>
-              <div><div className="pkv-l">Reference</div><div className="pkv-v money">{h.customer_so_no || h.ref || h.po_doc_no || "—"}</div></div>
-              <div><div className="pkv-l">Created</div><div className="pkv-v">{dm(h.so_date || h.created_at)}</div></div>
+            {/* KPI — Total / Paid / Balance (nowrap tabular money, cards min-width:0) */}
+            <div style={{ display: "flex", gap: 9, marginBottom: 12 }}>
+              <div className="card" style={{ flex: 1, minWidth: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Total</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(total(h))}</div></div></div>
+              <div className="card" style={{ flex: 1, minWidth: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Paid</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--green)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(h.paid_centi_total)}</div></div></div>
+              <div className="card" style={{ flex: 1, minWidth: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Balance</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: bal > 0 ? "var(--red)" : "var(--ink)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(bal)}</div></div></div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 11 }}>
-              <div style={{ background: "#fff", border: "1px solid #e3e6e0", borderRadius: 11, padding: 10, textAlign: "center" }}>
-                <div className="money" style={{ fontSize: 13, fontWeight: 800, color: "#11140f" }}>{rm(total(h))}</div>
-                <div className="ey" style={{ color: "#9aa093", marginTop: 3 }}>Total</div>
-              </div>
-              <div style={{ background: "#fff", border: "1px solid #e3e6e0", borderRadius: 11, padding: 10, textAlign: "center" }}>
-                <div className="money" style={{ fontSize: 13, fontWeight: 800, color: "#2f8a5b" }}>{rm(h.paid_centi_total)}</div>
-                <div className="ey" style={{ color: "#9aa093", marginTop: 3 }}>Paid</div>
-              </div>
-              <div style={{ background: "#fff", border: "1px solid #e3e6e0", borderRadius: 11, padding: 10, textAlign: "center" }}>
-                <div className="money" style={{ fontSize: 13, fontWeight: 800, color: bal > 0 ? "#a16a2e" : "#11140f" }}>{rm(bal)}</div>
-                <div className="ey" style={{ color: "#9aa093", marginTop: 3 }}>Balance</div>
-              </div>
+            <div className="card" style={{ marginBottom: 11 }}>
+              <div className="card-h"><span className="card-t">Order info</span></div>
+              <div className="row"><span className="row-l">Processing</span><span className="row-v strong tnum">{dm(h.processing_date)}</span></div>
+              <div className="row"><span className="row-l">Delivery</span><span className="row-v strong tnum">{dm(h.customer_delivery_date || h.internal_expected_dd)}</span></div>
+              <div className="row"><span className="row-l">Location</span><span className="row-v">{h.sales_location || h.customer_state || <span style={{ color: "var(--mut2)" }}>—</span>}</span></div>
+              <div className="row"><span className="row-l">Created</span><span className="row-v tnum">{dm(h.so_date || h.created_at)}</span></div>
             </div>
 
-            <div className="ey" style={{ color: "#767b6e", margin: "4px 2px 6px" }}>Line items</div>
-            <div style={{ background: "#fff", border: "1px solid #e3e6e0", borderRadius: 12, padding: "2px 12px", marginBottom: 11 }}>
+            <div className="card" style={{ marginBottom: 11 }}>
+              <div className="card-h"><span className="card-t">Customer</span></div>
+              <div className="row"><span className="row-l">Phone</span><span className="row-v tnum money">{h.phone || <span style={{ color: "var(--mut2)" }}>—</span>}</span></div>
+              <div className="row"><span className="row-l">Reference</span><span className="row-v money">{h.customer_so_no || h.ref || h.po_doc_no || <span style={{ color: "var(--mut2)" }}>—</span>}</span></div>
+            </div>
+
+            <div className="card" style={{ marginBottom: 11 }}>
+              <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{items.length} {items.length === 1 ? "line" : "lines"}</span></div>
               {items.length ? items.map((it) => (
-                <div className="docrow" key={it.id}>
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>
-                    {it.description || it.item_code || "—"} <span style={{ color: "#9aa093", fontWeight: 600 }}>{"×"}{it.qty ?? 0}</span>
-                  </span>
-                  <span className="ey" style={{ color: "#9aa093" }}>Deliv</span>
-                  <span style={{ fontSize: 11.5, fontWeight: 600, color: "#414539" }}>{dm(it.line_delivery_date)}</span>
+                <div key={it.id} style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{it.description || it.item_code || "—"}</div>
+                      <div style={{ fontSize: 10, color: "var(--mut2)", marginTop: 3 }} className="tnum">Delivery {dm(it.line_delivery_date)}</div>
+                    </div>
+                    <div style={{ textAlign: "right", whiteSpace: "nowrap", fontSize: 11, color: "var(--mut)" }} className="tnum">×{it.qty ?? 0}</div>
+                  </div>
                 </div>
-              )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>No items.</div>}
+              )) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No items.</div>}
             </div>
 
-            <div className="ey" style={{ color: "#767b6e", margin: "4px 2px 6px" }}>Payments</div>
-            <div style={{ background: "#fff", border: "1px solid #e3e6e0", borderRadius: 12, padding: "2px 12px" }}>
-              {paymentsQ.isLoading && <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>Loading{"…"}</div>}
+            <div className="card">
+              <div className="card-h"><span className="card-t">Payments</span>{!!payments.length && <span className="card-sub">{payments.length}</span>}</div>
+              {paymentsQ.isLoading && <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>Loading{"…"}</div>}
               {!paymentsQ.isLoading && (payments.length ? payments.map((p) => (
-                <div className="docrow" key={p.id}>
-                  <span style={{ flex: 1, fontSize: 12, color: "#414539" }}>{dm(p.paid_at)} {"·"} {methodLabel(p.method)}</span>
-                  {p.slip_key ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
-                  <span className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>RM {rm(p.amount_centi)}</span>
+                <div key={p.id} style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>{methodLabel(p.method)}</div>
+                    <div style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 2 }} className="tnum">{dm(p.paid_at)}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    {p.slip_key ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
+                    <span className="money-row">RM {rm(p.amount_centi)}</span>
+                  </div>
                 </div>
-              )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>No payments recorded.</div>)}
+              )) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No payments recorded.</div>)}
             </div>
 
-            {actionError && <div style={{ marginTop: 13, fontSize: 11.5, color: "#b23a3a", textAlign: "center" }}>{actionError}</div>}
+            {actionError && <div style={{ marginTop: 13, fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{actionError}</div>}
           </div>
         )}
       </div>
@@ -199,18 +213,18 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
           )}
           {ph === "draft" && (
             <div style={{ display: "flex", gap: 9 }}>
-              <button className="btn" style={{ flex: 1, background: "#fff", color: "#16695f", border: "1.5px solid #16695f", opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onEdit?.(docNo)}>Edit Draft</button>
+              <button className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onEdit?.(docNo)}>Edit Draft</button>
               <button className="btn" style={{ flex: 1.3, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => setStatus("CONFIRMED")}>{busy ? "Working…" : "Create Sales Order"}</button>
             </div>
           )}
           {ph === "submitted" && (
             <div style={{ display: "flex", gap: 9 }}>
-              <button className="btn" style={{ flex: 1, background: "#fff", color: "#16695f", border: "1.5px solid #16695f", opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onEdit?.(docNo)}>Edit</button>
-              <button className="btn" style={{ flex: 1, background: "#fff", color: "#b23a3a", border: "1.5px solid #f0d4d4", opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => setStatus("CANCELLED", `Cancel ${docNo}? This voids the order.`)}>{busy ? "Working…" : "Cancel Order"}</button>
+              <button className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onEdit?.(docNo)}>Edit</button>
+              <button className="btn-danger" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => setStatus("CANCELLED", `Cancel ${docNo}? This voids the order.`)}>{busy ? "Working…" : "Cancel Order"}</button>
             </div>
           )}
           {ph === "cancelled" && (
-            <div style={{ textAlign: "center", fontSize: 11.5, color: "#9aa093", padding: 4 }}>This order was cancelled.</div>
+            <div style={{ textAlign: "center", fontSize: 11.5, color: "var(--mut2)", padding: 4 }}>This order was cancelled.</div>
           )}
         </footer>
       )}
@@ -273,14 +287,9 @@ function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
    Cancelled [#f8eaea,#b23a3a,none]. */
 function StatusPill({ status }: { status: string | null }) {
   const p = phase(status);
-  const map: Record<string, [string, string, string]> = {
-    submitted: ["#e1efed", "#0c3f39", "none"],
-    draft: ["#f4f6f3", "#767b6e", "1px solid #e3e6e0"],
-    cancelled: ["#f8eaea", "#b23a3a", "none"],
-  };
-  const [bg, fg, border] = map[p];
+  const cls = p === "draft" ? "b-grey" : p === "cancelled" ? "b-red" : "b-brand";
   const label = p === "draft" ? "Draft" : p === "cancelled" ? "Cancelled" : "Submitted";
-  return <span className="spill" style={{ background: bg, color: fg, border }}>{label}</span>;
+  return <span className={`badge ${cls}`}>{label}</span>;
 }
 
 /* ── Record Payment sheet — the multi-payment core ──────────────────────────

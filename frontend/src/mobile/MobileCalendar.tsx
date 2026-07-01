@@ -244,38 +244,26 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "#fff" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 26, height: 26, borderRadius: 7, background: "#414539", color: "#fff", fontSize: 11, fontWeight: 800, letterSpacing: ".02em" }}>HC</div>
-            <div style={{ lineHeight: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 800, color: "#15161a" }}>HOUZS</div>
-              <div style={{ fontSize: 7.5, fontWeight: 700, letterSpacing: ".34em", color: "#16695f", marginTop: 2 }}>CENTURY</div>
-            </div>
-          </div>
-          <div className="iconbtn" style={{ width: 34, height: 34, borderRadius: 9 }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#414539" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-          </div>
-        </div>
-      </header>
-
-      <div className="scroll" style={{ padding: 12, paddingBottom: 120, background: "#fff" }}>
-        {/* Month nav */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 11 }}>
-          <button onClick={() => nav(-1)} aria-label="Previous month" className="cal-navbtn">‹</button>
-          <button onClick={goToday} className="cal-today">Today</button>
-          <button onClick={() => nav(1)} aria-label="Next month" className="cal-navbtn">›</button>
-          <div style={{ flex: 1, fontSize: 17, fontWeight: 800, color: "#11140f", textAlign: "right" }}>{MONTHS[month]} {year}</div>
+        {/* Month nav — prev ‹ · centered month label · next › (spec lockup) */}
+        <div className="hdr-row">
+          <button onClick={() => nav(-1)} aria-label="Previous month" className="iconbtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2.2"><path d="M15 6l-6 6 6 6" /></svg>
+          </button>
+          <div className="scr-title" style={{ flex: 1, textAlign: "center" }}>{MONTHS[month]} {year}</div>
+          <button onClick={() => nav(1)} aria-label="Next month" className="iconbtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2.2"><path d="M9 6l6 6-6 6" /></svg>
+          </button>
         </div>
 
         {/* Month / Week segmented toggle */}
-        <div style={{ display: "flex", background: "#f4f6f3", border: "1px solid #d6d9d2", borderRadius: 10, padding: 3, marginBottom: 10 }}>
+        <div style={{ display: "flex", background: "var(--bg)", border: "1px solid var(--line-card)", borderRadius: 10, padding: 3, marginTop: 10 }}>
           {(["month", "week"] as const).map((mo) => (
             <button key={mo} onClick={() => setMode(mo)} className={`cal-seg${mode === mo ? " on" : ""}`}>{mo === "month" ? "Month" : "Week"}</button>
           ))}
         </div>
 
-        {/* Filters — populated from the live feed */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 10 }}>
+        {/* Filters — populated from the live feed (native selects hold many dynamic values) */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 9 }}>
           <select value={brandF} onChange={(e) => setBrandF(e.target.value)} className="cal-sel">
             <option value="all">All brands</option>
             {brandOptions.map((b) => <option key={b} value={b}>{b}</option>)}
@@ -291,7 +279,13 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
             </select>
           </div>
         </div>
+      </header>
 
+      <div className="scroll" style={{ padding: 12, paddingBottom: 120, background: "#fff" }}>
+        {/* Today jump + Tasks / My holidays / Expand toggles */}
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+          <button onClick={goToday} className="cal-today">Today</button>
+        </div>
         {/* Tasks / My holidays / Expand toggles */}
         <div style={{ display: "flex", gap: 7, marginBottom: 10, flexWrap: "wrap" }}>
           <button onClick={() => setShowTasks((v) => !v)} className={`cal-tog${showTasks ? " on" : ""}`}>{showTasks ? "●" : "○"} Tasks</button>
@@ -302,23 +296,23 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 6, padding: "0 2px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 9, height: 9, borderRadius: "50%", background: STATUS_COLOR.confirmed }} />
-            <span style={{ fontSize: 11, color: "#414539" }}>Confirmed</span>
+            <span style={{ fontSize: 11, color: "var(--ink2)" }}>Confirmed</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 9, height: 9, borderRadius: "50%", background: STATUS_COLOR.pending }} />
-            <span style={{ fontSize: 11, color: "#414539" }}>Pending</span>
+            <span style={{ fontSize: 11, color: "var(--ink2)" }}>Pending</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 9, height: 9, borderRadius: "50%", background: STATUS_COLOR.cancelled }} />
-            <span style={{ fontSize: 11, color: "#414539" }}>Cancelled</span>
+            <span style={{ fontSize: 11, color: "var(--ink2)" }}>Cancelled</span>
           </div>
         </div>
-        <div style={{ textAlign: "right", fontSize: 10.5, fontStyle: "italic", color: "#9aa093", marginBottom: 8, paddingRight: 2 }}>
+        <div style={{ textAlign: "right", fontSize: 10.5, fontStyle: "italic", color: "var(--mut2)", marginBottom: 8, paddingRight: 2 }}>
           Tip: tap an event for details · use ‹ › to change month
         </div>
 
         {isLoading && <div style={emptyBox}>Loading…</div>}
-        {error && <div style={{ ...emptyBox, color: "#b23a3a" }}>Couldn't load the calendar. Pull to retry.</div>}
+        {error && <div style={{ ...emptyBox, color: "var(--red)" }}>Couldn't load the calendar. Pull to retry.</div>}
 
         {!isLoading && !error && mode === "month" && (
           <MonthGrid weeks={weeks} byDay={byDay} expand={expand} onExpand={() => setExpand(true)} empty={events.length === 0} onOpen={onOpenProject} />
@@ -343,15 +337,15 @@ function MonthGrid({ weeks, byDay, expand, onExpand, empty, onOpen }: {
   return (
     <>
       {/* Weekday header */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", border: "1px solid #d6d9d2", borderBottom: "none", borderRadius: "8px 8px 0 0", overflow: "hidden" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", border: "1px solid var(--line-card)", borderBottom: "none", borderRadius: "8px 8px 0 0", overflow: "hidden" }}>
         {WEEKDAYS.map((w, i) => (
-          <div key={w} style={{ padding: "7px 0", textAlign: "center", fontSize: 9, fontWeight: 700, letterSpacing: ".08em", color: "#767b6e", borderRight: i < 6 ? "1px solid #eceee9" : "none" }}>{w}</div>
+          <div key={w} style={{ padding: "7px 0", textAlign: "center", fontSize: 9, fontWeight: 700, letterSpacing: ".08em", color: "var(--mut)", borderRight: i < 6 ? "1px solid var(--line2)" : "none" }}>{w}</div>
         ))}
       </div>
 
       {empty && (
-        <div className="wk" style={{ borderBottom: "1px solid #d6d9d2", borderRadius: "0 0 8px 8px", padding: "18px 0" }}>
-          <div style={{ textAlign: "center", fontSize: 11.5, color: "#9aa093" }}>No events this month.</div>
+        <div className="wk" style={{ borderBottom: "1px solid var(--line-card)", borderRadius: "0 0 8px 8px", padding: "18px 0" }}>
+          <div style={{ textAlign: "center", fontSize: 11.5, color: "var(--mut2)" }}>No events this month.</div>
         </div>
       )}
 
@@ -362,10 +356,10 @@ function MonthGrid({ weeks, byDay, expand, onExpand, empty, onOpen }: {
         w.forEach((d, idx) => {
           if (d && byDay[d]) byDay[d].forEach((e) => cells.push({ e, idx }));
         });
-        const cap = expand ? cells.length : 4;
+        const cap = expand ? cells.length : 2;
         const overflow = cells.length - cap;
         return (
-          <div key={wi} className="wk" style={last ? { borderBottom: "1px solid #d6d9d2", borderRadius: "0 0 8px 8px" } : undefined}>
+          <div key={wi} className="wk" style={last ? { borderBottom: "1px solid var(--line-card)", borderRadius: "0 0 8px 8px" } : undefined}>
             <div className="nums">
               {w.map((d, i) => <div key={i}>{d || ""}</div>)}
             </div>
@@ -407,14 +401,14 @@ function WeekAgenda({ weeks, year, month, byDay, onOpen }: {
         return (
           <div key={`${e.key}-${i}`} className="card" onClick={() => onOpen?.(e.projectId)} style={{ padding: "11px 13px", borderLeft: `4px solid ${e.color}`, cursor: "pointer" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <span style={{ fontSize: 13.5, fontWeight: 800, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.label}</span>
+              <span style={{ fontSize: 13.5, fontWeight: 800, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.label}</span>
               {e.status && (
-                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 20, background: `color-mix(in srgb, ${e.color} 16%, white)`, color: "#0c3f39", flex: "none" }}>{e.status}</span>
+                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 20, background: `color-mix(in srgb, ${e.color} 16%, white)`, color: "var(--brand-d)", flex: "none" }}>{e.status}</span>
               )}
             </div>
             {/* Date is a fixed-width, no-wrap column so a long venue never overlaps or clips it (owner-reported). */}
-            <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5, fontSize: 11.5, color: "#767b6e", minWidth: 0 }}>
-              <span style={{ fontWeight: 700, color: "#414539", whiteSpace: "nowrap", flex: "none" }}>{label}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5, fontSize: 11.5, color: "var(--mut)", minWidth: 0 }}>
+              <span style={{ fontWeight: 700, color: "var(--ink2)", whiteSpace: "nowrap", flex: "none" }}>{label}</span>
               {e.sub && (<><span style={{ opacity: .4, flex: "none" }}>·</span><span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{e.sub}</span></>)}
               {e.organizer && (<><span style={{ opacity: .4, flex: "none" }}>·</span><span style={{ whiteSpace: "nowrap", flex: "none" }}>{e.organizer}</span></>)}
             </div>
@@ -432,5 +426,5 @@ function uniqueSorted(vals: (string | null)[]): string[] {
 }
 
 const emptyBox: React.CSSProperties = {
-  textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0",
+  textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0",
 };

@@ -153,14 +153,12 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      <header className="hdr">
+      {/* Spec #profile: dark near-black header (#15161a), white screen-title, no gold eyebrow. */}
+      <header className="hdr" style={{ background: "var(--ink-dark)", borderBottom: "none" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <div className="ey" style={{ color: "#a16a2e" }}>Account</div>
-            <div style={{ fontSize: 20, fontWeight: 800, color: "#11140f", marginTop: 2 }}>Profile</div>
-          </div>
-          <div className="iconbtn" onClick={() => setScreen("personal")}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#414539" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1L14.5 2h-5l-.3 2.6a7 7 0 0 0-1.7 1l-2.4-1-2 3.4L5 11a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.3 2.4h5l.3-2.6a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z" /></svg>
+          <div className="scr-title" style={{ color: "#fff", marginTop: 0 }}>Profile</div>
+          <div className="iconbtn" onClick={() => setScreen("personal")} style={{ background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.14)" }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d8a85a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1L14.5 2h-5l-.3 2.6a7 7 0 0 0-1.7 1l-2.4-1-2 3.4L5 11a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.3 2.4h5l.3-2.6a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z" /></svg>
           </div>
         </div>
       </header>
@@ -197,25 +195,22 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
           </div>
         </div>
 
-        {/* Account group */}
+        {/* Account group — spec #profile order: Personal details · Notifications · Language · My Team */}
         <div className="ey" style={{ color: "#767b6e", margin: "18px 2px 9px" }}>Account</div>
         <div className="card" style={{ overflow: "hidden" }}>
           <ProfRow icon="user" label="Personal details" onClick={() => setScreen("personal")} first />
-          <ProfRow icon="team" label="My team" onClick={() => setScreen("team")} />
+          <ProfRow icon="bell" label="Notifications" onClick={() => setScreen("notif")} />
+          <ProfRow icon="globe" label="Language" val="English" onClick={() => setScreen("language")} />
+          <ProfRow icon="team" label="My Team" onClick={() => setScreen("team")} />
         </div>
 
-        {/* App group */}
+        {/* App group — spec #profile: Help & Support */}
         <div className="ey" style={{ color: "#767b6e", margin: "18px 2px 9px" }}>App</div>
         <div className="card" style={{ overflow: "hidden" }}>
-          <ProfRow icon="bell" label="Notifications" val="On" onClick={() => setScreen("notif")} first />
-          <ProfRow icon="globe" label="Language" val="English" onClick={() => setScreen("language")} />
-          <ProfRow icon="help" label="Help & support" onClick={() => setScreen("help")} />
+          <ProfRow icon="help" label="Help & Support" onClick={() => setScreen("help")} first />
         </div>
 
-        <button
-          onClick={onLogout}
-          style={{ width: "100%", marginTop: 16, textAlign: "center", fontSize: 14, fontWeight: 700, color: "#b23a3a", background: "#fff", border: "1px solid #f0d4d4", borderRadius: 13, padding: 14, cursor: "pointer", fontFamily: "inherit" }}
-        >
+        <button onClick={onLogout} className="btn-danger" style={{ marginTop: 16 }}>
           Log out
         </button>
         <div className="money" style={{ textAlign: "center", fontSize: 10, color: "#a4a99c", marginTop: 12 }}>Houzs ERP · Mobile v1.0</div>
@@ -234,14 +229,14 @@ function SubScreen({ title, sub, onBack, right, children }: {
 }) {
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      <header style={{ background: "#fff", borderBottom: "1px solid var(--line)", padding: "calc(env(safe-area-inset-top) + 16px) 16px 12px" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <button onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "var(--teal)", background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit" }}>
-            <span style={{ fontSize: 17, lineHeight: 1 }}>{"‹"}</span> Profile
+      <header className="hdr">
+        <div className="hdr-row">
+          <button onClick={onBack} className="back">
+            <span className="chev">{"‹"}</span> Profile
           </button>
           {right}
         </div>
-        <div style={{ fontSize: 19, fontWeight: 800, color: "var(--ink)", marginTop: 7 }}>{title}</div>
+        <div className="scr-title" style={{ marginTop: 7 }}>{title}</div>
         {sub && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>{sub}</div>}
       </header>
       <div className="hz-scroll" style={{ flex: 1, overflowY: "auto", padding: 14, paddingBottom: 120 }}>
