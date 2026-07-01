@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { hasPermission } from "../services/permissions";
+import { todayMyt } from "../scm/lib/my-time";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -110,7 +111,12 @@ app.get("/", async (c) => {
 async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: boolean) {
   if (!userId) return [];
   const items: InboxItem[] = [];
-  const today = new Date().toISOString().slice(0, 10);
+  // Malaysia calendar "today" for the overdue check + the driver's today-trip
+  // filter. Workers run in UTC, so before 08:00 MYT `toISOString()` is still
+  // yesterday — an item due today would flag overdue and today's trips would be
+  // missed all morning. (The SQL `date('now')`/`datetime('now')` bounds in these
+  // same queries are still UTC — a deeper, separate sweep.)
+  const today = todayMyt();
 
   // ASSR cases assigned to me, not closed, not archived
   if (isStar || hasPermission(perms, "service_cases.read")) {
