@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
+import { HC_SUBSTATUS_VALUES } from "../vendor/scm/lib/delivery-planning-queries";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -92,9 +93,11 @@ type BoardRow = {
   warehouse_name: string | null;
   customer_state: string | null;
   time_range?: string | null;
+  time_confirmed?: boolean | null;
   arrival_at?: string | null;
   departure_at?: string | null;
   customer_delivered_date?: string | null;
+  delivery_substatus?: string | null;
   crew: Crew;
   delivery_orders?: DeliveryOrderRef[];
 };
@@ -385,50 +388,26 @@ export function MobileDeliveryPlanning({
       }}
     >
       <header className="hdr">
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <button
-            onClick={onBack}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 3,
-              fontSize: 12.5,
-              fontWeight: 600,
-              color: "#16695f",
-              cursor: "pointer",
-              border: "none",
-              background: "transparent",
-              fontFamily: "inherit",
-              padding: 0,
-            }}
-          >
-            <span style={{ fontSize: 17, lineHeight: 1 }}>‹</span> Menu
+        <div className="hdr-row">
+          <button className="back" onClick={onBack}>
+            <span className="chev">‹</span> Menu
           </button>
-          <span className="ey" style={{ color: "#a16a2e" }}>
-            Transportation
-          </span>
+          <span className="eyebrow">Transportation</span>
         </div>
-        <div
-          style={{
-            fontSize: 20,
-            fontWeight: 800,
-            color: "#11140f",
-            marginTop: 4,
-          }}
-        >
-          Delivery Planning
-        </div>
+        <div className="scr-title">Delivery Planning</div>
         <div
           className="tnum"
-          style={{ fontSize: 11.5, color: "#767b6e", marginTop: 2 }}
+          style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }}
         >
           {dayLabel} route
+          {crewLine && (crewLine.driver || crewLine.helper) ? (
+            <>
+              {" · "}
+              {crewLine.driver ?? ""}
+              {crewLine.driver && crewLine.helper ? " + " : ""}
+              {crewLine.helper ?? ""}
+            </>
+          ) : null}
         </div>
 
         {crewLine && (crewLine.driver || crewLine.helper) && (
@@ -439,7 +418,7 @@ export function MobileDeliveryPlanning({
               gap: 8,
               marginTop: 11,
               padding: "9px 11px",
-              background: "#eef4f2",
+              background: "var(--brand-bg)",
               border: "1px solid #cfe2dd",
               borderRadius: 11,
             }}
@@ -450,7 +429,7 @@ export function MobileDeliveryPlanning({
               style={{ flex: "none" }}
               viewBox="0 0 24 24"
               fill="none"
-              stroke="#16695f"
+              stroke="var(--brand)"
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -464,7 +443,7 @@ export function MobileDeliveryPlanning({
                 flex: 1,
                 minWidth: 0,
                 fontSize: 11.5,
-                color: "#0c3f39",
+                color: "var(--brand-d)",
                 lineHeight: 1.4,
               }}
             >
@@ -496,7 +475,7 @@ export function MobileDeliveryPlanning({
               flex: 1,
               height: 7,
               borderRadius: 4,
-              background: "#e3e6e0",
+              background: "var(--line)",
               overflow: "hidden",
             }}
           >
@@ -504,7 +483,7 @@ export function MobileDeliveryPlanning({
               style={{
                 height: "100%",
                 width: `${pct}%`,
-                background: "#16695f",
+                background: "var(--brand)",
                 borderRadius: 4,
               }}
             />
@@ -514,12 +493,24 @@ export function MobileDeliveryPlanning({
             style={{
               fontSize: 11,
               fontWeight: 700,
-              color: "#0c3f39",
+              color: "var(--brand-d)",
               whiteSpace: "nowrap",
             }}
           >
             {doneCount} / {total} delivered
           </span>
+        </div>
+
+        <div className="chips" style={{ marginTop: 11 }}>
+          {DAY_TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setDay(t.key)}
+              className={day === t.key ? "chip on" : "chip"}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
       </header>
 
@@ -532,36 +523,27 @@ export function MobileDeliveryPlanning({
           paddingBottom: 120,
         }}
       >
+        <span className="list-note">
+          Stops are in delivery sequence
+        </span>
         <div
           style={{
             fontSize: 10.5,
-            color: "#9aa093",
-            margin: "0 2px 10px",
+            color: "var(--mut2)",
+            margin: "8px 2px 10px",
             lineHeight: 1.4,
           }}
         >
-          Stops are in delivery order. Tap{" "}
-          <b style={{ color: "#16695f" }}>Take POD photo</b> when a stop is
+          Tap{" "}
+          <b style={{ color: "var(--brand)" }}>Take POD photo</b> when a stop is
           delivered — the photo time becomes the completion time.
-        </div>
-
-        <div style={{ display: "flex", gap: 7, marginBottom: 12 }}>
-          {DAY_TABS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setDay(t.key)}
-              className={day === t.key ? "sochip on" : "sochip"}
-            >
-              {t.label}
-            </button>
-          ))}
         </div>
 
         {isLoading && (
           <div
             style={{
               textAlign: "center",
-              color: "#9aa093",
+              color: "var(--mut2)",
               fontSize: 12,
               padding: "26px 0",
             }}
@@ -573,7 +555,7 @@ export function MobileDeliveryPlanning({
           <div
             style={{
               textAlign: "center",
-              color: "#b23a3a",
+              color: "var(--red)",
               fontSize: 12,
               padding: "26px 0",
             }}
@@ -594,19 +576,14 @@ export function MobileDeliveryPlanning({
               />
             ))}
             {!list.length && (
-              <div
-                style={{
-                  textAlign: "center",
-                  color: "#9aa093",
-                  fontSize: 12,
-                  padding: "30px 0",
-                }}
-              >
-                {day === "today"
-                  ? "No stops on today's run."
-                  : day === "tomorrow"
-                    ? "Nothing scheduled for tomorrow."
-                    : "No past deliveries."}
+              <div className="empty">
+                <div className="empty-t">
+                  {day === "today"
+                    ? "No stops on today's run."
+                    : day === "tomorrow"
+                      ? "Nothing scheduled for tomorrow."
+                      : "No past deliveries."}
+                </div>
               </div>
             )}
           </div>
@@ -616,26 +593,20 @@ export function MobileDeliveryPlanning({
   );
 }
 
-// ── Status pill — mirrors the design's chipHtml(planStatusText). ──
+// Track state → canonical badge variant (spec § States → badge).
+const BADGE_CLASS: Record<TrackState, string> = {
+  done: "b-green",
+  late: "b-red",
+  arrived: "b-brand",
+  otw: "b-brand",
+  sched: "b-amber",
+};
+
+// ── Status pill — canonical .badge tinted per track state. ──
 function StopPill({ o, isToday }: { o: BoardRow; isToday: boolean }) {
   const st = trackState(o, isToday);
-  const [bg, fg] = STATE_COLORS[st];
   return (
-    <span
-      style={{
-        fontSize: 9,
-        fontWeight: 800,
-        textTransform: "uppercase",
-        letterSpacing: ".05em",
-        padding: "3px 9px",
-        borderRadius: 20,
-        background: bg,
-        color: fg,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {STATE_LABELS[st]}
-    </span>
+    <span className={`badge ${BADGE_CLASS[st]}`}>{STATE_LABELS[st]}</span>
   );
 }
 
@@ -648,7 +619,7 @@ function MetaChip({ children }: { children: ReactNode }) {
         fontWeight: 700,
         color: "#5c6156",
         background: "#f0f1ed",
-        border: "1px solid #e3e6e0",
+        border: "1px solid var(--line)",
         padding: "3px 8px",
         borderRadius: 7,
         whiteSpace: "nowrap",
@@ -691,8 +662,8 @@ function StopCard({
       style={{
         textAlign: "left",
         width: "100%",
-        background: "#fff",
-        border: `1px solid ${st === "late" ? "#eccccc" : "#d6d9d2"}`,
+        background: "var(--card)",
+        border: `1px solid ${st === "late" ? "#eccccc" : "var(--line-card)"}`,
         borderRadius: 14,
         boxShadow:
           "0 1px 0 rgba(17,24,16,.04),0 4px 18px -8px rgba(17,24,16,.12)",
@@ -710,7 +681,7 @@ function StopCard({
             flex: "none",
             borderRadius: "50%",
             background: seqBg,
-            color: "#fff",
+            color: "var(--card)",
             fontSize: 12,
             fontWeight: 800,
             display: "flex",
@@ -725,7 +696,7 @@ function StopCard({
             style={{
               fontSize: 14,
               fontWeight: 800,
-              color: "#11140f",
+              color: "var(--ink)",
               lineHeight: 1.3,
               whiteSpace: "nowrap",
               overflow: "hidden",
@@ -736,7 +707,7 @@ function StopCard({
           </div>
           <div
             className="tnum"
-            style={{ fontSize: 11, color: "#767b6e", marginTop: 1 }}
+            style={{ fontSize: 11, color: "var(--mut)", marginTop: 1 }}
           >
             {subId}
           </div>
@@ -813,7 +784,7 @@ function StopCard({
             gap: 6,
             marginTop: 9,
             fontSize: 12,
-            color: "#414539",
+            color: "var(--ink2)",
           }}
         >
           <svg
@@ -822,7 +793,7 @@ function StopCard({
             style={{ flex: "none" }}
             viewBox="0 0 24 24"
             fill="none"
-            stroke="#a16a2e"
+            stroke="var(--gold)"
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -839,7 +810,7 @@ function StopCard({
           gap: 6,
           marginTop: 9,
           fontSize: 12,
-          color: "#414539",
+          color: "var(--ink2)",
         }}
       >
         <svg
@@ -848,7 +819,7 @@ function StopCard({
           style={{ flex: "none", marginTop: 1 }}
           viewBox="0 0 24 24"
           fill="none"
-          stroke="#a16a2e"
+          stroke="var(--gold)"
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -863,7 +834,7 @@ function StopCard({
               {" "}
               <span
                 className="tnum"
-                style={{ fontWeight: 700, color: "#11140f" }}
+                style={{ fontWeight: 700, color: "var(--ink)" }}
               >
                 {o.postcode}
               </span>
@@ -916,7 +887,7 @@ function StopCard({
           marginTop: 10,
           fontSize: 11.5,
           fontWeight: 700,
-          color: "#16695f",
+          color: "var(--brand)",
         }}
       >
         View &amp; deliver <span style={{ fontSize: 15, lineHeight: 1 }}>›</span>
@@ -932,29 +903,16 @@ function StopCard({
    (Start → Arrive → Done) wired to the DO status endpoint.
    ─────────────────────────────────────────────────────────────────────── */
 
-// pdRow — a label/value info row (mirrors the design's pdRow()).
+// pdRow — a canonical label:value row (.row / .row-l / .row-v). `last` drops
+// the divider (matches .row:last-child).
 function pdRow(label: string, val: ReactNode, strong?: boolean, last?: boolean) {
   return (
     <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "11px 13px",
-        borderBottom: last ? undefined : "1px solid #eceee9",
-      }}
+      className="row"
+      style={last ? { borderBottom: "none" } : undefined}
     >
-      <span style={{ fontSize: 11.5, color: "#767b6e" }}>{label}</span>
-      <span
-        style={{
-          fontSize: 13,
-          fontWeight: strong ? 700 : 600,
-          color: "#11140f",
-          textAlign: "right",
-        }}
-      >
-        {val}
-      </span>
+      <span className="row-l">{label}</span>
+      <span className={strong ? "row-v strong" : "row-v"}>{val}</span>
     </div>
   );
 }
@@ -975,16 +933,16 @@ function PdItem({
         display: "flex",
         gap: 10,
         padding: "11px 13px",
-        borderBottom: "1px solid #eceee9",
+        borderBottom: "1px solid var(--line2)",
       }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#11140f" }}>{n}</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{n}</div>
         {spec && (
           <div
             style={{
               fontSize: 11.5,
-              color: "#767b6e",
+              color: "var(--mut)",
               marginTop: 2,
               lineHeight: 1.4,
             }}
@@ -999,7 +957,7 @@ function PdItem({
           style={{
             fontSize: 12.5,
             fontWeight: 800,
-            color: "#0c3f39",
+            color: "var(--brand-d)",
             whiteSpace: "nowrap",
           }}
         >
@@ -1187,6 +1145,50 @@ function StopDetail({
   const invalidate = () =>
     qc.invalidateQueries({ queryKey: ["mobile-delivery-planning"] });
 
+  // ── Convert this Sales Order → a Delivery Order (identical endpoint to the
+  // desktop board's Convert-to-DO: resolve the SO's still-deliverable lines via
+  // /deliverable-so-lines, then POST /from-sos with those picks — one DO for
+  // this SO). Unblocks a stop that has no DO cut yet so the driver can start it.
+  const convert = useMutation({
+    mutationFn: async () => {
+      const { lines } = await authedFetch<{
+        lines: Array<{ soItemId: string; docNo: string; remaining: number }>;
+      }>(
+        `/delivery-orders-mfg/deliverable-so-lines?docNos=${encodeURIComponent(
+          order.so_doc_no,
+        )}`,
+      );
+      const picks = (lines ?? [])
+        .filter((l) => l.soItemId && l.remaining > 0)
+        .map((l) => ({ soItemId: l.soItemId, qty: l.remaining }));
+      if (picks.length === 0) {
+        throw new Error("already_delivered");
+      }
+      return authedFetch<{ id: string; doNumber: string }>(
+        `/delivery-orders-mfg/from-sos`,
+        { method: "POST", body: JSON.stringify({ picks }) },
+      );
+    },
+    onSuccess: async () => {
+      await invalidate();
+    },
+  });
+
+  // ── Save the HC delivery-execution fields on the latest DO (identical endpoint
+  // to the desktop DeliveryFieldsDrawer: PATCH /delivery-planning/so/:id/fields).
+  // Only the DO-execution subset a driver touches on the road — time window,
+  // arrival/departure clock, delivered date, and the HC "Remark 4" sub-status.
+  const saveFields = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      authedFetch<{ ok: true; no_do_hint: string | null }>(
+        `/delivery-planning/so/${encodeURIComponent(order.so_doc_no)}/fields`,
+        { method: "PATCH", body: JSON.stringify(body) },
+      ),
+    onSuccess: async () => {
+      await invalidate();
+    },
+  });
+
   // "On the way" / "Mark arrived" → IN_TRANSIT. Inventory-idempotent (DO OUT).
   const start = useMutation({
     mutationFn: () => {
@@ -1215,12 +1217,32 @@ function StopDetail({
     },
   });
 
+  // Offer to CUT the DO on the spot (same endpoint the desktop board uses) when
+  // a stop has none yet, instead of dead-ending at "ask the office".
+  const onConvert = async () => {
+    if (convert.isPending) return;
+    const go = await confirm({
+      title: "Create delivery order?",
+      body: "This turns this sales order's still-undelivered lines into a delivery order (one DO) so this stop can be started and delivered. Fully delivered orders are skipped.",
+      confirmLabel: "Create DO",
+    });
+    if (!go) return;
+    try {
+      await convert.mutateAsync();
+      await notify({ title: "Delivery order created", body: "You can now start and complete this stop." });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg === "already_delivered") {
+        await notify({ title: "Nothing to deliver", body: "Every line on this order is already delivered." });
+      } else {
+        await notify({ title: "Couldn't create the delivery order", body: msg });
+      }
+    }
+  };
+
   const requireDo = async (): Promise<boolean> => {
     if (doId) return true;
-    await notify({
-      title: "No delivery order yet",
-      body: "This stop has no delivery order cut yet. Open the order so the office can issue the DO first.",
-    });
+    await onConvert();
     return false;
   };
 
@@ -1242,6 +1264,7 @@ function StopDetail({
 
   const busy = start.isPending || complete.isPending;
   const goToDo = () => onOpen?.(order.so_doc_no);
+  const [editingFields, setEditingFields] = useState(false);
 
   return (
     <div
@@ -1254,48 +1277,19 @@ function StopDetail({
       }}
     >
       <header className="hdr">
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <button
-            onClick={onBack}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 3,
-              fontSize: 12.5,
-              fontWeight: 600,
-              color: "#16695f",
-              cursor: "pointer",
-              border: "none",
-              background: "transparent",
-              fontFamily: "inherit",
-              padding: 0,
-            }}
-          >
-            <span style={{ fontSize: 17, lineHeight: 1 }}>‹</span> Delivery
-            Planning
+        <div className="hdr-row">
+          <button className="back" onClick={onBack}>
+            <span className="chev">‹</span> Delivery Planning
           </button>
           <StopPill o={order} isToday={isToday} />
         </div>
-        <div className="ey" style={{ color: "#a16a2e", marginTop: 7 }}>
+        <div className="eyebrow" style={{ marginTop: 7 }}>
           Stop {seq} ·{" "}
           <span className="tnum">
             {doRef?.do_number || order.so_doc_no || EM}
           </span>
         </div>
-        <div
-          style={{
-            fontSize: 20,
-            fontWeight: 800,
-            color: "#11140f",
-            marginTop: 2,
-          }}
-        >
+        <div className="scr-title">
           {order.debtor_name || order.so_doc_no || EM}
         </div>
       </header>
@@ -1464,18 +1458,13 @@ function StopDetail({
           )}
         </div>
 
-        {/* Delivery-info card (pdRow). */}
-        <div
-          style={{
-            background: "#fff",
-            border: "1px solid #d6d9d2",
-            borderRadius: 13,
-            overflow: "hidden",
-            marginBottom: 12,
-          }}
-        >
+        {/* Delivery-info card (spec: .card + "Delivery" header + .row list). */}
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="card-h">
+            <span className="card-t">Delivery</span>
+          </div>
           {pdRow(
-            "Delivery window",
+            "Window",
             timeWindow ? (
               <>
                 <span className="tnum">{timeWindow}</span> · {eff}
@@ -1501,27 +1490,93 @@ function StopDetail({
           {pdRow("Helper", order.crew?.helper || EM, false, true)}
         </div>
 
+        {/* No DO yet → offer to cut one on the spot (desktop board's Convert-to-DO,
+            identical endpoint) so the driver isn't dead-ended. */}
+        {!doId && (
+          <button
+            onClick={onConvert}
+            disabled={convert.isPending}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 7,
+              height: 44,
+              border: "1.5px solid #16695f",
+              borderRadius: 11,
+              background: "#fff",
+              color: "#16695f",
+              fontFamily: "inherit",
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: convert.isPending ? "default" : "pointer",
+              opacity: convert.isPending ? 0.6 : 1,
+              marginBottom: 12,
+            }}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#16695f"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M1 3h15v13H1zM16 8h4l3 3v5h-7z"></path>
+              <circle cx="5.5" cy="18.5" r="2.5"></circle>
+              <circle cx="18.5" cy="18.5" r="2.5"></circle>
+            </svg>
+            {convert.isPending ? "Creating delivery order…" : "Create delivery order"}
+          </button>
+        )}
+
+        {/* Delivery details (HC delivery-execution fields) — same endpoint as the
+            desktop DeliveryFieldsDrawer: PATCH /delivery-planning/so/:id/fields.
+            Editable only once a DO exists (the fields live on the DO), mirroring
+            the desktop drawer's DO-execution group gating. */}
+        {doId && (
+          <DeliveryFieldsCard
+            order={order}
+            editing={editingFields}
+            saving={saveFields.isPending}
+            onEdit={() => setEditingFields(true)}
+            onCancel={() => setEditingFields(false)}
+            onSave={async (body) => {
+              try {
+                await saveFields.mutateAsync(body);
+                setEditingFields(false);
+              } catch (e) {
+                await notify({
+                  title: "Couldn't save",
+                  body: e instanceof Error ? e.message : String(e),
+                });
+              }
+            }}
+          />
+        )}
+
         {/* Goods to deliver (item list). The feed carries no line-level detail,
             so we surface one branded summary line; per-item spec/qty is not
             available from /delivery-planning. */}
-        <div className="so-card" style={{ marginBottom: 12 }}>
-          <div className="so-hd">
-            <h2 className="so-ti">Goods to deliver</h2>
-            <span className="so-sub">open order for lines</span>
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="card-h">
+            <span className="card-t">Goods to deliver</span>
+            <span className="card-sub">open order for lines</span>
           </div>
-          <div className="so-bd" style={{ gap: 0, padding: 0 }}>
-            <PdItem
-              n={
-                (order.branding && order.branding.trim()) ||
-                "Delivery order lines"
-              }
-              spec={
-                latestDo(order)?.do_number
-                  ? `Delivery order ${latestDo(order)?.do_number}`
-                  : `Sales order ${order.so_doc_no}`
-              }
-            />
-          </div>
+          <PdItem
+            n={
+              (order.branding && order.branding.trim()) ||
+              "Delivery order lines"
+            }
+            spec={
+              latestDo(order)?.do_number
+                ? `Delivery order ${latestDo(order)?.do_number}`
+                : `Sales order ${order.so_doc_no}`
+            }
+          />
         </div>
 
         {/* Disposal callout. */}
@@ -1579,12 +1634,12 @@ function StopDetail({
 
         {/* Setup & dismantle photo group + 3D floor plan (Setup jobs). */}
         {isSetup && (
-          <div className="so-card" style={{ marginBottom: 12 }}>
-            <div className="so-hd">
-              <h2 className="so-ti">Setup &amp; dismantle</h2>
-              <span className="so-sub">upload on site</span>
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="card-h">
+              <span className="card-t">Setup &amp; dismantle</span>
+              <span className="card-sub">upload on site</span>
             </div>
-            <div className="so-bd">
+            <div className="card-b">
               <PdPhotoGroup
                 title="Setup photos"
                 note="after install"
@@ -1606,15 +1661,7 @@ function StopDetail({
 
         {/* Sales-person + document rows. Sales-rep contact isn't in the feed,
             so that row is omitted; SO / DO / branding come straight off the row. */}
-        <div
-          style={{
-            background: "#fff",
-            border: "1px solid #d6d9d2",
-            borderRadius: 13,
-            overflow: "hidden",
-            marginBottom: 12,
-          }}
-        >
+        <div className="card" style={{ marginBottom: 12 }}>
           {pdRow(
             "Sales Order",
             <span className="tnum">{order.so_doc_no || EM}</span>,
@@ -1641,8 +1688,8 @@ function StopDetail({
               alignItems: "center",
               justifyContent: "space-between",
               padding: "12px 14px",
-              background: "#f4f6f3",
-              border: "1px solid #e3e6e0",
+              background: "var(--bg)",
+              border: "1px solid var(--line)",
               borderRadius: 12,
             }}
           >
@@ -1652,13 +1699,13 @@ function StopDetail({
                 fontWeight: 700,
                 textTransform: "uppercase",
                 letterSpacing: ".06em",
-                color: "#767b6e",
+                color: "var(--mut)",
               }}
             >
               Balance to collect
             </span>
-            <span style={{ fontSize: 13, fontWeight: 700, color: "#2f8a5b" }}>
-              Fully paid
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--green)" }}>
+              No balance — fully paid
             </span>
           </div>
         ) : (
@@ -1694,15 +1741,15 @@ function StopDetail({
         )}
 
         {/* Delivery tracking timeline — Start → Arrive → Done (planTracking). */}
-        <div className="so-card" style={{ marginTop: 12 }}>
-          <div className="so-hd">
-            <h2 className="so-ti">Delivery tracking</h2>
-            <span className="so-sub">On the way → Arrived → POD</span>
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="card-h">
+            <span className="card-t">Delivery tracking</span>
+            <span className="card-sub">On the way → Arrived → POD</span>
           </div>
-          <div className="so-bd" style={{ gap: 0 }}>
+          <div className="card-b">
             {(start.error || complete.error) && (
               <div
-                style={{ fontSize: 12, color: "#b23a3a", marginBottom: 9 }}
+                style={{ fontSize: 12, color: "var(--red)", marginBottom: 9 }}
               >
                 {(() => {
                   const e = start.error || complete.error;
@@ -1769,6 +1816,223 @@ function StopDetail({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── DeliveryFieldsCard — the HC delivery-execution fields, read + Edit→Save.
+   Mirrors the desktop DeliveryFieldsDrawer's DO-execution group (the subset a
+   driver touches on the road): time window + confirmed, arrival/departure clock,
+   customer-delivered date, and the HC "Remark 4" delivery sub-status. Save posts
+   ONLY the changed fields to PATCH /delivery-planning/so/:id/fields via the same
+   camelCase keys the drawer sends. Blank clears (the endpoint stores '' → null).
+   ─────────────────────────────────────────────────────────────────────────── */
+// A TIMESTAMPTZ ISO → the value <input type="datetime-local"> wants.
+const toDtLocal = (iso: string | null | undefined): string =>
+  iso ? String(iso).slice(0, 16) : "";
+// A YYYY-MM-DD date-ish string → the value <input type="date"> wants.
+const toDateInput = (d: string | null | undefined): string =>
+  d ? String(d).slice(0, 10) : "";
+
+function DeliveryFieldsCard({
+  order,
+  editing,
+  saving,
+  onEdit,
+  onCancel,
+  onSave,
+}: {
+  order: BoardRow;
+  editing: boolean;
+  saving: boolean;
+  onEdit: () => void;
+  onCancel: () => void;
+  onSave: (body: Record<string, unknown>) => void;
+}) {
+  const initial = useMemo(
+    () => ({
+      timeRange: order.time_range ?? "",
+      timeConfirmed: !!order.time_confirmed,
+      arrivalAt: toDtLocal(order.arrival_at),
+      departureAt: toDtLocal(order.departure_at),
+      customerDeliveredDate: toDateInput(order.customer_delivered_date),
+      deliverySubstatus: order.delivery_substatus ?? "",
+    }),
+    [order],
+  );
+  const [form, setForm] = useState(initial);
+  // Re-seed the draft each time the editor is (re)opened so a fresh board fetch
+  // isn't shadowed by a stale draft.
+  const startEdit = () => {
+    setForm(initial);
+    onEdit();
+  };
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
+    setForm((s) => ({ ...s, [k]: v }));
+
+  const save = () => {
+    const body: Record<string, unknown> = {};
+    if (form.timeRange !== initial.timeRange) body.timeRange = form.timeRange || null;
+    if (form.timeConfirmed !== initial.timeConfirmed) body.timeConfirmed = form.timeConfirmed;
+    if (form.arrivalAt !== initial.arrivalAt) body.arrivalAt = form.arrivalAt || null;
+    if (form.departureAt !== initial.departureAt) body.departureAt = form.departureAt || null;
+    if (form.customerDeliveredDate !== initial.customerDeliveredDate)
+      body.customerDeliveredDate = form.customerDeliveredDate || null;
+    if (form.deliverySubstatus !== initial.deliverySubstatus)
+      body.deliverySubstatus = form.deliverySubstatus || null;
+    if (Object.keys(body).length === 0) {
+      onCancel();
+      return;
+    }
+    onSave(body);
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    fontFamily: "inherit",
+    fontSize: 13,
+    color: "var(--ink)",
+    background: "var(--bg)",
+    border: "1px solid var(--line)",
+    borderRadius: 9,
+    padding: "9px 10px",
+    marginTop: 3,
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-h">
+        <span className="card-t">Delivery details</span>
+        {!editing && (
+          <span
+            onClick={startEdit}
+            className="card-sub"
+            style={{ color: "var(--brand)", fontWeight: 700, cursor: "pointer" }}
+          >
+            Edit
+          </span>
+        )}
+      </div>
+      {editing ? (
+        <div className="card-b">
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span className="fld-l">Time window</span>
+            <input
+              value={form.timeRange}
+              placeholder="e.g. 10am-12pm"
+              onChange={(e) => set("timeRange", e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <input
+              type="checkbox"
+              checked={form.timeConfirmed}
+              onChange={(e) => set("timeConfirmed", e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: "#16695f" }}
+            />
+            <span style={{ fontSize: 12.5, color: "var(--ink2)" }}>Time confirmed with customer</span>
+          </label>
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span className="fld-l">Departure</span>
+            <input
+              type="datetime-local"
+              value={form.departureAt}
+              onChange={(e) => set("departureAt", e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span className="fld-l">Arrival</span>
+            <input
+              type="datetime-local"
+              value={form.arrivalAt}
+              onChange={(e) => set("arrivalAt", e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span className="fld-l">Customer delivered date</span>
+            <input
+              type="date"
+              value={form.customerDeliveredDate}
+              onChange={(e) => set("customerDeliveredDate", e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "block", marginBottom: 12 }}>
+            <span className="fld-l">Delivery status</span>
+            <select
+              value={form.deliverySubstatus}
+              onChange={(e) => set("deliverySubstatus", e.target.value)}
+              style={inputStyle}
+            >
+              <option value="">—</option>
+              {HC_SUBSTATUS_VALUES.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={onCancel}
+              disabled={saving}
+              style={{
+                flex: 1,
+                height: 42,
+                border: "1px solid #d6d9d2",
+                borderRadius: 11,
+                background: "#fff",
+                color: "var(--ink2)",
+                fontFamily: "inherit",
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: saving ? "default" : "pointer",
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              disabled={saving}
+              style={{
+                flex: 1,
+                height: 42,
+                border: "none",
+                borderRadius: 11,
+                background: saving ? "#7fb4ad" : "#16695f",
+                color: "#fff",
+                fontFamily: "inherit",
+                fontSize: 13,
+                fontWeight: 800,
+                cursor: saving ? "default" : "pointer",
+              }}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {pdRow("Time window", (order.time_range && order.time_range.trim()) || EM, true)}
+          {pdRow(
+            "Time confirmed",
+            order.time_confirmed == null ? EM : order.time_confirmed ? "Yes" : "No",
+            true,
+          )}
+          {pdRow("Departure", order.departure_at ? hhmm(order.departure_at) : EM, false)}
+          {pdRow("Arrival", order.arrival_at ? hhmm(order.arrival_at) : EM, true)}
+          {pdRow("Delivered date", dm(order.customer_delivered_date), false)}
+          {pdRow(
+            "Delivery status",
+            (order.delivery_substatus && order.delivery_substatus.trim()) || EM,
+            true,
+            true,
+          )}
+        </>
+      )}
     </div>
   );
 }

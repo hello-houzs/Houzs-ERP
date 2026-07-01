@@ -250,21 +250,18 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
+        <div className="hdr-row" style={{ marginBottom: 9 }}>
           {onBack ? (
-            <span
-              onClick={onBack}
-              style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }}
-            >
-              <span style={{ fontSize: 17, lineHeight: 1 }}>&#8249;</span> Menu
-            </span>
+            <button onClick={onBack} className="back">
+              <span className="chev">&#8249;</span> Menu
+            </button>
           ) : (
             <span />
           )}
           <button
             onClick={() => setCompose({ mode: "new" })}
             className="tinybtn"
-            style={{ background: "#16695f", borderColor: "#16695f", color: "#fff", display: "flex", alignItems: "center", gap: 5 }}
+            style={{ background: "var(--brand)", borderColor: "var(--brand)", color: "#fff", display: "flex", alignItems: "center", gap: 5 }}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 20h9" />
@@ -273,13 +270,13 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
             New
           </button>
         </div>
-        <div style={{ fontSize: 20, fontWeight: 800, color: "#11140f", marginBottom: 9 }}>Mail Center</div>
+        <div className="scr-title">Mail Center</div>
 
         <select
           value={mailbox}
           onChange={(e) => setMailbox(e.target.value)}
           className="cal-sel"
-          style={{ marginBottom: 8 }}
+          style={{ marginTop: 9, marginBottom: 9 }}
         >
           <option value="all">All mailboxes</option>
           {activeAddresses.map((a) => (
@@ -289,8 +286,8 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
           ))}
         </select>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#f4f6f3", border: "1px solid #d6d9d2", borderRadius: 10, padding: "8px 11px", marginBottom: 9 }}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round">
+        <div className="searchbar" style={{ marginBottom: 9 }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--mut2)" strokeWidth="2" strokeLinecap="round">
             <circle cx="11" cy="11" r="7" />
             <path d="m21 21-4.3-4.3" />
           </svg>
@@ -298,16 +295,15 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search mail &middot; sender &middot; subject"
-            style={{ flex: 1, minWidth: 0, border: "none", background: "transparent", outline: "none", fontFamily: "inherit", fontSize: 13, color: "#11140f" }}
           />
         </div>
 
-        <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 2 }}>
+        <div className="chips">
           {FOLDERS.map(([f, label]) => (
             <button
               key={f}
               onClick={() => setFolder(f)}
-              className={`sochip${folder === f ? " on" : ""}`}
+              className={`chip${folder === f ? " on" : ""}`}
             >
               {label}
             </button>
@@ -319,10 +315,16 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
         {loading && <Muted>Loading&#8230;</Muted>}
         {!loading && error && <Muted tone="error">Could not load mail. {error}</Muted>}
         {!loading && !error && folder === "drafts" && (
-          <Muted>Drafts are kept on the desktop app only.</Muted>
+          <div className="empty">
+            <div className="empty-t">No drafts here</div>
+            <div className="empty-s">Drafts are kept on the desktop app only.</div>
+          </div>
         )}
         {!loading && !error && folder !== "drafts" && threads.length === 0 && (
-          <Muted>{folder === "trash" ? "Trash is empty." : `Nothing in ${folder}.`}</Muted>
+          <div className="empty">
+            <div className="empty-t">No messages</div>
+            <div className="empty-s">{folder === "trash" ? "Trash is empty." : `Nothing in ${folder}.`}</div>
+          </div>
         )}
         {!loading && !error && folder !== "drafts" && threads.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -339,45 +341,44 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
 function ThreadRow({ t, colorMap, onOpen }: { t: Thread; colorMap: Map<string, string>; onOpen: () => void }) {
   const who = t.counterpartyName || t.counterpartyEmail || "(unknown)";
   return (
-    <div
-      onClick={onOpen}
-      style={{ display: "flex", gap: 11, background: "#fff", border: `1px solid ${t.unread ? "#bcdcd7" : "#e3e6e0"}`, borderRadius: 13, padding: "11px 12px", cursor: "pointer" }}
-    >
-      <div style={{ width: 38, height: 38, flex: "none", borderRadius: "50%", background: avColor(who), color: "#fff", fontSize: 13, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        {initials(who)}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: t.unread ? 800 : 600, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-            {who}
-          </span>
-          {t.starred && (
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="#d8a85a" stroke="#d8a85a" strokeWidth="1.5">
-              <path d="M12 2l3 6 6 .9-4.5 4.3 1 6-5.5-3-5.5 3 1-6L3 8.9 9 8Z" />
-            </svg>
-          )}
-          <span style={{ fontSize: 10, color: "#9aa093", flex: "none" }}>{fmtTime(t.lastMessageAt)}</span>
+    <div onClick={onOpen} className="card" style={{ borderColor: t.unread ? "#bcdcd7" : "var(--line)", cursor: "pointer" }}>
+      <div className="card-b" style={{ padding: "11px 12px", display: "flex", gap: 11 }}>
+        <div style={{ width: 38, height: 38, flex: "none", borderRadius: "50%", background: avColor(who), color: "#fff", fontSize: 13, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {initials(who)}
         </div>
-        <div style={{ fontSize: 12.5, fontWeight: t.unread ? 700 : 500, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 2 }}>
-          {t.lastDirection === "outbound" ? "You: " : ""}
-          {t.subject}
-          {t.messageCount > 1 && <span style={{ color: "#9aa093", fontWeight: 600 }}> ({t.messageCount})</span>}
-        </div>
-        <div style={{ fontSize: 11.5, color: "#767b6e", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 1 }}>{t.lastSnippet}</div>
-        {t.labels.length > 0 && (
-          <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
-            {t.labels.map((l) => {
-              const [bg, fg] = chipColors(l, colorMap);
-              return (
-                <span key={l} className="rbadge" style={{ background: bg, color: fg }}>
-                  {l}
-                </span>
-              );
-            })}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: t.unread ? 800 : 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {who}
+            </span>
+            {t.starred && (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="var(--gold-lt)" stroke="var(--gold-lt)" strokeWidth="1.5">
+                <path d="M12 2l3 6 6 .9-4.5 4.3 1 6-5.5-3-5.5 3 1-6L3 8.9 9 8Z" />
+              </svg>
+            )}
+            <span className="tnum" style={{ fontSize: 10.5, color: "var(--mut2)", flex: "none" }}>{fmtTime(t.lastMessageAt)}</span>
           </div>
-        )}
+          <div style={{ fontSize: 12.5, fontWeight: t.unread ? 700 : 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 2 }}>
+            {t.lastDirection === "outbound" ? "You: " : ""}
+            {t.subject}
+            {t.messageCount > 1 && <span style={{ color: "var(--mut2)", fontWeight: 600 }}> ({t.messageCount})</span>}
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--mut)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 2 }}>{t.lastSnippet}</div>
+          {t.labels.length > 0 && (
+            <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
+              {t.labels.map((l) => {
+                const [bg, fg] = chipColors(l, colorMap);
+                return (
+                  <span key={l} className="rbadge" style={{ background: bg, color: fg }}>
+                    {l}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        {t.unread && <span style={{ width: 6, height: 6, flex: "none", borderRadius: "50%", background: "var(--brand)", marginTop: 6 }} />}
       </div>
-      {t.unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "#16695f", marginTop: 6 }} />}
     </div>
   );
 }
@@ -536,13 +537,10 @@ function MailThread({
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span
-            onClick={onBack}
-            style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }}
-          >
-            <span style={{ fontSize: 17, lineHeight: 1 }}>&#8249;</span> Mail
-          </span>
+        <div className="hdr-row">
+          <button onClick={onBack} className="back">
+            <span className="chev">&#8249;</span> Mail
+          </button>
           {thread && (
             <div style={{ display: "flex", gap: 7 }}>
               <button onClick={toggleStar} disabled={busy} className="tinybtn" style={thread.starred ? { color: "#d8a85a" } : undefined}>
@@ -555,7 +553,7 @@ function MailThread({
           )}
         </div>
         {thread && (
-          <div style={{ fontSize: 17, fontWeight: 800, color: "#11140f", marginTop: 8, lineHeight: 1.3 }}>{thread.subject}</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "var(--ink)", marginTop: 8, lineHeight: 1.2, letterSpacing: "-.01em" }}>{thread.subject}</div>
         )}
 
         {thread && (
@@ -671,8 +669,8 @@ function LabelPicker({
         className="hz-m so-card"
         style={{ width: "100%", borderTopLeftRadius: 18, borderTopRightRadius: 18, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: "16px 16px calc(env(safe-area-inset-bottom) + 18px)", maxHeight: "70vh", overflowY: "auto", marginBottom: 0 }}
       >
-        <div className="ey" style={{ color: "#a16a2e", marginBottom: 3 }}>Labels</div>
-        <div style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginBottom: 12 }}>Add label</div>
+        <div className="eyebrow" style={{ marginBottom: 3 }}>Labels</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: "var(--ink)", marginBottom: 12 }}>Add label</div>
         {available.length === 0 && <Muted>No other labels. Type one below.</Muted>}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 14 }}>
           {available.map((l) => (
@@ -1012,12 +1010,12 @@ function ComposeShell({
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div className="hdr-row">
           <div>
-            <div className="ey" style={{ color: "#a16a2e" }}>Compose</div>
-            <div style={{ fontSize: 19, fontWeight: 800, color: "#11140f", marginTop: 2 }}>{title}</div>
+            <div className="eyebrow">Compose</div>
+            <div className="scr-title">{title}</div>
           </div>
-          <span onClick={onClose} style={{ fontSize: 24, color: "#767b6e", cursor: "pointer", lineHeight: 1 }}>
+          <span onClick={onClose} style={{ fontSize: 24, color: "var(--mut)", cursor: "pointer", lineHeight: 1 }}>
             &times;
           </span>
         </div>
@@ -1036,7 +1034,7 @@ function ComposeShell({
 
 function Muted({ children, tone }: { children: React.ReactNode; tone?: "error" }) {
   return (
-    <div style={{ textAlign: "center", fontSize: 12, color: tone === "error" ? "#b23a3a" : "#9aa093", padding: "30px 0" }}>{children}</div>
+    <div style={{ textAlign: "center", fontSize: 12, color: tone === "error" ? "var(--red)" : "var(--mut2)", padding: "30px 0" }}>{children}</div>
   );
 }
 

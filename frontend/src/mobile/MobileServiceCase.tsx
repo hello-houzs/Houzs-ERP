@@ -115,6 +115,21 @@ const PRIORITY_PILL: Record<string, [string, string]> = {
   low: [FIELD_BG, MUTED],
 };
 
+// Canonical badge class per spec STATES(stage): the "waiting on our side"
+// stages read petrol (b-brand), completed green, everything else amber.
+function stageBadgeClass(stage: string): string {
+  if (stage === "completed") return "b-green";
+  if (stage === "pending_inspection" || stage === "pending_item_ready") return "b-brand";
+  return "b-amber";
+}
+// Spec priority chip: LOW=grey · MEDIUM/normal=amber · HIGH/urgent=red.
+function priorityBadgeClass(priority: string): string {
+  const p = priority.toLowerCase();
+  if (p === "high" || p === "urgent") return "b-red";
+  if (p === "low") return "b-grey";
+  return "b-amber";
+}
+
 // ── field readers (dual-read camelCase / snake_case) ──────────────
 const get = (r: Any, ...keys: string[]) => {
   for (const k of keys) {
@@ -156,6 +171,23 @@ function useLookupNames(kind: string, fallback: readonly string[]): string[] {
 function useLookupSlugs(kind: string, fallback: readonly string[]): string[] {
   const rows = useLookupRows(kind);
   return rows.length ? rows.map((r) => r.slug) : [...fallback];
+}
+
+// Assignable users for the PIC picker — mirrors desktop DetailContent, which
+// pulls /api/users (shape { users } | { data } | array) and narrows the picker
+// to Operations-department members (plus whoever is currently assigned so an
+// out-of-Operations assignment never silently vanishes from the list).
+type PicUser = { id: number; name: string; department_name?: string };
+function useAssignableUsers(): PicUser[] {
+  const { data } = useQuery({
+    queryKey: ["mobile-assr-users"],
+    queryFn: () =>
+      api
+        .get<any>("/api/users")
+        .then((r: any) => (r?.users ?? r?.data ?? r ?? []) as PicUser[]),
+    staleTime: 5 * 60_000,
+  });
+  return Array.isArray(data) ? data : [];
 }
 
 const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
@@ -235,10 +267,10 @@ function CaseList({
   });
   const all = data?.data ?? [];
 
-  // Design chips: All / Pending / Item ready / Delivery / Completed.
+  // Spec chips (service-list): All / Pending pickup / Item ready / Delivery / Completed.
   const CHIPS: { key: string; label: string; match: (r: Any) => boolean }[] = [
     { key: "all", label: "All", match: () => true },
-    { key: "pending", label: "Pending", match: (r) => ["pending_item_pickup", "pending_supplier_pickup", "pending_review", "under_verification", "pending_solution", "pending_inspection"].includes(stageOf(r)) },
+    { key: "pending", label: "Pending pickup", match: (r) => ["pending_item_pickup", "pending_supplier_pickup", "pending_review", "under_verification", "pending_solution", "pending_inspection"].includes(stageOf(r)) },
     { key: "item_ready", label: "Item ready", match: (r) => stageOf(r) === "pending_item_ready" },
     { key: "delivery", label: "Delivery", match: (r) => stageOf(r) === "pending_delivery_service" },
     { key: "completed", label: "Completed", match: (r) => stageOf(r) === "completed" },
@@ -276,69 +308,75 @@ function CaseList({
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      {/* header (.hdr) */}
+      {/* header (.hdr) — eyebrow + title + new-case iconbtn (spec #service-list) */}
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-          <span onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: TEAL, cursor: onBack ? "pointer" : "default" }}>
-            <span style={{ fontSize: 17, lineHeight: 1 }}>‹</span> Menu
-          </span>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span className="ey" style={{ color: BROWN }}>After-sales</span>
-            <button onClick={onNew} className="tinybtn" style={{ background: TEAL, borderColor: TEAL, color: "#fff" }}>+ New</button>
-          </span>
-        </div>
-        <div style={{ fontSize: 20, fontWeight: 800, color: INK, marginBottom: 11 }}>Service Cases</div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, background: FIELD_BG, border: `1px solid ${LINE}`, borderRadius: 10, padding: "8px 11px" }}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={GREY} strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search case · customer · item" style={{ flex: 1, minWidth: 0, border: "none", background: "transparent", outline: "none", fontFamily: "inherit", fontSize: 13, color: INK }} />
+        <div className="hdr-row">
+          <div>
+            {onBack ? (
+              <button className="back" onClick={onBack} style={{ marginBottom: 4 }}>
+                <span className="chev">‹</span> Menu
+              </button>
+            ) : null}
+            <div className="eyebrow">Quality</div>
+            <div className="scr-title">Service Cases</div>
           </div>
-          <select value={sort} onChange={(e) => setSort(e.target.value as "sla" | "no")} style={{ flex: "none", fontFamily: "inherit", fontSize: 12, color: "var(--ink-2)", background: FIELD_BG, border: `1px solid ${LINE}`, borderRadius: 10, padding: "0 8px", height: 38, appearance: "none", WebkitAppearance: "none" }}>
+          <button onClick={onNew} className="iconbtn" aria-label="New service case">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={TEAL} strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+          </button>
+        </div>
+        <div className="hdr-row" style={{ marginTop: 11 }}>
+          <div className="searchbar">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={GREY} strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search case · customer · item" />
+          </div>
+          <select value={sort} onChange={(e) => setSort(e.target.value as "sla" | "no")} style={{ flex: "none", fontFamily: "inherit", fontSize: 12, color: "var(--mut)", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "0 8px", height: 38, appearance: "none", WebkitAppearance: "none" }}>
             <option value="sla">Sort: SLA</option>
             <option value="no">Sort: Case</option>
           </select>
         </div>
-        <div className="hz-scroll" style={{ display: "flex", gap: 7, overflowX: "auto", marginTop: 10, paddingBottom: 2 }}>
+        <div className="chips" style={{ marginTop: 11 }}>
           {CHIPS.map((c) => (
-            <button key={c.key} className={`sochip${chip === c.key ? " on" : ""}`} onClick={() => setChip(c.key)}>
-              {c.label} (<span>{counts[c.key] ?? 0}</span>)
+            <button key={c.key} className={`chip${chip === c.key ? " on" : ""}`} onClick={() => setChip(c.key)}>
+              {c.label} ({counts[c.key] ?? 0})
             </button>
           ))}
         </div>
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
-        {isLoading && <div style={{ textAlign: "center", color: GREY, fontSize: 12, padding: "26px 0" }}>Loading…</div>}
-        {error && <div style={{ textAlign: "center", color: RED, fontSize: 12, padding: "26px 0" }}>Couldn't load service cases. Pull to retry.</div>}
+        {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
+        {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load service cases. Pull to retry.</div>}
         {!isLoading && !error && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {rows.map((r) => {
               const id = Number(get(r, "id"));
               const cancelled = statusOf(r).toLowerCase() === "cancelled";
               const sla = slaText(hoursToDeadline(r));
-              const slaLabel = sla ? sla.label : "—";
               const item = get(r, "itemDescription", "item_description", "itemCode", "item_code");
-              // .so-row card with .so-row-head (name + stage pill) + .so-grid.
+              // Spec card: name + stage badge · case_no · product · issue · priority + SLA.
               return (
-                <div key={id} className={`so-row${cancelled ? " cancelled" : ""}`} onClick={() => onOpen(id)}>
-                  <div className="so-row-head">
-                    <span className="so-row-name" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{customer(r)}</span>
-                    <StagePill stage={stageOf(r)} />
-                  </div>
-                  <div className="so-grid">
-                    <span className="so-k">Case</span>
-                    <span className="so-v money" style={cellEllipsis}>{String(caseNo(r))}</span>
-                    <span className="so-k">Item</span>
-                    <span className="so-v" style={cellEllipsis}>{item ? String(item) : "—"}</span>
-                    <span className="so-k">Issue</span>
-                    <span className="so-v" style={cellEllipsis}>{issueOf(r) ? String(issueOf(r)) : "—"}</span>
-                    <span className="so-k">SLA</span>
-                    <span className="so-v"><span style={{ color: sla?.overdue ? RED : INK, fontWeight: sla?.overdue ? 700 : 400 }}>{slaLabel}</span></span>
+                <div key={id} className="card" onClick={() => onOpen(id)} style={{ cursor: "pointer", ...(cancelled ? { opacity: 0.55, filter: "grayscale(.5)" } : null) }}>
+                  <div className="card-b" style={{ padding: "12px 13px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", ...cellEllipsis }}>{customer(r)}</span>
+                      <span className={`badge ${stageBadgeClass(stageOf(r))}`} style={{ flex: "none" }}>{prettyStage(stageOf(r))}</span>
+                    </div>
+                    <div className="tnum" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5, ...cellEllipsis }}>{String(caseNo(r))}{item ? ` · ${String(item)}` : ""}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 6, ...cellEllipsis }}>{issueOf(r) ? String(issueOf(r)) : "—"}</div>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
+                      <span className={`badge ${priorityBadgeClass(priorityOf(r))}`}>{cap(priorityOf(r))}</span>
+                      {sla && <span style={{ fontSize: 11, fontWeight: 700, color: sla.overdue ? "var(--red)" : "var(--mut)" }}>{sla.label}</span>}
+                    </div>
                   </div>
                 </div>
               );
             })}
-            {!rows.length && <div style={{ textAlign: "center", color: GREY, fontSize: 12, padding: "26px 0" }}>Nothing matches.</div>}
+            {!rows.length && (
+              <div className="empty">
+                <div className="empty-t">Nothing matches</div>
+                <div className="empty-s">Try a different filter or search.</div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -364,6 +402,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const issueCatOptions = useLookupNames("issue-categories", ISSUE_CATEGORY_OPTIONS as readonly string[]);
   const resolutionOptions = useLookupSlugs("resolution-methods", RESOLUTION_OPTIONS as readonly string[]);
   const priorityOptions = useLookupSlugs("priorities", PRIORITY_OPTIONS as readonly string[]);
+  const assignableUsers = useAssignableUsers();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-assr-detail", id],
@@ -481,29 +520,69 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     }, "Couldn't add item");
   };
 
+  // ── Remove product item → DELETE /:id/items/:itemId (desktop parity) ────────
+  const removeItem = async (it: Any) => {
+    if (busy) return;
+    const itemId = Number(get(it, "id"));
+    if (!itemId) return;
+    const label = String(get(it, "itemCode", "item_code") ?? get(it, "itemDescription", "item_description") ?? "this item");
+    if (!(await confirm({ title: `Remove ${label}?`, confirmLabel: "Remove", danger: true }))) return;
+    await runWrite(async () => {
+      await api.del(`/api/assr/${id}/items/${itemId}`);
+    }, "Couldn't remove item");
+  };
+
+  // ── Assign PIC → PATCH /:id { assigned_to } (desktop parity) ────────────────
+  // The picker is narrowed to Operations-department members, keeping the current
+  // assignee selectable, exactly as the desktop DetailContent PIC select does.
+  const assignPic = async () => {
+    if (busy) return;
+    const curId = Number(get(c, "assignedTo", "assigned_to") ?? 0) || null;
+    const ops = assignableUsers.filter(
+      (u) => /operation/i.test(u.department_name || "") || u.id === curId,
+    );
+    if (!ops.length) {
+      await notify({ title: "No assignable users", body: "No Operations members are available to assign." });
+      return;
+    }
+    const picked = await choose({
+      title: "Assign to",
+      body: assignedTo ? `Currently ${String(assignedTo)}.` : "Currently unassigned.",
+      options: [
+        { value: "", label: "— Unassigned —" },
+        ...ops.map((u) => ({ value: String(u.id), label: u.name })),
+      ],
+    });
+    if (picked == null) return;
+    const nextId = picked === "" ? null : Number(picked);
+    if (nextId === curId) return;
+    await patchCase({ assigned_to: nextId }, "Couldn't reassign");
+  };
+
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      {/* header (.hdr) — back "Cases" + eyebrow + case no + customer · assigned */}
+      {/* header (.hdr) — back + stage badge · eyebrow {case_no · priority} · customer */}
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: TEAL, cursor: "pointer" }}>
-            <span style={{ fontSize: 17, lineHeight: 1 }}>‹</span> Cases
-          </span>
-          <button onClick={changeStage} disabled={busy || isLoading || !!error} className="tinybtn" style={{ background: TEAL, borderColor: TEAL, color: "#fff", opacity: busy || isLoading || error ? 0.5 : 1 }}>
-            Change stage
+        <div className="hdr-row">
+          <button className="back" onClick={onBack}>
+            <span className="chev">‹</span> Service Cases
           </button>
+          {!isLoading && !error && (
+            <span className={`badge ${stageBadgeClass(stageOf(c))}`} style={{ flex: "none" }}>{prettyStage(stageOf(c))}</span>
+          )}
         </div>
-        <div className="ey" style={{ color: BROWN, letterSpacing: ".13em", marginTop: 7 }}>Service Case</div>
-        <div className="money" style={{ fontSize: 19, fontWeight: 800, color: INK, marginTop: 2 }}>{String(caseNo(c))}</div>
-        <div style={{ fontSize: 11.5, color: MUTED, marginTop: 3 }}>
+        <div className="eyebrow tnum" style={{ marginTop: 7 }}>
+          {String(caseNo(c))}{priorityOf(c) ? ` · ${cap(priorityOf(c))}` : ""}
+        </div>
+        <div className="scr-title">
           {customer(c)}
-          {assignedTo ? ` · Assigned ${assignedTo}` : ""}
+          {assignedTo ? <span style={{ fontSize: 11.5, fontWeight: 400, color: "var(--mut)" }}> · Assigned {String(assignedTo)}</span> : null}
         </div>
       </header>
 
-      <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 40 }}>
-        {isLoading && <div style={{ textAlign: "center", color: GREY, fontSize: 12, padding: "26px 0" }}>Loading…</div>}
-        {error && <div style={{ textAlign: "center", color: RED, fontSize: 12, padding: "26px 0" }}>Couldn't load this case.</div>}
+      <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 24 }}>
+        {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
+        {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load this case.</div>}
         {!isLoading && !error && (
           <>
             {/* chip row (.spill) */}
@@ -515,12 +594,8 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               {sla?.overdue && <Spill colors={["#f8eaea", RED]}>{sla.label}</Spill>}
             </div>
 
-            {/* Print copy / Portal link (.tinybtn) */}
+            {/* Portal link (.tinybtn) — Print + Advance live in the actbar (spec) */}
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <button onClick={printCopy} className="tinybtn" style={{ flex: 1, padding: 9, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ink-2)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" /></svg>
-                Print copy
-              </button>
               <button
                 onClick={async () => {
                   if (!portalToken) return;
@@ -613,6 +688,14 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                     <div style={{ fontSize: 12, fontWeight: 600, color: INK, marginTop: 2 }}>{String(get(it, "itemDescription", "item_description") ?? "—")}</div>
                   </div>
                   <span style={{ fontSize: 11, color: MUTED }}>×{String(get(it, "qty") ?? 1)}</span>
+                  <button
+                    onClick={() => removeItem(it)}
+                    disabled={busy}
+                    aria-label="Remove item"
+                    style={{ flex: "none", width: 26, height: 26, borderRadius: 8, border: "1px solid #e3e6e0", background: "#fff", color: RED, fontSize: 15, lineHeight: 1, cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1 }}
+                  >
+                    ×
+                  </button>
                 </div>
               )) : (
                 <div style={{ fontSize: 12, color: GREY, padding: "2px 0" }}>No items recorded.</div>
@@ -713,8 +796,20 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             </EditableAcc>
 
-            {/* PIC */}
-            <Acc title="PIC" headRight={assignedTo ? String(assignedTo) : undefined}>
+            {/* PIC — Assign (reassign assigned_to via PATCH /:id, desktop parity) */}
+            <Acc
+              title="PIC"
+              open
+              headSlot={
+                <span
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) assignPic(); }}
+                  className="tinybtn"
+                  style={{ marginLeft: "auto", color: BROWN, opacity: busy ? 0.5 : 1 }}
+                >
+                  Assign
+                </span>
+              }
+            >
               <KV label="Assigned to" value={assignedTo ? String(assignedTo) : "Unassigned"} />
               <KV label="Created by" value={String(get(c, "createdByName", "created_by_name") ?? "—")} />
             </Acc>
@@ -808,6 +903,12 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
           </>
         )}
       </div>
+
+      {/* actbar (spec #service-detail) — Print (ghost) + Advance stage (primary) */}
+      <footer className="actbar" style={{ display: "flex", gap: 9 }}>
+        <button onClick={printCopy} disabled={isLoading || !!error} className="btn-ghost" style={{ flex: 1, opacity: isLoading || error ? 0.5 : 1 }}>Print</button>
+        <button onClick={changeStage} disabled={busy || isLoading || !!error} className="btn" style={{ flex: 1.4, opacity: busy || isLoading || error ? 0.5 : 1 }}>Advance stage →</button>
+      </footer>
     </div>
   );
 }
@@ -899,43 +1000,30 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   return (
     <div className="hz-m" style={{ position: "absolute", inset: 0, zIndex: 20, background: "rgba(17,20,15,.4)", display: "flex", flexDirection: "column", justifyContent: "flex-end" }} onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--app-bg)", borderTopLeftRadius: 18, borderTopRightRadius: 18, maxHeight: "92%", display: "flex", flexDirection: "column", paddingBottom: "env(safe-area-inset-bottom)" }}>
-        {/* header (.hdr) — eyebrow + title + close × */}
+        {/* header (.hdr) — back "Cancel" + title (spec #service-new) */}
         <header className="hdr" style={{ borderTopLeftRadius: 18, borderTopRightRadius: 18 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div>
-              <div className="ey" style={{ color: BROWN, letterSpacing: ".13em" }}>Document</div>
-              <div style={{ fontSize: 19, fontWeight: 800, color: INK, marginTop: 2 }}>New Service Case</div>
-            </div>
-            <span onClick={onClose} style={{ fontSize: 24, color: MUTED, cursor: "pointer", lineHeight: 1 }}>×</span>
+          <div className="hdr-row">
+            <button className="back" onClick={onClose}>
+              <span className="chev">‹</span> Cancel
+            </button>
           </div>
+          <div className="scr-title">New Service Case</div>
         </header>
 
-        <div className="scroll hz-scroll" style={{ padding: 14 }}>
-          {/* Sales Order card (.so-card) */}
-          <div className="so-card">
-            <div className="so-hd"><h2 className="so-ti">Sales Order</h2></div>
-            <div className="so-bd">
+        <div className="scroll hz-scroll" style={{ padding: 14, display: "flex", flexDirection: "column", gap: 11 }}>
+          {/* Customer / SO + Product + Issue card (.card) */}
+          <div className="card"><div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+            <label className="fld">
+              <span className="fld-l">Customer / SO lookup *</span>
+              <input value={docNo} onChange={(e) => setDocNo(e.target.value)} placeholder="Search SO no or customer" className="fld-i money" />
+            </label>
+            <label className="fld">
+              <span className="fld-l">Product *</span>
+              <input value={itemCode} onChange={(e) => setItemCode(e.target.value)} placeholder="Affected item code — e.g. AK-GUARDIAN MATT (K)" className="fld-i money" />
+            </label>
+            <div className="fld-row">
               <label className="fld">
-                <span className="fld-l">SO # / reference / customer</span>
-                <input value={docNo} onChange={(e) => setDocNo(e.target.value)} placeholder="SO #, reference, or customer name…" className="fld-i money" />
-              </label>
-              <label className="fld">
-                <span className="fld-l">Affected item code</span>
-                <input value={itemCode} onChange={(e) => setItemCode(e.target.value)} placeholder="e.g. AK-GUARDIAN MATT (K)" className="fld-i money" />
-              </label>
-            </div>
-          </div>
-
-          {/* Issue card (.so-card) */}
-          <div className="so-card">
-            <div className="so-hd"><h2 className="so-ti">Issue</h2></div>
-            <div className="so-bd">
-              <label className="fld">
-                <span className="fld-l">Issue description</span>
-                <textarea value={complaint} onChange={(e) => setComplaint(e.target.value)} rows={3} placeholder="Describe the issue…" className="fld-i" style={{ resize: "none" }} />
-              </label>
-              <label className="fld">
-                <span className="fld-l">Issue category</span>
+                <span className="fld-l">Issue category *</span>
                 <select value={category} onChange={(e) => setCategory(e.target.value)} className="fld-i">
                   <option value="">— select —</option>
                   {issueCatOptions.map((o) => (
@@ -944,7 +1032,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                 </select>
               </label>
               <label className="fld">
-                <span className="fld-l">Priority</span>
+                <span className="fld-l">Priority *</span>
                 <select value={priority} onChange={(e) => setPriority(e.target.value)} className="fld-i">
                   {priorityOptions.map((o) => (
                     <option key={o} value={o}>{cap(o)}</option>
@@ -952,15 +1040,19 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                 </select>
               </label>
             </div>
-          </div>
+            <label className="fld">
+              <span className="fld-l">Issue description *</span>
+              <textarea value={complaint} onChange={(e) => setComplaint(e.target.value)} rows={3} placeholder="Describe the defect / fault" className="fld-i" style={{ resize: "none" }} />
+            </label>
+          </div></div>
 
-          {/* Defect photos / videos (.so-card) — up to 5, uploaded after create */}
-          <div className="so-card">
-            <div className="so-hd">
-              <h2 className="so-ti">Defect photos / videos</h2>
-              <span className="so-sub">{files.length} / 5</span>
+          {/* Attachments (.card) — up to 5, uploaded after create */}
+          <div className="card">
+            <div className="card-h">
+              <span className="card-t">Attachments</span>
+              <span className="card-sub">{files.length} / 5</span>
             </div>
-            <div className="so-bd">
+            <div className="card-b">
               {files.length > 0 && (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7, marginBottom: 10 }}>
                   {files.map((f, i) => (
@@ -978,20 +1070,17 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                 </div>
               )}
               {files.length < 5 && (
-                <label style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, background: TEAL, borderRadius: 13, padding: 13, cursor: "pointer" }}>
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
-                    <circle cx="12" cy="13" r="3" />
-                  </svg>
-                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>Add photos / videos</span>
+                <label style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, border: "1px dashed var(--mut2)", borderRadius: 11, padding: 18, background: "var(--bg)", cursor: "pointer" }}>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={TEAL} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--brand)" }}>Add photo / video / PDF</span>
                   <input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf" multiple style={{ display: "none" }} onChange={onPickFiles} />
                 </label>
               )}
-              <div style={{ fontSize: 10, color: GREY, marginTop: 6 }}>Up to 5 · JPG / PNG / WEBP / MP4 / PDF.</div>
+              <div style={{ fontSize: 10, color: "var(--mut2)", marginTop: 7, textAlign: "center" }}>JPG / PNG / WEBP / MP4 / PDF · 5MB each · up to 5</div>
             </div>
           </div>
 
-          {create.isError && <div style={{ fontSize: 12, color: RED }}>Couldn't create the case. Check the SO number and try again.</div>}
+          {create.isError && <div style={{ fontSize: 12, color: "var(--red)" }}>Couldn't create the case. Check the SO number and try again.</div>}
         </div>
 
         {/* actbar (.actbar / .btn) */}
@@ -1006,7 +1095,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
               ? uploadProgress
                 ? `Uploading ${uploadProgress.done}/${uploadProgress.total}…`
                 : "Creating…"
-              : "Create Case"}
+              : "Create case"}
           </button>
         </footer>
       </div>
@@ -1088,16 +1177,6 @@ function Spill({ colors, dot, children }: { colors: [string, string]; dot?: bool
     <span className="spill" style={{ background: colors[0], color: colors[1], fontSize: 10, padding: "4px 9px", borderRadius: 20 }}>
       {dot && <span style={{ marginRight: 4 }}>●</span>}
       {children}
-    </span>
-  );
-}
-
-// list-card stage pill (.spill 9px sizing; colours dynamic → inline).
-function StagePill({ stage }: { stage: string }) {
-  const colors = STAGE_PILL[stage] ?? [FIELD_BG, MUTED];
-  return (
-    <span className="spill" style={{ background: colors[0], color: colors[1], flex: "none" }}>
-      {prettyStage(stage)}
     </span>
   );
 }

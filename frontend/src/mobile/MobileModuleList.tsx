@@ -63,14 +63,50 @@ export type ModuleConfig = {
    *  status pill (pill) + a compact grid of these labelled field rows (so-k /
    *  so-v pairs). When absent, the card falls back to primary/secondary/right. */
   fields?: FieldDef[];
-  /** The row's status/category text → the pill above the card grid. */
+  /** The row's status/category text → the pill above the card grid. Also drives
+   *  the detail-header status, so keep it stable even when the list badge differs
+   *  (override the list-only badge via `badgeText`). */
   pill?: (row: any) => string;
+  /** List-card badge override. When set, the list card's status badge uses this
+   *  instead of `pill` (e.g. Positions shows "N members" while `pill` stays the
+   *  department for the detail header). */
+  badgeText?: (row: any) => string;
   /** Primary chip filter row (status/level/category) with live counts. */
   chips?: ChipDef[];
   /** Optional secondary chip filter (supplier / warehouse). */
   chips2?: ChipDef[];
   /** Sort options; the first is the default. */
   sorts?: SortDef[];
+
+  // ── Build-spec card layout (docs/mobile-build-spec.html) ────────────────────
+  /** Which spec card template the list renders. When omitted the module falls
+   *  back to the generic `fields[]` grid. Each variant mirrors one spec screen:
+   *   • "doc"       — name + status badge, doc_no·date sub-line, optional note
+   *                    line, top-bordered footer (left meta + right money).
+   *   • "product"   — .ph thumbnail + name/SKU·category + right price/uom.
+   *   • "inventory" — name + stock badge, SKU·warehouse sub-line, 3-KPI footer.
+   *   • "warehouse" — name + code grey badge, address line, SKU/Units footer.
+   *   • "mrp"       — name + state badge, SKU sub-line, 4-col KPI grid.
+   *   • "person"    — avatar initials + name/sub + status badge (row layout). */
+  variant?: "doc" | "product" | "inventory" | "warehouse" | "mrp" | "person";
+  /** Muted `.tnum` sub-line under the card name (spec: "{{doc_no}} · {{date}}"). */
+  subline?: (row: any) => string;
+  /** Optional third line in --ink2 (items summary / reason). Hidden when blank. */
+  note?: (row: any) => string;
+  /** Footer-row left meta as [label, value] — value bolded. Hidden when blank. */
+  footL?: (row: any) => [string, string] | null;
+  /** Footer-row right value. When `footMoney`, it's a *_centi total → RM x/100. */
+  footR?: (row: any) => string;
+  footMoney?: boolean;
+  /** KPI cells for the inventory / mrp footers: [label, value] pairs. */
+  kpis?: (row: any) => Array<[string, string]>;
+  /** Avatar seed for the "person" variant — initials come from this string. */
+  avatar?: (row: any) => string;
+  /** Right price (product variant) → *_centi rendered RM x/100 when priceMoney. */
+  price?: (row: any) => string;
+  priceMoney?: boolean;
+  /** Unit-of-measure caption under a product price (spec: "/{{uom}}"). */
+  uom?: (row: any) => string;
 
   /** When present, this module supports CREATE (+ New button) and — when the
    *  schema declares an updatePath — EDIT (from the detail screen). The parent
@@ -118,27 +154,61 @@ const statusLabel = (raw: unknown): string => {
     .replace(/\b\w/g, (m) => m.toUpperCase());
 };
 
-// Design PILL palette (ported 1:1 from the mobile prototype's PILL map). Keyed
-// by the human label the `pill(row)` accessor returns; unknown → neutral grey.
-const PILL: Record<string, [string, string]> = {
-  Draft: ["#f4f6f3", "#767b6e"], Submitted: ["#e1efed", "#0c3f39"], Cancelled: ["#f8eaea", "#b23a3a"],
-  Dispatched: ["#f6efd9", "#6e4d12"], Delivered: ["#e2f0e9", "#2f8a5b"], Signed: ["#e1efed", "#0c3f39"],
-  Sent: ["#f6efd9", "#6e4d12"], "Partially Paid": ["#f6efd9", "#6e4d12"], Paid: ["#e2f0e9", "#2f8a5b"], Overdue: ["#f8eaea", "#b23a3a"],
-  Open: ["#f6efd9", "#6e4d12"], "Partially Received": ["#f6efd9", "#6e4d12"], Received: ["#e2f0e9", "#2f8a5b"], Closed: ["#f4f6f3", "#767b6e"],
-  Unpaid: ["#f6efd9", "#6e4d12"], Completed: ["#e2f0e9", "#2f8a5b"],
-  "In stock": ["#e2f0e9", "#2f8a5b"], Shortage: ["#f8eaea", "#b23a3a"], "On PO": ["#f6efd9", "#6e4d12"], Low: ["#f6efd9", "#6e4d12"], Zero: ["#f8eaea", "#b23a3a"],
-  Sofa: ["#e2f0e9", "#2f8a5b"], Mattress: ["#f3ece0", "#a16a2e"], Bedframe: ["#e1efed", "#0c3f39"], Accessory: ["#f4f6f3", "#767b6e"],
-  Active: ["#e2f0e9", "#2f8a5b"], Invited: ["#f6efd9", "#6e4d12"], Inactive: ["#f4f6f3", "#767b6e"],
-  "In-house": ["#e2f0e9", "#2f8a5b"], Outsource: ["#f3ece0", "#a16a2e"], Off: ["#f4f6f3", "#767b6e"],
+// ── Build-spec status → badge class (docs/mobile-build-spec.html per-screen
+// STATES map). Resolves a humanized/raw status label to one of the canonical
+// .b-* palette classes; unknown → neutral grey. Keys are matched case-
+// insensitively against the label's collapsed form (spaces & underscores gone).
+const BADGE_CLASS: Record<string, string> = {
+  // greens (confirmed / paid / delivered / received / in-stock / active)
+  delivered: "b-green", paid: "b-green", posted: "b-green", received: "b-green",
+  signed: "b-green", completed: "b-green", refunded: "b-green", instock: "b-green",
+  available: "b-green", active: "b-green", inhouse: "b-green",
+  // ambers (pending / partial / open / sent / dispatched / low / on-po)
+  dispatched: "b-amber", sent: "b-amber", open: "b-amber", unpaid: "b-amber",
+  partiallypaid: "b-amber", partiallyreceived: "b-amber", low: "b-amber",
+  onpo: "b-amber", ontrip: "b-amber", intransit: "b-amber", loaded: "b-amber",
+  invited: "b-amber", outsource: "b-amber",
+  // reds (cancelled / overdue / shortage / zero / maintenance)
+  cancelled: "b-red", voided: "b-red", void: "b-red", overdue: "b-red",
+  shortage: "b-red", zero: "b-red", maintenance: "b-red",
+  // brand (approved / submitted)
+  approved: "b-brand", submitted: "b-brand",
+  // greys (draft / closed / inactive / off)
+  draft: "b-grey", closed: "b-grey", inactive: "b-grey", off: "b-grey",
+  disabled: "b-grey", invoiced: "b-grey",
 };
 
-function Pill({ label }: { label: string }) {
+/** Collapse a status label to its BADGE_CLASS lookup key. */
+const badgeClass = (label: string): string => {
+  const k = String(label ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  return BADGE_CLASS[k] ?? "b-grey";
+};
+
+/** Canonical spec status badge (`.badge .b-*`). Empty label → nothing. */
+function Badge({ label }: { label: string }) {
   const clean = (label ?? "").trim();
   if (!clean) return null;
-  const [bg, fg] = PILL[clean] ?? ["#f4f6f3", "#767b6e"];
+  return <span className={`badge ${badgeClass(clean)}`}>{clean}</span>;
+}
+
+/** Circle avatar with initials on #15161a / gold (spec drivers/members). */
+function Avatar({ seed, size = 40 }: { seed: string; size?: number }) {
+  const initials = String(seed ?? "")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase() || "?";
   return (
-    <span className="spill" style={{ background: bg, color: fg }}>
-      {clean}
+    <span
+      style={{
+        width: size, height: size, flex: "none", borderRadius: "50%",
+        background: "#15161a", color: "#d8a85a", fontSize: 13, fontWeight: 800,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+    >
+      {initials}
     </span>
   );
 }
@@ -247,34 +317,36 @@ export function MobileModuleList({
     return out;
   }, [all, q, chip, chip2, sortKey, config]);
 
-  const useFields = !!config.fields?.length;
-
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-          {onBack ? (
-            <span onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }}>
-              <span style={{ fontSize: 17, lineHeight: 1 }}>‹</span> Menu
-            </span>
-          ) : (
-            <span />
+        {onBack && (
+          <div style={{ marginBottom: 8 }}>
+            <button className="back" onClick={onBack}>
+              <span className="chev">{"‹"}</span> Menu
+            </button>
+          </div>
+        )}
+        {/* header lockup: gold eyebrow + big title (spec T3 + T1), + New action */}
+        <div className="hdr-row">
+          <div>
+            {config.eyebrow && <div className="eyebrow">{config.eyebrow}</div>}
+            <div className="scr-title">{config.title}</div>
+          </div>
+          {onNew && (
+            // Render whenever the parent wires onNew — a module with a `form`
+            // opens MobileModuleForm; a doc module (DO/SI/GRN/PO) opens the
+            // convert wizard. Both go through the same "+ New" affordance.
+            <button onClick={onNew} className="iconbtn" aria-label={`New ${config.title}`}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+            </button>
           )}
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {config.eyebrow && <span className="ey" style={{ color: "#a16a2e" }}>{config.eyebrow}</span>}
-            {onNew && (
-              // Render whenever the parent wires onNew — a module with a `form`
-              // opens MobileModuleForm; a doc module (DO/SI/GRN/PO) opens the
-              // convert wizard. Both go through the same "+ New" affordance.
-              <button onClick={onNew} className="tinybtn" style={{ background: "#16695f", borderColor: "#16695f", color: "#fff" }}>+ New</button>
-            )}
-          </span>
         </div>
-        <div style={{ fontSize: 20, fontWeight: 800, color: "#11140f", marginBottom: 11 }}>{config.title}</div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, background: "#f4f6f3", border: "1px solid #d6d9d2", borderRadius: 10, padding: "8px 11px" }}>
+
+        <div className="hdr-row" style={{ marginTop: 11 }}>
+          <div className="searchbar">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={config.placeholder ?? `Search ${config.title.toLowerCase()}`} style={{ flex: 1, minWidth: 0, border: "none", background: "transparent", outline: "none", fontFamily: "inherit", fontSize: 13, color: "#11140f" }} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={config.placeholder ?? `Search ${config.title.toLowerCase()}`} />
           </div>
           {config.sorts && config.sorts.length > 0 && (
             <select
@@ -292,95 +364,222 @@ export function MobileModuleList({
         </div>
 
         {config.chips && config.chips.length > 0 && (
-          <div style={{ display: "flex", gap: 7, overflowX: "auto", marginTop: 10, paddingBottom: 2 }}>
+          <div className="chips" style={{ marginTop: 11 }}>
             {config.chips.map((c) => {
               const on = chip === c.key;
               const count = c.key === "all" ? all.length : all.filter((r) => safeMatch(c.match, r)).length;
               return (
-                <button key={c.key} onClick={() => setChip(c.key)} className={on ? "sochip on" : "sochip"}>
-                  {c.label} (<span className="cnt">{count}</span>)
+                <button key={c.key} onClick={() => setChip(c.key)} className={on ? "chip on" : "chip"}>
+                  {c.label} ({count})
                 </button>
               );
             })}
           </div>
         )}
         {config.chips2 && config.chips2.length > 0 && (
-          <div style={{ display: "flex", gap: 7, overflowX: "auto", marginTop: 8, paddingBottom: 2 }}>
+          <div className="chips" style={{ marginTop: 8 }}>
             {config.chips2.map((c) => (
-              <button key={c.key} onClick={() => setChip2(c.key)} className={chip2 === c.key ? "sochip on" : "sochip"}>{c.label}</button>
+              <button key={c.key} onClick={() => setChip2(c.key)} className={chip2 === c.key ? "chip on" : "chip"}>{c.label}</button>
             ))}
           </div>
         )}
       </header>
 
       <div className="hz-scroll" style={{ flex: 1, overflowY: "auto", padding: 14, paddingBottom: 120 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", fontSize: 11.5, color: "var(--muted)", margin: "0 2px 11px" }}>
-          <span><b style={{ color: "var(--ink)" }}>{rows.length}</b> {rows.length === 1 ? "record" : "records"}</span>
-        </div>
+        {/* Variable-count note pill (spec § list-note): count of shown records. */}
+        {!isLoading && !error && rows.length > 0 && (
+          <span className="list-note">{rows.length} {rows.length === 1 ? "record" : "records"}</span>
+        )}
 
-        {isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
-        {!!error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load {config.title.toLowerCase()}. Pull to retry.</div>}
-        {!isLoading && !error && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-            {rows.map((r, i) => {
-              const clickable = !!onOpen;
-              const key = (r.id as string) ?? (r.doc_no as string) ?? i;
-              if (useFields) {
-                const title = safe(config.primary, r) || "—";
-                const pillLabel = config.pill ? safe(config.pill, r) : "";
-                const cancelled = eq(pillLabel, "Cancelled");
-                return (
-                  <div
-                    key={key}
-                    onClick={clickable ? () => onOpen!(r) : undefined}
-                    className={cancelled ? "so-row cancelled" : "so-row"}
-                    style={clickable ? undefined : { cursor: "default" }}
-                  >
-                    <div className="so-row-head">
-                      <span className="so-row-name">{title}</span>
-                      {pillLabel ? <Pill label={pillLabel} /> : null}
-                    </div>
-                    <div className="so-grid">
-                      {config.fields!.map(([accessor, label]) => (
-                        <div key={label} style={{ display: "contents" }}>
-                          <span className="so-k">{label}</span>
-                          <span className="so-v money">{safe(accessor, r) || "—"}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              }
-              // Fallback: legacy primary / secondary / right module (no fields[]).
-              // Rendered with the same design .so-row markup — the right value
-              // becomes a value pill, secondary a single so-k / so-v pair.
-              const primary = safe(config.primary, r) || "—";
-              const secondary = safe(config.secondary, r);
-              const rightRaw = config.right ? config.right(r) : "";
-              const rightText = config.rightMoney ? `RM ${rm(rightRaw as unknown as number)}` : rightRaw;
-              return (
-                <div
-                  key={key}
-                  onClick={clickable ? () => onOpen!(r) : undefined}
-                  className="so-row"
-                  style={clickable ? undefined : { cursor: "default" }}
-                >
-                  <div className="so-row-head">
-                    <span className="so-row-name">{primary}</span>
-                    {rightText && <span className="so-v money" style={{ fontWeight: 800 }}>{rightText}</span>}
-                  </div>
-                  {secondary && (
-                    <div className="so-grid">
-                      <span className="so-k">Detail</span>
-                      <span className="so-v money">{secondary}</span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {!rows.length && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>No {config.title.toLowerCase()} to show.</div>}
+        {/* LOADING: skeleton cards (spec § Foundations — 3 skeletons). */}
+        {isLoading && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="card"><div className="card-b" style={{ padding: "12px 13px" }}>
+                <div className="ph" style={{ height: 14, width: "55%", borderRadius: 5 }} />
+                <div className="ph" style={{ height: 11, width: "38%", borderRadius: 5, marginTop: 8 }} />
+              </div></div>
+            ))}
           </div>
         )}
+
+        {/* ERROR: retry strip (spec § Foundations). */}
+        {!!error && !isLoading && (
+          <div className="empty">
+            <div className="empty-t">Couldn't load {config.title.toLowerCase()}.</div>
+            <div className="empty-s">Pull to refresh to try again.</div>
+          </div>
+        )}
+
+        {!isLoading && !error && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+            {rows.map((r, i) => (
+              <ListCard
+                key={(r.id as string) ?? (r.doc_no as string) ?? i}
+                config={config}
+                row={r}
+                onOpen={onOpen}
+              />
+            ))}
+            {/* EMPTY state (spec § Foundations — empty block). */}
+            {!rows.length && (
+              <div className="empty">
+                <div className="empty-t">No {config.title.toLowerCase()}</div>
+                <div className="empty-s">{q.trim() ? "Try a different search." : "Nothing to show yet."}</div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ListCard — renders ONE spec-aligned list card, routed on config.variant. Each
+// branch mirrors the corresponding Build-Spec screen markup (docs/mobile-build-
+// spec.html), using the canonical .card / .card-b / .badge classes. When no
+// variant is set, falls back to the generic fields[] grid so untouched modules
+// keep working. All accessors are read through safe()/pick — a missing value is
+// an em-dash, never undefined.
+// ---------------------------------------------------------------------------
+function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onOpen?: (row: any) => void }) {
+  const clickable = !!onOpen;
+  const open = clickable ? () => onOpen!(row) : undefined;
+  const cardStyle: React.CSSProperties = clickable ? { cursor: "pointer" } : { cursor: "default" };
+  const pillStatus = config.pill ? safe(config.pill, row) : "";
+  const status = config.badgeText ? safe(config.badgeText, row) : pillStatus;
+  const cancelled = eq(pillStatus, "Cancelled");
+  const name = safe(config.primary, row) || "—";
+  const sub = config.subline ? safe(config.subline, row) : safe(config.secondary, row);
+  const noteLine = config.note ? safe(config.note, row) : "";
+
+  // ── person: avatar + name/sub + status badge (drivers / members) ────────────
+  if (config.variant === "person") {
+    return (
+      <div className="card" onClick={open} style={cardStyle}>
+        <div className="card-b" style={{ padding: "12px 13px", display: "flex", alignItems: "center", gap: 11 }}>
+          <Avatar seed={config.avatar ? safe(config.avatar, row) : name} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+            {sub && <div className="tnum" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>{sub}</div>}
+          </div>
+          {status ? <Badge label={status} /> : null}
+        </div>
+      </div>
+    );
+  }
+
+  // ── product: thumbnail + name/SKU + right price / uom ────────────────────────
+  if (config.variant === "product") {
+    const priceRaw = config.price ? config.price(row) : "";
+    const priceText = config.priceMoney ? `RM ${rm(priceRaw as unknown as number)}` : priceRaw;
+    const uomText = config.uom ? safe(config.uom, row) : "";
+    return (
+      <div className="card" onClick={open} style={cardStyle}>
+        <div className="card-b" style={{ padding: "11px 13px", display: "flex", gap: 11, alignItems: "center" }}>
+          <div className="ph" style={{ width: 46, height: 46, flex: "none", borderRadius: 8 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</div>
+            {sub && <div className="tnum" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>{sub}</div>}
+          </div>
+          <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+            {priceText && <div className="money-row">{priceText}</div>}
+            {uomText && <div className="tnum" style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 2 }}>/{uomText}</div>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── inventory / mrp / warehouse: name + badge, sub-line, KPI footer ──────────
+  if (config.variant === "inventory" || config.variant === "mrp" || config.variant === "warehouse") {
+    const kpis = config.kpis ? config.kpis(row) : [];
+    const isGrid = config.variant === "mrp"; // 4-col centred grid vs inline row
+    return (
+      <div className="card" onClick={open} style={cardStyle}>
+        <div className="card-b" style={{ padding: "12px 13px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <span style={{ fontSize: config.variant === "warehouse" ? 14 : 13.5, fontWeight: config.variant === "warehouse" ? 800 : 700, color: "var(--ink)" }}>{name}</span>
+            {status ? <Badge label={status} /> : null}
+          </div>
+          {sub && <div className="tnum" style={{ fontSize: 11, color: "var(--mut)", marginTop: 3 }}>{sub}</div>}
+          {noteLine && <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 6, lineHeight: 1.4 }}>{noteLine}</div>}
+          {kpis.length > 0 && (
+            <div
+              style={
+                isGrid
+                  ? { display: "grid", gridTemplateColumns: `repeat(${kpis.length},1fr)`, gap: 6, marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line2)", textAlign: "center" }
+                  : { display: "flex", gap: 14, marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line2)", fontSize: 11 }
+              }
+            >
+              {kpis.map(([label, value], k) =>
+                isGrid ? (
+                  <div key={label}>
+                    <div style={{ color: "var(--mut2)", fontSize: 10.5 }}>{label}</div>
+                    <div className="tnum" style={{ fontWeight: 700, fontSize: 10.5, color: label === "Shortage" ? "var(--red)" : "var(--ink)" }}>{value}</div>
+                  </div>
+                ) : (
+                  <span key={label} style={{ color: "var(--mut)" }}>{label} <b className="tnum" style={{ color: k === kpis.length - 1 && config.variant === "inventory" ? "var(--brand-d)" : "var(--ink)" }}>{value}</b></span>
+                ),
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── doc: name + status badge, doc_no·date sub-line, optional note, footer ─────
+  if (config.variant === "doc") {
+    const fl = config.footL ? config.footL(row) : null;
+    const frRaw = config.footR ? config.footR(row) : "";
+    const frText = config.footMoney ? `RM ${rm(frRaw as unknown as number)}` : frRaw;
+    const hasFooter = !!(fl || frText);
+    return (
+      <div className="card" onClick={open} style={{ ...cardStyle, ...(cancelled ? { opacity: 0.6 } : null) }}>
+        <div className="card-b" style={{ padding: "12px 13px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>{name}</span>
+            {status ? <Badge label={status} /> : null}
+          </div>
+          {sub && <div className="tnum" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5 }}>{sub}</div>}
+          {noteLine && <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 6, lineHeight: 1.4 }}>{noteLine}</div>}
+          {hasFooter && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: fl ? "space-between" : "flex-end", marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
+              {fl && <span style={{ fontSize: 11, color: "var(--mut)" }}>{fl[0] ? <>{fl[0]} </> : null}<b style={{ color: "var(--ink)" }}>{fl[1] || "—"}</b></span>}
+              {frText && <span className="money-row">{frText}</span>}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── fallback: generic fields[] grid, re-skinned to canonical .card/.badge ────
+  return (
+    <div className="card" onClick={open} style={{ ...cardStyle, ...(cancelled ? { opacity: 0.6 } : null) }}>
+      <div className="card-b" style={{ padding: "12px 13px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>{name}</span>
+          {status ? <Badge label={status} /> : (() => {
+            const rightRaw = config.right ? config.right(row) : "";
+            const rightText = config.rightMoney ? `RM ${rm(rightRaw as unknown as number)}` : rightRaw;
+            return rightText ? <span className="money-row">{rightText}</span> : null;
+          })()}
+        </div>
+        {config.fields?.length ? (
+          <div className="so-grid" style={{ marginTop: 8 }}>
+            {config.fields.map(([accessor, label]) => (
+              <div key={label} style={{ display: "contents" }}>
+                <span className="so-k">{label}</span>
+                <span className="so-v money">{safe(accessor, row) || "—"}</span>
+              </div>
+            ))}
+          </div>
+        ) : sub ? (
+          <div className="tnum" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5 }}>{sub}</div>
+        ) : null}
       </div>
     </div>
   );
@@ -655,6 +854,14 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     rightMoney: true,
     search: (r) => join(r.debtor_name, r.do_number, r.so_doc_no, r.ref),
     pill: (r) => statusLabel(pick(r, "status")),
+    // Spec #do-list: name + status badge, "{{doc_no}} · {{delivery_date}}" sub-
+    // line, footer "Driver {{name}}" + RM {{total_centi}}. items_summary has no
+    // list column → line-count shown in the footer left instead.
+    variant: "doc",
+    subline: (r) => join(pick(r, "doNumber", "do_number"), dm(pick(r, "doDate", "do_date"))),
+    footL: (r) => ["Driver", pick(r, "driverName", "driver_name") ?? "—"],
+    footR: (r) => pick(r, "localTotalCenti", "local_total_centi"),
+    footMoney: true,
     fields: [
       [(r) => pick(r, "doNumber", "do_number") ?? "—", "DO No"],
       [(r) => dm(pick(r, "doDate", "do_date")), "Date"],
@@ -691,6 +898,13 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     rightMoney: true,
     search: (r) => join(r.debtor_name, r.invoice_number, r.so_doc_no, r.ref),
     pill: (r) => statusLabel(pick(r, "status")),
+    // Spec #si-list: "{{doc_no}} · due {{due_date}}" sub-line, footer
+    // "Balance RM {{balance_centi}}" + RM {{total_centi}} (balance computed).
+    variant: "doc",
+    subline: (r) => join(pick(r, "invoiceNumber", "invoice_number"), dm(pick(r, "dueDate", "due_date")) !== "—" ? `due ${dm(pick(r, "dueDate", "due_date"))}` : ""),
+    footL: (r) => ["Balance", rmField(balanceCenti(r))],
+    footR: (r) => pick(r, "totalCenti", "total_centi", "localTotalCenti", "local_total_centi"),
+    footMoney: true,
     fields: [
       [(r) => pick(r, "invoiceNumber", "invoice_number") ?? "—", "Inv No"],
       [(r) => dm(pick(r, "invoiceDate", "invoice_date")), "Date"],
@@ -717,9 +931,9 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   // nested purchase_order.po_number, received_at, status. Items count has NO
   // column on the list row (items are a separate table) → OMITTED.
   grns: {
-    title: "Goods Receipt",
-    eyebrow: "Procurement",
-    placeholder: "Search GR · supplier · PO",
+    title: "Goods Received",
+    eyebrow: "Warehouse",
+    placeholder: "Search GRN · supplier · PO",
     endpoint: "/grns?limit=500&fields=minimal",
     listKey: "grns",
     primary: (r) => r.supplier?.name || r.grn_number,
@@ -728,11 +942,23 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     rightMoney: true,
     search: (r) => join(r.grn_number, r.supplier?.name, r.supplier?.code, r.delivery_note_ref),
     pill: (r) => statusLabel(pick(r, "status")),
+    // Spec #grn-list: name + status, "{{doc_no}} · {{received_date}} · PO
+    // {{po_doc_no}}" sub-line, no money footer. items_summary has no list column.
+    variant: "doc",
+    subline: (r) => {
+      const po = r.purchase_order?.po_number ?? r.purchaseOrder?.poNumber;
+      return join(pick(r, "grnNumber", "grn_number"), dm(pick(r, "receivedAt", "received_at")), po ? `PO ${po}` : "");
+    },
     fields: [
       [(r) => pick(r, "grnNumber", "grn_number") ?? "—", "GR No"],
       [(r) => r.purchase_order?.po_number ?? r.purchaseOrder?.poNumber ?? "—", "PO"],
       [(r) => dm(pick(r, "receivedAt", "received_at")), "Date"],
       [(r) => rmField(pick(r, "totalCenti", "total_centi")), "Value"],
+    ],
+    chips: [
+      { key: "all", label: "All", match: () => true },
+      { key: "draft", label: "Draft", match: (r) => eq(pick(r, "status"), "draft") },
+      { key: "posted", label: "Posted", match: (r) => eq(pick(r, "status"), "posted") },
     ],
     sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "receivedAt", "received_at"), pick(b, "receivedAt", "received_at")) }],
   },
@@ -753,6 +979,13 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     rightMoney: true,
     search: (r) => join(r.po_number, r.supplier?.name, r.supplier?.code),
     pill: (r) => statusLabel(pick(r, "status")),
+    // Spec #po-list: name + status, "{{doc_no}} · exp {{expected_date}}" sub-line,
+    // footer "{{line_count}} lines" + RM {{total_centi}}.
+    variant: "doc",
+    subline: (r) => join(pick(r, "poNumber", "po_number"), dm(pick(r, "expectedAt", "expected_at")) !== "—" ? `exp ${dm(pick(r, "expectedAt", "expected_at"))}` : ""),
+    footL: (r) => { const n = pick(r, "lineCount", "line_count"); return ["", n == null ? "" : `${n} lines`]; },
+    footR: (r) => pick(r, "totalCenti", "total_centi"),
+    footMoney: true,
     fields: [
       [(r) => pick(r, "poNumber", "po_number") ?? "—", "PO No"],
       [(r) => dm(pick(r, "poDate", "po_date")), "Date"],
@@ -777,8 +1010,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   // and Utilisation have NO per-warehouse column → OMITTED; only Code is bound.
   // Pill = the warehouse code (design pillKey:'code').
   warehouse: {
-    title: "Warehouse",
-    eyebrow: "Storage",
+    title: "Warehouses",
+    eyebrow: "Network",
     placeholder: "Search name · code",
     endpoint: "/warehouse",
     listKey: "warehouses",
@@ -786,6 +1019,18 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     secondary: (r) => join(r.code),
     search: (r) => join(r.name, r.code),
     pill: (r) => pick(r, "code") ?? "",
+    // Spec #warehouse: name + grey code badge, "{{address}}, {{state}}" line,
+    // "SKUs {{sku_count}} · Units {{unit_count}}" footer. warehouses row is
+    // {id,code,name} ONLY → address / state / counts have no column (line hidden,
+    // KPI values em-dash).
+    variant: "warehouse",
+    subline: () => "",
+    note: (r) => join(pick(r, "address"), pick(r, "state")),
+    kpis: (r) => {
+      const skus = pick(r, "skuCount", "sku_count");
+      const units = pick(r, "unitCount", "unit_count");
+      return [["SKUs", skus == null ? "—" : String(skus)], ["Units", units == null ? "—" : String(units)]];
+    },
     fields: [
       [(r) => pick(r, "code") ?? "—", "Code"],
     ],
@@ -802,7 +1047,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   // (In stock / Low / Zero) is computed client-side from qty.
   inventory: {
     title: "Inventory",
-    eyebrow: "Storage",
+    eyebrow: "Stock",
     placeholder: "Search product · SKU",
     endpoint: "/inventory?showAll=true",
     listKey: "balances",
@@ -811,6 +1056,15 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => (r.qty == null ? "" : `${r.qty}`),
     search: (r) => join(r.product_name, r.product_code, r.category, r.warehouse_name),
     pill: (r) => stockLevel(pick(r, "qty")),
+    // Spec #inventory: name + stock badge, "SKU {{sku}} · {{warehouse_name}}" sub-
+    // line, 3-KPI footer (On hand / Reserved / Available). v_inventory_all_skus
+    // has only qty → Reserved / Available have no column and render em-dash.
+    variant: "inventory",
+    subline: (r) => { const sku = pick(r, "productCode", "product_code"); return join(sku ? `SKU ${sku}` : "", pick(r, "warehouseCode", "warehouse_code", "warehouseName", "warehouse_name")); },
+    kpis: (r) => {
+      const n = pick(r, "qty");
+      return [["On hand", n == null ? "—" : String(n)], ["Reserved", "—"], ["Available", n == null ? "—" : String(n)]];
+    },
     fields: [
       [(r) => pick(r, "productCode", "product_code") ?? "—", "SKU"],
       [(r) => pick(r, "warehouseCode", "warehouse_code", "warehouseName", "warehouse_name") ?? "—", "Warehouse"],
@@ -836,7 +1090,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   // bound. Pill = In-house / Outsource (design "status").
   drivers: {
     title: "Drivers",
-    eyebrow: "Transportation",
+    eyebrow: "Fleet",
     placeholder: "Search driver · phone",
     endpoint: "/drivers",
     listKey: "drivers",
@@ -845,6 +1099,12 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => (r.in_house ? "In-house" : "Outsource"),
     search: (r) => join(r.name, r.driver_code, r.phone, r.vehicle),
     pill: (r) => (pick(r, "inHouse", "in_house") ? "In-house" : "Outsource"),
+    // Spec #drivers: avatar initials + name + "{{phone}} · {{today_stops}} stops"
+    // + status badge. today_stops / AVAILABLE-ON_TRIP-OFF status have no column →
+    // sub-line shows phone · code; badge keeps the In-house/Outsource fleet flag.
+    variant: "person",
+    avatar: (r) => r.name ?? "",
+    subline: (r) => join(pick(r, "phone"), pick(r, "driverCode", "driver_code")),
     fields: [
       [(r) => pick(r, "phone") ?? "—", "Phone"],
       [(r) => pick(r, "driverCode", "driver_code") ?? "—", "Code"],
@@ -882,8 +1142,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   // name, email, position_name, department_name, role_name, status.
   members: {
     title: "Members",
-    eyebrow: "Team",
-    placeholder: "Search name · email",
+    eyebrow: "Organisation",
+    placeholder: "Search name · position",
     core: true,
     endpoint: "/api/users",
     listKey: "users",
@@ -892,6 +1152,11 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.status ?? "",
     search: (r) => join(r.name, r.email, r.phone, r.position_name, r.department_name, r.role_name),
     pill: (r) => statusLabel(pick(r, "status")),
+    // Spec #members: avatar initials + name + "{{position}} · {{department}}"
+    // sub-line + status badge (ACTIVE=green / INACTIVE=grey; Invited=amber here).
+    variant: "person",
+    avatar: (r) => r.name || r.email || "",
+    subline: (r) => join(pick(r, "positionName", "position_name"), pick(r, "departmentName", "department_name")),
     fields: [
       [(r) => pick(r, "email") ?? "—", "Email"],
       [(r) => pick(r, "positionName", "position_name") ?? "—", "Position"],
@@ -914,7 +1179,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   // /positions/:id/page-access endpoint → OMITTED. Pill = department name.
   positions: {
     title: "Positions",
-    eyebrow: "Team",
+    eyebrow: "Organisation",
     placeholder: "Search position · department",
     core: true,
     endpoint: "/api/positions",
@@ -923,6 +1188,12 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     secondary: (r) => join(r.department_name, r.division),
     search: (r) => join(r.name, r.department_name),
     pill: (r) => pick(r, "departmentName", "department_name") ?? "",
+    // Spec #positions: title + "{{member_count}} members" grey badge,
+    // "{{department_name}}" sub-line, "{{permission_summary}}" note (no column →
+    // hidden). badgeText overrides the list badge; pill stays the dept for detail.
+    variant: "doc",
+    badgeText: (r) => { const n = pick(r, "memberCount", "member_count"); return n == null ? "" : `${n} members`; },
+    subline: (r) => pick(r, "departmentName", "department_name") ?? "",
     fields: [
       [(r) => pick(r, "departmentName", "department_name") ?? "—", "Department"],
       [(r) => { const n = pick(r, "memberCount", "member_count"); return n == null ? "—" : String(n); }, "Members"],
@@ -937,7 +1208,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   // only Members bound.
   departments: {
     title: "Departments",
-    eyebrow: "Team",
+    eyebrow: "Organisation",
     placeholder: "Search department",
     core: true,
     endpoint: "/api/departments",
@@ -945,6 +1216,11 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     primary: (r) => r.name,
     secondary: (r) => join(r.division),
     search: (r) => join(r.name),
+    // Spec #departments: name + "{{member_count}}" grey badge, "Head ·
+    // {{head_name}}" sub-line (head has no column → em-dash).
+    variant: "doc",
+    badgeText: (r) => { const n = pick(r, "memberCount", "member_count"); return n == null ? "" : String(n); },
+    subline: (r) => `Head · ${pick(r, "headName", "head_name") ?? "—"}`,
     fields: [
       [(r) => { const n = pick(r, "memberCount", "member_count"); return n == null ? "—" : String(n); }, "Members"],
     ],
@@ -968,6 +1244,17 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     rightMoney: true,
     search: (r) => join(r.debtor_name, r.return_number, r.do_doc_no),
     pill: (r) => statusLabel(pick(r, "status")),
+    // Spec #sr-list: name + status, "{{doc_no}} · {{return_date}} · ref
+    // {{so_doc_no}}" sub-line, "{{reason}}" note (hidden when blank), right-only
+    // RM {{refund_centi}} footer.
+    variant: "doc",
+    subline: (r) => {
+      const ref = pick(r, "soDocNo", "so_doc_no", "doDocNo", "do_doc_no");
+      return join(pick(r, "returnNumber", "return_number"), dm(pick(r, "returnDate", "return_date")), ref ? `ref ${ref}` : "");
+    },
+    note: (r) => pick(r, "reason") ?? "",
+    footR: (r) => pick(r, "refundCenti", "refund_centi"),
+    footMoney: true,
     fields: [
       [(r) => pick(r, "returnNumber", "return_number") ?? "—", "Return No"],
       [(r) => dm(pick(r, "returnDate", "return_date")), "Date"],
@@ -976,8 +1263,9 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     ],
     chips: [
       { key: "all", label: "All", match: () => true },
-      { key: "open", label: "Open", match: (r) => eq(pick(r, "status"), "open") },
-      { key: "completed", label: "Completed", match: (r) => eq(pick(r, "status"), "completed") },
+      { key: "received", label: "Received", match: (r) => eq(pick(r, "status"), "received") },
+      { key: "inspected", label: "Inspected", match: (r) => eq(pick(r, "status"), "inspected") },
+      { key: "refunded", label: "Refunded", match: (r) => eq(pick(r, "status"), "refunded") },
       { key: "cancelled", label: "Cancelled", match: (r) => eq(pick(r, "status"), "cancelled") },
     ],
     sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "returnDate", "return_date"), pick(b, "returnDate", "return_date")) }],
@@ -999,6 +1287,13 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     rightMoney: true,
     search: (r) => join(r.invoice_number, r.supplier?.name, r.supplier_invoice_ref),
     pill: (r) => statusLabel(pick(r, "status")),
+    // Spec #pi-list: name + status, "{{doc_no}} · due {{due_date}}" sub-line,
+    // footer "Balance RM {{balance_centi}}" + RM {{total_centi}}.
+    variant: "doc",
+    subline: (r) => join(pick(r, "invoiceNumber", "invoice_number"), dm(pick(r, "dueDate", "due_date")) !== "—" ? `due ${dm(pick(r, "dueDate", "due_date"))}` : ""),
+    footL: (r) => ["Balance", rmField(balanceCenti(r))],
+    footR: (r) => pick(r, "totalCenti", "total_centi"),
+    footMoney: true,
     fields: [
       [(r) => pick(r, "invoiceNumber", "invoice_number") ?? "—", "PI No"],
       [(r) => dm(pick(r, "invoiceDate", "invoice_date")), "Date"],
@@ -1033,6 +1328,17 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     rightMoney: true,
     search: (r) => join(r.return_number, r.supplier?.name, r.credit_note_ref),
     pill: (r) => statusLabel(pick(r, "status")),
+    // Spec #preturn-list: name + status, "{{doc_no}} · {{return_date}} · PO
+    // {{po_doc_no}}" sub-line, "{{reason}}" note (hidden when blank), right-only
+    // RM {{refund_centi}} footer.
+    variant: "doc",
+    subline: (r) => {
+      const po = pick(r, "poDocNo", "po_doc_no", "sourcePoDocNo", "source_po_doc_no");
+      return join(pick(r, "returnNumber", "return_number"), dm(pick(r, "returnDate", "return_date")), po ? `PO ${po}` : "");
+    },
+    note: (r) => pick(r, "reason") ?? "",
+    footR: (r) => pick(r, "refundCenti", "refund_centi"),
+    footMoney: true,
     fields: [
       [(r) => pick(r, "returnNumber", "return_number") ?? "—", "Return No"],
       [(r) => dm(pick(r, "returnDate", "return_date")), "Date"],
@@ -1041,8 +1347,10 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     ],
     chips: [
       { key: "all", label: "All", match: () => true },
-      { key: "open", label: "Open", match: (r) => eq(pick(r, "status"), "open") },
+      { key: "draft", label: "Draft", match: (r) => eq(pick(r, "status"), "draft") },
+      { key: "posted", label: "Posted", match: (r) => eq(pick(r, "status"), "posted") },
       { key: "completed", label: "Completed", match: (r) => eq(pick(r, "status"), "completed") },
+      { key: "cancelled", label: "Cancelled", match: (r) => eq(pick(r, "status"), "cancelled") },
     ],
     sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "returnDate", "return_date"), pick(b, "returnDate", "return_date")) }],
   },
@@ -1134,9 +1442,23 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => (r.stock == null ? "" : `${r.stock}`),
     search: (r) => join(r.name, r.sku, r.category?.label, r.series?.label),
     pill: (r) => pick(r.category, "label", "name") ?? "",
+    // Spec #products: .ph thumbnail + name + "SKU {{sku}} · {{category}}" sub-
+    // line + right "RM {{price_centi}}" / "/{{uom}}". flat_price is the flat SKU
+    // price (whole-RM sen); uom has no list column → omitted.
+    variant: "product",
+    subline: (r) => { const sku = pick(r, "sku"); return join(sku ? `SKU ${sku}` : "", pick(r.category, "label", "name")); },
+    price: (r) => pick(r, "flatPrice", "flat_price") ?? "",
+    priceMoney: true,
     fields: [
       [(r) => pick(r, "sku") ?? "—", "SKU"],
       [(r) => rmField(pick(r, "flatPrice", "flat_price")), "Price"],
+    ],
+    chips: [
+      { key: "all", label: "All", match: () => true },
+      { key: "sofa", label: "Sofa", match: (r) => /sofa/i.test(String(pick(r.category, "label", "name") ?? "")) },
+      { key: "bedframe", label: "Bedframe", match: (r) => /bed\s*frame|bedframe/i.test(String(pick(r.category, "label", "name") ?? "")) },
+      { key: "mattress", label: "Mattress", match: (r) => /mattress/i.test(String(pick(r.category, "label", "name") ?? "")) },
+      { key: "parts", label: "Parts", match: (r) => /part|accessor/i.test(String(pick(r.category, "label", "name") ?? "")) },
     ],
     sorts: [
       { key: "name", label: "Name", cmp: (a, b) => byStr(a.name, b.name) },
@@ -1150,7 +1472,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   // (In stock / Shortage / On PO) is derived from shortage/poOutstanding.
   mrp: {
     title: "MRP · Stock Status",
-    eyebrow: "Procurement",
+    eyebrow: "Planning",
     placeholder: "Search product · SKU",
     endpoint: "/mrp",
     listKey: "skus",
@@ -1158,6 +1480,15 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     secondary: (r) => join(pick(r, "itemCode", "item_code"), pick(r, "category"), pick(r, "warehouseCode", "warehouse_code", "warehouseName", "warehouse_name")),
     search: (r) => join(pick(r, "description"), pick(r, "itemCode", "item_code"), pick(r, "category")),
     pill: (r) => mrpState(r),
+    // Spec #mrp: name + state badge, "SKU {{sku}}" sub-line, 4-col KPI grid
+    // (Demand / On hand / Incoming / Shortage). Maps to qtyNeeded / stock /
+    // poOutstanding / shortage on the computed MrpSku row.
+    variant: "mrp",
+    subline: (r) => { const sku = pick(r, "itemCode", "item_code"); return sku ? `SKU ${sku}` : ""; },
+    kpis: (r) => {
+      const g = (...k: string[]) => { const n = pick(r, ...k); return n == null ? "—" : String(n); };
+      return [["Demand", g("qtyNeeded", "qty_needed")], ["On hand", g("stock")], ["Incoming", g("poOutstanding", "po_outstanding")], ["Shortage", g("shortage")]];
+    },
     fields: [
       [(r) => pick(r, "itemCode", "item_code") ?? "—", "SKU"],
       [(r) => { const n = pick(r, "qtyNeeded", "qty_needed"); return n == null ? "—" : String(n); }, "Required"],
@@ -1182,8 +1513,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   // NO column on a lorry (lorries aren't linked to drivers) → OMITTED. Status
   // pill: Off (inactive) / In-house / Outsource.
   fleet: {
-    title: "Fleet",
-    eyebrow: "Transportation",
+    title: "Lorries",
+    eyebrow: "Fleet",
     placeholder: "Search lorry · type",
     endpoint: "/lorries",
     listKey: "lorries",
@@ -1192,6 +1523,12 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => (r.active === false ? "Off" : r.is_internal ? "In-house" : "Outsource"),
     search: (r) => join(r.plate, r.type),
     pill: (r) => (pick(r, "active") === false ? "Off" : pick(r, "isInternal", "is_internal") ? "In-house" : "Outsource"),
+    // Spec #lorries: plate + status badge, "{{lorry_type}} · {{capacity}}" sub-
+    // line, "Assigned {{driver}}" footer. Lorries aren't linked to drivers →
+    // Unassigned; AVAILABLE/ON_TRIP/MAINTENANCE has no column → keep fleet flag.
+    variant: "doc",
+    subline: (r) => join(pick(r, "type"), capacityLabel(r) !== "—" ? capacityLabel(r) : ""),
+    footL: () => ["Assigned", "Unassigned"],
     fields: [
       [(r) => pick(r, "type") ?? "—", "Type"],
       [(r) => capacityLabel(r), "Capacity"],
