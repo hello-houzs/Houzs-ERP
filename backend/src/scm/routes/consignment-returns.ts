@@ -30,6 +30,7 @@ import { defaultWarehouseId, writeMovements, resolveWarehouseLotBatches, resolve
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const consignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -445,7 +446,7 @@ async function insertHeader(sb: any, userId: string, body: Record<string, unknow
     consignment_do_id: (body.consignmentDoId as string) ?? (body.deliveryOrderId as string) ?? null,
     debtor_code: (body.debtorCode as string) ?? null,
     debtor_name: (body.debtorName ?? body.customerName) as string,
-    return_date: (body.returnDate as string) ?? new Date().toISOString().slice(0, 10),
+    return_date: (body.returnDate as string) ?? todayMyt(),
     reason: (body.reason as string) ?? null,
     address1: (body.address1 as string) ?? null,
     address2: (body.address2 as string) ?? null,

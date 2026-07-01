@@ -8,6 +8,8 @@
 // Both are best-effort and idempotent (keyed on warehouse_rack_items.source_grn_id).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { todayMyt } from './my-time';
+
 type AnySb = any;
 
 const deriveRackStatus = (itemCount: number, reserved: boolean): 'OCCUPIED' | 'EMPTY' | 'RESERVED' =>
@@ -46,7 +48,7 @@ export async function placeGrnLinesOnRacks(
   const { data: racks } = await sb.from('warehouse_racks')
     .select('id, rack, warehouse_id').in('id', rackIds);
   const rackMap = new Map((racks ?? []).map((r: { id: string }) => [r.id, r]));
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayMyt();
 
   const itemRows = lines.map((l: { rack_id: string; material_code: string; material_name: string | null; qty_accepted: number }) => ({
     rack_id: l.rack_id,

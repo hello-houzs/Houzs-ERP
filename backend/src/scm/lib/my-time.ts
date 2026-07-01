@@ -13,6 +13,25 @@
 const MY_OFFSET_MS = 8 * 60 * 60 * 1000;
 const MY_TZ = 'Asia/Kuala_Lumpur';
 
+/**
+ * Today's calendar date in Malaysia (UTC+8, no DST) as `YYYY-MM-DD`.
+ *
+ * Workers run in UTC, so `new Date().toISOString().slice(0, 10)` is the UTC
+ * calendar date — before 08:00 MYT that is YESTERDAY, so every document-date
+ * default (do_date, invoice_date, received_at, entry_date, …) was stamped a
+ * day early each morning and effective-dated pricing flipped a day off. Shift
+ * the clock forward 8h, then read the UTC date — that IS the MY calendar date,
+ * independent of the server's own timezone. Backend mirror of the frontend
+ * `todayMyt()` in `vendor/scm/lib/dates.ts`.
+ *
+ * Optional `offsetDays` shifts the result (e.g. `todayMyt(-365)` = a year ago).
+ */
+export function todayMyt(offsetDays = 0): string {
+  return new Date(Date.now() + MY_OFFSET_MS + offsetDays * 86400 * 1000)
+    .toISOString()
+    .slice(0, 10);
+}
+
 export interface PeriodBounds {
   /** Inclusive lower bound as a UTC ISO instant, or null = open (no lower bound). */
   startUtc: string | null;

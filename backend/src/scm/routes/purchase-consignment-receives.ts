@@ -33,6 +33,7 @@ import {
 import { writeMovements, defaultWarehouseId, resolveWarehouseLotCosts } from '../lib/inventory-movements';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 
 export const purchaseConsignmentReceives = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseConsignmentReceives.use('*', supabaseAuth);
@@ -690,7 +691,7 @@ purchaseConsignmentReceives.post('/', async (c) => {
     purchase_consignment_order_id: pcOrderId,
     pc_order_no: pcOrderNo,
     supplier_id: body.supplierId,
-    received_at: (body.receivedAt as string) ?? new Date().toISOString().slice(0, 10),
+    received_at: (body.receivedAt as string) ?? todayMyt(),
     delivery_note_ref: (body.deliveryNoteRef as string) ?? null,
     notes: (body.notes as string) ?? null,
     warehouse_id: (body.warehouseId as string | undefined) ?? null,
@@ -802,7 +803,7 @@ purchaseConsignmentReceives.post('/from-pcos', async (c) => {
     purchase_consignment_order_id: pcoList[0]!.id,
     pc_order_no: pcoList[0]!.pc_number,
     supplier_id: supplierId,
-    received_at: new Date().toISOString().slice(0, 10),
+    received_at: todayMyt(),
     delivery_note_ref: body.deliveryNoteRef ?? null,
     notes: `Batch-converted from ${pcoList.length} PC Orders: ${pcoNumbersJoined}${body.notes ? ` · ${body.notes}` : ''}`,
     warehouse_id: body.warehouseId ?? null,

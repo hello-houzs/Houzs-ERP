@@ -58,7 +58,7 @@ import { orderSofaModuleRowsWithinBuilds, sortSoLinesByGroupRank } from '../shar
 import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
-import { rangeBoundsMy } from '../lib/my-time';
+import { rangeBoundsMy, todayMyt } from '../lib/my-time';
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
@@ -1321,7 +1321,7 @@ mfgSalesOrders.get('/active-venue', async (c) => {
   const soDate =
     typeof dateRaw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateRaw)
       ? dateRaw.slice(0, 10)
-      : new Date().toISOString().slice(0, 10);
+      : todayMyt();
   if (!Number.isFinite(uid)) {
     return c.json({ venueId: null, venueName: null, projectName: null });
   }
@@ -1875,7 +1875,7 @@ mfgSalesOrders.post('/', async (c) => {
       const soDateForVenue =
         typeof body.soDate === 'string' && body.soDate.trim()
           ? body.soDate.trim().slice(0, 10)
-          : new Date().toISOString().slice(0, 10);
+          : todayMyt();
       try {
         const projRow = await c.env.DB.prepare(
           `SELECT p.venue AS venue
@@ -2573,7 +2573,7 @@ mfgSalesOrders.post('/', async (c) => {
       ? (it.lineDeliveryDateOverridden === undefined ? true : Boolean(it.lineDeliveryDateOverridden))
       : Boolean(it.lineDeliveryDateOverridden ?? false);
     const baseRow = {
-      line_date: (it.lineDate as string) ?? new Date().toISOString().slice(0, 10),
+      line_date: (it.lineDate as string) ?? todayMyt(),
       debtor_code: (body.debtorCode as string) ?? null,
       debtor_name: body.debtorName,
       agent: (body.agent as string) ?? null,
@@ -2927,7 +2927,7 @@ mfgSalesOrders.post('/', async (c) => {
       await rollbackPwpClaims();
       return c.json(unknownItemCodeResponse(svcCheck.unknown), 409);
     }
-    const lineDateToday = new Date().toISOString().slice(0, 10);
+    const lineDateToday = todayMyt();
     for (const spec of serviceSpecs) {
       itemRows.push({
         line_date: lineDateToday,
@@ -3129,7 +3129,7 @@ mfgSalesOrders.post('/', async (c) => {
     doc_no: docNo,
     proceeded_at: autoProceed ? new Date().toISOString() : null,
     transfer_to: (body.transferTo as string) ?? null,
-    so_date: (body.soDate as string) ?? new Date().toISOString().slice(0, 10),
+    so_date: (body.soDate as string) ?? todayMyt(),
     branding: (body.branding as string) ?? null,
     debtor_code: (body.debtorCode ?? body.customerCode as string) ?? null,
     debtor_name: customerName,
@@ -3293,7 +3293,7 @@ mfgSalesOrders.post('/', async (c) => {
     /* Split payment — book EVERY validated row. Best-effort like the single
        path (the header already carries the Σ, so a ledger hiccup never blocks
        the order); rows are schema-validated so nothing is silently dropped. */
-    const paidAt = (body.paymentDate as string) ?? new Date().toISOString().slice(0, 10);
+    const paidAt = (body.paymentDate as string) ?? todayMyt();
     for (let i = 0; i < posPayments.length; i++) {
       const p = posPayments[i]!;
       const merchantLike = p.method === 'merchant' || p.method === 'installment';
@@ -3377,7 +3377,7 @@ mfgSalesOrders.post('/', async (c) => {
       const installmentMonths = merchantLike
         && typeof body.installmentMonths === 'number' && body.installmentMonths > 0
         ? body.installmentMonths : null;
-      const paidAt = (body.paymentDate as string) ?? new Date().toISOString().slice(0, 10);
+      const paidAt = (body.paymentDate as string) ?? todayMyt();
       const { error: depErr } = await sb.from('mfg_sales_order_payments').insert({
         so_doc_no:          docNo,
         paid_at:            paidAt,
@@ -3953,7 +3953,7 @@ async function recomputeDeliveryFeeCore(
     .eq('doc_no', docNo).in('item_code', [SVC_DELIVERY, SVC_DELIVERY_CROSS, SVC_DELIVERY_ADD]);
   if (delErr) { /* eslint-disable-next-line no-console */ console.error('[so-redetect] delivery line delete failed:', delErr.message); }
   if (specs.length > 0) {
-    const lineDateToday = new Date().toISOString().slice(0, 10);
+    const lineDateToday = todayMyt();
     const rows = specs.map((spec, i) => ({
       doc_no: docNo,                                    // ⚠️ NOT NULL — omitting it silently dropped the line (the bug)
       line_no: keptMaxLineNo >= 0 ? keptMaxLineNo + 1 + i : null,
@@ -4864,7 +4864,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
      template for each sofa module row (create-path convention: baseRow). */
   const baseRow = {
     doc_no: docNo,
-    line_date: (it.lineDate as string) ?? new Date().toISOString().slice(0, 10),
+    line_date: (it.lineDate as string) ?? todayMyt(),
     debtor_code: header.debtor_code,
     debtor_name: header.debtor_name,
     agent: header.agent,
@@ -6665,7 +6665,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   }
   const baseRow = {
     doc_no: docNo,
-    line_date: prev.line_date ?? new Date().toISOString().slice(0, 10),
+    line_date: prev.line_date ?? todayMyt(),
     debtor_code: prev.debtor_code,
     debtor_name: prev.debtor_name,
     agent: prev.agent,

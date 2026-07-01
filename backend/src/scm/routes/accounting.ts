@@ -23,6 +23,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { postSiRevenue } from '../lib/post-si-revenue';
 import { paginateAll } from '../lib/paginate-all';
+import { todayMyt } from '../lib/my-time';
 
 export const accounting = new Hono<{ Bindings: Env; Variables: Variables }>();
 accounting.use('*', supabaseAuth);
@@ -125,7 +126,7 @@ accounting.post('/journal-entries', async (c) => {
   let body: any;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
 
-  const entryDate = body.entryDate ?? new Date().toISOString().slice(0, 10);
+  const entryDate = body.entryDate ?? todayMyt();
   const sourceType = String(body.sourceType ?? 'MANUAL');
   const sourceDocNo = body.sourceDocNo ?? null;
   const narration = body.narration ?? null;
@@ -434,7 +435,7 @@ export async function reversePiAccounting(
     .from('journal_entries')
     .insert({
       je_no: revJeNo,
-      entry_date: new Date().toISOString().slice(0, 10),
+      entry_date: todayMyt(),
       source_type: 'PI_REVERSAL',
       source_doc_no: invoiceNumber,
       narration: `Reversal of ${orig.je_no} — Purchase invoice ${invoiceNumber} cancelled`,

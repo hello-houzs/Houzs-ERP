@@ -332,7 +332,9 @@ export function matchComboSubset(
   return subset;
 }
 
-const todayIso = (): string => new Date().toISOString().slice(0, 10);
+import { todayMyt } from '../lib/my-time';
+
+const todayIso = (): string => todayMyt();
 
 /** Result of a successful subset combo match. */
 export interface ComboMatch {

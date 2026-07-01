@@ -11,6 +11,7 @@ import {
 import { postPiAccounting, reversePiAccounting, resyncPiAccounting } from './accounting';
 import { recostForPi, recostFromGrn } from '../lib/recost';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 
 export const purchaseInvoices = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseInvoices.use('*', supabaseAuth);
@@ -411,7 +412,7 @@ purchaseInvoices.post('/', async (c) => {
     supplier_id: body.supplierId,
     purchase_order_id: (body.purchaseOrderId as string) ?? null,
     grn_id: (body.grnId as string) ?? null,
-    invoice_date: (body.invoiceDate as string) ?? new Date().toISOString().slice(0, 10),
+    invoice_date: (body.invoiceDate as string) ?? todayMyt(),
     due_date: (body.dueDate as string) ?? null,
     currency: ((body.currency as string) ?? 'MYR').toUpperCase(),
     subtotal_centi: subtotal,
@@ -713,7 +714,7 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
   const { data: existingPiNos } = await sb.from('purchase_invoices').select('invoice_number').like('invoice_number', `PI-${yymm}-%`);
   let counter = parseInt(nextMonthlyDocNo(`PI-${yymm}`, ((existingPiNos ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number)).slice(`PI-${yymm}-`.length), 10) - 1;
 
-  const invoiceDate = body.invoiceDate ?? new Date().toISOString().slice(0, 10);
+  const invoiceDate = body.invoiceDate ?? todayMyt();
   const created: Array<{ id: string; invoiceNumber: string; supplierId: string; grnCount: number; lineCount: number }> = [];
 
   /* PI discount unification (audit 2026-06-11 M3) — ONE rule on every PI line
@@ -878,7 +879,7 @@ purchaseInvoices.post('/from-grn', async (c) => {
     supplier_id: g.supplier_id,
     purchase_order_id: g.purchase_order_id,
     grn_id: g.id,
-    invoice_date: new Date().toISOString().slice(0, 10),
+    invoice_date: todayMyt(),
     currency: 'MYR',
     subtotal_centi: subtotal,
     tax_centi: 0,

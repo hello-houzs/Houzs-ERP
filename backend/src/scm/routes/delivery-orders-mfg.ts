@@ -20,6 +20,7 @@ import type { Env, Variables } from '../env';
 import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { computeVariantKey, isServiceLine, type VariantAttrs } from '../shared';
 import { syncSoDeliveredFromDo } from '../lib/so-delivery-sync';
+import { todayMyt } from '../lib/my-time';
 import { paginateAll } from '../lib/paginate-all';
 import { resolveSalesScopeIds } from '../lib/salesScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
@@ -1568,7 +1569,7 @@ deliveryOrdersMfg.post('/', async (c) => {
     so_doc_no: (body.soDocNo as string) ?? null,
     debtor_code: (body.debtorCode as string) ?? null,
     debtor_name: debtorName,
-    do_date: (body.doDate as string) ?? new Date().toISOString().slice(0, 10),
+    do_date: (body.doDate as string) ?? todayMyt(),
     expected_delivery_at: (body.expectedDeliveryAt as string) ?? (body.customerDeliveryDate as string) ?? null,
     customer_delivery_date: (body.customerDeliveryDate as string) ?? null,
     /* Mig 0053 (port of 2990 0199) — sea-freight DO-execution column. */
@@ -1892,7 +1893,7 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
     ?? ([head.address3, head.address4].filter(Boolean).join(', ') || null);
   const phoneRaw = head.phone as string | null;
   const emPhoneRaw = head.emergency_contact_phone as string | null;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayMyt();
   const doNumber = await nextNum(sb);
 
   const { data: doHeader, error: hErr } = await sb.from('delivery_orders').insert({

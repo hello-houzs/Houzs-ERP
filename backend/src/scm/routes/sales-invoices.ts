@@ -28,6 +28,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { postSiRevenue, reverseSiRevenue, resyncSiRevenue } from '../lib/post-si-revenue';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 import { resolveSalesScopeIds } from '../lib/salesScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { doLineRemaining, doRemainingByItemId, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
@@ -262,7 +263,7 @@ salesInvoices.post('/', async (c) => {
     delivery_order_id: (body.deliveryOrderId as string) ?? null,
     debtor_code: (body.debtorCode as string) ?? null,
     debtor_name: debtorName,
-    invoice_date: (body.invoiceDate as string) ?? new Date().toISOString().slice(0, 10),
+    invoice_date: (body.invoiceDate as string) ?? todayMyt(),
     due_date: (body.dueDate as string) ?? null,
     customer_delivery_date: (body.customerDeliveryDate as string) ?? null,
     address1: (body.address1 as string) ?? null,
@@ -449,7 +450,7 @@ salesInvoices.post('/from-dos', async (c) => {
     delivery_order_id: firstDoId,
     debtor_code: (head.debtor_code as string | null) ?? null,
     debtor_name: (head.debtor_name as string | null) ?? 'Customer',
-    invoice_date: new Date().toISOString().slice(0, 10),
+    invoice_date: todayMyt(),
     customer_delivery_date: (head.customer_delivery_date as string | null) ?? null,
     address1: (head.address1 as string | null) ?? null,
     address2: (head.address2 as string | null) ?? null,
@@ -1127,7 +1128,7 @@ salesInvoices.patch('/:id/payment', async (c) => {
 
   const { error } = await sb.from('sales_invoice_payments').insert({
     sales_invoice_id: id,
-    paid_at: new Date().toISOString().slice(0, 10),
+    paid_at: todayMyt(),
     method: 'cash',
     amount_centi: amount,
     note: body.notes ?? null,

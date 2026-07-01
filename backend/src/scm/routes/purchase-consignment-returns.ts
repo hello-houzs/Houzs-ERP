@@ -37,6 +37,7 @@ import {
 import { writeMovements, defaultWarehouseId, resolveWarehouseLotBatches } from '../lib/inventory-movements';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 import { recomputePcoReceived } from './purchase-consignment-receives';
 
 export const purchaseConsignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -454,7 +455,7 @@ purchaseConsignmentReturns.post('/', async (c) => {
     pc_order_id: pcOrderId,
     pc_receive_id: pcReceiveId,
     supplier_id: body.supplierId,
-    return_date: (body.returnDate as string) ?? new Date().toISOString().slice(0, 10),
+    return_date: (body.returnDate as string) ?? todayMyt(),
     reason: (body.reason as string | undefined) ?? null,
     refund_centi: totalRefund,
     notes: (body.notes as string | undefined) ?? null,
@@ -542,7 +543,7 @@ purchaseConsignmentReturns.post('/from-pc-receives', async (c) => {
     pc_order_id: recvList[0]!.purchase_consignment_order_id,
     pc_receive_id: primaryReceiveId,
     supplier_id: supplierId,
-    return_date: new Date().toISOString().slice(0, 10),
+    return_date: todayMyt(),
     reason: body.reason ?? `Batch from ${recvList.length} receives: ${recvNumbersJoined}`,
     refund_centi: totalRefund,
     notes: body.notes ?? null,
@@ -624,7 +625,7 @@ purchaseConsignmentReturns.post('/from-pc-receive', async (c) => {
     pc_order_id: g.purchase_consignment_order_id,
     pc_receive_id: g.id,
     supplier_id: g.supplier_id,
-    return_date: new Date().toISOString().slice(0, 10),
+    return_date: todayMyt(),
     reason: body.reason ?? `From ${g.receive_number}`,
     refund_centi: totalRefund,
     notes: body.notes ?? null,

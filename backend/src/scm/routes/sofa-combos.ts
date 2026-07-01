@@ -30,6 +30,7 @@ import type { Env, Variables } from '../env';
 import { canonicalizeComboModulesForStorage, comboSlotsKey, sofaComboCostSen, parseDefaultFreeGifts, type ComboSlots } from '../shared';
 import { loadModelSofaModuleCosts } from '../lib/mfg-pricing-recompute';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { todayMyt } from '../lib/my-time';
 
 export const sofaCombos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -52,7 +53,7 @@ async function requireWriteRole(c: AppContext): Promise<{ ok: true } | { ok: fal
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => todayMyt();
 const TIERS = new Set(['PRICE_1', 'PRICE_2', 'PRICE_3']);
 
 type Tier = 'PRICE_1' | 'PRICE_2' | 'PRICE_3' | null;

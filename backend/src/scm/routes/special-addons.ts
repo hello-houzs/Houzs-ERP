@@ -12,6 +12,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { todayMyt } from '../lib/my-time';
 import type { Env, Variables } from '../env';
 
 type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
@@ -202,7 +203,7 @@ specialAddons.delete('/:id', async (c) => {
 // ════════════════════════════════════════════════════════════════════════
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => todayMyt();
 
 function genHistId(): string {
   const rnd = crypto.randomUUID().replace(/-/g, '').slice(0, 12);

@@ -26,6 +26,7 @@ import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { resolveSalesScopeIds } from '../lib/salesScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { todayMyt } from '../lib/my-time';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 import { signSoItemPhotoUrl, soItemPhotoBindings } from '../lib/r2';
 import {
@@ -696,7 +697,7 @@ consignmentOrders.post('/', async (c) => {
       ? (it.lineDeliveryDateOverridden === undefined ? true : Boolean(it.lineDeliveryDateOverridden))
       : Boolean(it.lineDeliveryDateOverridden ?? false);
     return {
-      line_date: (it.lineDate as string) ?? new Date().toISOString().slice(0, 10),
+      line_date: (it.lineDate as string) ?? todayMyt(),
       debtor_code: (body.debtorCode as string) ?? null,
       debtor_name: body.debtorName,
       agent: (body.agent as string) ?? null,
@@ -742,7 +743,7 @@ consignmentOrders.post('/', async (c) => {
   const { error: hErr } = await sb.from('consignment_sales_orders').insert({
     doc_no: docNo,
     transfer_to: (body.transferTo as string) ?? null,
-    so_date: (body.soDate as string) ?? new Date().toISOString().slice(0, 10),
+    so_date: (body.soDate as string) ?? todayMyt(),
     branding: (body.branding as string) ?? null,
     debtor_code: (body.debtorCode ?? body.customerCode as string) ?? null,
     debtor_name: customerName,
@@ -1342,7 +1343,7 @@ consignmentOrders.post('/:docNo/items', async (c) => {
     : Boolean(it.lineDeliveryDateOverridden ?? false);
   const row = {
     doc_no: docNo,
-    line_date: (it.lineDate as string) ?? new Date().toISOString().slice(0, 10),
+    line_date: (it.lineDate as string) ?? todayMyt(),
     debtor_code: header.debtor_code,
     debtor_name: header.debtor_name,
     agent: header.agent,

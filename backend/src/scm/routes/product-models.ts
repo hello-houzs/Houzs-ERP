@@ -21,6 +21,7 @@ import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import { findModelUsage } from '../lib/sku-usage';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { todayMyt } from '../lib/my-time';
 import type { Env, Variables } from '../env';
 
 export const productModels = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -526,7 +527,7 @@ productModels.post('/:id/generate-skus', async (c) => {
       .from('maintenance_config_history')
       .select('config')
       .eq('scope', 'master')
-      .lte('effective_from', new Date().toISOString().slice(0, 10))
+      .lte('effective_from', todayMyt())
       .order('effective_from', { ascending: false })
       .limit(1)
       .maybeSingle();

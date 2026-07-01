@@ -32,6 +32,7 @@ import { defaultWarehouseId, writeMovements, resolveWarehouseLotBatches } from '
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const consignmentNotes = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -485,7 +486,7 @@ consignmentNotes.post('/', async (c) => {
     consignment_so_doc_no: (body.consignmentSoDocNo as string) ?? (body.soDocNo as string) ?? null,
     debtor_code: (body.debtorCode as string) ?? null,
     debtor_name: debtorName,
-    do_date: (body.doDate as string) ?? new Date().toISOString().slice(0, 10),
+    do_date: (body.doDate as string) ?? todayMyt(),
     expected_delivery_at: (body.expectedDeliveryAt as string) ?? (body.customerDeliveryDate as string) ?? null,
     customer_delivery_date: (body.customerDeliveryDate as string) ?? null,
     driver_id: (body.driverId as string) ?? null,
