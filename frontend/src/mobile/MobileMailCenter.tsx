@@ -1,0 +1,1093 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../api/client";
+import { useQuery } from "../hooks/useQuery";
+import { useToast } from "../hooks/useToast";
+import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
+import "./mobile.css";
+
+// Mobile Mail Center — the email client, wired to /api/mail-center. Kept at
+// desktop feature parity (MailCenter/Inbox.tsx + Thread.tsx) minus the desktop-
+// only split reading pane (single-column push nav is correct for mobile).
+//   List:   GET /api/mail-center/threads  (?status= / ?starred=1 / ?mailbox= / ?q=)
+//           GET /api/mail-center/addresses (mailbox switcher + compose From)
+//           GET /api/mail-center/labels    (label catalogue: name + colour)
+//   Reader: GET /api/mail-center/threads/:id  ({ thread, messages[] })  — marks read
+//   Send:   POST /api/mail-center/threads/:id/reply  (reply / reply-all)
+//           POST /api/mail-center/compose             (new / forward)
+//   Mutate: PATCH /api/mail-center/threads/:id  { starred | status:"open"|"closed"
+//                                                | trashed | unread | labels }
+//   Labels: POST /api/mail-center/labels { name, color } (create-if-new on apply)
+//   Attach: GET /api/mail-center/attachments/:id (authed stream -> blob URL)
+//
+// Presentation is a verbatim port of the owner's mobile design (Houzs Mobile.html
+// #m-mail / #mail-thread / #mail-compose) using the .hz-m design classes
+// (.hdr .ey .card .avatar .spill .sochip .cal-sel .tinybtn .so-card .so-hd .so-ti
+// .so-bd .fld .fld-l .fld-i .actbar .btn .scroll .rbadge). All data + actions are
+// unchanged from the live wiring.
+//
+// Folder -> backend query (mirrors the desktop MailCenter/Inbox mapping):
+//   Inbox   -> status=open
+//   Starred -> starred=1
+//   Sent    -> status=all, narrowed client-side by hasOutbound
+//   Drafts  -> local-only on desktop (no backend draft table); shown as empty
+//   Archive -> status=closed
+//   Trash   -> status=trashed
+
+type Thread = {
+  id: string;
+  mailboxAddress: string;
+  subject: string;
+  counterpartyEmail: string;
+  counterpartyName: string;
+  status: string;
+  lastMessageAt: string;
+  lastDirection: string;
+  lastSnippet: string;
+  messageCount: number;
+  unread: boolean;
+  starred: boolean;
+  labels: string[];
+  hasOutbound: boolean;
+  createdAt: string;
+  trashedAt?: string | null;
+};
+
+type Attachment = {
+  id: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  contentId?: string;
+  url: string;
+};
+
+type MailLabel = { id: string; name: string; color: string };
+
+type Message = {
+  id: string;
+  threadId: string;
+  direction: string;
+  fromAddress: string;
+  fromName: string;
+  toAddresses: string[];
+  ccAddresses: string[];
+  subject: string;
+  textBody: string;
+  htmlBody: string;
+  sentAt: string;
+  receivedAt: string;
+  createdAt: string;
+  attachments?: Attachment[];
+};
+
+type ThreadDetail = { thread: Thread; messages: Message[] };
+
+type MailAddress = {
+  id: string;
+  address: string;
+  label: string;
+  active: boolean;
+};
+
+type Folder = "inbox" | "starred" | "sent" | "drafts" | "archive" | "trash";
+type ComposeMode = "new" | "reply" | "replyall" | "forward";
+
+const FOLDERS: [Folder, string][] = [
+  ["inbox", "Inbox"],
+  ["starred", "Starred"],
+  ["sent", "Sent"],
+  ["archive", "Archive"],
+  ["drafts", "Drafts"],
+  ["trash", "Trash"],
+];
+
+// Deterministic avatar colour + initials, matching the design's mailAv/mailIni.
+const AV_COLORS = ["#16695f", "#a16a2e", "#2a6f9e", "#7a5c86", "#b45309", "#0e7490"];
+const avColor = (s: string) => AV_COLORS[(s || "?").charCodeAt(0) % AV_COLORS.length];
+const initials = (s: string) =>
+  (s || "?")
+    .trim()
+    .split(/\s+/)
+    .map((w) => w[0] || "")
+    .slice(0, 2)
+    .join("")
+    .toUpperCase() || "?";
+
+// Label chip colours (from the design's MAIL_LB map). Unknown labels fall back
+// to a neutral tone so a new label never crashes the row.
+const LABEL_COLORS: Record<string, [string, string]> = {
+  Sales: ["#e2f0e9", "#15803D"],
+  Supplier: ["#f6efd9", "#B45309"],
+  Finance: ["#e4ecf8", "#1D4ED8"],
+  Urgent: ["#f8eaea", "#B91C1C"],
+  Service: ["#e0f0f4", "#0E7490"],
+};
+const labelColor = (l: string): [string, string] => LABEL_COLORS[l] ?? ["#eef0ec", "#414539"];
+
+// Catalogue-aware chip colours: a DB label carries a solid dot colour, which we
+// render as a tinted pill (label text over a soft wash). Falls back to the
+// static map, then a neutral tone, so an unknown label never crashes a row.
+function chipColors(label: string, catalog: Map<string, string>): [string, string] {
+  const solid = catalog.get(label.toLowerCase());
+  if (solid) return [`${solid}1f`, solid];
+  return labelColor(label);
+}
+
+const fmtTime = (iso: string | null | undefined): string => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(+d)) return "";
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const yest = new Date(now);
+  yest.setDate(now.getDate() - 1);
+  if (d.toDateString() === yest.toDateString()) return "Yesterday";
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+};
+
+const fmtMsgTime = (m: Message): string => {
+  const iso = m.direction === "outbound" ? m.sentAt || m.createdAt : m.receivedAt || m.createdAt;
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(+d)) return "";
+  return d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+};
+
+const fmtBytes = (n: number): string => {
+  if (!n) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+/** Mail Center — folders, mailbox switcher, search, thread reader + compose. */
+export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
+  const [folder, setFolder] = useState<Folder>("inbox");
+  const [mailbox, setMailbox] = useState<string>("all"); // "all" or an address
+  const [q, setQ] = useState("");
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [compose, setCompose] = useState<{ mode: ComposeMode } | null>(null);
+
+  // Mailbox switcher options (scope-bound by the backend) + the label catalogue
+  // (name -> colour) so chips render in their managed colours.
+  const { data: addresses } = useQuery<MailAddress[]>(() => api.get("/api/mail-center/addresses"), []);
+  const activeAddresses = useMemo(() => (addresses ?? []).filter((a) => a.active), [addresses]);
+  const { data: labelCatalog } = useQuery<MailLabel[]>(() => api.get("/api/mail-center/labels"), []);
+  const colorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const l of labelCatalog ?? []) if (l.color) m.set((l.name ?? "").toLowerCase(), l.color);
+    return m;
+  }, [labelCatalog]);
+
+  // Folder -> query params. Drafts have no backend; we short-circuit to [].
+  const params = new URLSearchParams();
+  if (folder === "inbox") params.set("status", "open");
+  else if (folder === "archive") params.set("status", "closed");
+  else if (folder === "starred") params.set("starred", "1");
+  else if (folder === "trash") params.set("status", "trashed");
+  // "sent" and "drafts" fetch status=all (drafts is then rendered empty).
+  if (mailbox !== "all") params.set("mailbox", mailbox);
+  const listUrl = `/api/mail-center/threads${params.toString() ? `?${params.toString()}` : ""}`;
+
+  const {
+    data: threadsRaw,
+    loading,
+    error,
+    reload,
+  } = useQuery<Thread[]>(() => (folder === "drafts" ? Promise.resolve([]) : api.get(listUrl)), [listUrl, folder]);
+
+  const threads = useMemo(() => {
+    let rows = threadsRaw ?? [];
+    if (folder === "sent") rows = rows.filter((t) => t.hasOutbound);
+    const needle = q.trim().toLowerCase();
+    if (needle) {
+      rows = rows.filter((t) =>
+        `${t.subject} ${t.counterpartyName} ${t.counterpartyEmail} ${t.lastSnippet}`
+          .toLowerCase()
+          .includes(needle),
+      );
+    }
+    return rows;
+  }, [threadsRaw, folder, q]);
+
+  if (openId) {
+    return (
+      <MailThread
+        threadId={openId}
+        colorMap={colorMap}
+        catalog={labelCatalog ?? []}
+        onBack={() => {
+          setOpenId(null);
+          reload();
+        }}
+        onCompose={(mode) => setCompose({ mode })}
+        composeFor={compose}
+        clearCompose={() => setCompose(null)}
+        onSent={() => {
+          setCompose(null);
+          reload();
+        }}
+        addresses={activeAddresses}
+      />
+    );
+  }
+
+  if (compose) {
+    return (
+      <MailCompose
+        mode={compose.mode}
+        addresses={activeAddresses}
+        onClose={() => setCompose(null)}
+        onSent={() => {
+          setCompose(null);
+          reload();
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
+      <header className="hdr">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
+          {onBack ? (
+            <span
+              onClick={onBack}
+              style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }}
+            >
+              <span style={{ fontSize: 17, lineHeight: 1 }}>&#8249;</span> Menu
+            </span>
+          ) : (
+            <span />
+          )}
+          <button
+            onClick={() => setCompose({ mode: "new" })}
+            className="tinybtn"
+            style={{ background: "#16695f", borderColor: "#16695f", color: "#fff", display: "flex", alignItems: "center", gap: 5 }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+            </svg>
+            New
+          </button>
+        </div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: "#11140f", marginBottom: 9 }}>Mail Center</div>
+
+        <select
+          value={mailbox}
+          onChange={(e) => setMailbox(e.target.value)}
+          className="cal-sel"
+          style={{ marginBottom: 8 }}
+        >
+          <option value="all">All mailboxes</option>
+          {activeAddresses.map((a) => (
+            <option key={a.id} value={a.address}>
+              {a.address}
+            </option>
+          ))}
+        </select>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#f4f6f3", border: "1px solid #d6d9d2", borderRadius: 10, padding: "8px 11px", marginBottom: 9 }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search mail &middot; sender &middot; subject"
+            style={{ flex: 1, minWidth: 0, border: "none", background: "transparent", outline: "none", fontFamily: "inherit", fontSize: 13, color: "#11140f" }}
+          />
+        </div>
+
+        <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 2 }}>
+          {FOLDERS.map(([f, label]) => (
+            <button
+              key={f}
+              onClick={() => setFolder(f)}
+              className={`sochip${folder === f ? " on" : ""}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      <div className="scroll" style={{ padding: "11px 12px" }}>
+        {loading && <Muted>Loading&#8230;</Muted>}
+        {!loading && error && <Muted tone="error">Could not load mail. {error}</Muted>}
+        {!loading && !error && folder === "drafts" && (
+          <Muted>Drafts are kept on the desktop app only.</Muted>
+        )}
+        {!loading && !error && folder !== "drafts" && threads.length === 0 && (
+          <Muted>{folder === "trash" ? "Trash is empty." : `Nothing in ${folder}.`}</Muted>
+        )}
+        {!loading && !error && folder !== "drafts" && threads.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {threads.map((t) => (
+              <ThreadRow key={t.id} t={t} colorMap={colorMap} onOpen={() => setOpenId(t.id)} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ThreadRow({ t, colorMap, onOpen }: { t: Thread; colorMap: Map<string, string>; onOpen: () => void }) {
+  const who = t.counterpartyName || t.counterpartyEmail || "(unknown)";
+  return (
+    <div
+      onClick={onOpen}
+      style={{ display: "flex", gap: 11, background: "#fff", border: `1px solid ${t.unread ? "#bcdcd7" : "#e3e6e0"}`, borderRadius: 13, padding: "11px 12px", cursor: "pointer" }}
+    >
+      <div style={{ width: 38, height: 38, flex: "none", borderRadius: "50%", background: avColor(who), color: "#fff", fontSize: 13, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {initials(who)}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: t.unread ? 800 : 600, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {who}
+          </span>
+          {t.starred && (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="#d8a85a" stroke="#d8a85a" strokeWidth="1.5">
+              <path d="M12 2l3 6 6 .9-4.5 4.3 1 6-5.5-3-5.5 3 1-6L3 8.9 9 8Z" />
+            </svg>
+          )}
+          <span style={{ fontSize: 10, color: "#9aa093", flex: "none" }}>{fmtTime(t.lastMessageAt)}</span>
+        </div>
+        <div style={{ fontSize: 12.5, fontWeight: t.unread ? 700 : 500, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 2 }}>
+          {t.lastDirection === "outbound" ? "You: " : ""}
+          {t.subject}
+          {t.messageCount > 1 && <span style={{ color: "#9aa093", fontWeight: 600 }}> ({t.messageCount})</span>}
+        </div>
+        <div style={{ fontSize: 11.5, color: "#767b6e", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 1 }}>{t.lastSnippet}</div>
+        {t.labels.length > 0 && (
+          <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
+            {t.labels.map((l) => {
+              const [bg, fg] = chipColors(l, colorMap);
+              return (
+                <span key={l} className="rbadge" style={{ background: bg, color: fg }}>
+                  {l}
+                </span>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      {t.unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "#16695f", marginTop: 6 }} />}
+    </div>
+  );
+}
+
+function MailThread({
+  threadId,
+  colorMap,
+  catalog,
+  onBack,
+  onCompose,
+  composeFor,
+  clearCompose,
+  onSent,
+  addresses,
+}: {
+  threadId: string;
+  colorMap: Map<string, string>;
+  catalog: MailLabel[];
+  onBack: () => void;
+  onCompose: (mode: ComposeMode) => void;
+  composeFor: { mode: ComposeMode } | null;
+  clearCompose: () => void;
+  onSent: () => void;
+  addresses: MailAddress[];
+}) {
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState(false);
+  const [labelOpen, setLabelOpen] = useState(false);
+  const { data, loading, error, reload } = useQuery<ThreadDetail>(
+    () => api.get(`/api/mail-center/threads/${threadId}`),
+    [threadId],
+  );
+
+  const thread = data?.thread;
+  const messages = data?.messages ?? [];
+
+  // Reply / reply-all reuse the same in-thread reply endpoint. Forward starts a
+  // new conversation (compose) with a prefilled subject/body.
+  if (composeFor && (composeFor.mode === "reply" || composeFor.mode === "replyall")) {
+    return (
+      <MailReply
+        thread={thread}
+        onClose={clearCompose}
+        onSent={() => {
+          clearCompose();
+          reload();
+          onSent();
+        }}
+        addresses={addresses}
+      />
+    );
+  }
+  if (composeFor && composeFor.mode === "forward") {
+    return (
+      <MailCompose
+        mode="forward"
+        addresses={addresses}
+        seed={buildForwardSeed(thread, messages)}
+        onClose={clearCompose}
+        onSent={() => {
+          clearCompose();
+          onSent();
+        }}
+      />
+    );
+  }
+
+  const trashed = thread?.trashedAt != null;
+  const closed = thread?.status === "closed";
+
+  const patch = async (body: Record<string, unknown>, ok: string, err: string) => {
+    if (!thread || busy) return;
+    setBusy(true);
+    try {
+      await api.patch(`/api/mail-center/threads/${thread.id}`, body);
+      toast.success(ok);
+      reload();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleStar = () =>
+    patch({ starred: !thread?.starred }, thread?.starred ? "Star removed." : "Starred.", "Could not update star.");
+
+  const archive = () =>
+    closed
+      ? patch({ status: "open" }, "Moved to Inbox.", "Could not move to Inbox.")
+      : patch({ status: "closed" }, "Archived.", "Could not archive.");
+
+  const markUnread = () => patch({ unread: true }, "Marked as unread.", "Could not update.");
+
+  const trash = async () => {
+    if (!thread || busy) return;
+    if (trashed) {
+      await patch({ trashed: false }, "Restored from Trash.", "Could not restore.");
+      return;
+    }
+    const okConfirm = await confirm({
+      title: "Move to Trash?",
+      body: "This conversation moves to the Trash folder. You can restore it from there.",
+      confirmLabel: "Move to Trash",
+      danger: true,
+    });
+    if (!okConfirm) return;
+    await patch({ trashed: true }, "Moved to Trash.", "Could not move to Trash.");
+    onBack();
+  };
+
+  const chips = thread?.labels ?? [];
+  const applyLabel = async (name: string) => {
+    if (!thread || busy) return;
+    const clean = name.trim();
+    if (!clean || chips.some((l) => l.toLowerCase() === clean.toLowerCase())) {
+      setLabelOpen(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      // Create the catalogue entry first if it is a brand-new name, so the chip
+      // gets a managed colour (matches the desktop add-label flow).
+      if (!colorMap.has(clean.toLowerCase())) {
+        try {
+          await api.post("/api/mail-center/labels", { name: clean, color: "#16695f" });
+        } catch {
+          /* non-fatal — the thread label still applies */
+        }
+      }
+      await api.patch(`/api/mail-center/threads/${thread.id}`, { labels: [...chips, clean] });
+      reload();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not add label.");
+    } finally {
+      setBusy(false);
+      setLabelOpen(false);
+    }
+  };
+  const removeLabel = async (name: string) => {
+    if (!thread || busy) return;
+    setBusy(true);
+    try {
+      await api.patch(`/api/mail-center/threads/${thread.id}`, {
+        labels: chips.filter((l) => l.toLowerCase() !== name.toLowerCase()),
+      });
+      reload();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not remove label.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
+      <header className="hdr">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span
+            onClick={onBack}
+            style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }}
+          >
+            <span style={{ fontSize: 17, lineHeight: 1 }}>&#8249;</span> Mail
+          </span>
+          {thread && (
+            <div style={{ display: "flex", gap: 7 }}>
+              <button onClick={toggleStar} disabled={busy} className="tinybtn" style={thread.starred ? { color: "#d8a85a" } : undefined}>
+                {thread.starred ? "★ Starred" : "☆ Star"}
+              </button>
+              <button onClick={archive} disabled={busy} className="tinybtn">
+                {closed ? "Move to Inbox" : "Archive"}
+              </button>
+            </div>
+          )}
+        </div>
+        {thread && (
+          <div style={{ fontSize: 17, fontWeight: 800, color: "#11140f", marginTop: 8, lineHeight: 1.3 }}>{thread.subject}</div>
+        )}
+
+        {thread && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 7, alignItems: "center" }}>
+            {chips.map((l) => {
+              const [bg, fg] = chipColors(l, colorMap);
+              return (
+                <span key={l} className="spill" style={{ display: "inline-flex", alignItems: "center", gap: 5, background: bg, color: fg }}>
+                  {l}
+                  <span
+                    role="button"
+                    aria-label={`Remove label ${l}`}
+                    onClick={() => !busy && removeLabel(l)}
+                    style={{ cursor: busy ? "default" : "pointer", opacity: 0.75, fontSize: 12, lineHeight: 1 }}
+                  >
+                    &times;
+                  </span>
+                </span>
+              );
+            })}
+            <button
+              onClick={() => setLabelOpen(true)}
+              disabled={busy}
+              className="tinybtn"
+              style={{ borderStyle: "dashed", height: 22, padding: "0 9px" }}
+            >
+              + Label
+            </button>
+            <button onClick={markUnread} disabled={busy} className="tinybtn" style={{ height: 22, padding: "0 9px" }}>
+              Mark unread
+            </button>
+            <button
+              onClick={trash}
+              disabled={busy}
+              className="tinybtn"
+              style={{ height: 22, padding: "0 9px", background: "#fbf1f0", borderColor: "#e3c4c1", color: "#b23a3a" }}
+            >
+              {trashed ? "Restore" : "Trash"}
+            </button>
+          </div>
+        )}
+      </header>
+
+      <div className="scroll" style={{ padding: 14 }}>
+        {loading && <Muted>Loading&#8230;</Muted>}
+        {!loading && error && <Muted tone="error">Could not load this thread. {error}</Muted>}
+        {!loading && !error && messages.length === 0 && <Muted>No messages in this thread.</Muted>}
+        {!loading &&
+          !error &&
+          messages.map((m) => <MessageBubble key={m.id} m={m} />)}
+      </div>
+
+      {thread && (
+        <footer className="actbar">
+          <div style={{ display: "flex", gap: 7 }}>
+            <button onClick={() => onCompose("reply")} className="btn" style={{ flex: 1, fontSize: 13.5, padding: "13px 6px" }}>
+              Reply
+            </button>
+            <button
+              onClick={() => onCompose("replyall")}
+              className="btn"
+              style={{ flex: 1, fontSize: 13.5, padding: "13px 6px", background: "#fff", color: "#16695f", border: "1.5px solid #16695f" }}
+            >
+              Reply all
+            </button>
+            <button
+              onClick={() => onCompose("forward")}
+              className="btn"
+              style={{ flex: 1, fontSize: 13.5, padding: "13px 6px", background: "#fff", color: "#16695f", border: "1.5px solid #16695f" }}
+            >
+              Forward
+            </button>
+          </div>
+        </footer>
+      )}
+
+      {labelOpen && (
+        <LabelPicker
+          catalog={catalog}
+          applied={chips}
+          onPick={applyLabel}
+          onClose={() => setLabelOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Bottom-sheet label picker — apply an existing catalogue label (or type a new
+// one). Applying is a single PATCH of the thread's label set. Colour-manager
+// CRUD is desktop-only; here we display + apply/remove, per the mobile scope.
+function LabelPicker({
+  catalog,
+  applied,
+  onPick,
+  onClose,
+}: {
+  catalog: MailLabel[];
+  applied: string[];
+  onPick: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [custom, setCustom] = useState("");
+  const appliedLc = new Set(applied.map((l) => l.toLowerCase()));
+  const available = catalog.filter((l) => !appliedLc.has((l.name ?? "").toLowerCase()));
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,0.32)", display: "flex", alignItems: "flex-end" }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="hz-m so-card"
+        style={{ width: "100%", borderTopLeftRadius: 18, borderTopRightRadius: 18, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: "16px 16px calc(env(safe-area-inset-bottom) + 18px)", maxHeight: "70vh", overflowY: "auto", marginBottom: 0 }}
+      >
+        <div className="ey" style={{ color: "#a16a2e", marginBottom: 3 }}>Labels</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginBottom: 12 }}>Add label</div>
+        {available.length === 0 && <Muted>No other labels. Type one below.</Muted>}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 14 }}>
+          {available.map((l) => (
+            <button
+              key={l.id}
+              onClick={() => onPick(l.name)}
+              className="tinybtn"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 32, padding: "0 12px", background: "#fff", fontSize: 12.5 }}
+            >
+              <span style={{ width: 9, height: 9, borderRadius: "50%", background: l.color || "#767b6e", flex: "none" }} />
+              {l.name}
+            </button>
+          ))}
+        </div>
+        <label className="fld" style={{ flexDirection: "row", gap: 8, alignItems: "stretch" }}>
+          <input
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+            placeholder="New label&#8230;"
+            className="fld-i"
+            style={{ flex: 1 }}
+          />
+          <button
+            onClick={() => custom.trim() && onPick(custom.trim())}
+            disabled={!custom.trim()}
+            className="btn"
+            style={{ width: "auto", padding: "0 18px", opacity: custom.trim() ? 1 : 0.55 }}
+          >
+            Add
+          </button>
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function MessageBubble({ m }: { m: Message }) {
+  const out = m.direction === "outbound";
+  const who = out ? m.fromName || "You" : m.fromName || m.fromAddress || "Sender";
+  const atts = m.attachments ?? [];
+  // Prefer real HTML (htmlBody, or a textBody that is actually HTML) rendered in
+  // a sandboxed iframe; fall back to escaped plain text otherwise. Mirrors the
+  // desktop Thread.tsx rawHtml/plain split.
+  const rawHtml = m.htmlBody?.trim() || (looksLikeHtml(m.textBody) ? (m.textBody || "").trim() : "");
+  const plain = rawHtml ? "" : m.textBody?.trim() || stripHtml(m.htmlBody);
+  return (
+    <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+      <div style={{ width: 34, height: 34, flex: "none", borderRadius: "50%", background: out ? "#15161a" : avColor(who), color: "#fff", fontSize: 12, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {initials(who)}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: "#11140f" }}>{who}</span>
+          {!out && m.fromAddress && (
+            <span style={{ fontSize: 10, color: "#9aa093", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.fromAddress}</span>
+          )}
+          <span style={{ fontSize: 10, color: "#9aa093", marginLeft: "auto", flex: "none" }}>{fmtMsgTime(m)}</span>
+        </div>
+        {rawHtml ? (
+          <div style={{ background: out ? "#e1efed" : "#f4f6f3", borderRadius: 11, padding: "6px 8px", marginTop: 5 }}>
+            <HtmlBody html={rawHtml} attachments={atts} />
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, lineHeight: 1.6, color: "#414539", marginTop: 5, background: out ? "#e1efed" : "#f4f6f3", borderRadius: 11, padding: "11px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {plain || "(empty)"}
+          </div>
+        )}
+        {atts.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+            {atts.map((a) => (
+              <AttachmentChip key={a.id} a={a} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Render an email's HTML in a sandboxed iframe (sandbox="" — no scripts, no
+// same-origin), auto-sizing to content on load. Inline images referenced by
+// cid: are rewritten to authed blob: URLs resolved from the message's
+// attachments (contentId), matching the desktop reader. Anything that can't be
+// resolved falls back to the untouched HTML.
+function HtmlBody({ html, attachments }: { html: string; attachments: Attachment[] }) {
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const [doc, setDoc] = useState<string>(() => emailSrcDoc(html));
+
+  const inlineImgs = useMemo(
+    () => attachments.filter((a) => a.contentId && /^image\//i.test(a.contentType || "")),
+    [attachments],
+  );
+
+  useEffect(() => {
+    let revoked = false;
+    const made: string[] = [];
+    (async () => {
+      let out = html;
+      if (inlineImgs.length > 0 && /cid:/i.test(html)) {
+        for (const a of inlineImgs) {
+          const cid = (a.contentId || "").replace(/^<|>$/g, "");
+          if (!cid) continue;
+          try {
+            const url = await api.fetchBlobUrl(a.url);
+            if (revoked) {
+              URL.revokeObjectURL(url);
+              return;
+            }
+            made.push(url);
+            // Replace every cid:<id> reference (quoted or not) with the blob URL.
+            const esc = cid.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            out = out.replace(new RegExp(`cid:${esc}`, "gi"), url);
+          } catch {
+            /* leave the cid reference as-is; the image just won't load */
+          }
+        }
+      }
+      if (!revoked) setDoc(emailSrcDoc(out));
+    })();
+    return () => {
+      revoked = true;
+      for (const u of made) URL.revokeObjectURL(u);
+    };
+  }, [html, inlineImgs]);
+
+  return (
+    <iframe
+      ref={frameRef}
+      title="Email"
+      // allow-same-origin (NOT allow-scripts) — scripts stay blocked, but the
+      // frame can be measured on load so it auto-sizes to its content.
+      sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+      srcDoc={doc}
+      style={{ width: "100%", border: "none", background: "transparent", minHeight: 60 }}
+      onLoad={(e) => {
+        try {
+          const d = e.currentTarget.contentWindow?.document;
+          if (d) e.currentTarget.style.height = `${Math.min(d.body.scrollHeight + 16, 4000)}px`;
+        } catch {
+          /* keep the min height if measurement is blocked */
+        }
+      }}
+    />
+  );
+}
+
+function AttachmentChip({ a }: { a: Attachment }) {
+  const toast = useToast();
+  const open = async () => {
+    try {
+      // Attachments are served through an authed stream route, not a public URL.
+      const url = await api.fetchBlobUrl(a.url);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not open attachment.");
+    }
+  };
+  return (
+    <div
+      onClick={open}
+      style={{ border: "1px solid #e3e6e0", borderRadius: 11, padding: "10px 12px", display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 8 12 17a4 4 0 0 1-6-6l9-9a3 3 0 0 1 4 4l-9 9" />
+      </svg>
+      <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: "#11140f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.filename}</span>
+      {a.sizeBytes > 0 && <span style={{ fontSize: 10.5, color: "#9aa093", flex: "none" }}>{fmtBytes(a.sizeBytes)}</span>}
+      <span style={{ fontSize: 11, fontWeight: 700, color: "#a16a2e", flex: "none" }}>Download</span>
+    </div>
+  );
+}
+
+/** Reply / reply-all — POST /api/mail-center/threads/:id/reply. The backend
+ *  addresses the counterparty and prefixes Re: itself; the From defaults to the
+ *  thread's mailbox but can be overridden with a mailbox in scope. */
+function MailReply({
+  thread,
+  onClose,
+  onSent,
+  addresses,
+}: {
+  thread: Thread | undefined;
+  onClose: () => void;
+  onSent: () => void;
+  addresses: MailAddress[];
+}) {
+  const toast = useToast();
+  const [text, setText] = useState("");
+  const [from, setFrom] = useState(thread?.mailboxAddress || "");
+  const [sending, setSending] = useState(false);
+  const subject = /^re:/i.test(thread?.subject ?? "") ? thread?.subject ?? "" : `Re: ${thread?.subject ?? ""}`;
+
+  const send = async () => {
+    if (!thread) return;
+    if (!text.trim()) {
+      toast.error("Message body is empty.");
+      return;
+    }
+    setSending(true);
+    try {
+      await api.post(`/api/mail-center/threads/${thread.id}/reply`, {
+        text: text.trim(),
+        fromAddress: from || undefined,
+      });
+      toast.success("Reply sent.");
+      onSent();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not send reply.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <ComposeShell title="Reply" onClose={onClose} onSend={send} sending={sending}>
+      <label className="fld">
+        <span className="fld-l">To</span>
+        <input className="fld-i" value={thread?.counterpartyName || thread?.counterpartyEmail || "—"} disabled readOnly />
+      </label>
+      <FromPicker addresses={addresses} value={from} onChange={setFrom} />
+      <label className="fld">
+        <span className="fld-l">Subject</span>
+        <input className="fld-i" value={subject} disabled readOnly />
+      </label>
+      <label className="fld">
+        <span className="fld-l">Message</span>
+        <textarea className="fld-i" value={text} onChange={(e) => setText(e.target.value)} rows={8} style={{ resize: "none" }} placeholder="Write your reply&#8230;" />
+      </label>
+    </ComposeShell>
+  );
+}
+
+/** New / Forward — POST /api/mail-center/compose. Requires fromAddress, to,
+ *  subject and body. Forward seeds subject + quoted body but leaves To blank. */
+function MailCompose({
+  mode,
+  addresses,
+  seed,
+  onClose,
+  onSent,
+}: {
+  mode: ComposeMode;
+  addresses: MailAddress[];
+  seed?: { subject: string; body: string };
+  onClose: () => void;
+  onSent: () => void;
+}) {
+  const toast = useToast();
+  const [to, setTo] = useState("");
+  const [from, setFrom] = useState(addresses[0]?.address ?? "");
+  const [subject, setSubject] = useState(seed?.subject ?? "");
+  const [text, setText] = useState(seed?.body ?? "");
+  const [sending, setSending] = useState(false);
+
+  const send = async () => {
+    if (!from) {
+      toast.error("Choose a mailbox to send from.");
+      return;
+    }
+    if (!to.trim()) {
+      toast.error("Enter a recipient.");
+      return;
+    }
+    if (!subject.trim()) {
+      toast.error("Enter a subject.");
+      return;
+    }
+    if (!text.trim()) {
+      toast.error("Message body is empty.");
+      return;
+    }
+    setSending(true);
+    try {
+      await api.post("/api/mail-center/compose", {
+        fromAddress: from,
+        to: to.trim(),
+        subject: subject.trim(),
+        text: text.trim(),
+      });
+      toast.success("Email sent.");
+      onSent();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not send email.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <ComposeShell title={mode === "forward" ? "Forward" : "New email"} onClose={onClose} onSend={send} sending={sending}>
+      <FromPicker addresses={addresses} value={from} onChange={setFrom} />
+      <label className="fld">
+        <span className="fld-l">To</span>
+        <input className="fld-i" value={to} onChange={(e) => setTo(e.target.value)} placeholder="name@example.com" />
+      </label>
+      <label className="fld">
+        <span className="fld-l">Subject</span>
+        <input className="fld-i" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" />
+      </label>
+      <label className="fld">
+        <span className="fld-l">Message</span>
+        <textarea className="fld-i" value={text} onChange={(e) => setText(e.target.value)} rows={8} style={{ resize: "none" }} placeholder="Write your email&#8230;" />
+      </label>
+    </ComposeShell>
+  );
+}
+
+function FromPicker({ addresses, value, onChange }: { addresses: MailAddress[]; value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="fld">
+      <span className="fld-l">From</span>
+      <select className="fld-i" value={value} onChange={(e) => onChange(e.target.value)}>
+        {addresses.length === 0 && <option value="">No mailbox available</option>}
+        {addresses.map((a) => (
+          <option key={a.id} value={a.address}>
+            {a.address}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function ComposeShell({
+  title,
+  onClose,
+  onSend,
+  sending,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  onSend: () => void;
+  sending: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
+      <header className="hdr">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div className="ey" style={{ color: "#a16a2e" }}>Compose</div>
+            <div style={{ fontSize: 19, fontWeight: 800, color: "#11140f", marginTop: 2 }}>{title}</div>
+          </div>
+          <span onClick={onClose} style={{ fontSize: 24, color: "#767b6e", cursor: "pointer", lineHeight: 1 }}>
+            &times;
+          </span>
+        </div>
+      </header>
+      <div className="scroll" style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+        {children}
+      </div>
+      <footer className="actbar">
+        <button onClick={onSend} disabled={sending} className="btn" style={{ opacity: sending ? 0.6 : 1 }}>
+          {sending ? "Sending…" : "Send"}
+        </button>
+      </footer>
+    </div>
+  );
+}
+
+function Muted({ children, tone }: { children: React.ReactNode; tone?: "error" }) {
+  return (
+    <div style={{ textAlign: "center", fontSize: 12, color: tone === "error" ? "#b23a3a" : "#9aa093", padding: "30px 0" }}>{children}</div>
+  );
+}
+
+// True when a string carries real HTML markup (so a textBody that is actually
+// HTML still renders in the iframe). Ported from the desktop Thread.tsx.
+function looksLikeHtml(s: string | undefined): boolean {
+  return /<(?:!doctype|html|body|head|div|table|tr|td|p|br|span|a|img|style|font|center|ul|ol|li|h[1-6])[\s>/]/i.test(
+    s || "",
+  );
+}
+
+// Wrap raw email HTML in a self-contained document with a responsive base style
+// and a new-tab base target, injected into the existing <head> when present.
+// Ported from the desktop Thread.tsx emailSrcDoc.
+function emailSrcDoc(rawHtml: string): string {
+  const inject = `<base target="_blank"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html,body{margin:0;padding:10px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;line-height:1.5;color:#11140f;word-break:break-word;overflow-x:hidden;background:transparent}img{max-width:100%;height:auto}table{max-width:100%}</style>`;
+  if (/<head[^>]*>/i.test(rawHtml)) return rawHtml.replace(/<head([^>]*)>/i, `<head$1>${inject}`);
+  if (/<html[^>]*>/i.test(rawHtml)) return rawHtml.replace(/<html([^>]*)>/i, `<html$1><head>${inject}</head>`);
+  return `<!doctype html><html><head>${inject}</head><body>${rawHtml}</body></html>`;
+}
+
+// Strip HTML to a readable plain-text fallback when a message has no textBody.
+function stripHtml(html: string): string {
+  if (!html) return "";
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// Forward seed: Fwd: subject + a quoted transcript of the thread. To stays blank
+// so the user picks a new recipient (compose requires a valid To).
+function buildForwardSeed(thread: Thread | undefined, messages: Message[]): { subject: string; body: string } {
+  const base = thread?.subject ?? "";
+  const subject = /^fwd:/i.test(base) ? base : `Fwd: ${base}`;
+  const quoted = messages
+    .map((m) => {
+      const who = m.direction === "outbound" ? m.fromName || "You" : m.fromName || m.fromAddress || "Sender";
+      const when = fmtMsgTime(m);
+      const body = m.textBody || stripHtml(m.htmlBody);
+      return `On ${when}, ${who} wrote:\n${body}`;
+    })
+    .join("\n\n---\n\n");
+  const body = `\n\n---------- Forwarded message ----------\n${quoted}`;
+  return { subject, body };
+}

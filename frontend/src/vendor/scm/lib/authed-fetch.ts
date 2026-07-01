@@ -142,7 +142,22 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
     authorization: `Bearer ${token}`,
     ...(typeof init?.body === 'string' ? { 'content-type': 'application/json' } : {}),
   };
-  let res = await fetchWithTimeout(`${API_URL}${path}`, { ...init, headers }, path);
+  // Weak-wifi / Hyperdrive cold-start resilience (ported from HOOKKA
+  // 2026-06-30 + our core api-client): a transient 503 or network drop on an
+  // idempotent GET self-heals on retry instead of surfacing as a failed mobile
+  // list. GETs only (mutations aren't safe to replay); 2 retries w/ backoff.
+  const isGet = !init?.method || String(init.method).toUpperCase() === 'GET';
+  let res: Response;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetchWithTimeout(`${API_URL}${path}`, { ...init, headers }, path);
+    } catch (e) {
+      if (isGet && attempt < 2) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
+      throw e;
+    }
+    if (res.status === 503 && isGet && attempt < 2) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
+    break;
+  }
 
   /* Confirmable-409 loop (port of 2990 c3068b28) — a single DO save can trip
      MORE THAN ONE guard at once: short_stock (negative stock) AND sofa_no_batch

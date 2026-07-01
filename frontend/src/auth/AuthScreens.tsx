@@ -7,6 +7,9 @@ import { api } from "../api/client";
 import { useBranding } from "../hooks/useBranding";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
+import { MobileLogin } from "../mobile/MobileLogin";
+import { MobileApp } from "../mobile/MobileApp";
+import { useIsMobile } from "../mobile/useIsMobile";
 
 // Logo lives in /public; the wordmark is black-on-transparent so it gets
 // inverted to cream on the Nature Black canvas.
@@ -606,6 +609,7 @@ export function AcceptInviteScreen() {
 // ──────────────────────────────────────────────────────────
 export function AuthGate({ children }: { children: ReactNode }) {
   const { user, loading, hasUsers } = useAuth();
+  const isMobile = useIsMobile();
 
   // Track the hash so in-page links (#forgot, back-to-login) re-render
   // the gate without a full navigation. #invite= arrives as a fresh
@@ -642,8 +646,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
     if (hash === "#forgot") {
       return <ForgotPasswordScreen />;
     }
-    return <LoginScreen />;
+    return isMobile ? <MobileLogin /> : <LoginScreen />;
   }
 
-  return <>{children}</>;
+  return isMobile ? <MobileApp /> : <>{children}</>;
 }
