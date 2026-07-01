@@ -499,7 +499,15 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     // keeps the SCM nav ADDITIVE — `scm.access`/`*` still grant everything,
     // and a per-position SCM page-access grant ALSO unlocks its area.
     if (t.anyPerm || t.anyAccess) {
-      const permOk = t.anyPerm ? t.anyPerm.some((p) => can(p)) : false;
+      // For users with an explicit SCM L2 config, `scm.access` no longer
+      // auto-shows every SCM nav item — visibility falls to the granular
+      // page_access (anyAccess), mirroring the backend area-guard. `*` still
+      // shows everything; scm.access-only users (no L2) are unaffected.
+      const navPerms =
+        user?.scm_l2_configured && t.anyPerm
+          ? t.anyPerm.filter((p) => p !== "scm.access")
+          : t.anyPerm;
+      const permOk = navPerms ? navPerms.some((p) => can(p)) : false;
       const accessOk = t.anyAccess
         ? t.anyAccess.some((k) => pageAccess(k) !== "none")
         : false;

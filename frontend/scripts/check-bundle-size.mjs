@@ -67,7 +67,10 @@ const BUDGETS = {
   // chunks, but still counted here since this sums every emitted .js).
   // 1300 -> 1360 on 2026-06-30 to absorb the long-tail drift that remains
   // after the lucide tree-shake fix removed ~115 KB gzip from this number.
-  TOTAL_JS_GZIP: 1360 * KB,
+  // 1360 -> 1500 on 2026-07-01 for the new mobile app (frontend/src/mobile/*),
+  // code-split behind AuthScreens' useIsMobile — desktop users never fetch it
+  // (initial JS unchanged), but it is counted here since this sums every .js.
+  TOTAL_JS_GZIP: 1500 * KB,
   // Any single chunk, raw. A route blowing past this should be split.
   // Raised to fit the heaviest vendored lib — xlsx (~430 KB raw), pulled
   // out of the eager `vendor` chunk and loaded only on export.

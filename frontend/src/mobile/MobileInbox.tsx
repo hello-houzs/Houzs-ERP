@@ -1,0 +1,236 @@
+import { useMemo, useState } from "react";
+import { api } from "../api/client";
+import { relativeTime, parseDate, todayInAppTz } from "../lib/utils";
+import {
+  useNotifications,
+  type NotificationItem,
+} from "../hooks/useNotifications";
+import "./mobile.css";
+
+/** One-line summary of an activity row. Mirrors the desktop Notifications
+ *  page copy so the two surfaces read identically. */
+function activityLine(a: NotificationItem): string {
+  const who = a.user_name ? `${a.user_name} · ` : "";
+  switch (a.action) {
+    case "note":
+      return `${who}${a.note || "…"}`;
+    case "stage_change":
+      return `${who}Stage ${a.from_value || "?"} → ${a.to_value || "?"}`;
+    case "created":
+      return `${who}Created the project`;
+    case "checklist_status":
+      return `${who}${a.note || "Updated checklist"}`;
+    case "checklist_add":
+      return `${who}Added a checklist item`;
+    case "checklist_remove":
+      return `${who}Removed a checklist item`;
+    case "finance_edit":
+      return `${who}Updated finance`;
+    case "archived":
+      return `${who}Archived the project`;
+    case "restored":
+      return `${who}Restored the project`;
+    default:
+      return `${who}${a.action}${a.note ? ` · ${a.note}` : ""}`;
+  }
+}
+
+/** Small colored dot + rounded icon chip per action, echoing the design
+ *  prototype's per-category color coding. */
+function actionStyle(action: string): { dot: string; path: string } {
+  switch (action) {
+    case "note":
+    case "checklist_status":
+    case "checklist_add":
+    case "checklist_remove":
+      // speech bubble
+      return { dot: "#16695f", path: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" };
+    case "stage_change":
+      // arrow
+      return { dot: "#6e4d12", path: "M5 12h14M13 6l6 6-6 6" };
+    case "finance_edit":
+      // banknote
+      return { dot: "#2f8a5b", path: "M2 7h20v10H2zM12 12h.01M6 12h.01M18 12h.01" };
+    case "created":
+    case "restored":
+      // check
+      return { dot: "#2f8a5b", path: "M20 6 9 17l-5-5" };
+    case "archived":
+      // box
+      return { dot: "#b23a3a", path: "M4 8h16v11H4zM2 4h20v4H2zM10 12h4" };
+    default:
+      // bell
+      return { dot: "#16695f", path: "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" };
+  }
+}
+
+/**
+ * Mobile Inbox (notifications feed). Presentation ported VERBATIM from the
+ * owner's mobile design prototype (`#inbox` section + `renderInbox`) using the
+ * design system classes now in mobile.css (`.hdr` `.ey` `.card` `.scroll`),
+ * wired to the shared NotificationsProvider — the same unread activity rows the
+ * desktop bell popover and /notifications page show.
+ *
+ * "Mark all read" mirrors the desktop chat behaviour: there is no bulk
+ * endpoint, so we POST /api/projects/:id/read for every project that still
+ * carries an unread count (the same call ProjectChat makes on mount), then
+ * reload the feed.
+ */
+export function MobileInbox({
+  onOpen,
+  onBack,
+}: {
+  onOpen?: (item: NotificationItem) => void;
+  onBack?: () => void;
+}) {
+  const { feed, totalUnread, unreadByProject, reload } = useNotifications();
+  const [marking, setMarking] = useState(false);
+
+  const { today, earlier } = useMemo(() => {
+    const t = todayInAppTz();
+    const isToday = (iso: string) => {
+      const d = parseDate(iso);
+      if (!d) return false;
+      return (
+        new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Kuala_Lumpur",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(d) === t
+      );
+    };
+    const today: NotificationItem[] = [];
+    const earlier: NotificationItem[] = [];
+    for (const item of feed) (isToday(item.created_at) ? today : earlier).push(item);
+    return { today, earlier };
+  }, [feed]);
+
+  const markAll = async () => {
+    if (marking) return;
+    const ids = Object.entries(unreadByProject)
+      .filter(([, n]) => (n ?? 0) > 0)
+      .map(([id]) => Number(id));
+    if (!ids.length) return;
+    setMarking(true);
+    try {
+      await Promise.all(
+        ids.map((id) => api.post(`/api/projects/${id}/read`, {}).catch(() => {}))
+      );
+      await reload();
+    } finally {
+      setMarking(false);
+    }
+  };
+
+  return (
+    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
+      <header className="hdr">
+        {onBack && (
+          <span onClick={onBack} role="button" style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer", marginBottom: 7 }}>
+            <span style={{ fontSize: 17, lineHeight: 1 }}>{"‹"}</span> Menu
+          </span>
+        )}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div className="ey" style={{ color: "#a16a2e" }}>Activity</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 20, fontWeight: 800, color: "#11140f", marginTop: 2 }}>
+              Inbox
+              {totalUnread > 0 && (
+                <span style={{ minWidth: 20, height: 20, padding: "0 6px", borderRadius: 999, background: "#b23a3a", color: "#fff", fontSize: 11, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                  {totalUnread > 99 ? "99+" : totalUnread}
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={markAll}
+            disabled={marking || totalUnread === 0}
+            style={{
+              display: "flex", alignItems: "center", gap: 5, height: 34, padding: "0 12px",
+              border: "1px solid #d6d9d2", borderRadius: 9, background: "#f4f6f3",
+              color: "#414539", fontFamily: "inherit", fontSize: 12, fontWeight: 700,
+              cursor: marking || totalUnread === 0 ? "default" : "pointer",
+              opacity: totalUnread === 0 ? 0.5 : 1,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+            {marking ? "Marking…" : "Mark all read"}
+          </button>
+        </div>
+      </header>
+
+      <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
+        {feed.length === 0 ? (
+          <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12.5, padding: "48px 0" }}>
+            You're all caught up.
+          </div>
+        ) : (
+          <>
+            {today.length > 0 && (
+              <>
+                <div className="ey" style={{ color: "#767b6e", margin: "0 2px 9px" }}>Today</div>
+                <div className="card" style={{ overflow: "hidden", marginBottom: 14 }}>
+                  {today.map((item, i) => (
+                    <Row key={item.id} item={item} first={i === 0} unread={(unreadByProject[item.project_id] ?? 0) > 0} onOpen={onOpen} />
+                  ))}
+                </div>
+              </>
+            )}
+            {earlier.length > 0 && (
+              <>
+                <div className="ey" style={{ color: "#767b6e", margin: "0 2px 9px" }}>Earlier</div>
+                <div className="card" style={{ overflow: "hidden" }}>
+                  {earlier.map((item, i) => (
+                    <Row key={item.id} item={item} first={i === 0} unread={(unreadByProject[item.project_id] ?? 0) > 0} onOpen={onOpen} />
+                  ))}
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Row({
+  item, first, unread, onOpen,
+}: {
+  item: NotificationItem;
+  first: boolean;
+  unread: boolean;
+  onOpen?: (item: NotificationItem) => void;
+}) {
+  const { dot, path } = actionStyle(item.action);
+  const title = item.project_name || item.project_code || "Project";
+  return (
+    <button
+      onClick={() => onOpen?.(item)}
+      style={{
+        display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left",
+        background: "none", border: "none", borderTop: first ? undefined : "1px solid #e3e6e0",
+        padding: "11px 13px", cursor: onOpen ? "pointer" : "default", fontFamily: "inherit",
+      }}
+    >
+      <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: dot, visibility: unread ? "visible" : "hidden" }} />
+      <span style={{ width: 32, height: 32, flex: "none", borderRadius: 9, background: "#f4f6f3", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={path} /></svg>
+      </span>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ display: "block", fontSize: 13, fontWeight: unread ? 800 : 600, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {title}
+          {item.brand && (
+            <span className="money" style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 400, color: "#9aa093" }}>{item.brand}</span>
+          )}
+        </span>
+        <span style={{ display: "block", fontSize: 11.5, color: "#767b6e", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {activityLine(item)}
+        </span>
+      </span>
+      <span className="tnum" style={{ fontSize: 10, color: "#9aa093", flex: "none" }} title={item.created_at}>
+        {relativeTime(item.created_at)}
+      </span>
+    </button>
+  );
+}

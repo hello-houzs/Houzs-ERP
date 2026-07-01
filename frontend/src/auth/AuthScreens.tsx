@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, lazy, Suspense, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 import { Button } from "../components/Button";
@@ -7,6 +7,16 @@ import { api } from "../api/client";
 import { useBranding } from "../hooks/useBranding";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
+import { useIsMobile } from "../mobile/useIsMobile";
+
+// Code-split the mobile app: desktop users never download it, and it stays out
+// of the initial JS bundle (keeps the bundle-budget CI gate green).
+const MobileApp = lazy(() =>
+  import("../mobile/MobileApp").then((m) => ({ default: m.MobileApp })),
+);
+const MobileLogin = lazy(() =>
+  import("../mobile/MobileLogin").then((m) => ({ default: m.MobileLogin })),
+);
 
 // Logo lives in /public; the wordmark is black-on-transparent so it gets
 // inverted to cream on the Nature Black canvas.
@@ -606,6 +616,7 @@ export function AcceptInviteScreen() {
 // ──────────────────────────────────────────────────────────
 export function AuthGate({ children }: { children: ReactNode }) {
   const { user, loading, hasUsers } = useAuth();
+  const isMobile = useIsMobile();
 
   // Track the hash so in-page links (#forgot, back-to-login) re-render
   // the gate without a full navigation. #invite= arrives as a fresh
@@ -642,8 +653,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
     if (hash === "#forgot") {
       return <ForgotPasswordScreen />;
     }
-    return <LoginScreen />;
+    return isMobile ? (
+      <Suspense fallback={null}>
+        <MobileLogin />
+      </Suspense>
+    ) : (
+      <LoginScreen />
+    );
   }
 
-  return <>{children}</>;
+  return isMobile ? (
+    <Suspense fallback={null}>
+      <MobileApp />
+    </Suspense>
+  ) : (
+    <>{children}</>
+  );
 }
