@@ -353,10 +353,13 @@ type DocAction = {
   key: string;
   label: string;
   variant: ActVariant;
-  /** POST/PATCH request, relative to /api/scm. */
-  request: { path: string; method: "PATCH" | "POST"; body?: unknown };
-  /** In-app danger confirm before firing (Cancel / Void). */
+  /** POST/PATCH/DELETE request, relative to /api/scm. */
+  request: { path: string; method: "PATCH" | "POST" | "DELETE"; body?: unknown };
+  /** In-app danger confirm before firing (Cancel / Void / Delete). */
   confirm?: { title: string; body?: string; confirmLabel: string };
+  /** When true, the record no longer exists after this action → navigate back
+   *  to the list instead of staying on a now-deleted detail. */
+  removes?: boolean;
 };
 
 /** true when total − paid still leaves a balance (Record Payment worth offering). */
@@ -442,6 +445,9 @@ function statusActionsFor(moduleKey: string, id: string, header: any): DocAction
       }
       if (st === "CANCELLED") {
         out.push({ key: "reopen", label: "Reopen", variant: "outline", request: { path: `/mfg-purchase-orders/${enc}/reopen`, method: "PATCH" } });
+        // Desktop parity — a CANCELLED PO offers a hard Delete (DELETE /:id,
+        // CANCELLED-only on the backend). Removes the record → navigate back.
+        out.push({ key: "delete", label: "Delete", variant: "danger", removes: true, request: { path: `/mfg-purchase-orders/${enc}`, method: "DELETE" }, confirm: { title: "Delete this purchase order?", body: "This permanently removes the cancelled PO. This cannot be undone.", confirmLabel: "Delete PO" } });
         return out;
       }
       // SUBMITTED / PARTIALLY_RECEIVED
@@ -626,8 +632,11 @@ function PaymentSheet({ kind, id, header, onClose, onDone }: {
  *  (for SI/PI) a Record Payment action opening the PaymentSheet. Invalidates
  *  the detail + list queries on success; surfaces errors inline. Renders
  *  nothing when there is no valid action from the current status. */
-function DocActionFooter({ moduleKey, id, header, invalidate, onPOD }: {
+function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }: {
   moduleKey: string; id: string; header: any; invalidate: () => void; onPOD?: () => void;
+  /** Called after a `removes` action (e.g. Delete PO) succeeds — navigate back
+   *  to the list since the detail's record no longer exists. */
+  onDeleted?: () => void;
 }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
@@ -649,7 +658,18 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD }: {
         method: action.request.method,
         ...(action.request.body !== undefined ? { body: JSON.stringify(action.request.body) } : {}),
       }),
-    onSuccess: () => { refresh(); void notify({ title: "Done" }); },
+    onSuccess: (_data, action) => {
+      // A `removes` action (Delete) drops the record → refresh the list and pop
+      // back to it; every other action stays on the (now-updated) detail.
+      if (action.removes) {
+        void qc.invalidateQueries({ queryKey: ["mobile-module"] });
+        void notify({ title: "Deleted" });
+        onDeleted?.();
+        return;
+      }
+      refresh();
+      void notify({ title: "Done" });
+    },
     onError: (e) => setError(e instanceof Error ? e.message : "Something went wrong. Please try again."),
   });
 
@@ -753,7 +773,7 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
           </>
         )}
       </div>
-      {hasFooter && <DocActionFooter moduleKey={moduleKey} id={id} header={header} invalidate={invalidate} onPOD={onPOD} />}
+      {hasFooter && <DocActionFooter moduleKey={moduleKey} id={id} header={header} invalidate={invalidate} onPOD={onPOD} onDeleted={onBack} />}
     </div>
   );
 }
@@ -942,7 +962,7 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
           </>
         )}
       </div>
-      {hasFooter && <DocActionFooter moduleKey={moduleKey} id={actionId} header={actionRow} invalidate={invalidate} />}
+      {hasFooter && <DocActionFooter moduleKey={moduleKey} id={actionId} header={actionRow} invalidate={invalidate} onDeleted={onBack} />}
     </div>
   );
 }

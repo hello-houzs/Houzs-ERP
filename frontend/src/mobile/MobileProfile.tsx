@@ -21,11 +21,14 @@ import "./mobile.css";
  *                          our own row out by id. 403 (no users.read) is
  *                          handled gracefully; we fall back to the /me
  *                          fields we already have.
- *  - Self edit (name)    : PATCH /api/auth/me { name }  — the ONLY field
- *                          the backend lets a member self-edit. Phone /
+ *  - Self edit (name)    : PATCH /api/auth/me { name }  — the ONLY profile
+ *                          field the backend lets a member self-edit. Phone /
  *                          department / role stay read-only ("request
  *                          change to HR"), mirroring the prototype's Edit
  *                          affordance.
+ *  - Change password     : POST /api/auth/me/password { current, next } —
+ *                          self-service, mirrors the desktop Profile page.
+ *                          2FA (TOTP) + profile photo remain desktop-only.
  *  - My Team             : reuses GET /api/users to build the reporting
  *                          line (manager) + downline (direct reports).
  *  - Notifications       : NO backend endpoint exists — persisted to
@@ -35,7 +38,7 @@ import "./mobile.css";
  *  - Help & support      : static contact + guide rows.
  * ------------------------------------------------------------------ */
 
-type Screen = "home" | "personal" | "notif" | "language" | "help" | "team";
+type Screen = "home" | "personal" | "security" | "notif" | "language" | "help" | "team";
 
 // Subset of the /api/users row (TeamMember) we consume here. Every field
 // optional so a leaner/older backend never crashes the screen.
@@ -109,6 +112,9 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
 
   if (screen === "personal") {
     return <PersonalScreen onBack={() => setScreen("home")} myRow={myRow} />;
+  }
+  if (screen === "security") {
+    return <SecurityScreen onBack={() => setScreen("home")} />;
   }
   if (screen === "notif") {
     return <NotificationsScreen onBack={() => setScreen("home")} />;
@@ -199,6 +205,7 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
         <div className="ey" style={{ color: "#767b6e", margin: "18px 2px 9px" }}>Account</div>
         <div className="card" style={{ overflow: "hidden" }}>
           <ProfRow icon="user" label="Personal details" onClick={() => setScreen("personal")} first />
+          <ProfRow icon="lock" label="Password & security" onClick={() => setScreen("security")} />
           <ProfRow icon="bell" label="Notifications" onClick={() => setScreen("notif")} />
           <ProfRow icon="globe" label="Language" val="English" onClick={() => setScreen("language")} />
           <ProfRow icon="team" label="My Team" onClick={() => setScreen("team")} />
@@ -334,6 +341,90 @@ function PersonalScreen({ onBack, myRow }: { onBack: () => void; myRow: MemberRo
         </>
       )}
     </SubScreen>
+  );
+}
+
+// ── Password & security (self-service) ──
+// Change-password mirrors the desktop Profile page: POST /api/auth/me/password
+// { current, next }. The backend proves possession with the current password,
+// enforces its own strength rule, and revokes OTHER sessions (keeps this one).
+// 2FA / profile-picture live on the desktop Profile only for now (flagged in the
+// report) — this screen covers the password self-service.
+function SecurityScreen({ onBack }: { onBack: () => void }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  const changePw = useMutation({
+    mutationFn: (b: { current: string; next: string }) =>
+      api.post<{ ok: boolean }>("/api/auth/me/password", b),
+    onSuccess: () => {
+      setErr(null);
+      setDone(true);
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+    },
+    onError: (e: any) =>
+      setErr(e?.message?.replace(/^\d+:\s*/, "") || "Couldn't change password. Try again."),
+  });
+
+  const submit = () => {
+    setDone(false);
+    if (!current.trim()) { setErr("Enter your current password."); return; }
+    if (next.length < 8) { setErr("New password must be at least 8 characters."); return; }
+    if (next !== confirm) { setErr("New passwords don't match."); return; }
+    setErr(null);
+    changePw.mutate({ current, next });
+  };
+
+  return (
+    <SubScreen title="Password & security" sub="Change your account password" onBack={onBack}>
+      <div style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 14, padding: 14 }}>
+        <PwField label="Current password" value={current} onChange={setCurrent} autoComplete="current-password" />
+        <PwField label="New password" value={next} onChange={setNext} autoComplete="new-password" />
+        <PwField label="Confirm new password" value={confirm} onChange={setConfirm} autoComplete="new-password" />
+        {err && <div style={{ fontSize: 11.5, color: "#b23a3a", marginTop: 10 }}>{err}</div>}
+        {done && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#2f8a5b", marginTop: 10, fontWeight: 600 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2f8a5b" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+            Password changed. Other devices were signed out.
+          </div>
+        )}
+        <button
+          onClick={submit}
+          disabled={changePw.isPending}
+          style={{ width: "100%", marginTop: 14, background: "var(--teal)", color: "#fff", border: "none", borderRadius: 11, padding: "12px", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit", cursor: changePw.isPending ? "default" : "pointer", opacity: changePw.isPending ? 0.6 : 1 }}
+        >
+          {changePw.isPending ? "Saving…" : "Change password"}
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: "#9aa093", marginTop: 11, lineHeight: 1.5, padding: "0 2px" }}>
+        Changing your password signs out every other device. Two-factor authentication and profile photo are managed from the desktop app.
+      </div>
+    </SubScreen>
+  );
+}
+
+function PwField({ label, value, onChange, autoComplete }: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  autoComplete: string;
+}) {
+  return (
+    <label style={{ display: "block", marginBottom: 12 }}>
+      <div style={kvLabel}>{label}</div>
+      <input
+        type="password"
+        value={value}
+        autoComplete={autoComplete}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ width: "100%", marginTop: 6, border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", fontFamily: "inherit", fontSize: 14, color: "var(--ink)", outline: "none" }}
+      />
+    </label>
   );
 }
 
@@ -563,7 +654,7 @@ function PersonCard({ person, caption }: { person: MemberRow; caption?: string }
 // ── Profile setting row (design's profRow — icon chip + label + optional
 //    right value + chevron; first row has no top divider). ──
 function ProfRow({ icon, label, val, onClick, first }: {
-  icon: "user" | "team" | "bell" | "globe" | "help";
+  icon: "user" | "team" | "bell" | "globe" | "help" | "lock";
   label: string;
   val?: string;
   onClick: () => void;
@@ -584,11 +675,13 @@ function ProfRow({ icon, label, val, onClick, first }: {
   );
 }
 
-function RowIcon({ name }: { name: "user" | "team" | "bell" | "globe" | "help" }) {
+function RowIcon({ name }: { name: "user" | "team" | "bell" | "globe" | "help" | "lock" }) {
   const common = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "#16695f", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   switch (name) {
     case "user":
       return (<svg {...common}><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></svg>);
+    case "lock":
+      return (<svg {...common}><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>);
     case "team":
       return (<svg {...common}><circle cx="9" cy="8" r="3.2" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16 5.2a3.2 3.2 0 0 1 0 6.1" /><path d="M18 20a6.5 6.5 0 0 0-2.5-5.1" /></svg>);
     case "bell":

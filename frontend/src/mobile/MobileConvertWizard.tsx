@@ -127,17 +127,25 @@ export function MobileConvertWizard({
   target,
   onBack,
   onCreated,
+  initialSourceId,
 }: {
   target: ConvertTarget;
   onBack: () => void;
   onCreated: (docNo: string) => void;
+  /* Pre-seed the source document (single-source targets only: SO→DO / SO→PO /
+     DO→SI). When set, the wizard opens straight on the line/qty step for that
+     document — mirrors the desktop's per-row "Issue Delivery Order" action,
+     which lands on the prefilled convert screen for that specific SO. */
+  initialSourceId?: string | null;
 }) {
   const meta = META[target];
   const qc = useQueryClient();
   const notify = useNotify();
 
   // step 1 → source picked ; step 2 → lines/qty (or GRN supplier confirm) ; step 3 handled by submit.
-  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null); // doc_no (SO) or id (DO/PO)
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
+    meta.hasLinePicker && meta.source !== "po" ? (initialSourceId ?? null) : null,
+  ); // doc_no (SO) or id (DO/PO)
   // GRN: multi-PO of one supplier.
   const [selectedPoIds, setSelectedPoIds] = useState<string[]>([]);
   const [supplierFilter, setSupplierFilter] = useState<string | null>(null); // supplier id, GRN only
@@ -654,6 +662,8 @@ function humanize(msg: string): string {
     picks_required: "Select at least one line to convert.",
     mixed_customers: "All picked lines must belong to the same customer.",
     mixed_suppliers: "All selected Purchase Orders must be from the same supplier.",
+    missing_bindings: "One or more products have no supplier assigned yet. Bind a supplier to them (on the desktop Products screen) before raising a Purchase Order.",
+    qty_exceeds_remaining: "One of the quantities is more than what's left to convert. Refresh and try again.",
     over_remaining: "One of the quantities is more than what's left to convert. Refresh and try again.",
     not_authenticated: "Your session expired. Please sign in again.",
     load_failed: "Couldn't load the source data. Please try again.",

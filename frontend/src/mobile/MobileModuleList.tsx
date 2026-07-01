@@ -1263,8 +1263,9 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     ],
     chips: [
       { key: "all", label: "All", match: () => true },
-      { key: "open", label: "Open", match: (r) => eq(pick(r, "status"), "open") },
-      { key: "completed", label: "Completed", match: (r) => eq(pick(r, "status"), "completed") },
+      { key: "received", label: "Received", match: (r) => eq(pick(r, "status"), "received") },
+      { key: "inspected", label: "Inspected", match: (r) => eq(pick(r, "status"), "inspected") },
+      { key: "refunded", label: "Refunded", match: (r) => eq(pick(r, "status"), "refunded") },
       { key: "cancelled", label: "Cancelled", match: (r) => eq(pick(r, "status"), "cancelled") },
     ],
     sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "returnDate", "return_date"), pick(b, "returnDate", "return_date")) }],
@@ -1346,8 +1347,10 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     ],
     chips: [
       { key: "all", label: "All", match: () => true },
-      { key: "open", label: "Open", match: (r) => eq(pick(r, "status"), "open") },
+      { key: "draft", label: "Draft", match: (r) => eq(pick(r, "status"), "draft") },
+      { key: "posted", label: "Posted", match: (r) => eq(pick(r, "status"), "posted") },
       { key: "completed", label: "Completed", match: (r) => eq(pick(r, "status"), "completed") },
+      { key: "cancelled", label: "Cancelled", match: (r) => eq(pick(r, "status"), "cancelled") },
     ],
     sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "returnDate", "return_date"), pick(b, "returnDate", "return_date")) }],
   },

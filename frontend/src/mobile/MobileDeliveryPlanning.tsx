@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
+import { HC_SUBSTATUS_VALUES } from "../vendor/scm/lib/delivery-planning-queries";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -1142,6 +1143,50 @@ function StopDetail({
   const invalidate = () =>
     qc.invalidateQueries({ queryKey: ["mobile-delivery-planning"] });
 
+  // ── Convert this Sales Order → a Delivery Order (identical endpoint to the
+  // desktop board's Convert-to-DO: resolve the SO's still-deliverable lines via
+  // /deliverable-so-lines, then POST /from-sos with those picks — one DO for
+  // this SO). Unblocks a stop that has no DO cut yet so the driver can start it.
+  const convert = useMutation({
+    mutationFn: async () => {
+      const { lines } = await authedFetch<{
+        lines: Array<{ soItemId: string; docNo: string; remaining: number }>;
+      }>(
+        `/delivery-orders-mfg/deliverable-so-lines?docNos=${encodeURIComponent(
+          order.so_doc_no,
+        )}`,
+      );
+      const picks = (lines ?? [])
+        .filter((l) => l.soItemId && l.remaining > 0)
+        .map((l) => ({ soItemId: l.soItemId, qty: l.remaining }));
+      if (picks.length === 0) {
+        throw new Error("already_delivered");
+      }
+      return authedFetch<{ id: string; doNumber: string }>(
+        `/delivery-orders-mfg/from-sos`,
+        { method: "POST", body: JSON.stringify({ picks }) },
+      );
+    },
+    onSuccess: async () => {
+      await invalidate();
+    },
+  });
+
+  // ── Save the HC delivery-execution fields on the latest DO (identical endpoint
+  // to the desktop DeliveryFieldsDrawer: PATCH /delivery-planning/so/:id/fields).
+  // Only the DO-execution subset a driver touches on the road — time window,
+  // arrival/departure clock, delivered date, and the HC "Remark 4" sub-status.
+  const saveFields = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      authedFetch<{ ok: true; no_do_hint: string | null }>(
+        `/delivery-planning/so/${encodeURIComponent(order.so_doc_no)}/fields`,
+        { method: "PATCH", body: JSON.stringify(body) },
+      ),
+    onSuccess: async () => {
+      await invalidate();
+    },
+  });
+
   // "On the way" / "Mark arrived" → IN_TRANSIT. Inventory-idempotent (DO OUT).
   const start = useMutation({
     mutationFn: () => {
@@ -1170,12 +1215,32 @@ function StopDetail({
     },
   });
 
+  // Offer to CUT the DO on the spot (same endpoint the desktop board uses) when
+  // a stop has none yet, instead of dead-ending at "ask the office".
+  const onConvert = async () => {
+    if (convert.isPending) return;
+    const go = await confirm({
+      title: "Create delivery order?",
+      body: "This turns this sales order's still-undelivered lines into a delivery order (one DO) so this stop can be started and delivered. Fully delivered orders are skipped.",
+      confirmLabel: "Create DO",
+    });
+    if (!go) return;
+    try {
+      await convert.mutateAsync();
+      await notify({ title: "Delivery order created", body: "You can now start and complete this stop." });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg === "already_delivered") {
+        await notify({ title: "Nothing to deliver", body: "Every line on this order is already delivered." });
+      } else {
+        await notify({ title: "Couldn't create the delivery order", body: msg });
+      }
+    }
+  };
+
   const requireDo = async (): Promise<boolean> => {
     if (doId) return true;
-    await notify({
-      title: "No delivery order yet",
-      body: "This stop has no delivery order cut yet. Open the order so the office can issue the DO first.",
-    });
+    await onConvert();
     return false;
   };
 
@@ -1197,6 +1262,7 @@ function StopDetail({
 
   const busy = start.isPending || complete.isPending;
   const goToDo = () => onOpen?.(order.so_doc_no);
+  const [editingFields, setEditingFields] = useState(false);
 
   return (
     <div
@@ -1421,6 +1487,74 @@ function StopDetail({
           {pdRow("Driver", order.crew?.driver || EM, true)}
           {pdRow("Helper", order.crew?.helper || EM, false, true)}
         </div>
+
+        {/* No DO yet → offer to cut one on the spot (desktop board's Convert-to-DO,
+            identical endpoint) so the driver isn't dead-ended. */}
+        {!doId && (
+          <button
+            onClick={onConvert}
+            disabled={convert.isPending}
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 7,
+              height: 44,
+              border: "1.5px solid #16695f",
+              borderRadius: 11,
+              background: "#fff",
+              color: "#16695f",
+              fontFamily: "inherit",
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: convert.isPending ? "default" : "pointer",
+              opacity: convert.isPending ? 0.6 : 1,
+              marginBottom: 12,
+            }}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#16695f"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M1 3h15v13H1zM16 8h4l3 3v5h-7z"></path>
+              <circle cx="5.5" cy="18.5" r="2.5"></circle>
+              <circle cx="18.5" cy="18.5" r="2.5"></circle>
+            </svg>
+            {convert.isPending ? "Creating delivery order…" : "Create delivery order"}
+          </button>
+        )}
+
+        {/* Delivery details (HC delivery-execution fields) — same endpoint as the
+            desktop DeliveryFieldsDrawer: PATCH /delivery-planning/so/:id/fields.
+            Editable only once a DO exists (the fields live on the DO), mirroring
+            the desktop drawer's DO-execution group gating. */}
+        {doId && (
+          <DeliveryFieldsCard
+            order={order}
+            editing={editingFields}
+            saving={saveFields.isPending}
+            onEdit={() => setEditingFields(true)}
+            onCancel={() => setEditingFields(false)}
+            onSave={async (body) => {
+              try {
+                await saveFields.mutateAsync(body);
+                setEditingFields(false);
+              } catch (e) {
+                await notify({
+                  title: "Couldn't save",
+                  body: e instanceof Error ? e.message : String(e),
+                });
+              }
+            }}
+          />
+        )}
 
         {/* Goods to deliver (item list). The feed carries no line-level detail,
             so we surface one branded summary line; per-item spec/qty is not
@@ -1680,6 +1814,223 @@ function StopDetail({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── DeliveryFieldsCard — the HC delivery-execution fields, read + Edit→Save.
+   Mirrors the desktop DeliveryFieldsDrawer's DO-execution group (the subset a
+   driver touches on the road): time window + confirmed, arrival/departure clock,
+   customer-delivered date, and the HC "Remark 4" delivery sub-status. Save posts
+   ONLY the changed fields to PATCH /delivery-planning/so/:id/fields via the same
+   camelCase keys the drawer sends. Blank clears (the endpoint stores '' → null).
+   ─────────────────────────────────────────────────────────────────────────── */
+// A TIMESTAMPTZ ISO → the value <input type="datetime-local"> wants.
+const toDtLocal = (iso: string | null | undefined): string =>
+  iso ? String(iso).slice(0, 16) : "";
+// A YYYY-MM-DD date-ish string → the value <input type="date"> wants.
+const toDateInput = (d: string | null | undefined): string =>
+  d ? String(d).slice(0, 10) : "";
+
+function DeliveryFieldsCard({
+  order,
+  editing,
+  saving,
+  onEdit,
+  onCancel,
+  onSave,
+}: {
+  order: BoardRow;
+  editing: boolean;
+  saving: boolean;
+  onEdit: () => void;
+  onCancel: () => void;
+  onSave: (body: Record<string, unknown>) => void;
+}) {
+  const initial = useMemo(
+    () => ({
+      timeRange: order.time_range ?? "",
+      timeConfirmed: !!order.time_confirmed,
+      arrivalAt: toDtLocal(order.arrival_at),
+      departureAt: toDtLocal(order.departure_at),
+      customerDeliveredDate: toDateInput(order.customer_delivered_date),
+      deliverySubstatus: order.delivery_substatus ?? "",
+    }),
+    [order],
+  );
+  const [form, setForm] = useState(initial);
+  // Re-seed the draft each time the editor is (re)opened so a fresh board fetch
+  // isn't shadowed by a stale draft.
+  const startEdit = () => {
+    setForm(initial);
+    onEdit();
+  };
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
+    setForm((s) => ({ ...s, [k]: v }));
+
+  const save = () => {
+    const body: Record<string, unknown> = {};
+    if (form.timeRange !== initial.timeRange) body.timeRange = form.timeRange || null;
+    if (form.timeConfirmed !== initial.timeConfirmed) body.timeConfirmed = form.timeConfirmed;
+    if (form.arrivalAt !== initial.arrivalAt) body.arrivalAt = form.arrivalAt || null;
+    if (form.departureAt !== initial.departureAt) body.departureAt = form.departureAt || null;
+    if (form.customerDeliveredDate !== initial.customerDeliveredDate)
+      body.customerDeliveredDate = form.customerDeliveredDate || null;
+    if (form.deliverySubstatus !== initial.deliverySubstatus)
+      body.deliverySubstatus = form.deliverySubstatus || null;
+    if (Object.keys(body).length === 0) {
+      onCancel();
+      return;
+    }
+    onSave(body);
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    fontFamily: "inherit",
+    fontSize: 13,
+    color: "var(--ink)",
+    background: "var(--bg)",
+    border: "1px solid var(--line)",
+    borderRadius: 9,
+    padding: "9px 10px",
+    marginTop: 3,
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-h">
+        <span className="card-t">Delivery details</span>
+        {!editing && (
+          <span
+            onClick={startEdit}
+            className="card-sub"
+            style={{ color: "var(--brand)", fontWeight: 700, cursor: "pointer" }}
+          >
+            Edit
+          </span>
+        )}
+      </div>
+      {editing ? (
+        <div className="card-b">
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span className="fld-l">Time window</span>
+            <input
+              value={form.timeRange}
+              placeholder="e.g. 10am-12pm"
+              onChange={(e) => set("timeRange", e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <input
+              type="checkbox"
+              checked={form.timeConfirmed}
+              onChange={(e) => set("timeConfirmed", e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: "#16695f" }}
+            />
+            <span style={{ fontSize: 12.5, color: "var(--ink2)" }}>Time confirmed with customer</span>
+          </label>
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span className="fld-l">Departure</span>
+            <input
+              type="datetime-local"
+              value={form.departureAt}
+              onChange={(e) => set("departureAt", e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span className="fld-l">Arrival</span>
+            <input
+              type="datetime-local"
+              value={form.arrivalAt}
+              onChange={(e) => set("arrivalAt", e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span className="fld-l">Customer delivered date</span>
+            <input
+              type="date"
+              value={form.customerDeliveredDate}
+              onChange={(e) => set("customerDeliveredDate", e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "block", marginBottom: 12 }}>
+            <span className="fld-l">Delivery status</span>
+            <select
+              value={form.deliverySubstatus}
+              onChange={(e) => set("deliverySubstatus", e.target.value)}
+              style={inputStyle}
+            >
+              <option value="">—</option>
+              {HC_SUBSTATUS_VALUES.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={onCancel}
+              disabled={saving}
+              style={{
+                flex: 1,
+                height: 42,
+                border: "1px solid #d6d9d2",
+                borderRadius: 11,
+                background: "#fff",
+                color: "var(--ink2)",
+                fontFamily: "inherit",
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: saving ? "default" : "pointer",
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              disabled={saving}
+              style={{
+                flex: 1,
+                height: 42,
+                border: "none",
+                borderRadius: 11,
+                background: saving ? "#7fb4ad" : "#16695f",
+                color: "#fff",
+                fontFamily: "inherit",
+                fontSize: 13,
+                fontWeight: 800,
+                cursor: saving ? "default" : "pointer",
+              }}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {pdRow("Time window", (order.time_range && order.time_range.trim()) || EM, true)}
+          {pdRow(
+            "Time confirmed",
+            order.time_confirmed == null ? EM : order.time_confirmed ? "Yes" : "No",
+            true,
+          )}
+          {pdRow("Departure", order.departure_at ? hhmm(order.departure_at) : EM, false)}
+          {pdRow("Arrival", order.arrival_at ? hhmm(order.arrival_at) : EM, true)}
+          {pdRow("Delivered date", dm(order.customer_delivered_date), false)}
+          {pdRow(
+            "Delivery status",
+            (order.delivery_substatus && order.delivery_substatus.trim()) || EM,
+            true,
+            true,
+          )}
+        </>
+      )}
     </div>
   );
 }

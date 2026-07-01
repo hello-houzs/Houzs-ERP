@@ -173,6 +173,23 @@ function useLookupSlugs(kind: string, fallback: readonly string[]): string[] {
   return rows.length ? rows.map((r) => r.slug) : [...fallback];
 }
 
+// Assignable users for the PIC picker — mirrors desktop DetailContent, which
+// pulls /api/users (shape { users } | { data } | array) and narrows the picker
+// to Operations-department members (plus whoever is currently assigned so an
+// out-of-Operations assignment never silently vanishes from the list).
+type PicUser = { id: number; name: string; department_name?: string };
+function useAssignableUsers(): PicUser[] {
+  const { data } = useQuery({
+    queryKey: ["mobile-assr-users"],
+    queryFn: () =>
+      api
+        .get<any>("/api/users")
+        .then((r: any) => (r?.users ?? r?.data ?? r ?? []) as PicUser[]),
+    staleTime: 5 * 60_000,
+  });
+  return Array.isArray(data) ? data : [];
+}
+
 const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 // Human labels for the resolution_method slugs (mirrors desktop).
 const RESOLUTION_LABELS: Record<string, string> = {
@@ -385,6 +402,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const issueCatOptions = useLookupNames("issue-categories", ISSUE_CATEGORY_OPTIONS as readonly string[]);
   const resolutionOptions = useLookupSlugs("resolution-methods", RESOLUTION_OPTIONS as readonly string[]);
   const priorityOptions = useLookupSlugs("priorities", PRIORITY_OPTIONS as readonly string[]);
+  const assignableUsers = useAssignableUsers();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-assr-detail", id],
@@ -500,6 +518,45 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     await runWrite(async () => {
       await api.post(`/api/assr/${id}/items`, { items: [{ item_code: trimmed, qty: 1 }] });
     }, "Couldn't add item");
+  };
+
+  // ── Remove product item → DELETE /:id/items/:itemId (desktop parity) ────────
+  const removeItem = async (it: Any) => {
+    if (busy) return;
+    const itemId = Number(get(it, "id"));
+    if (!itemId) return;
+    const label = String(get(it, "itemCode", "item_code") ?? get(it, "itemDescription", "item_description") ?? "this item");
+    if (!(await confirm({ title: `Remove ${label}?`, confirmLabel: "Remove", danger: true }))) return;
+    await runWrite(async () => {
+      await api.del(`/api/assr/${id}/items/${itemId}`);
+    }, "Couldn't remove item");
+  };
+
+  // ── Assign PIC → PATCH /:id { assigned_to } (desktop parity) ────────────────
+  // The picker is narrowed to Operations-department members, keeping the current
+  // assignee selectable, exactly as the desktop DetailContent PIC select does.
+  const assignPic = async () => {
+    if (busy) return;
+    const curId = Number(get(c, "assignedTo", "assigned_to") ?? 0) || null;
+    const ops = assignableUsers.filter(
+      (u) => /operation/i.test(u.department_name || "") || u.id === curId,
+    );
+    if (!ops.length) {
+      await notify({ title: "No assignable users", body: "No Operations members are available to assign." });
+      return;
+    }
+    const picked = await choose({
+      title: "Assign to",
+      body: assignedTo ? `Currently ${String(assignedTo)}.` : "Currently unassigned.",
+      options: [
+        { value: "", label: "— Unassigned —" },
+        ...ops.map((u) => ({ value: String(u.id), label: u.name })),
+      ],
+    });
+    if (picked == null) return;
+    const nextId = picked === "" ? null : Number(picked);
+    if (nextId === curId) return;
+    await patchCase({ assigned_to: nextId }, "Couldn't reassign");
   };
 
   return (
@@ -631,6 +688,14 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                     <div style={{ fontSize: 12, fontWeight: 600, color: INK, marginTop: 2 }}>{String(get(it, "itemDescription", "item_description") ?? "—")}</div>
                   </div>
                   <span style={{ fontSize: 11, color: MUTED }}>×{String(get(it, "qty") ?? 1)}</span>
+                  <button
+                    onClick={() => removeItem(it)}
+                    disabled={busy}
+                    aria-label="Remove item"
+                    style={{ flex: "none", width: 26, height: 26, borderRadius: 8, border: "1px solid #e3e6e0", background: "#fff", color: RED, fontSize: 15, lineHeight: 1, cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1 }}
+                  >
+                    ×
+                  </button>
                 </div>
               )) : (
                 <div style={{ fontSize: 12, color: GREY, padding: "2px 0" }}>No items recorded.</div>
@@ -731,8 +796,20 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             </EditableAcc>
 
-            {/* PIC */}
-            <Acc title="PIC" headRight={assignedTo ? String(assignedTo) : undefined}>
+            {/* PIC — Assign (reassign assigned_to via PATCH /:id, desktop parity) */}
+            <Acc
+              title="PIC"
+              open
+              headSlot={
+                <span
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) assignPic(); }}
+                  className="tinybtn"
+                  style={{ marginLeft: "auto", color: BROWN, opacity: busy ? 0.5 : 1 }}
+                >
+                  Assign
+                </span>
+              }
+            >
               <KV label="Assigned to" value={assignedTo ? String(assignedTo) : "Unassigned"} />
               <KV label="Created by" value={String(get(c, "createdByName", "created_by_name") ?? "—")} />
             </Acc>

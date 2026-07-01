@@ -5,6 +5,7 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { uploadSlipFull, fetchPaymentSlipUrl } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
+import { generateSalesOrderPdf } from "../vendor/scm/lib/sales-order-pdf";
 import "./mobile.css";
 
 /* Shapes are the subset of the /mfg-sales-orders/:docNo + /:docNo/payments
@@ -29,6 +30,11 @@ type SoHeader = {
   total_revenue_centi: number | null;
   paid_centi_total: number | null;
   balance_centi: number | null;
+  /* Tier 2 downstream-lock + delivery progress — stamped by the detail GET
+     (same fields the desktop SO Detail / list read). has_children = a
+     non-cancelled DO/SI references this SO (locks Edit + Cancel). */
+  has_children: boolean | null;
+  delivery_state: string | null;
 };
 type SoItem = {
   id: string;
@@ -36,6 +42,10 @@ type SoItem = {
   item_code: string | null;
   qty: number | null;
   line_delivery_date: string | null;
+  /* Live delivery balance per line (qty − delivered + returned) — stamped by
+     the detail GET. Drives the "anything left to deliver?" gate for Issue DO,
+     mirroring the desktop list's has_undelivered. */
+  remaining_qty: number | null;
 };
 type SoPayment = {
   id: string;
@@ -70,10 +80,12 @@ const total = (h: SoHeader) => h.local_total_centi ?? h.total_revenue_centi ?? 0
  *  (`#so-detail` + `renderSoDetail`/`openSO`), wired to the real
  *  /mfg-sales-orders/:docNo (header + line items) and /:docNo/payments.
  *  Draft/Submitted actions PATCH /:docNo/status. Design classes only. */
-export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBack: () => void; onEdit?: (docNo: string) => void }) {
+export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: string; onBack: () => void; onEdit?: (docNo: string) => void; onIssueDo?: (docNo: string) => void }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
+  const notify = useNotify();
   const [busy, setBusy] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [payOpen, setPayOpen] = useState(false);
 
@@ -116,12 +128,88 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const ph = h ? phase(h.status) : "submitted";
   const bal = h ? (h.balance_centi ?? Math.max(0, total(h) - (h.paid_centi_total ?? 0))) : 0;
 
+  /* Parity with desktop SO Detail / list gating (all statuses UPPER-cased).
+     - Cancel is offered only on in-flight statuses (CONFIRMED / IN_PRODUCTION /
+       READY_TO_SHIP), never once SHIPPED+ / INVOICED / CLOSED — those carry
+       downstream docs. Mirrors SalesOrderDetail.cancellableStatuses.
+     - Edit is locked once the SO is SHIPPED+ or any non-cancelled DO/SI
+       references it (has_children). Mirrors SalesOrderDetail.lockedStatuses. */
+  const rawStatus = (h?.status ?? "").toUpperCase();
+  const hasChildren = Boolean(h?.has_children);
+  const CANCELLABLE = ["CONFIRMED", "IN_PRODUCTION", "READY_TO_SHIP"];
+  const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
+  const canCancel = CANCELLABLE.includes(rawStatus);
+  const editLocked = LOCKED.includes(rawStatus) || hasChildren;
+  /* Issue Delivery Order — offered when the SO is live and at least one line
+     still has an undelivered balance. Mirrors the desktop list's convertToDo
+     gate (has_undelivered && status not CANCELLED/CLOSED/ON_HOLD). */
+  const hasUndelivered = items.some((it) => Number(it.remaining_qty ?? it.qty ?? 0) > 0);
+  const canIssueDo = !!onIssueDo && ph !== "draft" && ph !== "cancelled"
+    && !["CANCELLED", "CLOSED", "ON_HOLD"].includes(rawStatus) && hasUndelivered;
+
+  /* Print PDF — parity with desktop's Print PDF button. Fetches the SAME full
+     bundle (header + items + pwpCodes via GET /:docNo, payments via
+     /:docNo/payments) the desktop feeds generateSalesOrderPdf, then saves the
+     PDF. The trimmed detail query above is display-only, so we re-fetch the
+     full header here rather than print a stripped document. */
+  const printPdf = async () => {
+    if (pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      const [bundle, payResp] = await Promise.all([
+        authedFetch<{ salesOrder: Record<string, unknown>; items: unknown[]; pwpCodes?: unknown[] }>(`/mfg-sales-orders/${encodeURIComponent(docNo)}`),
+        authedFetch<{ payments?: unknown[] }>(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`).catch(() => ({ payments: [] })),
+      ]);
+      await generateSalesOrderPdf(
+        bundle.salesOrder as never,
+        bundle.items as never,
+        (payResp.payments ?? []) as never,
+        "save",
+        (bundle.pwpCodes ?? []) as never,
+      );
+    } catch (e) {
+      void notify({ title: "Couldn't generate the PDF", body: e instanceof Error ? e.message : String(e), tone: "error" });
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
+  /* Delete a persisted payment — parity with the desktop PaymentsTable trash
+     action. In-app confirm, then DELETE /:docNo/payments/:id; on success the
+     payments + header (balance) queries invalidate so the KPIs update live. */
+  const deletePayment = async (paymentId: string) => {
+    if (busy) return;
+    if (!(await confirm({ title: "Delete this payment?", body: "This removes the recorded payment and re-opens the balance.", confirmLabel: "Delete", danger: true }))) return;
+    setActionError(null);
+    setBusy(true);
+    try {
+      await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments/${encodeURIComponent(paymentId)}`, { method: "DELETE" });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["mobile-so-payments", docNo] }),
+        qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
+        qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
+      ]);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Couldn't delete the payment. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
         <div className="hdr-row">
           <button className="back" onClick={onBack}><span className="chev">{"‹"}</span> Sales Orders</button>
-          {h && <StatusPill status={h.status} />}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {/* Print PDF — parity with desktop SO Detail's Print PDF button. */}
+            {h && (
+              <button onClick={() => void printPdf()} disabled={pdfBusy} aria-label="Print PDF" className="iconbtn" style={{ opacity: pdfBusy ? 0.5 : 1 }}>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z" /></svg>
+              </button>
+            )}
+            {h && <StatusPill status={h.status} />}
+          </div>
         </div>
         <div className="eyebrow" style={{ marginTop: 7, display: "flex", alignItems: "center", gap: 6 }}>
           <span className="money">{h?.doc_no ?? docNo}</span>
@@ -193,6 +281,21 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     {p.slip_key ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
                     <span className="money-row">RM {rm(p.amount_centi)}</span>
+                    {/* Delete payment — parity with desktop PaymentsTable. Hidden
+                        on cancelled / edit-locked (SHIPPED+ / has children) orders,
+                        matching the desktop's locked-mode hide. */}
+                    {ph !== "cancelled" && !editLocked && (
+                      <button
+                        type="button"
+                        onClick={() => void deletePayment(p.id)}
+                        disabled={busy}
+                        title="Delete payment"
+                        aria-label="Delete payment"
+                        style={{ border: "none", background: "transparent", cursor: "pointer", padding: "0 4px", display: "flex", alignItems: "center", opacity: busy ? 0.4 : 1 }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#b23a3a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
+                      </button>
+                    )}
                   </div>
                 </div>
               )) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No payments recorded.</div>)}
@@ -218,10 +321,26 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             </div>
           )}
           {ph === "submitted" && (
-            <div style={{ display: "flex", gap: 9 }}>
-              <button className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onEdit?.(docNo)}>Edit</button>
-              <button className="btn-danger" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => setStatus("CANCELLED", `Cancel ${docNo}? This voids the order.`)}>{busy ? "Working…" : "Cancel Order"}</button>
-            </div>
+            <>
+              {/* Issue Delivery Order — opens the convert wizard pre-seeded with
+                  this SO (parity with the desktop list's convertToDo). Shown only
+                  when the SO is live and has an undelivered balance. */}
+              {canIssueDo && (
+                <button className="btn" style={{ marginBottom: 9, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onIssueDo?.(docNo)}>Issue Delivery Order</button>
+              )}
+              <div style={{ display: "flex", gap: 9 }}>
+                {/* Edit — locked once SHIPPED+ or a non-cancelled DO/SI references
+                    this SO (has_children), matching the desktop's lockedStatuses. */}
+                <button className="btn-ghost" style={{ flex: 1, opacity: busy || editLocked ? 0.4 : 1 }} disabled={busy || editLocked} onClick={() => onEdit?.(docNo)}>Edit</button>
+                {/* Cancel — only on in-flight statuses (not SHIPPED+ / INVOICED /
+                    CLOSED), matching the desktop's cancellableStatuses. */}
+                {canCancel ? (
+                  <button className="btn-danger" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => setStatus("CANCELLED", `Cancel ${docNo}? This voids the order.`)}>{busy ? "Working…" : "Cancel Order"}</button>
+                ) : (
+                  <div style={{ flex: 1, textAlign: "center", fontSize: 11, color: "var(--mut2)", alignSelf: "center" }}>Locked — downstream documents exist.</div>
+                )}
+              </div>
+            </>
           )}
           {ph === "cancelled" && (
             <div style={{ textAlign: "center", fontSize: 11.5, color: "var(--mut2)", padding: 4 }}>This order was cancelled.</div>

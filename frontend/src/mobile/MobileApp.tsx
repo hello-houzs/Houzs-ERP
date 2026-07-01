@@ -34,7 +34,7 @@ type Screen =
   | { t: "module"; key: string; title: string }
   | { t: "module-detail"; key: string; row: any; title: string }
   | { t: "module-form"; key: string; mode: "new" | "edit"; row?: any }
-  | { t: "convert"; key: string; title: string; target: ConvertTarget }
+  | { t: "convert"; key: string; title: string; target: ConvertTarget; initialSourceId?: string }
   | { t: "pod"; docNo: string }
   | { t: "service" }
   | { t: "delivery-planning" }
@@ -224,7 +224,7 @@ function MobileAppInner() {
   };
 
   // Overlay screens (pushed above the tab bar).
-  if (screen.t === "so-detail") return <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} />;
+  if (screen.t === "so-detail") return <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} onIssueDo={(d) => setScreen({ t: "convert", key: "delivery-orders-mfg", title: "Delivery Orders", target: "do", initialSourceId: d })} />;
   if (screen.t === "new-so") return <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
   if (screen.t === "scan") return <MobileScan onBack={back} onExtracted={(prefill) => setScreen({ t: "new-so", mode: "new", scanPrefill: prefill })} />;
   if (screen.t === "module") {
@@ -239,7 +239,16 @@ function MobileAppInner() {
       onOpen={(row) => setScreen({ t: "module-detail", key: k, row, title: screen.title })}
       onNew={onNew} />;
   }
-  if (screen.t === "convert") return <MobileConvertWizard target={screen.target} onBack={() => setScreen({ t: "module", key: screen.key, title: screen.title })} onCreated={() => setScreen({ t: "module", key: screen.key, title: screen.title })} />;
+  if (screen.t === "convert") {
+    // Launched from an SO detail (Issue Delivery Order) → return to that SO
+    // afterwards so the operator sees the updated delivery state. Launched from
+    // a module list ("+ New") → return to that list.
+    const fromSo = screen.target === "do" && !!screen.initialSourceId;
+    const backToConvertHome = fromSo
+      ? () => setScreen({ t: "so-detail", docNo: screen.initialSourceId! })
+      : () => setScreen({ t: "module", key: screen.key, title: screen.title });
+    return <MobileConvertWizard target={screen.target} initialSourceId={screen.initialSourceId} onBack={backToConvertHome} onCreated={backToConvertHome} />;
+  }
   if (screen.t === "module-detail") {
     const doNo = screen.key === "delivery-orders-mfg" ? (screen.row?.do_number ?? screen.row?.doNumber) : null;
     return <MobileModuleDetail moduleKey={screen.key} row={screen.row} title={screen.title}
