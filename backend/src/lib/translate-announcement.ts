@@ -16,6 +16,33 @@
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
+// Anthropic returns transient 429 rate-limits and 529 "Overloaded" / 5xx spikes
+// that clear on a retry. Without one a single transient blip drops the whole
+// announcement translation to null (FE then shows the original text only). Retry
+// those a few times with an exponential-ish backoff; non-retryable statuses and
+// the final attempt fall through to the caller's existing !resp.ok handling.
+const RETRYABLE_ANTHROPIC_STATUS = new Set([429, 500, 502, 503, 529]);
+
+async function anthropicFetchWithRetry(
+  init: RequestInit,
+  tries = 3,
+): Promise<Response> {
+  let resp: Response | null = null;
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    resp = await fetch(ANTHROPIC_URL, init);
+    if (resp.ok) return resp;
+    let overloaded = false;
+    try {
+      const peek = await resp.clone().text();
+      if (/overloaded/i.test(peek)) overloaded = true;
+    } catch { /* body peek is best-effort */ }
+    const retryable = RETRYABLE_ANTHROPIC_STATUS.has(resp.status) || overloaded;
+    if (!retryable || attempt === tries - 1) return resp;
+    await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
+  }
+  return resp as Response;
+}
+
 // Four supported languages — English, Bahasa Melayu, Simplified Chinese,
 // Burmese. Mirrors the Hookka worker portal even though Houzs office staff
 // today mostly read English (covers future regional expansion + keeps the
@@ -114,7 +141,7 @@ export async function translateAnnouncement(args: {
   const userPayload = JSON.stringify({ title, body });
 
   try {
-    const resp = await fetch(ANTHROPIC_URL, {
+    const resp = await anthropicFetchWithRetry({
       method: "POST",
       headers: {
         "content-type": "application/json",
