@@ -19,7 +19,7 @@
 // for cleanup. Run scripts/seed-user-management.mjs --remove-tests to delete them
 // before real go-live.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import postgres from "postgres";
 import { webcrypto as crypto } from "node:crypto";
 
@@ -131,8 +131,15 @@ if (DRY) {
   process.exit(0);
 }
 
-const url = readFileSync(".dev.vars", "utf8").match(/DATABASE_URL="([^"]+)"/)?.[1];
-if (!url) { console.error("No DATABASE_URL in .dev.vars"); process.exit(1); }
+// Resolve DATABASE_URL. Env var takes precedence so CI (workflows/seed-*.yml)
+// can bind the target Supabase URL without writing a .dev.vars file into the
+// runner. Local dev keeps working the same — .dev.vars is only read as a
+// fallback when the env var is absent AND the file exists.
+let url = process.env.DATABASE_URL;
+if (!url && existsSync(".dev.vars")) {
+  url = readFileSync(".dev.vars", "utf8").match(/DATABASE_URL="([^"]+)"/)?.[1];
+}
+if (!url) { console.error("No DATABASE_URL in env or .dev.vars"); process.exit(1); }
 const sql = postgres(url, { ssl: "require", prepare: false, max: 1, idle_timeout: 4 });
 
 async function upsertDepartment(name) {
