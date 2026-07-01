@@ -5521,15 +5521,11 @@ function TaskAttachmentRow({
   canManage,
   onDelete,
   toast,
-  viewOnly,
 }: {
   attachment: TaskAttachment;
   canManage?: boolean;
   onDelete: () => void;
   toast?: ReturnType<typeof useToast>;
-  /** View-only: medium preview (image opens a lightbox, other files open
-   *  inline in a new tab); no download button. */
-  viewOnly?: boolean;
 }) {
   const isImage = (attachment.content_type ?? "").startsWith("image/");
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
@@ -5578,111 +5574,70 @@ function TaskAttachmentRow({
     }
   }
 
-  // View-only: medium preview, no download. Images open a view-only
-  // lightbox; other files (PDF) open inline in a new tab.
-  if (viewOnly) {
-    return (
-      <>
-        <div className="border-t border-border-subtle px-2 py-1.5 text-[10.5px]">
-          {isImage && thumbUrl ? (
+  // Every attachment: medium preview + download. Images open a lightbox on
+  // click (medium inline preview so the content is visible without leaving
+  // the page); other files (PDF/xlsx/docx) open inline in a new tab via the
+  // "View" button. A Download button is always available alongside.
+  return (
+    <>
+      <div className="border-t border-border-subtle px-2 py-1.5 text-[10.5px]">
+        {isImage && thumbUrl ? (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setPreviewing(true); }}
+            title="Click to enlarge"
+            className="block cursor-zoom-in"
+          >
+            <img
+              src={thumbUrl}
+              alt={attachment.file_name}
+              className="max-h-44 w-auto max-w-full rounded border border-border object-contain"
+              draggable={false}
+            />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); viewInTab(); }}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-1 text-ink hover:border-accent/40 hover:text-accent"
+          >
+            <FileText size={12} /> View {attachment.file_name}
+          </button>
+        )}
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-ink-muted">
+          <span className="max-w-[220px] truncate">{attachment.file_name}</span>
+          <span>· {attachment.uploader_name || "—"}</span>
+          <span>· {formatDateTime(attachment.uploaded_at)}</span>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); download(); }}
+            className="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-0.5 text-[9.5px] font-semibold text-ink hover:border-accent/40 hover:text-accent"
+            title="Download"
+          >
+            <Download size={10} /> Download
+          </button>
+          {canManage && (
             <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setPreviewing(true); }}
-              title="View only — click to enlarge"
-              className="block cursor-zoom-in"
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              className="rounded p-0.5 text-ink-muted hover:bg-err/10 hover:text-err"
+              aria-label="Remove attachment"
+              title="Remove"
             >
-              <img
-                src={thumbUrl}
-                alt={attachment.file_name}
-                className="max-h-44 w-auto max-w-full rounded border border-border object-contain"
-                draggable={false}
-              />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); viewInTab(); }}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-1 text-ink hover:border-accent/40 hover:text-accent"
-            >
-              <FileText size={12} /> View {attachment.file_name}
+              <Trash2 size={11} />
             </button>
           )}
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-ink-muted">
-            <span className="max-w-[220px] truncate">{attachment.file_name}</span>
-            <span>· {attachment.uploader_name || "—"}</span>
-            <span>· {formatDateTime(attachment.uploaded_at)}</span>
-            <span className="rounded bg-bg/60 px-1 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide text-ink-muted">
-              View only
-            </span>
-            {canManage && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onDelete(); }}
-                className="rounded p-0.5 text-ink-muted hover:bg-err/10 hover:text-err"
-                aria-label="Remove attachment"
-                title="Remove"
-              >
-                <Trash2 size={11} />
-              </button>
-            )}
-          </div>
         </div>
-        {previewing && (
-          <MediaLightbox
-            items={[{ r2_key: attachment.r2_key, content_type: attachment.content_type, caption: attachment.file_name }]}
-            index={0}
-            onChange={() => {}}
-            onClose={() => setPreviewing(false)}
-            baseUrl="/api/projects/attachments"
-          />
-        )}
-      </>
-    );
-  }
-
-  return (
-    <div
-      className="grid grid-cols-[minmax(0,1fr)_110px_90px_28px] items-center gap-2 border-t border-border-subtle px-2 py-1 text-[10.5px]"
-      title={`${attachment.file_name} · ${formatBytes(attachment.size_bytes)}`}
-    >
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          download();
-        }}
-        className="flex min-w-0 items-center gap-1.5 text-left text-ink hover:text-accent"
-      >
-        {isImage && thumbUrl ? (
-          <img src={thumbUrl} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
-        ) : (
-          <span className="grid h-6 w-6 shrink-0 place-items-center rounded bg-bg/60 text-ink-muted">
-            {isImage ? <ImageIcon size={11} /> : <FileText size={11} />}
-          </span>
-        )}
-        <span className="truncate">{attachment.file_name}</span>
-      </button>
-      <span className="truncate text-ink-secondary">
-        {attachment.uploader_name || "—"}
-      </span>
-      <span className="font-mono text-[10px] text-ink-muted">
-        {formatDateTime(attachment.uploaded_at)}
-      </span>
-      {canManage ? (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="justify-self-end rounded p-1 text-ink-muted hover:bg-err/10 hover:text-err"
-          aria-label="Remove attachment"
-          title="Remove"
-        >
-          <Trash2 size={11} />
-        </button>
-      ) : (
-        <span />
+      </div>
+      {previewing && (
+        <MediaLightbox
+          items={[{ r2_key: attachment.r2_key, content_type: attachment.content_type, caption: attachment.file_name }]}
+          index={0}
+          onChange={() => {}}
+          onClose={() => setPreviewing(false)}
+          baseUrl="/api/projects/attachments"
+        />
       )}
-    </div>
+    </>
   );
 }
 
@@ -6500,12 +6455,6 @@ const REVIEWABLE_TITLES = new Set([
 
 // Documents that are view-only: a medium preview opens (image → lightbox,
 // other files → inline new tab) and there's no download button.
-const VIEW_ONLY_TITLES = new Set([
-  "Stock Out Transfer Record",
-  "3D Design",
-  "2D Design",
-]);
-
 // ── Document table (section display_mode = 'documents') ───────
 // Renders a section's items as a 6-column document table
 // (DOCUMENT / REMARKS / FILES / UPLOADED BY / APPROVAL / ACTIONS).
@@ -6863,7 +6812,6 @@ function DocRow({
                   canManage={canManage}
                   onDelete={() => removeAtt(a.id)}
                   toast={toast}
-                  viewOnly={VIEW_ONLY_TITLES.has(item.title)}
                 />
               ))}
             </div>
@@ -7412,7 +7360,6 @@ function ChecklistRow({
                         canManage={canManage}
                         onDelete={() => deleteAttachment(a.id)}
                         toast={toast}
-                        viewOnly={VIEW_ONLY_TITLES.has(item.title)}
                       />
                     ))}
                   </div>
