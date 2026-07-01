@@ -13,6 +13,12 @@ on:
   push:
     branches: [staging]
   workflow_dispatch:
+    inputs:
+      skip_migrate:
+        description: 'Skip pg-migrate step (use when the staging DB is already at the latest schema — e.g. after a prod-snapshot clone)'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-staging
@@ -49,7 +55,14 @@ jobs:
       # Migrations are idempotent by convention (IF NOT EXISTS / ON CONFLICT);
       # a deploy with no pending migration files is a no-op against
       # _pg_migrations and exits 0.
-      - run: node scripts/pg-migrate.mjs
+      #
+      # `skip_migrate` bail-out (workflow_dispatch input only): set to true
+      # when the staging DB is known to be at (or ahead of) the latest schema
+      # — e.g. after seeding staging from a prod snapshot, or when the pooler
+      # credentials are being rotated. push-to-`staging` deploys always run
+      # the step (default false).
+      - if: ${{ !inputs.skip_migrate }}
+        run: node scripts/pg-migrate.mjs
         env:
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           # GitHub-hosted runners have no IPv6 egress. Supabase's pooler
