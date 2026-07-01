@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { generateToken, hashPassword, isoIn } from "../services/auth";
+import { bustUserSessions } from "../services/sessionCache";
 import { validatePasswordStrength } from "../services/passwordStrength";
 import { requirePermission } from "../middleware/auth";
 import {
@@ -965,9 +966,17 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     }
   }
 
-  // If we disabled a user, revoke their sessions.
+  // If we disabled a user, revoke their sessions. Bust the cached-user entries
+  // BEFORE the delete (reads the live tokens) so a disabled user can't ride a
+  // still-cached session for up to 60s.
   if (body.status === "disabled") {
+    await bustUserSessions(c.env, id);
     await db.delete(sessions).where(eq(sessions.user_id, id));
+  } else if (set.role_id != null) {
+    // Role change keeps the sessions alive but leaves the cached AuthUser's
+    // permissions stale for up to 60s. Bust the caches so the next request
+    // re-hydrates the new role/permissions.
+    await bustUserSessions(c.env, id);
   }
 
   // Keep the Sales Team roster in lockstep with the user's PRIMARY department.
@@ -1042,7 +1051,10 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
     }
   }
 
-  // Revoke sessions (any path)
+  // Revoke sessions (any path). Bust the cached-user entries BEFORE the delete
+  // (reads the live tokens) so a deleted/disabled user can't ride a still-cached
+  // session for up to 60s.
+  await bustUserSessions(c.env, id);
   await db.delete(sessions).where(eq(sessions.user_id, id));
 
   // Hard-delete path — either explicit ?hard=1 or never-joined user.
@@ -1237,7 +1249,9 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
   });
 
   // Also revoke active sessions so the user has to log in again with
-  // the new password.
+  // the new password. Bust the cached-user entries BEFORE the delete (reads
+  // the live tokens) so the revoked sessions can't ride the 60s cache.
+  await bustUserSessions(c.env, id);
   await db.delete(sessions).where(eq(sessions.user_id, id));
 
   // Fire the email. sendEmail() already handles "channel disabled" and

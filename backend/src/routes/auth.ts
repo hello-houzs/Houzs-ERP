@@ -10,6 +10,7 @@ import {
   generateToken,
   isoIn,
 } from "../services/auth";
+import { bustUserSessions } from "../services/sessionCache";
 import { sendEmail, publicUrl, resetEmailHtml } from "../services/email";
 import { validatePasswordStrength } from "../services/passwordStrength";
 import { verifyTotp, consumeBackupCode } from "../services/totp";
@@ -521,7 +522,10 @@ app.post("/reset/:token", async (c) => {
   )
     .bind(row.id)
     .run();
-  // Belt + braces: kill any remaining sessions.
+  // Belt + braces: kill any remaining sessions. Bust their cached-user entries
+  // BEFORE the delete (reads the live tokens) so a reset password can't ride a
+  // still-cached session for up to 60s.
+  await bustUserSessions(c.env, row.user_id);
   await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(row.user_id).run();
   return c.json({ ok: true });
 });
@@ -592,7 +596,10 @@ app.post("/me/password", async (c) => {
     .run();
   // Keep the current session alive — caller just proved they know the
   // old password. Revoke OTHER sessions on the account as a defensive
-  // measure (if the old password was compromised elsewhere).
+  // measure (if the old password was compromised elsewhere). Bust their
+  // cached-user entries first (keeping this session's), so the revoked
+  // sessions can't ride the 60s cache.
+  await bustUserSessions(c.env, auth.user.id, auth.token);
   await c.env.DB.prepare(
     `DELETE FROM sessions WHERE user_id = ? AND token != ?`
   )

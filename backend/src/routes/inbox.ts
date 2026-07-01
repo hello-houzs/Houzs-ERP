@@ -29,6 +29,26 @@ interface InboxItem {
   meta?: Record<string, any>;
 }
 
+// Per-user inbox snapshot key. Exported so the inbox-feeding routers can bust
+// the acting user's snapshot on write (see bustInboxForUser).
+export const inboxCacheKey = (userId: number | string) => `inbox:v1:${userId}`;
+
+// Best-effort delete of a user's inbox snapshot. The snapshot is cached for
+// ~60s to skip the slow multi-module aggregate on repeat loads/polls; without
+// busting it, a user's own write (a new ASSR case, a ticked task, a scheduled
+// trip) stayed invisible on their inbox for up to a minute. Cross-user
+// freshness (an item assigned TO someone else, a review queued for an approver)
+// still rides the 60s TTL — pinpointing every affected user per write is a much
+// larger surface, left as-is intentionally.
+export async function bustInboxForUser(env: Env, userId: number | string): Promise<void> {
+  if (!env.SESSION_CACHE || !userId) return;
+  try {
+    await env.SESSION_CACHE.delete(inboxCacheKey(userId));
+  } catch {
+    /* non-fatal: the 60s TTL still expires it */
+  }
+}
+
 app.get("/", async (c) => {
   const user = c.get("user");
   const userId = user?.id ?? 0;
@@ -39,7 +59,7 @@ app.get("/", async (c) => {
   // when present — the per-request DB work can be slow on a cold pool, and ~60s
   // staleness is fine for an inbox. Best-effort: any KV error falls through to a
   // live build.
-  const cacheKey = `inbox:v1:${userId}`;
+  const cacheKey = inboxCacheKey(userId);
   try {
     const cached = await c.env.SESSION_CACHE?.get(cacheKey);
     if (cached) return c.json(JSON.parse(cached));

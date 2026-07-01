@@ -53,3 +53,26 @@ export async function bustCachedUser(env: Env, token: string): Promise<void> {
     /* non-fatal */
   }
 }
+
+// Bust the cached user for EVERY live session of a user. Disable / password
+// reset / role change delete session ROWS in bulk (DELETE ... WHERE user_id=?)
+// but bypass deleteSession(), so the per-token `sess:<token>` cache entries
+// survived up to the 60s TTL — a disabled user kept working for a minute. Call
+// this BEFORE the bulk delete (it reads the live tokens), then bust each key.
+// `exceptToken` keeps the caller's own session cached (self password-change
+// revokes only the others). Best-effort: any DB/KV trouble just falls back to
+// the 60s TTL expiry.
+export async function bustUserSessions(env: Env, userId: number, exceptToken?: string): Promise<void> {
+  if (!env.SESSION_CACHE) return;
+  try {
+    const rows = await env.DB.prepare(`SELECT token FROM sessions WHERE user_id = ?`)
+      .bind(userId)
+      .all<{ token: string }>();
+    for (const r of rows.results ?? []) {
+      if (exceptToken && r.token === exceptToken) continue;
+      await env.SESSION_CACHE.delete(keyFor(r.token));
+    }
+  } catch {
+    /* non-fatal */
+  }
+}
