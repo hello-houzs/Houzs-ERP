@@ -6,6 +6,20 @@ import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { MODULE_CONFIGS } from "./MobileModuleList";
 import "./mobile.css";
 
+// ── Field-ops parity (owner "现场为主") ──────────────────────────────────────
+// Two capabilities added to the generic document detail so the mobile app is a
+// full field companion, sharing the SAME backend + the SAME desktop PDF
+// generators:
+//   1) Print / Share PDF — a header icon button that re-fetches the full
+//      document bundle (header + items, identical to what the desktop detail
+//      page feeds its generator) then calls the matching generate*Pdf helper
+//      from ../vendor/scm/lib. No PDF layout is reimplemented here.
+//   2) Header Edit / Save — an in-detail edit sheet for the SIMPLE header fields
+//      (dates / references / notes) each desktop page PATCHes to {path}/:id.
+//      Complex customer / supplier / warehouse / line edits stay desktop-only;
+//      the lock rules mirror each desktop page's isLocked gating so a posted /
+//      cancelled / child-bearing document is never editable on mobile.
+
 // ---------------------------------------------------------------------------
 // MobileModuleDetail — ONE generic, read-only DETAIL screen behind the generic
 // MobileModuleList. Given the module key + the already-loaded list `row`, it
@@ -130,6 +144,127 @@ function Eyebrow({ children }: { children: string }) {
   return <div className="ey" style={{ color: "#767b6e", margin: "4px 2px 6px" }}>{children}</div>;
 }
 
+/** Print / Share PDF header icon button — parity with MobileSODetail's Print
+ *  button. Fetches the full desktop bundle then calls the matching generator.
+ *  Only rendered for the field-ops document types (PRINT_MODULES). */
+function PrintButton({ moduleKey, id }: { moduleKey: string; id: string }) {
+  const notify = useNotify();
+  const [busy, setBusy] = useState(false);
+  if (!PRINT_MODULES[moduleKey] || !id) return null;
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runPrint(moduleKey, id);
+    } catch (e) {
+      void notify({ title: "Couldn't generate the PDF", body: e instanceof Error ? e.message : String(e), tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button onClick={() => void run()} disabled={busy} aria-label="Print PDF" className="iconbtn" style={{ opacity: busy ? 0.5 : 1 }}>
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z" /></svg>
+    </button>
+  );
+}
+
+/** Header Edit / Save bottom sheet — edits the SIMPLE header fields (dates /
+ *  refs / notes) for a field-ops document via PATCH {path}/:id. Edit→Save
+ *  discipline: the operator changes fields then taps Save; only the changed
+ *  fields are sent. On success the detail + list queries invalidate so the
+ *  screen refreshes. Renders a locked note (no form) when the doc is locked. */
+function HeaderEditSheet({ moduleKey, id, header, onClose, onSaved }: {
+  moduleKey: string; id: string; header: any; onClose: () => void; onSaved: () => void;
+}) {
+  const notify = useNotify();
+  const cfg = EDIT_MODULES[moduleKey];
+  const locked = cfg ? cfg.locked(header) : true;
+  const [values, setValues] = useState<Record<string, string>>(() => {
+    const seed: Record<string, string> = {};
+    for (const f of cfg?.fields ?? []) seed[f.key] = f.get(header);
+    return seed;
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (!cfg) throw new Error("This document can't be edited here.");
+      // Send only the fields the operator actually changed.
+      const body: Record<string, unknown> = {};
+      for (const f of cfg.fields) {
+        const next = values[f.key] ?? "";
+        if (next !== f.get(header)) body[f.key] = f.type === "date" ? (next || null) : next;
+      }
+      if (Object.keys(body).length === 0) return { unchanged: true };
+      await authedFetch(`${cfg.path}/${encodeURIComponent(id)}`, { method: cfg.method, body: JSON.stringify(body) });
+      return { unchanged: false };
+    },
+    onSuccess: (r) => {
+      if (r?.unchanged) { onClose(); return; }
+      onSaved();
+      onClose();
+      void notify({ title: "Saved" });
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : "Couldn't save the changes. Please try again."),
+  });
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%", boxSizing: "border-box", height: 42, padding: "0 12px", borderRadius: 10,
+    border: "1px solid #e3e6e0", background: "#fff", fontFamily: "inherit", fontSize: 14, color: "var(--ink)",
+  };
+  const labelStyle: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, letterSpacing: ".14em", textTransform: "uppercase", color: "#9aa093", marginBottom: 5, display: "block" };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 2500, background: "rgba(0,0,0,0.32)", display: "flex", alignItems: "flex-end" }}>
+      <div onClick={(e) => e.stopPropagation()} className="hz-m" style={{ width: "100%", maxHeight: "88vh", overflowY: "auto", background: "#fff", borderRadius: "18px 18px 0 0", padding: "18px 16px calc(env(safe-area-inset-bottom) + 16px)", boxShadow: "0 -8px 28px rgba(0,0,0,0.16)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: "var(--ink)" }}>Edit Details</div>
+          <button onClick={onClose} style={{ border: "none", background: "transparent", fontSize: 15, fontWeight: 700, color: "var(--teal)", cursor: "pointer", fontFamily: "inherit" }}>Close</button>
+        </div>
+
+        {locked || !cfg ? (
+          <div style={{ fontSize: 12.5, color: "#9aa093", padding: "8px 0 6px", textAlign: "center" }}>{cfg?.lockedNote ?? "This document can't be edited here."}</div>
+        ) : (
+          <>
+            {cfg.fields.map((f) => (
+              <div key={f.key} style={{ marginBottom: 12 }}>
+                <label style={labelStyle}>{f.label}</label>
+                {f.type === "textarea" ? (
+                  <textarea
+                    value={values[f.key] ?? ""}
+                    onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                    rows={3}
+                    style={{ ...inputStyle, height: "auto", padding: "10px 12px", resize: "vertical" }}
+                  />
+                ) : (
+                  <input
+                    type={f.type === "date" ? "date" : "text"}
+                    value={values[f.key] ?? ""}
+                    onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                    style={inputStyle}
+                  />
+                )}
+              </div>
+            ))}
+
+            {error && <div style={{ fontSize: 11.5, color: "#b23a3a", margin: "2px 0 12px", textAlign: "center" }}>{error}</div>}
+
+            <button
+              className="btn"
+              disabled={mutation.isPending}
+              onClick={() => { setError(null); mutation.mutate(); }}
+              style={{ opacity: mutation.isPending ? 0.6 : 1 }}
+            >
+              {mutation.isPending ? "Saving…" : "Save"}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** One `.docrow` line item: name + qty on top, unit price + amount below. */
 function LineItem({ name, sub, qty, unitCenti, amountCenti }: {
   name: string; sub?: string; qty: unknown; unitCenti: unknown; amountCenti: unknown;
@@ -151,8 +286,13 @@ function LineItem({ name, sub, qty, unitCenti, amountCenti }: {
 }
 
 // ── Header card (shared by every module) ────────────────────────────────────
-function DetailHeader({ eyebrow, title, subtitle, status, onBack, onEdit }: {
+function DetailHeader({ eyebrow, title, subtitle, status, onBack, onEdit, print, onFieldEdit }: {
   eyebrow: string; title: string; subtitle?: string; status?: unknown; onBack: () => void; onEdit?: () => void;
+  /** Field-ops Print / Share PDF — rendered as a header icon button. */
+  print?: { moduleKey: string; id: string };
+  /** Field-ops header Edit / Save — opens the HeaderEditSheet. Distinct from
+   *  `onEdit` (which routes to the create-form editor for form modules). */
+  onFieldEdit?: () => void;
 }) {
   return (
     <header className="hdr">
@@ -161,7 +301,13 @@ function DetailHeader({ eyebrow, title, subtitle, status, onBack, onEdit }: {
           <span style={{ fontSize: 17, lineHeight: 1 }}>{"‹"}</span> Back
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {print && <PrintButton moduleKey={print.moduleKey} id={print.id} />}
           <StatusPill status={status} />
+          {onFieldEdit && (
+            <button className="tinybtn" onClick={onFieldEdit} style={{ background: "#e1efed", border: "1px solid #16695f", color: "#0c3f39" }}>
+              Edit
+            </button>
+          )}
           {onEdit && (
             <button className="tinybtn" onClick={onEdit} style={{ background: "#e1efed", border: "1px solid #16695f", color: "#0c3f39" }}>
               Edit
@@ -334,9 +480,293 @@ function docId(row: any): string {
       row?.do_number ??
       row?.invoice_number ??
       row?.grn_number ??
-      row?.po_number,
+      row?.po_number ??
+      row?.return_number,
   );
 }
+
+// ---------------------------------------------------------------------------
+// PRINT / SHARE PDF — per-doc-type wiring. Each entry re-fetches the SAME full
+// bundle (`GET {path}/:id` → { <headerKey>, items }) the desktop detail page
+// feeds its generator, then invokes the matching desktop generate*Pdf. The
+// desktop generators all call jsPDF's doc.save() internally (no "mode" arg —
+// unlike the SO generator), so downloading is their built-in behaviour. The
+// active tree's authedFetch already dual-reads camelCase ?? snake_case, so the
+// raw snake_case header from these routes reaches the generators intact.
+// ---------------------------------------------------------------------------
+
+type PrintMap = {
+  /** GET path (relative to /api/scm). */
+  path: string;
+  /** Response key holding the header object. */
+  headerKey: string;
+  /** Fetch the bundle → generate the PDF. `enrich` runs an optional pre-pass
+   *  (e.g. PO's warehouse deliver-to resolution) mirroring the desktop page. */
+  print: (header: any, items: any[]) => Promise<void>;
+};
+
+/** Print-config for every field-ops document type. Keyed by moduleKey. */
+const PRINT_MODULES: Record<string, PrintMap> = {
+  "delivery-orders-mfg": {
+    path: "/delivery-orders-mfg",
+    headerKey: "deliveryOrder",
+    print: async (header, items) => {
+      const { generateDeliveryOrderPdf } = await import("../vendor/scm/lib/delivery-order-pdf");
+      await generateDeliveryOrderPdf(header, items);
+    },
+  },
+  "sales-invoices": {
+    path: "/sales-invoices",
+    headerKey: "salesInvoice",
+    print: async (header, items) => {
+      const { generateSalesInvoicePdf } = await import("../vendor/scm/lib/sales-invoice-pdf");
+      await generateSalesInvoicePdf(header, items);
+    },
+  },
+  "mfg-purchase-orders": {
+    path: "/mfg-purchase-orders",
+    headerKey: "purchaseOrder",
+    print: async (header, items) => {
+      // Desktop PurchaseOrderDetail.handlePrint pre-resolves the bound
+      // warehouse's name + location text (the PDF can't hit the API), so the
+      // supplier sees a real deliver-to. Mirror that here via the same
+      // /inventory/warehouses list, degrading to nulls when unresolved.
+      let purchaseLocationName: string | null = null;
+      let deliveryAddress: string | null = null;
+      try {
+        const whId = header.purchase_location_id ?? header.purchaseLocationId ?? null;
+        if (whId) {
+          const { warehouses } = await authedFetch<{ warehouses: any[] }>(`/inventory/warehouses`);
+          const wh = (warehouses ?? []).find((w) => w.id === whId);
+          if (wh) {
+            purchaseLocationName = `${wh.code} · ${wh.name}`;
+            deliveryAddress = wh.location ?? null;
+          }
+        }
+      } catch { /* deliver-to is optional — never block the print on it */ }
+      const headerForPdf = {
+        ...header,
+        purchase_location_name: purchaseLocationName,
+        delivery_address: deliveryAddress,
+        your_ref_no: header.your_ref_no ?? null,
+        source_so_doc_no: header.source_so_doc_no ?? null,
+      };
+      const { generatePurchaseOrderPdf } = await import("../vendor/scm/lib/purchase-order-pdf");
+      await generatePurchaseOrderPdf(headerForPdf, items);
+    },
+  },
+  grns: {
+    path: "/grns",
+    headerKey: "grn",
+    print: async (header, items) => {
+      const { generateGrnPdf } = await import("../vendor/scm/lib/grn-pdf");
+      await generateGrnPdf(header, items);
+    },
+  },
+  "purchase-invoices": {
+    path: "/purchase-invoices",
+    headerKey: "purchaseInvoice",
+    print: async (header, items) => {
+      const { generatePurchaseInvoicePdf } = await import("../vendor/scm/lib/purchase-invoice-pdf");
+      await generatePurchaseInvoicePdf(header, items);
+    },
+  },
+  "purchase-returns": {
+    path: "/purchase-returns",
+    headerKey: "purchaseReturn",
+    print: async (header, items) => {
+      const { generatePurchaseReturnPdf } = await import("../vendor/scm/lib/purchase-return-pdf");
+      await generatePurchaseReturnPdf(header, items);
+    },
+  },
+  "delivery-returns": {
+    path: "/delivery-returns",
+    headerKey: "deliveryReturn",
+    print: async (header, items) => {
+      // DeliveryReturnDetail.handlePrint remaps the header/items into the
+      // generator's own vocabulary (refund_centi ← local_total_centi, etc.).
+      const { generateDeliveryReturnPdf } = await import("../vendor/scm/lib/delivery-return-pdf");
+      await generateDeliveryReturnPdf(
+        {
+          return_number: header.return_number,
+          status: header.status,
+          return_date: header.return_date,
+          debtor_code: header.debtor_code,
+          debtor_name: header.debtor_name,
+          reason: header.reason,
+          refund_centi: header.local_total_centi,
+          notes: header.notes,
+          delivery_order_id: header.delivery_order_id,
+          sales_invoice_id: null,
+        } as never,
+        (items ?? []).map((it: any) => ({
+          item_code: it.item_code,
+          description: it.description,
+          qty_returned: it.qty_returned,
+          condition: it.condition,
+          unit_price_centi: it.unit_price_centi,
+          refund_centi: it.line_total_centi,
+        })) as never,
+      );
+    },
+  },
+};
+
+/** Fetch the full bundle then print — shared by the document + simple details.
+ *  Surfaces failures through useNotify, mirroring the desktop pages' catch. */
+async function runPrint(moduleKey: string, id: string): Promise<void> {
+  const cfg = PRINT_MODULES[moduleKey];
+  if (!cfg) return;
+  const bundle = await authedFetch<Record<string, unknown>>(`${cfg.path}/${encodeURIComponent(id)}`);
+  const header = (bundle[cfg.headerKey] as any) ?? {};
+  const items = (bundle.items as any[]) ?? [];
+  await cfg.print(header, items);
+}
+
+// ---------------------------------------------------------------------------
+// HEADER EDIT / SAVE — the SIMPLE header fields each desktop page PATCHes to
+// {path}/:id. camelCase body keys (backend maps → snake_case columns). Only the
+// text / date fields that don't need a picker component are surfaced on mobile;
+// customer / supplier / warehouse / line editing stays desktop-only. Each doc's
+// `locked()` mirrors its desktop page's isLocked so a posted / cancelled /
+// child-bearing document shows no Edit affordance.
+// ---------------------------------------------------------------------------
+
+type EditFieldType = "text" | "date" | "textarea";
+type EditField = {
+  /** camelCase body key sent to the PATCH endpoint. */
+  key: string;
+  label: string;
+  type: EditFieldType;
+  /** Read the current value off the raw (snake_case) header for the form seed. */
+  get: (h: any) => string;
+};
+type EditMap = {
+  /** PATCH path (relative to /api/scm) — body is the changed camelCase fields. */
+  path: string;
+  method: "PATCH";
+  fields: EditField[];
+  /** true → the header is read-only (mirror desktop isLocked). */
+  locked: (h: any) => boolean;
+  /** Shown in the Edit sheet when locked instead of the form. */
+  lockedNote: string;
+};
+
+const dateVal = (v: unknown): string => (v == null ? "" : String(v).slice(0, 10));
+const textVal = (v: unknown): string => (v == null ? "" : String(v));
+const truthy = (v: unknown): boolean => Boolean(v) && v !== 0 && v !== "0" && v !== "false";
+
+const EDIT_MODULES: Record<string, EditMap> = {
+  // DO — locked once INVOICED / CANCELLED or a DR/SI child exists
+  // (DeliveryOrderDetail lockedStatuses + has_children).
+  "delivery-orders-mfg": {
+    path: "/delivery-orders-mfg",
+    method: "PATCH",
+    locked: (h) => ["INVOICED", "CANCELLED"].includes(s(h?.status).toUpperCase()) || truthy(h?.has_children),
+    lockedNote: "Locked — this delivery order is invoiced, cancelled, or has downstream documents.",
+    fields: [
+      { key: "doDate", label: "DO Date", type: "date", get: (h) => dateVal(h.do_date) },
+      { key: "customerDeliveryDate", label: "Delivery Date", type: "date", get: (h) => dateVal(h.customer_delivery_date) },
+      { key: "ref", label: "Reference", type: "text", get: (h) => textVal(h.ref) },
+      { key: "poDocNo", label: "Customer PO No", type: "text", get: (h) => textVal(h.po_doc_no) },
+      { key: "notes", label: "Notes", type: "textarea", get: (h) => textVal(h.notes ?? h.note) },
+    ],
+  },
+
+  // Sales Invoice — locked only when CANCELLED (SalesInvoiceDetail lockedStatuses).
+  "sales-invoices": {
+    path: "/sales-invoices",
+    method: "PATCH",
+    locked: (h) => s(h?.status).toUpperCase() === "CANCELLED",
+    lockedNote: "Locked — this invoice is cancelled.",
+    fields: [
+      { key: "invoiceDate", label: "Invoice Date", type: "date", get: (h) => dateVal(h.invoice_date) },
+      { key: "dueDate", label: "Due Date", type: "date", get: (h) => dateVal(h.due_date) },
+      { key: "ref", label: "Reference", type: "text", get: (h) => textVal(h.ref) },
+      { key: "notes", label: "Notes", type: "textarea", get: (h) => textVal(h.notes ?? h.note) },
+    ],
+  },
+
+  // GRN — editable only while DRAFT, or POSTED without children
+  // (GoodsReceivedDetail: isLocked = !(DRAFT || (POSTED && !hasChildren))).
+  grns: {
+    path: "/grns",
+    method: "PATCH",
+    locked: (h) => {
+      const st = s(h?.status).toUpperCase();
+      return !(st === "DRAFT" || (st === "POSTED" && !truthy(h?.has_children)));
+    },
+    lockedNote: "Locked — this goods receipt is cancelled, closed, or already invoiced/returned.",
+    fields: [
+      { key: "receivedAt", label: "Received Date", type: "date", get: (h) => dateVal(h.received_at) },
+      { key: "deliveryNoteRef", label: "Delivery Note Ref", type: "text", get: (h) => textVal(h.delivery_note_ref) },
+      { key: "notes", label: "Notes", type: "textarea", get: (h) => textVal(h.notes) },
+    ],
+  },
+
+  // Purchase Order — editable in DRAFT / SUBMITTED / PARTIALLY_RECEIVED without
+  // children (PurchaseOrderDetail isEditableStatus && !hasChildren).
+  "mfg-purchase-orders": {
+    path: "/mfg-purchase-orders",
+    method: "PATCH",
+    locked: (h) => {
+      const st = s(h?.status).toUpperCase();
+      const editable = st === "DRAFT" || st === "SUBMITTED" || st === "PARTIALLY_RECEIVED";
+      return !editable || truthy(h?.has_children);
+    },
+    lockedNote: "Locked — this purchase order is received, cancelled, or has goods receipts.",
+    fields: [
+      { key: "poDate", label: "PO Date", type: "date", get: (h) => dateVal(h.po_date) },
+      { key: "expectedAt", label: "Expected Date", type: "date", get: (h) => dateVal(h.expected_at) },
+      { key: "notes", label: "Notes", type: "textarea", get: (h) => textVal(h.notes) },
+    ],
+  },
+
+  // Purchase Invoice — locked when CANCELLED or any payment recorded
+  // (PurchaseInvoiceDetail: isLocked = CANCELLED || paid_centi > 0).
+  "purchase-invoices": {
+    path: "/purchase-invoices",
+    method: "PATCH",
+    locked: (h) => s(h?.status).toUpperCase() === "CANCELLED" || Number(h?.paid_centi ?? 0) > 0,
+    lockedNote: "Locked — this purchase invoice is cancelled or already has a payment.",
+    fields: [
+      { key: "supplierInvoiceRef", label: "Supplier Invoice Ref", type: "text", get: (h) => textVal(h.supplier_invoice_ref) },
+      { key: "invoiceDate", label: "Invoice Date", type: "date", get: (h) => dateVal(h.invoice_date) },
+      { key: "dueDate", label: "Due Date", type: "date", get: (h) => dateVal(h.due_date) },
+      { key: "notes", label: "Notes", type: "textarea", get: (h) => textVal(h.notes) },
+    ],
+  },
+
+  // Purchase Return — editable only while POSTED (PurchaseReturnDetail:
+  // isLocked = status !== 'POSTED').
+  "purchase-returns": {
+    path: "/purchase-returns",
+    method: "PATCH",
+    locked: (h) => s(h?.status).toUpperCase() !== "POSTED",
+    lockedNote: "Locked — only a posted purchase return can be edited.",
+    fields: [
+      { key: "returnDate", label: "Return Date", type: "date", get: (h) => dateVal(h.return_date) },
+      { key: "reason", label: "Reason", type: "text", get: (h) => textVal(h.reason) },
+      { key: "creditNoteRef", label: "Credit Note Ref", type: "text", get: (h) => textVal(h.credit_note_ref) },
+      { key: "notes", label: "Notes", type: "textarea", get: (h) => textVal(h.notes) },
+    ],
+  },
+
+  // Delivery Return (Sales Return) — locked when REFUNDED / CREDIT_NOTED /
+  // CANCELLED (DeliveryReturnDetail lockedStatuses).
+  "delivery-returns": {
+    path: "/delivery-returns",
+    method: "PATCH",
+    locked: (h) => ["REFUNDED", "CREDIT_NOTED", "CANCELLED"].includes(s(h?.status).toUpperCase()),
+    lockedNote: "Locked — this return is refunded, credit-noted, or cancelled.",
+    fields: [
+      { key: "returnDate", label: "Return Date", type: "date", get: (h) => dateVal(h.return_date) },
+      { key: "reason", label: "Reason", type: "text", get: (h) => textVal(h.reason) },
+      { key: "ref", label: "Reference", type: "text", get: (h) => textVal(h.ref) },
+      { key: "notes", label: "Notes", type: "textarea", get: (h) => textVal(h.notes ?? h.note) },
+    ],
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Per-document ACTIONS — status transitions + Record Payment, rendered as a
@@ -714,6 +1144,7 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
 function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: DocMap; row: any; moduleKey: string; onBack: () => void; onEdit?: () => void; onPOD?: () => void }) {
   const id = docId(row);
   const qc = useQueryClient();
+  const [editOpen, setEditOpen] = useState(false);
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-module-detail", map.path, id],
     queryFn: () => authedFetch<Record<string, unknown>>(`${map.path}/${encodeURIComponent(id)}`),
@@ -727,6 +1158,16 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
   const items = (data?.items as any[]) ?? [];
   const meta = map.meta(header).filter(([, v]) => v && v !== "—");
   const stats = map.stats(header);
+
+  // Field-ops: Print (all doc types) + header Edit (once the full header has
+  // loaded, and only when the doc isn't locked). Edit reads the fetched header
+  // so its lock gate + field seeds are accurate; hidden until `data` arrives.
+  const editCfg = EDIT_MODULES[moduleKey];
+  const canFieldEdit = !!id && !!data && !!editCfg && !editCfg.locked(header);
+  const invalidateDetail = () => {
+    void qc.invalidateQueries({ queryKey: ["mobile-module-detail", map.path, id] });
+    void qc.invalidateQueries({ queryKey: ["mobile-module"] });
+  };
 
   // Whether a sticky footer will render — used to reserve scroll padding so it
   // never covers the last line item. A POD button (delivery orders) also counts.
@@ -743,6 +1184,8 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
         status={map.status(header)}
         onBack={onBack}
         onEdit={onEdit}
+        print={PRINT_MODULES[moduleKey] && id ? { moduleKey, id } : undefined}
+        onFieldEdit={canFieldEdit ? () => setEditOpen(true) : undefined}
       />
       <div className="scroll hz-scroll" style={hasFooter ? { ...scrollStyle, paddingBottom: onPOD && hasStatusActions ? 150 : 96 } : scrollStyle}>
         {!id && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't identify this record.</div>}
@@ -774,6 +1217,9 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
         )}
       </div>
       {hasFooter && <DocActionFooter moduleKey={moduleKey} id={id} header={header} invalidate={invalidate} onPOD={onPOD} onDeleted={onBack} />}
+      {editOpen && (
+        <HeaderEditSheet moduleKey={moduleKey} id={id} header={header} onClose={() => setEditOpen(false)} onSaved={invalidateDetail} />
+      )}
     </div>
   );
 }
@@ -871,10 +1317,28 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
     staleTime: 30_000,
   });
 
+  // Field-ops doc types routed through SimpleDetail (PI / PR / DR) get their
+  // full header fetched so Print + header Edit see the SAME bundle the desktop
+  // detail page uses (the list row lacks paid_centi / notes / dates). The 4
+  // richer doc types (DO/SI/GRN/PO) never reach here — they use DocumentDetail.
+  const printCfg = PRINT_MODULES[moduleKey];
+  const editCfg = EDIT_MODULES[moduleKey];
+  const wantDoc = !!printCfg && !!id;
+  const docQ = useQuery({
+    queryKey: ["mobile-module-detail", printCfg?.path ?? moduleKey, id],
+    queryFn: () => authedFetch<Record<string, unknown>>(`${printCfg!.path}/${encodeURIComponent(id)}`),
+    enabled: wantDoc,
+    staleTime: 15_000,
+  });
+  const [editOpen, setEditOpen] = useState(false);
+  const docHeader = (docQ.data?.[printCfg?.headerKey ?? ""] as any) ?? row ?? {};
+  const canFieldEdit = wantDoc && !!docQ.data && !!editCfg && !editCfg.locked(docHeader);
+
   const effectiveRow = useMemo(() => {
     if (wantSupplier && supplierQ.data?.supplier) return { ...row, ...supplierQ.data.supplier };
+    if (wantDoc && docQ.data?.[printCfg!.headerKey]) return { ...row, ...(docQ.data[printCfg!.headerKey] as any) };
     return row ?? {};
-  }, [wantSupplier, supplierQ.data, row]);
+  }, [wantSupplier, supplierQ.data, wantDoc, docQ.data, printCfg, row]);
 
   const bindings = wantSupplier ? (supplierQ.data?.bindings ?? []) : [];
 
@@ -913,10 +1377,22 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
   const actionId = s(row?.id);
   const hasFooter = !!actionId && (statusActionsFor(moduleKey, actionId, actionRow).length > 0 || paymentKind(moduleKey, actionRow) !== null);
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ["mobile-module"] }); };
+  const invalidateDoc = () => {
+    if (printCfg) void qc.invalidateQueries({ queryKey: ["mobile-module-detail", printCfg.path, id] });
+    void qc.invalidateQueries({ queryKey: ["mobile-module"] });
+  };
 
   return (
     <div className="hz-m" style={{ ...wrapStyle, position: "relative" }}>
-      <DetailHeader eyebrow={eyebrow === "—" ? "" : eyebrow} title={heading} status={status} onBack={onBack} onEdit={onEdit} />
+      <DetailHeader
+        eyebrow={eyebrow === "—" ? "" : eyebrow}
+        title={heading}
+        status={status}
+        onBack={onBack}
+        onEdit={onEdit}
+        print={wantDoc ? { moduleKey, id } : undefined}
+        onFieldEdit={canFieldEdit ? () => setEditOpen(true) : undefined}
+      />
       <div className="scroll hz-scroll" style={hasFooter ? { ...scrollStyle, paddingBottom: 96 } : scrollStyle}>
         <Eyebrow>Details</Eyebrow>
         {configFields ? (
@@ -963,6 +1439,9 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
         )}
       </div>
       {hasFooter && <DocActionFooter moduleKey={moduleKey} id={actionId} header={actionRow} invalidate={invalidate} onDeleted={onBack} />}
+      {editOpen && (
+        <HeaderEditSheet moduleKey={moduleKey} id={id} header={docHeader} onClose={() => setEditOpen(false)} onSaved={invalidateDoc} />
+      )}
     </div>
   );
 }
