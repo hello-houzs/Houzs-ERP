@@ -99,6 +99,7 @@ type SoHeader = {
   phone: string | null;
   email: string | null;
   ref: string | null;
+  customer_so_no: string | null;
   customer_type: string | null;
   building_type: string | null;
   venue: string | null;
@@ -333,7 +334,9 @@ export function MobileNewSO({
         if (cancelled) return;
         const h = detail.salesOrder;
         setName(h.debtor_name ?? "");
-        setCustRef(h.ref ?? "");
+        // Customer SO ref lives in customer_so_no (desktop's field); fall back
+        // to the legacy `ref` column for older mobile-created rows.
+        setCustRef(h.customer_so_no ?? h.ref ?? "");
         setPhone(stripPrefix(h.phone));
         setEmail(h.email ?? "");
         setCustType(h.customer_type ?? "");
@@ -548,7 +551,8 @@ export function MobileNewSO({
         // EDIT — header fields only (line items / payments have their own endpoints).
         const patch: Record<string, unknown> = {
           debtorName: name.trim(),
-          ref: custRef.trim() || null,
+          // Matches desktop SO Detail's PATCH: customer_so_no via `customerSoNo`.
+          customerSoNo: custRef.trim() || null,
           phone: phoneOut,
           email: email.trim(),
           customerType: custType || null,
@@ -628,7 +632,10 @@ export function MobileNewSO({
       const body: Record<string, unknown> = {
         customerName: name.trim(),
         debtorName: name.trim(),
-        ref: custRef.trim() || null,
+        // Customer's own SO reference → customer_so_no (desktop sends
+        // `customerSoNo`, backend writes it to customer_so_no on create;
+        // sending `ref` mis-routed it to the unrelated `ref` column).
+        customerSoNo: custRef.trim() || null,
         phone: phoneOut,
         email: email.trim() || null,
         customerType: custType || null,

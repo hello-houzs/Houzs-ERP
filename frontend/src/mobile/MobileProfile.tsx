@@ -99,7 +99,7 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
   // Service screen). A case is "open" while its stage is not "completed".
   const casesQ = useQuery({
     queryKey: ["mobile-profile-assr"],
-    queryFn: () => api.get<{ data?: Array<{ stage?: string | null }> }>("/api/assr/?per_page=200"),
+    queryFn: () => api.get<{ data?: Array<{ stage?: string | null }> }>("/api/assr?per_page=200"),
     staleTime: 60_000,
     retry: false,
   });
