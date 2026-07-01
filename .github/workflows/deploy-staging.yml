@@ -52,6 +52,15 @@ jobs:
       - run: node scripts/pg-migrate.mjs
         env:
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          # GitHub-hosted runners have no IPv6 egress. Supabase's pooler
+          # hostname resolves to both A and AAAA records; Node 22's default
+          # DNS lookup follows the OS's returned order, which on ubuntu-latest
+          # can put IPv6 first and Happy-Eyeballs then times out with
+          # ENETUNREACH before falling back. Forcing ipv4first sidesteps the
+          # dual-stack race entirely. Prod's deploy.yml doesn't need this
+          # because it points at a direct-connection hostname that resolves
+          # IPv4-only; the pooler is different DNS territory.
+          NODE_OPTIONS: --dns-result-order=ipv4first
       # Deploy the Worker to the staging env block in wrangler.toml
       # ([env.staging] → name autocount-sync-api-staging, isolated Hyperdrive,
       # crons=[]). Same Cloudflare account as prod, so the existing
