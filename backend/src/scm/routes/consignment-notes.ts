@@ -31,7 +31,7 @@ import type { Env, Variables } from '../env';
 import { defaultWarehouseId, writeMovements, resolveWarehouseLotBatches } from '../lib/inventory-movements';
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 
@@ -477,11 +477,12 @@ consignmentNotes.post('/', async (c) => {
      over-pick guard, and the sofa no-batch / incomplete-set ship guards — a
      loaner has no ordered-qty cap and ships whatever is on the shelf. */
 
-  const doNumber = await nextNum(sb);
   const phoneRaw = (body.phone as string | undefined) ?? null;
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
 
-  const { data: header, error: hErr } = await sb.from('consignment_delivery_orders').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; do_number: string }>(
+    () => nextNum(sb),
+    (doNumber) => sb.from('consignment_delivery_orders').insert({
     do_number: doNumber,
     consignment_so_doc_no: (body.consignmentSoDocNo as string) ?? (body.soDocNo as string) ?? null,
     debtor_code: (body.debtorCode as string) ?? null,
@@ -523,7 +524,8 @@ consignmentNotes.post('/', async (c) => {
     status: 'DISPATCHED',
     notes: (body.notes as string) ?? null,
     created_by: user.id,
-  }).select(HEADER).single();
+    }).select(HEADER).single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; do_number: string };
 

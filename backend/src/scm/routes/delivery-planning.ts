@@ -65,7 +65,7 @@ import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { summariseReadiness, type ReadinessLine } from '../lib/so-readiness';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
 
@@ -1074,8 +1074,9 @@ async function scheduleOntoTrip(
     if (!tripId) {
       if (!p.lorryId) return null;  // nothing to create a trip from
       const isOutsourced = await deriveTripOutsourced(sb, p.lorryId);
-      const tripNo = await nextTripNo(sb);
-      const { data: created, error: tErr } = await sb.from('trips').insert({
+      const { data: created, error: tErr } = await insertWithDocNoRetry<{ id: string; trip_no: string }>(
+        () => nextTripNo(sb),
+        (tripNo) => sb.from('trips').insert({
         trip_no:       tripNo,
         trip_date:     tripDate,
         lorry_id:      p.lorryId,
@@ -1085,7 +1086,8 @@ async function scheduleOntoTrip(
         status:        'PLANNED',
         is_outsourced: isOutsourced,
         created_by:    user?.id ?? null,
-      }).select('id, trip_no').single();
+        }).select('id, trip_no').single(),
+      );
       if (tErr || !created) return null;
       tripId = (created as { id: string }).id;
     }

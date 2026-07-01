@@ -28,7 +28,7 @@ import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 
 export const trips = new Hono<{ Bindings: Env; Variables: Variables }>();
 trips.use('*', supabaseAuth);
@@ -144,9 +144,10 @@ trips.post('/', async (c) => {
   const user = c.get('user');
   const lorryId = p.lorryId ?? null;
   const isOutsourced = await deriveOutsourced(sb, lorryId);
-  const tripNo = await nextTripNo(sb);
 
-  const { data, error } = await sb.from('trips').insert({
+  const { data, error } = await insertWithDocNoRetry(
+    () => nextTripNo(sb),
+    (tripNo) => sb.from('trips').insert({
     trip_no:       tripNo,
     trip_date:     p.tripDate,
     lorry_id:      lorryId,
@@ -159,7 +160,8 @@ trips.post('/', async (c) => {
     is_outsourced: isOutsourced,
     notes:         p.notes ?? null,
     created_by:    (user as { id?: string } | null)?.id ?? null,
-  }).select(TRIP_COLS).single();
+    }).select(TRIP_COLS).single(),
+  );
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_trip_no', reason: error.message }, 409);
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);

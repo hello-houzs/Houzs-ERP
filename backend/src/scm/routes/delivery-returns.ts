@@ -24,7 +24,7 @@ import { todayMyt } from '../lib/my-time';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { isServiceLine } from '../shared';
 import { findServiceLineCodes, serviceLinesNotReturnableResponse } from '../lib/service-line-guard';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 
 export const deliveryReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryReturns.use('*', supabaseAuth);
@@ -674,10 +674,11 @@ deliveryReturns.get('/:id', async (c) => {
 /* Insert the DR header from a client body. Shared by POST / and the
    convert-from-DO endpoint. Returns the inserted header row (HEADER cols). */
 async function insertHeader(sb: any, userId: string, body: Record<string, unknown>) {
-  const returnNumber = await nextNum(sb);
   const phoneRaw = (body.phone as string | undefined) ?? null;
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
-  return sb.from('delivery_returns').insert({
+  return insertWithDocNoRetry<{ id: string; return_number: string }>(
+    () => nextNum(sb),
+    (returnNumber) => sb.from('delivery_returns').insert({
     return_number: returnNumber,
     do_doc_no: (body.doDocNo as string) ?? null,
     delivery_order_id: (body.deliveryOrderId as string) ?? null,
@@ -718,7 +719,8 @@ async function insertHeader(sb: any, userId: string, body: Record<string, unknow
     received_at: new Date().toISOString(),
     notes: (body.notes as string) ?? null,
     created_by: userId,
-  }).select(HEADER).single();
+    }).select(HEADER).single(),
+  );
 }
 
 // ── Create ──────────────────────────────────────────────────────────────

@@ -51,7 +51,7 @@ import {
 import { findIncompleteVariantLines } from '../lib/so-variant-check';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { chunkIn } from '../lib/paginate-all';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import type { Env, Variables } from '../env';
 
 export const consignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -561,7 +561,10 @@ consignmentOrders.post('/', async (c) => {
     }
   }
 
-  const docNo = await nextDocNo(sb);
+  // Minted inside insertWithDocNoRetry below so a concurrent-create collision
+  // (23505 on doc_no) re-derives the next free number; the winning value is
+  // captured here for the items insert / audit / response.
+  let docNo = '';
 
   /* Auto-stamp venue_id from the caller's staff.venue_id when they're a
      POS-side role. Backend-only roles leave it NULL; an explicit body.venueId
@@ -740,7 +743,9 @@ consignmentOrders.post('/', async (c) => {
       (body.customerState as string | null | undefined) ?? null,
     ));
 
-  const { error: hErr } = await sb.from('consignment_sales_orders').insert({
+  const { error: hErr } = await insertWithDocNoRetry<{ doc_no: string }>(
+    () => nextDocNo(sb),
+    (n) => { docNo = n; return sb.from('consignment_sales_orders').insert({
     doc_no: docNo,
     transfer_to: (body.transferTo as string) ?? null,
     so_date: (body.soDate as string) ?? todayMyt(),
@@ -808,7 +813,8 @@ consignmentOrders.post('/', async (c) => {
     /* Every new CO is CONFIRMED on insert (2990 has no DRAFT step). */
     status: 'CONFIRMED',
     created_by: user.id,
-  });
+  }); },
+  );
   if (hErr) { return c.json({ error: 'insert_failed', reason: hErr.message }, 500); }
 
   if (itemRows.length > 0) {

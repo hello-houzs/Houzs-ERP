@@ -30,7 +30,7 @@ import { findSofaLinesWithoutCompleteBatch, sofaNoCompleteBatchResponse, findInc
 import { resolveExpectedBatchBySoItem, buildDropshipOffenders } from '../lib/dropship-batch';
 import { loadSofaBatchStock, sofaStockKey } from '../lib/sofa-set-coverage';
 import { currentDocNoByKey, type CurrentEvent } from '../lib/current-doc';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 
 export const deliveryOrdersMfg = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryOrdersMfg.use('*', supabaseAuth);
@@ -1559,12 +1559,12 @@ deliveryOrdersMfg.post('/', async (c) => {
     if (partial.length > 0) return c.json(sofaIncompleteSetResponse(partial), 409);
   }
 
-  const doNumber = await nextNum(sb);
-
   const phoneRaw = (body.phone as string | undefined) ?? null;
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
 
-  const { data: header, error: hErr } = await sb.from('delivery_orders').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; do_number: string }>(
+    () => nextNum(sb),
+    (doNumber) => sb.from('delivery_orders').insert({
     do_number: doNumber,
     so_doc_no: (body.soDocNo as string) ?? null,
     debtor_code: (body.debtorCode as string) ?? null,
@@ -1613,7 +1613,8 @@ deliveryOrdersMfg.post('/', async (c) => {
     is_dropship: dropShipped,
     notes: (body.notes as string) ?? null,
     created_by: user.id,
-  }).select(HEADER).single();
+    }).select(HEADER).single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; do_number: string };
 
@@ -1894,9 +1895,10 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
   const phoneRaw = head.phone as string | null;
   const emPhoneRaw = head.emergency_contact_phone as string | null;
   const today = todayMyt();
-  const doNumber = await nextNum(sb);
 
-  const { data: doHeader, error: hErr } = await sb.from('delivery_orders').insert({
+  const { data: doHeader, error: hErr } = await insertWithDocNoRetry<{ id: string; do_number: string }>(
+    () => nextNum(sb),
+    (doNumber) => sb.from('delivery_orders').insert({
     do_number: doNumber,
     /* so_doc_no has a FK to mfg_sales_orders(doc_no) → one valid doc. The full
        set of source SOs is recorded in `ref` below when the picks span >1 SO. */
@@ -1938,7 +1940,8 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
     /* Drop-ship (mig 0057) — flags the UI badge; inventory reconcile is ledger-driven. */
     is_dropship: dropShipped,
     created_by: user.id,
-  }).select('id, do_number').single();
+    }).select('id, do_number').single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const dh = doHeader as unknown as { id: string; do_number: string };
 
