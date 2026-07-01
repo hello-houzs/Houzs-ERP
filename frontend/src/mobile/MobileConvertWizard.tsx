@@ -273,7 +273,7 @@ export function MobileConvertWizard({
           body: JSON.stringify(body),
         });
         newDocNo = str(res?.doNumber);
-        await qc.invalidateQueries({ queryKey: ["mobile-module", "scm", "/delivery-orders-mfg?limit=500"] });
+        await qc.invalidateQueries({ queryKey: ["mobile-module"] });
       } else if (target === "si") {
         const body = { picks: picks.map((l) => ({ doItemId: l.lineId, qty: clampQty(l.qty, l.remaining) })) };
         const res = await authedFetch<{ invoiceNumber?: string }>("/sales-invoices/from-dos", {
@@ -281,7 +281,7 @@ export function MobileConvertWizard({
           body: JSON.stringify(body),
         });
         newDocNo = str(res?.invoiceNumber);
-        await qc.invalidateQueries({ queryKey: ["mobile-module", "scm", "/sales-invoices?limit=500"] });
+        await qc.invalidateQueries({ queryKey: ["mobile-module"] });
       } else if (target === "po") {
         const body = { picks: picks.map((l) => ({ soItemId: l.lineId, qty: clampQty(l.qty, l.remaining) })) };
         const res = await authedFetch<{ created?: Array<{ poNumber?: string }> }>("/mfg-purchase-orders/from-sos", {
@@ -290,7 +290,7 @@ export function MobileConvertWizard({
         });
         const created = res?.created ?? [];
         newDocNo = created.map((p) => str(p.poNumber)).filter(Boolean).join(", ");
-        await qc.invalidateQueries({ queryKey: ["mobile-module", "scm", "/mfg-purchase-orders?limit=500"] });
+        await qc.invalidateQueries({ queryKey: ["mobile-module"] });
       } else {
         // GRN — receives all lines of the selected POs (one supplier).
         const body: Record<string, unknown> = { purchaseOrderIds: selectedPoIds };
@@ -301,7 +301,7 @@ export function MobileConvertWizard({
           body: JSON.stringify(body),
         });
         newDocNo = str(res?.grnNumber);
-        await qc.invalidateQueries({ queryKey: ["mobile-module", "scm", "/grns?limit=500"] });
+        await qc.invalidateQueries({ queryKey: ["mobile-module"] });
       }
 
       onCreated(newDocNo);

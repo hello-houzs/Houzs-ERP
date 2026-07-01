@@ -134,6 +134,30 @@ const hoursToDeadline = (r: Any): number | null => {
   return v == null ? null : Number(v);
 };
 
+// ── Lookup option hooks (mirror desktop) ──────────────────────────
+// The four assr pickers live behind /api/assr/lookups/:kind, which
+// returns { data: [{ id, slug, name, sort_order, active }] }. Desktop
+// reads issue-categories by `name` and resolution-methods / priorities
+// by `slug`. We do the same, falling back to the hardcoded constant
+// until the (cheap, cached) call returns so the form stays usable.
+type LookupOpt = { slug: string; name: string };
+function useLookupRows(kind: string): LookupOpt[] {
+  const { data } = useQuery({
+    queryKey: ["mobile-assr-lookup", kind],
+    queryFn: () => api.get<{ data?: LookupOpt[] }>(`/api/assr/lookups/${kind}`),
+    staleTime: 5 * 60_000,
+  });
+  return data?.data ?? [];
+}
+function useLookupNames(kind: string, fallback: readonly string[]): string[] {
+  const rows = useLookupRows(kind);
+  return rows.length ? rows.map((r) => r.name) : [...fallback];
+}
+function useLookupSlugs(kind: string, fallback: readonly string[]): string[] {
+  const rows = useLookupRows(kind);
+  return rows.length ? rows.map((r) => r.slug) : [...fallback];
+}
+
 const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 // Human labels for the resolution_method slugs (mirrors desktop).
 const RESOLUTION_LABELS: Record<string, string> = {
@@ -206,7 +230,7 @@ function CaseList({
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-assr-list"],
-    queryFn: () => api.get<{ data?: Any[] }>("/api/assr/?per_page=200"),
+    queryFn: () => api.get<{ data?: Any[] }>("/api/assr?per_page=200"),
     staleTime: 30_000,
   });
   const all = data?.data ?? [];
@@ -333,6 +357,13 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const [noteAudience, setNoteAudience] = useState<"purchasing" | "customer">("purchasing");
   const [tlFilter, setTlFilter] = useState("all");
   const [busy, setBusy] = useState(false);
+
+  // Picker option lists sourced from /api/assr/lookups/* exactly as the
+  // desktop DetailContent does (issue categories by NAME; resolution +
+  // priority by SLUG). Hardcoded constants stay as the pre-load fallback.
+  const issueCatOptions = useLookupNames("issue-categories", ISSUE_CATEGORY_OPTIONS as readonly string[]);
+  const resolutionOptions = useLookupSlugs("resolution-methods", RESOLUTION_OPTIONS as readonly string[]);
+  const priorityOptions = useLookupSlugs("priorities", PRIORITY_OPTIONS as readonly string[]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-assr-detail", id],
@@ -553,8 +584,8 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               busy={busy}
               fields={[
                 { key: "complaint_issue", label: "Complaint", value: issueOf(c), type: "textarea" },
-                { key: "issue_category", label: "Issue category", value: get(c, "issueCategory", "issue_category"), type: "select", options: ISSUE_CATEGORY_OPTIONS.map((o) => ({ value: o, label: o })) },
-                { key: "priority", label: "Priority", value: priorityOf(c), type: "select", options: PRIORITY_OPTIONS.map((o) => ({ value: o, label: cap(o) })) },
+                { key: "issue_category", label: "Issue category", value: get(c, "issueCategory", "issue_category"), type: "select", options: issueCatOptions.map((o) => ({ value: o, label: o })) },
+                { key: "priority", label: "Priority", value: priorityOf(c), type: "select", options: priorityOptions.map((o) => ({ value: o, label: cap(o) })) },
               ]}
               onSave={(body) => patchCase(body, "Couldn't save issue")}
             >
@@ -615,7 +646,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               open
               busy={busy}
               fields={[
-                { key: "resolution_method", label: "Resolution method", value: resolutionMethod, type: "select", options: [{ value: "", label: "—" }, ...RESOLUTION_OPTIONS.map((o) => ({ value: o, label: resolutionLabel(o) }))] },
+                { key: "resolution_method", label: "Resolution method", value: resolutionMethod, type: "select", options: [{ value: "", label: "—" }, ...resolutionOptions.map((o) => ({ value: o, label: resolutionLabel(o) }))] },
                 { key: "supplier_pickup_at", label: "Supplier pickup date", value: get(c, "supplierPickupAt", "supplier_pickup_at"), type: "date" },
               ]}
               onSave={(body) => patchCase(body, "Couldn't save resolution")}
@@ -789,6 +820,12 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
 function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: number) => void }) {
   const qc = useQueryClient();
   const notify = useNotify();
+  // Lookups sourced the SAME way desktop CreatePanel does — from
+  // /api/assr/lookups/*, which returns { data: [{ slug, name, ... }] }.
+  // Issue categories render by NAME; priority by SLUG. Fall back to the
+  // hardcoded constants until the call returns so the form stays usable.
+  const issueCatOptions = useLookupNames("issue-categories", ISSUE_CATEGORY_OPTIONS as readonly string[]);
+  const priorityOptions = useLookupSlugs("priorities", PRIORITY_OPTIONS as readonly string[]);
   const [docNo, setDocNo] = useState("");
   const [itemCode, setItemCode] = useState("");
   const [complaint, setComplaint] = useState("");
@@ -809,9 +846,17 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
 
   const create = useMutation({
     mutationFn: async () => {
-      const res = await api.post<Any>("/api/assr/", {
+      // Match desktop CreatePanel EXACTLY: POST /api/assr (NO trailing
+      // slash — the slash 404s) with an `items` array of
+      // { item_code, item_description, qty }, NOT a singular `item_code`
+      // string. Backend accepts both, but keeping the shape identical to
+      // desktop guarantees a mobile-created case lands the same rows and
+      // shows up on desktop (owner's acceptance test).
+      const res = await api.post<{ id: number; assr_no?: string }>("/api/assr", {
         doc_no: docNo.trim(),
-        item_code: itemCode.trim() || undefined,
+        items: itemCode.trim()
+          ? [{ item_code: itemCode.trim(), item_description: null, qty: 1 }]
+          : [],
         complaint_issue: complaint.trim(),
         issue_category: category.trim() || null,
         priority,
@@ -893,7 +938,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                 <span className="fld-l">Issue category</span>
                 <select value={category} onChange={(e) => setCategory(e.target.value)} className="fld-i">
                   <option value="">— select —</option>
-                  {ISSUE_CATEGORY_OPTIONS.map((o) => (
+                  {issueCatOptions.map((o) => (
                     <option key={o} value={o}>{o}</option>
                   ))}
                 </select>
@@ -901,7 +946,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
               <label className="fld">
                 <span className="fld-l">Priority</span>
                 <select value={priority} onChange={(e) => setPriority(e.target.value)} className="fld-i">
-                  {PRIORITY_OPTIONS.map((o) => (
+                  {priorityOptions.map((o) => (
                     <option key={o} value={o}>{cap(o)}</option>
                   ))}
                 </select>

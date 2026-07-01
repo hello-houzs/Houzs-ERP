@@ -18,6 +18,7 @@ type SoHeader = {
   sales_location: string | null;
   customer_state: string | null;
   ref: string | null;
+  customer_so_no: string | null;
   po_doc_no: string | null;
   processing_date: string | null;
   customer_delivery_date: string | null;
@@ -139,7 +140,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               <div><div className="pkv-l">Delivery</div><div className="pkv-v">{dm(h.customer_delivery_date || h.internal_expected_dd)}</div></div>
               <div><div className="pkv-l">Phone</div><div className="pkv-v money">{h.phone || "—"}</div></div>
               <div><div className="pkv-l">Location</div><div className="pkv-v">{h.sales_location || h.customer_state || "—"}</div></div>
-              <div><div className="pkv-l">Reference</div><div className="pkv-v money">{h.ref || h.po_doc_no || "—"}</div></div>
+              <div><div className="pkv-l">Reference</div><div className="pkv-v money">{h.customer_so_no || h.ref || h.po_doc_no || "—"}</div></div>
               <div><div className="pkv-l">Created</div><div className="pkv-v">{dm(h.so_date || h.created_at)}</div></div>
             </div>
 
