@@ -2606,6 +2606,15 @@ function DetailContent({
       actions={
         c ? (
           <>
+            {/* PR 1 redesign — Print + Portal Link moved up from the
+                pill row. Match the design's title-row action group. */}
+            <PrintMenu caseId={id} toast={toast} />
+            <PortalLinksMenu
+              id={id}
+              existingToken={detail.data?.portal_token ?? null}
+              toast={toast}
+              onGenerated={() => detail.reload()}
+            />
             {c.archived_at ? (
               <HeaderButton
                 variant="ghost"
@@ -2691,88 +2700,19 @@ function DetailContent({
             </div>
           )}
 
-          {/* v3.1 Workflow Progress Tracker — 9-step stepper, top of detail */}
-          <div className="border-b border-border bg-bg/40 px-5 py-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-secondary">
-                Workflow Progress
-              </span>
-              {!c.archived_at && (
-                <label className="inline-flex items-center gap-2">
-                  <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-                    Change to
-                  </span>
-                  <select
-                    value={c.stage}
-                    onChange={(e) => transition(e.target.value as AssrStage)}
-                    disabled={transitioning}
-                    className="h-8 rounded-md border border-border bg-surface px-2 text-[12px] font-semibold outline-none focus:border-primary disabled:opacity-60"
-                    title="Move this case to any stage"
-                  >
-                    <option value="pending_review">Pending Review</option>
-                    <option value="under_verification">Under Verification</option>
-                    <option value="pending_solution">Pending Solution</option>
-                    <option value="pending_inspection">Pending Inspection</option>
-                    <option value="pending_item_pickup">Pending Item Pickup</option>
-                    <option value="pending_supplier_pickup">Pending Supplier Pickup</option>
-                    <option value="pending_item_ready">Pending Item Ready</option>
-                    <option value="pending_delivery_service">Pending Delivery / Service</option>
-                    <option value="completed">Completed</option>
-                  </select>
-                </label>
-              )}
-            </div>
-            <ServiceProgressTracker
-              history={(detail.data as any)?.stage_history ?? []}
+          {/* PR 1 redesign — Workflow card + Status summary bar. Replaces
+              the old "Workflow Progress" strip and the pill row that
+              rendered stage/priority/SLA/resolution as discrete chips.
+              Print + Portal Link menus moved into DetailLayout actions
+              (above). */}
+          <div className="flex flex-col gap-4 border-b border-border bg-bg/40 px-5 py-4">
+            <WorkflowCard
               currentStage={c.stage}
-              variant="full"
+              transitioning={transitioning}
+              onChange={(s) => transition(s)}
+              disabled={!!c.archived_at}
             />
-          </div>
-
-          {/* Stage + Priority header */}
-          <div className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-3">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1 text-[12.5px] font-bold text-ink shadow-stone">
-              <StatusDot variant={stageVariant(c.stage)} />
-              {caseStageLabel(c.stage)}
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className={cn("h-2 w-2 rounded-full", priorityColor(c.priority))} />
-              <span className="text-[11px] font-semibold capitalize text-ink-secondary">{c.priority}</span>
-            </span>
-            <LeadTimePill c={c} priorityMap={priorityMap} />
-            {c.resolution_method && (
-              <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-semibold text-accent">
-                {resolutionLabel(c.resolution_method)}
-              </span>
-            )}
-            {c.deadline_at && c.stage !== "completed" && (
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                  c.is_breached === 1
-                    ? "bg-err text-white"
-                    : (c.hours_to_deadline ?? 9999) < 24
-                    ? "bg-amber-500/10 text-amber-700"
-                    : "bg-synced/10 text-synced"
-                )}
-                title={`Deadline: ${formatDateTime(c.deadline_at)}`}
-              >
-                <Calendar size={10} />
-                {c.is_breached === 1
-                  ? `Overdue ${Math.abs(c.hours_to_deadline ?? 0)}h`
-                  : `${c.hours_to_deadline ?? 0}h left`}
-              </span>
-            )}
-            <PrintMenu
-              caseId={id}
-              toast={toast}
-            />
-            <PortalLinksMenu
-              id={id}
-              existingToken={detail.data?.portal_token ?? null}
-              toast={toast}
-              onGenerated={() => detail.reload()}
-            />
+            <StatusSummaryBar c={c} priorityMap={priorityMap} />
           </div>
           <DetailGrid>
             <DetailMain>
@@ -3947,6 +3887,208 @@ const VERIFICATION_OPTIONS = [
   { value: "needs_more_info", label: "Needs more info", tone: "warn" as const },
   { value: "rejected", label: "Rejected", tone: "err" as const },
 ];
+
+// ── Detail top-of-page redesign (PR 1) ─────────────────────────
+// Two card components lifted from `Service Case Detail — Redesign.dc.html`:
+// a numbered workflow tracker with an inline "Change to" dropdown, and a
+// 5-cell status summary bar. The full accordion + resolution-driven flow
+// filtering land in later PRs; this PR only refreshes the header strip.
+
+const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
+  { id: "pending_review",           short: "Review",       long: "Pending Review" },
+  { id: "under_verification",       short: "Verification", long: "Under Verification" },
+  { id: "pending_solution",         short: "Solution",     long: "Pending Solution" },
+  { id: "pending_inspection",       short: "Inspection",   long: "Pending Inspection" },
+  { id: "pending_item_pickup",      short: "Item Pickup",  long: "Pending Item Pickup" },
+  { id: "pending_supplier_pickup",  short: "Supplier",     long: "Pending Supplier Pickup" },
+  { id: "pending_item_ready",       short: "Item Ready",   long: "Pending Item Ready" },
+  { id: "pending_delivery_service", short: "Delivery",     long: "Pending Delivery / Service" },
+  { id: "completed",                short: "Completed",    long: "Completed" },
+];
+
+// Which side of the flow a resolution method routes to. Drives dot
+// colour + subtitle in the Resolution cell of the summary bar. PR 4
+// will use this to hide the two supplier-only stages when 'internal'.
+function resolutionRoute(m: string | null | undefined): "supplier" | "internal" | null {
+  if (!m) return null;
+  if (m === "field_service_own" || m === "return_visit") return "internal";
+  return "supplier";
+}
+
+function WorkflowCard({
+  currentStage,
+  transitioning,
+  onChange,
+  disabled,
+}: {
+  currentStage: AssrStage;
+  transitioning: boolean;
+  onChange: (s: AssrStage) => void;
+  disabled?: boolean;
+}) {
+  const curIdx = Math.max(0, DETAIL_STAGES.findIndex((s) => s.id === currentStage));
+  const n = DETAIL_STAGES.length;
+  return (
+    <div className="rounded-lg border border-border bg-surface px-6 pb-4 pt-5 shadow-stone">
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-[13px] font-bold tracking-tight text-ink">Workflow</div>
+        <div className="flex items-center gap-2.5">
+          <span className="font-mono text-[11px] text-ink-muted">
+            Step {curIdx + 1} / {n}
+          </span>
+          {!disabled && (
+            <>
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                Change to
+              </span>
+              <select
+                value={currentStage}
+                onChange={(e) => onChange(e.target.value as AssrStage)}
+                disabled={transitioning}
+                className="h-8 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-semibold outline-none focus:border-primary disabled:opacity-60"
+                title="Move this case to any stage"
+              >
+                {DETAIL_STAGES.map((s) => (
+                  <option key={s.id} value={s.id}>{s.long}</option>
+                ))}
+              </select>
+            </>
+          )}
+        </div>
+      </div>
+      <ol className="flex items-start">
+        {DETAIL_STAGES.map((s, i) => {
+          const done = i < curIdx;
+          const current = i === curIdx;
+          const last = i === n - 1;
+          return (
+            <li key={s.id} className={cn("flex flex-1 items-start", last && "flex-none w-[74px]")}>
+              <div className="flex w-[74px] shrink-0 flex-col items-center">
+                <span
+                  className={cn(
+                    "flex h-[30px] w-[30px] items-center justify-center rounded-full text-[13px] font-bold",
+                    done && "bg-primary text-white",
+                    current && "bg-accent text-white ring-4 ring-accent-soft",
+                    !done && !current && "border-[1.5px] border-border bg-surface text-ink-muted",
+                  )}
+                >
+                  {done ? "✓" : i + 1}
+                </span>
+                <span
+                  className={cn(
+                    "mt-[9px] text-center font-mono text-[9px] uppercase tracking-brand leading-snug",
+                    current ? "font-bold text-accent" : done ? "font-semibold text-ink" : "font-semibold text-ink-muted",
+                  )}
+                >
+                  {s.short}
+                </span>
+              </div>
+              {!last && (
+                <span
+                  className={cn(
+                    "mt-[14px] h-0.5 flex-1",
+                    i < curIdx ? "bg-primary" : "bg-border",
+                  )}
+                />
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+function StatusSummaryBar({
+  c,
+  priorityMap,
+}: {
+  c: AssrCase;
+  priorityMap: Record<string, string>;
+}) {
+  const curIdx = Math.max(0, DETAIL_STAGES.findIndex((s) => s.id === c.stage));
+  const n = DETAIL_STAGES.length;
+  const route = resolutionRoute(c.resolution_method);
+  const priorityName = priorityMap[c.priority] ?? c.priority;
+  const slaHours = c.hours_to_deadline ?? null;
+  const slaBreached = c.is_breached === 1;
+  const slaSoon = !slaBreached && slaHours != null && slaHours < 24;
+
+  const cells: {
+    label: string;
+    value: string;
+    sub: string;
+    valColor: string;
+    dotColor: string;
+  }[] = [
+    {
+      label: "Status",
+      value: caseStageLabel(c.stage),
+      sub: `Step ${curIdx + 1} / ${n}`,
+      valColor: "text-ink",
+      dotColor: "bg-accent",
+    },
+    {
+      label: "Priority",
+      value: priorityName || "—",
+      sub: `${priorityName || "Standard"} tier`,
+      valColor: "text-ink",
+      dotColor: priorityColor(c.priority),
+    },
+    {
+      label: "SLA",
+      value: slaBreached
+        ? `Overdue ${Math.abs(Math.round((slaHours ?? 0) / 24))}d`
+        : slaHours != null
+        ? `${slaHours}h left`
+        : "—",
+      sub: c.deadline_at ? `Due ${formatDate(c.deadline_at)}` : `${priorityName || "Normal"} tier`,
+      valColor: slaBreached ? "text-err" : slaSoon ? "text-amber-700" : "text-ink",
+      dotColor: slaBreached ? "bg-err" : slaSoon ? "bg-amber-500" : "bg-synced",
+    },
+    {
+      label: "Resolution",
+      value: c.resolution_method ? resolutionLabel(c.resolution_method) : "TBD",
+      sub:
+        route === "supplier"
+          ? "Supplier flow"
+          : route === "internal"
+          ? "Internal flow"
+          : "Set at Solution",
+      valColor: c.resolution_method ? "text-ink" : "text-ink-secondary",
+      dotColor: route === "supplier" ? "bg-accent" : route === "internal" ? "bg-synced" : "bg-border",
+    },
+    {
+      label: "Lead Time",
+      value:
+        c.stage_target_days != null
+          ? `${c.stage_target_days} day${c.stage_target_days === 1 ? "" : "s"}`
+          : "—",
+      sub: `${priorityName || "Normal"} tier`,
+      valColor: "text-ink",
+      dotColor: "bg-synced",
+    },
+  ];
+
+  return (
+    <div className="flex items-stretch overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
+      {cells.map((cell, i) => (
+        <div key={cell.label} className={cn("flex-1 px-5 py-3.5", i > 0 && "border-l border-border-subtle")}>
+          <div className="font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+            {cell.label}
+          </div>
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <span className={cn("h-2 w-2 shrink-0 rounded-full", cell.dotColor)} />
+            <span className={cn("text-[14px] font-bold leading-tight", cell.valColor)}>
+              {cell.value}
+            </span>
+          </div>
+          <div className="mt-1 text-[11px] text-ink-muted">{cell.sub}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ── Inspection card ────────────────────────────────────────────
 // Surfaces the v3.1 `inspection_result` field (pass / fail / na) +
