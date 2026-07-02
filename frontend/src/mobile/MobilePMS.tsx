@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
@@ -155,18 +155,20 @@ type ProjectDetail = {
     dismantle_driver_name?: string | null;
     setup_lorry_plate?: string | null;
     dismantle_lorry_plate?: string | null;
+    setup_end_at?: string | null;
+    dismantle_end_at?: string | null;
+    setup_helper_1_id?: number | null;
+    setup_helper_2_id?: number | null;
+    dismantle_helper_1_id?: number | null;
+    dismantle_helper_2_id?: number | null;
+    setup_helper_outsourced?: number | boolean | null;
+    dismantle_helper_outsourced?: number | boolean | null;
     setup_helper_1_name?: string | null;
     setup_helper_2_name?: string | null;
     dismantle_helper_1_name?: string | null;
     dismantle_helper_2_name?: string | null;
   };
-  stock_transfers?: Array<{
-    id: number;
-    direction?: string | null;
-    created_by_name?: string | null;
-    confirmed_by_name?: string | null;
-    transferred_at?: string | null;
-  }>;
+  stock_transfers?: StockTransfer[];
   finance: {
     rental: number | null;
     contractor_cost: number | null;
@@ -175,16 +177,125 @@ type ProjectDetail = {
     deposit_refund: number | null;
     total_sales: number | null;
   } | null;
+  finance_lines?: FinanceLine[];
   checklist?: ChecklistItem[];
   checklist_attachments?: TaskAttachment[];
+  checklist_comments?: ChecklistComment[];
   sections?: TasklistSection[];
   section_progress?: SectionProgress[];
   sales_attendees?: SalesAttendee[];
+  defects?: Defect[];
+  attachments?: ProjectAttachment[];
+  activity?: ActivityEntry[];
   _access?: {
     level?: string;
     pms?: { canFinancial?: boolean };
   };
 };
+
+// Full stock-transfer row (dual-read camelCase ?? snake_case).
+type StockTransfer = {
+  id: number;
+  direction?: string | null;
+  confirmed?: number | boolean | null;
+  confirmed_at?: string | null;
+  confirmedAt?: string | null;
+  created_by_name?: string | null;
+  createdByName?: string | null;
+  confirmed_by_name?: string | null;
+  confirmedByName?: string | null;
+  transferred_at?: string | null;
+  transferredAt?: string | null;
+  record_r2_key?: string | null;
+  recordR2Key?: string | null;
+  file_name?: string | null;
+  fileName?: string | null;
+};
+
+// Finance ledger line (income/cost). Synthetic sales rows carry source='sales_entry'.
+type FinanceLine = {
+  id: number;
+  kind: string;
+  category: string;
+  description?: string | null;
+  amount: number;
+  occurred_at?: string | null;
+  occurredAt?: string | null;
+  r2_key?: string | null;
+  r2Key?: string | null;
+  file_name?: string | null;
+  fileName?: string | null;
+  created_by_name?: string | null;
+  createdByName?: string | null;
+  auto_source?: string | null;
+  autoSource?: string | null;
+  source?: string | null;
+  source_id?: number | null;
+};
+
+type ChecklistComment = {
+  id: number;
+  item_id: number;
+  itemId?: number;
+  kind?: string | null;
+  note?: string | null;
+  user_name?: string | null;
+  userName?: string | null;
+  created_at?: string | null;
+  createdAt?: string | null;
+};
+
+type Defect = {
+  id: number;
+  phase: string;
+  reported_by_role?: string | null;
+  reportedByRole?: string | null;
+  item_code?: string | null;
+  itemCode?: string | null;
+  item_description?: string | null;
+  itemDescription?: string | null;
+  size?: string | null;
+  quantity?: number | null;
+  reason?: string | null;
+  resolved?: number | boolean | null;
+  resolved_notes?: string | null;
+  resolvedNotes?: string | null;
+  photo_r2_key?: string | null;
+  photoR2Key?: string | null;
+  reported_by_name?: string | null;
+  reportedByName?: string | null;
+};
+
+type ProjectAttachment = {
+  id: number;
+  category?: string | null;
+  r2_key?: string | null;
+  r2Key?: string | null;
+  file_name?: string | null;
+  fileName?: string | null;
+  mime_type?: string | null;
+  mimeType?: string | null;
+  uploader_name?: string | null;
+  uploaderName?: string | null;
+  created_at?: string | null;
+  createdAt?: string | null;
+};
+
+type ActivityEntry = {
+  id: number;
+  action?: string | null;
+  from_value?: string | null;
+  fromValue?: string | null;
+  to_value?: string | null;
+  toValue?: string | null;
+  note?: string | null;
+  user_name?: string | null;
+  userName?: string | null;
+  created_at?: string | null;
+  createdAt?: string | null;
+};
+
+type Lorry = { id: number; plate: string | null; type?: string | null; is_internal?: boolean | null };
 
 // ── Reference-data list rows (populate the write-form selects) ──
 type PicUser = { id: number; name: string | null; email: string };
@@ -222,6 +333,14 @@ async function patchPayment(
   } finally {
     setBusy(false);
   }
+}
+
+// Dual-read helper — the PG driver camelCases result columns, so a row may
+// carry either snake_case (D1 fallback / raw SQL) or camelCase. Always read
+// both (project_pg_camelcase_columns memory — #1 recurring bug).
+function pick<T>(...vals: (T | null | undefined)[]): T | null {
+  for (const v of vals) if (v != null) return v;
+  return null;
 }
 
 // ── Formatters ──
@@ -284,18 +403,151 @@ const STAGE_TO_INDEX: Record<string, number> = {
 // ── Component ──
 export function MobilePMS({ onBack, initialProjectId }: { onBack?: () => void; initialProjectId?: number }) {
   const [openId, setOpenId] = useState<number | null>(initialProjectId ?? null);
+  const [creating, setCreating] = useState(false);
   // When entered straight into a detail (e.g. tapped from the Calendar), Back
   // leaves PMS entirely; once the user visits the list, Back returns to it.
   const [direct, setDirect] = useState<boolean>(initialProjectId != null);
 
+  if (creating) {
+    return <ProjectCreate onBack={() => setCreating(false)} onCreated={(id) => { setCreating(false); setDirect(false); setOpenId(id); }} />;
+  }
   if (openId != null) {
     return <ProjectDetailView id={openId} onBack={() => (direct ? onBack?.() : setOpenId(null))} />;
   }
-  return <ProjectListView onOpen={(id) => { setDirect(false); setOpenId(id); }} onBack={onBack} />;
+  return <ProjectListView onOpen={(id) => { setDirect(false); setOpenId(id); }} onBack={onBack} onNew={() => setCreating(true)} />;
+}
+
+// ── Create ──
+// New-project form. POST /api/projects — the backend derives the project code
+// from state + venue + brand, so those three are required (a missing one comes
+// back as a clean 400 which we surface). event_type_id seeds the checklist.
+type EventTypeOption = { id: number; slug?: string | null; name: string | null };
+type VenueOption = { id: number; name: string | null; state: string | null };
+
+function ProjectCreate({ onBack, onCreated }: { onBack: () => void; onCreated: (id: number) => void }) {
+  const notify = useNotify();
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState("");
+  const [brand, setBrand] = useState("");
+  const [state, setState] = useState("");
+  const [venue, setVenue] = useState("");
+  const [eventTypeId, setEventTypeId] = useState("");
+  const [organizer, setOrganizer] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+
+  const brandsQ = useQuery({ queryKey: ["mobile-pms-brands"], queryFn: () => api.get<{ data: string[] }>(`/api/projects/brands`), staleTime: 5 * 60_000, retry: false });
+  const statesQ = useQuery({ queryKey: ["mobile-pms-states"], queryFn: () => api.get<{ data: string[] }>(`/api/projects/states`), staleTime: 5 * 60_000, retry: false });
+  const eventTypesQ = useQuery({ queryKey: ["mobile-pms-event-types"], queryFn: () => api.get<{ data: EventTypeOption[] }>(`/api/projects/event-types`), staleTime: 5 * 60_000, retry: false });
+  const venuesQ = useQuery({ queryKey: ["mobile-pms-venues"], queryFn: () => api.get<{ data: VenueOption[] }>(`/api/projects/venues`), staleTime: 5 * 60_000, retry: false });
+
+  const brands = brandsQ.data?.data ?? [];
+  const states = statesQ.data?.data ?? [];
+  const eventTypes = eventTypesQ.data?.data ?? [];
+  const venues = venuesQ.data?.data ?? [];
+  // Narrow the venue picker to the chosen state when possible.
+  const venuesForState = useMemo(
+    () => venues.filter((v) => !state || (v.state ?? "") === state),
+    [venues, state],
+  );
+
+  const canSubmit = !!name.trim() && !!brand && !!state && !!venue.trim() && !busy;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    try {
+      const res = await api.post<{ id?: number }>(`/api/projects`, {
+        name: name.trim(),
+        brand,
+        state,
+        venue: venue.trim(),
+        event_type_id: eventTypeId ? parseInt(eventTypeId, 10) : undefined,
+        organizer: organizer.trim() || undefined,
+        start_date: startDate || undefined,
+        end_date: endDate || undefined,
+      });
+      if (res?.id) onCreated(res.id);
+      else onBack();
+    } catch (e) {
+      await notify({ title: "Couldn't create project", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
+      <header className="hdr">
+        <button className="back" onClick={onBack} aria-label="Back"><span className="chev">‹</span> Projects</button>
+        <div className="eyebrow" style={{ marginTop: 6 }}>PMS</div>
+        <div className="scr-title">New project</div>
+      </header>
+      <div className="scroll" style={{ padding: 14, paddingBottom: 120, display: "flex", flexDirection: "column", gap: 10 }}>
+        <label className="fld">
+          <span className="fld-l">Project name *</span>
+          <input className="fld-i" value={name} disabled={busy} onChange={(e) => setName(e.target.value)} placeholder="Project name" />
+        </label>
+        <label className="fld">
+          <span className="fld-l">Brand *</span>
+          <select className="fld-i" value={brand} disabled={busy} onChange={(e) => setBrand(e.target.value)}>
+            <option value="">— select brand —</option>
+            {brands.map((b) => <option key={b} value={b}>{b}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          <span className="fld-l">State *</span>
+          <select className="fld-i" value={state} disabled={busy} onChange={(e) => { setState(e.target.value); }}>
+            <option value="">— select state —</option>
+            {states.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          <span className="fld-l">Venue *</span>
+          <input className="fld-i" list="pms-venue-list" value={venue} disabled={busy} onChange={(e) => setVenue(e.target.value)} placeholder="Venue name" />
+          <datalist id="pms-venue-list">
+            {venuesForState.map((v) => <option key={v.id} value={v.name ?? ""} />)}
+          </datalist>
+        </label>
+        <label className="fld">
+          <span className="fld-l">Event type</span>
+          <select className="fld-i" value={eventTypeId} disabled={busy} onChange={(e) => setEventTypeId(e.target.value)}>
+            <option value="">— none —</option>
+            {eventTypes.map((et) => <option key={et.id} value={et.id}>{et.name || et.slug || `#${et.id}`}</option>)}
+          </select>
+        </label>
+        <label className="fld">
+          <span className="fld-l">Organizer</span>
+          <input className="fld-i" value={organizer} disabled={busy} onChange={(e) => setOrganizer(e.target.value)} placeholder="Organizer" />
+        </label>
+        <div style={{ display: "flex", gap: 9 }}>
+          <label className="fld" style={{ flex: 1 }}>
+            <span className="fld-l">Start date</span>
+            <input className="fld-i" type="date" value={startDate} disabled={busy} onChange={(e) => setStartDate(e.target.value)} />
+          </label>
+          <label className="fld" style={{ flex: 1 }}>
+            <span className="fld-l">End date</span>
+            <input className="fld-i" type="date" value={endDate} disabled={busy} onChange={(e) => setEndDate(e.target.value)} />
+          </label>
+        </div>
+        <button
+          className="tinybtn"
+          style={{ marginTop: 6, padding: "11px 14px", fontSize: 13, background: canSubmit ? "#16695f" : "#c2c6bd", borderColor: canSubmit ? "#16695f" : "#c2c6bd", color: "#fff", justifyContent: "center" }}
+          disabled={!canSubmit}
+          onClick={submit}
+        >
+          {busy ? "Creating…" : "Create project"}
+        </button>
+        <div style={{ fontSize: 10.5, color: "#9aa093" }}>Brand, state and venue are required — the project code is derived from them.</div>
+      </div>
+    </div>
+  );
 }
 
 // ── List ──
-function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onBack?: () => void }) {
+function ProjectListView({ onOpen, onBack, onNew }: { onOpen: (id: number) => void; onBack?: () => void; onNew: () => void }) {
+  const { can } = useAuth();
+  const canCreate = can("projects.write");
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<string>("all");
 
@@ -338,6 +590,9 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
               <div className="scr-title">Projects</div>
             </div>
           </div>
+          {canCreate && (
+            <button className="tinybtn" style={{ marginLeft: "auto", background: "#16695f", borderColor: "#16695f", color: "#fff" }} onClick={onNew}>+ New</button>
+          )}
         </div>
         <div className="hdr-row" style={{ marginTop: 11 }}>
           <div className="searchbar">
@@ -410,6 +665,10 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const { pageAccess, can } = useAuth();
   // Finance-gate key mirrors the desktop Projects page (usePageAccess).
   const canSeeFinance = pageAccess("projects.finances") !== "none";
+  // Sales quick-log + void gates (the Sales page-access, mirrors desktop).
+  const salesAccess = pageAccess("sales");
+  const canLogSale = salesAccess !== "none";
+  const canVoidSale = salesAccess === "full";
   const canWrite = can("projects.write");
   const canManage = can("projects.manage");
   const canTick = canWrite || can("projects.checklist.tick");
@@ -470,6 +729,30 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     () => (fleetQ.data?.data ?? []).filter((s) => (s.role_name ?? "").toLowerCase() === "driver"),
     [fleetQ.data],
   );
+  // Helper crew — Helper / Storekeeper roles from the same fleet endpoint.
+  const helpers = useMemo(
+    () => (fleetQ.data?.data ?? []).filter((s) => {
+      const r = (s.role_name ?? "").toLowerCase();
+      return r === "helper" || r === "storekeeper";
+    }),
+    [fleetQ.data],
+  );
+
+  // Lorry list (GET /api/scm/lorries → { lorries: [...] }). Best-effort; a
+  // reader without scm access gets [] and the picker shows only the current value.
+  const lorriesQ = useQuery({
+    queryKey: ["mobile-pms-lorries"],
+    queryFn: () => api.get<{ lorries: Lorry[] }>(`/api/scm/lorries`),
+    staleTime: 5 * 60_000,
+    enabled: canWrite,
+    retry: false,
+  });
+  const lorries = lorriesQ.data?.lorries ?? [];
+
+  // Mark the project read when the detail opens (drives the unread bell).
+  useEffect(() => {
+    api.post(`/api/projects/${id}/read`).catch(() => {});
+  }, [id]);
 
   const reload = () => {
     void qc.invalidateQueries({ queryKey: ["mobile-pms-detail", id] });
@@ -703,11 +986,15 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               <FinancialSnapshot
                 projectId={id}
                 finance={data.finance!}
+                lines={data.finance_lines}
                 canWrite={canWrite && !archived}
+                canLogSale={canLogSale && !archived}
+                canVoidSale={canVoidSale && !archived}
                 busy={busy}
                 setBusy={setBusy}
                 prompt={prompt}
                 notify={notify}
+                confirm={confirm}
                 reload={reload}
               />
             )}
@@ -719,12 +1006,15 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               items={data.checklist}
               progress={data.section_progress}
               attachments={data.checklist_attachments}
+              comments={data.checklist_comments}
               canTick={canTick && !archived}
+              canWrite={canWrite && !archived}
               can={can}
               busy={busy}
               setBusy={setBusy}
               notify={notify}
               confirm={confirm}
+              prompt={prompt}
               reload={reload}
             />
 
@@ -734,6 +1024,8 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               project={p}
               photos={photos}
               drivers={drivers}
+              helpers={helpers}
+              lorries={lorries}
               canWrite={canWrite && !archived}
               busy={busy}
               setBusy={setBusy}
@@ -742,11 +1034,49 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reloadPhotos={reloadPhotos}
             />
 
-            {/* floor plans & layout */}
+            {/* floor plans & layout + stock transfers */}
             <FloorPlans
               projectId={id}
               stockTransfers={data.stock_transfers}
               canWrite={canWrite && !archived}
+              busy={busy}
+              setBusy={setBusy}
+              notify={notify}
+              confirm={confirm}
+              reload={reload}
+            />
+
+            {/* attachments (floorplan / render / contract) */}
+            <Attachments
+              projectId={id}
+              attachments={data.attachments}
+              canWrite={canWrite && !archived}
+              busy={busy}
+              setBusy={setBusy}
+              notify={notify}
+              confirm={confirm}
+              prompt={prompt}
+              reload={reload}
+            />
+
+            {/* defects */}
+            <Defects
+              projectId={id}
+              defects={data.defects}
+              canWrite={canWrite && !archived}
+              busy={busy}
+              setBusy={setBusy}
+              notify={notify}
+              confirm={confirm}
+              prompt={prompt}
+              reload={reload}
+            />
+
+            {/* project chat / activity */}
+            <ProjectChat
+              projectId={id}
+              activity={data.activity}
+              canChat={canWrite || can("projects.chat")}
               busy={busy}
               setBusy={setBusy}
               notify={notify}
@@ -984,23 +1314,96 @@ const NEXT_STATUS: Record<string, "pending" | "done" | "na"> = {
 };
 
 function TasklistSectionView({
-  projectId, sections, items, progress, attachments, canTick, can, busy, setBusy, notify, confirm, reload,
+  projectId, sections, items, progress, attachments, comments, canTick, canWrite, can, busy, setBusy, notify, confirm, prompt, reload,
 }: {
   projectId: number;
   sections?: TasklistSection[];
   items?: ChecklistItem[];
   progress?: SectionProgress[];
   attachments?: TaskAttachment[];
+  comments?: ChecklistComment[];
   canTick: boolean;
+  canWrite: boolean;
   can: (perm: string) => boolean;
   busy: boolean;
   setBusy: SetBusy;
   notify: NotifyFn;
   confirm: ConfirmFn;
+  prompt: PromptFn;
   reload: () => void;
 }) {
   const list = items ?? [];
   const secs = sections ?? [];
+  const commentsByItem = useMemo(() => {
+    const m = new Map<number, ChecklistComment[]>();
+    for (const cm of comments ?? []) {
+      const key = pick(cm.item_id, cm.itemId) ?? 0;
+      const arr = m.get(key) ?? [];
+      arr.push(cm);
+      m.set(key, arr);
+    }
+    return m;
+  }, [comments]);
+
+  // Add a new section (append to the end). POST /:id/sections.
+  const addSection = async () => {
+    const name = await prompt({ title: "New section", placeholder: "Section name" });
+    if (name == null || !name.trim()) return;
+    setBusy(true);
+    try {
+      await api.post(`/api/projects/${projectId}/sections`, { name: name.trim() });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Rename a section. PATCH /sections/:sectionId.
+  const renameSection = async (sec: TasklistSection) => {
+    const name = await prompt({ title: "Rename section", defaultValue: sec.name, placeholder: "Section name" });
+    if (name == null || !name.trim() || name.trim() === sec.name) return;
+    setBusy(true);
+    try {
+      await api.patch(`/api/projects/sections/${sec.id}`, { name: name.trim() });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Delete a section (its tasks fall back to Uncategorised). DELETE /sections/:sectionId.
+  const deleteSection = async (sec: TasklistSection) => {
+    if (!(await confirm({ title: `Delete section "${sec.name}"?`, body: "Its tasks move to Uncategorised.", confirmLabel: "Delete", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/projects/sections/${sec.id}`);
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Add a checklist item to a section (or Uncategorised when sectionId=null).
+  // POST /:id/checklist.
+  const addItem = async (sectionId: number | null) => {
+    const title = await prompt({ title: "New task", placeholder: "Task title" });
+    if (title == null || !title.trim()) return;
+    setBusy(true);
+    try {
+      await api.post(`/api/projects/${projectId}/checklist`, { title: title.trim(), section_id: sectionId });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
   const attachBySection = useMemo(() => {
     const m = new Map<number, TaskAttachment[]>();
     for (const a of attachments ?? []) {
@@ -1034,12 +1437,15 @@ function TasklistSectionView({
         projectId={projectId}
         item={it}
         attachments={attachBySection.get(it.id) ?? []}
+        comments={commentsByItem.get(it.id) ?? []}
         canTick={canTick}
+        canWrite={canWrite}
         can={can}
         busy={busy}
         setBusy={setBusy}
         notify={notify}
         confirm={confirm}
+        prompt={prompt}
         reload={reload}
       />
     ));
@@ -1054,18 +1460,24 @@ function TasklistSectionView({
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">
-        {totalTasks === 0 && <div style={{ fontSize: 12, color: "#9aa093" }}>No tasks yet.</div>}
+        {totalTasks === 0 && !orderedSecs.length && <div style={{ fontSize: 12, color: "#9aa093" }}>No tasks yet.</div>}
         {orderedSecs.map((sec) => {
           const rows = bySection.get(sec.id) ?? [];
-          if (!rows.length) return null;
           const prog = progressById.get(sec.id);
           return (
             <div key={sec.id} style={{ marginTop: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0 2px" }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#11140f" }}>{sec.name}</span>
-                {prog && <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{prog.done}/{prog.total}</span>}
+                {prog && <span style={{ fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{prog.done}/{prog.total}</span>}
+                {canWrite && (
+                  <span style={{ marginLeft: "auto", display: "flex", gap: 5 }}>
+                    <button className="tinybtn" disabled={busy} onClick={() => addItem(sec.id)}>+ Task</button>
+                    <button className="tinybtn" disabled={busy} onClick={() => renameSection(sec)}>Rename</button>
+                    <button aria-label="Delete section" className="tinybtn" disabled={busy} style={{ padding: "3px 7px" }} onClick={() => deleteSection(sec)}>×</button>
+                  </span>
+                )}
               </div>
-              {renderRows(rows)}
+              {rows.length ? renderRows(rows) : <div style={{ fontSize: 11, color: "#9aa093", padding: "4px 0" }}>No tasks in this section.</div>}
             </div>
           );
         })}
@@ -1077,11 +1489,20 @@ function TasklistSectionView({
             <div style={{ marginTop: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0 2px" }}>
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#11140f" }}>Uncategorised</span>
+                {canWrite && <button className="tinybtn" style={{ marginLeft: "auto" }} disabled={busy} onClick={() => addItem(null)}>+ Task</button>}
               </div>
               {renderRows(rows)}
             </div>
           );
         })()}
+        {canWrite && (bySection.get(0)?.length ?? 0) === 0 && (
+          <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
+            <button className="tinybtn" disabled={busy} onClick={() => addItem(null)}>+ Uncategorised task</button>
+          </div>
+        )}
+        {canWrite && (
+          <button className="tinybtn" style={{ marginTop: 10, color: "#16695f", borderColor: "#bcdcd7" }} disabled={busy} onClick={addSection}>+ Add section</button>
+        )}
       </div>
     </details>
   );
@@ -1092,17 +1513,20 @@ function TasklistSectionView({
 // the "…" opens remark / approval. Payment-pill rows (mig 090) render N/A /
 // PENDING / PAID buttons instead of the tick, saved via PATCH /checklist/:id.
 function TaskRow({
-  projectId, item: it, attachments, canTick, can, busy, setBusy, notify, confirm, reload,
+  projectId, item: it, attachments, comments, canTick, canWrite, can, busy, setBusy, notify, confirm, prompt, reload,
 }: {
   projectId: number;
   item: ChecklistItem;
   attachments: TaskAttachment[];
+  comments: ChecklistComment[];
   canTick: boolean;
+  canWrite: boolean;
   can: (perm: string) => boolean;
   busy: boolean;
   setBusy: SetBusy;
   notify: NotifyFn;
   confirm: ConfirmFn;
+  prompt: PromptFn;
   reload: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -1168,17 +1592,38 @@ function TaskRow({
     }
   };
 
-  const review = async (action: "approve" | "reject") => {
-    let reason = "";
+  // Review loop — approve / reject (gated by required_perm) plus the
+  // submit-for-review / amend / comment actions. reject needs a reason;
+  // amend + comment take an optional note.
+  const review = async (action: "approve" | "reject" | "submit" | "amend" | "comment") => {
+    const body: Record<string, unknown> = { action };
     if (action === "reject") {
-      const label = it.title.replace(/'/g, "");
-      const r = await confirm({ title: `Reject "${label}"?`, confirmLabel: "Reject", danger: true });
-      if (!r) return;
-      reason = "Rejected from mobile";
+      const reason = await prompt({ title: `Reject "${it.title}"?`, placeholder: "Reason (required)", validate: (v) => (v.trim() ? null : "A reason is required.") });
+      if (reason == null || !reason.trim()) return;
+      body.reason = reason.trim();
+    } else if (action === "amend" || action === "comment") {
+      const note = await prompt({ title: action === "amend" ? "Amend — note (optional)" : "Add a comment", placeholder: "Note" });
+      if (note == null) return;
+      if (action === "comment" && !note.trim()) return;
+      body.note = note.trim() || null;
     }
     setBusy(true);
     try {
-      await api.post(`/api/projects/checklist/${it.id}/review`, action === "reject" ? { action, reason } : { action });
+      await api.post(`/api/projects/checklist/${it.id}/review`, body);
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Delete a checklist item. DELETE /checklist/:itemId.
+  const deleteItem = async () => {
+    if (!(await confirm({ title: `Delete "${it.title}"?`, confirmLabel: "Delete", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/projects/checklist/${it.id}`);
       reload();
     } catch (e) {
       await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
@@ -1217,9 +1662,12 @@ function TaskRow({
     );
   }
 
-  const awaitingReview = it.review_status === "pending_review" || it.review_status === "amended";
+  const reviewStatus = (it.review_status ?? "").toLowerCase();
+  const awaitingReview = reviewStatus === "pending_review" || reviewStatus === "amended";
+  const canSubmit = reviewStatus === "" || reviewStatus === "rejected" || reviewStatus === "draft";
   return (
-    <div className="docrow" style={{ flexWrap: "wrap" }}>
+    <div style={{ borderTop: "1px solid #eceee9" }}>
+    <div className="docrow" style={{ flexWrap: "wrap", borderTop: "none" }}>
       <span
         role={canRowTick ? "button" : undefined}
         onClick={cycle}
@@ -1251,8 +1699,30 @@ function TaskRow({
         <>
           <button className="tinybtn" style={{ background: "#e2f0e9", borderColor: "#bcdcd7", color: "#2f8a5b" }} disabled={busy} onClick={() => review("approve")}>Approve</button>
           <button className="tinybtn" style={{ background: "#f7e7e5", borderColor: "#e6c9c6", color: "#a13a34" }} disabled={busy} onClick={() => review("reject")}>Reject</button>
+          <button className="tinybtn" disabled={busy} onClick={() => review("amend")}>Amend</button>
         </>
       )}
+      {canWrite && canSubmit && !done && !na && (
+        <button className="tinybtn" style={{ background: "#f6efd9", borderColor: "#e8dcc5", color: "#6e4d12" }} disabled={busy} onClick={() => review("submit")}>Submit for review</button>
+      )}
+      {canWrite && <button className="tinybtn" disabled={busy} onClick={() => review("comment")}>Comment</button>}
+      {canWrite && <button aria-label="Delete task" className="tinybtn" disabled={busy} style={{ padding: "3px 7px" }} onClick={deleteItem}>×</button>}
+    </div>
+    {reviewStatus && reviewStatus !== "approved" && (
+      <div style={{ padding: "0 0 6px 24px" }}>
+        <span className="rbadge" style={{ background: reviewStatus === "rejected" ? "#f7e7e5" : "#f6efd9", color: reviewStatus === "rejected" ? "#a13a34" : "#6e4d12" }}>{humanize(reviewStatus).toUpperCase()}</span>
+      </div>
+    )}
+    {comments.length > 0 && (
+      <div style={{ padding: "0 0 8px 24px", display: "flex", flexDirection: "column", gap: 4 }}>
+        {comments.map((cm) => (
+          <div key={cm.id} style={{ fontSize: 10.5, color: "#767b6e" }}>
+            <span style={{ fontWeight: 700, color: "#414539" }}>{pick(cm.user_name, cm.userName) || "—"}</span>
+            {": "}{cm.note || "—"}
+          </div>
+        ))}
+      </div>
+    )}
     </div>
   );
 }
@@ -1270,18 +1740,19 @@ const isoTimePart = (iso: string | null | undefined): string => {
 };
 
 // ── Setup & dismantle (logistic) ──
-// Editable per-phase date + start time + driver, plus a real photo upload
-// (two-step: PUT /:id/phase-photos/upload → POST /:id/phase-photos). Date +
-// time compose into setup_start_at / dismantle_start_at (PATCH). Driver saves
-// the fleet-staff user id. Lorry has NO list endpoint (backend gap) so it
-// stays read-only with a hint — flagged in the report.
+// Editable per-phase schedule (date + start time + end time), driver +
+// helper crew pickers, lorry picker (GET /api/scm/lorries), an outsource
+// flag, plus a real photo upload (two-step: PUT /:id/phase-photos/upload →
+// POST /:id/phase-photos). Schedule/crew/lorry all persist via PATCH /:id.
 function SetupDismantle({
-  projectId, project, photos, drivers, canWrite, busy, setBusy, patchProject, notify, reloadPhotos,
+  projectId, project, photos, drivers, helpers, lorries, canWrite, busy, setBusy, patchProject, notify, reloadPhotos,
 }: {
   projectId: number;
   project: ProjectDetail["project"];
   photos: PhasePhoto[];
   drivers: FleetStaff[];
+  helpers: FleetStaff[];
+  lorries: Lorry[];
   canWrite: boolean;
   busy: boolean;
   setBusy: SetBusy;
@@ -1309,12 +1780,11 @@ function SetupDismantle({
         <PhaseBlock
           kind="Setup"
           projectId={projectId}
-          startAt={project.setup_start_at}
-          driverId={project.setup_driver_user_id}
-          driverName={project.setup_driver_name}
-          lorryPlate={project.setup_lorry_plate}
+          project={project}
           photo={setupPhoto}
           drivers={drivers}
+          helpers={helpers}
+          lorries={lorries}
           canWrite={canWrite}
           busy={busy}
           setBusy={setBusy}
@@ -1326,12 +1796,11 @@ function SetupDismantle({
         <PhaseBlock
           kind="Dismantle"
           projectId={projectId}
-          startAt={project.dismantle_start_at}
-          driverId={project.dismantle_driver_user_id}
-          driverName={project.dismantle_driver_name}
-          lorryPlate={project.dismantle_lorry_plate}
+          project={project}
           photo={dismantlePhoto}
           drivers={drivers}
+          helpers={helpers}
+          lorries={lorries}
           canWrite={canWrite}
           busy={busy}
           setBusy={setBusy}
@@ -1344,17 +1813,42 @@ function SetupDismantle({
   );
 }
 
+// A driver/helper picker that always renders the current out-of-scope value
+// (so a rep who can't list fleet still sees who's assigned).
+function StaffSelect({
+  label, value, currentName, options, disabled, onChange,
+}: {
+  label: string;
+  value: number | null | undefined;
+  currentName: string | null | undefined;
+  options: FleetStaff[];
+  disabled: boolean;
+  onChange: (id: number | null) => void;
+}) {
+  return (
+    <label className="fld" style={{ marginBottom: 6 }}>
+      <span className="fld-l">{label}</span>
+      <select className="fld-i" value={value ?? ""} disabled={disabled} onChange={(e) => { const v = e.target.value; onChange(v ? parseInt(v, 10) : null); }}>
+        <option value="">— unassigned —</option>
+        {value != null && currentName && !options.some((o) => o.id === value) && (
+          <option value={value}>{currentName}</option>
+        )}
+        {options.map((o) => <option key={o.id} value={o.id}>{o.name || `#${o.id}`}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function PhaseBlock({
-  kind, projectId, startAt, driverId, driverName, lorryPlate, photo, drivers, canWrite, busy, setBusy, patchProject, notify, reloadPhotos,
+  kind, projectId, project, photo, drivers, helpers, lorries, canWrite, busy, setBusy, patchProject, notify, reloadPhotos,
 }: {
   kind: "Setup" | "Dismantle";
   projectId: number;
-  startAt: string | null | undefined;
-  driverId: number | null | undefined;
-  driverName: string | null | undefined;
-  lorryPlate: string | null | undefined;
+  project: ProjectDetail["project"];
   photo: PhasePhoto | undefined;
   drivers: FleetStaff[];
+  helpers: FleetStaff[];
+  lorries: Lorry[];
   canWrite: boolean;
   busy: boolean;
   setBusy: SetBusy;
@@ -1365,17 +1859,40 @@ function PhaseBlock({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const accent = kind === "Setup" ? "#16695f" : "#a16a2e";
   const phase = kind.toLowerCase() as "setup" | "dismantle";
-  const startCol = kind === "Setup" ? "setup_start_at" : "dismantle_start_at";
-  const driverCol = kind === "Setup" ? "setup_driver_user_id" : "dismantle_driver_user_id";
+  const isSetup = kind === "Setup";
+  const startAt = isSetup ? project.setup_start_at : project.dismantle_start_at;
+  const endAt = isSetup ? project.setup_end_at : project.dismantle_end_at;
+  const driverId = isSetup ? project.setup_driver_user_id : project.dismantle_driver_user_id;
+  const driverName = isSetup ? project.setup_driver_name : project.dismantle_driver_name;
+  const helper1Id = isSetup ? project.setup_helper_1_id : project.dismantle_helper_1_id;
+  const helper2Id = isSetup ? project.setup_helper_2_id : project.dismantle_helper_2_id;
+  const helper1Name = isSetup ? project.setup_helper_1_name : project.dismantle_helper_1_name;
+  const helper2Name = isSetup ? project.setup_helper_2_name : project.dismantle_helper_2_name;
+  const lorryId = isSetup ? project.setup_lorry_id : project.dismantle_lorry_id;
+  const lorryPlate = isSetup ? project.setup_lorry_plate : project.dismantle_lorry_plate;
+  const outsourced = !!(isSetup ? project.setup_helper_outsourced : project.dismantle_helper_outsourced);
+  const startCol = isSetup ? "setup_start_at" : "dismantle_start_at";
+  const endCol = isSetup ? "setup_end_at" : "dismantle_end_at";
+  const driverCol = isSetup ? "setup_driver_user_id" : "dismantle_driver_user_id";
+  const helper1Col = isSetup ? "setup_helper_1_id" : "dismantle_helper_1_id";
+  const helper2Col = isSetup ? "setup_helper_2_id" : "dismantle_helper_2_id";
+  const lorryCol = isSetup ? "setup_lorry_id" : "dismantle_lorry_id";
+  const outsourceCol = isSetup ? "setup_helper_outsourced" : "dismantle_helper_outsourced";
 
   const [date, setDate] = useState(isoDatePart(startAt));
   const [time, setTime] = useState(isoTimePart(startAt));
+  const [endDate, setEndDate] = useState(isoDatePart(endAt));
+  const [endTime, setEndTime] = useState(isoTimePart(endAt));
 
   // Compose date + time → the ISO the backend stores. Only PATCHes when a date
   // is present (time-only is meaningless without a day).
   const saveStart = async (d: string, t: string) => {
     if (!d) return;
     await patchProject({ [startCol]: `${d}T${t || "00:00"}:00` });
+  };
+  const saveEnd = async (d: string, t: string) => {
+    if (!d) return;
+    await patchProject({ [endCol]: `${d}T${t || "00:00"}:00` });
   };
 
   const uploadPhoto = async (file: File) => {
@@ -1430,27 +1947,44 @@ function PhaseBlock({
               <input className="fld-i" type="time" value={time} disabled={busy} onChange={(e) => { setTime(e.target.value); void saveStart(date, e.target.value); }} />
             </label>
           </div>
+          <div style={{ display: "flex", gap: 9, marginBottom: 6 }}>
+            <label className="fld" style={{ flex: 1.4 }}>
+              <span className="fld-l">End date</span>
+              <input className="fld-i" type="date" value={endDate} disabled={busy} onChange={(e) => { setEndDate(e.target.value); void saveEnd(e.target.value, endTime); }} />
+            </label>
+            <label className="fld" style={{ flex: 1 }}>
+              <span className="fld-l">End time</span>
+              <input className="fld-i" type="time" value={endTime} disabled={busy} onChange={(e) => { setEndTime(e.target.value); void saveEnd(endDate, e.target.value); }} />
+            </label>
+          </div>
+          <StaffSelect label={`${kind} driver`} value={driverId} currentName={driverName} options={drivers} disabled={busy} onChange={(v) => { void patchProject({ [driverCol]: v }); }} />
+          <StaffSelect label="Helper 1" value={helper1Id} currentName={helper1Name} options={helpers} disabled={busy} onChange={(v) => { void patchProject({ [helper1Col]: v }); }} />
+          <StaffSelect label="Helper 2" value={helper2Id} currentName={helper2Name} options={helpers} disabled={busy} onChange={(v) => { void patchProject({ [helper2Col]: v }); }} />
           <label className="fld" style={{ marginBottom: 6 }}>
-            <span className="fld-l">{kind} driver</span>
-            <select className="fld-i" value={driverId ?? ""} disabled={busy} onChange={(e) => { const v = e.target.value; void patchProject({ [driverCol]: v ? parseInt(v, 10) : null }); }}>
+            <span className="fld-l">Lorry / vehicle</span>
+            <select className="fld-i" value={lorryId ?? ""} disabled={busy} onChange={(e) => { const v = e.target.value; void patchProject({ [lorryCol]: v ? parseInt(v, 10) : null }); }}>
               <option value="">— unassigned —</option>
-              {driverId != null && driverName && !drivers.some((d) => d.id === driverId) && (
-                <option value={driverId}>{driverName}</option>
+              {lorryId != null && lorryPlate && !lorries.some((l) => l.id === lorryId) && (
+                <option value={lorryId}>{lorryPlate}</option>
               )}
-              {drivers.map((d) => <option key={d.id} value={d.id}>{d.name || `#${d.id}`}</option>)}
+              {lorries.map((l) => <option key={l.id} value={l.id}>{l.plate || `#${l.id}`}{l.is_internal === false ? " (outsource)" : ""}</option>)}
             </select>
           </label>
-          <div className="fld" style={{ marginBottom: 6 }}>
-            <span className="fld-l">Lorry / vehicle</span>
-            <div className="pkv-v" style={{ marginTop: 0 }}>{lorryPlate || "Assigned from the desktop fleet planner"}</div>
-          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, fontSize: 12, color: "#414539", cursor: busy ? "default" : "pointer" }}>
+            <input type="checkbox" checked={outsourced} disabled={busy} onChange={(e) => { void patchProject({ [outsourceCol]: e.target.checked ? 1 : 0 }); }} />
+            <span>Outsourced crew</span>
+          </label>
         </>
       ) : (
         <div className="pgrid2" style={{ marginBottom: 6 }}>
           <div><div className="pkv-l">{kind} date</div><div className="pkv-v">{dOnly(startAt)}</div></div>
           <div><div className="pkv-l">Start time</div><div className="pkv-v">{tOnly(startAt)}</div></div>
+          <div><div className="pkv-l">End</div><div className="pkv-v">{startAt || endAt ? `${dOnly(endAt)} ${tOnly(endAt)}` : "—"}</div></div>
           <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverName || "—"}</div></div>
+          <div><div className="pkv-l">Helper 1</div><div className="pkv-v">{helper1Name || "—"}</div></div>
+          <div><div className="pkv-l">Helper 2</div><div className="pkv-v">{helper2Name || "—"}</div></div>
           <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryPlate || "—"}</div></div>
+          <div><div className="pkv-l">Crew source</div><div className="pkv-v">{outsourced ? "Outsourced" : "In-house"}</div></div>
         </div>
       )}
       <button
@@ -1470,29 +2004,27 @@ function PhaseBlock({
   );
 }
 
-// ── Floor plans & layout ──
-// 3D viewer entry is a design stub with NO backend (left inert). The
-// unfilled / filled floorplan tiles are placeholders (payload carries no plan
-// image URL — flagged in the report). The Stock-Out Transfer Record row is
-// real: its credit line is the last transfer and the Upload button files a new
-// OUT transfer (PUT /:id/stock-transfers/upload → POST /:id/stock-transfers).
+// ── Floor plans & layout + stock transfers ──
+// The 3D viewer + floorplan tiles remain design placeholders (no plan-image
+// payload). The Stock Transfer Record is fully wired: OUT + RETURN records
+// (PUT /:id/stock-transfers/upload → POST /:id/stock-transfers {direction}),
+// each row confirm/unconfirm (POST /stock-transfers/:tid/confirm|unconfirm)
+// and delete (DELETE /stock-transfers/:tid).
 function FloorPlans({
-  projectId, stockTransfers, canWrite, busy, setBusy, notify, reload,
+  projectId, stockTransfers, canWrite, busy, setBusy, notify, confirm, reload,
 }: {
   projectId: number;
-  stockTransfers?: ProjectDetail["stock_transfers"];
+  stockTransfers?: StockTransfer[];
   canWrite: boolean;
   busy: boolean;
   setBusy: SetBusy;
   notify: NotifyFn;
+  confirm: ConfirmFn;
   reload: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const [direction, setDirection] = useState<"out" | "return">("out");
   const transfers = stockTransfers ?? [];
-  const lastOut = transfers.find((t) => (t.direction ?? "").toLowerCase() === "out") ?? transfers[0];
-  const transferCredit = lastOut
-    ? [lastOut.created_by_name || "—", lastOut.transferred_at ? dm(lastOut.transferred_at) : null].filter(Boolean).join(" · ")
-    : "No stock transfer recorded yet";
 
   const uploadTransfer = async (file: File) => {
     if (file.size > 10 * 1024 * 1024) {
@@ -1513,7 +2045,7 @@ function FloorPlans({
         file.type || "application/octet-stream",
       );
       await api.post(`/api/projects/${projectId}/stock-transfers`, {
-        direction: "out",
+        direction,
         record_r2_key: up.key,
         file_name: file.name,
         mime_type: up.mime_type,
@@ -1527,10 +2059,36 @@ function FloorPlans({
     }
   };
 
+  const setConfirmed = async (t: StockTransfer, confirmed: boolean) => {
+    setBusy(true);
+    try {
+      await api.post(`/api/projects/stock-transfers/${t.id}/${confirmed ? "confirm" : "unconfirm"}`);
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeTransfer = async (t: StockTransfer) => {
+    if (!(await confirm({ title: "Delete this stock transfer?", confirmLabel: "Delete", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/projects/stock-transfers/${t.id}`);
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <details className="pacc">
       <summary>
-        <span className="psec-t">Floor plans &amp; layout</span>
+        <span className="psec-t">Floor plans &amp; stock</span>
+        {transfers.length > 0 && <span style={{ marginLeft: "auto", fontSize: 10, color: "#9aa093" }}>{transfers.length} transfer{transfers.length === 1 ? "" : "s"}</span>}
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">
@@ -1544,35 +2102,45 @@ function FloorPlans({
           </span>
           <span style={{ color: "#8c968a" }}>›</span>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
-          <div style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden" }}>
-            <div className="ph" style={{ height: 80 }} />
-            <div style={{ padding: "7px 9px" }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>Unfilled plan</div>
-              <span className="rbadge" style={{ background: "#f6efd9", color: "#6e4d12" }}>DRAFT</span>
-            </div>
+
+        <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093", margin: "10px 0 6px" }}>Stock transfer record</div>
+        {transfers.length === 0 && <div style={{ fontSize: 12, color: "#9aa093", marginBottom: 8 }}>No stock transfer recorded yet.</div>}
+        {transfers.length > 0 && (
+          <div style={{ border: "1px solid #e3e6e0", borderRadius: 10, overflow: "hidden", marginBottom: 8 }}>
+            {transfers.map((t, i) => {
+              const dir = (t.direction ?? "out").toLowerCase();
+              const isReturn = dir === "return";
+              const confirmed = !!(t.confirmed || t.confirmed_at || t.confirmedAt);
+              const who = pick(t.created_by_name, t.createdByName);
+              const when = pick(t.transferred_at, t.transferredAt);
+              return (
+                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 11px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
+                  <span className="rbadge" style={{ background: isReturn ? "#eef0f6" : "#e2f0e9", color: isReturn ? "#3a4d86" : "#2f8a5b" }}>{isReturn ? "RETURN" : "OUT"}</span>
+                  <span style={{ flex: 1, minWidth: 80, fontSize: 11, color: "#414539" }}>{[who || "—", when ? dm(when) : null].filter(Boolean).join(" · ")}</span>
+                  {confirmed
+                    ? <span className="rbadge" style={{ background: "#e2f0e9", color: "#2f8a5b" }}>CONFIRMED</span>
+                    : <span className="rbadge" style={{ background: "#f6efd9", color: "#6e4d12" }}>PENDING</span>}
+                  {canWrite && (
+                    <>
+                      <button className="tinybtn" disabled={busy} onClick={() => setConfirmed(t, !confirmed)}>{confirmed ? "Unconfirm" : "Confirm"}</button>
+                      <button aria-label="Delete" className="tinybtn" disabled={busy} style={{ padding: "3px 7px" }} onClick={() => removeTransfer(t)}>×</button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
-          <div style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden" }}>
-            <div className="ph" style={{ height: 80 }} />
-            <div style={{ padding: "7px 9px" }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>Filled plan</div>
-              <span className="rbadge" style={{ background: "#e2f0e9", color: "#2f8a5b" }}>PLACED</span>
-            </div>
+        )}
+        {canWrite && (
+          <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
+            <select className="fld-i" value={direction} disabled={busy} onChange={(e) => setDirection(e.target.value as "out" | "return")} style={{ flex: 1 }}>
+              <option value="out">Stock out</option>
+              <option value="return">Return</option>
+            </select>
+            <input ref={fileRef} type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadTransfer(f); }} />
+            <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Upload record</button>
           </div>
-        </div>
-        <div className="docrow" style={{ borderTop: "none", marginTop: 8, alignItems: "flex-start" }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none", marginTop: 1 }}><path d="M14 3v4a1 1 0 0 0 1 1h4" /><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z" /></svg>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>Stock Out Transfer Record</div>
-            <div style={{ fontSize: 9.5, color: "#9aa093" }}>{transferCredit}</div>
-          </div>
-          {canWrite && (
-            <>
-              <input ref={fileRef} type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadTransfer(f); }} />
-              <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Upload</button>
-            </>
-          )}
-        </div>
+        )}
       </div>
     </details>
   );
@@ -1594,22 +2162,111 @@ const COST_CATS: Array<[string, string]> = [
 
 // ── Finance snapshot ──
 function FinancialSnapshot({
-  projectId, finance, canWrite, busy, setBusy, prompt, notify, reload,
+  projectId, finance, lines, canWrite, canLogSale, canVoidSale, busy, setBusy, prompt, notify, confirm, reload,
 }: {
   projectId: number;
   finance: NonNullable<ProjectDetail["finance"]>;
+  lines?: FinanceLine[];
   canWrite: boolean;
+  canLogSale: boolean;
+  canVoidSale: boolean;
   busy: boolean;
   setBusy: SetBusy;
   prompt: PromptFn;
   notify: NotifyFn;
+  confirm: ConfirmFn;
   reload: () => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [cat, setCat] = useState(COST_CATS[0][0]);
+  const receiptRef = useRef<HTMLInputElement | null>(null);
+  // The line the receipt picker is currently targeting.
+  const receiptTarget = useRef<number | null>(null);
+
+  // Upload a receipt (PUT /:id/finance/upload) then attach it to the line
+  // via PATCH /finance/lines/:lineId { r2_key, file_name, mime_type }.
+  const uploadReceipt = async (file: File, lineId: number) => {
+    if (file.size > 10 * 1024 * 1024) {
+      await notify({ title: "File too large", body: "Max 10MB.", tone: "error" });
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!["jpg", "jpeg", "png", "webp", "pdf", "xlsx"].includes(ext)) {
+      await notify({ title: "Unsupported type", body: "Use an image, PDF or XLSX.", tone: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const up = await api.putBinary<{ key: string; mime_type: string }>(
+        `/api/projects/${projectId}/finance/upload?ext=${encodeURIComponent(ext)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      await api.patch(`/api/projects/finance/lines/${lineId}`, {
+        r2_key: up.key,
+        file_name: file.name,
+        mime_type: up.mime_type,
+      });
+      reload();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (receiptRef.current) receiptRef.current.value = "";
+    }
+  };
+
+  // Edit a cost line's amount (+ optional description). PATCH /finance/lines/:lineId.
+  const editLine = async (line: FinanceLine) => {
+    const amtStr = await prompt({
+      title: "Amount (RM)",
+      defaultValue: String(line.amount ?? 0),
+      placeholder: "0.00",
+      validate: (v) => { const n = parseFloat(v); return Number.isFinite(n) && n >= 0 ? null : "Enter a non-negative number."; },
+    });
+    if (amtStr == null) return;
+    const desc = await prompt({ title: "Description (optional)", defaultValue: line.description ?? "", placeholder: "Description" });
+    if (desc == null) return;
+    setBusy(true);
+    try {
+      await api.patch(`/api/projects/finance/lines/${line.id}`, { amount: parseFloat(amtStr), description: desc.trim() || null });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Delete a cost line. DELETE /finance/lines/:lineId.
+  const deleteLine = async (line: FinanceLine) => {
+    if (!(await confirm({ title: "Delete this line?", confirmLabel: "Delete", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/projects/finance/lines/${line.id}`);
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openReceipt = async (line: FinanceLine) => {
+    const key = pick(line.r2_key, line.r2Key);
+    if (!key) return;
+    try {
+      const url = await api.fetchBlobUrl(`/api/projects/attachments/${key}`);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      await notify({ title: "Couldn't open receipt", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    }
+  };
 
   // Add a cost line: category from the select, amount + optional note via
-  // prompts, then POST /:id/finance/lines (no receipt on mobile — flagged).
+  // prompts, then POST /:id/finance/lines.
   const addLine = async () => {
     const amtStr = await prompt({
       title: "Cost amount (RM)",
@@ -1640,6 +2297,55 @@ function FinancialSnapshot({
     }
   };
 
+  // Quick-log a sale at the project (POST /api/sales/entries { quick_log }).
+  // Lands as a draft sales entry; surfaces as a synthetic income line.
+  const logSale = async () => {
+    const amtStr = await prompt({
+      title: "Sale amount (RM)",
+      placeholder: "0.00",
+      validate: (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? null : "Enter a positive number."; },
+    });
+    if (amtStr == null) return;
+    const ref = await prompt({ title: "Reference no. (optional)", placeholder: "e.g. INV-123" });
+    if (ref == null) return;
+    const today = new Date().toISOString().slice(0, 10);
+    setBusy(true);
+    try {
+      await api.post(`/api/sales/entries`, {
+        project_id: projectId,
+        quick_log: true,
+        amount: parseFloat(amtStr),
+        ref_no: ref.trim() || null,
+        occurred_at: today,
+      });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Void a sales entry (POST /api/sales/entries/:id/void). Synthetic income
+  // rows carry source='sales_entry' + source_id = the real entry id.
+  const voidSale = async (line: FinanceLine) => {
+    const entryId = line.source_id;
+    if (!entryId) return;
+    if (!(await confirm({ title: "Void this sale?", body: "It will be removed from the project total.", confirmLabel: "Void", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.post(`/api/sales/entries/${entryId}/void`);
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const allLines = lines ?? [];
+  const costLines = allLines.filter((l) => (l.kind ?? "").toLowerCase() === "cost");
+  const incomeLines = allLines.filter((l) => (l.kind ?? "").toLowerCase() === "income");
   const sales = finance.total_sales ?? 0;
   const cost =
     (finance.rental ?? 0) +
@@ -1677,16 +2383,65 @@ function FinancialSnapshot({
             <div className="money" style={{ fontSize: 16, fontWeight: 800, color: netColor, marginTop: 3 }}>{marginPct == null ? "—" : `${marginPct.toFixed(1)}%`}</div>
           </div>
         </div>
-        <div style={{ marginTop: 10, border: "1px solid #eceee9", borderRadius: 10, overflow: "hidden" }}>
-          <CostRow label="Rental" value={finance.rental ?? 0} />
-          <CostRow label="Contractor" value={finance.contractor_cost ?? 0} />
-          <CostRow label="License fee" value={finance.license_fee ?? 0} />
-          <CostRow label="Misc" value={finance.misc_cost ?? 0} />
-          <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 12px", borderTop: "1px solid #eceee9", fontSize: 12, fontWeight: 700, color: "#11140f", background: "#f4f6f3" }}>
-            <span>Net profit{marginPct != null ? ` (${marginPct.toFixed(1)}%)` : ""}</span>
-            <span className="money" style={{ color: netColor }}>RM {rm(net)}</span>
-          </div>
+        {/* Sales / income lines — quick-log adds one; sales-entry rows can be
+            voided (source='sales_entry'). Manual income lines are read-only here. */}
+        <div style={{ display: "flex", alignItems: "center", margin: "12px 0 6px" }}>
+          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093" }}>Sales</span>
+          {canLogSale && <button className="tinybtn" style={{ marginLeft: "auto", color: "#16695f", borderColor: "#bcdcd7" }} disabled={busy} onClick={logSale}>+ Log sale</button>}
         </div>
+        {incomeLines.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#9aa093" }}>No sales recorded.</div>
+        ) : (
+          <div style={{ border: "1px solid #eceee9", borderRadius: 10, overflow: "hidden" }}>
+            {incomeLines.map((line, i) => {
+              const isSalesEntry = (line.source ?? "").toLowerCase() === "sales_entry";
+              return (
+                <div key={`${line.source ?? "l"}-${line.id}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
+                  <span style={{ flex: 1, minWidth: 90, fontSize: 12, color: "#414539" }}>{line.description || humanize(line.category || "sales")}</span>
+                  <span className="money" style={{ fontSize: 12, fontWeight: 700, color: "#2f8a5b" }}>RM {rm(line.amount)}</span>
+                  {isSalesEntry && canVoidSale && <button className="tinybtn" disabled={busy} onClick={() => voidSale(line)}>Void</button>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Cost ledger — individual lines, editable. Auto rows (auto_source)
+            are engine-owned so edit/delete are hidden. Sales entries live in
+            the ledger as income and don't render here. */}
+        <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093", margin: "12px 0 6px" }}>Cost lines</div>
+        {costLines.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#9aa093" }}>No cost lines yet.</div>
+        ) : (
+          <div style={{ border: "1px solid #eceee9", borderRadius: 10, overflow: "hidden" }}>
+            {costLines.map((line, i) => {
+              const auto = !!pick(line.auto_source, line.autoSource);
+              const receiptKey = pick(line.r2_key, line.r2Key);
+              return (
+                <div key={line.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
+                  <span style={{ flex: 1, minWidth: 90, fontSize: 12, color: "#414539" }}>
+                    {line.description || humanize(line.category || "—")}
+                    {auto && <span style={{ marginLeft: 5, fontSize: 9, color: "#9aa093" }}>auto</span>}
+                  </span>
+                  <span className="money" style={{ fontSize: 12, fontWeight: 700 }}>RM {rm(line.amount)}</span>
+                  {receiptKey && <button className="tinybtn" disabled={busy} onClick={() => openReceipt(line)}>Receipt</button>}
+                  {canWrite && !auto && (
+                    <>
+                      <button className="tinybtn" disabled={busy} onClick={() => { receiptTarget.current = line.id; receiptRef.current?.click(); }}>{receiptKey ? "Replace" : "+ Receipt"}</button>
+                      <button className="tinybtn" disabled={busy} onClick={() => editLine(line)}>Edit</button>
+                      <button aria-label="Delete line" className="tinybtn" disabled={busy} style={{ padding: "3px 7px" }} onClick={() => deleteLine(line)}>×</button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 12px", borderTop: "1px solid #eceee9", fontSize: 12, fontWeight: 700, color: "#11140f", background: "#f4f6f3" }}>
+              <span>Net profit{marginPct != null ? ` (${marginPct.toFixed(1)}%)` : ""}</span>
+              <span className="money" style={{ color: netColor }}>RM {rm(net)}</span>
+            </div>
+          </div>
+        )}
+        {canWrite && <input ref={receiptRef} type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; const t = receiptTarget.current; if (f && t != null) void uploadReceipt(f, t); }} />}
         {canWrite && !adding && (
           <button className="tinybtn" style={{ marginTop: 9, color: "#a16a2e" }} disabled={busy} onClick={() => setAdding(true)}>+ Add cost line</button>
         )}
@@ -1697,6 +2452,399 @@ function FinancialSnapshot({
             </select>
             <button className="tinybtn" style={{ background: "#16695f", borderColor: "#16695f", color: "#fff" }} disabled={busy} onClick={addLine}>Next</button>
             <button className="tinybtn" disabled={busy} onClick={() => setAdding(false)}>Cancel</button>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+// R2-backed thumbnail. <img src> can't carry the bearer, so fetch as a blob
+// URL (api.fetchBlobUrl) and revoke on unmount. r2Key is streamed from the
+// project attachments endpoint (/api/projects/attachments/:key).
+function R2Thumb({ r2Key, style }: { r2Key: string; style?: React.CSSProperties }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    let made: string | null = null;
+    api.fetchBlobUrl(`/api/projects/attachments/${r2Key}`)
+      .then((u) => { if (live) { made = u; setUrl(u); } else URL.revokeObjectURL(u); })
+      .catch(() => {});
+    return () => { live = false; if (made) URL.revokeObjectURL(made); };
+  }, [r2Key]);
+  if (!url) return <div className="ph" style={style} />;
+  return <img src={url} alt="" style={{ ...style, objectFit: "cover", display: "block" }} />;
+}
+
+// ── Defects ──
+// Add / resolve / delete per-phase defect records (POST /:id/defects,
+// PATCH /defects/:id, DELETE /defects/:id) with an optional photo
+// (PUT /:id/defects/photo → PATCH /defects/:id { photo_r2_key }).
+const DEFECT_PHASES: Array<[string, string]> = [["setup", "Setup"], ["dismantle", "Dismantle"]];
+const DEFECT_ROLES: Array<[string, string]> = [["logistic", "Logistic"], ["sales", "Sales"]];
+
+function Defects({
+  projectId, defects, canWrite, busy, setBusy, notify, confirm, prompt, reload,
+}: {
+  projectId: number;
+  defects?: Defect[];
+  canWrite: boolean;
+  busy: boolean;
+  setBusy: SetBusy;
+  notify: NotifyFn;
+  confirm: ConfirmFn;
+  prompt: PromptFn;
+  reload: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [phase, setPhase] = useState("setup");
+  const [role, setRole] = useState("logistic");
+  const photoRef = useRef<HTMLInputElement | null>(null);
+  const photoTarget = useRef<number | null>(null);
+  const list = defects ?? [];
+
+  const add = async () => {
+    const desc = await prompt({ title: "Defect item / description", placeholder: "e.g. HB scratched" });
+    if (desc == null || !desc.trim()) return;
+    const reason = await prompt({ title: "Reason (optional)", placeholder: "What went wrong" });
+    if (reason == null) return;
+    setBusy(true);
+    try {
+      await api.post(`/api/projects/${projectId}/defects`, {
+        phase, reported_by_role: role,
+        item_description: desc.trim(),
+        reason: reason.trim() || null,
+        quantity: 1,
+      });
+      setAdding(false);
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleResolved = async (d: Defect) => {
+    const resolved = !pick(d.resolved);
+    setBusy(true);
+    try {
+      await api.patch(`/api/projects/defects/${d.id}`, { resolved: resolved ? 1 : 0 });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (d: Defect) => {
+    if (!(await confirm({ title: "Delete this defect?", confirmLabel: "Delete", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/projects/defects/${d.id}`);
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const uploadPhoto = async (file: File, defectId: number) => {
+    if (file.size > 10 * 1024 * 1024) { await notify({ title: "File too large", body: "Max 10MB.", tone: "error" }); return; }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!["jpg", "jpeg", "png", "webp"].includes(ext)) { await notify({ title: "Images only", body: "Use a jpg/png/webp.", tone: "error" }); return; }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const up = await api.putBinary<{ key: string }>(`/api/projects/${projectId}/defects/photo?ext=${encodeURIComponent(ext)}`, buf, file.type || "application/octet-stream");
+      await api.patch(`/api/projects/defects/${defectId}`, { photo_r2_key: up.key });
+      reload();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (photoRef.current) photoRef.current.value = "";
+    }
+  };
+
+  return (
+    <details className="pacc">
+      <summary>
+        <span className="psec-t">Defects</span>
+        {list.length > 0 && <span style={{ marginLeft: "auto", fontSize: 10, color: "#9aa093" }}>{list.filter((d) => !pick(d.resolved)).length} open</span>}
+        <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+      </summary>
+      <div className="pbody">
+        {list.length === 0 && <div style={{ fontSize: 12, color: "#9aa093" }}>No defects reported.</div>}
+        {list.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {list.map((d) => {
+              const resolved = !!pick(d.resolved);
+              const photoKey = pick(d.photo_r2_key, d.photoR2Key);
+              const dphase = (d.phase ?? "").toLowerCase();
+              return (
+                <div key={d.id} style={{ border: "1px solid #e3e6e0", borderRadius: 10, padding: "9px 11px", opacity: resolved ? 0.6 : 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span className="rbadge" style={{ background: dphase === "dismantle" ? "#f6efd9" : "#e2f0e9", color: dphase === "dismantle" ? "#6e4d12" : "#2f8a5b" }}>{humanize(d.phase || "—").toUpperCase()}</span>
+                    <span style={{ flex: 1, minWidth: 80, fontSize: 12, fontWeight: 600, color: "#11140f", textDecoration: resolved ? "line-through" : "none" }}>{pick(d.item_description, d.itemDescription) || pick(d.item_code, d.itemCode) || "—"}</span>
+                    {resolved && <span className="rbadge" style={{ background: "#e2f0e9", color: "#2f8a5b" }}>RESOLVED</span>}
+                  </div>
+                  {d.reason && <div style={{ fontSize: 11, color: "#767b6e", marginTop: 4 }}>{d.reason}</div>}
+                  {photoKey && <R2Thumb r2Key={photoKey} style={{ width: "100%", height: 120, borderRadius: 8, marginTop: 6 }} />}
+                  {canWrite && (
+                    <div style={{ display: "flex", gap: 6, marginTop: 7, flexWrap: "wrap" }}>
+                      <button className="tinybtn" disabled={busy} onClick={() => toggleResolved(d)}>{resolved ? "Reopen" : "Resolve"}</button>
+                      <button className="tinybtn" disabled={busy} onClick={() => { photoTarget.current = d.id; photoRef.current?.click(); }}>{photoKey ? "Replace photo" : "+ Photo"}</button>
+                      <button aria-label="Delete defect" className="tinybtn" disabled={busy} style={{ padding: "3px 7px" }} onClick={() => remove(d)}>×</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {canWrite && <input ref={photoRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; const t = photoTarget.current; if (f && t != null) void uploadPhoto(f, t); }} />}
+        {canWrite && !adding && <button className="tinybtn" style={{ marginTop: 9, color: "#a16a2e" }} disabled={busy} onClick={() => setAdding(true)}>+ Report defect</button>}
+        {canWrite && adding && (
+          <div style={{ display: "flex", gap: 7, marginTop: 9, alignItems: "center", flexWrap: "wrap" }}>
+            <select className="fld-i" value={phase} disabled={busy} onChange={(e) => setPhase(e.target.value)} style={{ flex: 1, minWidth: 90 }}>
+              {DEFECT_PHASES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+            <select className="fld-i" value={role} disabled={busy} onChange={(e) => setRole(e.target.value)} style={{ flex: 1, minWidth: 90 }}>
+              {DEFECT_ROLES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+            <button className="tinybtn" style={{ background: "#16695f", borderColor: "#16695f", color: "#fff" }} disabled={busy} onClick={add}>Next</button>
+            <button className="tinybtn" disabled={busy} onClick={() => setAdding(false)}>Cancel</button>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+// ── Project attachments (floorplan / render / contract / other) ──
+// Upload (PUT /:id/attachments?category&ext&name), rename + recategorise
+// (PATCH /attachments/:id), archive (POST /attachments/:id/archive).
+const ATTACH_CATS: Array<[string, string]> = [
+  ["floorplan", "Floorplan"],
+  ["render", "Render"],
+  ["contract", "Contract"],
+  ["other", "Other"],
+];
+const ATTACH_EXTS = "jpg,jpeg,png,webp,pdf,dwg,skp,mp4";
+
+function Attachments({
+  projectId, attachments, canWrite, busy, setBusy, notify, confirm, prompt, reload,
+}: {
+  projectId: number;
+  attachments?: ProjectAttachment[];
+  canWrite: boolean;
+  busy: boolean;
+  setBusy: SetBusy;
+  notify: NotifyFn;
+  confirm: ConfirmFn;
+  prompt: PromptFn;
+  reload: () => void;
+}) {
+  const [cat, setCat] = useState(ATTACH_CATS[0][0]);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const list = attachments ?? [];
+
+  const upload = async (file: File) => {
+    if (file.size > 25 * 1024 * 1024) { await notify({ title: "File too large", body: "Max 25MB.", tone: "error" }); return; }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ATTACH_EXTS.split(",").includes(ext)) { await notify({ title: "Unsupported type", body: `Allowed: ${ATTACH_EXTS}.`, tone: "error" }); return; }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/projects/${projectId}/attachments?category=${encodeURIComponent(cat)}&ext=${encodeURIComponent(ext)}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      reload();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const rename = async (a: ProjectAttachment) => {
+    const cur = pick(a.file_name, a.fileName) ?? "";
+    const name = await prompt({ title: "Rename attachment", defaultValue: cur, placeholder: "File name" });
+    if (name == null || !name.trim() || name.trim() === cur) return;
+    setBusy(true);
+    try {
+      await api.patch(`/api/projects/attachments/${a.id}`, { file_name: name.trim() });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const archive = async (a: ProjectAttachment) => {
+    if (!(await confirm({ title: "Archive this attachment?", confirmLabel: "Archive", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.post(`/api/projects/attachments/${a.id}/archive`);
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const open = async (a: ProjectAttachment) => {
+    const key = pick(a.r2_key, a.r2Key);
+    if (!key) return;
+    try {
+      const url = await api.fetchBlobUrl(`/api/projects/attachments/${key}`);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      await notify({ title: "Couldn't open file", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    }
+  };
+
+  const isImage = (a: ProjectAttachment) => /^image\//.test(pick(a.mime_type, a.mimeType) ?? "");
+
+  return (
+    <details className="pacc">
+      <summary>
+        <span className="psec-t">Attachments</span>
+        {list.length > 0 && <span style={{ marginLeft: "auto", fontSize: 10, color: "#9aa093" }}>{list.length}</span>}
+        <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+      </summary>
+      <div className="pbody">
+        {list.length === 0 && <div style={{ fontSize: 12, color: "#9aa093" }}>No attachments.</div>}
+        {list.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {list.map((a) => {
+              const key = pick(a.r2_key, a.r2Key);
+              return (
+                <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 9, border: "1px solid #e3e6e0", borderRadius: 10, padding: "8px 10px" }}>
+                  {isImage(a) && key
+                    ? <R2Thumb r2Key={key} style={{ width: 44, height: 44, borderRadius: 8, flex: "none" }} />
+                    : <span style={{ width: 44, height: 44, borderRadius: 8, background: "#f0f1ed", display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 3v4a1 1 0 0 0 1 1h4" /><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z" /></svg>
+                      </span>}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pick(a.file_name, a.fileName) || "Attachment"}</div>
+                    <div style={{ fontSize: 9.5, color: "#9aa093" }}>{humanize(a.category || "other")}</div>
+                  </div>
+                  <button className="tinybtn" disabled={busy} onClick={() => open(a)}>Open</button>
+                  {canWrite && <button className="tinybtn" disabled={busy} onClick={() => rename(a)}>Rename</button>}
+                  {canWrite && <button aria-label="Archive" className="tinybtn" disabled={busy} style={{ padding: "3px 7px" }} onClick={() => archive(a)}>×</button>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {canWrite && (
+          <div style={{ display: "flex", gap: 7, alignItems: "center", marginTop: 9 }}>
+            <select className="fld-i" value={cat} disabled={busy} onChange={(e) => setCat(e.target.value)} style={{ flex: 1 }}>
+              {ATTACH_CATS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+            <input ref={fileRef} type="file" accept={ATTACH_EXTS.split(",").map((e) => "." + e).join(",")} style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
+            <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Upload</button>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+// ── Project chat / activity thread ──
+// Renders the interleaved activity feed (system events + human notes) and
+// posts free-text messages (POST /:id/notes { note }). The feed comes from
+// the detail payload's `activity`; posting reloads it.
+function ProjectChat({
+  projectId, activity, canChat, busy, setBusy, notify, reload,
+}: {
+  projectId: number;
+  activity?: ActivityEntry[];
+  canChat: boolean;
+  busy: boolean;
+  setBusy: SetBusy;
+  notify: NotifyFn;
+  reload: () => void;
+}) {
+  const [text, setText] = useState("");
+  // Payload returns newest-first; render oldest-first so the thread reads top-down.
+  const feed = useMemo(() => [...(activity ?? [])].reverse(), [activity]);
+
+  const send = async () => {
+    const note = text.trim();
+    if (!note || busy) return;
+    setBusy(true);
+    try {
+      await api.post(`/api/projects/${projectId}/notes`, { note });
+      setText("");
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed to send", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const lineFor = (a: ActivityEntry): string => {
+    const note = a.note;
+    if (note) return note;
+    const action = humanize(a.action || "update");
+    const to = pick(a.to_value, a.toValue);
+    const from = pick(a.from_value, a.fromValue);
+    if (from && to) return `${action}: ${from} → ${to}`;
+    if (to) return `${action}: ${to}`;
+    return action;
+  };
+
+  return (
+    <details className="pacc">
+      <summary>
+        <span className="psec-t">Chat &amp; activity</span>
+        {feed.length > 0 && <span style={{ marginLeft: "auto", fontSize: 10, color: "#9aa093" }}>{feed.length}</span>}
+        <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+      </summary>
+      <div className="pbody">
+        {feed.length === 0 && <div style={{ fontSize: 12, color: "#9aa093" }}>No activity yet.</div>}
+        {feed.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 320, overflowY: "auto" }}>
+            {feed.map((a) => {
+              const isNote = (a.action ?? "").toLowerCase() === "note";
+              const who = pick(a.user_name, a.userName);
+              const when = pick(a.created_at, a.createdAt);
+              return (
+                <div key={a.id} style={{ background: isNote ? "#f3ece0" : "#f4f6f3", borderRadius: 9, padding: "8px 10px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 2 }}>
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: isNote ? "#5a3a14" : "#414539" }}>{who || "System"}</span>
+                    {when && <span style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap" }}>{dm(when)} {tOnly(when)}</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: "#11140f", lineHeight: 1.35, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{lineFor(a)}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {canChat && (
+          <div style={{ display: "flex", gap: 7, marginTop: 9, alignItems: "center" }}>
+            <input
+              className="fld-i"
+              value={text}
+              disabled={busy}
+              placeholder="Write a message…"
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void send(); } }}
+              style={{ flex: 1 }}
+            />
+            <button className="tinybtn" style={{ background: "#16695f", borderColor: "#16695f", color: "#fff" }} disabled={busy || !text.trim()} onClick={send}>Send</button>
           </div>
         )}
       </div>

@@ -5,6 +5,7 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { MODULE_CONFIGS } from "./MobileModuleList";
 import { MobileEditableLines, LINE_SHAPES } from "./MobileLineEditor";
+import { SupplierBindingsSection } from "./MobileSupplierBindings";
 import "./mobile.css";
 
 // ── Field-ops parity (owner "现场为主") ──────────────────────────────────────
@@ -1450,24 +1451,16 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
           </>
         )}
 
-        {wantSupplier && (
-          <>
-            <Eyebrow>Assigned materials</Eyebrow>
-            <div style={cardStyle}>
-              {supplierQ.isLoading && <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>Loading{"…"}</div>}
-              {!supplierQ.isLoading && (bindings.length ? bindings.map((b: any, i: number) => (
-                <div className="docrow" key={s(b?.id) || i} style={{ justifyContent: "space-between" }}>
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>
-                    {firstOf(b.material_name, b.material_code)}
-                    {s(b.material_code).trim() ? <span className="money" style={{ color: "#9aa093", fontWeight: 600 }}> {"·"} {s(b.material_code)}</span> : null}
-                  </span>
-                  {Number.isFinite(Number(b.unit_price_centi)) && Number(b.unit_price_centi) > 0
-                    ? <span className="money" style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)", flex: "none" }}>{money(b.unit_price_centi)}</span>
-                    : null}
-                </div>
-              )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>No materials assigned.</div>)}
-            </div>
-          </>
+        {wantSupplier && !!id && (
+          // Editable SKU material bindings (add / edit / delete / main toggle).
+          // Everyday FLAT price axis; the per-category price matrix stays desktop-
+          // only (an existing matrix is preserved through a mobile edit).
+          <SupplierBindingsSection
+            supplierId={id}
+            bindings={bindings}
+            isLoading={supplierQ.isLoading}
+            onChanged={() => { void qc.invalidateQueries({ queryKey: ["mobile-supplier-detail", id] }); }}
+          />
         )}
       </div>
       {hasFooter && <DocActionFooter moduleKey={moduleKey} id={actionId} header={actionRow} invalidate={invalidate} onDeleted={onBack} />}
