@@ -316,13 +316,14 @@ const uploaderCredit = (photo: PhasePhoto | undefined) => {
 // pipeline (Floorplan → Done). We drive the pipeline off the project's
 // checklist SECTIONS when present (that is what the desktop tracker uses),
 // and fall back to a fixed 9-step reference pipeline keyed off `stage`.
+// Designer's 9-step reference pipeline (MobilePMS PIPELINE), VERBATIM.
 const FALLBACK_PIPELINE = [
+  "Confirmed",
+  "Setup",
   "Floorplan",
   "3D",
   "Stocks Transfer",
-  "Driver Info",
   "Setup/Dismantle",
-  "Setup Image",
   "Filled Floorplan",
   "Event Complete",
   "Done",
@@ -331,10 +332,10 @@ const FALLBACK_PIPELINE = [
 // Map the coarse backend stage onto an approximate pipeline index so the
 // fallback pipeline highlights a plausible "current" step.
 const STAGE_TO_INDEX: Record<string, number> = {
-  draft: 0,
-  setup: 4,
-  live: 5,
-  dismantle: 7,
+  draft: 1,
+  setup: 2,
+  live: 6,
+  dismantle: 5,
   completed: 8,
 };
 
@@ -630,8 +631,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
             {p?.status && (!canWrite || archived) && <StatusPill status={p.status} dark />}
           </div>
         </div>
-        <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".13em", textTransform: "uppercase", color: "#8c968a" }}>Project</div>
-        <div style={{ fontSize: 19, fontWeight: 800, color: "#fff", lineHeight: 1.25, marginTop: 3 }}>{p?.name || "—"}</div>
+        {/* Title block — design VERBATIM: project name as the sole heading
+            (16px/800), no eyebrow. Meta line carries our real code/brand data. */}
+        <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", lineHeight: 1.3, marginTop: 6 }}>{p?.name || "—"}</div>
         <div style={{ fontSize: 11.5, color: "#8c968a", marginTop: 5 }}>
           {[p?.code, p?.brand, p?.event_type_name, p?.venue].filter(Boolean).join(" · ") || "—"}
         </div>
@@ -643,22 +645,13 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
 
         {!isLoading && !error && data && p && (
           <>
-            {/* stage pipeline */}
+            {/* stage pipeline (design "Pipeline" card) */}
             <StagePipeline stage={p.stage} sections={data.section_progress} />
-
-            {/* cover */}
-            <div className="ph" style={{ height: 120, borderRadius: 14, position: "relative", overflow: "hidden", marginBottom: 11, display: "flex", alignItems: "flex-end" }}>
-              <div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top,rgba(19,32,28,.72),transparent 60%)" }} />
-              <div style={{ position: "relative", padding: "11px 13px" }}>
-                <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: ".1em", color: "rgba(255,255,255,.7)", fontFamily: "monospace" }}>COVER · BOOTH RENDER</div>
-                <div style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>{[p.venue || p.state, p.booth_no ? `Booth ${p.booth_no}` : null].filter(Boolean).join(" · ") || "—"}</div>
-              </div>
-            </div>
 
             {/* project detail */}
             <details className="pacc" open>
               <summary>
-                <span className="psec-t">Project detail</span>
+                <span className="psec-t">Project</span>
                 {canWrite && !archived && (
                   <span
                     role="button"
@@ -693,22 +686,20 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 )}
                 <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
               </summary>
+              {/* Body — design "Project" card rows VERBATIM: Dates / Venue /
+                  Organizer / Branding, wired to our real columns. */}
               <div className="pbody">
-                <div className="pgrid2">
-                  <div><div className="pkv-l">Start</div><div className="pkv-v">{dm(p.start_date)}</div></div>
-                  <div><div className="pkv-l">End</div><div className="pkv-v">{dm(p.end_date)}</div></div>
-                  <div><div className="pkv-l">Booth</div><div className="pkv-v">{p.booth_no || "—"}</div></div>
-                  <div><div className="pkv-l">Venue</div><div className="pkv-v">{p.venue || p.state || "—"}</div></div>
-                  {p.organizer && <div style={{ gridColumn: "1 / -1" }}><div className="pkv-l">Organizer</div><div className="pkv-v">{p.organizer}</div></div>}
-                  {p.duration_days != null && <div style={{ gridColumn: "1 / -1" }}><div className="pkv-l">Duration</div><div className="pkv-v">{`${p.duration_days} day${p.duration_days === 1 ? "" : "s"}`}</div></div>}
-                </div>
+                <div className="row" style={{ borderTop: "none" }}><span className="row-l">Dates</span><span className="row-v money">{dm(p.start_date)} – {dm(p.end_date)}</span></div>
+                <div className="row"><span className="row-l">Venue</span><span className="row-v">{p.venue || p.state || "—"}</span></div>
+                <div className="row"><span className="row-l">Organizer</span><span className="row-v">{p.organizer || "—"}</span></div>
+                <div className="row" style={{ borderBottom: "none" }}><span className="row-l">Branding</span><span className="row-v">{p.brand || "—"}</span></div>
               </div>
             </details>
 
             {/* project team */}
             <details className="pacc" open>
               <summary>
-                <span className="psec-t">Project team</span>
+                <span className="psec-t">Team</span>
                 <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
               </summary>
               <div className="pbody">
@@ -962,57 +953,48 @@ function RentalPayment({
   );
 }
 
-// ── 9-stage pipeline ──
+// ── Pipeline (design VERBATIM — flat rounded-pill row in a card) ──
+// Designer render (`MobilePMS` "Pipeline" card): a horizontal-scroll strip of
+// rounded pills; the reached steps read green, the rest grey. We drive the
+// reached count off the project's real checklist SECTIONS when present (the
+// desktop tracker's source of truth), falling back to the coarse backend
+// `stage`. The 9 pill labels + colours are the designer's.
 function StagePipeline({ stage, sections }: { stage: string | null; sections?: SectionProgress[] }) {
-  // Prefer the project's own checklist sections (that is the real tracker);
-  // fall back to a fixed reference pipeline keyed off `stage`.
-  let steps: { label: string; state: "done" | "current" | "todo" }[];
+  let labels: string[];
+  let reached: number; // number of steps considered "done" (green)
   if (sections && sections.length) {
     const ordered = [...sections].sort((a, b) => a.sort_order - b.sort_order);
-    // First not-complete section is "current".
-    const currentIdx = ordered.findIndex((s) => !s.complete);
-    steps = ordered.map((s, i) => ({
-      label: s.name,
-      state: s.complete ? "done" : i === currentIdx ? "current" : "todo",
-    }));
+    labels = ordered.map((s) => s.name);
+    // First not-complete section is the current step; everything before it done.
+    const firstOpen = ordered.findIndex((s) => !s.complete);
+    reached = firstOpen === -1 ? ordered.length : firstOpen;
   } else {
-    const cur = STAGE_TO_INDEX[(stage ?? "").toLowerCase()] ?? 0;
-    steps = FALLBACK_PIPELINE.map((label, i) => ({
-      label,
-      state: i < cur ? "done" : i === cur ? "current" : "todo",
-    }));
+    labels = FALLBACK_PIPELINE;
+    reached = STAGE_TO_INDEX[(stage ?? "").toLowerCase()] ?? 0;
   }
 
   return (
-    <>
-      {/* legend */}
-      <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "0 2px 8px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: "#2f8a5b" }} /><span style={{ fontSize: 10, color: "#414539" }}>Done</span></div>
-        <div style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: "#cf9a2e" }} /><span style={{ fontSize: 10, color: "#414539" }}>Current</span></div>
-        <div style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: "#d6d9d2" }} /><span style={{ fontSize: 10, color: "#414539" }}>Upcoming</span></div>
+    <div className="card"><div className="card-b">
+      <div className="fld-l" style={{ marginBottom: 8 }}>Pipeline</div>
+      <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 4 }}>
+        {labels.map((label, i) => (
+          <span
+            key={`${label}-${i}`}
+            style={{
+              flex: "none",
+              fontSize: 10,
+              fontWeight: 700,
+              padding: "5px 9px",
+              borderRadius: 20,
+              background: i < reached ? "#e2f0e9" : "#f4f6f3",
+              color: i < reached ? "#2f8a5b" : "#9aa093",
+            }}
+          >
+            {label}
+          </span>
+        ))}
       </div>
-      <div style={{ display: "flex", gap: 2, overflowX: "auto", padding: "4px 2px 12px" }}>
-        {steps.map((s, i) => {
-          const isTodo = s.state === "todo";
-          const dotStyle =
-            s.state === "done"
-              ? { background: "#2f8a5b", color: "#fff" }
-              : s.state === "current"
-                ? { background: "#cf9a2e", color: "#fff" }
-                : { background: "#fff", border: "2px solid #d6d9d2", color: "#9aa093" };
-          return (
-            <div key={i} className="pstage">
-              <span className="pdot" style={dotStyle}>
-                {s.state === "done" ? (
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-                ) : i + 1}
-              </span>
-              <span style={{ fontSize: 9, fontWeight: isTodo ? 400 : 700, color: isTodo ? "#767b6e" : "#11140f", lineHeight: 1.1 }}>{s.label}</span>
-            </div>
-          );
-        })}
-      </div>
-    </>
+    </div></div>
   );
 }
 
@@ -1642,7 +1624,7 @@ function FloorPlans({
   return (
     <details className="pacc">
       <summary>
-        <span className="psec-t">Floor plans &amp; stock</span>
+        <span className="psec-t">Floor plans &amp; layout</span>
         {transfers.length > 0 && <span style={{ marginLeft: "auto", fontSize: 10, color: "#9aa093" }}>{transfers.length} transfer{transfers.length === 1 ? "" : "s"}</span>}
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
@@ -1782,8 +1764,11 @@ function FinancialSnapshot({
   return (
     <details className="pacc fin-only" open>
       <summary>
-        <span className="psec-t">Financial snapshot</span>
-        <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: netColor }}>Net RM {rm(net)}</span>
+        {/* Title + gating badge — design "P&L (finance)" VERBATIM, plus our
+            live net so the collapsed header still carries the headline number. */}
+        <span className="psec-t" style={{ color: "#8a4b12" }}>P&amp;L (finance)</span>
+        <span className="rbadge" style={{ marginLeft: "auto", background: "#f3ece0", color: "#a16a2e" }}>Owner / Director only</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: netColor, marginLeft: 8 }}>Net RM {rm(net)}</span>
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">
