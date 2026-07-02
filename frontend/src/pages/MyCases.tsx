@@ -156,6 +156,7 @@ export function MyCaseDetail() {
   const id = idStr ? parseInt(idStr, 10) : NaN;
   const [comment, setComment] = useState("");
   const [posting, setPosting] = useState(false);
+  const [nudging, setNudging] = useState(false);
 
   const detail = useQuery<AssrDetail>(
     () => api.get(`/api/assr/${id}`),
@@ -177,6 +178,22 @@ export function MyCaseDetail() {
     }
   }, [comment, id, detail, toast]);
 
+  // "Nudge office" — one-tap ping that lands in the timeline so ops
+  // sees the row bubble up. Server rate-limits to one nudge per hour
+  // per case; on 429 we tell the rep it was already sent recently.
+  const nudge = useCallback(async () => {
+    setNudging(true);
+    try {
+      await api.post(`/api/assr/${id}/sales-nudge`, {});
+      toast.success("Office nudged.");
+      detail.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to nudge");
+    } finally {
+      setNudging(false);
+    }
+  }, [id, detail, toast]);
+
   const conversation = useMemo(() => {
     const rows = detail.data?.activity ?? [];
     return rows
@@ -184,6 +201,7 @@ export function MyCaseDetail() {
         (a: any) =>
           a.action === "customer_comment" ||
           a.action === "sales_comment" ||
+          a.action === "sales_nudge" ||
           (a.action === "note" && a.note),
       )
       .sort((a: any, b: any) =>
@@ -314,6 +332,8 @@ export function MyCaseDetail() {
                         ? "border-blue-500/60"
                         : a.action === "sales_comment"
                         ? "border-accent"
+                        : a.action === "sales_nudge"
+                        ? "border-amber-500"
                         : "border-border",
                     )}
                   >
@@ -323,6 +343,8 @@ export function MyCaseDetail() {
                           ? "Customer"
                           : a.action === "sales_comment"
                           ? "You (sales)"
+                          : a.action === "sales_nudge"
+                          ? "You · Nudge"
                           : a.user_name || "Ops"}
                       </span>
                       <span>{formatDateTime(a.created_at)}</span>
@@ -351,15 +373,26 @@ export function MyCaseDetail() {
               <span className="text-[10px] text-ink-muted" aria-live="polite">
                 {comment.length}/2000
               </span>
-              <Button
-                variant="primary"
-                onClick={post}
-                disabled={!comment.trim() || posting}
-                icon={<Send size={12} />}
-                className="h-8 px-3 text-[11px]"
-              >
-                {posting ? "Posting…" : "Post"}
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={nudge}
+                  disabled={nudging}
+                  className="h-8 px-3 text-[11px]"
+                  title="Ping ops to look at this case — capped at once per hour"
+                >
+                  {nudging ? "Nudging…" : "Nudge office"}
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={post}
+                  disabled={!comment.trim() || posting}
+                  icon={<Send size={12} />}
+                  className="h-8 px-3 text-[11px]"
+                >
+                  {posting ? "Posting…" : "Post"}
+                </Button>
+              </div>
             </div>
           </PanelSection>
         </>
