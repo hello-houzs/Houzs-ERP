@@ -53,6 +53,10 @@ type SupplierCase = {
     creditor_code: string | null;
     stage_entered_at: string | null;
     stage_target_days: number | null;
+    // Mig 106 — the supplier owns supplier_service_note; goods_returned_note
+    // is read-only for them (surfaced so they know what came in).
+    supplier_service_note: string | null;
+    goods_returned_note: string | null;
   };
   supplier_name: string | null;
   items: Array<{
@@ -121,6 +125,11 @@ export function PortalSupplierCasePage() {
   const [remark, setRemark] = useState("");
   const [savingRemark, setSavingRemark] = useState(false);
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
+  // Mig 106 — supplier-owned service record. Draft lives in local
+  // state until they press Save; last saved value is echoed back from
+  // the API on reload.
+  const [serviceNoteDraft, setServiceNoteDraft] = useState("");
+  const [savingServiceNote, setSavingServiceNote] = useState(false);
 
   async function load() {
     if (!token) return;
@@ -138,6 +147,15 @@ export function PortalSupplierCasePage() {
   useEffect(() => {
     load();
   }, [token]);
+
+  // Keep the service-note textarea in sync with what the API returned.
+  // Only overwrite the draft when the incoming value differs from what
+  // we last had — protects the supplier from losing an unsaved edit if
+  // another tab reload lands mid-typing.
+  useEffect(() => {
+    const incoming = data?.case?.supplier_service_note ?? "";
+    setServiceNoteDraft((prev) => (prev === "" ? incoming : prev));
+  }, [data?.case?.supplier_service_note]);
 
   async function moveStage(stage: string) {
     setSubmittingStage(stage);
@@ -163,6 +181,20 @@ export function PortalSupplierCasePage() {
       setErr(e?.message || "Failed to post remark");
     } finally {
       setSavingRemark(false);
+    }
+  }
+
+  async function saveServiceNote() {
+    setSavingServiceNote(true);
+    try {
+      await portalApi.put("/api/supplier-portal/service-note", token, {
+        note: serviceNoteDraft,
+      });
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Failed to save service note");
+    } finally {
+      setSavingServiceNote(false);
     }
   }
 
@@ -304,11 +336,58 @@ export function PortalSupplierCasePage() {
           <FormCell label="Proof of Return Date" value={<SigPlaceholder />} />
         </FormRow>
 
+        {/* Service Note + Goods Returned Note — Mig 106. Service Note
+            is what the supplier writes about the job (persistent,
+            editable). Goods Returned Note is the send-out slip Houzs
+            handed them with the item — read-only reference. */}
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="border border-ink/40 bg-surface">
+            <div className="border-b border-ink/40 bg-bg/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink">
+              Supplier Service Note
+            </div>
+            <textarea
+              aria-label="Supplier service note"
+              value={serviceNoteDraft}
+              onChange={(e) => setServiceNoteDraft(e.target.value)}
+              rows={4}
+              placeholder="What was serviced, findings, parts changed — saved with the case."
+              className="w-full resize-none border-0 bg-transparent px-3 py-2 text-[12px] outline-none"
+              maxLength={2000}
+            />
+            <div className="flex items-center justify-between border-t border-ink/40 px-3 py-1.5 text-[10px] text-ink-muted">
+              <span aria-live="polite">{serviceNoteDraft.length}/2000</span>
+              <Button
+                variant="primary"
+                onClick={saveServiceNote}
+                disabled={
+                  savingServiceNote ||
+                  (serviceNoteDraft.trim() === (cs.supplier_service_note ?? "").trim())
+                }
+                className="h-8 px-3 text-[11px]"
+              >
+                {savingServiceNote ? "Saving…" : "Save service note"}
+              </Button>
+            </div>
+          </div>
+          <div className="border border-ink/40 bg-surface">
+            <div className="border-b border-ink/40 bg-bg/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink">
+              Goods Returned Note <span className="ml-1 text-ink-muted/70">from Houzs</span>
+            </div>
+            <div className="whitespace-pre-wrap px-3 py-2 text-[12px] text-ink">
+              {cs.goods_returned_note?.trim() || (
+                <span className="text-ink-muted">
+                  Houzs hasn't attached a send-out note for this job yet.
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Supplier Remarks + Warehouse Ack */}
         <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <div className="border border-ink/40 bg-surface">
             <div className="border-b border-ink/40 bg-bg/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink">
-              Supplier Remarks
+              Supplier Remarks <span className="ml-1 text-ink-muted/70">— one-off messages</span>
             </div>
             <textarea
               aria-label="Supplier remarks"
