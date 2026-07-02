@@ -140,87 +140,68 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
   const name = user?.name || myRow?.name || "—";
   const role = user?.role_name || myRow?.role_name || null;
   const dept = myRow?.department_name || null;
-  const roleLine = [role, dept].filter(Boolean).join(" · ") || "Team member";
-  // Staff id: no staff-code column exists on the core user/member row, so the
-  // email is the real, stable identifier we surface here.
-  const staffId = user?.email || myRow?.email || "";
+  const position = myRow?.position_name || null;
+  // Designer sub-line: "{position} · {venue}". We have no venue on /me, so the
+  // honest analogue is position · department (the real org placement).
+  const roleLine = [position || role, dept].filter(Boolean).join(" · ") || "Team member";
   // Points come off the auth user (users.points_balance) — AuthUser doesn't
   // declare it yet, so read through a cast; never render NaN.
   const points = Number((user as { points_balance?: number } | null)?.points_balance ?? 0);
-  // Trips today — kept an honest 0. A per-day source exists
-  // (GET /api/scm/trips?from=&to= filters by trip_date), but a trip is keyed
-  // by driver_id (a scm.drivers UUID) with NO link back to the core user id —
-  // scm.drivers carries only name/phone/ic (synced from UM position by name).
-  // There is no self-scoped "my trips today" endpoint, so counting THIS user's
-  // trips would mean a fragile name match. Left inert until a driver↔user link
-  // or a /trips?mine=1 filter exists. See the report — do NOT fabricate.
-  const tripsToday = 0;
 
+  // Designer layout VERBATIM (MobileProfile.tsx): dark header, dark identity
+  // card with initials avatar + name/sub, a 2-card stat row, an Account card of
+  // plain rows, an App card, danger Log out, version line. Wired to our real
+  // /me + roster + /assr; sub-screens (Personal / Password / Notifications /
+  // Language / Help & Support / My Team) unchanged.
   return (
-    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      {/* Spec #profile: dark near-black header (#15161a), white screen-title, no gold eyebrow. */}
-      <header className="hdr" style={{ background: "var(--ink-dark)", borderBottom: "none" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div className="scr-title" style={{ color: "#fff", marginTop: 0 }}>Profile</div>
-          <div className="iconbtn" onClick={() => setScreen("personal")} style={{ background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.14)" }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d8a85a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1L14.5 2h-5l-.3 2.6a7 7 0 0 0-1.7 1l-2.4-1-2 3.4L5 11a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.3 2.4h5l.3-2.6a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z" /></svg>
-          </div>
-        </div>
+    <div className="hz-m screen" style={{ background: "var(--app-bg)" }}>
+      <header className="hdr" style={{ background: "#15161a", borderBottom: "none" }}>
+        <div className="scr-title" style={{ color: "#fff" }}>Profile</div>
       </header>
-
-      <div className="hz-scroll" style={{ flex: 1, overflowY: "auto", padding: 14, paddingBottom: 120 }}>
-        {/* Identity card */}
-        <div style={{ position: "relative", overflow: "hidden", borderRadius: 18, background: "#15161a", padding: "20px 18px", boxShadow: "0 12px 32px -16px rgba(17,24,16,.45)" }}>
-          <div style={{ position: "absolute", right: -50, top: -60, width: 200, height: 200, borderRadius: "50%", background: "radial-gradient(circle,rgba(22,105,95,.55),transparent 70%)", pointerEvents: "none" }} />
-          <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 14 }}>
-            <div style={{ width: 58, height: 58, flex: "none", borderRadius: "50%", background: "#16695f", border: "2px solid rgba(216,168,90,.5)", color: "#d8a85a", fontSize: 20, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
-              {initials(name, user?.email)}
-            </div>
+      <div className="scroll hz-scroll" style={{ paddingBottom: 120 }}>
+        <div className="card" style={{ background: "#15161a", border: "none" }}>
+          <div className="card-b" style={{ display: "flex", alignItems: "center", gap: 13 }}>
+            <span style={{ width: 52, height: 52, flex: "none", borderRadius: "50%", background: "#23242a", color: "#d8a85a", fontSize: 16, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{initials(name, user?.email)}</span>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 19, fontWeight: 800, color: "#fff", lineHeight: 1.15 }}>{name}</div>
-              <div style={{ fontSize: 12.5, color: "rgba(231,234,228,.82)", marginTop: 3 }}>{roleLine}</div>
-              <div className="money" style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".08em", color: "#d8a85a", marginTop: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{`STAFF · ${staffId.toUpperCase()}`}</div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: "#fff" }}>{name}</div>
+              <div style={{ fontSize: 11.5, color: "#9aa093", marginTop: 2 }}>{roleLine}</div>
             </div>
           </div>
         </div>
 
-        {/* Stat grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 9, marginTop: 13 }}>
-          <div style={{ background: "#fff", border: "1px solid #d6d9d2", borderRadius: 12, padding: 13, textAlign: "center" }}>
-            <div className="tnum" style={{ fontSize: 24, fontWeight: 800, color: "#11140f", lineHeight: 1 }}>{tripsToday.toLocaleString("en-US")}</div>
-            <div className="ey" style={{ color: "#767b6e", marginTop: 6 }}>Trips today</div>
-          </div>
-          <div style={{ background: "#fff", border: "1px solid #d6d9d2", borderRadius: 12, padding: 13, textAlign: "center" }}>
-            <div className="tnum" style={{ fontSize: 24, fontWeight: 800, color: "#11140f", lineHeight: 1 }}>{openCases.toLocaleString("en-US")}</div>
-            <div className="ey" style={{ color: "#767b6e", marginTop: 6 }}>Open cases</div>
-          </div>
-          <div style={{ background: "#fff", border: "1px solid #d6d9d2", borderRadius: 12, padding: 13, textAlign: "center" }}>
-            <div className="tnum" style={{ fontSize: 24, fontWeight: 800, color: "#a16a2e", lineHeight: 1 }}>{(Number.isFinite(points) ? points : 0).toLocaleString("en-US")}</div>
-            <div className="ey" style={{ color: "#767b6e", marginTop: 6 }}>Points</div>
-          </div>
+        <div style={{ display: "flex", gap: 9, margin: "12px 0" }}>
+          <div className="card" style={{ flex: 1, margin: 0 }}><div className="card-b" style={{ textAlign: "center", padding: 11 }}><div className="money" style={{ fontSize: 15, fontWeight: 800 }}>{openCases.toLocaleString("en-US")}</div><div className="fld-l" style={{ marginTop: 3 }}>Open cases</div></div></div>
+          <div className="card" style={{ flex: 1, margin: 0 }}><div className="card-b" style={{ textAlign: "center", padding: 11 }}><div className="money" style={{ fontSize: 15, fontWeight: 800, color: "#a16a2e" }}>{(Number.isFinite(points) ? points : 0).toLocaleString("en-US")}</div><div className="fld-l" style={{ marginTop: 3 }}>Points</div></div></div>
         </div>
 
-        {/* Account group — spec #profile order: Personal details · Notifications · Language · My Team */}
-        <div className="ey" style={{ color: "#767b6e", margin: "18px 2px 9px" }}>Account</div>
-        <div className="card" style={{ overflow: "hidden" }}>
-          <ProfRow icon="user" label="Personal details" onClick={() => setScreen("personal")} first />
-          <ProfRow icon="lock" label="Password & security" onClick={() => setScreen("security")} />
-          <ProfRow icon="bell" label="Notifications" onClick={() => setScreen("notif")} />
-          <ProfRow icon="globe" label="Language" val="English" onClick={() => setScreen("language")} />
-          <ProfRow icon="team" label="My Team" onClick={() => setScreen("team")} />
+        <div className="fld-l" style={{ margin: "6px 2px 8px" }}>Account</div>
+        <div className="card">
+          <Item label="Personal details" onClick={() => setScreen("personal")} />
+          <Item label="Password" onClick={() => setScreen("security")} />
+          <Item label="Notifications" onClick={() => setScreen("notif")} />
+          <Item label="Language" right="English" onClick={() => setScreen("language")} />
+          <Item label="My Team" onClick={() => setScreen("team")} />
         </div>
 
-        {/* App group — spec #profile: Help & Support */}
-        <div className="ey" style={{ color: "#767b6e", margin: "18px 2px 9px" }}>App</div>
-        <div className="card" style={{ overflow: "hidden" }}>
-          <ProfRow icon="help" label="Help & Support" onClick={() => setScreen("help")} first />
+        <div className="fld-l" style={{ margin: "14px 2px 8px" }}>App</div>
+        <div className="card">
+          <Item label="Help & Support" onClick={() => setScreen("help")} />
         </div>
 
-        <button onClick={onLogout} className="btn-danger" style={{ marginTop: 16 }}>
-          Log out
-        </button>
+        <button className="btn btn-danger" style={{ marginTop: 16 }} onClick={onLogout}>Log out</button>
         <div className="money" style={{ textAlign: "center", fontSize: 10, color: "#a4a99c", marginTop: 12 }}>Houzs ERP · Mobile v1.0</div>
       </div>
+    </div>
+  );
+}
+
+// Designer's plain settings row (MobileProfile.tsx `Item`): label + optional
+// right value, chevron glyph otherwise. Wired to our sub-screen navigation.
+function Item({ label, right, onClick }: { label: string; right?: string; onClick: () => void }) {
+  return (
+    <div className="row" style={{ cursor: "pointer" }} onClick={onClick}>
+      <span className="row-l" style={{ color: "#11140f", fontWeight: 600 }}>{label}</span>
+      <span style={{ color: right ? "#767b6e" : "#c2c6bd", fontSize: right ? 13 : 16 }}>{right ?? "›"}</span>
     </div>
   );
 }
@@ -646,48 +627,6 @@ function PersonCard({ person, caption }: { person: MemberRow; caption?: string }
       </div>
     </div>
   );
-}
-
-// ── Profile setting row (design's profRow — icon chip + label + optional
-//    right value + chevron; first row has no top divider). ──
-function ProfRow({ icon, label, val, onClick, first }: {
-  icon: "user" | "team" | "bell" | "globe" | "help" | "lock";
-  label: string;
-  val?: string;
-  onClick: () => void;
-  first?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left", background: "none", border: "none", borderTop: first ? "none" : "1px solid #e3e6e0", padding: "12px 13px", cursor: "pointer", fontFamily: "inherit" }}
-    >
-      <span style={{ width: 34, height: 34, flex: "none", borderRadius: 9, background: "#f4f6f3", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <RowIcon name={icon} />
-      </span>
-      <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600, color: "#11140f" }}>{label}</span>
-      {val ? <span style={{ fontSize: 12, color: "#9aa093" }}>{val}</span> : null}
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c2c6bd" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
-    </button>
-  );
-}
-
-function RowIcon({ name }: { name: "user" | "team" | "bell" | "globe" | "help" | "lock" }) {
-  const common = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "#16695f", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-  switch (name) {
-    case "user":
-      return (<svg {...common}><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></svg>);
-    case "lock":
-      return (<svg {...common}><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>);
-    case "team":
-      return (<svg {...common}><circle cx="9" cy="8" r="3.2" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16 5.2a3.2 3.2 0 0 1 0 6.1" /><path d="M18 20a6.5 6.5 0 0 0-2.5-5.1" /></svg>);
-    case "bell":
-      return (<svg {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.7 21a2 2 0 0 1-3.4 0" /></svg>);
-    case "globe":
-      return (<svg {...common}><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18" /></svg>);
-    case "help":
-      return (<svg {...common}><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 0 1 4.5 1.5c0 1.7-2.2 2-2.2 3.5" /><path d="M12 17h.01" /></svg>);
-  }
 }
 
 function KV({ label, value, span, mono }: { label: string; value: string; span?: boolean; mono?: boolean }) {
