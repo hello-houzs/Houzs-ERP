@@ -78,6 +78,54 @@ function SubstatusPill({ value }: { value: string | null }) {
 /* A datetime-or-dash cell (TIMESTAMPTZ columns). */
 const dtOrDash = (iso: string | null): string => (iso ? fmtDateTime(iso) : '—');
 
+/* ── Row-type helpers (SO delivery vs ASSR service-case job) ───────────────────
+   The board now mixes SO-delivery rows (the original) with Service-Case (ASSR)
+   rows added by the backend. `isAssr` gates every ASSR-specific behaviour;
+   `rowIdOf` is the stable DataGrid key (prefixed so SO doc_nos and ASSR case ids
+   never collide). */
+const isAssr = (o: PlanningOrder): boolean => o.row_type === 'assr';
+/* ASSR key includes job_kind — a case with BOTH a customer-pickup and a
+   delivery date emits TWO rows sharing one assr_id, so the key must carry the
+   leg to stay unique (the backend's so_doc_no is already `<assrNo>#<jobKind>`). */
+const rowIdOf = (o: PlanningOrder): string => (isAssr(o) ? `assr:${o.assr_id ?? o.ref ?? ''}:${o.job_kind ?? ''}` : `so:${o.so_doc_no}`);
+
+/* The Type column's chip. SO rows read a neutral "SO delivery"; ASSR rows read
+   their job kind — amber "Cust. pickup" for a pickup, green "Delivery" for a
+   delivery. Same inline-pill shape the SO drill-down's CategoryPill / the
+   SubstatusPill use, so it reads consistently across the board. */
+function TypeChip({ order }: { order: PlanningOrder }) {
+  let label = 'SO delivery';
+  let tone = 'var(--fg-muted)';
+  let bg = 'rgba(34, 31, 32, 0.06)';
+  if (isAssr(order)) {
+    if (order.job_kind === 'customer_pickup') {
+      label = 'Cust. pickup';
+      tone = 'var(--c-burnt)';
+      bg = 'rgba(232, 107, 58, 0.12)';
+    } else {
+      label = 'Delivery';
+      tone = 'var(--c-secondary-a)';
+      bg = 'rgba(47, 93, 79, 0.12)';
+    }
+  }
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center',
+      padding: '1px 8px', borderRadius: 999,
+      background: bg, color: tone,
+      fontFamily: 'var(--font-button)', fontSize: 'var(--fs-10)',
+      fontWeight: 700, letterSpacing: '0.06em',
+      textTransform: 'uppercase', lineHeight: 1.4, whiteSpace: 'nowrap',
+    }}>
+      {label}
+    </span>
+  );
+}
+
+/* A muted em-dash cell — the shared "not applicable" render for columns that
+   don't apply to an ASSR row (stock, driver, lorry). */
+const NotApplicable = () => <span style={{ color: 'var(--fg-muted)' }}>—</span>;
+
 /* Region chips — CONFIG-DRIVEN buckets (migration 0198) classified by customer
    STATE. The bucket list now comes from the API's `regions` master (owner-
    maintained in Delivery Regions), with an "All" tab prepended. SG is visually
@@ -111,8 +159,10 @@ const DSTATE_TONE: Record<DeliveryState, { bg: string; fg: string }> = {
    coordinator can force e.g. an OVERDUE SO into PENDING_SCHEDULE. The real stock
    readiness stays visible in its own Stock column (never hidden by the override).
 
-   The board is SO-scoped, so every write is type:'so', id: so_doc_no — matching
-   the amended_delivery_date / delivery_state override path on mfg_sales_orders. */
+   SO rows write type:'so', id: so_doc_no — matching the amended_delivery_date /
+   delivery_state override path on mfg_sales_orders. ASSR (service-case) rows are
+   date-only for now: the Sched. Date cell writes type:'assr' (+ jobKind); their
+   Status / Driver / Lorry cells are read-only / non-applicable (not wired yet). */
 type SchedMutation = ReturnType<typeof useScheduleDelivery>;
 
 /* Small shared wrapper so clicks inside an editor stay in the editor. */
@@ -123,6 +173,19 @@ const stopRow = {
 
 function StatusEditCell({ order, sched }: { order: PlanningOrder; sched: SchedMutation }) {
   const tone = DSTATE_TONE[order.delivery_state];
+  /* ASSR rows: the delivery-state override is not wired for service cases yet, so
+     show the state read-only (as a tinted pill) instead of an editable select. */
+  if (isAssr(order)) {
+    return (
+      <span
+        className={styles.dstatePill}
+        style={{ background: tone.bg, color: tone.fg }}
+        title="Service-case state (override not wired for ASSR)"
+      >
+        {DELIVERY_STATE_LABEL[order.delivery_state]}
+      </span>
+    );
+  }
   return (
     <select
       className={styles.inlineEdit}
@@ -148,18 +211,28 @@ function StatusEditCell({ order, sched }: { order: PlanningOrder; sched: SchedMu
    the customer's ORIGINAL customer_delivery_date is never overwritten). */
 function ScheduleDateEditCell({ order, sched }: { order: PlanningOrder; sched: SchedMutation }) {
   const current = (order.amended_delivery_date ?? '').slice(0, 10);
+  const assr = isAssr(order);
   return (
     <input
       type="date"
       className={styles.inlineEdit}
       value={current}
       disabled={sched.isPending}
-      title="Firm / amended delivery date (original customer date is preserved)"
+      title={assr
+        ? 'Scheduled date for this service-case job'
+        : 'Firm / amended delivery date (original customer date is preserved)'}
       {...stopRow}
       onChange={(e) => {
         const v = e.target.value || null;   // clearing → null
         if ((v ?? '') === (current || '')) return;
-        sched.mutate({ type: 'so', id: order.so_doc_no, scheduleDate: v });
+        /* ASSR rows write back through the same hook with type:'assr' — the id is
+           the service case's id and jobKind carries the row's kind (the backend
+           now accepts this). SO rows keep their existing so-doc-no path. */
+        if (assr) {
+          sched.mutate({ type: 'assr', id: String(order.assr_id ?? ''), scheduleDate: v, jobKind: order.job_kind });
+        } else {
+          sched.mutate({ type: 'so', id: order.so_doc_no, scheduleDate: v });
+        }
       }}
     />
   );
@@ -171,6 +244,8 @@ function ScheduleDateEditCell({ order, sched }: { order: PlanningOrder; sched: S
 const KEEP_CURRENT = '__current__';
 
 function DriverEditCell({ order, sched, drivers }: { order: PlanningOrder; sched: SchedMutation; drivers: DriverRow[] }) {
+  /* Driver assignment is not wired for ASSR rows yet → non-applicable. */
+  if (isAssr(order)) return <NotApplicable />;
   /* No driver_id on the row (crew carries names only) → preselect by matching the
      current driver_1_name against the option list. */
   const currentName = order.crew?.driver_1_name ?? '';
@@ -202,6 +277,8 @@ function DriverEditCell({ order, sched, drivers }: { order: PlanningOrder; sched
 }
 
 function LorryEditCell({ order, sched, lorries }: { order: PlanningOrder; sched: SchedMutation; lorries: LorryRow[] }) {
+  /* Lorry assignment is not wired for ASSR rows yet → non-applicable. */
+  if (isAssr(order)) return <NotApplicable />;
   const currentPlate = order.crew?.lorry_plate ?? '';
   const matchedId = lorries.find((l) => l.plate === currentPlate)?.id ?? '';
   const offList = currentPlate !== '' && matchedId === '';
@@ -427,6 +504,17 @@ export const DeliveryPlanning = () => {
   /* Single-row convert (context-menu action). */
   const convertOne = (o: PlanningOrder) => { void runConvert([o.so_doc_no]); };
 
+  /* Open a row's underlying document: an ASSR row goes to the SERVICE CASE detail
+     (/assr/:id, keyed on the numeric case id); an SO row keeps its Sales Order
+     route. Shared by the row double-click + the context-menu "Open" action. */
+  const openRow = (o: PlanningOrder) => {
+    if (isAssr(o)) {
+      if (o.assr_id != null) navigate(`/assr/${o.assr_id}`);
+    } else {
+      navigate('/scm/sales-orders/' + o.so_doc_no);
+    }
+  };
+
   /* ── Bulk-edit bar state ────────────────────────────────────────────────────
      One field at a time: Status | Delivery date | Driver | Lorry. The second
      control's TYPE depends on the chosen field; `bulkValue` holds its raw value
@@ -442,8 +530,15 @@ export const DeliveryPlanning = () => {
      no sense once the field is Driver, etc.). */
   const changeBulkField = (f: BulkField) => { setBulkField(f); setBulkValue(''); };
 
+  /* Selection keys are prefixed (`so:<docNo>` / `assr:<id>`). The bulk actions
+     (Convert-to-DO, Status/Date/Driver/Lorry) are SO-only — driver/lorry/state
+     writes and DO conversion aren't wired for ASSR — so every bulk path operates
+     on the SO doc_nos extracted from the selection. */
+  const selectedSoDocNos = (): string[] =>
+    [...sel].filter((k) => k.startsWith('so:')).map((k) => k.slice(3));
+
   const applyBulk = async () => {
-    const docNos = [...sel];
+    const docNos = selectedSoDocNos();
     if (docNos.length === 0 || bulkBusy) return;
 
     /* Build the single-field patch + a human label for the confirm/summary. */
@@ -505,7 +600,7 @@ export const DeliveryPlanning = () => {
 
   /* Bulk convert (selection bar) — confirm first (useConfirm, no window.*). */
   const convertSelected = async () => {
-    const docNos = [...sel];
+    const docNos = selectedSoDocNos();
     if (docNos.length === 0) return;
     if (!(await askConfirm({
       title: `Convert ${docNos.length} sales order${docNos.length === 1 ? '' : 's'} to delivery orders?`,
@@ -572,15 +667,25 @@ export const DeliveryPlanning = () => {
 
   const columns = useMemo<DataGridColumn<PlanningOrder>[]>(() => [
     {
-      key: 'so_doc_no', label: 'SO No.', width: 150, sortable: true,
+      /* Row type — SO delivery vs ASSR (service-case) job. A chip per row so the
+         two kinds read apart at a glance. */
+      key: 'row_type', label: 'Type', width: 130, groupable: true,
+      accessor: (o) => <TypeChip order={o} />,
+      searchValue: (o) => (isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup customer pickup' : 'Delivery') : 'SO delivery'),
+      groupValue: (o) => (isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup' : 'Delivery') : 'SO delivery'),
+      exportValue: (o) => (isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup' : 'Delivery') : 'SO delivery'),
+    },
+    {
+      /* SO No. for SO rows; the ASSR ref (assr_no) for service-case rows. */
+      key: 'so_doc_no', label: 'SO / Ref', width: 150, sortable: true,
       accessor: (o) => (
         <span style={{ display: 'inline-flex', alignItems: 'center', fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>
-          {o.so_doc_no}
+          {isAssr(o) ? (o.ref ?? '—') : o.so_doc_no}
         </span>
       ),
-      searchValue: (o) => o.so_doc_no,
-      exportValue: (o) => o.so_doc_no,
-      sortFn: (a, b) => a.so_doc_no.localeCompare(b.so_doc_no),
+      searchValue: (o) => (isAssr(o) ? (o.ref ?? '') : o.so_doc_no),
+      exportValue: (o) => (isAssr(o) ? (o.ref ?? '') : o.so_doc_no),
+      sortFn: (a, b) => (isAssr(a) ? (a.ref ?? '') : a.so_doc_no).localeCompare(isAssr(b) ? (b.ref ?? '') : b.so_doc_no),
     },
     {
       key: 'debtor_name', label: 'Customer', width: 200, sortable: true, groupable: true,
@@ -728,13 +833,14 @@ export const DeliveryPlanning = () => {
     },
     {
       key: 'stock_remark', label: 'Stock', width: 150, groupable: true,
-      accessor: (o) => (
+      /* ASSR rows carry no stock/DO data → non-applicable. */
+      accessor: (o) => (isAssr(o) ? <NotApplicable /> : (
         <span style={{ fontSize: 'var(--fs-12)', color: o.stock_status === 'PENDING' ? 'var(--fg-muted)' : 'var(--c-secondary-a)' }}>
           {o.stock_remark || o.stock_status}
         </span>
-      ),
-      searchValue: (o) => `${o.stock_remark} ${o.stock_status}`.trim(),
-      groupValue: (o) => o.stock_status,
+      )),
+      searchValue: (o) => (isAssr(o) ? '' : `${o.stock_remark} ${o.stock_status}`.trim()),
+      groupValue: (o) => (isAssr(o) ? '(n/a)' : o.stock_status),
     },
     {
       key: 'delivery_state', label: 'State', width: 160, sortable: true, groupable: true,
@@ -1072,12 +1178,13 @@ export const DeliveryPlanning = () => {
         columns={columns}
         storageKey="dg-delivery-planning"
         exportName="DeliveryPlanning"
-        rowKey={(o) => o.so_doc_no}
-        searchPlaceholder="Search SO / customer / phone…"
+        rowKey={rowIdOf}
+        searchPlaceholder="Search SO / ref / customer / phone…"
         groupBanner={false}
         isLoading={isLoading}
         emptyMessage="No orders need delivering in this view."
-        /* First-class multi-select (so_doc_no keys) → the bulk Convert-to-DO bar. */
+        /* First-class multi-select (prefixed so:/assr: keys) → the bulk bar. The
+           bulk actions themselves are SO-only (see selectedSoDocNos). */
         selectable={{
           selectedKeys: sel,
           onToggle: (k) => setSel((p) => {
@@ -1092,18 +1199,24 @@ export const DeliveryPlanning = () => {
             return n;
           }),
         }}
-        onRowDoubleClick={(row) => navigate('/scm/sales-orders/' + row.so_doc_no)}
+        onRowDoubleClick={openRow}
         expandable={{
-          renderExpansion: (row) => <PlanningExpandedLines docNo={row.so_doc_no} />,
-          rowExpansionKey: (row) => row.so_doc_no,
+          /* Line-item drill-down is SO-only (ASSR rows carry no SO lines). */
+          renderExpansion: (row) => (isAssr(row) ? null : <PlanningExpandedLines docNo={row.so_doc_no} />),
+          /* Falsy key suppresses the expand chevron for ASSR rows. */
+          rowExpansionKey: (row) => (isAssr(row) ? '' : row.so_doc_no),
         }}
         rowStyle={(o) => (o.region === 'SG' ? { boxShadow: 'inset 3px 0 0 var(--c-secondary-a)' } : undefined)}
-        contextMenu={(row) => [
-          { label: 'Edit HC fields…', onClick: () => setEditing(row) },
-          { label: 'Convert to DO', onClick: () => convertOne(row) },
-          { divider: true },
-          { label: 'Open Sales Order', onClick: () => navigate('/scm/sales-orders/' + row.so_doc_no) },
-        ]}
+        contextMenu={(row) => (isAssr(row)
+          ? [
+              { label: 'Open Service Case', onClick: () => openRow(row) },
+            ]
+          : [
+              { label: 'Edit HC fields…', onClick: () => setEditing(row) },
+              { label: 'Convert to DO', onClick: () => convertOne(row) },
+              { divider: true },
+              { label: 'Open Sales Order', onClick: () => openRow(row) },
+            ])}
       />
 
       {/* Per-row HC fields editor (right-click → Edit HC fields). SO-context
