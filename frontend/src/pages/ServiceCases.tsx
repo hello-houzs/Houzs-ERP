@@ -2318,6 +2318,15 @@ function DetailContent({
     [id]
   );
 
+  // PR 4 — the active-stage set collapses to 7 when the resolution
+  // method is internal (own team / return-to-store). Compute once
+  // per render and thread through the workflow card, summary bar,
+  // and stage accordion.
+  const activeStages = useMemo(
+    () => getActiveStages(detail.data?.case?.resolution_method, detail.data?.case?.stage ?? "pending_review"),
+    [detail.data?.case?.resolution_method, detail.data?.case?.stage],
+  );
+
   // PR 3 — snap the accordion's open row to the case's current stage
   // any time the case's stage changes. A hooks ref remembers the last
   // stage we snapped to so the user can still hand-collapse or open a
@@ -2732,11 +2741,12 @@ function DetailContent({
           <div className="flex flex-col gap-4 border-b border-border bg-bg/40 px-5 py-4">
             <WorkflowCard
               currentStage={c.stage}
+              stages={activeStages}
               transitioning={transitioning}
               onChange={(s) => transition(s)}
               disabled={!!c.archived_at}
             />
-            <StatusSummaryBar c={c} priorityMap={priorityMap} />
+            <StatusSummaryBar c={c} stages={activeStages} priorityMap={priorityMap} />
           </div>
           <DetailGrid>
             <DetailMain>
@@ -2747,6 +2757,10 @@ function DetailContent({
               SLA calculation. service_category was removed when the
               intake form was simplified — the issue_category taxonomy
               now drives both the dashboard breakdown and triage. */}
+          {/* PR 4 — Issue + Product Info side-by-side above the stage
+              accordion, matching the design's overview strip. Stacks
+              on narrow viewports (grid-cols-1 default, md:grid-cols-2). */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <PanelSection title="Issue" icon={<AlertCircle size={13} />}>
             <InlineEdit
               label="Complaint"
@@ -3015,6 +3029,7 @@ function DetailContent({
               )}
             </div>
           </PanelSection>
+          </div>
 
           {/* PR 3 redesign — Stage Accordion. Wraps Verification /
               Resolution / QC Inspection / Reference & Logistics as
@@ -3037,6 +3052,7 @@ function DetailContent({
               title="Pending Review"
               summary="Case registered — awaiting Service Admin"
               currentStage={c.stage}
+              stages={activeStages}
               openStage={openStage}
               setOpenStage={setOpenStage}
             >
@@ -3058,6 +3074,7 @@ function DetailContent({
                   : "Awaiting QC issue inspection"
               }
               currentStage={c.stage}
+              stages={activeStages}
               openStage={openStage}
               setOpenStage={setOpenStage}
             >
@@ -3088,6 +3105,7 @@ function DetailContent({
                   : "Set resolution method to route the case"
               }
               currentStage={c.stage}
+              stages={activeStages}
               openStage={openStage}
               setOpenStage={setOpenStage}
             >
@@ -3168,50 +3186,10 @@ function DetailContent({
               value={c.action_remark}
               onSave={(v) => patch({ action_remark: v })}
             />
-            {/* Mig 107 — date we go to the customer's house to collect
-                the faulty item (precedes the supplier handover). */}
-            <InlineEdit
-              label="Customer Pickup Date"
-              type="date"
-              value={c.customer_pickup_at}
-              onSave={(v) => patch({ customer_pickup_at: v || null })}
-            />
-            {/* Mig 064 — supplier handover dates. Surfaced inline so
-                ops can record them without opening a separate panel.
-                Both feed the case-list columns + future SLA reports. */}
-            <InlineEdit
-              label="Supplier Pickup Date"
-              type="date"
-              value={c.supplier_pickup_at}
-              onSave={(v) => patch({ supplier_pickup_at: v || null })}
-            />
-            {/* Mig 106 — the send-out slip we hand off with the item
-                when supplier picks up. Editable here; supplier sees it
-                on their portal so they know what came in. */}
-            <InlineEdit
-              label="Goods Returned Note"
-              textarea
-              value={c.goods_returned_note}
-              onSave={(v) => patch({ goods_returned_note: v })}
-              placeholder="What's leaving with the supplier (contents, condition, expected fix)"
-            />
-            {(c.supplier_pickup_at || attachments.some((a: any) => a?.category === "pickup_form")) && (
-              <MilestoneAttachmentSlot
-                caseId={id}
-                category="pickup_form"
-                label="Pickup Form / Consignment Note"
-                emptyLabel="No pickup form yet."
-                uploadLabel="Upload pickup form"
-                attachments={attachments}
-                archived={!!c.archived_at}
-                detail={detail}
-                dialog={dialog}
-                toast={toast}
-              />
-            )}
-            {/* Item-ready date is set in the QC Inspection card (pass →
-                item ready); the completion doc stays here with the
-                supplier-handover paperwork. */}
+            {/* PR 4 — pickup / supplier-handover fields moved to
+                their respective stage rows so each stage has one
+                canonical place. See Pending Item Pickup + Pending
+                Supplier Pickup rows below. */}
             {(c.items_ready_at || attachments.some((a: any) => a?.category === "ready_doc")) && (
               <MilestoneAttachmentSlot
                 caseId={id}
@@ -3238,6 +3216,7 @@ function DetailContent({
               title="Pending Inspection"
               summary="Physical inspection — pending workflow assignment"
               currentStage={c.stage}
+              stages={activeStages}
               openStage={openStage}
               setOpenStage={setOpenStage}
             >
@@ -3258,6 +3237,7 @@ function DetailContent({
                   : "Awaiting customer collection date"
               }
               currentStage={c.stage}
+              stages={activeStages}
               openStage={openStage}
               setOpenStage={setOpenStage}
             >
@@ -3286,14 +3266,41 @@ function DetailContent({
                   : "Awaiting supplier handover"
               }
               currentStage={c.stage}
+              stages={activeStages}
               openStage={openStage}
               setOpenStage={setOpenStage}
             >
-              <div className="rounded-md border border-border-subtle bg-surface px-3 py-2.5 text-[12px] text-ink-secondary">
-                Supplier pickup date, Goods Returned Note and the
-                pickup-form attachment live inside the Pending Solution
-                → Resolution row above. Duplicate surfaces land here in
-                a follow-up.
+              <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
+                <InlineEdit
+                  label="Supplier Pickup Date"
+                  type="date"
+                  value={c.supplier_pickup_at}
+                  onSave={(v) => patch({ supplier_pickup_at: v || null })}
+                />
+                {/* Mig 106 — send-out slip that goes with the item
+                    when supplier collects. Supplier sees this on
+                    their portal (read-only). */}
+                <InlineEdit
+                  label="Goods Returned Note"
+                  textarea
+                  value={c.goods_returned_note}
+                  onSave={(v) => patch({ goods_returned_note: v })}
+                  placeholder="What's leaving with the supplier (contents, condition, expected fix)"
+                />
+                {(c.supplier_pickup_at || attachments.some((a: any) => a?.category === "pickup_form")) && (
+                  <MilestoneAttachmentSlot
+                    caseId={id}
+                    category="pickup_form"
+                    label="Pickup Form / Consignment Note"
+                    emptyLabel="No pickup form yet."
+                    uploadLabel="Upload pickup form"
+                    attachments={attachments}
+                    archived={!!c.archived_at}
+                    detail={detail}
+                    dialog={dialog}
+                    toast={toast}
+                  />
+                )}
               </div>
             </StageRow>
 
@@ -3307,6 +3314,7 @@ function DetailContent({
                   : "Awaiting supplier return + QC"
               }
               currentStage={c.stage}
+              stages={activeStages}
               openStage={openStage}
               setOpenStage={setOpenStage}
             >
@@ -3332,6 +3340,7 @@ function DetailContent({
                   : "Schedule delivery / on-site service"
               }
               currentStage={c.stage}
+              stages={activeStages}
               openStage={openStage}
               setOpenStage={setOpenStage}
             >
@@ -3442,6 +3451,7 @@ function DetailContent({
                   : "Not closed yet"
               }
               currentStage={c.stage}
+              stages={activeStages}
               openStage={openStage}
               setOpenStage={setOpenStage}
             >
@@ -4205,12 +4215,31 @@ const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
 ];
 
 // Which side of the flow a resolution method routes to. Drives dot
-// colour + subtitle in the Resolution cell of the summary bar. PR 4
-// will use this to hide the two supplier-only stages when 'internal'.
+// colour + subtitle in the Resolution cell of the summary bar and,
+// via `getActiveStages` below, whether the two supplier-only workflow
+// stages appear at all.
 function resolutionRoute(m: string | null | undefined): "supplier" | "internal" | null {
   if (!m) return null;
   if (m === "field_service_own" || m === "return_visit") return "internal";
   return "supplier";
+}
+
+// PR 4 — filtered stage list. When the case's resolution method is
+// on-site (own team) / return to store, the two supplier-only stages
+// (Supplier Pickup + Item Ready) drop out and the workflow shrinks
+// from 9 to 7. We keep the current stage in the list unconditionally
+// as a safety net so a case parked on a filtered-out stage still
+// renders (unlikely, but ops can happen).
+function getActiveStages(
+  method: string | null | undefined,
+  currentStage: AssrStage,
+): typeof DETAIL_STAGES {
+  const route = resolutionRoute(method);
+  if (route !== "internal") return DETAIL_STAGES;
+  const SKIP: AssrStage[] = ["pending_supplier_pickup", "pending_item_ready"];
+  return DETAIL_STAGES.filter(
+    (s) => !SKIP.includes(s.id) || s.id === currentStage,
+  );
 }
 
 // Design PR 3 — accordion row for a single workflow stage. Shows a
@@ -4225,6 +4254,7 @@ function StageRow({
   summary,
   children,
   currentStage,
+  stages,
   openStage,
   setOpenStage,
 }: {
@@ -4233,11 +4263,18 @@ function StageRow({
   summary: string;
   children: React.ReactNode;
   currentStage: AssrStage;
+  // PR 4 — filtered active-stage list. If stageId isn't in it, the
+  // row hides itself (internal resolution methods skip Supplier
+  // Pickup + Item Ready). Row number + Done/Current/Pending state
+  // come from this filtered list too, so the numbering matches the
+  // Workflow card above.
+  stages: typeof DETAIL_STAGES;
   openStage: AssrStage | null;
   setOpenStage: (s: AssrStage | null) => void;
 }) {
-  const curIdx = DETAIL_STAGES.findIndex((s) => s.id === currentStage);
-  const myIdx = DETAIL_STAGES.findIndex((s) => s.id === stageId);
+  const myIdx = stages.findIndex((s) => s.id === stageId);
+  if (myIdx < 0) return null;
+  const curIdx = stages.findIndex((s) => s.id === currentStage);
   const state: "done" | "current" | "future" =
     myIdx < curIdx ? "done" : myIdx === curIdx ? "current" : "future";
   const open = openStage === stageId;
@@ -4308,17 +4345,21 @@ function StageRow({
 
 function WorkflowCard({
   currentStage,
+  stages,
   transitioning,
   onChange,
   disabled,
 }: {
   currentStage: AssrStage;
+  // PR 4 — pass the filtered active-stage list. Internal resolution
+  // methods drop Supplier Pickup + Item Ready → 7 dots instead of 9.
+  stages: typeof DETAIL_STAGES;
   transitioning: boolean;
   onChange: (s: AssrStage) => void;
   disabled?: boolean;
 }) {
-  const curIdx = Math.max(0, DETAIL_STAGES.findIndex((s) => s.id === currentStage));
-  const n = DETAIL_STAGES.length;
+  const curIdx = Math.max(0, stages.findIndex((s) => s.id === currentStage));
+  const n = stages.length;
   return (
     <div className="rounded-lg border border-border bg-surface px-6 pb-4 pt-5 shadow-stone">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -4348,7 +4389,7 @@ function WorkflowCard({
         </div>
       </div>
       <ol className="flex items-start">
-        {DETAIL_STAGES.map((s, i) => {
+        {stages.map((s, i) => {
           const done = i < curIdx;
           const current = i === curIdx;
           const last = i === n - 1;
@@ -4392,13 +4433,15 @@ function WorkflowCard({
 
 function StatusSummaryBar({
   c,
+  stages,
   priorityMap,
 }: {
   c: AssrCase;
+  stages: typeof DETAIL_STAGES;
   priorityMap: Record<string, string>;
 }) {
-  const curIdx = Math.max(0, DETAIL_STAGES.findIndex((s) => s.id === c.stage));
-  const n = DETAIL_STAGES.length;
+  const curIdx = Math.max(0, stages.findIndex((s) => s.id === c.stage));
+  const n = stages.length;
   const route = resolutionRoute(c.resolution_method);
   const priorityName = priorityMap[c.priority] ?? c.priority;
   const slaHours = c.hours_to_deadline ?? null;
