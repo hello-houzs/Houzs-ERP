@@ -51,6 +51,11 @@ const MODULE_TO_CONVERT: Record<string, ConvertTarget> = {
   "sales-invoices": "si",
   "grns": "grn",
   "mfg-purchase-orders": "po",
+  // The three from-source create paths desktop supports but mobile lacked:
+  // Sales Return from a DO, Purchase Invoice + Purchase Return from a GRN.
+  "delivery-returns": "dr",
+  "purchase-invoices": "pi",
+  "purchase-returns": "pr",
 };
 
 const ROUTE_TO_CONFIG: Record<string, string> = {
