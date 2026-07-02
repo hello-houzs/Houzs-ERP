@@ -3128,6 +3128,7 @@ function DetailContent({
                 archived={!!c.archived_at}
                 detail={detail}
                 toast={toast}
+                hideHeader
               />
             </StageRow>
 
@@ -3367,6 +3368,7 @@ function DetailContent({
                 detail={detail}
                 dialog={dialog}
                 toast={toast}
+                hideHeader
               />
             </StageRow>
 
@@ -4612,6 +4614,7 @@ function InspectionCard({
   detail,
   dialog,
   toast,
+  hideHeader,
 }: {
   c: AssrCase;
   patch: (body: Record<string, any>) => Promise<void>;
@@ -4621,21 +4624,16 @@ function InspectionCard({
   detail: ReturnType<typeof useQuery>;
   dialog: ReturnType<typeof useDialog>;
   toast: ReturnType<typeof useToast>;
+  // Refresh — when rendered inside a StageRow the surrounding
+  // accordion already labels the section, so skip the PanelSection
+  // wrapper here to avoid double headers.
+  hideHeader?: boolean;
 }) {
   // Always visible so ops can pre-fill / cross-check even before the
   // item reaches the post-supplier-return checkpoint. Matches the
   // VerificationCard (QC Issue Inspection) which also has no gate.
-  return (
-    <PanelSection
-      icon={<ShieldCheck size={13} />}
-      accent="bg-synced"
-      title={
-        <>
-          QC Inspection{" "}
-          <span className="font-normal normal-case tracking-normal text-ink-muted/70">— after supplier return</span>
-        </>
-      }
-    >
+  const inner = (
+    <>
       <InlineEdit
         label="QC Result"
         value={c.inspection_result}
@@ -4674,6 +4672,23 @@ function InspectionCard({
         dialog={dialog}
         toast={toast}
       />
+    </>
+  );
+  if (hideHeader) {
+    return <div className="space-y-2.5">{inner}</div>;
+  }
+  return (
+    <PanelSection
+      icon={<ShieldCheck size={13} />}
+      accent="bg-synced"
+      title={
+        <>
+          QC Inspection{" "}
+          <span className="font-normal normal-case tracking-normal text-ink-muted/70">— after supplier return</span>
+        </>
+      }
+    >
+      {inner}
     </PanelSection>
   );
 }
@@ -4688,6 +4703,7 @@ function VerificationCard({
   archived,
   detail,
   toast,
+  hideHeader,
 }: {
   c: AssrCase;
   patch: (body: Record<string, any>) => Promise<void>;
@@ -4698,6 +4714,10 @@ function VerificationCard({
   archived: boolean;
   detail: ReturnType<typeof useQuery>;
   toast: ReturnType<typeof useToast>;
+  // Refresh — inside a StageRow the accordion supplies the section
+  // title, so skip the PanelSection wrapper here to avoid stacking
+  // two headers on top of each other.
+  hideHeader?: boolean;
 }) {
   const [rootDraft, setRootDraft] = useState(c.verified_root_cause ?? "");
   const [saving, setSaving] = useState(false);
@@ -4761,17 +4781,8 @@ function VerificationCard({
     }
   }
 
-  return (
-    <PanelSection
-      icon={<ClipboardCheck size={13} />}
-      accent="bg-accent"
-      title={
-        <>
-          QC Issue Inspection{" "}
-          <span className="font-normal normal-case tracking-normal text-ink-muted/70">— on receipt</span>
-        </>
-      }
-    >
+  const inner = (
+    <>
       <InlineEdit
         label="QC Issue Inspection Date"
         type="date"
@@ -4869,6 +4880,23 @@ function VerificationCard({
         dialog={dialog}
         toast={toast}
       />
+    </>
+  );
+  if (hideHeader) {
+    return <div className="space-y-2.5">{inner}</div>;
+  }
+  return (
+    <PanelSection
+      icon={<ClipboardCheck size={13} />}
+      accent="bg-accent"
+      title={
+        <>
+          QC Issue Inspection{" "}
+          <span className="font-normal normal-case tracking-normal text-ink-muted/70">— on receipt</span>
+        </>
+      }
+    >
+      {inner}
     </PanelSection>
   );
 }
