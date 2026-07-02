@@ -725,6 +725,58 @@ app.get("/search-so", requirePermission("service_cases.read"), async (c) => {
   return c.json({ results: rows.results ?? [] });
 });
 
+// ── My Cases (sales-side portal) ──────────────────────────────
+// Lists cases where the logged-in user's name substring-matches
+// assr_cases.sales_agent. sales_agent is a free text field
+// mirrored from AutoCount (mig 010), typically the rep's name;
+// this endpoint bridges it to our user account.
+app.get("/my-cases", requirePermission("service_cases.read"), async (c) => {
+  const userId = (c as any).get?.("userId") ?? 0;
+  if (!userId) return c.json({ cases: [] });
+  const userRow = await c.env.DB.prepare(
+    `SELECT name FROM users WHERE id = ?`
+  )
+    .bind(userId)
+    .first<{ name: string | null }>();
+  const name = (userRow?.name || "").trim();
+  if (!name) return c.json({ cases: [] });
+  const rows = await c.env.DB.prepare(
+    `SELECT id, assr_no, stage, status, priority, doc_no,
+            customer_name, phone, complained_date, deadline_at,
+            complaint_issue, item_code, sales_agent
+       FROM assr_cases
+      WHERE LOWER(COALESCE(sales_agent, '')) LIKE ?
+        AND archived_at IS NULL
+      ORDER BY complained_date DESC, id DESC
+      LIMIT 200`
+  )
+    .bind(`%${name.toLowerCase()}%`)
+    .all();
+  return c.json({ cases: rows.results ?? [], user_name: name });
+});
+
+// ── Sales comment ─────────────────────────────────────────────
+// Sales rep posts a comment on a case they own (matched by
+// sales_agent). Lands in assr_activity with source_channel=
+// 'sales_portal' so the timeline distinguishes it from staff /
+// customer / supplier notes.
+app.post("/:id{[0-9]+}/sales-comment", requirePermission("service_cases.read"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const userId = (c as any).get?.("userId") ?? 0;
+  const body = await c.req.json<{ text?: string }>().catch(() => ({} as { text?: string }));
+  const text = (body.text || "").trim();
+  if (!text) return c.json({ error: "Comment cannot be empty" }, 400);
+  if (text.length > 2000) return c.json({ error: "Comment is too long" }, 400);
+  await c.env.DB.prepare(
+    `INSERT INTO assr_activity (assr_id, action, note, category, source_channel, user_id)
+     VALUES (?, 'sales_comment', ?, 'system', 'sales_portal', ?)`
+  )
+    .bind(id, text, userId || null)
+    .run();
+  return c.json({ ok: true }, 201);
+});
+
 // ── Detail ────────────────────────────────────────────────────
 
 // Numeric-only guard on the catch-all detail route. Hono's
