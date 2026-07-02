@@ -236,7 +236,7 @@ function deriveBranding(firstItemCategory: string | null, firstItemBranding: str
   return '';                                 // accessory / others / service → none ("—")
 }
 
-type DeliveryState = 'PENDING_DELIVERY' | 'PENDING_SCHEDULE' | 'OVERDUE' | 'DELIVERED';
+export type DeliveryState = 'PENDING_DELIVERY' | 'PENDING_SCHEDULE' | 'OVERDUE' | 'DELIVERED';
 const DELIVERY_STATES: DeliveryState[] = ['PENDING_DELIVERY', 'PENDING_SCHEDULE', 'OVERDUE', 'DELIVERED'];
 
 /* Malaysian "today" (UTC+8), timezone-stable on the Workers UTC runtime. The
@@ -253,6 +253,51 @@ function daysBetween(fromISO: string, toISO: string | null | undefined): number 
   const b = new Date(`${String(toISO).slice(0, 10)}T00:00:00Z`).getTime();
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
   return Math.round((b - a) / 86_400_000);
+}
+
+/* ── Shared 4-state derivation ────────────────────────────────────────────
+   The SINGLE source of truth for an SO's planning state. Used BOTH here (the
+   board) and by the /mfg-sales-orders LIST endpoint (the mobile Orders-list
+   card's planning_state field) so the two can never drift.
+
+   A manual override stored on the SO header (delivery_state) wins when it is one
+   of the 4 enum values; else derive live:
+     · DELIVERED        — status DELIVERED, or every deliverable line remaining
+                          == 0 once any qty has shipped.
+     · PENDING_SCHEDULE — ready to ship (isMainReady when there IS a main line,
+                          else isFullyReady) but not yet fully delivered.
+     · OVERDUE          — NOT ready AND today >= EFFECTIVE delivery date − 3 days.
+     · PENDING_DELIVERY — NOT ready and not yet inside the 3-day window.
+
+   `readiness` is the summariseReadiness() output; `effectiveDD` is the caller-
+   resolved amended_delivery_date ?? customer_delivery_date; `today` is MYT
+   (todayMY()). Pure — no I/O. */
+export function derivePlanningState(input: {
+  storedOverride: string | null | undefined;
+  status: string | null | undefined;
+  readiness: { mainCount: number; isMainReady: boolean; isFullyReady: boolean };
+  delivered: number;
+  remaining: number;
+  effectiveDD: string | null | undefined;
+  today: string;
+}): DeliveryState {
+  const { storedOverride, status, readiness, delivered, remaining, effectiveDD, today } = input;
+  const stored = storedOverride ?? null;
+  if (stored && (DELIVERY_STATES as string[]).includes(stored)) return stored as DeliveryState;
+
+  const st = String(status ?? '').toUpperCase();
+  if (st === 'DELIVERED' || (delivered > 0 && remaining <= 0)) return 'DELIVERED';
+
+  /* "Ready to ship" gate. isMainReady is VACUOUSLY true when mainCount === 0
+     (an accessory-only / service-only SO has no MAIN line), so use it only when
+     there IS a main; otherwise require isFullyReady (every line READY). */
+  const readyToShip = readiness.mainCount > 0 ? readiness.isMainReady : readiness.isFullyReady;
+  if (readyToShip) return 'PENDING_SCHEDULE';
+
+  // NOT ready. OVERDUE once we're within 3 days of (or past) the EFFECTIVE
+  // delivery date (amended ?? original) and the goods still aren't ready.
+  const daysLeft = daysBetween(today, effectiveDD ?? null);
+  return daysLeft != null && daysLeft <= 3 ? 'OVERDUE' : 'PENDING_DELIVERY';
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -612,22 +657,13 @@ deliveryPlanning.get('/', async (c) => {
        otherwise require isFullyReady (every line READY). */
     const readyToShip = readiness.mainCount > 0 ? readiness.isMainReady : readiness.isFullyReady;
 
-    /* delivery_state derivation (the core rule). A manual override stored on the
-       SO header wins; else compute live. */
+    /* delivery_state derivation (the core rule) — shared with the SO list via
+       derivePlanningState(). A manual override stored on the SO header wins; else
+       compute live. */
     const stored = r.delivery_state ?? null;
-    let state: DeliveryState;
-    if (stored && (DELIVERY_STATES as string[]).includes(stored)) {
-      state = stored as DeliveryState;
-    } else if (status === 'DELIVERED' || (delivered > 0 && remaining <= 0)) {
-      state = 'DELIVERED';
-    } else if (readyToShip) {
-      state = 'PENDING_SCHEDULE';
-    } else {
-      // NOT ready. OVERDUE once we're within 3 days of (or past) the EFFECTIVE
-      // delivery date (amended ?? original) and the goods still aren't ready.
-      const daysLeft = daysBetween(today, effectiveDD);
-      state = daysLeft != null && daysLeft <= 3 ? 'OVERDUE' : 'PENDING_DELIVERY';
-    }
+    const state: DeliveryState = derivePlanningState({
+      storedOverride: stored, status, readiness, delivered, remaining, effectiveDD, today,
+    });
 
     /* Region(s) for this SO = its customer-STATE bucket(s) from the config
        mapping (a state can map to MANY). primaryRegion = the first mapped bucket. */

@@ -274,9 +274,10 @@ export async function createAssrCase(
     `INSERT INTO assr_cases (
        assr_no, status, stage, doc_no, complained_date, customer_name, phone, location,
        sales_agent, item_code, complaint_issue, issue_category, priority, po_no, addr1, addr2, addr3, addr4, created_by,
+       ref_no, delivery_order, do_date,
        assigned_to, sla_hours, deadline_at,
        stage_entered_at, stage_target_days, stage_changed_at, lead_time_profile_id
-     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       assrNo,
@@ -297,6 +298,17 @@ export async function createAssrCase(
       context?.InvAddr3 ?? null,
       context?.InvAddr4 ?? null,
       input.created_by ?? null,
+      // ref_no <- the SO's own customer reference (the pre-printed
+      // customer docket, e.g. "HC14032"), distinct from the internal
+      // service PO which maps to po_no above via SOUDF_ToPONo.
+      context?.Ref ?? null,
+      // delivery_order / do_date <- the SO's linked DO. The AutoCount
+      // /SalesOrder/getSingle context does not expose a DO doc no or
+      // date, so these stay NULL at create time (case manager fills
+      // them via PATCH). Bound explicitly so the columns stay covered
+      // if the context ever starts carrying DO fields.
+      null,
+      null,
       defaultAssigneeId,
       slaHours,
       deadlineAt,

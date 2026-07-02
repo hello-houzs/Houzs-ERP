@@ -762,7 +762,7 @@ function Compose({
           </label>
           <label className="tinybtn" style={{ flex: 1, padding: 11, textAlign: "center", cursor: "pointer" }}>
             + Document
-            <input type="file" accept="application/pdf,.pdf,.doc,.docx,.xls,.xlsx" multiple style={{ display: "none" }} onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+            <input type="file" accept="application/pdf,.pdf" multiple style={{ display: "none" }} onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
           </label>
         </div>
         <div style={{ fontSize: 10.5, color: "#9aa093", marginTop: 8 }}>

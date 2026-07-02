@@ -121,6 +121,10 @@ import { creditFromCancelledSo, getCustomerCreditBalance } from '../lib/customer
 import { summariseReadiness } from '../lib/so-readiness';
 import { nextMonthlyDocNo } from '../lib/doc-no';
 import { soDeliverableRemaining, soLineDeliveries, computeSoLifecycle, soCurrentDocNo } from './delivery-orders-mfg';
+/* Shared 4-state delivery-planning derivation — the SO list emits planning_state
+   (the mobile Orders-list card's status) from the SAME helper the Delivery
+   Planning board uses, so the two can never drift. */
+import { derivePlanningState } from './delivery-planning';
 import { computeMrp, mrpLineCoverage } from './mrp';
 import type { Env, Variables } from '../env';
 
@@ -646,7 +650,7 @@ mfgSalesOrders.get('/', async (c) => {
        is blank; created_at drives the first-line pick. */
     const { data: itemRows } = await sb
       .from('mfg_sales_order_items')
-      .select('doc_no, item_group, stock_status, cancelled, branding, item_code, created_at')
+      .select('doc_no, item_group, stock_status, cancelled, branding, item_code, warehouse_id, created_at')
       .in('doc_no', docNos)
       .eq('cancelled', false)
       .order('doc_no')
@@ -668,6 +672,10 @@ mfgSalesOrders.get('/', async (c) => {
     const firstCat = new Map<string, string>();
     const firstBranding = new Map<string, string | null>();
     const firstItemCode = new Map<string, string | null>();
+    /* Primary warehouse per SO — the FIRST non-null line warehouse_id (mirrors
+       the Delivery Planning board's primaryWh = warehouseIds[0]). Drives the
+       mobile Orders-list card's warehouse_name. */
+    const firstWarehouseByDoc = new Map<string, string>();
     const allCodes = new Set<string>();
     const normCategory = (raw: string): string => {
       const g = (raw ?? '').trim().toUpperCase();
@@ -678,7 +686,7 @@ mfgSalesOrders.get('/', async (c) => {
       if (g.includes('SERVICE')) return 'SERVICE'; // SO-SKU spec P2 — synced with normCat below
       return 'OTHERS';
     };
-    for (const it of (itemRows ?? []) as Array<{ doc_no: string; item_group: string; stock_status: string; cancelled: boolean; branding: string | null; item_code: string | null; created_at: string | null }>) {
+    for (const it of (itemRows ?? []) as Array<{ doc_no: string; item_group: string; stock_status: string; cancelled: boolean; branding: string | null; item_code: string | null; warehouse_id: string | null; created_at: string | null }>) {
       let perGroup = agg.get(it.doc_no);
       if (!perGroup) { perGroup = new Map(); agg.set(it.doc_no, perGroup); }
       const g = (it.item_group ?? '').trim().toUpperCase() || 'OTHERS';
@@ -691,6 +699,11 @@ mfgSalesOrders.get('/', async (c) => {
       if (!catSet) { catSet = new Set(); cats.set(it.doc_no, catSet); }
       catSet.add(normCategory(it.item_group));
       if (it.item_code) allCodes.add(it.item_code);
+      /* First non-null line warehouse per doc (rows are line_no/created_at
+         ordered) — the SO's primary warehouse for the mobile card. */
+      if (it.warehouse_id && !firstWarehouseByDoc.has(it.doc_no)) {
+        firstWarehouseByDoc.set(it.doc_no, it.warehouse_id);
+      }
 
       /* Rows arrive ordered by (doc_no, created_at ASC) so the first time we
          see a doc_no IS its earliest line — record it once. */
@@ -842,6 +855,39 @@ mfgSalesOrders.get('/', async (c) => {
       soCurrentDocNo(sb, docNos),
     ]);
 
+    /* Warehouse label map (id → name) for the mobile Orders-list card's
+       warehouse_name. Mirrors the Delivery Planning board's read-only master
+       lookup (delivery-planning.ts step 1). Small master, unpaginated like there. */
+    const whName = new Map<string, string>();
+    {
+      const { data: whRows } = await sb.from('warehouses').select('id, code, name');
+      for (const w of (whRows ?? []) as Array<{ id: string; code: string | null; name: string | null }>) {
+        const label = (w.name ?? w.code ?? '').trim();
+        if (label) whName.set(w.id, label);
+      }
+    }
+
+    /* Planning-state inputs that live ONLY on the BASE table (NOT in the
+       payment-totals VIEW backing this list): the manual delivery_state override
+       and amended_delivery_date. Per the VIEW-TRAP CoE these post-view columns
+       must NEVER be added to LIST_COLS/HEADER (they 500 the list), so read them
+       straight off mfg_sales_orders keyed by doc_no. customer_delivery_date +
+       status are already on the view rows (`r`). */
+    const overrideByDoc = new Map<string, string | null>();
+    const amendedDDByDoc = new Map<string, string | null>();
+    {
+      const { data: baseRows } = await sb
+        .from('mfg_sales_orders')
+        .select('doc_no, delivery_state, amended_delivery_date')
+        .in('doc_no', docNos);
+      for (const b of (baseRows ?? []) as Array<{ doc_no: string | null; delivery_state?: string | null; deliveryState?: string | null; amended_delivery_date?: string | null; amendedDeliveryDate?: string | null }>) {
+        if (!b.doc_no) continue;
+        overrideByDoc.set(b.doc_no, b.deliveryState ?? b.delivery_state ?? null);
+        amendedDDByDoc.set(b.doc_no, b.amendedDeliveryDate ?? b.amended_delivery_date ?? null);
+      }
+    }
+    const planningToday = todayMyt();
+
     for (const r of rows) {
       const docNo = r.doc_no ?? '';
       const perGroup = agg.get(docNo);
@@ -857,6 +903,28 @@ mfgSalesOrders.get('/', async (c) => {
       const readiness = readinessByDoc.get(docNo);
       (r as Record<string, unknown>).stock_remark = readiness?.stockRemark ?? '';
       (r as Record<string, unknown>).is_main_ready = readiness?.isMainReady ?? false;
+      /* Mobile Orders-list card fields (snake_case, dual-read by the FE):
+         · warehouse_name  — the SO's primary line warehouse label ('—' until set).
+         · planning_state  — the 4-state Delivery-Planning status, derived from the
+           SAME shared helper the board uses. delivery_state (above) is the DO-
+           progress none/partial/full field — this is the ORTHOGONAL planning
+           status; both are emitted. */
+      const primaryWh = firstWarehouseByDoc.get(docNo) ?? null;
+      (r as Record<string, unknown>).warehouse_name = primaryWh ? (whName.get(primaryWh) ?? null) : null;
+      const effectiveDD = (amendedDDByDoc.get(docNo) ?? null) ?? ((r as Record<string, unknown>).customer_delivery_date as string | null ?? null);
+      (r as Record<string, unknown>).planning_state = derivePlanningState({
+        storedOverride: overrideByDoc.get(docNo) ?? null,
+        status: (r as Record<string, unknown>).status as string | null,
+        readiness: {
+          mainCount: readiness?.mainCount ?? 0,
+          isMainReady: readiness?.isMainReady ?? false,
+          isFullyReady: readiness?.isFullyReady ?? false,
+        },
+        delivered: dDelivered,
+        remaining: dRemaining,
+        effectiveDD,
+        today: planningToday,
+      });
       /* First-item branding source (PR #266; catalog-resolved + mains-first). */
       const hasRep = repCat.has(docNo);
       const fCat = (hasRep ? repCat.get(docNo) : firstCat.get(docNo)) ?? null;
