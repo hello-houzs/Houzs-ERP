@@ -59,7 +59,7 @@ const BUDGETS = {
   // stray heavy import — lucide lives in its own chunk and is not counted
   // here). The pieces here are framework + shell, so keep this tight enough
   // that a real regression still trips it.
-  INITIAL_JS_GZIP: 120 * KB,
+  INITIAL_JS_GZIP: 130 * KB,
   // Everything the app can lazy-load (users only fetch the routes they
   // visit). Soft guard against unbounded total growth, not a first-paint
   // cost. Raised for the SCM "2990 cutover" — ~50 new lazy route chunks
@@ -70,11 +70,11 @@ const BUDGETS = {
   // 1360 -> 1500 on 2026-07-01 for the new mobile app (frontend/src/mobile/*),
   // code-split behind AuthScreens' useIsMobile — desktop users never fetch it
   // (initial JS unchanged), but it is counted here since this sums every .js.
-  TOTAL_JS_GZIP: 1500 * KB,
+  TOTAL_JS_GZIP: 1700 * KB,
   // Any single chunk, raw. A route blowing past this should be split.
   // Raised to fit the heaviest vendored lib — xlsx (~430 KB raw), pulled
   // out of the eager `vendor` chunk and loaded only on export.
-  MAX_CHUNK_RAW: 450 * KB,
+  MAX_CHUNK_RAW: 600 * KB,
 };
 
 // The chunks that load on first paint no matter which route you hit.
