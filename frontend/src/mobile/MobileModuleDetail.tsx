@@ -97,6 +97,30 @@ function phase(status: unknown): "draft" | "cancelled" | "live" {
   return "live";
 }
 
+/** A cancelled / voided document renders greyed + a "Cancelled {date}" ribbon
+ *  and drops its action bar (spec §lifecycle: CANCELLED = read-only forever). */
+function isCancelledDoc(status: unknown): boolean {
+  return phase(status) === "cancelled";
+}
+
+/** Ribbon shown at the top of a cancelled document's scroll area. Dual-reads
+ *  the cancel timestamp (camelCase ?? snake_case), degrading to a bare label. */
+function CancelledRibbon({ header }: { header: any }) {
+  const when = dmy(header?.cancelledAt ?? header?.cancelled_at ?? header?.voidedAt ?? header?.voided_at ?? header?.updatedAt ?? header?.updated_at);
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "center", gap: 7, marginBottom: 13, padding: "9px 12px",
+        background: "#f8eaea", border: "1px solid #f0d4d4", borderRadius: 11,
+        fontSize: 12, fontWeight: 700, color: "#b23a3a",
+      }}
+    >
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#b23a3a" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="9" /><path d="M15 9l-6 6M9 9l6 6" /></svg>
+      <span>Cancelled{when !== "—" ? ` ${when}` : ""}</span>
+    </div>
+  );
+}
+
 function StatusPill({ status }: { status: unknown }) {
   const raw = s(status).trim();
   if (!raw) return null;
@@ -961,7 +985,8 @@ function actSkin(variant: ActVariant, disabled: boolean): React.CSSProperties {
     variant === "solid" ? { background: "#16695f", color: "#fff", border: "none" }
     : variant === "danger" ? { background: "#fff", color: "#b23a3a", border: "1.5px solid #f0d4d4" }
     : { background: "#fff", color: "#16695f", border: "1.5px solid #16695f" };
-  return { flex: 1, padding: 12, borderRadius: 11, fontSize: 13.5, ...skin, opacity: disabled ? 0.55 : 1 };
+  // white-space:nowrap per spec — labels never wrap; the row lets buttons flex.
+  return { flex: 1, padding: 12, borderRadius: 11, fontSize: 13.5, whiteSpace: "nowrap", ...skin, opacity: disabled ? 0.55 : 1 };
 }
 
 /** Record-Payment bottom sheet. `kind` picks the endpoint + payload:
@@ -1075,6 +1100,7 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
   const notify = useNotify();
   const [error, setError] = useState<string | null>(null);
   const [payOpen, setPayOpen] = useState(false);
+  const [runningKey, setRunningKey] = useState<string | null>(null);
 
   const statusActions = useMemo(() => statusActionsFor(moduleKey, id, header), [moduleKey, id, header]);
   const payKind = paymentKind(moduleKey, header);
@@ -1091,6 +1117,7 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
         ...(action.request.body !== undefined ? { body: JSON.stringify(action.request.body) } : {}),
       }),
     onSuccess: (_data, action) => {
+      setRunningKey(null);
       // A `removes` action (Delete) drops the record → refresh the list and pop
       // back to it; every other action stays on the (now-updated) detail.
       if (action.removes) {
@@ -1102,13 +1129,14 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
       refresh();
       void notify({ title: "Done" });
     },
-    onError: (e) => setError(e instanceof Error ? e.message : "Something went wrong. Please try again."),
+    onError: (e) => { setRunningKey(null); setError(e instanceof Error ? e.message : "Something went wrong. Please try again."); },
   });
 
   const run = async (action: DocAction) => {
     if (mutation.isPending) return;
     setError(null);
     if (action.confirm && !(await confirm({ title: action.confirm.title, body: action.confirm.body, confirmLabel: action.confirm.confirmLabel, danger: true }))) return;
+    setRunningKey(action.key);
     mutation.mutate(action);
   };
 
@@ -1131,7 +1159,7 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
               <button className="btn" disabled={busy} onClick={() => { setError(null); setPayOpen(true); }} style={actSkin("solid", busy)}>Record Payment</button>
             )}
             {statusActions.map((a) => (
-              <button className="btn" key={a.key} disabled={busy} onClick={() => run(a)} style={actSkin(a.variant, busy)}>{busy ? "Working…" : a.label}</button>
+              <button className="btn" key={a.key} disabled={busy} onClick={() => run(a)} style={actSkin(a.variant, busy)}>{busy && runningKey === a.key ? "Working…" : a.label}</button>
             ))}
           </div>
         )}
@@ -1165,6 +1193,7 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
   // loaded, and only when the doc isn't locked). Edit reads the fetched header
   // so its lock gate + field seeds are accurate; hidden until `data` arrives.
   const editCfg = EDIT_MODULES[moduleKey];
+  const cancelled = isCancelledDoc(map.status(header));
   const canFieldEdit = !!id && !!data && !!editCfg && !editCfg.locked(header);
   const invalidateDetail = () => {
     void qc.invalidateQueries({ queryKey: ["mobile-module-detail", map.path, id] });
@@ -1192,8 +1221,9 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
       <div className="scroll hz-scroll" style={hasFooter ? { ...scrollStyle, paddingBottom: onPOD && hasStatusActions ? 150 : 96 } : scrollStyle}>
         {!id && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't identify this record.</div>}
 
+        {!!id && cancelled && <CancelledRibbon header={header} />}
         {!!id && (
-          <>
+          <div style={cancelled ? { opacity: 0.55, pointerEvents: "none" } : undefined}>
             {meta.length > 0 && (
               <div className="pgrid2" style={{ marginBottom: 13 }}>
                 {meta.map(([label, value]) => (
@@ -1227,9 +1257,12 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
                 }) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>No line items.</div>)}
               </div>
             )}
-          </>
+          </div>
         )}
       </div>
+      {/* CANCELLED = no lifecycle bar (spec); only the desktop-parity recovery
+          actions (Reopen / Delete, the sole actions statusActionsFor returns for
+          a cancelled doc) survive so a mis-cancel is still recoverable. */}
       {hasFooter && <DocActionFooter moduleKey={moduleKey} id={id} header={header} invalidate={invalidate} onPOD={onPOD} onDeleted={onBack} />}
       {editOpen && (
         <HeaderEditSheet moduleKey={moduleKey} id={id} header={header} onClose={() => setEditOpen(false)} onSaved={invalidateDetail} />
@@ -1381,6 +1414,9 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
     : config?.pill
       ? safeCall(config.pill, effectiveRow)
       : "";
+  // A cancelled doc-like module (PI / PR / DR) greys its body + shows the ribbon.
+  // Non-doc simple modules (suppliers / drivers) never reach a cancelled state.
+  const cancelled = wantDoc && isCancelledDoc(status);
   const dumpFields = rowToFields(effectiveRow);
 
   // Status action bar for the DOC-like simple modules (Sales/Purchase Returns,
@@ -1408,6 +1444,8 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
         onFieldEdit={canFieldEdit ? () => setEditOpen(true) : undefined}
       />
       <div className="scroll hz-scroll" style={hasFooter ? { ...scrollStyle, paddingBottom: 96 } : scrollStyle}>
+        {cancelled && <CancelledRibbon header={docHeader} />}
+        <div style={cancelled ? { opacity: 0.55, pointerEvents: "none" } : undefined}>
         <Eyebrow>Details</Eyebrow>
         {configFields ? (
           <div style={{ background: "#fff", border: "1px solid #e3e6e0", borderRadius: 13, overflow: "hidden", marginBottom: 13, padding: "0 12px" }}>
@@ -1462,6 +1500,7 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
             onChanged={() => { void qc.invalidateQueries({ queryKey: ["mobile-supplier-detail", id] }); }}
           />
         )}
+        </div>
       </div>
       {hasFooter && <DocActionFooter moduleKey={moduleKey} id={actionId} header={actionRow} invalidate={invalidate} onDeleted={onBack} />}
       {editOpen && (
