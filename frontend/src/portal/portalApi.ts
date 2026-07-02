@@ -77,6 +77,7 @@ async function req<T>(
 export const portalApi = {
   get:  <T>(path: string, token: string) => req<T>("GET", path, token),
   post: <T>(path: string, token: string | null, body?: any) => req<T>("POST", path, token, body),
+  put:  <T>(path: string, token: string | null, body?: any) => req<T>("PUT", path, token, body),
 
   putBinary: async <T>(path: string, token: string, body: ArrayBuffer, contentType: string): Promise<T> => {
     const res = await portalFetch(url(path), {

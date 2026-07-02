@@ -48,7 +48,11 @@ app.get("/case", async (c) => {
             supplier_pickup_at, items_ready_at,
             do_date, delivery_order,
             creditor_code,
-            stage_entered_at, stage_target_days
+            stage_entered_at, stage_target_days,
+            -- Mig 106 — supplier's own service record + the goods-
+            -- returned slip we sent with the item (read-only for the
+            -- supplier; helps them cross-reference what came in).
+            supplier_service_note, goods_returned_note
        FROM assr_cases WHERE id = ?`
   )
     .bind(assr_id)
@@ -159,6 +163,27 @@ app.post("/remarks", async (c) => {
   // overwrites it. Full history stays in assr_activity.
   await c.env.DB.prepare(
     `UPDATE assr_cases SET action_remark = ? WHERE id = ?`
+  )
+    .bind(clipped, assr_id)
+    .run();
+  return c.json({ ok: true });
+});
+
+// ── PUT /service-note ───────────────────────────────────────────────
+//
+// Mig 106 — persistent service record the supplier writes when
+// they've serviced the item. Unlike /remarks (which fires one-off
+// notes into the activity log), this field is the current-state
+// blob the supplier owns and can rewrite. Ops sees the same value
+// on the main case page's QC Inspection card.
+
+app.put("/service-note", async (c) => {
+  const { assr_id } = c.get("supplierScope");
+  const body = await c.req.json<{ note?: string | null }>();
+  const raw = typeof body.note === "string" ? body.note.trim() : "";
+  const clipped = raw ? raw.slice(0, 2000) : null;
+  await c.env.DB.prepare(
+    `UPDATE assr_cases SET supplier_service_note = ? WHERE id = ?`
   )
     .bind(clipped, assr_id)
     .run();
