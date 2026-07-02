@@ -97,7 +97,9 @@ export class ChunkReloadBoundary extends React.Component<
       return (
         <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
           <p className="text-sm font-medium text-ink">Something went wrong loading this page.</p>
-          <p className="max-w-md text-xs text-ink-muted">{this.state.error.message}</p>
+          <p className="max-w-md text-xs text-ink-muted">
+            Please reload to try again. If it keeps happening, let IT know.
+          </p>
           <button
             onClick={() => {
               this.setState({ error: null });

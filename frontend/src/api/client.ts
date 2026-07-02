@@ -78,10 +78,45 @@ function extractErrorMessage(body: string): string {
  *  network/timeout failure so request() knows NOT to retry it — a 403/404/500
  *  is a real answer, not a transient hang. Message keeps the historic
  *  `"<status>: <body>"` shape that callers and toasts parse. */
+/* Turn an HTTP failure into ONE plain-language sentence for the user — never a
+   raw "<status>: <json>" dump. Prefer the human message the server already put
+   in the JSON body ({error|message|detail}); otherwise map the status code.
+   The 503 wording keeps the "briefly unavailable / try again in a moment"
+   phrases that isColdPool503() matches on, so cold-pool retry still works. */
+export function humanHttpMessage(status: number, body: string): string {
+  const t = (body ?? "").trim();
+  if (t && (t.startsWith("{") || t.startsWith("["))) {
+    try {
+      const j = JSON.parse(t) as { error?: unknown; message?: unknown; detail?: unknown };
+      const m = j?.error ?? j?.message ?? j?.detail;
+      if (typeof m === "string" && m.trim()) return m.trim();
+    } catch { /* not json — fall through to the status map */ }
+  } else if (t && t.length <= 200 && !t.startsWith("<") && !/^\d+\s*:/.test(t)) {
+    return t; // a short, human-ish plain-text body (not HTML, not a code dump)
+  }
+  switch (status) {
+    case 400: return "Something in that request wasn't right. Please check and try again.";
+    case 401: return "Your session has expired. Please sign in again.";
+    case 403: return "You don't have permission to do that.";
+    case 404: return "We couldn't find what you were looking for.";
+    case 409: return "That conflicts with existing data. Please refresh and try again.";
+    case 413: return "That file is too large.";
+    case 422: return "Some details couldn't be saved. Please check them and try again.";
+    case 429: return "Too many attempts. Please wait a moment and try again.";
+    case 503: return "The service is briefly unavailable. Please try again in a moment.";
+    default:
+      return status >= 500
+        ? "Something went wrong on our end. Please try again."
+        : "Something went wrong. Please try again.";
+  }
+}
+
 class HttpError extends Error {
   readonly isHttp = true;
+  readonly rawBody: string;
   constructor(public readonly status: number, body: string) {
-    super(`${status}: ${body}`);
+    super(humanHttpMessage(status, body));
+    this.rawBody = body;
   }
 }
 
@@ -281,7 +316,7 @@ export const api = {
       try {
         txt = await res.text();
       } catch {}
-      throw new Error(`${res.status}: ${txt || res.statusText}`);
+      throw new HttpError(res.status, txt || res.statusText);
     }
     return (await res.json()) as T;
   },
@@ -308,7 +343,7 @@ export const api = {
       try {
         txt = await res.text();
       } catch {}
-      throw new Error(`${res.status}: ${txt || res.statusText}`);
+      throw new HttpError(res.status, txt || res.statusText);
     }
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
@@ -329,7 +364,7 @@ export const api = {
     const res = await binaryFetch(`${baseUrl}${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     }, BINARY_GET_TIMEOUT_MS);
-    if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+    if (!res.ok) throw new HttpError(res.status, res.statusText);
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },
@@ -349,7 +384,7 @@ export const api = {
     const res = await binaryFetch(`${baseUrl}${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     }, BINARY_GET_TIMEOUT_MS);
-    if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+    if (!res.ok) throw new HttpError(res.status, res.statusText);
     const cd = res.headers.get("Content-Disposition") || "";
     const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
     const name = m ? decodeURIComponent(m[1]) : fallbackName;
@@ -369,7 +404,7 @@ export const api = {
     const res = await binaryFetch(`${baseUrl}${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     }, BINARY_GET_TIMEOUT_MS);
-    if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+    if (!res.ok) throw new HttpError(res.status, res.statusText);
     const html = await res.text();
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);

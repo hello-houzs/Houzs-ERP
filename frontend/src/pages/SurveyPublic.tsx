@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Star, CheckCircle2 } from "lucide-react";
 import { cn, formatDate } from "../lib/utils";
+import { humanHttpMessage } from "../api/client";
 
 // Public (unauthenticated) customer satisfaction survey. Loaded via
 // /survey/:token — dispatcher shares this URL with the customer by
@@ -35,7 +36,7 @@ export function SurveyPublic() {
           "https://autocount-sync-api.houzs-erp.workers.dev";
         const res = await fetch(`${base}/api/survey/${encodeURIComponent(token)}`);
         if (!res.ok) {
-          throw new Error((await res.text()) || `HTTP ${res.status}`);
+          throw new Error(humanHttpMessage(res.status, await res.text().catch(() => "")));
         }
         const json = (await res.json()) as SurveyPayload;
         setData(json);
@@ -63,8 +64,7 @@ export function SurveyPublic() {
         body: JSON.stringify({ rating, notes: notes.trim() || undefined }),
       });
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || `HTTP ${res.status}`);
+        throw new Error(humanHttpMessage(res.status, await res.text().catch(() => "")));
       }
       setSubmitted(true);
     } catch (e: any) {

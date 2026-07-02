@@ -210,7 +210,10 @@ export function LoginScreen() {
       const res = await login(email, password);
       if (res.kind === "totp") setChallenge(res.challenge);
     } catch (e: any) {
-      setErr(e?.message?.includes("401") ? "Invalid email or password" : e?.message || "Login failed");
+      // A 401 here means bad credentials — show that specific wording rather
+      // than the generic "session expired" sentence the humanized message
+      // carries. Match on the status flag (the message no longer embeds "401").
+      setErr(e?.status === 401 ? "Invalid email or password" : e?.message || "Login failed");
     } finally {
       setBusy(false);
     }
@@ -224,7 +227,7 @@ export function LoginScreen() {
       await verifyTotpLogin(challenge!, code.trim());
     } catch (e: any) {
       setErr(
-        e?.message?.includes("401")
+        e?.status === 401
           ? "That code didn't work — try the current code or a backup code."
           : e?.message || "Verification failed",
       );

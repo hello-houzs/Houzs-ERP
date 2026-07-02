@@ -91,7 +91,7 @@ import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
 import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
-import { api, buildQuery } from "../api/client";
+import { api, buildQuery, humanHttpMessage } from "../api/client";
 import { MediaLightbox } from "../components/MediaLightbox";
 import { ResetFiltersButton } from "../components/ResetFiltersButton";
 import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime } from "../lib/utils";
@@ -11595,7 +11595,7 @@ function ImportCsvPanel({
         }
         throw err;
       }
-      if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`);
+      if (!resp.ok) throw new Error(humanHttpMessage(resp.status, await resp.text().catch(() => "")));
       const data = (await resp.json()) as { imported: number; errors: string[]; total_rows: number };
       setResult(data);
       if (data.imported > 0) toast.success(`Imported ${data.imported} of ${data.total_rows} row(s)`);
