@@ -30,6 +30,7 @@ import { Hono } from 'hono';
 import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
+import { todayMyt } from '../lib/my-time';
 
 export const sofaCompartmentPhotos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -103,7 +104,7 @@ sofaCompartmentPhotos.get('/:code/photo/:key', async (c) => {
     .from('maintenance_config_history')
     .select('id, config')
     .eq('scope', 'master')
-    .lte('effective_from', new Date().toISOString().slice(0, 10))
+    .lte('effective_from', todayMyt())
     .order('effective_from', { ascending: false })
     .order('created_at', { ascending: false })
     .limit(1)
@@ -147,7 +148,7 @@ sofaCompartmentPhotos.post('/:code/photo', async (c) => {
   }
 
   // Load the current effective master-scope row.
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayMyt();
   const { data: row, error: rowErr } = await supabase
     .from('maintenance_config_history')
     .select('id, config')
@@ -234,7 +235,7 @@ sofaCompartmentPhotos.delete('/:code/photo', async (c) => {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayMyt();
   const { data: row, error: rowErr } = await supabase
     .from('maintenance_config_history')
     .select('id, config')

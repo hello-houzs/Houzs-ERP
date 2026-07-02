@@ -18,6 +18,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 import { buildVariantSummary, computeVariantKey, type VariantAttrs } from '../shared';
 import {
   orderSofaModuleRowsWithinBuilds,
@@ -489,7 +490,7 @@ purchaseReturns.post('/', async (c) => {
     purchase_order_id: (body.purchaseOrderId as string | undefined) ?? null,
     grn_id: grnId,
     supplier_id: body.supplierId,
-    return_date: (body.returnDate as string) ?? new Date().toISOString().slice(0, 10),
+    return_date: (body.returnDate as string) ?? todayMyt(),
     reason: (body.reason as string | undefined) ?? null,
     refund_centi: totalRefund,
     notes: (body.notes as string | undefined) ?? null,
@@ -585,7 +586,7 @@ purchaseReturns.post('/from-grns', async (c) => {
     purchase_order_id: grnList[0]!.purchase_order_id,
     grn_id: primaryGrnId,                              // primary GRN ref
     supplier_id: supplierId,
-    return_date: new Date().toISOString().slice(0, 10),
+    return_date: todayMyt(),
     reason: body.reason ?? `Batch from ${grnList.length} GRNs: ${grnNumbersJoined}`,
     refund_centi: totalRefund,
     notes: body.notes ?? null,
@@ -672,7 +673,7 @@ purchaseReturns.post('/from-grn', async (c) => {
     purchase_order_id: g.purchase_order_id,
     grn_id: g.id,
     supplier_id: g.supplier_id,
-    return_date: new Date().toISOString().slice(0, 10),
+    return_date: todayMyt(),
     reason: body.reason ?? `From ${g.grn_number}`,
     refund_centi: totalRefund,
     notes: body.notes ?? null,

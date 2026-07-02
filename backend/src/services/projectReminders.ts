@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { sendEmail, publicUrl } from "./email";
+import { todayMyt } from "../scm/lib/my-time";
 
 /**
  * Daily job that emails project owners when their checklist items are
@@ -76,7 +77,10 @@ export async function runProjectDueReminders(env: Env): Promise<{
     return managerEmails;
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  // Overdue/upcoming boundary is a Malaysia calendar day, not UTC. Workers run
+  // in UTC, so before 08:00 MYT `toISOString()` is still yesterday and an item
+  // due "today" would be mislabelled overdue an entire morning.
+  const today = todayMyt();
   let sent = 0;
   let recipients = 0;
 

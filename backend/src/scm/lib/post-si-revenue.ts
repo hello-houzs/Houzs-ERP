@@ -13,6 +13,8 @@
 //   • POST /sales-invoices                     (auto-post on create/confirm)
 // ----------------------------------------------------------------------------
 
+import { todayMyt } from './my-time';
+
 const padMmDd = (d: Date): string => {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const yy = String(d.getFullYear()).slice(-2);
@@ -204,7 +206,7 @@ export async function reverseSiRevenue(sb: any, invoiceNumber: string): Promise<
     .from('journal_entries')
     .insert({
       je_no: revJeNo,
-      entry_date: new Date().toISOString().slice(0, 10),
+      entry_date: todayMyt(),
       source_type: 'SI_REVERSAL',
       source_doc_no: invoiceNumber,
       narration: `Reversal of ${orig.je_no} — Sales invoice ${invoiceNumber} cancelled`,

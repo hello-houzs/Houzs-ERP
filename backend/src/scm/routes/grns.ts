@@ -12,6 +12,7 @@ import {
 } from '../shared/so-line-display';
 import { recostFromGrn } from '../lib/recost';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
 grns.use('*', supabaseAuth);
@@ -827,7 +828,7 @@ grns.post('/', async (c) => {
     purchase_order_id: (body.purchaseOrderId as string | undefined) ?? null,
     supplier_id: body.supplierId,
     warehouse_id: headerWarehouseId,
-    received_at: (body.receivedAt as string) ?? new Date().toISOString().slice(0, 10),
+    received_at: (body.receivedAt as string) ?? todayMyt(),
     delivery_note_ref: (body.deliveryNoteRef as string) ?? null,
     notes: (body.notes as string) ?? null,
     // Draft/Confirmed — DRAFT commits nothing; the confirm transition (PATCH
@@ -967,7 +968,7 @@ grns.post('/from-pos', async (c) => {
     grn_number: grnNumber,
     purchase_order_id: poList[0]!.id,                    // primary PO ref (first one)
     supplier_id: supplierId,
-    received_at: new Date().toISOString().slice(0, 10),
+    received_at: todayMyt(),
     delivery_note_ref: body.deliveryNoteRef ?? null,
     notes: `Batch-converted from ${poList.length} POs: ${poNumbersJoined}${body.notes ? ` · ${body.notes}` : ''}`,
     /* PR-DRAFT-removal — auto-POSTED on create. */
@@ -1183,7 +1184,7 @@ grns.post('/from-po-items', async (c) => {
   const firstNext = nextMonthlyDocNo(`GRN-${yymm}`, ((existingBatchNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
   let counter = parseInt(firstNext.slice(`GRN-${yymm}-`.length), 10) - 1;
 
-  const receivedAt = body.receivedDate ?? new Date().toISOString().slice(0, 10);
+  const receivedAt = body.receivedDate ?? todayMyt();
   const created: Array<{ id: string; grnNumber: string; purchaseOrderId: string; poNumber: string; lineCount: number; posted?: boolean; postError?: string; movementErrors?: string[] }> = [];
   // Track any bucket rolled back by the post-insert over-receipt verification so
   // we can surface a 409 with the same error shape the add-line path uses.

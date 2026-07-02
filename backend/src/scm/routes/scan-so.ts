@@ -79,6 +79,40 @@ const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 
+// Anthropic (and gateways in front of it) return transient 429 rate-limits and
+// 529 "Overloaded" / 5xx spikes that clear on a retry; a single hit otherwise
+// fails the whole scan/distill with a hard error. Retry those a few times with
+// an exponential-ish backoff. Non-retryable statuses (4xx other than 429) and
+// the final attempt fall straight through to the caller's existing !resp.ok
+// handling, so the response shape is unchanged. Only the transport is retried —
+// the prompt/body and response parsing are untouched.
+const RETRYABLE_ANTHROPIC_STATUS = new Set([429, 500, 502, 503, 529]);
+
+async function anthropicFetchWithRetry(
+  init: RequestInit,
+  tries = 3,
+): Promise<Response> {
+  let resp: Response | null = null;
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    resp = await fetch(ANTHROPIC_URL, init);
+    if (resp.ok) return resp;
+    // Peek the body for an explicit overloaded_error without consuming the
+    // Response the caller reads — clone so the returned body survives. Some
+    // gateways surface an overloaded body under a status outside the set.
+    let overloaded = false;
+    try {
+      const peek = await resp.clone().text();
+      if (/overloaded/i.test(peek)) overloaded = true;
+    } catch { /* body peek is best-effort */ }
+    const retryable = RETRYABLE_ANTHROPIC_STATUS.has(resp.status) || overloaded;
+    if (!retryable || attempt === tries - 1) return resp;
+    // 400ms, 800ms, 1600ms … keeps the whole retry window well under the
+    // per-call AbortSignal.timeout budget.
+    await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
+  }
+  return resp as Response;
+}
+
 const IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 // ArrayBuffer -> base64. Workers don't expose Node's Buffer; the chunked loop
@@ -564,7 +598,7 @@ async function warmCatalogCache(
   }
   const cachedPrefix = buildCachedPrefix(catalog, companyName);
   try {
-    const resp = await fetch(ANTHROPIC_URL, {
+    const resp = await anthropicFetchWithRetry({
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -1199,7 +1233,7 @@ async function claudeDistillCall(
   userPayload: string,
 ): Promise<{ text: string; error: string | null }> {
   try {
-    const resp = await fetch(ANTHROPIC_URL, {
+    const resp = await anthropicFetchWithRetry({
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -2023,11 +2057,12 @@ scanSo.post('/extract', async (c) => {
   let cacheCreated = false;
 
   try {
-    const resp = await fetch(ANTHROPIC_URL, {
+    const resp = await anthropicFetchWithRetry({
       method: 'POST',
       // Outbound timeout (110s, under the Worker's wall-clock budget) so a hung
       // Anthropic call fails fast into the graceful 503 below instead of the
-      // request dangling until the platform kills it with an opaque error.
+      // request dangling until the platform kills it with an opaque error. The
+      // timeout bounds the whole retry window, not each attempt.
       signal: AbortSignal.timeout(110_000),
       headers: {
         'content-type': 'application/json',

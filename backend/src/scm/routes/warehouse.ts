@@ -25,6 +25,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { todayMyt } from '../lib/my-time';
 
 export const warehouse = new Hono<{ Bindings: Env; Variables: Variables }>();
 warehouse.use('*', supabaseAuth);
@@ -279,7 +280,7 @@ warehouse.post('/stock-in', async (c) => {
     customer_name: customerName,
     source_doc_no: sourceDocNo,
     qty,
-    stocked_in_date: new Date().toISOString().slice(0, 10),
+    stocked_in_date: todayMyt(),
     notes,
   }).select(ITEM_COLS).single();
   if (itemErr) return c.json({ error: 'insert_failed', reason: itemErr.message }, 500);

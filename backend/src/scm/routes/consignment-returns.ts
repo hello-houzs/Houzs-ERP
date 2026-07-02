@@ -29,7 +29,8 @@ import type { Env, Variables } from '../env';
 import { defaultWarehouseId, writeMovements, resolveWarehouseLotBatches, resolveWarehouseLotCosts } from '../lib/inventory-movements';
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const consignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -436,16 +437,17 @@ consignmentReturns.get('/:id', async (c) => {
 
 /* Insert the return header from a client body. Shared by POST /. */
 async function insertHeader(sb: any, userId: string, body: Record<string, unknown>) {
-  const returnNumber = await nextNum(sb);
   const phoneRaw = (body.phone as string | undefined) ?? null;
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
-  return sb.from('consignment_delivery_returns').insert({
+  return insertWithDocNoRetry<{ id: string; return_number: string }>(
+    () => nextNum(sb),
+    (returnNumber) => sb.from('consignment_delivery_returns').insert({
     return_number: returnNumber,
     do_doc_no: (body.doDocNo as string) ?? (body.cnDocNo as string) ?? null,
     consignment_do_id: (body.consignmentDoId as string) ?? (body.deliveryOrderId as string) ?? null,
     debtor_code: (body.debtorCode as string) ?? null,
     debtor_name: (body.debtorName ?? body.customerName) as string,
-    return_date: (body.returnDate as string) ?? new Date().toISOString().slice(0, 10),
+    return_date: (body.returnDate as string) ?? todayMyt(),
     reason: (body.reason as string) ?? null,
     address1: (body.address1 as string) ?? null,
     address2: (body.address2 as string) ?? null,
@@ -479,7 +481,8 @@ async function insertHeader(sb: any, userId: string, body: Record<string, unknow
     received_at: new Date().toISOString(),
     notes: (body.notes as string) ?? null,
     created_by: userId,
-  }).select(HEADER).single();
+    }).select(HEADER).single(),
+  );
 }
 
 // ── Create ──────────────────────────────────────────────────────────────

@@ -27,7 +27,8 @@ import { normalizePhone, buildVariantSummary, isServiceLine } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { postSiRevenue, reverseSiRevenue, resyncSiRevenue } from '../lib/post-si-revenue';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 import { resolveSalesScopeIds } from '../lib/salesScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { doLineRemaining, doRemainingByItemId, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
@@ -244,8 +245,6 @@ salesInvoices.post('/', async (c) => {
     if (over) return c.json(over, 409);
   }
 
-  const invoiceNumber = await nextNum(sb);
-
   const phoneRaw = (body.phone as string | undefined) ?? null;
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
   const nowIso = new Date().toISOString();
@@ -256,13 +255,15 @@ salesInvoices.post('/', async (c) => {
      The confirm transition (PATCH /:id/status DRAFT→SENT) does the posting. */
   const isDraft = (body as { asDraft?: unknown }).asDraft === true;
 
-  const { data: header, error: hErr } = await sb.from('sales_invoices').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string; debtor_code: string | null; debtor_name: string | null; total_centi: number | null; paid_centi: number | null }>(
+    () => nextNum(sb),
+    (invoiceNumber) => sb.from('sales_invoices').insert({
     invoice_number: invoiceNumber,
     so_doc_no: (body.soDocNo as string) ?? null,
     delivery_order_id: (body.deliveryOrderId as string) ?? null,
     debtor_code: (body.debtorCode as string) ?? null,
     debtor_name: debtorName,
-    invoice_date: (body.invoiceDate as string) ?? new Date().toISOString().slice(0, 10),
+    invoice_date: (body.invoiceDate as string) ?? todayMyt(),
     due_date: (body.dueDate as string) ?? null,
     customer_delivery_date: (body.customerDeliveryDate as string) ?? null,
     address1: (body.address1 as string) ?? null,
@@ -295,7 +296,8 @@ salesInvoices.post('/', async (c) => {
     confirmed_at: isDraft ? null : nowIso,
     notes: (body.notes as string) ?? null,
     created_by: user.id,
-  }).select(HEADER).single();
+    }).select(HEADER).single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; invoice_number: string; debtor_code: string | null; debtor_name: string | null; total_centi: number | null; paid_centi: number | null };
 
@@ -438,18 +440,19 @@ salesInvoices.post('/from-dos', async (c) => {
   if (!doHeaderRow) return c.json({ error: 'delivery_order_not_found' }, 404);
   const head = doHeaderRow as unknown as Record<string, unknown>;
 
-  const invoiceNumber = await nextNum(sb);
   const nowIso = new Date().toISOString();
   const phoneRaw = head.phone as string | null;
   const emPhoneRaw = head.emergency_contact_phone as string | null;
 
-  const { data: header, error: hErr } = await sb.from('sales_invoices').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string }>(
+    () => nextNum(sb),
+    (invoiceNumber) => sb.from('sales_invoices').insert({
     invoice_number: invoiceNumber,
     so_doc_no: (head.so_doc_no as string | null) ?? null,
     delivery_order_id: firstDoId,
     debtor_code: (head.debtor_code as string | null) ?? null,
     debtor_name: (head.debtor_name as string | null) ?? 'Customer',
-    invoice_date: new Date().toISOString().slice(0, 10),
+    invoice_date: todayMyt(),
     customer_delivery_date: (head.customer_delivery_date as string | null) ?? null,
     address1: (head.address1 as string | null) ?? null,
     address2: (head.address2 as string | null) ?? null,
@@ -482,7 +485,8 @@ salesInvoices.post('/from-dos', async (c) => {
     sent_at: isDraft ? null : nowIso,
     confirmed_at: isDraft ? null : nowIso,
     created_by: user.id,
-  }).select(HEADER).single();
+    }).select(HEADER).single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; invoice_number: string };
 
@@ -1127,7 +1131,7 @@ salesInvoices.patch('/:id/payment', async (c) => {
 
   const { error } = await sb.from('sales_invoice_payments').insert({
     sales_invoice_id: id,
-    paid_at: new Date().toISOString().slice(0, 10),
+    paid_at: todayMyt(),
     method: 'cash',
     amount_centi: amount,
     note: body.notes ?? null,

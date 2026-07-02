@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "./types";
 import { auth, requirePermission, requireAnyPermission, requireScmAccess } from "./middleware/auth";
@@ -42,7 +43,7 @@ import fleet from "./routes/fleet";
 // (distinct from the new SCM TMS crew records).
 import settings from "./routes/settings";
 import branding from "./routes/branding";
-import inbox from "./routes/inbox";
+import inbox, { bustInboxForUser } from "./routes/inbox";
 import projectsPrint from "./routes/projects_print";
 import search from "./routes/search";
 import assrPrint from "./routes/assr_print";
@@ -75,6 +76,18 @@ import { getSupabaseService } from "./db/supabase";
 import { getBranding } from "./services/branding";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// After a successful ASSR/Projects write, bust the acting user's inbox snapshot
+// so their own inbox self-heals on the next load (see routes/inbox.ts). Runs the
+// handler first, then busts on a 2xx non-GET; always best-effort.
+const inboxBustAfterWrite: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  await next();
+  if (c.req.method === "GET") return;
+  if (c.res.status >= 200 && c.res.status < 300) {
+    const uid = c.get("user")?.id;
+    if (uid != null) await bustInboxForUser(c.env, uid);
+  }
+};
 
 // Outermost: one structured access-log line + X-Request-Id per request.
 app.use("*", requestLog);
@@ -127,6 +140,18 @@ app.use("/api/*", auth);
 // `Idempotency-Key` header). Mounted after auth so `userId` is set, and
 // before the routes so it can replay a stored response. Fail-open.
 app.use("/api/*", idempotency);
+
+// Inbox snapshot self-heal — the /api/inbox GET caches a per-user aggregate of
+// ASSR + Projects + Trips for ~60s. After the acting user makes a successful
+// write to ASSR or Projects, bust THEIR snapshot so their own inbox reflects it
+// on the next load instead of staying stale for up to a minute. Best-effort and
+// post-response: never blocks or fails the write. Scoped to /api/assr + /api/
+// projects only, where c.get("user") is the Houzs bigint user that keys the
+// snapshot; the /api/scm/* trip routes carry the scm.staff UUID (see the
+// staff-UUID bigint trap), so their inbox slice stays on the 60s TTL. Cross-
+// user staleness (items assigned to others) is likewise intentionally on TTL.
+app.use("/api/assr/*", inboxBustAfterWrite);
+app.use("/api/projects/*", inboxBustAfterWrite);
 
 // Mount the Lead Time Portal first so /api/assr/portal/* doesn't
 // fall through into the catch-all /:id handler on the main module.

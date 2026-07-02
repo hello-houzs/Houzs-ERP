@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { todayMyt } from "../scm/lib/my-time";
 import { AutoCountClient, cleanPhone } from "./autocount";
 import { resolveCreditorForCase } from "./stockItems";
 import { getActiveStaffToken } from "./caseTracking";
@@ -230,7 +231,7 @@ export async function createAssrCase(
   }
 
   const assrNo = await nextAssrNumber(env);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayMyt();
   // Use first item_code for the legacy column
   const firstItem = input.items[0]?.item_code ?? null;
 

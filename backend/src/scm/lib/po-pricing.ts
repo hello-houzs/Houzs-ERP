@@ -18,8 +18,9 @@
 // ----------------------------------------------------------------------------
 
 import type { MaintenanceConfig } from '../shared/mfg-pricing';
+import { todayMyt } from './my-time';
 
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => todayMyt();
 
 /** Internal: load the most-recent config row for a given scope at asOf. */
 async function loadConfigForScope(

@@ -22,6 +22,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { todayMyt } from '../lib/my-time';
 import type { Env, Variables } from '../env';
 
 export const maintenanceConfig = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -39,7 +40,7 @@ type Row = {
 };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const todayIso = () => new Date().toISOString().slice(0, 10);
+const todayIso = () => todayMyt();
 
 function parseScope(raw: string | null | undefined): string | null {
   const s = (raw ?? '').trim();

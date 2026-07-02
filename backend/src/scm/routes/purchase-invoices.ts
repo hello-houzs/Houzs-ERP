@@ -10,7 +10,8 @@ import {
 } from '../shared/so-line-display';
 import { postPiAccounting, reversePiAccounting, resyncPiAccounting } from './accounting';
 import { recostForPi, recostFromGrn } from '../lib/recost';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { todayMyt } from '../lib/my-time';
 
 export const purchaseInvoices = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseInvoices.use('*', supabaseAuth);
@@ -376,7 +377,6 @@ purchaseInvoices.post('/', async (c) => {
     }
   }
 
-  const invoiceNumber = await nextNum(sb, 'PI');
   let subtotal = 0;
   const itemRows = items.map((it) => {
     /* PI discount unification (audit 2026-06-11 M3) — ONE rule on every PI
@@ -405,13 +405,15 @@ purchaseInvoices.post('/', async (c) => {
   /* PR-DRAFT-removal — PIs are now created as POSTED directly. PI is
      AP-only (no inventory impact — that landed at GRN time), so there's
      no side-effect helper to call after insert. */
-  const { data: header, error: hErr } = await sb.from('purchase_invoices').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string }>(
+    () => nextNum(sb, 'PI'),
+    (invoiceNumber) => sb.from('purchase_invoices').insert({
     invoice_number: invoiceNumber,
     supplier_invoice_ref: (body.supplierInvoiceRef as string) ?? null,
     supplier_id: body.supplierId,
     purchase_order_id: (body.purchaseOrderId as string) ?? null,
     grn_id: (body.grnId as string) ?? null,
-    invoice_date: (body.invoiceDate as string) ?? new Date().toISOString().slice(0, 10),
+    invoice_date: (body.invoiceDate as string) ?? todayMyt(),
     due_date: (body.dueDate as string) ?? null,
     currency: ((body.currency as string) ?? 'MYR').toUpperCase(),
     subtotal_centi: subtotal,
@@ -420,7 +422,8 @@ purchaseInvoices.post('/', async (c) => {
     status: asDraft ? 'DRAFT' : 'POSTED',
     posted_at: asDraft ? null : new Date().toISOString(),
     created_by: user.id,
-  }).select(HEADER).single();
+    }).select(HEADER).single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; invoice_number: string };
 
@@ -713,7 +716,7 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
   const { data: existingPiNos } = await sb.from('purchase_invoices').select('invoice_number').like('invoice_number', `PI-${yymm}-%`);
   let counter = parseInt(nextMonthlyDocNo(`PI-${yymm}`, ((existingPiNos ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number)).slice(`PI-${yymm}-`.length), 10) - 1;
 
-  const invoiceDate = body.invoiceDate ?? new Date().toISOString().slice(0, 10);
+  const invoiceDate = body.invoiceDate ?? todayMyt();
   const created: Array<{ id: string; invoiceNumber: string; supplierId: string; grnCount: number; lineCount: number }> = [];
 
   /* PI discount unification (audit 2026-06-11 M3) — ONE rule on every PI line
@@ -863,7 +866,6 @@ purchaseInvoices.post('/from-grn', async (c) => {
     .filter((it) => it._remaining > 0);
   if (lines.length === 0) return c.json({ error: 'nothing_to_invoice', message: 'GRN is fully invoiced' }, 400);
 
-  const invoiceNumber = await nextNum(sb, 'PI');
   /* PI discount unification (audit 2026-06-11 M3) — ONE rule on every PI line
      write path: line_total_centi = qty × unit − discount, discount stored.
      The GRN line discount is pro-rated by the billed (remaining) qty over
@@ -873,12 +875,14 @@ purchaseInvoices.post('/from-grn', async (c) => {
     Math.round(Number(it.discount_centi ?? 0) * it._remaining / (Number(it.qty_accepted) || 1));
   const subtotal = lines.reduce((s, it) => s + (it._remaining * it.unit_price_centi - discFor(it)), 0);
 
-  const { data: header, error: hErr } = await sb.from('purchase_invoices').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string }>(
+    () => nextNum(sb, 'PI'),
+    (invoiceNumber) => sb.from('purchase_invoices').insert({
     invoice_number: invoiceNumber,
     supplier_id: g.supplier_id,
     purchase_order_id: g.purchase_order_id,
     grn_id: g.id,
-    invoice_date: new Date().toISOString().slice(0, 10),
+    invoice_date: todayMyt(),
     currency: 'MYR',
     subtotal_centi: subtotal,
     tax_centi: 0,
@@ -887,7 +891,8 @@ purchaseInvoices.post('/from-grn', async (c) => {
     posted_at: new Date().toISOString(),
     notes: `From ${g.grn_number}`,
     created_by: user.id,
-  }).select('id, invoice_number').single();
+    }).select('id, invoice_number').single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; invoice_number: string };
 
