@@ -127,6 +127,15 @@ async function binaryFetch(url: string, init: RequestInit, timeoutMs: number): P
 // Mutations are NOT retried (not idempotent) and are left uncapped.
 const GET_TIMEOUT_MS = 27_000;
 const GET_RETRIES = 2;
+// A cold Hyperdrive pool answers with a 503 carrying a "database is briefly
+// unavailable" body — raised by the connection layer BEFORE the handler/DB is
+// touched, so the request never executed. That makes it safe to retry even for
+// a mutation (no double-write). We retry ONLY this specific cold-pool 503; every
+// other 503 and all 4xx/5xx still surface as-is.
+const COLD_POOL_RETRIES = 3;
+const isColdPool503 = (e: HttpError) =>
+  e.status === 503 &&
+  /briefly unavailable|warming up|try again in a moment/i.test(String(e.message || ""));
 
 async function handleResponse<T>(res: Response, path: string): Promise<T> {
   if (res.status === 401) {
@@ -185,6 +194,12 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       // errors fail fast and are never masked.
       if (e instanceof HttpError) {
         if (e.status === 503 && method === "GET" && attempt < retries) {
+          await sleep(600 + attempt * 1200);
+          continue;
+        }
+        // Cold-pool 503 (DB not yet touched) is safe to retry for mutations too,
+        // so a save early after idle doesn't dump a raw 503 on the user.
+        if (isColdPool503(e) && method !== "GET" && attempt < COLD_POOL_RETRIES) {
           await sleep(600 + attempt * 1200);
           continue;
         }

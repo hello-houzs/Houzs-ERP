@@ -156,6 +156,16 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
       throw e;
     }
     if (res.status === 503 && isGet && attempt < 2) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
+    // Cold Hyperdrive pool answers 503 with a "database briefly unavailable" body
+    // BEFORE the handler/DB runs, so a mutation never executed → safe to retry
+    // (no double-write). Retry ONLY this specific cold-pool 503 for mutations, so
+    // an SO save early after idle self-heals instead of dumping a raw 503.
+    if (res.status === 503 && !isGet && attempt < 3) {
+      const warmText = await res.clone().text().catch(() => '');
+      if (/briefly unavailable|warming up|try again in a moment/i.test(warmText)) {
+        await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue;
+      }
+    }
     break;
   }
 
