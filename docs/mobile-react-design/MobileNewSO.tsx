@@ -49,7 +49,32 @@ export function MobileNewSO({ mode, order = {}, onCancel, onSaveDraft, onSubmit 
           </div>
           <button style={{ width: '100%', padding: 11, background: 'transparent', border: '1px dashed #16695f', borderRadius: 12, color: '#16695f', fontFamily: 'inherit', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>+ Add item</button>
         </div></div>
-        <div className="card"><div className="card-h"><span className="card-t">Payments</span></div><div className="card-b">
+        {/* Payments — an SO can carry SEVERAL payments (deposit + balances). When
+            opened from a scan, ONE payment row is seeded per scanned payment slip,
+            each carrying its own slip. Sample: two seeded rows + add-more. */}
+        <div className="card"><div className="card-h"><span className="card-t">Payments</span><span className="card-sub">2 payments</span></div><div className="card-b">
+          {[
+            { method: 'Cash', amount: '500.00', slip: 'Deposit slip' },
+            { method: 'Merchant', amount: '950.00', slip: 'Balance slip' },
+          ].map((p, i) => (
+            <div key={i} style={{ border: '1px solid #e3e6e0', borderRadius: 11, padding: 11, marginBottom: 9 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ width: 19, height: 19, borderRadius: 6, background: '#16695f', color: '#fff', fontSize: 10.5, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{i + 1}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>{p.method}</span>
+                </div>
+                <span style={{ color: '#b23a3a', fontSize: 16, cursor: 'pointer' }}>&times;</span>
+              </div>
+              <div style={{ display: 'flex', gap: 9, marginTop: 8 }}>
+                <div style={{ flex: 1 }}><F label="Amount (RM)" value={p.amount} /></div>
+                <div style={{ flex: 1 }}>
+                  <div className="fld"><span className="fld-l">Slip</span>
+                    <div style={{ height: 38, borderRadius: 9, border: '1px solid #bcdcd7', background: '#e1efed', color: '#16695f', fontSize: 11.5, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>{p.slip} &#10003;</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
           <button style={{ width: '100%', padding: 11, background: 'transparent', border: '1px dashed #16695f', borderRadius: 12, color: '#16695f', fontFamily: 'inherit', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>+ Add payment</button>
         </div></div>
       </div>
