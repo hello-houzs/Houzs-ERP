@@ -195,6 +195,9 @@ export interface AssrCase {
   verified_by?: number | null;
   verified_by_name?: string | null;
   verified_at?: string | null;
+  // Mig 105 — editable QC-on-receipt inspection date, distinct from
+  // the auto-stamped verified_at audit timestamp.
+  qc_receipt_date?: string | null;
   // Soft-delete
   archived_at?: string | null;
   archived_by?: number | null;

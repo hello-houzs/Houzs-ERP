@@ -3996,7 +3996,7 @@ function InspectionCard({
         onSave={(v) => patch({ inspection_result: v })}
       />
       <InlineEdit
-        label="QC Inspection Date"
+        label="QC Date after supplier return"
         type="date"
         value={c.items_ready_at}
         onSave={(v) => patch({ items_ready_at: v || null })}
@@ -4099,11 +4099,17 @@ function VerificationCard({
       accent="bg-accent"
       title={
         <>
-          Issue Inspection{" "}
+          QC Issue Inspection{" "}
           <span className="font-normal normal-case tracking-normal text-ink-muted/70">— on receipt</span>
         </>
       }
     >
+      <InlineEdit
+        label="QC Issue Inspection Date"
+        type="date"
+        value={c.qc_receipt_date}
+        onSave={(v) => patch({ qc_receipt_date: v || null })}
+      />
       <div>
         <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Outcome
