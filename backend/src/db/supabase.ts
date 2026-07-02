@@ -27,6 +27,37 @@ function requireConfig(env: Env): { url: string; serviceKey: string } {
   return { url, serviceKey };
 }
 
+/* Transient-retry wrapper for the SCM PostgREST calls. supabase-js uses the
+   global fetch, which has NO retry — a cold/blip on the Supabase REST edge would
+   surface as an error where a retry would have succeeded (the same transient
+   class the d1-compat path already retries for env.DB). Conservative to avoid
+   double-writes: retry when the request almost certainly never reached the
+   server — a network THROW (any method; nothing applied) and a 502/503/504
+   gateway status on GET (idempotent). A 5xx on a write is returned as-is so a
+   possibly-applied mutation is never re-sent. Up to 3 retries with backoff. */
+const REST_RETRIES = 3;
+async function retryingFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  let lastErr: unknown;
+  for (let i = 0; ; i++) {
+    try {
+      const res = await fetch(input, init);
+      if ((res.status === 502 || res.status === 503 || res.status === 504) && method === "GET" && i < REST_RETRIES) {
+        await new Promise((r) => setTimeout(r, 300 + i * 500));
+        continue;
+      }
+      return res;
+    } catch (e) {
+      lastErr = e;
+      if (i < REST_RETRIES) {
+        await new Promise((r) => setTimeout(r, 300 + i * 500));
+        continue;
+      }
+      throw lastErr;
+    }
+  }
+}
+
 /**
  * Service-role client (full access, RLS bypassed) for the server-side SCM route
  * handlers. Built per request — a Worker request boundary can't share a client.
@@ -35,6 +66,9 @@ function requireConfig(env: Env): { url: string; serviceKey: string } {
 export function getSupabaseService(env: Env) {
   const { url, serviceKey } = requireConfig(env);
   return createClient(url, serviceKey, {
+    // Retry transient REST-edge blips (see retryingFetch) so an SCM page doesn't
+    // error on a hiccup that a retry clears — parity with the env.DB retry path.
+    global: { fetch: retryingFetch },
     // The ported 2990's SCM tables live in a dedicated `scm` Postgres schema
     // (kept apart from Houzs's own public.* tables, which carry different
     // AutoCount-named tables — warehouses / purchase_orders / etc.). Pointing
