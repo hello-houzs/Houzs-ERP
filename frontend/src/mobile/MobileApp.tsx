@@ -23,7 +23,6 @@ import { MobileScan, type MobileScanPrefill } from "./MobileScan";
 import { MobileConvertWizard, type ConvertTarget } from "./MobileConvertWizard";
 import { MobilePOD } from "./MobilePOD";
 import { MobileProfile } from "./MobileProfile";
-import { MobileStockOps, type StockOp } from "./MobileStockOps";
 import "./mobile.css";
 
 type Tab = "orders" | "service" | "calendar" | "profile";
@@ -37,8 +36,6 @@ type Screen =
   | { t: "module-form"; key: string; mode: "new" | "edit"; row?: any }
   | { t: "convert"; key: string; title: string; target: ConvertTarget; initialSourceId?: string }
   | { t: "pod"; docNo: string }
-  | { t: "inventory-hub" }
-  | { t: "stock-ops"; op: StockOp }
   | { t: "service" }
   | { t: "delivery-planning" }
   | { t: "pms"; projectId?: number }
@@ -54,11 +51,6 @@ const MODULE_TO_CONVERT: Record<string, ConvertTarget> = {
   "sales-invoices": "si",
   "grns": "grn",
   "mfg-purchase-orders": "po",
-  // The three from-source create paths desktop supports but mobile lacked:
-  // Sales Return from a DO, Purchase Invoice + Purchase Return from a GRN.
-  "delivery-returns": "dr",
-  "purchase-invoices": "pi",
-  "purchase-returns": "pr",
 };
 
 const ROUTE_TO_CONFIG: Record<string, string> = {
@@ -220,9 +212,6 @@ function MobileAppInner() {
     if (path === "/announcements") return setScreen({ t: "announcements" });
     if (path === "/activity-inbox") return setScreen({ t: "inbox" });
     if (path === "/scm/delivery-planning") return setScreen({ t: "delivery-planning" });
-    // Inventory opens a hub: read-only balances (existing module) PLUS the three
-    // stock operations (adjustment / transfer / take), each access-gated.
-    if (path === "/scm/inventory") return setScreen({ t: "inventory-hub" });
     if (path === "/team") {
       const tab = new URLSearchParams((to.split("?")[1] || "")).get("tab");
       const teamKey = tab === "members" ? "members" : tab === "positions" ? "positions" : tab === "departments" ? "departments" : null;
@@ -277,19 +266,6 @@ function MobileAppInner() {
       onSaved={() => setScreen({ t: "module", key: screen.key, title })} />;
   }
   if (screen.t === "pod") return <MobilePOD docNo={screen.docNo} onBack={back} onDone={back} />;
-  if (screen.t === "inventory-hub") {
-    return (
-      <InventoryHub
-        onBack={back}
-        pageAccess={pageAccess}
-        onViewBalances={() => setScreen({ t: "module", key: "inventory", title: "Inventory" })}
-        onOp={(op) => setScreen({ t: "stock-ops", op })}
-      />
-    );
-  }
-  if (screen.t === "stock-ops") {
-    return <MobileStockOps op={screen.op} onBack={() => setScreen({ t: "inventory-hub" })} onDone={() => setScreen({ t: "inventory-hub" })} />;
-  }
   if (screen.t === "service") return <MobileServiceCase onBack={back} />;
   if (screen.t === "delivery-planning") return <MobileDeliveryPlanning onBack={back} onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })} />;
   if (screen.t === "pms") return <MobilePMS onBack={back} initialProjectId={screen.projectId} />;
@@ -390,53 +366,6 @@ function MIcon({ name, color, size }: { name: string; color: string; size: numbe
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       {MENU_ICONS[name] ?? null}
     </svg>
-  );
-}
-
-/** Inventory hub — the mobile Inventory entry. Read-only balances sit alongside
- *  the three stock operations. Each op tile is gated by the SAME page_access key
- *  the desktop nav uses (write actions need "full"); a user with only read access
- *  sees the balances view but not the ops. */
-function InventoryHub({
-  onBack, pageAccess, onViewBalances, onOp,
-}: {
-  onBack: () => void;
-  pageAccess: (page: string) => string;
-  onViewBalances: () => void;
-  onOp: (op: StockOp) => void;
-}) {
-  const canAdjust  = pageAccess("scm.warehouse.adjustments") === "full";
-  const canTransfer = pageAccess("scm.warehouse.transfers") === "full";
-  const canTake    = pageAccess("scm.warehouse.stock_take") === "full";
-
-  const Tile = ({ title, sub, tone, onClick }: { title: string; sub: string; tone: string; onClick: () => void }) => (
-    <button className="mcard" onClick={onClick} style={{ width: "100%", textAlign: "left", alignItems: "flex-start", flexDirection: "column", gap: 3, padding: "13px 14px" }}>
-      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span className="mi" style={{ background: tone }}>
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5Z" /><path d="M3 8l9 5 9-5" /></svg>
-        </span>
-        <span style={{ fontSize: 14, fontWeight: 800, color: "#11140f" }}>{title}</span>
-      </span>
-      <span style={{ fontSize: 11.5, color: "#767b6e", marginLeft: 31 }}>{sub}</span>
-    </button>
-  );
-
-  return (
-    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      <header className="hdr">
-        <span onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 12.5, fontWeight: 600, color: "#16695f", cursor: "pointer" }}>
-          <span style={{ fontSize: 17, lineHeight: 1 }}>{"‹"}</span> Back
-        </span>
-        <div className="ey" style={{ color: "#a16a2e", marginTop: 6 }}>Warehouse</div>
-        <div style={{ fontSize: 19, fontWeight: 800, color: "#11140f", marginTop: 2 }}>Inventory</div>
-      </header>
-      <div className="scroll" style={{ padding: 12, display: "flex", flexDirection: "column", gap: 9 }}>
-        <Tile title="View balances" sub="Live stock per warehouse (read-only)" tone="#16695f" onClick={onViewBalances} />
-        {canAdjust  && <Tile title="Stock adjustment" sub="Increase / decrease with a reason" tone="#a16a2e" onClick={() => onOp("adjustment")} />}
-        {canTransfer && <Tile title="Stock transfer" sub="Move stock between warehouses" tone="#2f5d4f" onClick={() => onOp("transfer")} />}
-        {canTake    && <Tile title="Stock take" sub="Create a count sheet snapshot" tone="#557089" onClick={() => onOp("take")} />}
-      </div>
-    </div>
   );
 }
 

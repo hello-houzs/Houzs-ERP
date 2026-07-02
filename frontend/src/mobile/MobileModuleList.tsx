@@ -674,59 +674,6 @@ export const FORM_DRIVERS: FormSchema = {
   ],
 };
 
-/* products (SKU master) — POST /mfg-products (code+name+category required),
-   PATCH /mfg-products/:id. Both gated on `scm.config.write` (a missing grant
-   surfaces the route's 403 inline). Response is FLAT ({ id, code }); id =
-   mfg_products.id (the text PK the PATCH path keys on), so the list this form
-   backs MUST read /mfg-products (see MODULE_CONFIGS.products) — the retail
-   /products view's id is a different table and can't drive the PATCH.
-
-   EVERYDAY SUBSET ONLY. Prices are SEN (moneyScale 100): basePriceSen is the
-   POS/base selling price the SO line editor defaults from, sellPriceSen the
-   selling override, costPriceSen the PO cost. Category is the FIXED mfg enum
-   (SOFA / BEDFRAME / MATTRESS / ACCESSORY / SERVICE), sent verbatim.
-
-   PHASE 2 (desktop-only, intentionally omitted): size-variant / seat-height
-   price maps (seatHeightPrices), effective-dated Maintenance config, modular /
-   combo (allowed_options, sub_assemblies, pieces), included / free-gift add-ons,
-   hero photo, and the sofa/bedframe configurator. Those need pickers + pricing
-   recompute this flat form must not touch. */
-export const FORM_PRODUCTS: FormSchema = {
-  title: "Product",
-  eyebrow: "Catalogue",
-  base: "scm",
-  createPath: "/mfg-products",
-  updatePath: (id) => `/mfg-products/${encodeURIComponent(id)}`,
-  idKey: "id",
-  responseIdKeys: ["id"],
-  fields: [
-    { key: "code", label: "SKU Code", type: "text", required: true, placeholder: "e.g. BED-001", hint: "Uppercase letters, digits, hyphens." },
-    { key: "name", label: "Name", type: "text", required: true, placeholder: "Product name" },
-    // Category is CREATE-only on the backend (POST validates the enum; PATCH
-    // never remaps it). Required so a new SKU lands in the right lane; on edit
-    // it shows the current value and re-saving is a no-op (moving a SKU between
-    // categories stays a desktop operation).
-    { key: "category", label: "Category", type: "select", required: true, placeholder: "Select category…", options: [
-      { value: "BEDFRAME", label: "Bedframe" }, { value: "SOFA", label: "Sofa" },
-      { value: "MATTRESS", label: "Mattress" }, { value: "ACCESSORY", label: "Accessory" },
-      { value: "SERVICE", label: "Service" },
-    ], hint: "Set at creation; category moves are done on desktop." },
-    { key: "sizeLabel", label: "Size", type: "text", placeholder: "e.g. Queen", hint: "Set at creation." },
-    { key: "description", label: "Description", type: "textarea", hint: "Set at creation." },
-    { key: "branding", label: "Brand", type: "text" },
-    { key: "barcode", label: "Barcode", type: "text" },
-    { key: "basePriceSen", label: "Base Selling Price (RM)", type: "money", moneyScale: 100 },
-    { key: "costPriceSen", label: "Cost Price (RM)", type: "money", moneyScale: 100 },
-    // Selling override + Active are EDIT-only on the backend (a new SKU starts
-    // ACTIVE, and its selling price defaults from the base). Shown here so an
-    // edit can set them; ignored on create.
-    { key: "sellPriceSen", label: "Selling Price (RM)", type: "money", moneyScale: 100, hint: "Editable after creation. Blank uses the base price." },
-    { key: "status", label: "Active", type: "select", options: [
-      { value: "ACTIVE", label: "Active" }, { value: "INACTIVE", label: "Inactive" },
-    ], placeholder: "Active", hint: "Editable after creation." },
-  ],
-};
-
 /* fleet — POST /lorries (plate required, type enum), PATCH /lorries/:id.
    Response wraps as { lorry: {...} }; id = lorry.id. capacityM3 / capacityKg
    are numeric(.,.) → plain numbers (NOT money). */
@@ -1523,7 +1470,6 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
       { key: "name", label: "Name", cmp: (a, b) => byStr(a.name, b.name) },
       { key: "price", label: "Price", cmp: (a, b) => byNum(pick(a, "basePriceSen", "base_price_sen"), pick(b, "basePriceSen", "base_price_sen")) },
     ],
-    form: FORM_PRODUCTS,
   },
 
   // Design m-mrp: SKU/Required/On hand/Shortage/Incoming + state pill. MrpSku
