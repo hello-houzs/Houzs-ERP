@@ -4773,6 +4773,7 @@ function ProjectDetailContent({
                     sizeSqm={p.size_sqm ?? null}
                     durationDays={p.duration_days ?? null}
                     lines={detail.data?.finance_lines ?? []}
+                    lumpSales={detail.data?.finance?.total_sales ?? null}
                     onChange={() => detail.reload()}
                     toast={toast}
                   />
@@ -9897,6 +9898,7 @@ function FinanceLedgerSection({
   sizeSqm,
   durationDays,
   lines,
+  lumpSales,
   onChange,
   toast,
 }: {
@@ -9904,6 +9906,10 @@ function FinanceLedgerSection({
   sizeSqm: number | null;
   durationDays: number | null;
   lines: FinanceLine[];
+  /** project_finance.total_sales — the quick lump-sum "Total Sales" box.
+   *  Used as the snapshot's sales figure when no individual sales-entry
+   *  lines exist, so the green box and the snapshot agree. */
+  lumpSales: number | null;
   onChange: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
@@ -10006,7 +10012,11 @@ function FinanceLedgerSection({
   const totalCost = cost.reduce((s, l) => s + (l.amount || 0), 0);
   const profit = totalIncome - totalCost;
   const margin = totalIncome > 0 ? (profit / totalIncome) * 100 : null;
-  const sales = sumBy("income", "sales");
+  // Prefer individual sales-entry lines; if none exist, fall back to the
+  // quick lump-sum Total Sales box (project_finance.total_sales) so the
+  // snapshot matches the green Total Sales figure the user keyed in.
+  const salesLinesSum = sumBy("income", "sales");
+  const sales = salesLinesSum > 0 ? salesLinesSum : (lumpSales ?? 0);
   // COGS family — break out + total. Legacy `cogs` slug folds into
   // the total alongside the three product sub-cats.
   const cogsLegacy = sumBy("cost", "cogs");
