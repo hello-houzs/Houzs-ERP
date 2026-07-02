@@ -4,8 +4,10 @@ import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
+import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import type { MobileScanPrefill } from "./MobileScan";
+import { MobileSkuPicker, type PickedSku } from "./MobileSkuPicker";
 import "./mobile.css";
 
 /* ---------------------------------------------------------------------------
@@ -25,16 +27,23 @@ import "./mobile.css";
  * The backend recomputes honest pricing and mints the doc_no server-side, so we
  * never send a doc_no. Money crosses the wire as *_centi integers.
  *
- * SCOPE NOTE (line items on the create path): the design lets you build line
- * items with an optional bedframe variant panel. On CREATE we send them as
- * items[] with a free-typed description (itemCode left blank — the backend
- * drops blank codes as a no-op rather than rejecting, see
- * lib/validate-item-codes). A blank processing/delivery date pair keeps the
+ * LINE ITEMS: each line picks a REAL catalog SKU via MobileSkuPicker (the
+ * searchable bottom-sheet over useMfgProducts → GET /mfg-products). On CREATE we
+ * send items[] with the picked item_code + item_group + variants + qty (mirrors
+ * desktop's POST); the server recomputes the honest price and rejects >0.5%
+ * drift, so we NEVER send an authoritative price — the unit price we send is a
+ * catalog default only, and a blank processing/delivery date pair keeps the
  * order a plain draft (the server pairs-guards proc/deliv, so we submit them
- * all-or-nothing). On EDIT the PATCH /:docNo endpoint only accepts HEADER
- * fields; line-item and payment mutations flow through separate
- * /:docNo/items and /:docNo/payments endpoints, so in edit mode the existing
- * lines/payments are shown read-only and only header fields are saved.
+ * all-or-nothing).
+ *
+ * On EDIT the PATCH /:docNo endpoint accepts HEADER fields only; line-item
+ * mutations flow through the dedicated /:docNo/items endpoints. So the existing
+ * lines load into the SAME editable cards and, on save, we diff them against the
+ * frozen snapshot: added lines → POST /:docNo/items, changed lines → PATCH
+ * /:docNo/items/:itemId, removed lines → DELETE /:docNo/items/:itemId (in-app
+ * confirm). Line edits are locked (read-only) once the SO is SHIPPED+ / has a
+ * downstream DO/SI (has_children), mirroring desktop. Payments stay read-only in
+ * edit mode (their own screen owns them).
  * ------------------------------------------------------------------------- */
 
 type Mode = "new" | "edit" | "edit-draft";
@@ -52,9 +61,18 @@ type LineCat = "" | "sofa" | "bedframe";
 
 type LineItem = {
   key: string;
+  // Catalog identity — set by the SKU picker. itemCode drives the backend's
+  // honest-pricing recompute + inventory linkage; a blank code is an unpicked
+  // line (blocked at save). itemGroup is the lowercase catalog category the
+  // backend variant rule reads (sofa/bedframe/mattress/accessory/others).
+  itemCode: string;
+  itemGroup: string;
+  // In edit mode, the persisted mfg_sales_order_items.id (blank = a line the
+  // operator added this session → POST on save).
+  itemId: string;
   name: string;
   qty: string;
-  price: string; // RM, as typed (e.g. "1,450.00")
+  price: string; // RM, as typed (e.g. "1,450.00") — display/default only; server recomputes
   ddate: string; // per-line delivery date (ISO yyyy-mm-dd)
   remark: string;
   photo: boolean; // per-line delivery/reference photo captured (display-only)
@@ -119,12 +137,19 @@ type SoItem = {
   id: string;
   description: string | null;
   item_code: string | null;
+  item_group: string | null;
   qty: number | null;
   unit_price_centi: number | null;
+  discount_centi: number | null;
   line_delivery_date: string | null;
   remark: string | null;
+  variants: Record<string, unknown> | null;
+  cancelled: boolean | null;
 };
-type DetailResp = { salesOrder: SoHeader; items: SoItem[] };
+/* has_children / status ride on the header (stamped by GET /:docNo) so the
+   edit form can lock line mutations once the SO is SHIPPED+ or has a
+   downstream DO/SI, mirroring the desktop SO Detail lock rules. */
+type DetailResp = { salesOrder: SoHeader & { has_children?: boolean | null; status?: string | null }; items: SoItem[] };
 type SoPayment = {
   id: string;
   paid_at: string | null;
@@ -171,10 +196,75 @@ const inchNum = (s: string) => parseInt(s, 10) || 0;
 
 function newLine(): LineItem {
   return {
-    key: uid(), name: "", qty: "1", price: "0.00", ddate: "", remark: "", photo: false, cat: "",
+    key: uid(), itemCode: "", itemGroup: "", itemId: "",
+    name: "", qty: "1", price: "0.00", ddate: "", remark: "", photo: false, cat: "",
     fabric: FABRIC_OPTS[0], seat: '24"',
     size: "Queen", head: 'Standard 28"', store: "No storage",
     divan: '10"', leg: '6"', gap: '1"',
+  };
+}
+
+/* item_group (catalog category, lowercase) → the line's `cat` axis, which
+   drives the sofa/bedframe variant panels. Only sofa/bedframe have panels;
+   every other group (mattress/accessory/others/service) is a plain line. */
+function catForGroup(group: string | null | undefined): LineCat {
+  const g = (group ?? "").toLowerCase();
+  return g === "sofa" ? "sofa" : g === "bedframe" ? "bedframe" : "";
+}
+
+/* Build a line's `variants` blob the same way the create path does, so ONE
+   builder feeds both the create body and the edit-mode POST/PATCH. Mirrors
+   desktop's canonical variant keys (bedframe: divanHeight/legHeight/gap/
+   fabricCode(+size/headboard/storage descriptive); sofa: seatHeight/legHeight/
+   fabricCode). remark rides as variants.remark AND the dedicated column. */
+function buildVariants(l: LineItem): Record<string, unknown> {
+  const variants: Record<string, unknown> = {};
+  if (l.remark.trim()) variants.remark = l.remark.trim();
+  if (l.cat === "bedframe") {
+    variants.size = l.size;
+    variants.headboard = l.head;
+    variants.storage = l.store;
+    variants.divanHeight = l.divan;
+    variants.legHeight = l.leg;
+    variants.gap = l.gap;
+    variants.fabricCode = l.fabric;
+    variants.totalHeight = inchNum(l.divan) + inchNum(l.leg) + inchNum(l.gap);
+  } else if (l.cat === "sofa") {
+    variants.seatHeight = l.seat;
+    variants.legHeight = l.leg;
+    variants.fabricCode = l.fabric;
+  }
+  return variants;
+}
+
+/* Map a persisted SoItem (edit prefill) back into an editable LineItem. Reads
+   the descriptive variant keys buildVariants writes, dual-reading nothing new
+   (variants is a free-form blob, not driver-camelCased). Falls back to the
+   newLine() defaults for any axis the stored blob didn't carry. */
+function lineFromItem(it: SoItem): LineItem {
+  const base = newLine();
+  const v = (it.variants ?? {}) as Record<string, unknown>;
+  const str = (x: unknown, fallback: string) => (typeof x === "string" && x ? x : fallback);
+  const cat = catForGroup(it.item_group);
+  return {
+    ...base,
+    itemId: it.id,
+    itemCode: it.item_code ?? "",
+    itemGroup: (it.item_group ?? "").toLowerCase(),
+    name: it.description ?? it.item_code ?? "",
+    qty: String(it.qty ?? 1),
+    price: fromCenti(it.unit_price_centi),
+    ddate: (it.line_delivery_date ?? "").slice(0, 10),
+    remark: it.remark ?? str(v.remark, ""),
+    cat,
+    fabric: str(v.fabricCode, base.fabric),
+    seat: str(v.seatHeight, base.seat),
+    size: str(v.size, base.size),
+    head: str(v.headboard, base.head),
+    store: str(v.storage, base.store),
+    divan: str(v.divanHeight, base.divan),
+    leg: str(v.legHeight, base.leg),
+    gap: str(v.gap, base.gap),
   };
 }
 function newPayment(): Payment {
@@ -218,6 +308,7 @@ export function MobileNewSO({
 }) {
   const qc = useQueryClient();
   const notify = useNotify();
+  const confirm = useConfirm();
   const staffQ = useStaff();
   const isEdit = mode === "edit" || mode === "edit-draft";
 
@@ -276,9 +367,19 @@ export function MobileNewSO({
       ? [{ ...newPayment(), method: scanPayMethod, amount: scanPrefill?.payment?.amount || "0.00", approval: scanPrefill?.payment?.approval ?? "" }]
       : [],
   );
-  // In edit mode, the existing (read-only) lines/payments loaded from the SO.
-  const [existingItems, setExistingItems] = useState<SoItem[]>([]);
+  // In edit mode: the ORIGINAL persisted items (frozen snapshot) used to diff
+  // against the editable `lines` on save — POST added, PATCH changed, DELETE
+  // removed. Payments stay read-only here (own screen).
+  const [origItems, setOrigItems] = useState<SoItem[]>([]);
   const [existingPays, setExistingPays] = useState<SoPayment[]>([]);
+  /* Line-mutation lock (edit mode) — mirrors desktop SalesOrderDetail: line
+     add/edit/delete is blocked once the SO is SHIPPED+ / INVOICED / CLOSED /
+     CANCELLED or has a non-cancelled downstream DO/SI (has_children). The
+     backend also enforces this (soHasDownstream → 409); we gate the UI so the
+     operator never sends a doomed request. */
+  const [lineLocked, setLineLocked] = useState(false);
+  // SKU picker sheet — the line key it was opened for, or null when closed.
+  const [pickerFor, setPickerFor] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(isEdit);
   const [submitting, setSubmitting] = useState(false);
@@ -353,8 +454,19 @@ export function MobileNewSO({
         setState(h.customer_state ?? "");
         setCity(h.city ?? "");
         setPostcode(h.postcode ?? "");
-        setExistingItems(detail.items ?? []);
+        /* Load the persisted lines into the editable list (skip cancelled
+           rows — they're history, not editable). Keep the frozen snapshot for
+           the save-time diff. When the SO has no live lines, seed one blank
+           editable card so the operator can add the first item. */
+        const liveItems = (detail.items ?? []).filter((it) => !it.cancelled);
+        setOrigItems(liveItems);
+        const editable = liveItems.map(lineFromItem);
+        setLines(editable.length ? editable : [newLine()]);
         setExistingPays(payResp.payments ?? []);
+        /* Lock line mutations on SHIPPED+ / has_children (desktop parity). */
+        const st = (detail.salesOrder.status ?? "").toUpperCase();
+        const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
+        setLineLocked(LOCKED.includes(st) || Boolean(detail.salesOrder.has_children));
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Couldn't load this order.");
       } finally {
@@ -367,10 +479,15 @@ export function MobileNewSO({
   }, [isEdit, docNo]);
 
   // ---- Totals ---------------------------------------------------------------
-  const subtotal = useMemo(() => {
-    if (isEdit) return existingItems.reduce((a, it) => a + (it.unit_price_centi ?? 0) * (it.qty ?? 0), 0);
-    return lines.reduce((a, l) => a + toCenti(l.price) * num(l.qty), 0);
-  }, [isEdit, existingItems, lines]);
+  /* Display-only subtotal from the on-screen line prices. This is an ESTIMATE
+     for the operator — the server recomputes every line's honest price on save,
+     so the authoritative total lands on the SO detail after save. Lines are the
+     single source in both new + edit mode now (edit loads persisted lines into
+     the editable list). */
+  const subtotal = useMemo(
+    () => lines.reduce((a, l) => a + toCenti(l.price) * num(l.qty), 0),
+    [lines],
+  );
   const paidTotal = useMemo(() => {
     if (isEdit) return existingPays.reduce((a, p) => a + (p.amount_centi ?? 0), 0);
     return pays.reduce((a, p) => a + toCenti(p.amount), 0);
@@ -525,11 +642,107 @@ export function MobileNewSO({
     }
   }
 
+  /* Line-item body for POST /:docNo/items and the create body's items[]. We
+     send item_code + item_group + qty + variants + per-line delivery date + an
+     optional discount. The unit price rides along as a DEFAULT (mirrors what
+     desktop POSTs) — the server RECOMPUTES it honestly and rejects >0.5% drift,
+     so this figure is never authoritative. A blank itemCode is impossible here:
+     the save gate below blocks unpicked lines (POST /:docNo/items 400s on a
+     blank code anyway). */
+  const itemBody = (l: LineItem): Record<string, unknown> => ({
+    itemCode: l.itemCode,
+    itemGroup: l.itemGroup || "others",
+    description: l.name.trim(),
+    qty: num(l.qty) || 1,
+    unitPriceCenti: toCenti(l.price),
+    lineDeliveryDate: l.ddate || null,
+    ...(Object.keys(buildVariants(l)).length ? { variants: buildVariants(l) } : {}),
+  });
+
+  /* PATCH body for an existing line — item_code + item_group + qty + discount +
+     variants (server recomputes price). Sent only for a line whose priced shape
+     actually moved (see lineChanged). */
+  const itemPatchBody = (l: LineItem): Record<string, unknown> => ({
+    itemCode: l.itemCode,
+    itemGroup: l.itemGroup || "others",
+    description: l.name.trim(),
+    qty: num(l.qty) || 1,
+    unitPriceCenti: toCenti(l.price),
+    lineDeliveryDate: l.ddate || null,
+    variants: buildVariants(l),
+  });
+
+  /* Did this edit-mode line change vs its persisted snapshot? Compares the
+     priced/identifying shape (code, group, qty, delivery date, variants) plus
+     description. Variants compare key-order-independently (Postgres jsonb
+     reorders keys) so an untouched line isn't re-PATCHed (which could trip the
+     backend's allowed_options re-validation on a since-changed pool). */
+  const canonJson = (o: unknown): string => {
+    if (o == null) return "null";
+    if (typeof o !== "object") return JSON.stringify(o);
+    if (Array.isArray(o)) return "[" + o.map(canonJson).join(",") + "]";
+    return "{" + Object.keys(o as Record<string, unknown>).sort()
+      .map((k) => JSON.stringify(k) + ":" + canonJson((o as Record<string, unknown>)[k]))
+      .join(",") + "}";
+  };
+  const lineChanged = (l: LineItem, snap: SoItem): boolean => {
+    if (l.itemCode !== (snap.item_code ?? "")) return true;
+    if ((l.itemGroup || "others") !== ((snap.item_group ?? "others").toLowerCase())) return true;
+    if ((num(l.qty) || 1) !== (snap.qty ?? 1)) return true;
+    if (toCenti(l.price) !== (snap.unit_price_centi ?? 0)) return true;
+    if (l.name.trim() !== (snap.description ?? "").trim()) return true;
+    if ((l.ddate || "") !== ((snap.line_delivery_date ?? "").slice(0, 10))) return true;
+    if (canonJson(buildVariants(l)) !== canonJson(snap.variants ?? {})) return true;
+    return false;
+  };
+
+  /* Reconcile the editable `lines` against the frozen `origItems` snapshot,
+     applying each change through the dedicated /items endpoints. Returns the
+     number of writes that failed (each write is independent so one failure
+     doesn't abort the rest). */
+  async function applyLineDiff(soDocNo: string): Promise<number> {
+    const base = `/mfg-sales-orders/${encodeURIComponent(soDocNo)}/items`;
+    let failed = 0;
+    // DELETE — snapshot rows whose id is no longer in the editable list.
+    const liveIds = new Set(lines.map((l) => l.itemId).filter(Boolean));
+    for (const snap of origItems) {
+      if (liveIds.has(snap.id)) continue;
+      try { await authedFetch(`${base}/${encodeURIComponent(snap.id)}`, { method: "DELETE" }); }
+      catch { failed += 1; }
+    }
+    // POST (new) / PATCH (changed) — walk the editable list.
+    const snapById = new Map(origItems.map((s) => [s.id, s]));
+    for (const l of lines) {
+      if (!l.itemCode.trim()) continue; // unpicked lines are blocked earlier
+      if (!l.itemId) {
+        try { await authedFetch(base, { method: "POST", body: JSON.stringify(itemBody(l)) }); }
+        catch { failed += 1; }
+        continue;
+      }
+      const snap = snapById.get(l.itemId);
+      if (snap && lineChanged(l, snap)) {
+        try { await authedFetch(`${base}/${encodeURIComponent(l.itemId)}`, { method: "PATCH", body: JSON.stringify(itemPatchBody(l)) }); }
+        catch { failed += 1; }
+      }
+    }
+    return failed;
+  }
+
   // ---- Mutations ------------------------------------------------------------
   async function save(asDraft = false) {
     setTouched(true);
     if (nameErr || phoneErr || emailErr) {
       setError("Please fill in the required fields: customer name, phone and a valid email.");
+      return;
+    }
+    /* Honest-pricing prerequisite — every non-empty line MUST carry a real
+       catalog itemCode (picked from the SKU sheet) so the server can price it.
+       A named-but-unpicked line is blocked with a clear message rather than
+       silently sent (and rejected) with a blank code. */
+    const namedLines = lines.filter((l) => l.name.trim() || l.itemCode.trim());
+    const unpicked = namedLines.filter((l) => !l.itemCode.trim());
+    if (unpicked.length > 0) {
+      setError(`Pick a product from the catalog for every line (${unpicked.length} line${unpicked.length === 1 ? "" : "s"} still ha${unpicked.length === 1 ? "s" : "ve"} no product selected).`);
       return;
     }
     // Save as Draft forces blank processing/delivery dates (the existing
@@ -575,6 +788,23 @@ export function MobileNewSO({
           method: "PATCH",
           body: JSON.stringify(patch),
         });
+
+        /* Line-item diff → the dedicated /items endpoints (only when line edits
+           are allowed — a locked SO shows lines read-only and skips this). The
+           header PATCH above never touches lines, so we reconcile the editable
+           list against the frozen snapshot:
+             • line with no itemId          → POST   /:docNo/items       (added)
+             • line whose priced shape moved → PATCH  /:docNo/items/:id  (changed)
+             • snapshot id absent from list  → DELETE /:docNo/items/:id  (removed)
+           Every write is server-recomputed; we never send an authoritative
+           price. A failed write surfaces a notify but leaves the header saved. */
+        if (!lineLocked) {
+          const failed = await applyLineDiff(docNo);
+          if (failed > 0) {
+            void notify({ title: "Some line changes didn't save", body: `${failed} line change(s) failed. Re-open the order and check the items.`, tone: "error" });
+          }
+        }
+
         await qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] });
         await qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
         if (onSaved) onSaved(docNo);
@@ -583,51 +813,9 @@ export function MobileNewSO({
       }
 
       // CREATE (new / edit-draft treated as create — mints a fresh doc_no).
-      const items = lines
-        .filter((l) => l.name.trim())
-        .map((l) => {
-          /* variants blob → the free-form mfg_sales_order_items.variants column.
-             The backend canonicalizes it (so-variant-rule) and reads the
-             category axes: bedframe → divanHeight/legHeight/gap/fabricCode,
-             sofa → seatHeight/legHeight/fabricCode. We send those canonical
-             keys so a bedframe/sofa line is variant-complete (and clears the
-             Processing-Date "variants_incomplete" gate). Size/headboard/storage
-             ride along as descriptive keys (persisted, surfaced in Description 2,
-             not priced). remark maps to the dedicated remark column. */
-          const variants: Record<string, unknown> = {};
-          if (l.remark.trim()) variants.remark = l.remark.trim();
-          if (l.cat === "bedframe") {
-            variants.size = l.size;
-            variants.headboard = l.head;
-            variants.storage = l.store;
-            variants.divanHeight = l.divan;
-            variants.legHeight = l.leg;
-            variants.gap = l.gap;
-            variants.fabricCode = l.fabric;
-            variants.totalHeight = inchNum(l.divan) + inchNum(l.leg) + inchNum(l.gap);
-          } else if (l.cat === "sofa") {
-            variants.seatHeight = l.seat;
-            variants.legHeight = l.leg;
-            variants.fabricCode = l.fabric;
-          }
-          return {
-            // itemCode left blank — no mobile catalog picker yet; the backend
-            // drops blank codes (validate-item-codes) so the free-typed
-            // description carries the line. TODO(verify): once a mobile SKU
-            // picker exists, send the real itemCode so pricing recompute +
-            // inventory linkage engage.
-            itemCode: "",
-            // itemGroup drives the backend's category variant rule; blank cat →
-            // "others" (no mandatory variants), so a plain item never trips the
-            // variants gate.
-            ...(l.cat ? { itemGroup: l.cat } : {}),
-            description: l.name.trim(),
-            qty: num(l.qty) || 1,
-            unitPriceCenti: toCenti(l.price),
-            lineDeliveryDate: l.ddate || null,
-            ...(Object.keys(variants).length ? { variants } : {}),
-          };
-        });
+      // Real item_code + item_group + variants + qty per line; the server
+      // recomputes the honest price (fixes the old RM 0.00 blank-code path).
+      const items = namedLines.map((l) => itemBody(l));
 
       const body: Record<string, unknown> = {
         customerName: name.trim(),
@@ -831,21 +1019,24 @@ export function MobileNewSO({
               </div>
             </div>
 
-            {/* Line Items */}
+            {/* Line Items — editable in BOTH new + edit mode (edit loads the
+                persisted lines into the same cards; the diff on save applies to
+                the /items endpoints). Locked read-only once the SO is SHIPPED+ /
+                has downstream docs (desktop parity). */}
             <div className="card" style={{ marginBottom: 11 }}>
-              <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{`${isEdit ? existingItems.length : lines.length} ${(isEdit ? existingItems.length : lines.length) === 1 ? "line" : "lines"}`}</span></div>
+              <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{`${lines.length} ${lines.length === 1 ? "line" : "lines"}`}</span></div>
               <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                {isEdit ? (
+                {lineLocked ? (
                   <>
-                    {existingItems.length ? existingItems.map((it) => (
-                      <div key={it.id} style={roItemBox}>
+                    {lines.length ? lines.map((l) => (
+                      <div key={l.key} style={roItemBox}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>{it.description || it.item_code || "—"} <span style={{ color: "#9aa093" }}>{"×"}{it.qty ?? 0}</span></span>
-                          <span className="money" style={{ fontSize: 12.5, fontWeight: 800, color: "#0c3f39" }}>RM {fromCenti((it.unit_price_centi ?? 0) * (it.qty ?? 0))}</span>
+                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>{l.name || l.itemCode || "—"} <span style={{ color: "#9aa093" }}>{"×"}{num(l.qty)}</span></span>
+                          <span className="money" style={{ fontSize: 12.5, fontWeight: 800, color: "#0c3f39" }}>RM {fmt((toCenti(l.price) * num(l.qty)) / 100)}</span>
                         </div>
                       </div>
                     )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "8px 0" }}>No items.</div>}
-                    <div style={{ fontSize: 10, color: "#9aa093", marginTop: 4 }}>Line items are edited from the SO detail screen.</div>
+                    <div style={{ fontSize: 10, color: "#9aa093", marginTop: 4 }}>This order is shipped or has downstream documents — line items can no longer be changed.</div>
                   </>
                 ) : (
                   <>
@@ -856,8 +1047,16 @@ export function MobileNewSO({
                           line={l}
                           index={i}
                           removable={lines.length > 1}
+                          onOpenPicker={() => setPickerFor(l.key)}
                           onChange={(patch) => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, ...patch } : x)))}
-                          onRemove={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}
+                          onRemove={async () => {
+                            /* No naked deletes — confirm in-app. A persisted line
+                               (itemId) is only actually removed from the SO when
+                               the diff runs on Save; dropping it from the list
+                               here stages that DELETE. */
+                            if (!(await confirm({ title: "Remove this line?", body: l.name ? `"${l.name}" will be removed from the order.` : undefined, confirmLabel: "Remove", danger: true }))) return;
+                            setLines((prev) => prev.filter((x) => x.key !== l.key));
+                          }}
                         />
                       ))}
                     </div>
@@ -865,6 +1064,7 @@ export function MobileNewSO({
                   </>
                 )}
                 <div className="so-sub-row"><span style={{ fontSize: 11, color: "var(--mut)" }}>Subtotal</span><span className="money" style={{ fontSize: 17, fontWeight: 800, color: "var(--brand-d)" }}>RM {fmt(subtotal / 100)}</span></div>
+                <div style={{ fontSize: 10, color: "#9aa093" }}>Prices are recomputed by the system when you save.</div>
               </div>
             </div>
 
@@ -939,6 +1139,32 @@ export function MobileNewSO({
           </div>
         </footer>
       )}
+
+      {pickerFor && (
+        <MobileSkuPicker
+          initialCat={lines.find((l) => l.key === pickerFor)?.cat ?? ""}
+          onClose={() => setPickerFor(null)}
+          onPick={(sku: PickedSku) => {
+            /* Seed the line with the real catalog identity. `cat` derives from
+               the picked group so the right variant panel shows; the unit price
+               defaults from the catalog SELLING price (server recomputes on
+               save). We deliberately DON'T stomp the operator's typed qty /
+               remark / already-picked variants. */
+            setLines((prev) => prev.map((x) => {
+              if (x.key !== pickerFor) return x;
+              return {
+                ...x,
+                itemCode: sku.itemCode,
+                itemGroup: sku.itemGroup,
+                name: sku.name,
+                cat: catForGroup(sku.itemGroup),
+                price: fromCenti(sku.unitPriceCenti),
+              };
+            }));
+            setPickerFor(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -982,22 +1208,48 @@ function LineCard({
   line,
   index,
   removable,
+  onOpenPicker,
   onChange,
   onRemove,
 }: {
   line: LineItem;
   index: number;
   removable: boolean;
+  onOpenPicker: () => void;
   onChange: (patch: Partial<LineItem>) => void;
   onRemove: () => void;
 }) {
   const amt = fmt(num(line.qty) * num(line.price));
   const catLabel = LINE_CATS.find((c) => c.value === line.cat)?.label ?? "General item";
+  const picked = Boolean(line.itemCode.trim());
   return (
     <div style={{ border: "1px solid rgba(34,31,32,.12)", borderRadius: 11, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f4f6f3", borderBottom: "1px solid rgba(34,31,32,.1)" }}>
         <span style={{ width: 19, height: 19, flex: "none", borderRadius: 6, background: "#16695f", color: "#fff", fontSize: 10.5, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{index + 1}</span>
-        <input className="fld-i" style={{ flex: 1, fontWeight: 600 }} value={line.name} onChange={(e) => onChange({ name: e.target.value })} placeholder="Item name" />
+        {/* SKU picker trigger — replaces the old free-typed name. Tapping opens
+            the searchable catalog bottom-sheet; the picked product's code + name
+            drive the line's item_code (so the server can price it). */}
+        <button
+          type="button"
+          onClick={onOpenPicker}
+          style={{
+            flex: 1, minWidth: 0, textAlign: "left", fontFamily: "inherit", cursor: "pointer",
+            background: "#fff", border: picked ? "1px solid #bcdcd7" : "1px dashed #c2c6bd",
+            borderRadius: 9, padding: "6px 9px", display: "flex", alignItems: "center", gap: 7,
+          }}
+        >
+          <span style={{ flex: 1, minWidth: 0 }}>
+            {picked ? (
+              <>
+                <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: "#11140f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{line.name}</span>
+                <span style={{ display: "block", fontSize: 10, color: "#16695f", fontWeight: 700, marginTop: 1 }}>{line.itemCode}</span>
+              </>
+            ) : (
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#9aa093" }}>Pick a product{"…"}</span>
+            )}
+          </span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><polyline points="9 6 15 12 9 18" /></svg>
+        </button>
         {removable && <span onClick={onRemove} style={{ fontSize: 14, color: "#9aa093", cursor: "pointer", padding: "0 2px" }}>{"✕"}</span>}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 7, padding: 10 }}>
