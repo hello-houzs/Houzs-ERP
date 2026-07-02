@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 // Static named imports — every icon the Categories page might render is listed
 // here so Rollup can tree-shake the rest of lucide-react out of the bundle.
 // The earlier `import * as Lucide from "lucide-react"` (and the subsequent
@@ -192,7 +192,15 @@ const useDeleteCategory = () => {
 
 export function Categories() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
+  // When Categories is mounted inside the Products page (as the
+  // `?tab=categories` sub-tab, per PR #164) the "← Products" breadcrumb
+  // navigates to `/scm/products` — dropping the `?tab=categories` query
+  // and teleporting the user back to the SKU Master tab. Hide the
+  // breadcrumb in that case; the outer Products tab strip already tells
+  // them where they are.
+  const embedded = location.pathname === "/scm/products";
 
   const catsQ = useQuery({
     queryKey: ["scm-categories"],
@@ -289,13 +297,15 @@ export function Categories() {
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <button
-            type="button"
-            onClick={() => navigate("/scm/products")}
-            className="mb-1.5 inline-flex items-center gap-1 text-[11px] font-semibold text-ink-muted hover:text-primary"
-          >
-            <ArrowLeft size={12} /> Products
-          </button>
+          {!embedded && (
+            <button
+              type="button"
+              onClick={() => navigate("/scm/products")}
+              className="mb-1.5 inline-flex items-center gap-1 text-[11px] font-semibold text-ink-muted hover:text-primary"
+            >
+              <ArrowLeft size={12} /> Products
+            </button>
+          )}
           <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
             <FolderTree size={11} /> SCM · Catalogue · Categories
           </div>
