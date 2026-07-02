@@ -38,6 +38,11 @@ const SUPPLIER_CATEGORY = new Set(["evidence", "completion"]);
 app.get("/case", async (c) => {
   const { assr_id } = c.get("supplierScope");
 
+  // TEMP DEBUG — surface which SELECT is failing in prod so we can
+  // stop guessing from the "Something went wrong" wrapper. Revert
+  // this wrapper once the root cause is fixed.
+  try {
+
   const cs = await c.env.DB.prepare(
     `SELECT id, assr_no, stage, complained_date, complaint_issue,
             issue_category, resolution_method, service_category,
@@ -103,6 +108,16 @@ app.get("/case", async (c) => {
     attachments: attachments.results ?? [],
     stage_history: history.results ?? [],
   });
+
+  } catch (e: any) {
+    // TEMP DEBUG passthrough — remove once root cause is fixed.
+    return c.json({
+      _debug: true,
+      error: String(e?.message ?? e),
+      stack: String(e?.stack ?? "").split("\n").slice(0, 3).join(" | "),
+      assr_id,
+    }, 500);
+  }
 });
 
 // ── POST /stage ─────────────────────────────────────────────────────
