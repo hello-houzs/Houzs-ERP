@@ -107,11 +107,18 @@ export function MobileLogin() {
       <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />
 
       <div style={{ position: "relative", zIndex: 1, height: "100%", display: "flex", flexDirection: "column", justifyContent: "center", padding: "34px 28px", maxWidth: 460, margin: "0 auto" }}>
-        <div className="appicon hz-lg-item" style={{ ...delay(0), marginBottom: 18 }}>
-          <img src="/logo-mark.png" alt="Houzs Century" style={{ width: 40, height: 40, objectFit: "contain", filter: "brightness(0) invert(1)" }} />
+        {/* Brand lockup — ported VERBATIM from the owner's MobileLogin.tsx: a
+            rounded-square app icon holding a 3-bar mark, "Houzs Century" title,
+            "ERP · MOBILE" gold eyebrow. Wrapped in our entrance-animation items. */}
+        <div className="appicon hz-lg-item" style={{ ...delay(0), width: 70, height: 70, borderRadius: 20, background: "linear-gradient(160deg,#23242a,#0e0f12)", marginBottom: 22, boxShadow: "inset 0 0 0 1px rgba(216,168,90,.16)" }}>
+          <div style={{ display: "flex", gap: 3, alignItems: "flex-end", height: 26 }}>
+            <span style={{ width: 6, height: 12, background: "#2a6f63", borderRadius: 2 }} />
+            <span style={{ width: 6, height: 20, background: "#3f9c8c", borderRadius: 2 }} />
+            <span style={{ width: 6, height: 26, background: "#d8a85a", borderRadius: 2 }} />
+          </div>
         </div>
-        <div className="hz-lg-item" style={{ ...delay(1), fontSize: 28, fontWeight: 800, color: "#fff", letterSpacing: "-.01em", lineHeight: 1 }}>HOUZS</div>
-        <div className="hz-lg-item" style={{ ...delay(1), fontSize: 9, fontWeight: 700, letterSpacing: ".38em", color: "var(--gold)", marginTop: 5 }}>CENTURY · ERP</div>
+        <div className="hz-lg-item" style={{ ...delay(1), fontSize: 26, fontWeight: 800, color: "#fff" }}>Houzs Century</div>
+        <div className="hz-lg-item" style={{ ...delay(1), fontSize: 8.5, fontWeight: 700, letterSpacing: ".34em", color: "var(--gold)", marginTop: 6 }}>ERP · MOBILE</div>
         <div className="hz-lg-item" style={{ ...delay(2), fontSize: 14.5, color: "rgba(231,234,228,.78)", marginTop: 24, lineHeight: 1.5 }}>
           {challenge ? "Enter your 6-digit code" : "Sign in to your workspace"}
         </div>
