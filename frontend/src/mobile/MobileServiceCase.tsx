@@ -657,41 +657,54 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               </button>
             </div>
 
-            {/* pipeline legend */}
-            <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "0 2px 8px" }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: GREEN }} /><span style={{ fontSize: 10, color: "var(--ink-2)" }}>Done</span></span>
-              <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: RED }} /><span style={{ fontSize: 10, color: "var(--ink-2)" }}>Current</span></span>
-            </div>
-            {/* 9-stage pipeline (.pstage / .pdot) — tap a dot to jump stage */}
-            <div className="hz-scroll" style={{ display: "flex", gap: 2, overflowX: "auto", padding: "4px 2px 10px" }}>
-              {STAGES.map((s, i) => {
-                const done = curStageIdx >= 0 && i < curStageIdx;
-                const current = i === curStageIdx;
-                const fg = done ? GREEN : current ? RED : MUTED;
-                const jump = async () => {
-                  if (busy || current) return;
-                  if (!(await confirm({ title: `Move to ${s.label}?`, confirmLabel: "Change stage" }))) return;
-                  await runWrite(async () => {
-                    await api.post(`/api/assr/${id}/transition`, { stage: s.key });
-                  }, "Stage change failed");
-                };
-                return (
-                  <div key={s.key} className="pstage" onClick={jump} style={{ cursor: busy || current ? "default" : "pointer" }}>
-                    <span className="pdot" style={{
-                      background: done ? GREEN : current ? RED : "#fff",
-                      color: done || current ? "#fff" : GREY,
-                      border: done || current ? "none" : `2px solid ${LINE}`,
-                    }}>
-                      {done ? (
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-                      ) : (
-                        i + 1
-                      )}
-                    </span>
-                    <span style={{ fontSize: 8.5, fontWeight: current ? 800 : 600, color: fg, lineHeight: 1.1 }}>{s.label}</span>
-                  </div>
-                );
-              })}
+            {/* Workflow card — design VERBATIM framing (.card + "Workflow"
+                label). Our real 9-stage pipeline stays tap-to-jump (POST
+                /transition), so the dots keep the legend + interactivity. */}
+            <div className="card"><div className="card-b">
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <span className="fld-l" style={{ marginBottom: 0 }}>Workflow</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: GREEN }} /><span style={{ fontSize: 10, color: "var(--ink-2)" }}>Done</span></span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: RED }} /><span style={{ fontSize: 10, color: "var(--ink-2)" }}>Current</span></span>
+                </span>
+              </div>
+              <div className="hz-scroll" style={{ display: "flex", gap: 2, overflowX: "auto", paddingBottom: 4 }}>
+                {STAGES.map((s, i) => {
+                  const done = curStageIdx >= 0 && i < curStageIdx;
+                  const current = i === curStageIdx;
+                  const fg = done ? GREEN : current ? RED : MUTED;
+                  const jump = async () => {
+                    if (busy || current) return;
+                    if (!(await confirm({ title: `Move to ${s.label}?`, confirmLabel: "Change stage" }))) return;
+                    await runWrite(async () => {
+                      await api.post(`/api/assr/${id}/transition`, { stage: s.key });
+                    }, "Stage change failed");
+                  };
+                  return (
+                    <div key={s.key} className="pstage" onClick={jump} style={{ cursor: busy || current ? "default" : "pointer" }}>
+                      <span className="pdot" style={{
+                        background: done ? GREEN : current ? RED : "#fff",
+                        color: done || current ? "#fff" : GREY,
+                        border: done || current ? "none" : `2px solid ${LINE}`,
+                      }}>
+                        {done ? (
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                        ) : (
+                          i + 1
+                        )}
+                      </span>
+                      <span style={{ fontSize: 8.5, fontWeight: current ? 800 : 600, color: fg, lineHeight: 1.1 }}>{s.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div></div>
+
+            {/* Reported issue banner — design VERBATIM (red box headline). Reads
+                our real complaint_issue; the editable copy lives in Issue below. */}
+            <div style={{ background: "#fbf2f2", border: "1px solid #f0d9d9", borderRadius: 12, padding: "12px 13px", marginBottom: 11 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", color: RED }}>Reported issue</div>
+              <div style={{ fontSize: 12.5, color: "#3f2626", marginTop: 5, lineHeight: 1.5 }}>{issueOf(c) ? String(issueOf(c)) : "—"}</div>
             </div>
 
             {/* Issue (Edit → Save) */}
@@ -709,9 +722,9 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               <KV label="Status" value={statusOf(c) ? cap(statusOf(c).replace(/_/g, " ")) : "—"} />
             </EditableAcc>
 
-            {/* Product info */}
+            {/* Product & PO (design wording) */}
             <Acc
-              title="Product info"
+              title="Product & PO"
               open
               headSlot={
                 <span
