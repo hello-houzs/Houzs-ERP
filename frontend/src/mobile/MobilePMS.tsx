@@ -300,7 +300,7 @@ type Lorry = { id: number; plate: string | null; type?: string | null; is_intern
 // ── Reference-data list rows (populate the write-form selects) ──
 type PicUser = { id: number; name: string | null; email: string };
 type SalesRepOption = { id: number; code: string | null; name: string | null };
-type FleetStaff = { id: number; name: string | null; role_name: string | null };
+type FleetStaff = { id: number; name: string | null; role_name: string | null; phone?: string | null; company_phone?: string | null; companyPhone?: string | null };
 
 // ── Shared dialog-hook / setter fn types (props into the write blocks) ──
 type NotifyFn = (o: { title: string; body?: ReactNode; tone?: "info" | "error" }) => Promise<void>;
@@ -652,14 +652,6 @@ function ProjectListView({ onOpen, onBack, onNew }: { onOpen: (id: number) => vo
   );
 }
 
-// ── View-as roles (client-side section-visibility toggle, mirrors the
-// design's projRole). Finance-bearing sections show only for Owner / BD;
-// the SERVER also gates finance (defense in depth) so this is purely a
-// convenience preview for operations staff. ──
-type ViewAsRole = "Owner" | "BD" | "Sales" | "Logistics";
-const VIEW_AS_ROLES: ViewAsRole[] = ["Owner", "BD", "Sales", "Logistics"];
-const roleSeesFinance = (r: ViewAsRole) => r === "Owner" || r === "BD";
-
 // ── Detail ──
 function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const { pageAccess, can } = useAuth();
@@ -678,7 +670,6 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const notify = useNotify();
   const prompt = usePrompt();
   const [busy, setBusy] = useState(false);
-  const [viewAs, setViewAs] = useState<ViewAsRole>("Owner");
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-pms-detail", id],
@@ -788,8 +779,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const archived = !!p?.archived_at;
   // Show finance only when the user has the page-access AND the backend
   // actually returned the finance block (it strips it server-side for a
-  // role whose PMS position lacks FINANCIAL) AND the view-as role sees it.
-  const financeVisible = canSeeFinance && !!data?.finance && roleSeesFinance(viewAs);
+  // role whose PMS position lacks FINANCIAL). Gating follows the real
+  // backend permission — no in-screen view-as switcher (removed to match v4).
+  const financeVisible = canSeeFinance && !!data?.finance;
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -858,23 +850,6 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
 
         {!isLoading && !error && data && p && (
           <>
-            {/* view-as role — client-side section-visibility toggle */}
-            <div style={{ display: "flex", alignItems: "center", gap: 9, background: "#f3ece0", border: "1px solid #e8dcc5", borderRadius: 11, padding: "9px 11px", marginBottom: 12 }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6Z" /></svg>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 11.5, fontWeight: 700, color: "#5a3a14" }}>View as</div>
-                <div style={{ fontSize: 10, color: "#a16a2e" }}>{roleSeesFinance(viewAs) ? "Full access · finance visible" : "Operations view · sales & P&L hidden"}</div>
-              </div>
-              <select
-                value={viewAs}
-                onChange={(e) => setViewAs(e.target.value as ViewAsRole)}
-                aria-label="View as role"
-                style={{ fontFamily: "inherit", fontSize: 12, fontWeight: 700, color: "#5a3a14", background: "#fff", border: "1px solid #e8dcc5", borderRadius: 8, padding: "6px 9px" }}
-              >
-                {VIEW_AS_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-              </select>
-            </div>
-
             {/* stage pipeline */}
             <StagePipeline stage={p.stage} sections={data.section_progress} />
 
@@ -1038,6 +1013,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
             <FloorPlans
               projectId={id}
               stockTransfers={data.stock_transfers}
+              attachments={data.attachments}
               canWrite={canWrite && !archived}
               busy={busy}
               setBusy={setBusy}
@@ -1813,10 +1789,19 @@ function SetupDismantle({
   );
 }
 
+// Staff name with phone in parens when available (mirrors the prototype's
+// "Faiz Rahman (012-880 5567)" driver option). Dual-reads phone / company_phone.
+function staffLabel(o: FleetStaff): string {
+  const name = o.name || `#${o.id}`;
+  const ph = o.phone ?? o.company_phone ?? o.companyPhone ?? null;
+  return ph ? `${name} (${ph})` : name;
+}
+
 // A driver/helper picker that always renders the current out-of-scope value
-// (so a rep who can't list fleet still sees who's assigned).
+// (so a rep who can't list fleet still sees who's assigned). When
+// `withContact` is set, options show the staff phone alongside the name.
 function StaffSelect({
-  label, value, currentName, options, disabled, onChange,
+  label, value, currentName, options, disabled, onChange, withContact,
 }: {
   label: string;
   value: number | null | undefined;
@@ -1824,6 +1809,7 @@ function StaffSelect({
   options: FleetStaff[];
   disabled: boolean;
   onChange: (id: number | null) => void;
+  withContact?: boolean;
 }) {
   return (
     <label className="fld" style={{ marginBottom: 6 }}>
@@ -1833,7 +1819,7 @@ function StaffSelect({
         {value != null && currentName && !options.some((o) => o.id === value) && (
           <option value={value}>{currentName}</option>
         )}
-        {options.map((o) => <option key={o.id} value={o.id}>{o.name || `#${o.id}`}</option>)}
+        {options.map((o) => <option key={o.id} value={o.id}>{withContact ? staffLabel(o) : (o.name || `#${o.id}`)}</option>)}
       </select>
     </label>
   );
@@ -1957,7 +1943,7 @@ function PhaseBlock({
               <input className="fld-i" type="time" value={endTime} disabled={busy} onChange={(e) => { setEndTime(e.target.value); void saveEnd(endDate, e.target.value); }} />
             </label>
           </div>
-          <StaffSelect label={`${kind} driver`} value={driverId} currentName={driverName} options={drivers} disabled={busy} onChange={(v) => { void patchProject({ [driverCol]: v }); }} />
+          <StaffSelect label={`${kind} driver & contact`} value={driverId} currentName={driverName} options={drivers} disabled={busy} onChange={(v) => { void patchProject({ [driverCol]: v }); }} withContact />
           <StaffSelect label="Helper 1" value={helper1Id} currentName={helper1Name} options={helpers} disabled={busy} onChange={(v) => { void patchProject({ [helper1Col]: v }); }} />
           <StaffSelect label="Helper 2" value={helper2Id} currentName={helper2Name} options={helpers} disabled={busy} onChange={(v) => { void patchProject({ [helper2Col]: v }); }} />
           <label className="fld" style={{ marginBottom: 6 }}>
@@ -2005,16 +1991,19 @@ function PhaseBlock({
 }
 
 // ── Floor plans & layout + stock transfers ──
-// The 3D viewer + floorplan tiles remain design placeholders (no plan-image
-// payload). The Stock Transfer Record is fully wired: OUT + RETURN records
+// The 3D viewer stays a design placeholder (no plan-image payload). The
+// Unfilled / Filled plan tiles are wired to the project's floorplan-category
+// attachments: tap opens the plan when one exists, or prompts an upload.
+// The Stock Transfer Record is fully wired: OUT + RETURN records
 // (PUT /:id/stock-transfers/upload → POST /:id/stock-transfers {direction}),
 // each row confirm/unconfirm (POST /stock-transfers/:tid/confirm|unconfirm)
 // and delete (DELETE /stock-transfers/:tid).
 function FloorPlans({
-  projectId, stockTransfers, canWrite, busy, setBusy, notify, confirm, reload,
+  projectId, stockTransfers, attachments, canWrite, busy, setBusy, notify, confirm, reload,
 }: {
   projectId: number;
   stockTransfers?: StockTransfer[];
+  attachments?: ProjectAttachment[];
   canWrite: boolean;
   busy: boolean;
   setBusy: SetBusy;
@@ -2025,6 +2014,26 @@ function FloorPlans({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [direction, setDirection] = useState<"out" | "return">("out");
   const transfers = stockTransfers ?? [];
+
+  // Unfilled = first floorplan attachment, Filled = second (matches the
+  // prototype's two "tap to view / replace" tiles). Opens the stored plan or
+  // nudges the user to the Attachments section to add one.
+  const plans = (attachments ?? []).filter((a) => (a.category || "").toLowerCase() === "floorplan");
+  const openPlan = async (a: ProjectAttachment | undefined, which: string) => {
+    if (!a) {
+      await notify({ title: `${which} plan not uploaded`, body: "Add it under Attachments (Floorplan category).", tone: "info" });
+      return;
+    }
+    const key = pick(a.r2_key, a.r2Key);
+    if (!key) return;
+    try {
+      const url = await api.fetchBlobUrl(`/api/projects/attachments/${key}`);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      await notify({ title: "Couldn't open plan", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    }
+  };
 
   const uploadTransfer = async (file: File) => {
     if (file.size > 10 * 1024 * 1024) {
@@ -2101,6 +2110,31 @@ function FloorPlans({
             <span style={{ display: "block", fontSize: 10.5, color: "#8c968a" }}>Interactive booth render</span>
           </span>
           <span style={{ color: "#8c968a" }}>›</span>
+        </div>
+
+        {/* Unfilled / Filled plan tiles — tap to view the stored floorplan */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
+          {([["Unfilled", plans[0], "DRAFT", "#f6efd9", "#6e4d12"], ["Filled", plans[1], "PLACED", "#e2f0e9", "#2f8a5b"]] as const).map(([label, att, badge, badgeBg, badgeCol]) => {
+            const key = att ? pick(att.r2_key, att.r2Key) : undefined;
+            return (
+              <div
+                key={label}
+                role="button"
+                tabIndex={0}
+                onClick={() => void openPlan(att, label)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void openPlan(att, label); } }}
+                style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden", cursor: "pointer" }}
+              >
+                {att && key && /^image\//.test(pick(att.mime_type, att.mimeType) ?? "")
+                  ? <R2Thumb r2Key={key} style={{ width: "100%", height: 80 }} />
+                  : <div className="ph" style={{ height: 80 }} />}
+                <div style={{ padding: "7px 9px" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{label} plan</div>
+                  <span className="rbadge" style={{ background: att ? badgeBg : "#f0f1ed", color: att ? badgeCol : "#9aa093" }}>{att ? badge : "NONE"}</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093", margin: "10px 0 6px" }}>Stock transfer record</div>

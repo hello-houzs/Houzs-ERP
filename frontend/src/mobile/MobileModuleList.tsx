@@ -539,9 +539,9 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
     return (
       <div className="card" onClick={open} style={{ ...cardStyle, ...(cancelled ? { opacity: 0.6 } : null) }}>
         <div className="card-b" style={{ padding: "12px 13px" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-            <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>{name}</span>
-            {status ? <Badge label={status} /> : null}
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", flex: 1, minWidth: 0, whiteSpace: "normal" }}>{name}</span>
+            {status ? <span style={{ flex: "none" }}><Badge label={status} /></span> : null}
           </div>
           {sub && <div className="tnum" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5 }}>{sub}</div>}
           {noteLine && <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 6, lineHeight: 1.4 }}>{noteLine}</div>}
@@ -560,8 +560,8 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
   return (
     <div className="card" onClick={open} style={{ ...cardStyle, ...(cancelled ? { opacity: 0.6 } : null) }}>
       <div className="card-b" style={{ padding: "12px 13px" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>{name}</span>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", flex: 1, minWidth: 0, whiteSpace: "normal" }}>{name}</span>
           {status ? <Badge label={status} /> : (() => {
             const rightRaw = config.right ? config.right(row) : "";
             const rightText = config.rightMoney ? `RM ${rm(rightRaw as unknown as number)}` : rightRaw;

@@ -270,7 +270,7 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
           </select>
           <div style={{ display: "flex", gap: 7 }}>
             <select value={sectionF} onChange={(e) => setSectionF(e.target.value)} className="cal-sel" style={{ flex: 1 }}>
-              <option value="all">All sections</option>
+              <option value="all">All venues</option>
               {sectionOptions.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
             <select value={orgF} onChange={(e) => setOrgF(e.target.value)} className="cal-sel" style={{ flex: 1 }}>

@@ -92,7 +92,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
         <div className="hdr-row" style={{ marginTop: 11 }}>
           <div className="searchbar">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search doc no · customer" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customer · SO · reference" />
           </div>
           <button onClick={() => setStatus((s) => (s === "all" ? "Submitted" : s === "Submitted" ? "Draft" : s === "Draft" ? "Cancelled" : "all"))} className="iconbtn" style={{ position: "relative" }} aria-label="Filter by status">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#414539" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5h18M6 12h12M10 19h4" /></svg>

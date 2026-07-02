@@ -98,12 +98,14 @@ type MailUser = { id: number; name: string | null; email: string; status?: strin
 type Folder = "inbox" | "starred" | "sent" | "drafts" | "archive" | "trash";
 type ComposeMode = "new" | "reply" | "replyall" | "forward";
 
+// Folder order mirrors the prototype (Inbox · Starred · Sent · Drafts ·
+// Archive); Trash is an extra live-only folder kept at the end.
 const FOLDERS: [Folder, string][] = [
   ["inbox", "Inbox"],
   ["starred", "Starred"],
   ["sent", "Sent"],
-  ["archive", "Archive"],
   ["drafts", "Drafts"],
+  ["archive", "Archive"],
   ["trash", "Trash"],
 ];
 
