@@ -88,6 +88,45 @@ Bottom tabs: **Orders · Service · (center Menu) · Calendar · Profile**.
 
 ---
 
+## 2026-07-02 build session — shipped to prod (sw v93 → v97)
+Design-relevant changes made while wiring screens to the real backend. Update
+the matching `mobile-react-design/*.tsx` when you redo a screen so this stays
+the current-state reference.
+
+### Orders — SO card (MobileSoList)
+43. **SO card re-designed → owner-locked 4-line layout.** Line 1: customer name + phone (accent) · order-status badge (right). Line 2: `SO-no · Ref` (values only, no "SO"/"Ref" labels) · **warehouse** name far right (no icon). Line 3: `Processing {date} → Delivery {date}` (labels spelled in full, left) · **Stock chip** + **Delivery-planning chip** (right). Line 4: `Balance` (left) · total (right, bold). No customer-state line (warehouse implies region). Chips: Stock ready=green / pending=grey; Planning pending-schedule=amber / pending-delivery=grey / overdue=red / delivered=green. Warehouse + planning come from the backend list (`warehouse_name` / `planning_state`).
+
+### Sales Order — scan (MobileScan / MobileNewSO)
+44. **Payment slip → multiple.** The Scan "Payment slip" tile now takes MANY photos; each slip = one payment (an order can take 2–3). Front slip stays single. New-SO seeds one payment row per slip.
+
+### Service Case (MobileServiceCase)
+45. **Removed the duplicate "REPORTED ISSUE" banner** — the complaint shows once, as the editable Complaint field in the Issue accordion.
+46. **Add product → picker of AVAILABLE items** (from the case's SO), not free text; the "+ Add item" action is HIDDEN when nothing is available to add.
+47. **Customer section completed** — added Ref No + Address (Email already editable).
+48. **Resolution → Customer pickup date** added beside Supplier pickup date (go-to-customer vs go-to-supplier).
+49. **Edit buttons** sit at the far right of each section header (were floating mid-row). **Bottom padding** increased so content clears the tab bar.
+
+### Font
+50. **Mobile font aligned to desktop** — dropped the unloaded "IBM Plex Sans" from the `.hz-m` stack (it was falling back to an ugly serif); now the desktop system-ui stack.
+
+### Calendar (MobileCalendar)
+51. **Filters wired to real data** (brands / sections / organizers endpoints); the mislabeled "All venues" is now "All sections". **"+N more"** opens that day's detail sheet. **Tapping a date** (or a holiday) opens a **DaySheet** listing that day's projects, tasks, and public holidays.
+
+### Announcements (MobileAnnouncements)
+52. Attachment upload confirmed present (photo/video + PDF); the Document picker was narrowed to PDF (backend accepts images/pdf/video only).
+
+### Delivery Planning (DESKTOP board — SCM, not the mobile run-sheet)
+53. **Excel-style inline editing** — click a cell to set Status / Sched. date / Driver / Lorry in place (no drill-in); each persists immediately. **Compact bulk-edit bar** appears when rows are ticked: `N selected · Set [field] → [value] Apply` (the value control's type follows the field). Manual status override wins over the auto state; the Stock column still shows real readiness.
+54. **Dated Service Cases surface on the board.** A service case appears ONLY once it has a date (Customer pickup date or Delivery/DO date); empty = hidden. A new **Type** column tags each row: `SO delivery` / `Cust. pickup` / `Delivery`. Service rows open the case (not an SO); editing the date writes back to the case. Grouped by region like SOs; lands in Pending Delivery.
+
+### Sales Order Maintenance (DESKTOP) + regions
+55. Per-state **Region** multi-select column added (state → delivery-region buckets) beside the Warehouse column.
+
+### Project Maintenance (DESKTOP)
+56. The 6 config managers (Brands, Event Types, Organizers, **Venues**, Cost Rates, Checklist) are now **collapsible** sections with count badges (Brands open by default) — kills the long scroll.
+
+---
+
 ## Still open (flagged, awaiting direction)
 - **My Team depth** — single-level downline now; multi-level (reports-of-reports) optional.
 
