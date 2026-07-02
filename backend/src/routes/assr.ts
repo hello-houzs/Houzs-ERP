@@ -777,6 +777,40 @@ app.post("/:id{[0-9]+}/sales-comment", requirePermission("service_cases.read"), 
   return c.json({ ok: true }, 201);
 });
 
+// ── Sales nudge ───────────────────────────────────────────────
+// One-tap "poke the office" from the sales portal — the rep can't
+// dispatch or reassign but they can flag that the customer is on
+// their case, so ops treats the row as fresh. Rate-limited to one
+// nudge per hour per case so it stays useful (spam ≠ signal).
+app.post("/:id{[0-9]+}/sales-nudge", requirePermission("service_cases.read"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const userId = (c as any).get?.("userId") ?? 0;
+  const body = await c.req.json<{ text?: string }>().catch(() => ({} as { text?: string }));
+  const note = (body.text || "").trim().slice(0, 500) || "Sales rep is asking for an update.";
+  const cutoffIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const recent = await c.env.DB.prepare(
+    `SELECT id FROM assr_activity
+      WHERE assr_id = ?
+        AND action = 'sales_nudge'
+        AND source_channel = 'sales_portal'
+        AND created_at > ?
+      LIMIT 1`
+  )
+    .bind(id, cutoffIso)
+    .first<{ id: number }>();
+  if (recent?.id) {
+    return c.json({ error: "Ops was already nudged for this case within the last hour." }, 429);
+  }
+  await c.env.DB.prepare(
+    `INSERT INTO assr_activity (assr_id, action, note, category, source_channel, user_id)
+     VALUES (?, 'sales_nudge', ?, 'system', 'sales_portal', ?)`
+  )
+    .bind(id, note, userId || null)
+    .run();
+  return c.json({ ok: true }, 201);
+});
+
 // ── Detail ────────────────────────────────────────────────────
 
 // Numeric-only guard on the catch-all detail route. Hono's
