@@ -4,7 +4,6 @@ import { api } from "../api/client";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../vendor/scm/components/ChoiceDialog";
-import { usePrompt } from "../vendor/scm/components/PromptDialog";
 import "./mobile.css";
 
 // The core /api/assr route (NOT scm). The list returns
@@ -406,7 +405,6 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const confirm = useConfirm();
   const notify = useNotify();
   const choose = useChoice();
-  const prompt = usePrompt();
   const [noteDraft, setNoteDraft] = useState("");
   const [noteAudience, setNoteAudience] = useState<"purchasing" | "customer">("purchasing");
   const [tlFilter, setTlFilter] = useState("all");
@@ -486,6 +484,24 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
 
   const assignedTo = get(c, "assignedToName", "assigned_to_name");
 
+  // ── Add-item picker source — the case's SO line items (desktop parity) ──
+  // Mirrors desktop openAddItem(): GET /api/assr/lookup-items/:doc_no returns
+  // { items: [{ item_code, item_description, qty? }] }. We only offer items
+  // that aren't already on the case; when nothing is pickable the "+ Add item"
+  // action is hidden entirely (see the Product & PO section below).
+  type LookupItem = { item_code: string; item_description: string | null; qty?: number };
+  const caseDocNo = String(get(c, "docNo", "doc_no") ?? "").trim();
+  const { data: lookupData } = useQuery({
+    queryKey: ["mobile-assr-lookup-items", caseDocNo],
+    enabled: !!caseDocNo,
+    staleTime: 60_000,
+    queryFn: () => api.get<{ items?: LookupItem[] }>(`/api/assr/lookup-items/${encodeURIComponent(caseDocNo)}`),
+  });
+  const availableItems: LookupItem[] = useMemo(() => {
+    const existing = new Set(items.map((it) => String(get(it, "itemCode", "item_code") ?? "")));
+    return (lookupData?.items ?? []).filter((it) => !existing.has(it.item_code));
+  }, [lookupData, items]);
+
   // ── Change stage → POST /:id/transition (confirmed) ─────────────
   const changeStage = async () => {
     if (busy) return;
@@ -518,21 +534,33 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   };
 
   // ── Add product item → POST /:id/items ──────────────────────────
-  // In-app prompt for the item code (qty defaults to 1, matching the
-  // endpoint's `qty ?? 1`). No naked window.prompt.
+  // Desktop parity: pick from the case's SO line items (availableItems,
+  // already filtered to what's not on the case yet) via the in-app single-
+  // select ChoiceDialog. The "+ Add item" affordance is hidden when nothing
+  // is available, so this only fires with a non-empty list. Qty carries the
+  // SO qty (or 1), matching the endpoint's `qty ?? 1`. No naked window.prompt.
   const addItem = async () => {
-    if (busy) return;
-    const code = await prompt({
+    if (busy || !availableItems.length) return;
+    const picked = await choose({
       title: "Add product item",
-      placeholder: "e.g. AK-GUARDIAN MATT (K)",
-      confirmLabel: "Add item",
-      validate: (v) => (v.trim() ? null : "Enter an item code"),
+      body: `From SO ${caseDocNo || "—"}`,
+      options: availableItems.map((it) => ({
+        value: it.item_code,
+        label: it.item_code,
+        detail: it.item_description || undefined,
+      })),
     });
-    if (code == null) return;
-    const trimmed = code.trim();
-    if (!trimmed) return;
+    if (picked == null) return;
+    const chosen = availableItems.find((it) => it.item_code === picked);
+    if (!chosen) return;
     await runWrite(async () => {
-      await api.post(`/api/assr/${id}/items`, { items: [{ item_code: trimmed, qty: 1 }] });
+      await api.post(`/api/assr/${id}/items`, {
+        items: [{
+          item_code: chosen.item_code,
+          item_description: chosen.item_description,
+          qty: chosen.qty && chosen.qty > 0 ? chosen.qty : 1,
+        }],
+      });
     }, "Couldn't add item");
   };
 
@@ -622,7 +650,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
         </div>
       </header>
 
-      <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 24 }}>
+      <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
         {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load this case.</div>}
         {!isLoading && !error && (
@@ -700,14 +728,9 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             </div></div>
 
-            {/* Reported issue banner — design VERBATIM (red box headline). Reads
-                our real complaint_issue; the editable copy lives in Issue below. */}
-            <div style={{ background: "#fbf2f2", border: "1px solid #f0d9d9", borderRadius: 12, padding: "12px 13px", marginBottom: 11 }}>
-              <div style={{ fontSize: 10.5, fontWeight: 800, textTransform: "uppercase", color: RED }}>Reported issue</div>
-              <div style={{ fontSize: 12.5, color: "#3f2626", marginTop: 5, lineHeight: 1.5 }}>{issueOf(c) ? String(issueOf(c)) : "—"}</div>
-            </div>
-
-            {/* Issue (Edit → Save) */}
+            {/* Issue (Edit → Save) — the complaint lives here as the editable
+                Complaint field. The redundant top "Reported issue" banner was
+                removed so the complaint text isn't shown twice. */}
             <EditableAcc
               title="Issue"
               open
@@ -727,13 +750,15 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               title="Product & PO"
               open
               headSlot={
-                <span
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) addItem(); }}
-                  className="tinybtn"
-                  style={{ marginLeft: "auto", color: BROWN, opacity: busy ? 0.5 : 1 }}
-                >
-                  + Add item
-                </span>
+                availableItems.length ? (
+                  <span
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) addItem(); }}
+                    className="tinybtn"
+                    style={{ marginLeft: "auto", color: BROWN, opacity: busy ? 0.5 : 1 }}
+                  >
+                    + Add item
+                  </span>
+                ) : undefined
               }
             >
               {items.length ? items.map((it, i) => (
@@ -852,6 +877,17 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               ]}
               onSave={(body) => patchCase(body, "Couldn't save customer")}
             >
+              {/* Read-only extras (desktop parity): Ref No + full address. */}
+              <KV label="Ref No" value={String(get(c, "refNo", "ref_no") ?? "—")} mono />
+              <KV
+                label="Address"
+                value={
+                  [get(c, "addr1"), get(c, "addr2"), get(c, "addr3"), get(c, "addr4")]
+                    .filter(Boolean)
+                    .join(", ") || "—"
+                }
+                multiline
+              />
               <div className="pgrid2">
                 <PGrid label="SO No" value={String(get(c, "docNo", "doc_no") ?? "—")} mono />
                 <PGrid label="Date" value={dm(get(c, "complainedDate", "complained_date", "createdAt", "created_at"))} />

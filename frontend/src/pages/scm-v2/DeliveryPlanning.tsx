@@ -787,7 +787,7 @@ export const DeliveryPlanning = () => {
             return n;
           }),
         }}
-        onRowDoubleClick={(row) => navigate('/scm/mfg-sales-orders/' + row.so_doc_no)}
+        onRowDoubleClick={(row) => navigate('/scm/sales-orders/' + row.so_doc_no)}
         expandable={{
           renderExpansion: (row) => <PlanningExpandedLines docNo={row.so_doc_no} />,
           rowExpansionKey: (row) => row.so_doc_no,
@@ -797,7 +797,7 @@ export const DeliveryPlanning = () => {
           { label: 'Edit HC fields…', onClick: () => setEditing(row) },
           { label: 'Convert to DO', onClick: () => convertOne(row) },
           { divider: true },
-          { label: 'Open Sales Order', onClick: () => navigate('/scm/mfg-sales-orders/' + row.so_doc_no) },
+          { label: 'Open Sales Order', onClick: () => navigate('/scm/sales-orders/' + row.so_doc_no) },
         ]}
       />
 

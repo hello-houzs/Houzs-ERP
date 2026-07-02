@@ -37,6 +37,15 @@ import {
    warehouse master CRUD belongs at Inventory → Warehouses. The L2 view
    only READS the warehouse list. */
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
+/* Per-state → delivery-region(s) mapping. The region MASTER buckets are edited
+   in Delivery Regions; here each state row picks which bucket(s) it falls under
+   (a state can map to MANY regions). Both hooks were vendored-in but unused —
+   the queries comment flags this as "drives the SO Maintenance multi-select". */
+import {
+  useDeliveryPlanningRegions,
+  useStateDeliveryRegions,
+  useSetStateDeliveryRegions,
+} from '../../vendor/scm/lib/delivery-planning-regions-queries';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import {
   useLocalities, distinctStates,
@@ -138,6 +147,36 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
     }
     if (changed) setPendingByState(next);
   }, [mappedByState, pendingByState]);
+
+  /* Per-state → delivery-region(s) mapping (the REGION column beside Warehouse).
+     regionMasters = the bucket list the multi-select offers; stateRegions = the
+     current per-state region-code set (keyed by state NAME). Same optimistic
+     mirror pattern as the warehouse select: apply the chosen set immediately,
+     drop the override once the persisted map catches up. */
+  const regionMasters = useDeliveryPlanningRegions();
+  const stateRegions = useStateDeliveryRegions();
+  const setStateRegions = useSetStateDeliveryRegions();
+
+  const regionCodesByState = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const row of stateRegions.data ?? []) m.set(row.stateKey, row.regionCodes);
+    return m;
+  }, [stateRegions.data]);
+
+  const [pendingRegionsByState, setPendingRegionsByState] = useState<Map<string, string[]>>(new Map());
+  useEffect(() => {
+    if (pendingRegionsByState.size === 0) return;
+    const next = new Map(pendingRegionsByState);
+    let changed = false;
+    for (const [state, optimistic] of pendingRegionsByState) {
+      const persisted = regionCodesByState.get(state) ?? [];
+      // Order-independent set compare — persisted matches our optimistic pick.
+      const same = persisted.length === optimistic.length
+        && [...persisted].sort().join(' ') === [...optimistic].sort().join(' ');
+      if (same) { next.delete(state); changed = true; }
+    }
+    if (changed) setPendingRegionsByState(next);
+  }, [regionCodesByState, pendingRegionsByState]);
 
   /* Commander 2026-05-27: 4-level drill-down — Country L1 → State L2 →
      City L3 → Postcode L4. State L2 also exposes an inline Country edit
@@ -474,6 +513,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
                     <th>State</th>
                     <th style={{ width: 80 }}>Code</th>
                     <th style={{ width: 140 }}>Country</th>
+                    <th style={{ width: 180 }}>Region</th>
                     <th>Warehouse</th>
                     <th>Notes</th>
                     <th style={{ width: 80, textAlign: 'right' }}>Cities</th>
@@ -507,6 +547,61 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
                               aria-label={`Country for ${s.state}`}
                             />
                           ) : s.country}
+                        </td>
+                        <td onDoubleClick={(e) => e.stopPropagation()}>
+                          {(() => {
+                            /* Multi-select: a state can fall under several region
+                               buckets. Native <select multiple> keeps the same
+                               styles.input look as the Warehouse select while
+                               allowing a multi-pick. Optimistic mirror via
+                               pendingRegionsByState (mirrors displayWarehouseId). */
+                            const displayRegionCodes = pendingRegionsByState.has(s.state)
+                              ? pendingRegionsByState.get(s.state) ?? []
+                              : regionCodesByState.get(s.state) ?? [];
+                            const activeRegions = sortByText(
+                              (regionMasters.data ?? []).filter((r) => r.active),
+                            );
+                            return (
+                              <select
+                                multiple
+                                className={styles.input}
+                                style={{ minHeight: 68 }}
+                                value={displayRegionCodes}
+                                disabled={!canEdit}
+                                aria-label={`Delivery region(s) for ${s.state}`}
+                                onChange={(e) => {
+                                  const regionCodes = Array.from(e.target.selectedOptions, (o) => o.value);
+                                  const prev = regionCodesByState.get(s.state) ?? [];
+                                  setPendingRegionsByState((m) => {
+                                    const next = new Map(m);
+                                    next.set(s.state, regionCodes);
+                                    return next;
+                                  });
+                                  setStateRegions.mutate(
+                                    { stateKey: s.state, regionCodes, country: s.country },
+                                    {
+                                      onSuccess: () => toast.success(
+                                        `${s.state} → ${regionCodes.length ? regionCodes.join(', ') : 'no region'}`,
+                                      ),
+                                      onError: (err) => {
+                                        // Roll back the optimistic pick on failure.
+                                        setPendingRegionsByState((m) => {
+                                          const next = new Map(m);
+                                          next.set(s.state, prev);
+                                          return next;
+                                        });
+                                        toast.error(`Region save failed: ${err instanceof Error ? err.message : String(err)}`);
+                                      },
+                                    },
+                                  );
+                                }}
+                              >
+                                {activeRegions.map((r) => (
+                                  <option key={r.code} value={r.code}>{r.code} · {r.name}</option>
+                                ))}
+                              </select>
+                            );
+                          })()}
                         </td>
                         <td onDoubleClick={(e) => e.stopPropagation()}>
                           <select

@@ -5,10 +5,25 @@ import "./mobile.css";
 
 type SoRow = {
   doc_no: string; debtor_name: string | null; status: string | null;
+  phone: string | null;
   sales_location: string | null; customer_state: string | null; ref: string | null; po_doc_no: string | null;
   processing_date: string | null; customer_delivery_date: string | null; internal_expected_dd: string | null;
   so_date: string | null; created_at: string | null;
   local_total_centi: number | null; total_revenue_centi: number | null; paid_total_centi: number | null;
+  balance_centi: number | null; balance_centi_live: number | null;
+  /* Stock/ready status — DERIVED per SO by the /mfg-sales-orders list handler
+     (aggregated from mfg_sales_order_items.stock_status). Present today. */
+  is_fully_ready?: boolean | null;
+  is_main_ready?: boolean | null;
+  stock_remark?: string | null;
+  /* Warehouse name + the delivery-planning 4-state are NOT returned by
+     /mfg-sales-orders (they're derived only in /delivery-planning). Typed
+     optional + dual-read so the card lights up automatically once the list
+     endpoint is extended to carry them; until then they render as "—". */
+  warehouse_name?: string | null;
+  warehouseName?: string | null;
+  planning_state?: string | null;
+  planningState?: string | null;
 };
 
 const RANGES: [string, string][] = [
@@ -132,27 +147,48 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
               const cancelled = (r.status ?? "").toLowerCase() === "cancelled";
               const ref = r.ref ?? r.po_doc_no ?? "";
               const balance = total(r) - (r.paid_total_centi ?? 0);
+              const warehouse = (r.warehouse_name ?? r.warehouseName ?? "").trim() || "—";
               return (
-                /* Card layout ported VERBATIM from the owner's MobileSoList design:
-                   name + Badge / doc_no · ref / Processing → Delivery (→ glyph) /
-                   Balance … total footer. Wired to our real row fields (dual-read
-                   camelCase ?? snake_case handled upstream). */
+                /* Owner-locked 4-line SO card:
+                   L1  {debtor name} + {phone}          ·  {status badge}
+                   L2  {SO-no} · {ref}                  ·  {warehouse name}
+                   L3  Processing {date} -> Delivery {date}  ·  [Stock][Planning]
+                   L4  Balance {balance}                ·  {total}
+                   Chips reuse MobileDeliveryPlanning's badge tones. Warehouse +
+                   the delivery-planning state are not in the /mfg-sales-orders
+                   payload yet → graceful "—" (see report). */
                 <div key={r.doc_no} onClick={() => onOpen(r.doc_no)} className={cancelled ? "card cancelled" : "card"} style={{ cursor: "pointer", padding: "12px 13px", ...(cancelled ? { opacity: .55, filter: "grayscale(.5)" } : null) }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.debtor_name || "—"}</span>
+                  {/* Line 1 — name + phone / status */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <span style={{ fontSize: 15, fontWeight: 800, color: "var(--ink)" }}>{r.debtor_name || "—"}</span>
+                      {r.phone ? <span style={{ fontSize: 12, fontWeight: 600, color: "var(--brand)", marginLeft: 7 }}>{r.phone}</span> : null}
+                    </span>
                     <StatusPill status={r.status} />
                   </div>
-                  <div className="money" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5 }}>{r.doc_no}{ref ? ` · ${ref}` : ""}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 11, color: "var(--ink2)" }}>
-                    <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Processing</span>
-                    <span className="money" style={{ fontWeight: 600 }}>{dm(r.processing_date)}</span>
-                    <span style={{ color: "#c2c6bd" }}>&rarr;</span>
-                    <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Delivery</span>
-                    <span className="money" style={{ fontWeight: 600 }}>{dm(r.customer_delivery_date || r.internal_expected_dd)}</span>
+                  {/* Line 2 — SO-no · ref / warehouse (values only) */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginTop: 5 }}>
+                    <span className="money" style={{ fontSize: 11.5, color: "var(--mut)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.doc_no}{ref ? ` · ${ref}` : ""}</span>
+                    <span style={{ fontSize: 11.5, color: "var(--mut2)", fontWeight: 600, whiteSpace: "nowrap", flex: "none" }}>{warehouse}</span>
                   </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
-                    <span style={{ fontSize: 10, color: "var(--mut2)" }}>Balance RM {rm(balance)}</span>
-                    <span className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--brand-d)" }}>RM {rm(total(r))}</span>
+                  {/* Line 3 — Processing -> Delivery / stock + planning chips */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 8 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, fontSize: 11, color: "var(--ink2)", overflow: "hidden", whiteSpace: "nowrap" }}>
+                      <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Processing</span>
+                      <span className="money" style={{ fontWeight: 600 }}>{dm(r.processing_date)}</span>
+                      <span style={{ color: "#c2c6bd" }}>&rarr;</span>
+                      <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Delivery</span>
+                      <span className="money" style={{ fontWeight: 600 }}>{dm(r.customer_delivery_date || r.internal_expected_dd)}</span>
+                    </span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 5, flex: "none" }}>
+                      <StockChip r={r} />
+                      <PlanningChip r={r} />
+                    </span>
+                  </div>
+                  {/* Line 4 — Balance / total */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
+                    <span style={{ fontSize: 10.5, color: "var(--mut2)" }}>Balance <span className="money" style={{ color: balance > 0 ? "var(--ink2)" : "var(--mut2)", fontWeight: 700 }}>RM {rm(balance)}</span></span>
+                    <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "var(--brand-d)" }}>RM {rm(total(r))}</span>
                   </div>
                 </div>
               );
@@ -182,4 +218,34 @@ function StatusPill({ status }: { status: string | null }) {
     "b-brand";
   const label = status ? status.charAt(0).toUpperCase() + status.slice(1).toLowerCase() : "—";
   return <span className={`badge ${cls}`} style={{ flex: "none" }}>{label}</span>;
+}
+
+/* Chip vocabulary reused from MobileDeliveryPlanning: canonical .badge tinted by
+   the same b-green/b-amber/b-red/b-grey tones. Each chip carries a tiny
+   uppercase label prefix (Stock / Delivery) so the two read distinctly. */
+function MiniChip({ tone, label }: { tone: "green" | "amber" | "red" | "grey"; label: string }) {
+  const cls = tone === "green" ? "b-green" : tone === "amber" ? "b-amber" : tone === "red" ? "b-red" : "b-grey";
+  return <span className={`badge ${cls}`}>{label}</span>;
+}
+
+/* Stock chip — READY (green) once every non-cancelled line is stocked, else
+   Pending (grey). Reads the list handler's is_fully_ready aggregate. */
+function StockChip({ r }: { r: SoRow }) {
+  const ready = r.is_fully_ready === true;
+  return <MiniChip tone={ready ? "green" : "grey"} label={ready ? "Ready" : "Pending"} />;
+}
+
+/* Delivery-planning chip — maps the 4 planning states to the DeliveryPlanning
+   colour scheme: Pending schedule = amber, Pending delivery = grey,
+   Overdue = red, Delivered = green. The state itself is NOT in the
+   /mfg-sales-orders payload yet (only /delivery-planning derives it), so this
+   renders a neutral "—" placeholder until the list endpoint carries it. */
+function PlanningChip({ r }: { r: SoRow }) {
+  const raw = (r.planning_state ?? r.planningState ?? "").toUpperCase();
+  if (!raw) return <MiniChip tone="grey" label="—" />;
+  if (raw === "DELIVERED") return <MiniChip tone="green" label="Delivered" />;
+  if (raw === "OVERDUE") return <MiniChip tone="red" label="Overdue" />;
+  if (raw === "PENDING_SCHEDULE") return <MiniChip tone="amber" label="Pending schedule" />;
+  if (raw === "PENDING_DELIVERY") return <MiniChip tone="grey" label="Pending delivery" />;
+  return <MiniChip tone="grey" label={raw.charAt(0) + raw.slice(1).toLowerCase().replace(/_/g, " ")} />;
 }
