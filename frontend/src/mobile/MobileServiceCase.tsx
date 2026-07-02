@@ -811,6 +811,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               fields={[
                 { key: "resolution_method", label: "Resolution method", value: resolutionMethod, type: "select", options: [{ value: "", label: "—" }, ...resolutionOptions.map((o) => ({ value: o, label: resolutionLabel(o) }))] },
                 { key: "action_remark", label: "Action remark", value: get(c, "actionRemark", "action_remark"), type: "textarea" },
+                { key: "customer_pickup_at", label: "Customer pickup date", value: get(c, "customerPickupAt", "customer_pickup_at"), type: "date" },
                 { key: "supplier_pickup_at", label: "Supplier pickup date", value: get(c, "supplierPickupAt", "supplier_pickup_at"), type: "date" },
               ]}
               onSave={(body) => patchCase(body, "Couldn't save resolution")}

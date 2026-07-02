@@ -28,7 +28,7 @@
 //     (Houzs co-locates it with the SO queries; 2990 has it under flow-queries).
 // ----------------------------------------------------------------------------
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { MapPinned, Truck } from 'lucide-react';
 import { Button } from '@2990s/design-system';
@@ -43,11 +43,14 @@ import { useMfgSalesOrderDetail } from '../../vendor/scm/lib/sales-order-queries
 import {
   useDeliveryPlanning,
   useConvertSosToDo,
+  useScheduleDelivery,
   DELIVERY_STATES,
   DELIVERY_STATE_LABEL,
   type DeliveryState,
   type PlanningOrder,
 } from '../../vendor/scm/lib/delivery-planning-queries';
+import { useDrivers, type DriverRow } from '../../vendor/scm/lib/drivers-queries';
+import { useLorries, type LorryRow } from '../../vendor/scm/lib/lorries-queries';
 import styles from './DeliveryPlanning.module.css';
 
 /* HC "Remark 4" delivery sub-status → a small pill class (reuse the cream
@@ -87,18 +90,141 @@ type RegionTab = { key: string; label: string; sg?: boolean };
 /* The 4 state tabs (the top row). */
 const STATE_TABS = DELIVERY_STATES;
 
-const DSTATE_PILL_CLASS: Record<DeliveryState, string> = {
-  PENDING_DELIVERY: styles.dstatePendingDelivery!,
-  PENDING_SCHEDULE: styles.dstatePendingSchedule!,
-  OVERDUE: styles.dstateOverdue!,
-  DELIVERED: styles.dstateDelivered!,
+/* Per-state tint for the Status cell's editable select — the same cream palette
+   the old inline pill used, applied as the select's text/background so an
+   overridden state still reads at a glance. */
+const DSTATE_TONE: Record<DeliveryState, { bg: string; fg: string }> = {
+  PENDING_DELIVERY: { bg: 'rgba(34, 31, 32, 0.06)', fg: 'var(--fg-muted)' },
+  PENDING_SCHEDULE: { bg: 'rgba(232, 107, 58, 0.12)', fg: 'var(--c-burnt)' },
+  OVERDUE:          { bg: 'rgba(184, 51, 31, 0.12)', fg: 'var(--c-festive-b, #B8331F)' },
+  DELIVERED:        { bg: 'rgba(47, 93, 79, 0.12)', fg: 'var(--c-secondary-a)' },
 };
 
-function DeliveryStatePill({ state }: { state: DeliveryState }) {
+/* ── Inline (Excel-style) cell editors ────────────────────────────────────────
+   Each cell IS the control (no drill-in). All of them stopPropagation on click /
+   double-click so editing a cell never selects the row or triggers the row's
+   double-click → open-SO navigation. Every change persists immediately through
+   useScheduleDelivery (shared `sched` mutation, optimistic + invalidate).
+
+   Manual-override semantics (owner rule): the Status cell writes deliveryState —
+   the backend treats this as the override that WINS over the derived state, so a
+   coordinator can force e.g. an OVERDUE SO into PENDING_SCHEDULE. The real stock
+   readiness stays visible in its own Stock column (never hidden by the override).
+
+   The board is SO-scoped, so every write is type:'so', id: so_doc_no — matching
+   the amended_delivery_date / delivery_state override path on mfg_sales_orders. */
+type SchedMutation = ReturnType<typeof useScheduleDelivery>;
+
+/* Small shared wrapper so clicks inside an editor stay in the editor. */
+const stopRow = {
+  onClick: (e: ReactMouseEvent) => e.stopPropagation(),
+  onDoubleClick: (e: ReactMouseEvent) => e.stopPropagation(),
+};
+
+function StatusEditCell({ order, sched }: { order: PlanningOrder; sched: SchedMutation }) {
+  const tone = DSTATE_TONE[order.delivery_state];
   return (
-    <span className={`${styles.dstatePill} ${DSTATE_PILL_CLASS[state]}`}>
-      {DELIVERY_STATE_LABEL[state]}
-    </span>
+    <select
+      className={styles.inlineEdit}
+      style={{ background: tone.bg, color: tone.fg, fontWeight: 600 }}
+      value={order.delivery_state}
+      disabled={sched.isPending}
+      title="Manual delivery-state override (wins over the derived state)"
+      {...stopRow}
+      onChange={(e) => {
+        const deliveryState = e.target.value as DeliveryState;
+        if (deliveryState === order.delivery_state) return;
+        sched.mutate({ type: 'so', id: order.so_doc_no, deliveryState });
+      }}
+    >
+      {DELIVERY_STATES.map((s) => (
+        <option key={s} value={s}>{DELIVERY_STATE_LABEL[s]}</option>
+      ))}
+    </select>
+  );
+}
+
+/* Delivery date → scheduleDate → the SO's amended_delivery_date (the firm date;
+   the customer's ORIGINAL customer_delivery_date is never overwritten). */
+function ScheduleDateEditCell({ order, sched }: { order: PlanningOrder; sched: SchedMutation }) {
+  const current = (order.amended_delivery_date ?? '').slice(0, 10);
+  return (
+    <input
+      type="date"
+      className={styles.inlineEdit}
+      value={current}
+      disabled={sched.isPending}
+      title="Firm / amended delivery date (original customer date is preserved)"
+      {...stopRow}
+      onChange={(e) => {
+        const v = e.target.value || null;   // clearing → null
+        if ((v ?? '') === (current || '')) return;
+        sched.mutate({ type: 'so', id: order.so_doc_no, scheduleDate: v });
+      }}
+    />
+  );
+}
+
+/* Sentinel for an existing crew assignment whose name/plate is NOT in the active
+   master list — shown as a selected option so the cell never blanks an existing
+   assignment; picking it is a no-op (guarded in onChange). */
+const KEEP_CURRENT = '__current__';
+
+function DriverEditCell({ order, sched, drivers }: { order: PlanningOrder; sched: SchedMutation; drivers: DriverRow[] }) {
+  /* No driver_id on the row (crew carries names only) → preselect by matching the
+     current driver_1_name against the option list. */
+  const currentName = order.crew?.driver_1_name ?? '';
+  const matchedId = drivers.find((d) => d.name === currentName)?.id ?? '';
+  const offList = currentName !== '' && matchedId === '';
+  return (
+    <select
+      className={styles.inlineEdit}
+      value={offList ? KEEP_CURRENT : matchedId}
+      disabled={sched.isPending}
+      {...stopRow}
+      onChange={(e) => {
+        const picked = e.target.value;
+        if (picked === KEEP_CURRENT) return;   // re-picking the off-list current = no-op
+        const driverId = picked || null;
+        const driverNameOptimistic = driverId ? (drivers.find((d) => d.id === driverId)?.name ?? null) : null;
+        sched.mutate({ type: 'so', id: order.so_doc_no, driverId, driverNameOptimistic });
+      }}
+    >
+      <option value="">—</option>
+      {/* Keep the current name selectable even if it's not (or no longer) in the
+          active driver master, so an existing assignment never silently blanks. */}
+      {offList && <option value={KEEP_CURRENT}>{currentName}</option>}
+      {drivers.map((d) => (
+        <option key={d.id} value={d.id}>{d.name}</option>
+      ))}
+    </select>
+  );
+}
+
+function LorryEditCell({ order, sched, lorries }: { order: PlanningOrder; sched: SchedMutation; lorries: LorryRow[] }) {
+  const currentPlate = order.crew?.lorry_plate ?? '';
+  const matchedId = lorries.find((l) => l.plate === currentPlate)?.id ?? '';
+  const offList = currentPlate !== '' && matchedId === '';
+  return (
+    <select
+      className={styles.inlineEdit}
+      value={offList ? KEEP_CURRENT : matchedId}
+      disabled={sched.isPending}
+      {...stopRow}
+      onChange={(e) => {
+        const picked = e.target.value;
+        if (picked === KEEP_CURRENT) return;
+        const lorryId = picked || null;
+        const lorryPlateOptimistic = lorryId ? (lorries.find((l) => l.id === lorryId)?.plate ?? null) : null;
+        sched.mutate({ type: 'so', id: order.so_doc_no, lorryId, lorryPlateOptimistic });
+      }}
+    >
+      <option value="">—</option>
+      {offList && <option value={KEEP_CURRENT}>{currentPlate}</option>}
+      {lorries.map((l) => (
+        <option key={l.id} value={l.id}>{l.plate}</option>
+      ))}
+    </select>
   );
 }
 
@@ -260,6 +386,15 @@ export const DeliveryPlanning = () => {
   const [sel, setSel] = useState<Set<string>>(new Set());
   const convertSos = useConvertSosToDo();
 
+  /* Inline-cell + bulk-edit write path (shared). The backend schedule endpoint
+     already accepts scheduleDate / deliveryState / driverId / lorryId. */
+  const sched = useScheduleDelivery();
+  /* Option lists for the Driver / Lorry inline selects + the bulk value control.
+     Active-only (the pickers offer current crew); an existing off-list assignment
+     stays selectable via the cell's fallback <option>. */
+  const { data: drivers = [] } = useDrivers();
+  const { data: lorries = [] } = useLorries();
+
   /* Convert a set of SOs → DOs (single row or the bulk selection). Skips SOs
      with no deliverable remaining (already fully delivered); reports the result
      via the in-app NotifyDialog. Reused by the row action + the selection bar. */
@@ -291,6 +426,82 @@ export const DeliveryPlanning = () => {
 
   /* Single-row convert (context-menu action). */
   const convertOne = (o: PlanningOrder) => { void runConvert([o.so_doc_no]); };
+
+  /* ── Bulk-edit bar state ────────────────────────────────────────────────────
+     One field at a time: Status | Delivery date | Driver | Lorry. The second
+     control's TYPE depends on the chosen field; `bulkValue` holds its raw value
+     (state code / YYYY-MM-DD / driver id / lorry id). Apply fans out one
+     useScheduleDelivery call per selected SO (capped concurrency), then clears
+     the selection and reports a summary via the in-app NotifyDialog. */
+  type BulkField = 'STATUS' | 'DATE' | 'DRIVER' | 'LORRY';
+  const [bulkField, setBulkField] = useState<BulkField>('STATUS');
+  const [bulkValue, setBulkValue] = useState<string>('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  /* Reset the value control whenever the field type changes (a date value makes
+     no sense once the field is Driver, etc.). */
+  const changeBulkField = (f: BulkField) => { setBulkField(f); setBulkValue(''); };
+
+  const applyBulk = async () => {
+    const docNos = [...sel];
+    if (docNos.length === 0 || bulkBusy) return;
+
+    /* Build the single-field patch + a human label for the confirm/summary. */
+    const patch: Partial<Parameters<typeof sched.mutateAsync>[0]> = {};
+    let valueLabel = '';
+    if (bulkField === 'STATUS') {
+      if (!bulkValue) return;
+      patch.deliveryState = bulkValue as DeliveryState;
+      valueLabel = DELIVERY_STATE_LABEL[bulkValue as DeliveryState];
+    } else if (bulkField === 'DATE') {
+      patch.scheduleDate = bulkValue || null;   // empty → clear the amended date
+      valueLabel = bulkValue || '(cleared)';
+    } else if (bulkField === 'DRIVER') {
+      patch.driverId = bulkValue || null;
+      patch.driverNameOptimistic = bulkValue ? (drivers.find((d) => d.id === bulkValue)?.name ?? null) : null;
+      valueLabel = bulkValue ? (drivers.find((d) => d.id === bulkValue)?.name ?? bulkValue) : '(none)';
+    } else {
+      patch.lorryId = bulkValue || null;
+      patch.lorryPlateOptimistic = bulkValue ? (lorries.find((l) => l.id === bulkValue)?.plate ?? null) : null;
+      valueLabel = bulkValue ? (lorries.find((l) => l.id === bulkValue)?.plate ?? bulkValue) : '(none)';
+    }
+
+    const fieldLabel = bulkField === 'STATUS' ? 'Status' : bulkField === 'DATE' ? 'Delivery date' : bulkField === 'DRIVER' ? 'Driver' : 'Lorry';
+    if (!(await askConfirm({
+      title: `Set ${fieldLabel} on ${docNos.length} order${docNos.length === 1 ? '' : 's'}?`,
+      body: `${fieldLabel} → ${valueLabel} will be applied to every selected order.`,
+      confirmLabel: `Apply to ${docNos.length}`,
+    }))) return;
+
+    setBulkBusy(true);
+    let ok = 0;
+    const failed: string[] = [];
+    const LIMIT = 4;
+    try {
+      for (let i = 0; i < docNos.length; i += LIMIT) {
+        const batch = docNos.slice(i, i + LIMIT);
+        await Promise.all(batch.map(async (docNo) => {
+          try {
+            await sched.mutateAsync({ type: 'so', id: docNo, ...patch });
+            ok += 1;
+          } catch (e) {
+            failed.push(`${docNo} (${e instanceof Error ? e.message : String(e)})`);
+          }
+        }));
+      }
+    } finally {
+      setBulkBusy(false);
+    }
+    setSel(new Set());
+    setBulkValue('');
+    const parts = [`${fieldLabel} set to ${valueLabel} on ${ok} order${ok === 1 ? '' : 's'}.`];
+    if (failed.length > 0) parts.push(`Failed ${failed.length}: ${failed.join('; ')}.`);
+    notify({
+      title: failed.length > 0 ? 'Bulk update finished with errors' : 'Bulk update complete',
+      body: parts.join(' '),
+      tone: failed.length > 0 ? 'error' : 'info',
+    });
+  };
 
   /* Bulk convert (selection bar) — confirm first (useConfirm, no window.*). */
   const convertSelected = async () => {
@@ -526,12 +737,25 @@ export const DeliveryPlanning = () => {
       groupValue: (o) => o.stock_status,
     },
     {
-      key: 'delivery_state', label: 'State', width: 150, sortable: true, groupable: true,
-      accessor: (o) => <DeliveryStatePill state={o.delivery_state} />,
+      key: 'delivery_state', label: 'State', width: 160, sortable: true, groupable: true,
+      /* Inline-editable: writes a manual delivery_state override (wins over the
+         derived state). Real stock readiness stays visible in the Stock column. */
+      accessor: (o) => <StatusEditCell order={o} sched={sched} />,
       searchValue: (o) => DELIVERY_STATE_LABEL[o.delivery_state],
       groupValue: (o) => DELIVERY_STATE_LABEL[o.delivery_state],
       exportValue: (o) => DELIVERY_STATE_LABEL[o.delivery_state],
       sortFn: (a, b) => a.delivery_state.localeCompare(b.delivery_state),
+    },
+    {
+      /* Inline-editable firm/amended delivery date → scheduleDate (writes the SO's
+         amended_delivery_date; the customer's original date is preserved). Shown
+         by default so operators can plan without opening the HC drawer. */
+      key: 'sched_date', label: 'Sched. Date', width: 150, sortable: true,
+      accessor: (o) => <ScheduleDateEditCell order={o} sched={sched} />,
+      searchValue: (o) => o.amended_delivery_date ?? '',
+      exportValue: (o) => fmtDateOrDash(o.amended_delivery_date),
+      sortFn: (a, b) => String(a.amended_delivery_date ?? '').localeCompare(String(b.amended_delivery_date ?? '')),
+      filterType: 'date', dateValue: (o) => o.amended_delivery_date,
     },
     /* HC DO-execution raw-data fields (migration 0197). delivery_substatus (a
        small pill) + customer_delivered_date default-SHOW; the rest default-HIDE.
@@ -598,9 +822,12 @@ export const DeliveryPlanning = () => {
     /* Crew — split into the HC delivery-sheet columns. Driver + Lorry show by
        default; IC / contact / driver 2 / helpers are in the show/hide menu. */
     {
-      key: 'driver', label: 'Driver', width: 150,
-      accessor: (o) => o.crew?.driver_1_name || <span style={{ color: 'var(--fg-muted)' }}>—</span>,
+      /* Inline-editable: assigns the trip driver (writes driverId; the backend
+         find-or-creates the trip + appends the stop). */
+      key: 'driver', label: 'Driver', width: 160,
+      accessor: (o) => <DriverEditCell order={o} sched={sched} drivers={drivers} />,
       searchValue: (o) => o.crew?.driver_1_name ?? '',
+      exportValue: (o) => o.crew?.driver_1_name ?? '',
     },
     {
       key: 'driver_ic', label: 'Driver IC', width: 140, defaultHidden: true,
@@ -628,9 +855,11 @@ export const DeliveryPlanning = () => {
       searchValue: (o) => o.crew?.helper_2_name ?? '',
     },
     {
-      key: 'lorry', label: 'Lorry', width: 130,
-      accessor: (o) => o.crew?.lorry_plate || <span style={{ color: 'var(--fg-muted)' }}>—</span>,
+      /* Inline-editable: assigns the trip lorry (writes lorryId). */
+      key: 'lorry', label: 'Lorry', width: 150,
+      accessor: (o) => <LorryEditCell order={o} sched={sched} lorries={lorries} />,
       searchValue: (o) => o.crew?.lorry_plate ?? '',
+      exportValue: (o) => o.crew?.lorry_plate ?? '',
     },
     {
       key: 'balance_centi', label: 'Balance', width: 130, align: 'right', sortable: true,
@@ -661,8 +890,10 @@ export const DeliveryPlanning = () => {
     },
   // The EM/SG cross-border default-show (isEmSg) depends on activeRegion →
   // recompute the columns on region change. regionLabel feeds the Region column's
-  // display labels (from the config master).
-  ], [activeRegion, regionLabel]); // eslint-disable-line react-hooks/exhaustive-deps
+  // display labels (from the config master). The editable Status/Date/Driver/Lorry
+  // accessors close over `sched` + the driver/lorry option lists, so they join the
+  // deps (a new driver/lorry list must re-render the pickers).
+  ], [activeRegion, regionLabel, sched, drivers, lorries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className={styles.page ?? ''} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', padding: 'var(--space-3) var(--space-4) var(--space-4)', background: 'var(--c-cream)', minHeight: '100%' }}>
@@ -740,25 +971,99 @@ export const DeliveryPlanning = () => {
         </div>
       )}
 
-      {/* Selection bar — appears once one or more rows are ticked; "Convert N to
-          DO" bulk-converts every selected SO (one DO per SO, useConfirm first). */}
+      {/* Compact bulk-edit bar — appears once one or more rows are ticked.
+          "<N> selected · Set [field] → [value] [Apply]" mass-writes one field
+          across every selected SO via useScheduleDelivery; the value control's
+          TYPE follows the chosen field. The existing "Convert N to DO" bulk
+          action is folded in on the right. */}
       {sel.size > 0 && (
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: 'var(--space-2) var(--space-3)',
-          background: 'rgba(232, 107, 58, 0.06)',
-          border: '1px solid var(--c-orange)',
-          borderRadius: 'var(--radius-md)',
-          gap: 'var(--space-3)',
-        }}>
-          <span style={{ fontWeight: 600, color: 'var(--c-burnt)' }}>{sel.size} selected</span>
-          <span style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
-            <Button variant="ghost" size="sm" onClick={() => setSel(new Set())}>Clear</Button>
-            <Button variant="secondary" size="sm" disabled={convertSos.isPending} onClick={() => void convertSelected()}>
-              <Truck size={14} strokeWidth={1.75} />
-              <span>{convertSos.isPending ? 'Converting…' : `Convert ${sel.size} to DO`}</span>
-            </Button>
-          </span>
+        <div className={styles.bulkBar}>
+          <span className={styles.bulkCount}>{sel.size} selected</span>
+          <span className={styles.bulkSep}>·</span>
+          <span className={styles.bulkLabel}>Set</span>
+          <select
+            className={styles.bulkControl}
+            style={{ minWidth: 130 }}
+            value={bulkField}
+            disabled={bulkBusy}
+            onChange={(e) => changeBulkField(e.target.value as typeof bulkField)}
+            aria-label="Bulk-edit field"
+          >
+            <option value="STATUS">Status</option>
+            <option value="DATE">Delivery date</option>
+            <option value="DRIVER">Driver</option>
+            <option value="LORRY">Lorry</option>
+          </select>
+          <span className={styles.bulkLabel}>&rarr;</span>
+          {/* Value control — type depends on the field. */}
+          {bulkField === 'STATUS' && (
+            <select
+              className={styles.bulkControl}
+              value={bulkValue}
+              disabled={bulkBusy}
+              onChange={(e) => setBulkValue(e.target.value)}
+              aria-label="New status"
+            >
+              <option value="">Choose status…</option>
+              {DELIVERY_STATES.map((s) => (
+                <option key={s} value={s}>{DELIVERY_STATE_LABEL[s]}</option>
+              ))}
+            </select>
+          )}
+          {bulkField === 'DATE' && (
+            <input
+              type="date"
+              className={styles.bulkControl}
+              value={bulkValue}
+              disabled={bulkBusy}
+              onChange={(e) => setBulkValue(e.target.value)}
+              aria-label="New delivery date"
+            />
+          )}
+          {bulkField === 'DRIVER' && (
+            <select
+              className={styles.bulkControl}
+              value={bulkValue}
+              disabled={bulkBusy}
+              onChange={(e) => setBulkValue(e.target.value)}
+              aria-label="New driver"
+            >
+              <option value="">Unassign / choose driver…</option>
+              {drivers.map((d) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
+          )}
+          {bulkField === 'LORRY' && (
+            <select
+              className={styles.bulkControl}
+              value={bulkValue}
+              disabled={bulkBusy}
+              onChange={(e) => setBulkValue(e.target.value)}
+              aria-label="New lorry"
+            >
+              <option value="">Unassign / choose lorry…</option>
+              {lorries.map((l) => (
+                <option key={l.id} value={l.id}>{l.plate}</option>
+              ))}
+            </select>
+          )}
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={bulkBusy || (bulkField === 'STATUS' && !bulkValue)}
+            onClick={() => void applyBulk()}
+          >
+            {bulkBusy ? 'Applying…' : 'Apply'}
+          </Button>
+
+          <span className={styles.bulkSpacer} />
+
+          <Button variant="secondary" size="sm" disabled={convertSos.isPending} onClick={() => void convertSelected()}>
+            <Truck size={14} strokeWidth={1.75} />
+            <span>{convertSos.isPending ? 'Converting…' : `Convert ${sel.size} to DO`}</span>
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setSel(new Set())} title="Clear selection">x</Button>
         </div>
       )}
 

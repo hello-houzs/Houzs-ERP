@@ -139,3 +139,65 @@
 .daysSoon     { color: var(--c-burnt); font-weight: 700; }
 .daysOk       { color: var(--c-ink); }
 
+/* ── Inline Excel-style cell editors (native select / date, styled like the
+      grid so they read as plain cells until focused) ─────────────────────────
+   Used by the editable Status / Delivery date / Driver / Lorry columns and by
+   the bulk-edit bar's value control. Transparent until hover/focus so the grid
+   stays calm; a burnt focus ring signals editability. */
+.inlineEdit {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  cursor: pointer;
+  appearance: auto;
+}
+.inlineEdit:hover {
+  border-color: var(--line);
+  background: var(--c-paper);
+}
+.inlineEdit:focus {
+  outline: none;
+  border-color: var(--c-burnt);
+  background: var(--c-paper);
+}
+.inlineEdit:disabled { opacity: 0.6; cursor: default; }
+
+/* ── Bulk-edit bar (compact single row above the grid) ─────────────────────── */
+.bulkBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  background: rgba(232, 107, 58, 0.06);
+  border: 1px solid var(--c-orange);
+  border-radius: var(--radius-md);
+}
+.bulkCount { font-weight: 600; color: var(--c-burnt); white-space: nowrap; }
+.bulkSep { color: var(--fg-muted); }
+.bulkLabel { font-size: var(--fs-12); color: var(--fg-muted); }
+/* The bar's own field / value controls — bordered (they sit on tint, not in a
+   cell), but share the inlineEdit type ramp. */
+.bulkControl {
+  height: 26px;
+  min-width: 120px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--c-paper);
+  font-family: var(--font-sans);
+  font-size: var(--fs-12);
+  color: var(--c-ink);
+  cursor: pointer;
+}
+.bulkControl:focus { outline: none; border-color: var(--c-burnt); }
+.bulkSpacer { flex: 1 1 auto; }
+

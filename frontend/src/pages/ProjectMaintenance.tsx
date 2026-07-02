@@ -101,6 +101,61 @@ export function ProjectMaintenanceView() {
 // list is much longer than the others.
 const PICKER_PREVIEW_ROWS = 5;
 
+// ── Collapsible section shell ────────────────────────────────
+// Each manager below wraps its body in this. The header (title +
+// count + rotating chevron) toggles the body open/closed. Default:
+// the first section (Brands) is open; the rest start collapsed so
+// the page isn't a single long scroll (owner: "Venues (59)" was
+// always fully expanded). Count shows even when collapsed so admins
+// can see list sizes at a glance.
+function CollapsibleSection({
+  title,
+  description,
+  count,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  description: string;
+  count?: number;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="rounded-md border border-border bg-surface shadow-stone">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-6 py-4 text-left"
+      >
+        <h2 className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
+          {title}
+        </h2>
+        {count != null && (
+          <span className="rounded-full bg-bg px-2 py-0.5 font-mono text-[10px] font-semibold text-ink-muted">
+            {count}
+          </span>
+        )}
+        <ChevronDown
+          size={16}
+          className={cn(
+            "ml-auto text-ink-muted transition-transform",
+            open && "rotate-180"
+          )}
+        />
+      </button>
+      {open && (
+        <div className="px-6 pb-6">
+          <p className="mb-4 text-[12px] text-ink-secondary">{description}</p>
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ExpandToggle({
   total,
   expanded,
@@ -170,15 +225,11 @@ function OrganizerManager() {
   }
 
   return (
-    <section className="rounded-md border border-border bg-surface p-6 shadow-stone">
-      <h2 className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
-        Organizers
-      </h2>
-      <p className="mb-4 text-[12px] text-ink-secondary">
-        Picker values for the project Organizer field. Soft delete — existing
-        project rows still display whatever name they were saved with.
-      </p>
-
+    <CollapsibleSection
+      title="Organizers"
+      count={q.data?.data.length}
+      description="Picker values for the project Organizer field. Soft delete — existing project rows still display whatever name they were saved with."
+    >
       <div className="mb-3 flex gap-2">
         <input
           value={name}
@@ -233,7 +284,7 @@ function OrganizerManager() {
         expanded={expanded}
         onToggle={() => setExpanded((v) => !v)}
       />
-    </section>
+    </CollapsibleSection>
   );
 }
 
@@ -319,15 +370,11 @@ function VenueManager() {
   }
 
   return (
-    <section className="rounded-md border border-border bg-surface p-6 shadow-stone">
-      <h2 className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
-        Venues
-      </h2>
-      <p className="mb-4 text-[12px] text-ink-secondary">
-        Picker values for the project Venue field. Optionally tag each venue
-        with a state — picking it on a new project will pre-fill the state.
-      </p>
-
+    <CollapsibleSection
+      title="Venues"
+      count={q.data?.data.length}
+      description="Picker values for the project Venue field. Optionally tag each venue with a state — picking it on a new project will pre-fill the state."
+    >
       <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_180px_auto]">
         <input
           value={name}
@@ -422,7 +469,7 @@ function VenueManager() {
         expanded={expanded}
         onToggle={() => setExpanded((s) => !s)}
       />
-    </section>
+    </CollapsibleSection>
   );
 }
 
@@ -455,15 +502,11 @@ function ChecklistManager() {
   }
 
   return (
-    <section className="rounded-md border border-border bg-surface p-6 shadow-stone">
-      <h2 className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
-        Default Checklist
-      </h2>
-      <p className="mb-4 text-[12px] text-ink-secondary">
-        Items in the chosen template are cloned into every new project of that
-        event type. Editing here does not affect projects already created.
-      </p>
-
+    <CollapsibleSection
+      title="Default Checklist"
+      count={templates.length}
+      description="Items in the chosen template are cloned into every new project of that event type. Editing here does not affect projects already created."
+    >
       <div className="mb-4 rounded-md border border-border bg-bg/40 p-3">
         <div className="mb-2 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Default template per event type
@@ -532,7 +575,7 @@ function ChecklistManager() {
       {currentTemplateId && (
         <ChecklistItemsEditor templateId={currentTemplateId} />
       )}
-    </section>
+    </CollapsibleSection>
   );
 }
 
@@ -1342,15 +1385,12 @@ function BrandManager() {
   }
 
   return (
-    <section className="rounded-md border border-border bg-surface p-6 shadow-stone">
-      <h2 className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
-        Brands
-      </h2>
-      <p className="mb-4 text-[12px] text-ink-secondary">
-        Shown in the project Brand dropdown. Renames cascade to existing
-        projects so historical data stays in sync.
-      </p>
-
+    <CollapsibleSection
+      title="Brands"
+      count={q.data?.data.length}
+      defaultOpen
+      description="Shown in the project Brand dropdown. Renames cascade to existing projects so historical data stays in sync."
+    >
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <input
           value={name}
@@ -1474,7 +1514,7 @@ function BrandManager() {
         expanded={expanded}
         onToggle={() => setExpanded((s) => !s)}
       />
-    </section>
+    </CollapsibleSection>
   );
 }
 
@@ -1549,16 +1589,11 @@ function EventTypeManager() {
   }
 
   return (
-    <section className="rounded-md border border-border bg-surface p-6 shadow-stone">
-      <h2 className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
-        Event Types
-      </h2>
-      <p className="mb-4 text-[12px] text-ink-secondary">
-        Shown in the "Event Type" dropdown when creating a project. Setting
-        a default checklist template on a type auto-seeds the checklist for
-        every new project of that type.
-      </p>
-
+    <CollapsibleSection
+      title="Event Types"
+      count={q.data?.data.length}
+      description={'Shown in the "Event Type" dropdown when creating a project. Setting a default checklist template on a type auto-seeds the checklist for every new project of that type.'}
+    >
       <div className="mb-3 flex gap-2">
         <input
           value={name}
@@ -1685,7 +1720,7 @@ function EventTypeManager() {
         expanded={expanded}
         onToggle={() => setExpanded((s) => !s)}
       />
-    </section>
+    </CollapsibleSection>
   );
 }
 
@@ -1713,15 +1748,11 @@ function CostRateManager() {
   );
 
   return (
-    <section className="rounded-md border border-border bg-surface p-6 shadow-stone">
-      <h2 className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
-        Cost Rates
-      </h2>
-      <p className="mb-4 text-[12px] text-ink-secondary">
-        Per-brand transport, merchandise, and commission. Saving a
-        row recomputes auto cost lines for every active project on
-        that brand.
-      </p>
+    <CollapsibleSection
+      title="Cost Rates"
+      count={q.data?.data.length}
+      description="Per-brand transport, merchandise, and commission. Saving a row recomputes auto cost lines for every active project on that brand."
+    >
       {q.loading && !q.data ? (
         <Skeleton className="h-32" />
       ) : q.error ? (
@@ -1746,7 +1777,7 @@ function CostRateManager() {
           )}
         </div>
       )}
-    </section>
+    </CollapsibleSection>
   );
 }
 

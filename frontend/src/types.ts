@@ -184,6 +184,8 @@ export interface AssrCase {
   // Mig 064 — supplier handover + items-ready dates, plus the
   // `stage_changed_at` snapshot the new lead-time column reads.
   supplier_pickup_at?: string | null;
+  // Mig 107 — date we collect the faulty item from the customer's house.
+  customer_pickup_at?: string | null;
   items_ready_at?: string | null;
   stage_changed_at?: string | null;
   // Mig 081 — Verification card (gate between Under Verification and

@@ -5,13 +5,27 @@ import { normalizePhone, splitE164 } from "../vendor/shared/phone";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import "./mobile.css";
 
-// Mobile OCR "Scan" screen — capture two phone photos of a handwritten sales
-// slip (front slip + payment slip), POST them to POST /api/scm/scan-so/extract,
-// then map the EXTRACTED slip into a prefill and hand it to the mobile New SO
-// form for the operator to review and save. This mirrors the DESKTOP flow
-// (ScanOrderModal -> SalesOrderNew): the backend /scan-so/extract only RETURNS
-// extracted data — it never creates a draft — so the operator always reviews
-// and saves in the real form, where the learning feedback fires on save.
+// Mobile OCR "Scan" screen — capture phone photos of a handwritten sales
+// slip (ONE front slip + ONE OR MORE payment slips), POST them to
+// POST /api/scm/scan-so/extract, then map the EXTRACTED slip into a prefill and
+// hand it to the mobile New SO form for the operator to review and save. This
+// mirrors the DESKTOP flow (ScanOrderModal -> SalesOrderNew): the backend
+// /scan-so/extract only RETURNS extracted data — it never creates a draft — so
+// the operator always reviews and saves in the real form, where the learning
+// feedback fires on save.
+//
+// MULTIPLE PAYMENT SLIPS — an order can take 2-3 payments (deposit + balances),
+// and each physical slip / card-terminal receipt is ONE payment. The front slip
+// stays single; the payment slip becomes an ARRAY (add-more + per-slip remove).
+// Because the current /scan-so/extract contract reads exactly ONE order slip +
+// ONE payment receipt into a SINGLE payment, we OCR each payment slip in its
+// OWN /extract call (front slip attached to every call so the order fields are
+// read once and each call's single payment is the k-th slip's payment). We then
+// merge: the FIRST call supplies the order + payment #1, calls 2..N each supply
+// one more payment. This yields N payments per N slips end-to-end WITHOUT any
+// backend change — each call uses the existing 1-slip + 1-receipt contract
+// verbatim. (See the report note for the alternative single-call array contract
+// if the backend later grows a paymentFiles[]/payments[] mode.)
 //
 // Camera capture uses a hidden <input type="file" accept="image/*"
 // capture="environment"> per slot — the standard PWA pattern that opens the
@@ -65,6 +79,13 @@ export type MobileScanPayment = {
   amount: string; // RM
   approval: string;
 };
+/* One captured payment slip = ONE payment. Carries the OCR'd values PLUS the
+   captured File so the New SO form can pre-attach it to the payment row and
+   upload it (a payment row is only RECORDED once it has an uploaded slip). The
+   front slip has no such carrier — it seeds the order header, not a payment. */
+export type MobileScanPaymentSlip = MobileScanPayment & {
+  file: File; // the captured payment-slip image, for the New SO row's slip upload
+};
 export type MobileScanPrefill = {
   name: string;
   phone: string; // national digits (no +60 — the form's prefix box owns it)
@@ -80,7 +101,14 @@ export type MobileScanPrefill = {
   customerType: string;
   buildingType: string;
   venue: string; // raw slip location text (mobile venue is free-text)
+  /* First payment (back-compat) — kept so the mobile New SO form's existing
+     single-payment seed keeps working unchanged. Equals payments[0] ?? null. */
   payment: MobileScanPayment | null;
+  /* ALL payments — one entry per captured payment slip, each OCR'd in its own
+     /extract call and carrying its captured File for the New SO row's slip
+     upload. Empty when no payment slip was captured. The New SO form should seed
+     ONE payment row per entry (see report note). */
+  payments: MobileScanPaymentSlip[];
   lines: MobileScanLine[];
   /* Edit-gate carry-through — mirrors desktop's ScanPrefill. */
   sampleId: string | null;
@@ -108,11 +136,40 @@ const CAMERA = (
 
 const SLOT_LABELS = ["Front slip", "Payment slip"];
 
+/* Map ONE extracted slip's payment fields into the mobile payment shape, or
+   null when the slip carries no payment. Shared by the front-slip extraction
+   (payment #1) and every additional payment-slip extraction (payments #2..N) so
+   they resolve method/amount/approval identically. */
+function extractPayment(ex: ExtractedSlip): MobileScanPayment | null {
+  // 3-method model — top-level method is only Merchant / Online / Cash. Fold any
+  // legacy "Installment" match to Merchant (a bank EPP is Merchant + a plan).
+  const rawPmValue = ex.paymentMethodMatch?.value ?? "";
+  const pmValue = rawPmValue === "Installment" ? "Merchant" : rawPmValue;
+  if (!pmValue) return null;
+  return {
+    method: pmValue,
+    amount:
+      ex.depositRm && ex.depositRm > 0
+        ? ex.depositRm.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : "0.00",
+    approval: ex.approvalCode ?? "",
+  };
+}
+
 /* Build the mobile New-SO handoff straight from the AI extraction — the SAME
    field mapping desktop's buildPrefill uses, reduced to the mobile form's
    simpler state (free-text venue, plain State/method strings, free-text line
-   name). No dropdown reconcile (the mobile form has no dropdown masters). */
-function buildPrefill(d: ExtractResp["data"], repName: string): MobileScanPrefill {
+   name). No dropdown reconcile (the mobile form has no dropdown masters).
+
+   `paymentSlips` is the per-slip payment + captured File for EVERY payment slip
+   (one per /extract call, in capture order). The prefill's back-compat `payment`
+   field is set to the first entry so the existing single-payment New SO seed
+   keeps working; `payments` carries the full array. */
+function buildPrefill(
+  d: ExtractResp["data"],
+  repName: string,
+  paymentSlips: MobileScanPaymentSlip[],
+): MobileScanPrefill {
   const ex = d.extracted;
   const skuByCode = new Map(d.catalog.skus.map((s) => [s.code.toUpperCase(), s]));
 
@@ -123,11 +180,6 @@ function buildPrefill(d: ExtractResp["data"], repName: string): MobileScanPrefil
     .filter((p) => p.trim() !== "");
   const mainNational = phonesE164[0] ? splitE164(phonesE164[0]).national : "";
   const emergencyNational = phonesE164[1] ? splitE164(phonesE164[1]).national : "";
-
-  // 3-method model — top-level method is only Merchant / Online / Cash. Fold any
-  // legacy "Installment" match to Merchant (a bank EPP is Merchant + a plan).
-  const rawPmValue = ex.paymentMethodMatch?.value ?? "";
-  const pmValue = rawPmValue === "Installment" ? "Merchant" : rawPmValue;
 
   return {
     name: ex.customerName ?? "",
@@ -146,16 +198,12 @@ function buildPrefill(d: ExtractResp["data"], repName: string): MobileScanPrefil
     buildingType: ex.buildingTypeMatch?.value ?? "",
     // Mobile venue is free text — seed the raw slip location (nothing lost).
     venue: ex.location ?? "",
-    payment: pmValue
-      ? {
-          method: pmValue,
-          amount:
-            ex.depositRm && ex.depositRm > 0
-              ? ex.depositRm.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-              : "0.00",
-          approval: ex.approvalCode ?? "",
-        }
-      : null,
+    // Back-compat first payment = payments[0] (the existing single-payment New
+    // SO seed reads this). Falls back to the front slip's own payment when no
+    // payment-slip-specific extraction produced one.
+    payment: paymentSlips[0] ? { method: paymentSlips[0].method, amount: paymentSlips[0].amount, approval: paymentSlips[0].approval } : extractPayment(ex),
+    // One payment per captured payment slip, each with its captured File.
+    payments: paymentSlips,
     lines: (ex.lines ?? []).map((l) => {
       const code = l.skuMatch?.code ?? "";
       const sku = code ? skuByCode.get(code.toUpperCase()) : undefined;
@@ -191,18 +239,30 @@ export function MobileScan({
   onExtracted: (prefill: MobileScanPrefill) => void;
 }) {
   const { user } = useAuth();
-  const [slots, setSlots] = useState<[Slot, Slot]>([null, null]);
+  // Front slip = single; payment slips = an ARRAY (one per payment). A NonNull
+  // Slot is { file, url }; front is null until captured.
+  const [front, setFront] = useState<Slot>(null);
+  const [payShots, setPayShots] = useState<{ file: File; url: string }[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
-  const inputRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
+  const frontInputRef = useRef<HTMLInputElement>(null);
+  // ONE hidden payment input, re-targeted per capture (add-more taps the same
+  // input; each pick appends a new slip). capture="environment" opens the rear
+  // camera each time.
+  const payInputRef = useRef<HTMLInputElement>(null);
 
   // Revoke every object URL still held when the component unmounts so captured
-  // previews don't leak.
+  // previews don't leak. Latest front + payShots are read via the setters so we
+  // never close over a stale list.
   useEffect(() => {
     return () => {
-      setSlots((cur) => {
-        for (const s of cur) if (s) URL.revokeObjectURL(s.url);
+      setFront((cur) => {
+        if (cur) URL.revokeObjectURL(cur.url);
+        return cur;
+      });
+      setPayShots((cur) => {
+        for (const s of cur) URL.revokeObjectURL(s.url);
         return cur;
       });
     };
@@ -214,57 +274,102 @@ export function MobileScan({
     authedFetch("/scan-so/warm", { method: "POST" }).catch(() => {});
   }, []);
 
-  const captured = slots.filter(Boolean).length;
   const salesperson = (user?.name || user?.email || "").trim();
+  // Ready to scan once the front slip AND at least one payment slip are captured.
+  const ready = front !== null && payShots.length > 0;
 
-  const pick = (idx: 0 | 1) => {
+  const pickFront = () => {
     if (submitting) return;
-    inputRefs[idx].current?.click();
+    frontInputRef.current?.click();
+  };
+  const pickPayment = () => {
+    if (submitting) return;
+    payInputRef.current?.click();
   };
 
-  const onFile = (idx: 0 | 1, file: File | undefined) => {
+  const onFrontFile = (file: File | undefined) => {
     if (!file) return;
     const url = URL.createObjectURL(file);
-    setSlots((cur) => {
-      const prev = cur[idx];
+    setFront((prev) => {
       if (prev) URL.revokeObjectURL(prev.url);
-      const next: [Slot, Slot] = [cur[0], cur[1]];
-      next[idx] = { file, url };
-      return next;
+      return { file, url };
     });
     setError(null);
   };
-
-  const clearSlot = (idx: 0 | 1) => {
+  const clearFront = () => {
     if (submitting) return;
-    setSlots((cur) => {
-      const prev = cur[idx];
+    setFront((prev) => {
       if (prev) URL.revokeObjectURL(prev.url);
-      const next: [Slot, Slot] = [cur[0], cur[1]];
-      next[idx] = null;
-      return next;
+      return null;
     });
   };
 
+  // Append a captured payment slip (each = one payment). No cap — an order can
+  // take as many payments as slips.
+  const addPayFile = (file: File | undefined) => {
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    setPayShots((cur) => [...cur, { file, url }]);
+    setError(null);
+  };
+  const removePayShot = (i: number) => {
+    if (submitting) return;
+    setPayShots((cur) => {
+      const gone = cur[i];
+      if (gone) URL.revokeObjectURL(gone.url);
+      return cur.filter((_, k) => k !== i);
+    });
+  };
+
+  // POST the front slip + ONE payment slip to /scan-so/extract. The existing
+  // contract reads exactly one order slip + one payment receipt into a single
+  // payment, so one call per payment slip yields one payment per slip. The front
+  // slip rides EVERY call (order fields are read identically each time; we keep
+  // the FIRST response's order + this call's single payment).
+  const extractOne = (payFile: File): Promise<ExtractResp> => {
+    const form = new FormData();
+    if (front) form.append("file", front.file);
+    form.append("file", payFile);
+    if (salesperson) form.append("salesperson", salesperson);
+    // authedFetch handles the FormData content-type + bearer + long scan
+    // timeout. A non-ok reason throws a plain-language message we catch below.
+    return authedFetch<ExtractResp>("/scan-so/extract", { method: "POST", body: form });
+  };
+
   const submit = async () => {
-    const files = slots.filter((s): s is NonNullable<Slot> => s !== null).map((s) => s.file);
-    if (files.length < 2 || submitting) return;
+    if (!ready || submitting) return;
     setSubmitting(true);
     setError(null);
     setUnavailable(false);
     try {
-      const form = new FormData();
-      for (const f of files) form.append("file", f);
-      if (salesperson) form.append("salesperson", salesperson);
-      // authedFetch handles the FormData content-type + bearer + long scan
-      // timeout. A non-ok reason throws a plain-language message we catch below.
-      const res = await authedFetch<ExtractResp>("/scan-so/extract", {
-        method: "POST",
-        body: form,
-      });
-      if (res && res.success && res.data) {
-        const repName = salesperson || (res.data.extracted.salesRep ?? "").trim();
-        onExtracted(buildPrefill(res.data, repName));
+      // OCR each payment slip in its own call (front slip attached to every
+      // call). Sequential — the shared catalog prompt-cache stays warm across
+      // calls and we avoid hammering Anthropic with parallel spikes. Call k's
+      // single payment becomes payment #k; the FIRST call also supplies the
+      // whole order header + line items.
+      const responses: ExtractResp[] = [];
+      for (const shot of payShots) {
+        responses.push(await extractOne(shot.file));
+      }
+      const first = responses[0];
+      if (first && first.success && first.data) {
+        const repName = salesperson || (first.data.extracted.salesRep ?? "").trim();
+        // One MobileScanPaymentSlip per captured slip: the per-call OCR'd payment
+        // (falling back to a blank-method / zeroed row when a call couldn't read a
+        // payment, so the slip is never silently dropped — the operator picks the
+        // method and fixes the amount) + the captured File for the New SO row's
+        // slip upload.
+        const paymentSlips: MobileScanPaymentSlip[] = payShots.map((shot, i) => {
+          const res = responses[i];
+          const pm = res && res.success && res.data ? extractPayment(res.data.extracted) : null;
+          return {
+            method: pm?.method ?? "",
+            amount: pm?.amount ?? "0.00",
+            approval: pm?.approval ?? "",
+            file: shot.file,
+          };
+        });
+        onExtracted(buildPrefill(first.data, repName, paymentSlips));
       } else {
         setError("The scan couldn't be processed. Please try again.");
       }
@@ -315,54 +420,102 @@ export function MobileScan({
           </div>
         ) : (
           <>
-            <div id="scan-shots" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 8 }}>
-              {[0, 1].map((i) => {
-                const idx = i as 0 | 1;
-                const slot = slots[idx];
-                return (
-                  <div key={i}>
-                    <input
-                      ref={inputRefs[idx]}
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      style={{ display: "none" }}
-                      onChange={(e) => {
-                        onFile(idx, e.target.files?.[0]);
-                        e.target.value = "";
-                      }}
-                    />
-                    {slot ? (
-                      <div className="ph" style={{ position: "relative", height: 120, borderRadius: 12, overflow: "hidden" }}>
-                        <img src={slot.url} alt={SLOT_LABELS[idx]} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                        <span style={{ position: "absolute", top: 6, right: 6, width: 20, height: 20, borderRadius: "50%", background: "#2f8a5b", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          {CHECK}
-                        </span>
-                        {!submitting && (
-                          <button
-                            onClick={() => clearSlot(idx)}
-                            aria-label={`Retake ${SLOT_LABELS[idx]}`}
-                            style={{ position: "absolute", bottom: 6, right: 6, height: 24, padding: "0 9px", borderRadius: 999, border: "none", background: "rgba(17,20,15,.62)", color: "#fff", fontFamily: "inherit", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
-                          >
-                            Retake
-                          </button>
-                        )}
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => pick(idx)}
-                        disabled={submitting}
-                        style={{ height: 120, width: "100%", border: "1px dashed #c2c6bd", borderRadius: 12, background: "#f4f6f3", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, cursor: submitting ? "default" : "pointer", fontFamily: "inherit", opacity: submitting ? 0.5 : 1 }}
-                      >
-                        {CAMERA}
-                        <span style={{ fontSize: 11, fontWeight: 700, color: "#16695f" }}>{SLOT_LABELS[idx]}</span>
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+            {/* Hidden inputs: one for the front slip, one re-targeted for every
+                payment-slip capture. capture="environment" opens the rear camera. */}
+            <input
+              ref={frontInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                onFrontFile(e.target.files?.[0]);
+                e.target.value = "";
+              }}
+            />
+            <input
+              ref={payInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                addPayFile(e.target.files?.[0]);
+                e.target.value = "";
+              }}
+            />
+
+            {/* FRONT SLIP — single. */}
+            <div className="ey" style={{ letterSpacing: ".14em", color: "#9aa093", fontSize: 10.5, marginBottom: 6 }}>{SLOT_LABELS[0]}</div>
+            {front ? (
+              <div className="ph" style={{ position: "relative", height: 130, borderRadius: 12, overflow: "hidden", marginBottom: 4 }}>
+                <img src={front.url} alt={SLOT_LABELS[0]} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                <span style={{ position: "absolute", top: 6, right: 6, width: 20, height: 20, borderRadius: "50%", background: "#2f8a5b", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {CHECK}
+                </span>
+                {!submitting && (
+                  <button
+                    onClick={clearFront}
+                    aria-label={`Retake ${SLOT_LABELS[0]}`}
+                    style={{ position: "absolute", bottom: 6, right: 6, height: 24, padding: "0 9px", borderRadius: 999, border: "none", background: "rgba(17,20,15,.62)", color: "#fff", fontFamily: "inherit", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
+                  >
+                    Retake
+                  </button>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={pickFront}
+                disabled={submitting}
+                style={{ height: 130, width: "100%", border: "1px dashed #c2c6bd", borderRadius: 12, background: "#f4f6f3", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, cursor: submitting ? "default" : "pointer", fontFamily: "inherit", opacity: submitting ? 0.5 : 1, marginBottom: 4 }}
+              >
+                {CAMERA}
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#16695f" }}>{SLOT_LABELS[0]}</span>
+              </button>
+            )}
+
+            {/* PAYMENT SLIPS — one photo per payment. Add-more tile + thumbnail
+                list with a per-slip remove. Each slip becomes its own payment on
+                the draft SO. */}
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 16, marginBottom: 6 }}>
+              <span className="ey" style={{ letterSpacing: ".14em", color: "#9aa093", fontSize: 10.5 }}>Payment slips</span>
+              <span style={{ fontSize: 10.5, color: "#9aa093" }}>
+                {payShots.length === 0 ? "One photo per payment" : `${payShots.length} payment${payShots.length === 1 ? "" : "s"}`}
+              </span>
             </div>
-            <div style={{ fontSize: 10.5, color: "#9aa093", textAlign: "center" }}>Front slip + payment slip · 2 photos</div>
+            <div id="scan-pay-shots" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+              {payShots.map((shot, i) => (
+                <div key={shot.url} className="ph" style={{ position: "relative", height: 96, borderRadius: 12, overflow: "hidden" }}>
+                  <img src={shot.url} alt={`Payment ${i + 1}`} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                  <span style={{ position: "absolute", top: 5, left: 5, height: 18, minWidth: 18, padding: "0 5px", borderRadius: 999, background: "rgba(17,20,15,.62)", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    {i + 1}
+                  </span>
+                  {!submitting && (
+                    <button
+                      onClick={() => removePayShot(i)}
+                      aria-label={`Remove payment ${i + 1}`}
+                      style={{ position: "absolute", top: 5, right: 5, width: 20, height: 20, borderRadius: "50%", border: "none", background: "rgba(178,58,58,.9)", color: "#fff", fontFamily: "inherit", fontSize: 13, lineHeight: 1, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    >
+                      {"×"}
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button
+                onClick={pickPayment}
+                disabled={submitting}
+                aria-label={payShots.length === 0 ? SLOT_LABELS[1] : "Add another payment slip"}
+                style={{ height: 96, width: "100%", border: "1px dashed #c2c6bd", borderRadius: 12, background: "#f4f6f3", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, cursor: submitting ? "default" : "pointer", fontFamily: "inherit", opacity: submitting ? 0.5 : 1 }}
+              >
+                {CAMERA}
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: "#16695f", textAlign: "center", lineHeight: 1.25 }}>
+                  {payShots.length === 0 ? SLOT_LABELS[1] : "Add payment"}
+                </span>
+              </button>
+            </div>
+            <div style={{ fontSize: 10.5, color: "#9aa093", textAlign: "center", marginTop: 10 }}>
+              1 front slip + {payShots.length || 1} payment slip{(payShots.length || 1) === 1 ? "" : "s"} · each payment slip = one payment
+            </div>
 
             {/* Design #scan: amber helper note box (design's #f3ece0 / #e8dcc5 /
                 #6a4a1e amber trio). Copy reflects our real flow — the scan opens
@@ -382,7 +535,9 @@ export function MobileScan({
             {submitting && (
               <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 12, color: "#767b6e" }}>
                 <span style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid rgba(22,105,95,.3)", borderTopColor: "#16695f", animation: "hzSpin .8s linear infinite" }} />
-                Reading the slip — this can take a moment.
+                {payShots.length > 1
+                  ? `Reading the slip and ${payShots.length} payments — this can take a moment.`
+                  : "Reading the slip — this can take a moment."}
               </div>
             )}
 
@@ -401,13 +556,15 @@ export function MobileScan({
             id="scan-submit"
             className="btn"
             onClick={submit}
-            disabled={captured < 2 || submitting}
-            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 9, cursor: captured < 2 || submitting ? "default" : "pointer", opacity: captured < 2 || submitting ? 0.5 : 1 }}
+            disabled={!ready || submitting}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 9, cursor: !ready || submitting ? "default" : "pointer", opacity: !ready || submitting ? 0.5 : 1 }}
           >
             {submitting && (
               <span style={{ width: 16, height: 16, borderRadius: "50%", border: "2px solid rgba(255,255,255,.45)", borderTopColor: "#fff", animation: "hzSpin .8s linear infinite" }} />
             )}
-            {submitting ? "Scanning slip…" : "Scan & open New SO"}
+            {submitting
+              ? payShots.length > 1 ? "Scanning slips…" : "Scanning slip…"
+              : "Scan & open New SO"}
           </button>
         </footer>
       )}

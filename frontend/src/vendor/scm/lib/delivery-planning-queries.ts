@@ -187,18 +187,77 @@ export function useUpdateDeliveryFields() {
   });
 }
 
-/* Set the concrete schedule date (+ optional manual delivery_state override) on
-   an SO or DO. type = 'so' | 'do'; id = SO doc_no or DO id. */
+/* Set the concrete schedule date (+ optional manual delivery_state override,
+   + optional driver / lorry trip-wiring) on an SO or DO. type = 'so' | 'do';
+   id = SO doc_no or DO id.
+
+   NOTE (Delivery Planning inline-edit, 2026-07): the board's inline cells write
+   through THIS hook. The backend schedule endpoint already accepts driverId /
+   lorryId / tripId / tripDate / warehouseId (it find-or-creates a trip and
+   appends a stop); the previous frontend signature dropped them, so we widen it
+   here to forward driverId / lorryId. The `*Optimistic` fields are DISPLAY-ONLY
+   values (driver name / lorry plate / the effective delivery date) used purely
+   for the optimistic cache patch — they are NOT sent to the API. */
+export type ScheduleDeliveryVars = {
+  type: 'so' | 'do';
+  id: string;
+  scheduleDate?: string | null;
+  deliveryState?: DeliveryState | null;
+  driverId?: string | null;
+  lorryId?: string | null;
+  /* Display-only, for optimistic UI (never posted). */
+  driverNameOptimistic?: string | null;
+  lorryPlateOptimistic?: string | null;
+};
+
 export function useScheduleDelivery() {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ type, id, scheduleDate, deliveryState }: {
-      type: 'so' | 'do'; id: string; scheduleDate?: string | null; deliveryState?: DeliveryState | null;
-    }) =>
-      authedFetch<{ ok: true }>(`/delivery-planning/${type}/${id}/schedule`, {
-        method: 'PATCH', body: JSON.stringify({ scheduleDate, deliveryState }),
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['delivery-planning'] }),
+  return useMutation<{ ok: true }, Error, ScheduleDeliveryVars, { snapshots: Array<[readonly unknown[], PlanningResponse]> }>({
+    mutationFn: ({ type, id, scheduleDate, deliveryState, driverId, lorryId }) => {
+      /* Only include keys the caller actually set, so an unrelated field is never
+         nulled out by an inline single-field edit. */
+      const body: Record<string, unknown> = {};
+      if (scheduleDate !== undefined) body.scheduleDate = scheduleDate;
+      if (deliveryState !== undefined) body.deliveryState = deliveryState;
+      if (driverId !== undefined) body.driverId = driverId;
+      if (lorryId !== undefined) body.lorryId = lorryId;
+      return authedFetch<{ ok: true }>(`/delivery-planning/${type}/${id}/schedule`, {
+        method: 'PATCH', body: JSON.stringify(body),
+      });
+    },
+    /* Optimistic patch — reflect the edit immediately on every cached planning
+       board (all region/state keys), then invalidate on settle for the truth. */
+    onMutate: async (vars) => {
+      await qc.cancelQueries({ queryKey: ['delivery-planning'] });
+      const entries = qc.getQueriesData<PlanningResponse>({ queryKey: ['delivery-planning'] });
+      const snapshots: Array<[readonly unknown[], PlanningResponse]> = [];
+      for (const [key, prev] of entries) {
+        if (!prev) continue;
+        snapshots.push([key, prev]);
+        qc.setQueryData<PlanningResponse>(key, {
+          ...prev,
+          orders: prev.orders.map((o) => {
+            if (o.so_doc_no !== vars.id) return o;
+            const next: PlanningOrder = { ...o };
+            if (vars.deliveryState !== undefined && vars.deliveryState !== null) next.delivery_state = vars.deliveryState;
+            if (vars.scheduleDate !== undefined) next.amended_delivery_date = vars.scheduleDate;
+            if (vars.driverNameOptimistic !== undefined || vars.lorryPlateOptimistic !== undefined) {
+              const crew = { ...(o.crew ?? { driver: null, helper: null, lorry: null, driver_1_name: null, driver_1_ic: null, driver_1_contact: null, driver_2_name: null, helper_1_name: null, helper_2_name: null, lorry_plate: null }) };
+              if (vars.driverNameOptimistic !== undefined) crew.driver_1_name = vars.driverNameOptimistic;
+              if (vars.lorryPlateOptimistic !== undefined) crew.lorry_plate = vars.lorryPlateOptimistic;
+              next.crew = crew;
+            }
+            return next;
+          }),
+        });
+      }
+      return { snapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      /* Roll every board back to its pre-edit snapshot. */
+      for (const [key, prev] of ctx?.snapshots ?? []) qc.setQueryData(key, prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['delivery-planning'] }),
   });
 }
 
