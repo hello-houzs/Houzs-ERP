@@ -5,6 +5,7 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { uploadSlipFull, fetchPaymentSlipUrl } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
+import { buildVariantSummary } from "../vendor/shared/variant-summary";
 import "./mobile.css";
 
 /* Shapes are the subset of the /mfg-sales-orders/:docNo + /:docNo/payments
@@ -48,7 +49,11 @@ type SoHeader = {
 type SoItem = {
   id: string;
   description: string | null;
-  variants: string | null;
+  /* Backend returns mfg_sales_order_items.variants as a JSONB OBJECT (not a
+     pre-formatted string). Render it through the shared summary builder — the
+     prototype's `variants: string` assumption crashed on .trim(). */
+  item_group: string | null;
+  variants: Record<string, unknown> | null;
   item_code: string | null;
   qty: number | null;
   unit_price_centi: number | null;
@@ -280,7 +285,7 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
                 <div key={it.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "11px 13px", borderTop: i ? "1px solid var(--line2)" : "none" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{it.description || it.item_code || "—"}</div>
-                    {it.variants && it.variants.trim() ? <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }}>{it.variants}</div> : null}
+                    {(() => { const vs = buildVariantSummary(it.item_group, it.variants); return vs ? <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }}>{vs}</div> : null; })()}
                     <div className="money" style={{ fontSize: 10, color: "var(--mut2)", marginTop: 3 }}>SKU {val(it.item_code)}</div>
                   </div>
                   <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
