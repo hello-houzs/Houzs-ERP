@@ -896,32 +896,40 @@ export function MobileNewSO({
             {/* Customer */}
             <div className="card" style={{ marginBottom: 11 }}>
               <div className="card-h"><span className="card-t">Customer</span></div>
+              {/* Field order + two-column pairing ported from the owner's design
+                  MobileNewSO Customer card: Name / Phone+Email / Customer type +
+                  Salesperson / Customer SO ref. All fields, validation, scanned
+                  hints and the +60 prefix box are ours, kept intact. */}
               <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 <Field label="Customer Name *" error={touched && nameErr} scanned={scanned("name", name)}>
                   <input className="fld-i" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Lim Mei Hua" />
                 </Field>
+                <div style={{ display: "flex", gap: 9 }}>
+                  <Field label="Phone *" style={{ flex: 1 }} error={touched && phoneErr} scanned={scanned("phone", phone)}>
+                    <span style={{ display: "flex", alignItems: "stretch" }}>
+                      <span style={prefixBox}>+60</span>
+                      <input className="fld-i" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="1X-XXX XXXX" style={{ borderRadius: "0 9px 9px 0" }} />
+                    </span>
+                  </Field>
+                  <Field label="Email *" style={{ flex: 1 }} error={touched && emailErr}>
+                    <input className="fld-i" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="customer@example.com" />
+                  </Field>
+                </div>
+                <div style={{ display: "flex", gap: 9 }}>
+                  <Field label="Customer Type" style={{ flex: 1 }} scanned={scanned("custType", custType)}>
+                    <select className="fld-i" value={custType} onChange={(e) => setCustType(e.target.value)}>
+                      {CUSTOMER_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Salesperson" style={{ flex: 1 }}>
+                    <select className="fld-i" value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
+                      <option value="">{staffQ.isLoading ? "Loading…" : "Me (default)"}</option>
+                      {(staffQ.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </Field>
+                </div>
                 <Field label="Customer SO Ref" scanned={scanned("custRef", custRef)}>
                   <input className="fld-i" value={custRef} onChange={(e) => setCustRef(e.target.value)} placeholder="Their PO / SO number" />
-                </Field>
-                <Field label="Phone *" error={touched && phoneErr} scanned={scanned("phone", phone)}>
-                  <span style={{ display: "flex", alignItems: "stretch" }}>
-                    <span style={prefixBox}>+60</span>
-                    <input className="fld-i" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="1X-XXX XXXX" style={{ borderRadius: "0 9px 9px 0" }} />
-                  </span>
-                </Field>
-                <Field label="Email *" error={touched && emailErr}>
-                  <input className="fld-i" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="customer@example.com" />
-                </Field>
-                <Field label="Customer Type" scanned={scanned("custType", custType)}>
-                  <select className="fld-i" value={custType} onChange={(e) => setCustType(e.target.value)}>
-                    {CUSTOMER_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
-                  </select>
-                </Field>
-                <Field label="Salesperson">
-                  <select className="fld-i" value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
-                    <option value="">{staffQ.isLoading ? "Loading…" : "Me (default)"}</option>
-                    {(staffQ.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
                 </Field>
               </div>
             </div>
@@ -929,21 +937,27 @@ export function MobileNewSO({
             {/* Order Info */}
             <div className="card" style={{ marginBottom: 11 }}>
               <div className="card-h"><span className="card-t">Order info</span></div>
+              {/* Two-column pairing from the design Order info card: Building type
+                  + Venue / Processing + Delivery / Note. */}
               <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                <Field label="Building Type" scanned={scanned("buildingType", buildingType)}>
-                  <select className="fld-i" value={buildingType} onChange={(e) => setBuildingType(e.target.value)}>
-                    {BUILDING_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
-                  </select>
-                </Field>
-                <Field label="Venue" scanned={scanned("venue", venue)}>
-                  <input className="fld-i" value={venue} onChange={(e) => setVenue(e.target.value)} placeholder="Exhibition / outlet venue" />
-                </Field>
-                <Field label="Processing Date" scanned={scanned("procDate", procDate)}>
-                  <input className="fld-i" type="date" value={procDate} onChange={(e) => setProcDate(e.target.value)} />
-                </Field>
-                <Field label="Delivery Date" scanned={scanned("delivDate", delivDate)}>
-                  <input className="fld-i" type="date" value={delivDate} onChange={(e) => setDelivDate(e.target.value)} />
-                </Field>
+                <div style={{ display: "flex", gap: 9 }}>
+                  <Field label="Building Type" style={{ flex: 1 }} scanned={scanned("buildingType", buildingType)}>
+                    <select className="fld-i" value={buildingType} onChange={(e) => setBuildingType(e.target.value)}>
+                      {BUILDING_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Venue" style={{ flex: 1 }} scanned={scanned("venue", venue)}>
+                    <input className="fld-i" value={venue} onChange={(e) => setVenue(e.target.value)} placeholder="Exhibition / outlet venue" />
+                  </Field>
+                </div>
+                <div style={{ display: "flex", gap: 9 }}>
+                  <Field label="Processing Date" style={{ flex: 1 }} scanned={scanned("procDate", procDate)}>
+                    <input className="fld-i" type="date" value={procDate} onChange={(e) => setProcDate(e.target.value)} />
+                  </Field>
+                  <Field label="Delivery Date" style={{ flex: 1 }} scanned={scanned("delivDate", delivDate)}>
+                    <input className="fld-i" type="date" value={delivDate} onChange={(e) => setDelivDate(e.target.value)} />
+                  </Field>
+                </div>
                 <Field label="Note" scanned={scanned("note", note)}>
                   <input className="fld-i" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Internal notes — SO detail only" />
                 </Field>
