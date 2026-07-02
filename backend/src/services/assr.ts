@@ -557,6 +557,34 @@ export async function transitionStage(
   return true;
 }
 
+// ── Admin-open auto-advance ───────────────────────────────────
+//
+// Mig 106 — Service Admin opens a pending_review case → the case
+// auto-advances to under_verification and the activity log stamps
+// who did it. No-op when the case is already past pending_review or
+// when the caller doesn't have write permission (route enforces that
+// gate; the service function itself is trust-based).
+export async function markCaseOpened(
+  env: Env,
+  id: number,
+  userId: number,
+): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT stage FROM assr_cases WHERE id = ?`
+  )
+    .bind(id)
+    .first<{ stage: Stage }>();
+  if (!row) return false;
+  if (row.stage !== "pending_review") return false;
+  return transitionStage(
+    env,
+    id,
+    "under_verification",
+    userId,
+    "auto-advanced when Service Admin opened the case",
+  );
+}
+
 // ── Patch case fields ─────────────────────────────────────────
 
 const PATCH_FIELDS = [
@@ -580,6 +608,11 @@ const PATCH_FIELDS = [
   // Mig 105 — editable QC-on-receipt inspection date (distinct from
   // the auto-stamped verified_at audit timestamp).
   "qc_receipt_date",
+  // Mig 106 — paperwork that travels with the item between Houzs and
+  // supplier. Both are free text; ops edits goods_returned_note from
+  // the main case, supplier edits supplier_service_note from the
+  // supplier portal.
+  "goods_returned_note", "supplier_service_note",
 ] as const;
 
 export async function patchAssrCase(

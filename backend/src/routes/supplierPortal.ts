@@ -145,11 +145,22 @@ app.post("/remarks", async (c) => {
   const body = await c.req.json<{ note?: string }>();
   const note = (body.note || "").trim();
   if (!note) return c.json({ error: "note is required" }, 400);
+  const clipped = note.slice(0, 2000);
   await c.env.DB.prepare(
     `INSERT INTO assr_activity (assr_id, action, note, category, source_channel)
      VALUES (?, 'note', ?, 'purchasing', 'supplier_portal')`
   )
-    .bind(assr_id, note.slice(0, 2000))
+    .bind(assr_id, clipped)
+    .run();
+  // Mig 106 — main case page's "Supplier status update" (action_remark)
+  // mirrors the latest supplier-portal note so ops don't have to hunt
+  // through the activity log to see the current status. Ops can still
+  // hand-edit action_remark on the main page; the next supplier note
+  // overwrites it. Full history stays in assr_activity.
+  await c.env.DB.prepare(
+    `UPDATE assr_cases SET action_remark = ? WHERE id = ?`
+  )
+    .bind(clipped, assr_id)
     .run();
   return c.json({ ok: true });
 });

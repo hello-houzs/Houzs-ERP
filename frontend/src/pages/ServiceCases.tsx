@@ -2317,6 +2317,31 @@ function DetailContent({
     () => api.get(`/api/assr/${id}`),
     [id]
   );
+
+  // Mig 106 — Service Admin opening a case that's still on
+  // pending_review auto-advances it to under_verification. The server
+  // gates on write permission so read-only viewers don't kick the
+  // stage. Fire once per case after the detail loads; if the case
+  // actually advanced, reload the detail so the panel reflects the
+  // new stage without a manual refresh.
+  const openedRef = useRef<number | null>(null);
+  useEffect(() => {
+    const c = detail.data?.case;
+    if (!c || c.stage !== "pending_review") return;
+    if (openedRef.current === c.id) return;
+    openedRef.current = c.id;
+    (async () => {
+      try {
+        const res = await api.post<{ advanced: boolean }>(`/api/assr/${c.id}/mark-opened`);
+        if (res.advanced) {
+          detail.reload();
+          onUpdated();
+        }
+      } catch {
+        // Silent — no perm, non-fatal.
+      }
+    })();
+  }, [detail.data]);
   const users = useQuery<{ id: number; name: string; department_name?: string }[]>(
     () => api.get<any>("/api/users").then((r: any) => r.users ?? r.data ?? r ?? []),
     []
@@ -3125,6 +3150,16 @@ function DetailContent({
               type="date"
               value={c.supplier_pickup_at}
               onSave={(v) => patch({ supplier_pickup_at: v || null })}
+            />
+            {/* Mig 106 — the send-out slip we hand off with the item
+                when supplier picks up. Editable here; supplier sees it
+                on their portal so they know what came in. */}
+            <InlineEdit
+              label="Goods Returned Note"
+              textarea
+              value={c.goods_returned_note}
+              onSave={(v) => patch({ goods_returned_note: v })}
+              placeholder="What's leaving with the supplier (contents, condition, expected fix)"
             />
             {(c.supplier_pickup_at || attachments.some((a: any) => a?.category === "pickup_form")) && (
               <MilestoneAttachmentSlot
@@ -4004,6 +4039,17 @@ function InspectionCard({
       <p className="-mt-1 text-[10.5px] leading-snug text-ink-muted">
         Pass + date → becomes the Item Ready date. Fail → stays pending supplier item-ready.
       </p>
+      {/* Mig 106 — the service note the supplier hands back with the
+          item on return. Supplier edits this from their portal;
+          shown here read-in-context so QC can cross-check what the
+          supplier claims to have done. */}
+      <InlineEdit
+        label="Supplier Service Note"
+        textarea
+        value={c.supplier_service_note}
+        onSave={(v) => patch({ supplier_service_note: v })}
+        placeholder="What the supplier did / findings on the returned item"
+      />
       <MilestoneAttachmentSlot
         caseId={caseId}
         category="inspection_report"

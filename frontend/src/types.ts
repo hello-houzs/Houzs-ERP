@@ -198,6 +198,11 @@ export interface AssrCase {
   // Mig 105 — editable QC-on-receipt inspection date, distinct from
   // the auto-stamped verified_at audit timestamp.
   qc_receipt_date?: string | null;
+  // Mig 106 — paperwork that travels with the item between Houzs and
+  // supplier. Ops edits goods_returned_note; supplier edits
+  // supplier_service_note from their portal.
+  goods_returned_note?: string | null;
+  supplier_service_note?: string | null;
   // Soft-delete
   archived_at?: string | null;
   archived_by?: number | null;

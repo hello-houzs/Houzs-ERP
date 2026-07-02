@@ -4,6 +4,7 @@ import {
   createAssrCase,
   getAssrDetail,
   transitionStage,
+  markCaseOpened,
   patchAssrCase,
   listAssrCases,
   exportAssrCases,
@@ -849,6 +850,20 @@ app.patch("/:id{[0-9]+}", requirePermission("service_cases.write"), async (c) =>
   const ok = await patchAssrCase(c.env, id, body, userId);
   if (!ok) return c.json({ error: "Not found or no changes" }, 404);
   return c.json({ ok: true });
+});
+
+// ── Mark opened by Service Admin ──────────────────────────────
+// Frontend fires this when the detail page mounts. Server checks
+// the case is still at pending_review; if so it auto-advances to
+// under_verification and stamps the activity log. Requires write
+// permission so a read-only viewer opening the case doesn't kick
+// the stage — Sales sees pending_review, SA opening it advances.
+app.post("/:id{[0-9]+}/mark-opened", requirePermission("service_cases.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const userId = (c as any).get?.("userId") ?? 0;
+  const advanced = await markCaseOpened(c.env, id, userId);
+  return c.json({ advanced });
 });
 
 // ── Generate a staff-sourced portal tracking link ─────────────
