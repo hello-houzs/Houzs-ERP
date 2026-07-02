@@ -5688,7 +5688,10 @@ function ProjectStageStepper({
     if (st.titles.length === 0) return false; // final "Done" handled below
     const present = items.filter((i) => st.titles.includes(i.title));
     if (present.length === 0) return true; // no signal → pass-through
-    return present.every((i) => i.status === "done");
+    // A stage is satisfied when every mapped item is done OR N/A — an item
+    // marked N/A (not applicable for this event) must not block the flow,
+    // mirroring the section progress bar which also excludes N/A.
+    return present.every((i) => i.status === "done" || i.status === "na");
   };
   const lastIdx = PROJECT_STAGES.length - 1;
   let currentIdx = PROJECT_STAGES.findIndex((_, i) => i < lastIdx && !stepDone(i));
