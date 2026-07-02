@@ -40,6 +40,8 @@ type Thread = {
   counterpartyEmail: string;
   counterpartyName: string;
   status: string;
+  assignedToUserId?: number | null;
+  assignedToName?: string | null;
   lastMessageAt: string;
   lastDirection: string;
   lastSnippet: string;
@@ -88,6 +90,10 @@ type MailAddress = {
   label: string;
   active: boolean;
 };
+
+// Assignee-picker roster (triage). Sourced from /api/users (users.read); a 403
+// yields [] and the assignee control renders read-only rather than crashing.
+type MailUser = { id: number; name: string | null; email: string; status?: string | null };
 
 type Folder = "inbox" | "starred" | "sent" | "drafts" | "archive" | "trash";
 type ComposeMode = "new" | "reply" | "replyall" | "forward";
@@ -174,6 +180,14 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
   const { data: addresses } = useQuery<MailAddress[]>(() => api.get("/api/mail-center/addresses"), []);
   const activeAddresses = useMemo(() => (addresses ?? []).filter((a) => a.active), [addresses]);
   const { data: labelCatalog } = useQuery<MailLabel[]>(() => api.get("/api/mail-center/labels"), []);
+  // Assignee roster for thread triage. Read via /api/users (users.read); a 403
+  // resolves to [] (useQuery swallows the throw), so the assignee picker simply
+  // shows the current assignee read-only for accounts without directory access.
+  const { data: usersRaw } = useQuery<{ users: MailUser[] }>(() => api.get("/api/users"), []);
+  const assignees = useMemo(
+    () => (usersRaw?.users ?? []).filter((u) => (u.status ?? "active") === "active"),
+    [usersRaw],
+  );
   const colorMap = useMemo(() => {
     const m = new Map<string, string>();
     for (const l of labelCatalog ?? []) if (l.color) m.set((l.name ?? "").toLowerCase(), l.color);
@@ -229,6 +243,7 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
           reload();
         }}
         addresses={activeAddresses}
+        assignees={assignees}
       />
     );
   }
@@ -393,6 +408,7 @@ function MailThread({
   clearCompose,
   onSent,
   addresses,
+  assignees,
 }: {
   threadId: string;
   colorMap: Map<string, string>;
@@ -403,11 +419,13 @@ function MailThread({
   clearCompose: () => void;
   onSent: () => void;
   addresses: MailAddress[];
+  assignees: MailUser[];
 }) {
   const toast = useToast();
   const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
   const { data, loading, error, reload } = useQuery<ThreadDetail>(
     () => api.get(`/api/mail-center/threads/${threadId}`),
     [threadId],
@@ -534,6 +552,31 @@ function MailThread({
     }
   };
 
+  // Triage: assign the conversation to a teammate (or clear it). The backend
+  // stores assigned_to_name too; we send both so the chip reads correctly before
+  // the next reload. Passing null on both clears the assignment.
+  const assignTo = async (u: MailUser | null) => {
+    if (!thread || busy) {
+      setAssignOpen(false);
+      return;
+    }
+    setAssignOpen(false);
+    setBusy(true);
+    try {
+      await api.patch(`/api/mail-center/threads/${thread.id}`, {
+        assignedToUserId: u ? u.id : null,
+        assignedToName: u ? u.name || u.email : null,
+      });
+      toast.success(u ? `Assigned to ${u.name || u.email}.` : "Assignment cleared.");
+      reload();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not assign.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const assignedName = thread?.assignedToName || null;
+
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
@@ -584,6 +627,15 @@ function MailThread({
             </button>
             <button onClick={markUnread} disabled={busy} className="tinybtn" style={{ height: 22, padding: "0 9px" }}>
               Mark unread
+            </button>
+            <button
+              onClick={() => setAssignOpen(true)}
+              disabled={busy}
+              className="tinybtn"
+              style={{ height: 22, padding: "0 9px", display: "inline-flex", alignItems: "center", gap: 4, ...(assignedName ? { background: "#e1efed", borderColor: "#bcdcd7", color: "#0c3f39" } : {}) }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></svg>
+              {assignedName ? assignedName : "Assign"}
             </button>
             <button
               onClick={trash}
@@ -638,6 +690,98 @@ function MailThread({
           onClose={() => setLabelOpen(false)}
         />
       )}
+
+      {assignOpen && (
+        <AssigneePicker
+          users={assignees}
+          currentId={thread?.assignedToUserId ?? null}
+          onPick={assignTo}
+          onClose={() => setAssignOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Bottom-sheet assignee picker — pick a teammate to own this conversation, or
+// clear the current assignment. A single PATCH { assignedToUserId }. When the
+// directory couldn't be read (users empty) it shows a read-only note instead of
+// an empty list.
+function AssigneePicker({
+  users,
+  currentId,
+  onPick,
+  onClose,
+}: {
+  users: MailUser[];
+  currentId: number | null;
+  onPick: (u: MailUser | null) => void;
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const needle = q.trim().toLowerCase();
+  const filtered = needle
+    ? users.filter((u) => (u.name ?? "").toLowerCase().includes(needle) || (u.email ?? "").toLowerCase().includes(needle))
+    : users;
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, zIndex: 2000, background: "rgba(0,0,0,0.32)", display: "flex", alignItems: "flex-end" }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="hz-m so-card"
+        style={{ width: "100%", borderTopLeftRadius: 18, borderTopRightRadius: 18, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, padding: "16px 16px calc(env(safe-area-inset-bottom) + 18px)", maxHeight: "72vh", overflowY: "auto", marginBottom: 0 }}
+      >
+        <div className="eyebrow" style={{ marginBottom: 3 }}>Triage</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: "var(--ink)", marginBottom: 12 }}>Assign conversation</div>
+        {users.length === 0 ? (
+          <Muted>The team directory isn't available for your account.</Muted>
+        ) : (
+          <>
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search people&#8230;"
+              className="fld-i"
+              style={{ marginBottom: 10 }}
+            />
+            <button
+              onClick={() => onPick(null)}
+              className="tinybtn"
+              style={{ width: "100%", padding: 11, marginBottom: 8, textAlign: "left", color: currentId == null ? "var(--brand)" : "var(--ink)" }}
+            >
+              {currentId == null ? "Unassigned (current)" : "Clear assignment"}
+            </button>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {filtered.map((u) => {
+                const on = u.id === currentId;
+                const who = u.name || u.email.split("@")[0];
+                return (
+                  <button
+                    key={u.id}
+                    onClick={() => onPick(u)}
+                    className="tinybtn"
+                    style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: 10, textAlign: "left", background: on ? "#e1efed" : "#fff", borderColor: on ? "#bcdcd7" : "var(--line)" }}
+                  >
+                    <span style={{ width: 30, height: 30, flex: "none", borderRadius: "50%", background: avColor(who), color: "#fff", fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {initials(who)}
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{who}</span>
+                      <span style={{ display: "block", fontSize: 10.5, color: "var(--mut)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</span>
+                    </span>
+                    {on && (
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                    )}
+                  </button>
+                );
+              })}
+              {filtered.length === 0 && <Muted>No matches.</Muted>}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
