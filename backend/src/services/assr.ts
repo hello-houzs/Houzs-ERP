@@ -613,6 +613,8 @@ const PATCH_FIELDS = [
   "sla_hours", "deadline_at",
   // Mig 064 — supplier handover + ready dates
   "supplier_pickup_at", "items_ready_at",
+  // Mig 107 — date we collect the faulty item from the customer's house
+  "customer_pickup_at",
   // Mig 074 — v3.1 fields
   "inspection_result", "email_for_survey",
   // Mig 081 — verification card (Under Verification → Pending Solution gate)

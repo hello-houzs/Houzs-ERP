@@ -3147,6 +3147,14 @@ function DetailContent({
               value={c.action_remark}
               onSave={(v) => patch({ action_remark: v })}
             />
+            {/* Mig 107 — date we go to the customer's house to collect
+                the faulty item (precedes the supplier handover). */}
+            <InlineEdit
+              label="Customer Pickup Date"
+              type="date"
+              value={c.customer_pickup_at}
+              onSave={(v) => patch({ customer_pickup_at: v || null })}
+            />
             {/* Mig 064 — supplier handover dates. Surfaced inline so
                 ops can record them without opening a separate panel.
                 Both feed the case-list columns + future SLA reports. */}

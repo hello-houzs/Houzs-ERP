@@ -327,7 +327,35 @@ export function MobileNewSO({
   const seededLineMeta: Record<string, ScanLineMetaSeed> = {};
   for (const { line, meta } of scanLines) seededLineMeta[line.key] = meta;
   const inList = (v: string, list: string[]) => (list.includes(v) ? v : "");
-  const scanPayMethod = scanPrefill?.payment ? inList(scanPrefill.payment.method, PAY_METHODS) : "";
+
+  /* Seed ONE payment row per captured payment slip (scanPrefill.payments[]),
+     each carrying its OCR'd method/amount/approval. Method is mapped through the
+     dropdown list (an off-list method stays blank for the operator to pick).
+     Each row starts in the "uploading" phase and its carried File is stashed in
+     `scanSlipFiles` (keyed by row.key) so the on-mount effect below can pre-upload
+     it and attach the resulting slip session — mirroring PayCard.onPickSlip — so
+     recordSlipBackedPayments posts all N slip-backed rows on create.
+     Back-compat: when only the single `payment` (no `payments` array) is present,
+     seed one slip-less row exactly as before. Computed once — scanPrefill is
+     stable for this screen's lifetime (see note above). */
+  const scanPaymentSlips = scanPrefill?.payments ?? [];
+  const scanSlipFilesInit: Record<string, File> = {};
+  const seededPays: Payment[] = scanPaymentSlips.length
+    ? scanPaymentSlips.map((ps) => {
+        const row: Payment = {
+          ...newPayment(),
+          method: inList(ps.method, PAY_METHODS),
+          amount: ps.amount || "0.00",
+          approval: ps.approval ?? "",
+          slipName: ps.file.name,
+          slipPhase: "uploading",
+        };
+        scanSlipFilesInit[row.key] = ps.file;
+        return row;
+      })
+    : scanPrefill?.payment
+      ? [{ ...newPayment(), method: inList(scanPrefill.payment.method, PAY_METHODS), amount: scanPrefill.payment.amount || "0.00", approval: scanPrefill.payment.approval ?? "" }]
+      : [];
 
   // Customer
   const [name, setName] = useState(scanPrefill?.name ?? "");
@@ -362,11 +390,11 @@ export function MobileNewSO({
   const [lines, setLines] = useState<LineItem[]>(() =>
     scanLines.length > 0 ? scanLines.map((s) => s.line) : [newLine()],
   );
-  const [pays, setPays] = useState<Payment[]>(() =>
-    scanPayMethod
-      ? [{ ...newPayment(), method: scanPayMethod, amount: scanPrefill?.payment?.amount || "0.00", approval: scanPrefill?.payment?.approval ?? "" }]
-      : [],
-  );
+  const [pays, setPays] = useState<Payment[]>(() => seededPays);
+  /* Captured payment-slip Files from the scan handoff, keyed by seeded row.key —
+     consumed once by the on-mount effect that pre-uploads them. Held in a ref (not
+     state) so it never re-renders and is read exactly once. */
+  const scanSlipFilesRef = useRef<Record<string, File>>(scanSlipFilesInit);
   // In edit mode: the ORIGINAL persisted items (frozen snapshot) used to diff
   // against the editable `lines` on save — POST added, PATCH changed, DELETE
   // removed. Payments stay read-only here (own screen).
@@ -477,6 +505,39 @@ export function MobileNewSO({
       cancelled = true;
     };
   }, [isEdit, docNo]);
+
+  /* ── Pre-upload scan-seeded payment slips (new-from-scan only) ───────────
+     Each payment row seeded from scanPrefill.payments[] carries a captured File
+     (stashed in scanSlipFilesRef by key). On mount we upload every one via the
+     same uploadSlipFull({ file }) call PayCard.onPickSlip uses, then attach the
+     returned slip session to its row so recordSlipBackedPayments posts all N on
+     create. Runs async in the background — never blocks the form render; a failed
+     upload flips just that row to "error" (operator re-attaches from the row).
+     Each row started in "uploading". Fires once on mount. */
+  useEffect(() => {
+    const files = scanSlipFilesRef.current;
+    const keys = Object.keys(files);
+    if (keys.length === 0) return;
+    scanSlipFilesRef.current = {}; // consume once — guard against re-runs
+    let cancelled = false;
+    for (const key of keys) {
+      const file = files[key];
+      void (async () => {
+        try {
+          const { uploadSessionId } = await uploadSlipFull({ file });
+          if (cancelled) return;
+          setPays((prev) => prev.map((p) => (p.key === key ? { ...p, slipSession: uploadSessionId, slipPhase: "done" } : p)));
+        } catch {
+          if (cancelled) return;
+          setPays((prev) => prev.map((p) => (p.key === key ? { ...p, slipPhase: "error" } : p)));
+        }
+      })();
+    }
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---- Totals ---------------------------------------------------------------
   /* Display-only subtotal from the on-screen line prices. This is an ESTIMATE
