@@ -478,7 +478,7 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
                       <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: unread ? 800 : 700, color: "var(--ink)", lineHeight: 1.25 }}>{a.title}</span>
-                      {unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "var(--red)", marginTop: 5 }} />}
+                      {unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "var(--brand)", marginTop: 5 }} />}
                     </span>
                     <span style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5 }}>
                       <CatChip ann={a} />
