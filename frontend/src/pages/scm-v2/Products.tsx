@@ -99,13 +99,14 @@ import { FabricTracking } from './FabricTracking';
 import { formatSizeRich, formatSizeRichWithCfg, resolveSizeInfo } from '../../vendor/scm/lib/size-info';
 import { ProductModels, NewModelDialog } from './ProductModels';
 import { VariantsTab } from './products/VariantsTab';
+import { Categories } from './Categories';
 import { useBrandingPool, useProjectBrands } from '../../vendor/scm/lib/product-models-queries';
 import { useQueryClient } from '@tanstack/react-query';
 import styles from './Products.module.css';
 
 const ICON_PROPS = { size: 16, strokeWidth: 1.75 } as const;
 
-type TopTab = 'sku' | 'modular' | 'maintenance' | 'combos' | 'variants' | 'fabric';
+type TopTab = 'sku' | 'modular' | 'maintenance' | 'combos' | 'variants' | 'fabric' | 'categories';
 
 
 export const Products = () => {
@@ -115,7 +116,7 @@ export const Products = () => {
      change; the legacy default (no query string) still lands on SKU Master. */
   const [searchParams, setSearchParams] = useSearchParams();
   const tabFromUrl = (searchParams.get('tab') ?? 'sku') as TopTab;
-  const topTab: TopTab = ['sku', 'modular', 'maintenance', 'combos', 'variants', 'fabric'].includes(
+  const topTab: TopTab = ['sku', 'modular', 'maintenance', 'combos', 'variants', 'fabric', 'categories'].includes(
     tabFromUrl,
   )
     ? tabFromUrl
@@ -206,6 +207,20 @@ export const Products = () => {
             >
               Fabric Converter
             </button>
+            {/* Categories — brought in from the standalone /scm/categories
+                route (same pattern as Fabric Converter): the standalone
+                route stays for back-compat / direct links, but this tab is
+                now the canonical entry so operators managing products can
+                edit the category tree without leaving the page. */}
+            <button
+              type="button"
+              role="tab"
+              data-active={topTab === 'categories'}
+              className={styles.tabSwitchBtn}
+              onClick={() => setTopTab('categories')}
+            >
+              Categories
+            </button>
           </div>
         </div>
       </header>
@@ -216,6 +231,7 @@ export const Products = () => {
       {topTab === 'combos' && <SofaComboTab />}
       {topTab === 'variants' && <VariantsTab />}
       {topTab === 'fabric' && <FabricTracking />}
+      {topTab === 'categories' && <Categories />}
     </div>
   );
 };
