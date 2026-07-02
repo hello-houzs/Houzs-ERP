@@ -577,6 +577,9 @@ const PATCH_FIELDS = [
   "inspection_result", "email_for_survey",
   // Mig 081 — verification card (Under Verification → Pending Solution gate)
   "verification_outcome", "verified_root_cause",
+  // Mig 105 — editable QC-on-receipt inspection date (distinct from
+  // the auto-stamped verified_at audit timestamp).
+  "qc_receipt_date",
 ] as const;
 
 export async function patchAssrCase(
