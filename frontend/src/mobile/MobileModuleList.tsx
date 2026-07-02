@@ -674,6 +674,59 @@ export const FORM_DRIVERS: FormSchema = {
   ],
 };
 
+/* products (SKU master) — POST /mfg-products (code+name+category required),
+   PATCH /mfg-products/:id. Both gated on `scm.config.write` (a missing grant
+   surfaces the route's 403 inline). Response is FLAT ({ id, code }); id =
+   mfg_products.id (the text PK the PATCH path keys on), so the list this form
+   backs MUST read /mfg-products (see MODULE_CONFIGS.products) — the retail
+   /products view's id is a different table and can't drive the PATCH.
+
+   EVERYDAY SUBSET ONLY. Prices are SEN (moneyScale 100): basePriceSen is the
+   POS/base selling price the SO line editor defaults from, sellPriceSen the
+   selling override, costPriceSen the PO cost. Category is the FIXED mfg enum
+   (SOFA / BEDFRAME / MATTRESS / ACCESSORY / SERVICE), sent verbatim.
+
+   PHASE 2 (desktop-only, intentionally omitted): size-variant / seat-height
+   price maps (seatHeightPrices), effective-dated Maintenance config, modular /
+   combo (allowed_options, sub_assemblies, pieces), included / free-gift add-ons,
+   hero photo, and the sofa/bedframe configurator. Those need pickers + pricing
+   recompute this flat form must not touch. */
+export const FORM_PRODUCTS: FormSchema = {
+  title: "Product",
+  eyebrow: "Catalogue",
+  base: "scm",
+  createPath: "/mfg-products",
+  updatePath: (id) => `/mfg-products/${encodeURIComponent(id)}`,
+  idKey: "id",
+  responseIdKeys: ["id"],
+  fields: [
+    { key: "code", label: "SKU Code", type: "text", required: true, placeholder: "e.g. BED-001", hint: "Uppercase letters, digits, hyphens." },
+    { key: "name", label: "Name", type: "text", required: true, placeholder: "Product name" },
+    // Category is CREATE-only on the backend (POST validates the enum; PATCH
+    // never remaps it). Required so a new SKU lands in the right lane; on edit
+    // it shows the current value and re-saving is a no-op (moving a SKU between
+    // categories stays a desktop operation).
+    { key: "category", label: "Category", type: "select", required: true, placeholder: "Select category…", options: [
+      { value: "BEDFRAME", label: "Bedframe" }, { value: "SOFA", label: "Sofa" },
+      { value: "MATTRESS", label: "Mattress" }, { value: "ACCESSORY", label: "Accessory" },
+      { value: "SERVICE", label: "Service" },
+    ], hint: "Set at creation; category moves are done on desktop." },
+    { key: "sizeLabel", label: "Size", type: "text", placeholder: "e.g. Queen", hint: "Set at creation." },
+    { key: "description", label: "Description", type: "textarea", hint: "Set at creation." },
+    { key: "branding", label: "Brand", type: "text" },
+    { key: "barcode", label: "Barcode", type: "text" },
+    { key: "basePriceSen", label: "Base Selling Price (RM)", type: "money", moneyScale: 100 },
+    { key: "costPriceSen", label: "Cost Price (RM)", type: "money", moneyScale: 100 },
+    // Selling override + Active are EDIT-only on the backend (a new SKU starts
+    // ACTIVE, and its selling price defaults from the base). Shown here so an
+    // edit can set them; ignored on create.
+    { key: "sellPriceSen", label: "Selling Price (RM)", type: "money", moneyScale: 100, hint: "Editable after creation. Blank uses the base price." },
+    { key: "status", label: "Active", type: "select", options: [
+      { value: "ACTIVE", label: "Active" }, { value: "INACTIVE", label: "Inactive" },
+    ], placeholder: "Active", hint: "Editable after creation." },
+  ],
+};
+
 /* fleet — POST /lorries (plate required, type enum), PATCH /lorries/:id.
    Response wraps as { lorry: {...} }; id = lorry.id. capacityM3 / capacityKg
    are numeric(.,.) → plain numbers (NOT money). */
@@ -1425,45 +1478,52 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     search: (r) => join(r.debtor_name, r.return_number, r.do_doc_no),
   },
 
-  // products.get('/') → { products: [...] }; cols sku, name, stock, size_display
-  // + nested category:{label}, series:{label}.
-  // Design label "Products & Maintenance" (m-products).
-  // Design m-products: SKU/Brand/Price + category pill. Real cols: sku, name,
-  // flat_price (sen), nested category.label. Brand has NO column → OMITTED.
-  // Price is flat only (size_variants have per-size prices, shown as "—" here).
+  // mfg-products.get('/') → { products: [...] }; the SKU MASTER (mfg_products),
+  // NOT the retail /products view. Repointed here (from /products) so the mobile
+  // list, detail, CREATE and EDIT all share ONE surface whose row id is the
+  // mfg_products text PK the PATCH /mfg-products/:id keys on. Cols: id, code,
+  // name, category (string enum), base_price_sen, sell_price_sen, status,
+  // size_label, branding, barcode.
+  // Design m-products: SKU/Brand/Price + category pill. Prices are SEN.
   products: {
     title: "Products & Maintenance",
     eyebrow: "Catalogue",
     placeholder: "Search name · SKU",
-    endpoint: "/products",
+    endpoint: "/mfg-products",
     listKey: "products",
-    primary: (r) => r.name || r.sku,
-    secondary: (r) => join(r.sku, r.category?.label, r.size_display),
-    right: (r) => (r.stock == null ? "" : `${r.stock}`),
-    search: (r) => join(r.name, r.sku, r.category?.label, r.series?.label),
-    pill: (r) => pick(r.category, "label", "name") ?? "",
+    primary: (r) => r.name || pick(r, "code", "sku"),
+    secondary: (r) => join(pick(r, "code", "sku"), pick(r, "category"), pick(r, "sizeLabel", "size_label")),
+    right: (r) => pick(r, "basePriceSen", "base_price_sen") ?? "",
+    rightMoney: true,
+    search: (r) => join(r.name, pick(r, "code", "sku"), pick(r, "category"), pick(r, "branding"), pick(r, "barcode")),
+    pill: (r) => statusLabel(pick(r, "category")),
     // Spec #products: .ph thumbnail + name + "SKU {{sku}} · {{category}}" sub-
-    // line + right "RM {{price_centi}}" / "/{{uom}}". flat_price is the flat SKU
-    // price (whole-RM sen); uom has no list column → omitted.
+    // line + right "RM {{price_centi}}". base_price_sen is the base selling
+    // price (SEN); uom has no mfg column → omitted.
     variant: "product",
-    subline: (r) => { const sku = pick(r, "sku"); return join(sku ? `SKU ${sku}` : "", pick(r.category, "label", "name")); },
-    price: (r) => pick(r, "flatPrice", "flat_price") ?? "",
+    subline: (r) => { const sku = pick(r, "code", "sku"); return join(sku ? `SKU ${sku}` : "", pick(r, "category")); },
+    price: (r) => pick(r, "basePriceSen", "base_price_sen") ?? "",
     priceMoney: true,
     fields: [
-      [(r) => pick(r, "sku") ?? "—", "SKU"],
-      [(r) => rmField(pick(r, "flatPrice", "flat_price")), "Price"],
+      [(r) => pick(r, "code", "sku") ?? "—", "SKU"],
+      [(r) => pick(r, "category") ?? "—", "Category"],
+      [(r) => rmField(pick(r, "basePriceSen", "base_price_sen")), "Base Price"],
+      [(r) => rmField(pick(r, "sellPriceSen", "sell_price_sen")), "Selling Price"],
+      [(r) => rmField(pick(r, "costPriceSen", "cost_price_sen")), "Cost Price"],
+      [(r) => statusLabel(pick(r, "status")) || "—", "Status"],
     ],
     chips: [
       { key: "all", label: "All", match: () => true },
-      { key: "sofa", label: "Sofa", match: (r) => /sofa/i.test(String(pick(r.category, "label", "name") ?? "")) },
-      { key: "bedframe", label: "Bedframe", match: (r) => /bed\s*frame|bedframe/i.test(String(pick(r.category, "label", "name") ?? "")) },
-      { key: "mattress", label: "Mattress", match: (r) => /mattress/i.test(String(pick(r.category, "label", "name") ?? "")) },
-      { key: "parts", label: "Parts", match: (r) => /part|accessor/i.test(String(pick(r.category, "label", "name") ?? "")) },
+      { key: "sofa", label: "Sofa", match: (r) => /sofa/i.test(String(pick(r, "category") ?? "")) },
+      { key: "bedframe", label: "Bedframe", match: (r) => /bed\s*frame|bedframe/i.test(String(pick(r, "category") ?? "")) },
+      { key: "mattress", label: "Mattress", match: (r) => /mattress/i.test(String(pick(r, "category") ?? "")) },
+      { key: "parts", label: "Parts", match: (r) => /part|accessor/i.test(String(pick(r, "category") ?? "")) },
     ],
     sorts: [
       { key: "name", label: "Name", cmp: (a, b) => byStr(a.name, b.name) },
-      { key: "price", label: "Price", cmp: (a, b) => byNum(pick(a, "flatPrice", "flat_price"), pick(b, "flatPrice", "flat_price")) },
+      { key: "price", label: "Price", cmp: (a, b) => byNum(pick(a, "basePriceSen", "base_price_sen"), pick(b, "basePriceSen", "base_price_sen")) },
     ],
+    form: FORM_PRODUCTS,
   },
 
   // Design m-mrp: SKU/Required/On hand/Shortage/Incoming + state pill. MrpSku
