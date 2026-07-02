@@ -95,6 +95,25 @@ const PRINT_VARIANTS = [
 // Upload constraints mirror the PUT /:id/attachments backend guard.
 const ATTACH_EXTS = new Set(["jpg", "jpeg", "png", "webp", "mp4", "pdf"]);
 
+// Logistics rows — assr_logistics.type / .status CHECK enums (mig 010).
+const LOGISTICS_TYPE_OPTIONS = [
+  { value: "pickup", label: "Pickup" },
+  { value: "delivery", label: "Delivery" },
+] as const;
+const LOGISTICS_STATUS_OPTIONS = [
+  { value: "pending", label: "Pending" },
+  { value: "scheduled", label: "Scheduled" },
+  { value: "completed", label: "Completed" },
+  { value: "cancelled", label: "Cancelled" },
+] as const;
+// Logistics status chip colours (matches the desktop LogisticsRow map).
+const LOGISTICS_STATUS_PILL: Record<string, [string, string]> = {
+  pending: ["#f6efd9", "#6e4d12"],
+  scheduled: ["#e1efed", TEAL_DK],
+  completed: ["#e2f0e9", GREEN],
+  cancelled: [FIELD_BG, MUTED],
+};
+
 // Pill colours — design PILL map (bg, fg). Open stages read as amber, the
 // "waiting on our side" ones teal, completed green, cancelled red.
 const STAGE_PILL: Record<string, [string, string]> = {
@@ -188,6 +207,22 @@ function useAssignableUsers(): PicUser[] {
     staleTime: 5 * 60_000,
   });
   return Array.isArray(data) ? data : [];
+}
+
+// SO typeahead — mirrors desktop CreatePanel: GET /api/assr/search-so?q=…
+// returns { results: [{ doc_no, ref, debtor_name, phone, doc_date,
+// sales_agent }] } (min 2 chars server-side). Debounced client-side.
+type SoHit = Any;
+function useSoSearch(q: string): { results: SoHit[]; loading: boolean } {
+  const needle = q.trim();
+  const { data, isFetching } = useQuery({
+    queryKey: ["mobile-assr-so-search", needle],
+    enabled: needle.length >= 2,
+    staleTime: 30_000,
+    queryFn: () =>
+      api.get<{ results?: SoHit[] }>(`/api/assr/search-so?q=${encodeURIComponent(needle)}`),
+  });
+  return { results: data?.results ?? [], loading: isFetching };
 }
 
 const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
@@ -447,6 +482,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const activity: Any[] = data?.activity ?? [];
   const attachments: Any[] = data?.attachments ?? [];
   const relatedPOs: Any[] = data?.related_pos ?? data?.relatedPos ?? [];
+  const logistics: Any[] = data?.logistics ?? [];
   const portalToken = get(data ?? {}, "portal_token", "portalToken");
 
   const sla = slaText(hoursToDeadline(c));
@@ -559,6 +595,65 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     await patchCase({ assigned_to: nextId }, "Couldn't reassign");
   };
 
+  // ── Case-level values driving the conditional PO / creditor actions ──
+  const poNo = get(c, "poNo", "po_no");
+  const creditorCode = get(c, "creditorCode", "creditor_code");
+  const itemCode = get(c, "itemCode", "item_code");
+  const archivedAt = get(c, "archivedAt", "archived_at");
+  const isArchived = !!archivedAt;
+  // Generate PO — desktop gates on: no PO yet AND a creditor is resolved
+  // AND the case isn't completed. POST /:id/generate-po → { po_no }.
+  const canGeneratePo = !poNo && !!creditorCode && stageOf(c) !== "completed";
+  // Resolve creditor — desktop shows the button when the creditor is not
+  // resolved but an item_code exists. POST /:id/resolve-creditor.
+  const canResolveCreditor = !creditorCode && !!itemCode;
+
+  const generatePo = async () => {
+    if (busy || !canGeneratePo) return;
+    if (!(await confirm({ title: "Generate a service PO number?", confirmLabel: "Generate PO" }))) return;
+    await runWrite(async () => {
+      const res = await api.post<{ po_no?: string }>(`/api/assr/${id}/generate-po`);
+      const po = get(res ?? {}, "poNo", "po_no");
+      await notify({ title: "PO generated", body: po ? String(po) : "Purchase order created." });
+    }, "Couldn't generate PO");
+  };
+
+  const resolveCreditor = async () => {
+    if (busy || !canResolveCreditor) return;
+    await runWrite(async () => {
+      const res = await api.post<{ creditor_code?: string | null; message?: string }>(
+        `/api/assr/${id}/resolve-creditor`,
+      );
+      const code = get(res ?? {}, "creditorCode", "creditor_code");
+      const msg = get(res ?? {}, "message");
+      await notify({
+        title: code ? "Creditor resolved" : "No supplier found",
+        body: msg ? String(msg) : code ? String(code) : "No MainSupplier set on this item in AutoCount.",
+        tone: code ? "info" : "error",
+      });
+    }, "Resolve failed");
+  };
+
+  // ── Case archive / unarchive → POST /:id/archive | /unarchive ───────
+  const toggleArchive = async () => {
+    if (busy) return;
+    const to = isArchived ? "unarchive" : "archive";
+    if (
+      !(await confirm({
+        title: isArchived ? "Unarchive this case?" : "Archive this case?",
+        body: isArchived
+          ? "It returns to the active list."
+          : "It is hidden from the active list. You can unarchive it later.",
+        confirmLabel: isArchived ? "Unarchive" : "Archive",
+        danger: !isArchived,
+      }))
+    )
+      return;
+    await runWrite(async () => {
+      await api.post(`/api/assr/${id}/${to}`);
+    }, isArchived ? "Couldn't unarchive" : "Couldn't archive");
+  };
+
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       {/* header (.hdr) — back + stage badge · eyebrow {case_no · priority} · customer */}
@@ -568,7 +663,10 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
             <span className="chev">‹</span> Service Cases
           </button>
           {!isLoading && !error && (
-            <span className={`badge ${stageBadgeClass(stageOf(c))}`} style={{ flex: "none" }}>{prettyStage(stageOf(c))}</span>
+            <span style={{ display: "flex", gap: 6, flex: "none" }}>
+              {isArchived && <span className="badge b-grey">Archived</span>}
+              <span className={`badge ${stageBadgeClass(stageOf(c))}`}>{prettyStage(stageOf(c))}</span>
+            </span>
           )}
         </div>
         <div className="eyebrow tnum" style={{ marginTop: 7 }}>
@@ -730,21 +828,52 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               busy={busy}
               fields={[
                 { key: "resolution_method", label: "Resolution method", value: resolutionMethod, type: "select", options: [{ value: "", label: "—" }, ...resolutionOptions.map((o) => ({ value: o, label: resolutionLabel(o) }))] },
+                { key: "action_remark", label: "Action remark", value: get(c, "actionRemark", "action_remark"), type: "textarea" },
                 { key: "supplier_pickup_at", label: "Supplier pickup date", value: get(c, "supplierPickupAt", "supplier_pickup_at"), type: "date" },
               ]}
               onSave={(body) => patchCase(body, "Couldn't save resolution")}
             >
-              {get(c, "creditorName", "creditor_name") ? (
-                <>
-                  <div className="fld-l" style={{ marginTop: 8 }}>Supplier</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid #e3e6e0`, borderRadius: 10, padding: "10px 11px", marginTop: 5 }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>{String(get(c, "creditorName", "creditor_name"))}</div>
-                      <div className="money" style={{ fontSize: 10, color: GREY }}>{String(get(c, "creditorCode", "creditor_code") ?? "")}</div>
-                    </div>
+              {/* Supplier / creditor — read-only when resolved, otherwise a
+                  Resolve-now action (mirrors desktop). */}
+              <div className="fld-l" style={{ marginTop: 8 }}>Supplier</div>
+              {creditorCode ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid #e3e6e0`, borderRadius: 10, padding: "10px 11px", marginTop: 5 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>{String(get(c, "creditorName", "creditor_name") ?? creditorCode)}</div>
+                    <div className="money" style={{ fontSize: 10, color: GREY }}>{String(creditorCode)}</div>
                   </div>
-                </>
-              ) : null}
+                </div>
+              ) : canResolveCreditor ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid #e3e6e0`, borderRadius: 10, padding: "10px 11px", marginTop: 5 }}>
+                  <div style={{ flex: 1, minWidth: 0, fontSize: 11, color: MUTED }}>
+                    Not resolved for <span className="money" style={{ color: INK }}>{String(itemCode)}</span>.
+                  </div>
+                  <button
+                    onClick={resolveCreditor}
+                    disabled={busy}
+                    className="tinybtn"
+                    style={{ flex: "none", color: TEAL, borderColor: TEAL, opacity: busy ? 0.5 : 1 }}
+                  >
+                    Resolve now
+                  </button>
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: GREY, marginTop: 5 }}>Set an item code to auto-link the creditor.</div>
+              )}
+
+              {/* Procurement / PO — auto-generate when a creditor is set. */}
+              <div className="fld-l" style={{ marginTop: 12 }}>PO No</div>
+              <KV label="PO number" value={poNo ? String(poNo) : "—"} mono />
+              {canGeneratePo && (
+                <button
+                  onClick={generatePo}
+                  disabled={busy}
+                  className="tinybtn"
+                  style={{ marginTop: 6, color: BROWN, opacity: busy ? 0.5 : 1 }}
+                >
+                  + Auto-generate PO number
+                </button>
+              )}
             </EditableAcc>
 
             {/* QC inspection (green left-border, "after repair") — inspection_result + items_ready_at */}
@@ -777,6 +906,19 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               onSave={(body) => patchCase(body, "Couldn't save reference")}
             />
 
+            {/* Logistics — pickup / delivery schedule rows (create / edit /
+                archive). POST /:id/logistics · PATCH /:id/logistics/:logId ·
+                POST /:id/logistics/:logId/archive. */}
+            <LogisticsSection
+              caseId={id}
+              rows={logistics}
+              users={assignableUsers}
+              busy={busy}
+              onChanged={() => { refetch(); qc.invalidateQueries({ queryKey: ["mobile-assr-list"] }); }}
+              notify={notify}
+              confirm={confirm}
+            />
+
             {/* Customer (Edit → Save, .pgrid2 read view) */}
             <EditableAcc
               title="Customer"
@@ -785,6 +927,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               fields={[
                 { key: "customer_name", label: "Customer", value: customer(c) === "—" ? "" : customer(c), type: "text" },
                 { key: "phone", label: "Phone", value: get(c, "phone", "customerPhone", "customer_phone"), type: "text" },
+                { key: "customer_email", label: "Email", value: get(c, "customerEmail", "customer_email"), type: "text" },
                 { key: "location", label: "Location", value: get(c, "location", "customerState", "customer_state"), type: "text" },
                 { key: "sales_agent", label: "Agent", value: get(c, "salesAgent", "sales_agent", "agent"), type: "text" },
               ]}
@@ -904,10 +1047,12 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
         )}
       </div>
 
-      {/* actbar (spec #service-detail) — Print (ghost) + Advance stage (primary) */}
+      {/* actbar (spec #service-detail) — Archive/Print (ghost) + Advance (primary).
+          When archived, the primary button flips to Unarchive. */}
       <footer className="actbar" style={{ display: "flex", gap: 9 }}>
+        <button onClick={toggleArchive} disabled={busy || isLoading || !!error} className="btn-ghost" style={{ flex: 1, opacity: busy || isLoading || error ? 0.5 : 1 }}>{isArchived ? "Unarchive" : "Archive"}</button>
         <button onClick={printCopy} disabled={isLoading || !!error} className="btn-ghost" style={{ flex: 1, opacity: isLoading || error ? 0.5 : 1 }}>Print</button>
-        <button onClick={changeStage} disabled={busy || isLoading || !!error} className="btn" style={{ flex: 1.4, opacity: busy || isLoading || error ? 0.5 : 1 }}>Advance stage →</button>
+        <button onClick={changeStage} disabled={busy || isLoading || !!error || isArchived} className="btn" style={{ flex: 1.4, opacity: busy || isLoading || error || isArchived ? 0.5 : 1 }}>Advance stage →</button>
       </footer>
     </div>
   );
@@ -928,10 +1073,33 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   const issueCatOptions = useLookupNames("issue-categories", ISSUE_CATEGORY_OPTIONS as readonly string[]);
   const priorityOptions = useLookupSlugs("priorities", PRIORITY_OPTIONS as readonly string[]);
   const [docNo, setDocNo] = useState("");
+  // SO picker (real search-so lookup, replacing free-text). `soQuery` is
+  // what the user types; once they pick a hit we lock `docNo` and show the
+  // chosen SO. `soPicked` guards the dropdown so it hides after selection.
+  const [soQuery, setSoQuery] = useState("");
+  const [soPicked, setSoPicked] = useState<SoHit | null>(null);
+  const { results: soResults, loading: soLoading } = useSoSearch(soPicked ? "" : soQuery);
   const [itemCode, setItemCode] = useState("");
   const [complaint, setComplaint] = useState("");
   const [category, setCategory] = useState("");
   const [priority, setPriority] = useState("normal");
+  // SO line-item lookup — once an SO is chosen, offer its items so the
+  // Product field is a picker (GET /api/assr/lookup-items/:docNo), not free
+  // text. Staff can still type a custom code if the item isn't listed.
+  const { data: soItemsData } = useQuery({
+    queryKey: ["mobile-assr-so-items", docNo],
+    enabled: !!docNo,
+    staleTime: 60_000,
+    queryFn: () => api.get<{ items?: Any[] }>(`/api/assr/lookup-items/${encodeURIComponent(docNo)}`),
+  });
+  const soItems: Any[] = soItemsData?.items ?? [];
+
+  const pickSo = (hit: SoHit) => {
+    setSoPicked(hit);
+    setDocNo(String(get(hit, "docNo", "doc_no") ?? "").trim());
+    setSoQuery("");
+  };
+  const clearSo = () => { setSoPicked(null); setDocNo(""); setSoQuery(""); };
   // Defect photos/videos staged locally, uploaded after the case is
   // created (attachments require the case id). Up to 5, matching the design.
   const [files, setFiles] = useState<File[]>([]);
@@ -1013,13 +1181,54 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
         <div className="scroll hz-scroll" style={{ padding: 14, display: "flex", flexDirection: "column", gap: 11 }}>
           {/* Customer / SO + Product + Issue card (.card) */}
           <div className="card"><div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-            <label className="fld">
+            {/* SO picker — real search-so lookup, not free text. */}
+            <div className="fld" style={{ position: "relative" }}>
               <span className="fld-l">Customer / SO lookup *</span>
-              <input value={docNo} onChange={(e) => setDocNo(e.target.value)} placeholder="Search SO no or customer" className="fld-i money" />
-            </label>
+              {soPicked ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid ${TEAL}`, borderRadius: 10, padding: "9px 11px", background: FIELD_BG }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="money" style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(soPicked, "docNo", "doc_no"))}</div>
+                    <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(soPicked, "debtorName", "debtor_name") ?? "—")}</div>
+                  </div>
+                  <button onClick={clearSo} aria-label="Change SO" className="tinybtn" style={{ flex: "none", padding: "3px 9px" }}>Change</button>
+                </div>
+              ) : (
+                <>
+                  <input value={soQuery} onChange={(e) => setSoQuery(e.target.value)} placeholder="Search SO no or customer (2+ chars)" className="fld-i money" />
+                  {soQuery.trim().length >= 2 && (
+                    <div style={{ marginTop: 5, border: `1px solid #e3e6e0`, borderRadius: 10, overflow: "hidden", maxHeight: 190, overflowY: "auto" }} className="hz-scroll">
+                      {soLoading && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>Searching…</div>}
+                      {!soLoading && !soResults.length && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>No matching sales orders.</div>}
+                      {soResults.map((hit, i) => (
+                        <button
+                          key={String(get(hit, "docNo", "doc_no")) + i}
+                          onClick={() => pickSo(hit)}
+                          style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderTop: i ? "1px solid #eceee9" : "none", background: "#fff", padding: "9px 11px", cursor: "pointer" }}
+                        >
+                          <div className="money" style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(hit, "docNo", "doc_no"))}</div>
+                          <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(hit, "debtorName", "debtor_name") ?? "—")}{get(hit, "phone") ? ` · ${String(get(hit, "phone"))}` : ""}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            {/* Product — SO line-item picker when the SO is known; free text otherwise. */}
             <label className="fld">
               <span className="fld-l">Product *</span>
-              <input value={itemCode} onChange={(e) => setItemCode(e.target.value)} placeholder="Affected item code — e.g. AK-GUARDIAN MATT (K)" className="fld-i money" />
+              {soItems.length ? (
+                <select value={itemCode} onChange={(e) => setItemCode(e.target.value)} className="fld-i money">
+                  <option value="">— select item —</option>
+                  {soItems.map((it, i) => {
+                    const code = String(get(it, "itemCode", "item_code") ?? "");
+                    const desc = get(it, "itemDescription", "item_description");
+                    return <option key={code + i} value={code}>{code}{desc ? ` — ${String(desc)}` : ""}</option>;
+                  })}
+                </select>
+              ) : (
+                <input value={itemCode} onChange={(e) => setItemCode(e.target.value)} placeholder="Affected item code — e.g. AK-GUARDIAN MATT (K)" className="fld-i money" />
+              )}
             </label>
             <div className="fld-row">
               <label className="fld">
@@ -1346,6 +1555,245 @@ function isoDateOnly(v: any): string {
   return dt.toISOString().slice(0, 10);
 }
 
+// ── Logistics schedule (pickup / delivery) ────────────────────────
+// Lists the case's assr_logistics rows and lets ops create / edit /
+// archive them. Mirrors desktop LogisticsForm + LogisticsRow:
+//   POST   /:id/logistics            { type, scheduled_date?,
+//                                      scheduled_time_range?,
+//                                      assigned_to?, notes? }
+//   PATCH  /:id/logistics/:logId     { scheduled_date, scheduled_time_range,
+//                                      assigned_to, status, notes }
+//   POST   /:id/logistics/:logId/archive
+// type ∈ pickup|delivery · status ∈ pending|scheduled|completed|cancelled.
+type LogDraft = {
+  scheduled_date: string;
+  scheduled_time_range: string;
+  assigned_to: string;
+  status: string;
+  notes: string;
+};
+function draftFromRow(l: Any): LogDraft {
+  return {
+    scheduled_date: isoDateOnly(get(l, "scheduledDate", "scheduled_date")) || "",
+    scheduled_time_range: String(get(l, "scheduledTimeRange", "scheduled_time_range") ?? ""),
+    assigned_to: String(get(l, "assignedTo", "assigned_to") ?? ""),
+    status: String(get(l, "status") ?? "pending"),
+    notes: String(get(l, "notes") ?? ""),
+  };
+}
+
+function LogisticsSection({
+  caseId,
+  rows,
+  users,
+  busy,
+  onChanged,
+  notify,
+  confirm,
+}: {
+  caseId: number;
+  rows: Any[];
+  users: PicUser[];
+  busy: boolean;
+  onChanged: () => void;
+  notify: ReturnType<typeof useNotify>;
+  confirm: ReturnType<typeof useConfirm>;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editId, setEditId] = useState<number | null>(null);
+  const [type, setType] = useState<"pickup" | "delivery">("pickup");
+  const [draft, setDraft] = useState<LogDraft>({
+    scheduled_date: "",
+    scheduled_time_range: "",
+    assigned_to: "",
+    status: "pending",
+    notes: "",
+  });
+
+  const startAdd = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setType("pickup");
+    setDraft({ scheduled_date: "", scheduled_time_range: "", assigned_to: "", status: "pending", notes: "" });
+    setEditId(null);
+    setAdding(true);
+  };
+  const startEdit = (l: Any) => {
+    setDraft(draftFromRow(l));
+    setEditId(Number(get(l, "id")));
+    setAdding(false);
+  };
+  const closeForms = () => { setAdding(false); setEditId(null); };
+
+  const createRow = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await api.post(`/api/assr/${caseId}/logistics`, {
+        type,
+        scheduled_date: draft.scheduled_date || undefined,
+        scheduled_time_range: draft.scheduled_time_range || undefined,
+        assigned_to: draft.assigned_to ? Number(draft.assigned_to) : undefined,
+        notes: draft.notes || undefined,
+      });
+      closeForms();
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't add schedule row", body: e?.message || "Please try again.", tone: "error" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveEdit = async (logId: number) => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/assr/${caseId}/logistics/${logId}`, {
+        scheduled_date: draft.scheduled_date || null,
+        scheduled_time_range: draft.scheduled_time_range || null,
+        assigned_to: draft.assigned_to ? Number(draft.assigned_to) : null,
+        status: draft.status,
+        notes: draft.notes || null,
+      });
+      closeForms();
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't save schedule row", body: e?.message || "Please try again.", tone: "error" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const archiveRow = async (l: Any) => {
+    const logId = Number(get(l, "id"));
+    if (!logId) return;
+    if (!(await confirm({ title: "Archive this schedule row?", confirmLabel: "Archive", danger: true }))) return;
+    try {
+      await api.post(`/api/assr/${caseId}/logistics/${logId}/archive`);
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't archive", body: e?.message || "Please try again.", tone: "error" });
+    }
+  };
+
+  // Shared draft field editor (date / time / assignee / [status] / notes).
+  const fields = (withStatus: boolean) => (
+    <>
+      <label className="fld">
+        <span className="fld-l">Date</span>
+        <input type="date" value={draft.scheduled_date} onChange={(e) => setDraft((d) => ({ ...d, scheduled_date: e.target.value }))} className="fld-i" />
+      </label>
+      <label className="fld">
+        <span className="fld-l">Time range</span>
+        <input value={draft.scheduled_time_range} onChange={(e) => setDraft((d) => ({ ...d, scheduled_time_range: e.target.value }))} placeholder="e.g. 9AM – 12PM" className="fld-i" />
+      </label>
+      <label className="fld">
+        <span className="fld-l">Assigned to</span>
+        <select value={draft.assigned_to} onChange={(e) => setDraft((d) => ({ ...d, assigned_to: e.target.value }))} className="fld-i">
+          <option value="">— Unassigned —</option>
+          {users.map((u) => (
+            <option key={u.id} value={String(u.id)}>{u.name}</option>
+          ))}
+        </select>
+      </label>
+      {withStatus && (
+        <label className="fld">
+          <span className="fld-l">Status</span>
+          <select value={draft.status} onChange={(e) => setDraft((d) => ({ ...d, status: e.target.value }))} className="fld-i">
+            {LOGISTICS_STATUS_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      <label className="fld">
+        <span className="fld-l">Remark</span>
+        <textarea value={draft.notes} onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))} rows={2} placeholder="e.g. pickup gate B; call on arrival" className="fld-i" style={{ resize: "none" }} />
+      </label>
+    </>
+  );
+
+  return (
+    <Acc
+      title="Logistics"
+      open
+      headRight={`${rows.length}`}
+      headSlot={
+        <span
+          onClick={startAdd}
+          className="tinybtn"
+          style={{ marginLeft: 8, color: BROWN, opacity: busy || saving ? 0.5 : 1 }}
+        >
+          + Add
+        </span>
+      }
+    >
+      {/* Add form */}
+      {adding && (
+        <div style={{ border: `1px solid ${TEAL}`, borderRadius: 11, padding: 11, marginBottom: 9, background: FIELD_BG }}>
+          <div className="fld-l" style={{ marginBottom: 5 }}>New schedule row</div>
+          <label className="fld">
+            <span className="fld-l">Type</span>
+            <select value={type} onChange={(e) => setType(e.target.value as "pickup" | "delivery")} className="fld-i">
+              {LOGISTICS_TYPE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </label>
+          {fields(false)}
+          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+            <button onClick={closeForms} disabled={saving} className="tinybtn" style={{ flex: 1, padding: 9 }}>Cancel</button>
+            <button onClick={createRow} disabled={saving} className="tinybtn" style={{ flex: 1, padding: 9, background: TEAL, borderColor: TEAL, color: "#fff", opacity: saving ? 0.6 : 1 }}>{saving ? "Saving…" : "Add row"}</button>
+          </div>
+        </div>
+      )}
+
+      {rows.length ? rows.map((l, i) => {
+        const logId = Number(get(l, "id"));
+        const editing = editId === logId;
+        const lType = String(get(l, "type") ?? "");
+        const status = String(get(l, "status") ?? "pending");
+        const date = get(l, "scheduledDate", "scheduled_date");
+        const timeRange = get(l, "scheduledTimeRange", "scheduled_time_range");
+        const assignedName = get(l, "assignedToName", "assigned_to_name");
+        const notes = get(l, "notes");
+        const pill = LOGISTICS_STATUS_PILL[status] ?? LOGISTICS_STATUS_PILL.pending;
+        if (editing) {
+          return (
+            <div key={logId} style={{ border: `1px solid ${TEAL}`, borderRadius: 11, padding: 11, marginBottom: 7, background: FIELD_BG }}>
+              <div className="fld-l" style={{ marginBottom: 5 }}>Editing {cap(lType)}</div>
+              {fields(true)}
+              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                <button onClick={closeForms} disabled={saving} className="tinybtn" style={{ flex: 1, padding: 9 }}>Cancel</button>
+                <button onClick={() => saveEdit(logId)} disabled={saving} className="tinybtn" style={{ flex: 1, padding: 9, background: TEAL, borderColor: TEAL, color: "#fff", opacity: saving ? 0.6 : 1 }}>{saving ? "Saving…" : "Save"}</button>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div key={logId ?? i} style={{ border: `1px solid #e3e6e0`, borderRadius: 10, padding: "10px 11px", marginBottom: 7 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>{cap(lType)}</span>
+              <span className="spill" style={{ marginLeft: "auto", background: pill[0], color: pill[1], fontSize: 10, padding: "3px 8px", borderRadius: 20 }}>{cap(status)}</span>
+              <button onClick={() => startEdit(l)} aria-label="Edit row" className="tinybtn" style={{ flex: "none", padding: "3px 8px" }}>Edit</button>
+              <button onClick={() => archiveRow(l)} aria-label="Archive row" style={{ flex: "none", width: 24, height: 24, borderRadius: 8, border: "1px solid #e3e6e0", background: "#fff", color: RED, fontSize: 14, lineHeight: 1, cursor: "pointer" }}>×</button>
+            </div>
+            {(date || timeRange) && (
+              <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>{dm(date)}{timeRange ? ` · ${String(timeRange)}` : ""}</div>
+            )}
+            {assignedName && <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>Assigned: {String(assignedName)}</div>}
+            {notes && <div style={{ fontSize: 11, color: MUTED, marginTop: 4, whiteSpace: "pre-wrap" }}><span style={{ fontWeight: 700 }}>Remark: </span>{String(notes)}</div>}
+          </div>
+        );
+      }) : (
+        !adding && <div style={{ fontSize: 12, color: GREY, padding: "2px 0" }}>No pickup or delivery scheduled.</div>
+      )}
+    </Acc>
+  );
+}
+
 // ── Defect photos / videos grid → PUT /:id/attachments ────────────
 // Shows every non-archived attachment as an auth-fetched thumbnail
 // (blob URL) and lets staff capture / pick up to 5 more per batch.
@@ -1419,6 +1867,20 @@ function PhotoGrid({
     }
   };
 
+  // Toggle whether an attachment shows on the customer portal.
+  // PATCH /attachments/:attId/visibility { visible_to_customer }.
+  const toggleVisibility = async (att: Any) => {
+    const attId = Number(get(att, "id"));
+    if (!attId) return;
+    const cur = Number(get(att, "visibleToCustomer", "visible_to_customer") ?? 1) === 1;
+    try {
+      await api.patch(`/api/assr/attachments/${attId}/visibility`, { visible_to_customer: !cur });
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't change visibility", body: e?.message || "Please try again.", tone: "error" });
+    }
+  };
+
   return (
     <Acc
       title="Defect photos / videos"
@@ -1428,7 +1890,7 @@ function PhotoGrid({
       {attachments.length ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7, marginBottom: 10 }}>
           {attachments.map((att, i) => (
-            <AttachThumb key={get(att, "id") ?? i} att={att} onArchive={() => archive(att)} />
+            <AttachThumb key={get(att, "id") ?? i} att={att} onArchive={() => archive(att)} onToggleVisibility={() => toggleVisibility(att)} />
           ))}
         </div>
       ) : (
@@ -1457,12 +1919,14 @@ function PhotoGrid({
   );
 }
 
-// Auth-fetched attachment thumbnail (blob URL) with a remove affordance.
-function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
+// Auth-fetched attachment thumbnail (blob URL) with remove + customer-
+// visibility affordances. `visible_to_customer` defaults to 1 (shown).
+function AttachThumb({ att, onArchive, onToggleVisibility }: { att: Any; onArchive: () => void; onToggleVisibility: () => void }) {
   const key = get(att, "r2Key", "r2_key");
   const contentType = String(get(att, "contentType", "content_type") ?? "");
   const isVideo = contentType.startsWith("video");
   const isPdf = contentType.includes("pdf");
+  const visible = Number(get(att, "visibleToCustomer", "visible_to_customer") ?? 1) === 1;
   const [url, setUrl] = useState<string | null>(null);
 
   const { data } = useQuery({
@@ -1474,7 +1938,7 @@ function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
   if (data && data !== url) setUrl(data);
 
   return (
-    <div style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid #e3e6e0` }}>
+    <div style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid ${visible ? "#e3e6e0" : "#f0d4d4"}` }}>
       {isVideo || isPdf ? (
         <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 3 }}>
           <span style={{ fontSize: 9, fontWeight: 700, color: MUTED }}>{isVideo ? "VIDEO" : "PDF"}</span>
@@ -1486,6 +1950,14 @@ function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
           <span style={{ fontSize: 9, color: GREY }}>…</span>
         </div>
       )}
+      <button
+        onClick={onToggleVisibility}
+        aria-label={visible ? "Hide from customer" : "Show to customer"}
+        title={visible ? "Visible to customer — tap to hide" : "Hidden from customer — tap to show"}
+        style={{ position: "absolute", top: 3, left: 3, height: 18, padding: "0 6px", borderRadius: 9, border: "none", background: visible ? "rgba(47,138,91,.85)" : "rgba(178,58,58,.85)", color: "#fff", fontSize: 8.5, fontWeight: 800, letterSpacing: ".04em", lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center" }}
+      >
+        {visible ? "CUST" : "HIDDEN"}
+      </button>
       <button
         onClick={onArchive}
         aria-label="Remove file"
