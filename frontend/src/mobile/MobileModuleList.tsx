@@ -556,31 +556,33 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
     );
   }
 
-  // ── fallback: generic fields[] grid, re-skinned to canonical .card/.badge ────
+  // ── fallback: generic list card — LAYOUT ported VERBATIM from the owner's
+  //    MobileList.tsx: clickable .card (padding 12px 13px), a header row with the
+  //    bold title + status Badge, then a two-column grid of stacked labelled
+  //    fields (uppercase mut label over the value). Data still comes from our
+  //    ModuleConfig (primary / pill / fields), so all wiring is preserved.
   return (
-    <div className="card" onClick={open} style={{ ...cardStyle, ...(cancelled ? { opacity: 0.6 } : null) }}>
-      <div className="card-b" style={{ padding: "12px 13px" }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
-          <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", flex: 1, minWidth: 0, whiteSpace: "normal" }}>{name}</span>
-          {status ? <Badge label={status} /> : (() => {
-            const rightRaw = config.right ? config.right(row) : "";
-            const rightText = config.rightMoney ? `RM ${rm(rightRaw as unknown as number)}` : rightRaw;
-            return rightText ? <span className="money-row">{rightText}</span> : null;
-          })()}
-        </div>
-        {config.fields?.length ? (
-          <div className="so-grid" style={{ marginTop: 8 }}>
-            {config.fields.map(([accessor, label]) => (
-              <div key={label} style={{ display: "contents" }}>
-                <span className="so-k">{label}</span>
-                <span className="so-v money">{safe(accessor, row) || "—"}</span>
-              </div>
-            ))}
-          </div>
-        ) : sub ? (
-          <div className="tnum" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5 }}>{sub}</div>
-        ) : null}
+    <div className="card" onClick={open} style={{ ...cardStyle, padding: "12px 13px", ...(cancelled ? { opacity: 0.6 } : null) }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 800, color: "#11140f" }}>{name}</span>
+        {status ? <span style={{ flex: "none" }}><Badge label={status} /></span> : (() => {
+          const rightRaw = config.right ? config.right(row) : "";
+          const rightText = config.rightMoney ? `RM ${rm(rightRaw as unknown as number)}` : rightRaw;
+          return rightText ? <span className="money-row">{rightText}</span> : null;
+        })()}
       </div>
+      {config.fields?.length ? (
+        <div className="so-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px", marginTop: 8 }}>
+          {config.fields.map(([accessor, label]) => (
+            <div key={label} style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".05em", textTransform: "uppercase", color: "#9aa093" }}>{label}</div>
+              <div className="money" style={{ fontSize: 12, fontWeight: 600, color: "#11140f" }}>{safe(accessor, row) || "—"}</div>
+            </div>
+          ))}
+        </div>
+      ) : sub ? (
+        <div className="tnum" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5 }}>{sub}</div>
+      ) : null}
     </div>
   );
 }
