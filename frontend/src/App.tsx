@@ -21,6 +21,8 @@ import { IosInstallGuide } from "./components/IosInstallGuide";
 // share one chunk.
 const ServiceCases = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCases })));
 const ServiceCaseDetail = lazy(() => import("./pages/ServiceCases").then((m) => ({ default: m.ServiceCaseDetail })));
+const MyCases = lazy(() => import("./pages/MyCases").then((m) => ({ default: m.MyCases })));
+const MyCaseDetail = lazy(() => import("./pages/MyCases").then((m) => ({ default: m.MyCaseDetail })));
 const Projects = lazy(() => import("./pages/Projects").then((m) => ({ default: m.Projects })));
 const ProjectDetail = lazy(() => import("./pages/Projects").then((m) => ({ default: m.ProjectDetail })));
 const Profile = lazy(() => import("./pages/Profile").then((m) => ({ default: m.Profile })));
@@ -222,6 +224,25 @@ export default function App() {
           element={
             <PageGuard page="service_cases">
               <ServiceCaseDetail />
+            </PageGuard>
+          }
+        />
+        <Route
+          path="/my-cases"
+          element={
+            <PageGuard page="service_cases">
+              <MyCases />
+            </PageGuard>
+          }
+        />
+        <Route
+          path="/my-cases/:id"
+          element={
+            <PageGuard page="service_cases">
+              <>
+                <MyCases />
+                <MyCaseDetail />
+              </>
             </PageGuard>
           }
         />

@@ -173,6 +173,16 @@ export const NAV_TABS: NavTab[] = [
         icon: Wrench,
         perm: "service_cases.manage",
       },
+      {
+        // Sales-side view of the cases the current user raised.
+        // Filter is server-side (LOWER(sales_agent) contains user's name);
+        // any user with service_cases.read gets the tab but they'll see
+        // an empty list until a case's sales_agent matches their name.
+        to: "/my-cases",
+        label: "My Cases",
+        icon: ClipboardCheck,
+        perm: "service_cases.read",
+      },
     ],
   },
 
