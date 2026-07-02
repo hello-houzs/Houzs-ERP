@@ -282,40 +282,45 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
               }) : <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "9px 2px" }}>No items on this delivery.</div>}
             </div>
 
-            {/* Delivery photos — captured locally (uploaded to R2 on Confirm). */}
+            {/* Delivery photos — designer two-column row: Take-photo button + a
+                preview tile that lights up once captured. Photos are captured
+                locally and uploaded to R2 on Confirm. */}
             <div className="fld-l" style={{ margin: "18px 0 8px" }}>Delivery photos</div>
-            <label style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, background: photoName ? "var(--card)" : "var(--brand)", border: photoName ? "1px solid var(--line-card)" : "none", borderRadius: 13, padding: 14, cursor: "pointer" }}>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={photoName ? "#16695f" : "#fff"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
-                <circle cx="12" cy="13" r="3" />
-              </svg>
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: photoName ? "var(--ink)" : "#fff" }}>{photoName ? "Photo attached — retake" : "Take photo"}</span>
-              <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                capture="environment"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const f = e.target.files?.[0] ?? null;
-                  if (!f) return;
-                  // Guard against the R2 pipeline's contract (jpeg/png/webp,
-                  // 5 MiB) up front so the operator learns before Confirm, not
-                  // mid-upload.
-                  if (!ALLOWED_SLIP_MIMES.includes(f.type as (typeof ALLOWED_SLIP_MIMES)[number])) {
-                    setPhotoFile(null);
-                    setPhotoError("Please use a JPEG, PNG or WebP photo.");
-                    return;
-                  }
-                  if (f.size > MAX_SLIP_SIZE_BYTES) {
-                    setPhotoFile(null);
-                    setPhotoError("That photo is too large (max 5 MB).");
-                    return;
-                  }
-                  setPhotoError(null);
-                  setPhotoFile(f);
-                }}
-              />
-            </label>
+            <div style={{ display: "flex", gap: 9 }}>
+              <label style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, background: "var(--brand)", border: "none", borderRadius: 13, padding: 14, color: "#fff", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
+                  <circle cx="12" cy="13" r="3" />
+                </svg>
+                {photoName ? "Retake photo" : "Take photo"}
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  capture="environment"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] ?? null;
+                    if (!f) return;
+                    // Guard against the R2 pipeline's contract (jpeg/png/webp,
+                    // 5 MiB) up front so the operator learns before Confirm, not
+                    // mid-upload.
+                    if (!ALLOWED_SLIP_MIMES.includes(f.type as (typeof ALLOWED_SLIP_MIMES)[number])) {
+                      setPhotoFile(null);
+                      setPhotoError("Please use a JPEG, PNG or WebP photo.");
+                      return;
+                    }
+                    if (f.size > MAX_SLIP_SIZE_BYTES) {
+                      setPhotoFile(null);
+                      setPhotoError("That photo is too large (max 5 MB).");
+                      return;
+                    }
+                    setPhotoError(null);
+                    setPhotoFile(f);
+                  }}
+                />
+              </label>
+              <div style={{ flex: 1, borderRadius: 13, minHeight: 70, background: photoName ? "linear-gradient(135deg,#d7ded6,#c7d0c4)" : "linear-gradient(135deg,#eceee9,#e3e6e0)" }} />
+            </div>
             {photoName && <div style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 6 }} className="tnum">{photoName}</div>}
             {photoError && <div style={{ fontSize: 10.5, color: "var(--red)", marginTop: 6 }}>{photoError}</div>}
 
