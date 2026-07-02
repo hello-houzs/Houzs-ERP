@@ -375,7 +375,24 @@ export function MobileDeliveryPlanning({
     );
   }
 
+  // Designer header subline: "Monday · {route_date} · {driver} + {helper}".
+  // route_date = the date the active day bucket represents (today / tomorrow;
+  // History has no single date, so we fall back to the tab label).
+  const routeDate = useMemo(() => {
+    const now = new Date();
+    if (day === "today") return now;
+    if (day === "tomorrow") {
+      const t = new Date(now);
+      t.setDate(t.getDate() + 1);
+      return t;
+    }
+    return null;
+  }, [day]);
   const dayLabel = DAY_TABS.find((t) => t.key === day)?.label;
+  const routeWeekday = routeDate
+    ? routeDate.toLocaleDateString("en-GB", { weekday: "long" })
+    : dayLabel;
+  const routeDateStr = routeDate ? dm(routeDate.toISOString()) : null;
 
   return (
     <div
@@ -399,7 +416,8 @@ export function MobileDeliveryPlanning({
           className="tnum"
           style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }}
         >
-          {dayLabel} route
+          {routeWeekday}
+          {routeDateStr ? ` · ${routeDateStr}` : ""}
           {crewLine && (crewLine.driver || crewLine.helper) ? (
             <>
               {" · "}
@@ -642,36 +660,23 @@ function StopCard({
   onOpen: () => void;
 }) {
   const st = trackState(o, isToday);
-  const [chipBg, chipFg] = STATE_COLORS[st];
   const seqBg = seqBgFor(st);
   const bal = o.balance_centi_live ?? o.balance_centi ?? 0;
   const fullyPaid = bal <= 0;
-  const balCol = fullyPaid ? "#767b6e" : "#8a4b12";
-  const balBg = fullyPaid ? "#f4f6f3" : "#f3ece0";
-  const balBd = fullyPaid ? "#e3e6e0" : "#e8dcc5";
   const cust = o.debtor_name || o.so_doc_no || EM;
   const subId = latestDo(o)?.do_number || o.so_doc_no || EM;
-  const addr = o.address || o.customer_state || o.warehouse_name || EM;
   const htype = houseTypeOf(o);
   const hasDisposal = !!(o.replacement_disposal && o.replacement_disposal.trim());
   const timeWindow = (o.time_range && o.time_range.trim()) || "";
 
+  // Designer stop-card layout (MobileDeliveryPlanning): seq circle + title +
+  // doc sub + amber time-window badge; then the status Badge + a house-type tag
+  // chip; then the balance-only block. Real data + our track-state Late pill.
   return (
-    <button
+    <div
+      className="card"
+      style={{ cursor: "pointer", padding: 13, marginBottom: 0 }}
       onClick={onOpen}
-      style={{
-        textAlign: "left",
-        width: "100%",
-        background: "var(--card)",
-        border: `1px solid ${st === "late" ? "#eccccc" : "var(--line-card)"}`,
-        borderRadius: 14,
-        boxShadow:
-          "0 1px 0 rgba(17,24,16,.04),0 4px 18px -8px rgba(17,24,16,.12)",
-        padding: 13,
-        fontFamily: "inherit",
-        cursor: "pointer",
-        opacity: st === "done" ? 0.92 : 1,
-      }}
     >
       <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
         <span
@@ -681,7 +686,7 @@ function StopCard({
             flex: "none",
             borderRadius: "50%",
             background: seqBg,
-            color: "var(--card)",
+            color: "#fff",
             fontSize: 12,
             fontWeight: 800,
             display: "flex",
@@ -697,7 +702,6 @@ function StopCard({
               fontSize: 14,
               fontWeight: 800,
               color: "var(--ink)",
-              lineHeight: 1.3,
               whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -705,52 +709,24 @@ function StopCard({
           >
             {cust}
           </div>
-          <div
-            className="tnum"
-            style={{ fontSize: 11, color: "var(--mut)", marginTop: 1 }}
-          >
+          <div className="tnum" style={{ fontSize: 11, color: "var(--mut)" }}>
             {subId}
           </div>
         </div>
         {timeWindow ? (
           <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              fontSize: 11.5,
-              fontWeight: 800,
-              padding: "5px 10px",
-              borderRadius: 9,
-              background: chipBg,
-              color: chipFg,
-              whiteSpace: "nowrap",
-            }}
+            className="badge"
+            style={{ background: "#f6efd9", color: "#8a6a2e" }}
           >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke={chipFg}
-              strokeWidth="2.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="12" cy="12" r="9"></circle>
-              <path d="M12 7v5l3 2"></path>
-            </svg>
-            <span className="tnum">{timeWindow}</span>
+            {timeWindow}
           </span>
         ) : (
           <StopPill o={o} isToday={isToday} />
         )}
       </div>
-
       <div
         style={{
           display: "flex",
-          alignItems: "center",
           gap: 6,
           flexWrap: "wrap",
           marginTop: 9,
@@ -758,141 +734,41 @@ function StopCard({
       >
         <StopPill o={o} isToday={isToday} />
         {htype && <MetaChip>{htype}</MetaChip>}
-        {o.branding && o.branding.trim() && <MetaChip>{o.branding}</MetaChip>}
-        {hasDisposal && (
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 800,
-              color: "#8a4b12",
-              background: "#f3ece0",
-              border: "1px solid #e8dcc5",
-              padding: "3px 8px",
-              borderRadius: 7,
-            }}
-          >
-            Disposal
-          </span>
-        )}
+        {hasDisposal && <MetaChip>Disposal</MetaChip>}
       </div>
-
-      {o.phone && (
+      {!fullyPaid && (
         <div
           style={{
             display: "flex",
+            justifyContent: "space-between",
             alignItems: "center",
-            gap: 6,
-            marginTop: 9,
-            fontSize: 12,
-            color: "var(--ink2)",
+            marginTop: 11,
+            padding: "9px 11px",
+            background: "#f3ece0",
+            border: "1px solid #e8dcc5",
+            borderRadius: 10,
           }}
         >
-          <svg
-            width="14"
-            height="14"
-            style={{ flex: "none" }}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="var(--gold)"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              textTransform: "uppercase",
+              letterSpacing: ".06em",
+              color: "#8a6a2e",
+            }}
           >
-            <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.3 1.8.6 2.6a2 2 0 0 1-.5 2.1L8 11a16 16 0 0 0 6 6l1.6-1.2a2 2 0 0 1 2.1-.5c.8.3 1.7.5 2.6.6a2 2 0 0 1 1.7 2Z"></path>
-          </svg>
-          <span className="tnum">{o.phone}</span>
+            Balance to collect
+          </span>
+          <span
+            className="tnum"
+            style={{ fontSize: 16, fontWeight: 800, color: "#8a4b12" }}
+          >
+            RM {rm(bal)}
+          </span>
         </div>
       )}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          gap: 6,
-          marginTop: 9,
-          fontSize: 12,
-          color: "var(--ink2)",
-        }}
-      >
-        <svg
-          width="14"
-          height="14"
-          style={{ flex: "none", marginTop: 1 }}
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="var(--gold)"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"></path>
-          <circle cx="12" cy="10" r="3"></circle>
-        </svg>
-        <span>
-          {addr}
-          {o.postcode ? (
-            <>
-              {" "}
-              <span
-                className="tnum"
-                style={{ fontWeight: 700, color: "var(--ink)" }}
-              >
-                {o.postcode}
-              </span>
-            </>
-          ) : null}
-        </span>
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginTop: 11,
-          padding: "9px 11px",
-          background: balBg,
-          border: `1px solid ${balBd}`,
-          borderRadius: 10,
-        }}
-      >
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            textTransform: "uppercase",
-            letterSpacing: ".06em",
-            color: "#8a6a2e",
-          }}
-        >
-          Balance to collect
-        </span>
-        <span
-          className="tnum"
-          style={{
-            fontSize: fullyPaid ? 11 : 16,
-            fontWeight: 800,
-            color: balCol,
-          }}
-        >
-          {fullyPaid ? "No balance — fully paid" : `RM ${rm(bal)}`}
-        </span>
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "flex-end",
-          gap: 3,
-          marginTop: 10,
-          fontSize: 11.5,
-          fontWeight: 700,
-          color: "var(--brand)",
-        }}
-      >
-        View &amp; deliver <span style={{ fontSize: 15, lineHeight: 1 }}>›</span>
-      </div>
-    </button>
+    </div>
   );
 }
 
