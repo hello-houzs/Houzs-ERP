@@ -2318,6 +2318,18 @@ function DetailContent({
     [id]
   );
 
+  // PR 3 — snap the accordion's open row to the case's current stage
+  // any time the case's stage changes. A hooks ref remembers the last
+  // stage we snapped to so the user can still hand-collapse or open a
+  // different row without us fighting them on every render.
+  useEffect(() => {
+    const s = detail.data?.case?.stage;
+    if (!s) return;
+    if (stageSetByHookRef.current === s) return;
+    stageSetByHookRef.current = s;
+    setOpenStage(s);
+  }, [detail.data?.case?.stage]);
+
   // Mig 106 — Service Admin opening a case that's still on
   // pending_review auto-advances it to under_verification. The server
   // gates on write permission so read-only viewers don't kick the
@@ -2400,6 +2412,11 @@ function DetailContent({
   const [transitioning, setTransitioning] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [showClosePrompt, setShowClosePrompt] = useState(false);
+  // PR 3 — stage accordion open row. Defaults to the case's current
+  // stage so ops lands on the row they need to work; changing the
+  // stage from the Workflow card also snaps this to the new stage.
+  const [openStage, setOpenStage] = useState<AssrStage | null>(null);
+  const stageSetByHookRef = useRef<AssrStage | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [showAddItem, setShowAddItem] = useState(false);
   const [showAddLogistics, setShowAddLogistics] = useState(false);
@@ -2704,6 +2721,9 @@ function DetailContent({
             </div>
           )}
 
+          {/* PR 3 redesign hook — accordion open state. Defaults to
+              the case's current stage so the row that ops needs is
+              already open when the page lands. */}
           {/* PR 1 redesign — Workflow card + Status summary bar. Replaces
               the old "Workflow Progress" strip and the pill row that
               rendered stage/priority/SLA/resolution as discrete chips.
@@ -2996,25 +3016,82 @@ function DetailContent({
             </div>
           </PanelSection>
 
-          {/* ── Verification (gate between Under Verification and
-              Pending Solution). Mig 081. QA's acceptance decision —
-              when outcome=accepted AND root cause is filled, a modal
-              offers to advance the stage. 'rejected' offers to short-
-              circuit to Completed; 'needs_more_info' is a hold. */}
-          <VerificationCard
-            c={c}
-            patch={patch}
-            transition={transition}
-            dialog={dialog}
-            caseId={id}
-            attachments={attachments}
-            archived={!!c.archived_at}
-            detail={detail}
-            toast={toast}
-          />
+          {/* PR 3 redesign — Stage Accordion. Wraps Verification /
+              Resolution / QC Inspection / Reference & Logistics as
+              accordion rows keyed by workflow stage. The row for the
+              current stage auto-opens (see the useEffect on
+              detail.data?.case?.stage above); click any header to
+              toggle. Later PRs (4) will hide the two supplier-only
+              rows for internal resolution methods. */}
+          <div className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
+            <div className="flex items-center justify-between border-b border-border-subtle px-5 py-3">
+              <div className="text-[13.5px] font-bold tracking-tight text-ink">Stage actions</div>
+              <span className="font-mono text-[10px] text-ink-muted">click any stage to expand</span>
+            </div>
 
-          {/* ── Resolution (filled as the case progresses) ────── */}
-          <PanelSection title="Resolution" icon={<ClipboardCheck size={13} />}>
+            {/* pending_review — the intake gate. Body is a small
+                summary; nothing to edit here beyond the initial
+                complaint (captured in the Issue card above). */}
+            <StageRow
+              stageId="pending_review"
+              title="Pending Review"
+              summary="Case registered — awaiting Service Admin"
+              currentStage={c.stage}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              <div className="rounded-md border border-border-subtle bg-surface px-3 py-2.5 text-[12px] text-ink-secondary">
+                Case created {formatDate(c.complained_date)}
+                {c.created_by_name ? ` by ${c.created_by_name}` : ""}.
+                Service Admin advances the case to <b>Under Verification</b>
+                {" "}on first open (or use the Workflow "Change to" dropdown above).
+              </div>
+            </StageRow>
+
+            {/* under_verification — QC Issue Inspection on receipt */}
+            <StageRow
+              stageId="under_verification"
+              title="Under Verification"
+              summary={
+                c.verification_outcome
+                  ? `Outcome: ${c.verification_outcome.replace(/_/g, " ")}`
+                  : "Awaiting QC issue inspection"
+              }
+              currentStage={c.stage}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              {/* Mig 081 — Verification card wraps its own PanelSection so
+                  we strip the outer card wrapper by nesting it directly. */}
+              <VerificationCard
+                c={c}
+                patch={patch}
+                transition={transition}
+                dialog={dialog}
+                caseId={id}
+                attachments={attachments}
+                archived={!!c.archived_at}
+                detail={detail}
+                toast={toast}
+              />
+            </StageRow>
+
+            {/* pending_solution — pick resolution method + set supplier */}
+            <StageRow
+              stageId="pending_solution"
+              title="Pending Solution"
+              summary={
+                c.resolution_method
+                  ? `${resolutionLabel(c.resolution_method)} — ${
+                      resolutionRoute(c.resolution_method) === "supplier" ? "Supplier flow" : "Internal flow"
+                    }`
+                  : "Set resolution method to route the case"
+              }
+              currentStage={c.stage}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              <PanelSection title="Resolution" icon={<ClipboardCheck size={13} />}>
             <InlineEdit
               label="Resolution Method"
               value={c.resolution_method}
@@ -3150,22 +3227,115 @@ function DetailContent({
               />
             )}
           </PanelSection>
+            </StageRow>
 
-          {/* ── QC Inspection (after Resolution): pass → item ready. */}
-          <InspectionCard
-            c={c}
-            patch={patch}
-            caseId={id}
-            attachments={attachments}
-            archived={!!c.archived_at}
-            detail={detail}
-            dialog={dialog}
-            toast={toast}
-          />
+            {/* pending_inspection — placeholder for now; PR 4 splits
+                the QC Inspection form so a receipt-side check lands
+                here (separate from the on-return check under Item
+                Ready). */}
+            <StageRow
+              stageId="pending_inspection"
+              title="Pending Inspection"
+              summary="Physical inspection — pending workflow assignment"
+              currentStage={c.stage}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              <div className="rounded-md border border-dashed border-border bg-surface px-3 py-2.5 text-[12px] text-ink-muted">
+                Assignment + receipt-inspection form lands here in a
+                follow-up PR. For now, ops can move the case to Item
+                Pickup / Supplier Pickup via the Workflow dropdown.
+              </div>
+            </StageRow>
 
-          {/* Reference & Logistics — collapsible (v2): identifiers +
-              logistics rows + related POs, folded by default. */}
-          <CollapsibleBlock title="Reference & Logistics">
+            {/* pending_item_pickup — customer-side pickup */}
+            <StageRow
+              stageId="pending_item_pickup"
+              title="Pending Item Pickup"
+              summary={
+                c.customer_pickup_at
+                  ? `Collected ${formatDate(c.customer_pickup_at)}`
+                  : "Awaiting customer collection date"
+              }
+              currentStage={c.stage}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
+                <InlineEdit
+                  label="Customer Pickup Date"
+                  type="date"
+                  value={c.customer_pickup_at}
+                  onSave={(v) => patch({ customer_pickup_at: v || null })}
+                />
+                <div className="text-[11px] text-ink-muted">
+                  This is the date logistics collects the faulty item
+                  from the customer's house — precedes any supplier
+                  handover.
+                </div>
+              </div>
+            </StageRow>
+
+            {/* pending_supplier_pickup — supplier collects from us */}
+            <StageRow
+              stageId="pending_supplier_pickup"
+              title="Pending Supplier Pickup"
+              summary={
+                c.supplier_pickup_at
+                  ? `Supplier collected ${formatDate(c.supplier_pickup_at)}`
+                  : "Awaiting supplier handover"
+              }
+              currentStage={c.stage}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              <div className="rounded-md border border-border-subtle bg-surface px-3 py-2.5 text-[12px] text-ink-secondary">
+                Supplier pickup date, Goods Returned Note and the
+                pickup-form attachment live inside the Pending Solution
+                → Resolution row above. Duplicate surfaces land here in
+                a follow-up.
+              </div>
+            </StageRow>
+
+            {/* pending_item_ready — QC Inspection after supplier return */}
+            <StageRow
+              stageId="pending_item_ready"
+              title="Pending Item Ready"
+              summary={
+                c.inspection_result
+                  ? `QC: ${c.inspection_result}${c.items_ready_at ? ` · ready ${formatDate(c.items_ready_at)}` : ""}`
+                  : "Awaiting supplier return + QC"
+              }
+              currentStage={c.stage}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              <InspectionCard
+                c={c}
+                patch={patch}
+                caseId={id}
+                attachments={attachments}
+                archived={!!c.archived_at}
+                detail={detail}
+                dialog={dialog}
+                toast={toast}
+              />
+            </StageRow>
+
+            {/* pending_delivery_service — logistics rows + related POs */}
+            <StageRow
+              stageId="pending_delivery_service"
+              title="Pending Delivery / Service"
+              summary={
+                logistics.length
+                  ? `${logistics.length} logistics ${logistics.length === 1 ? "trip" : "trips"}`
+                  : "Schedule delivery / on-site service"
+              }
+              currentStage={c.stage}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              <CollapsibleBlock title="Reference & Logistics">
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
               {([
                 ["SO", c.doc_no, true],
@@ -3257,7 +3427,48 @@ function DetailContent({
               </div>
             </PanelSection>
           )}
-          </CollapsibleBlock>
+              </CollapsibleBlock>
+            </StageRow>
+
+            {/* completed — closed case summary */}
+            <StageRow
+              stageId="completed"
+              title="Completed"
+              summary={
+                c.stage === "completed"
+                  ? c.satisfaction_rating
+                    ? `Closed · ${c.satisfaction_rating}/5 CSAT`
+                    : "Closed"
+                  : "Not closed yet"
+              }
+              currentStage={c.stage}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              {c.stage === "completed" ? (
+                <div className="rounded-md border border-synced/30 bg-synced/5 px-3 py-2.5 text-[12px] text-ink-secondary">
+                  Case closed on{" "}
+                  <b>{formatDate(c.closed_at || c.completion_date)}</b>.
+                  {c.satisfaction_rating != null && (
+                    <>
+                      {" "}Customer CSAT: <b>{c.satisfaction_rating} / 5</b>.
+                    </>
+                  )}
+                  {c.satisfaction_notes && (
+                    <>
+                      {" "}"{c.satisfaction_notes}"
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed border-border bg-surface px-3 py-2.5 text-[12px] text-ink-muted">
+                  Case not closed yet. Use the "Close Case" button
+                  in the top-right of the page once delivery is done.
+                </div>
+              )}
+            </StageRow>
+
+          </div>
 
             </DetailMain>
 
@@ -4000,6 +4211,99 @@ function resolutionRoute(m: string | null | undefined): "supplier" | "internal" 
   if (!m) return null;
   if (m === "field_service_own" || m === "return_visit") return "internal";
   return "supplier";
+}
+
+// Design PR 3 — accordion row for a single workflow stage. Shows a
+// numbered badge (done ✓ / current N / pending N), title, chip, and
+// one-line summary. Clicking the header toggles the body. Current
+// stage is auto-opened on mount / on stage change (see the useEffect
+// in DetailBody). The current row gets a cream inset + brass left rail
+// so ops can spot it from across the page.
+function StageRow({
+  stageId,
+  title,
+  summary,
+  children,
+  currentStage,
+  openStage,
+  setOpenStage,
+}: {
+  stageId: AssrStage;
+  title: string;
+  summary: string;
+  children: React.ReactNode;
+  currentStage: AssrStage;
+  openStage: AssrStage | null;
+  setOpenStage: (s: AssrStage | null) => void;
+}) {
+  const curIdx = DETAIL_STAGES.findIndex((s) => s.id === currentStage);
+  const myIdx = DETAIL_STAGES.findIndex((s) => s.id === stageId);
+  const state: "done" | "current" | "future" =
+    myIdx < curIdx ? "done" : myIdx === curIdx ? "current" : "future";
+  const open = openStage === stageId;
+  const chip = state === "done" ? "Done" : state === "current" ? "Current" : "Pending";
+
+  return (
+    <div
+      className={cn(
+        "border-b border-border-subtle last:border-b-0",
+        state === "current" && "bg-amber-50/40 shadow-[inset_3px_0_0_0_theme(colors.accent.DEFAULT)]",
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => setOpenStage(open ? null : stageId)}
+        className="flex w-full items-center gap-3.5 px-5 py-3.5 text-left hover:bg-bg/40"
+      >
+        <span
+          className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[12px] font-bold",
+            state === "done" && "bg-primary text-white",
+            state === "current" && "bg-accent text-white",
+            state === "future" && "border-[1.5px] border-border bg-surface text-ink-muted",
+          )}
+        >
+          {state === "done" ? "✓" : myIdx + 1}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                "text-[13.5px] font-bold",
+                state === "current" ? "text-accent" : state === "done" ? "text-ink" : "text-ink-muted",
+              )}
+            >
+              {title}
+            </span>
+            <span
+              className={cn(
+                "rounded px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-wider",
+                state === "done" && "bg-synced/15 text-synced",
+                state === "current" && "bg-accent/15 text-accent",
+                state === "future" && "bg-bg text-ink-muted",
+              )}
+            >
+              {chip}
+            </span>
+          </div>
+          <div className="mt-0.5 truncate text-[11.5px] text-ink-muted">{summary}</div>
+        </div>
+        <span
+          className={cn(
+            "shrink-0 text-[12px] text-ink-muted transition-transform",
+            open && "rotate-180",
+          )}
+        >
+          ▾
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-border-subtle bg-bg/20 px-3 py-2">
+          {children}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function WorkflowCard({
