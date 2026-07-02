@@ -70,8 +70,36 @@ jobs:
       # behaviour so we don't introduce a new failure mode here.
       - run: node scripts/smoke-check.mjs "${{ vars.STAGING_SMOKE_URL || 'https://autocount-sync-api-staging.houzs-erp.workers.dev' }}"
 
-  # NOTE: no frontend job. The staging Worker is the only artefact this
-  # workflow ships. If a staging frontend Pages project is needed later, add
-  # a second job here mirroring deploy.yml's `frontend` job — separate Pages
-  # project name (e.g. `houzs-erp-staging`) + VITE_API_URL pointing at the
-  # staging Worker URL.
+  # Frontend deploys to the `houzs-erp-staging` Pages project (separate from
+  # prod's `houzs-erp`). Git Provider is intentionally DISCONNECTED on this
+  # project — only this workflow pushes to it, so there's no double-build
+  # noise like prod has today. The staging bundle points at the staging
+  # Worker via VITE_API_URL, so a session on houzs-erp-staging.pages.dev
+  # cannot accidentally hit prod's origin.
+  frontend:
+    runs-on: ubuntu-latest
+    environment: Staging
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+        env:
+          # Vite inlines this into the bundle at build time. Override via
+          # repo var STAGING_VITE_API_URL if the staging Worker sits behind
+          # a custom domain; the default is the workers.dev origin.
+          VITE_API_URL: ${{ vars.STAGING_VITE_API_URL || 'https://autocount-sync-api-staging.houzs-erp.workers.dev' }}
+      - uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: frontend
+          command: pages deploy ./dist --project-name=houzs-erp-staging --branch=staging --commit-dirty=true

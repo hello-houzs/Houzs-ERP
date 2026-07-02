@@ -14,6 +14,8 @@ covers the staging path; prod stays as today (push-to-`main` → `deploy.yml`).
 | Supabase project | prod | minnapsemfzjmtvnnvdd (per wrangler comment) |
 | R2 buckets | `houzs-erp` (POD_BUCKET / SO_ITEM_PHOTOS / PUBLIC_ASSETS, key-prefixed) | same — `houzs-erp` reused, key prefixes isolate |
 | Crons | enabled | `crons = []` (must never run prod jobs) |
+| Pages project | `houzs-erp` → `erp.houzscentury.com` / `houzs-erp.pages.dev` | `houzs-erp-staging` → `houzs-erp-staging.pages.dev` |
+| Pages Git integration | Yes (double-builds; separate issue) | **No** — only this workflow deploys it |
 | Deploy workflow | `.github/workflows/deploy.yml` (push to `main`) | `.github/workflows/deploy-staging.yml` (push to `staging`) |
 | GitHub Environment | `Production` | `Staging` |
 
@@ -36,6 +38,7 @@ GitHub Environment if you want to gate them behind reviewers later).
 | Name | What | Default |
 |---|---|---|
 | `STAGING_SMOKE_URL` | Overrides the smoke-check base URL if the staging Worker sits behind a custom domain. | `https://autocount-sync-api-staging.houzs-erp.workers.dev` |
+| `STAGING_VITE_API_URL` | Overrides the API origin baked into the staging frontend bundle. Set this if the staging Worker moves to a custom domain. | `https://autocount-sync-api-staging.houzs-erp.workers.dev` |
 
 ### GitHub Environment
 
@@ -60,13 +63,16 @@ Create **Settings → Environments → Staging** (if not present). Recommended:
    git merge --ff-only feat/whatever     # or just hard-reset staging to the PR's tip
    git push origin staging --force-with-lease
    ```
-   The push triggers `.github/workflows/deploy-staging.yml`:
-   - Typecheck + tests
-   - Apply pending migrations against `STAGING_DATABASE_URL`
-   - `wrangler deploy --env staging`
-   - Smoke check against the staging Worker URL
-4. **Verify on staging.** Run the PR's acceptance checks against the staging
-   stack. For UI work, point a local frontend at the staging Worker
+   The push triggers `.github/workflows/deploy-staging.yml`, which runs two
+   parallel jobs:
+   - **backend** — typecheck + tests → migrations against
+     `STAGING_DATABASE_URL` → `wrangler deploy --env staging` → smoke check.
+   - **frontend** — typecheck → `npm run build` with `VITE_API_URL` pointing
+     at the staging Worker → `wrangler pages deploy` to `houzs-erp-staging`.
+4. **Verify on staging.** Open `https://houzs-erp-staging.pages.dev` — that's
+   the deployed staging frontend, wired to the staging Worker and staging
+   Supabase. For rapid local iteration you can still point a local dev server
+   at the staging Worker instead
    (`VITE_API_URL=https://autocount-sync-api-staging.houzs-erp.workers.dev npm
    run dev` in `frontend/`).
 5. **Promote to prod.** Get explicit sign-off, then merge the PR to `main` —
