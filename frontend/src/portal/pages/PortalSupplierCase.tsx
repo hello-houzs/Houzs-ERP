@@ -1,29 +1,30 @@
 /**
  * Supplier Portal — service request view.
  *
- * Layout mirrors Mr Lim's "SUPPLIER SERVICE REQUEST" reference:
- *   - top metadata strip: ASSR NO · Request Date · Category
- *   - strip 2: Ref No · PO No · Service Category
- *   - Supplier Info: Supplier Name · Service Status (current stage)
- *   - Problem Description (full width)
- *   - Items table (fixed 5-row shape — empty rows visible for completeness)
- *   - Service Issue + Operation QC Checked picture panels (side by side)
- *   - Proof of Service: Supplier Pickup Date · Supplier Ready Date ·
- *     Proof of Pickup Date · Proof of Return Date (WH signature placeholders)
- *   - Supplier Remarks (left) + Warehouse Acknowledgement (right)
- *   - Footer: Print Supplier Template / Back
+ * Card-based layout matching PortalCaseDetail (customer portal) so the
+ * two portals feel like the same shell. Sections top→bottom:
+ *   - Header: ASSR no + stage pill + supplier name + dates + PO/Ref
+ *   - Items under service
+ *   - Reported issue
+ *   - Goods Returned Note (read-only, from Houzs)
+ *   - Service Note (editable, supplier owns)
+ *   - Photos & evidence (Service issue + Operation QC checked)
+ *   - Add a remark (one-off messages, fire-and-forget to Houzs)
+ *   - Update job status (Picked up / Repair complete / Returned)
  *
  * Auth: token in URL (/portal/supplier/:token). No localStorage —
  * link IS the auth, matching the customer portal model.
  */
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Printer, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, Package, Printer, Trash2, Upload } from "lucide-react";
 import { portalApi } from "../portalApi";
 import { PortalFrame } from "../components/PortalFrame";
+import { StatusPill } from "../components/StatusPill";
 import { Button } from "../../components/Button";
 import { Skeleton } from "../../components/Skeleton";
 import { useDialog } from "../../hooks/useDialog";
+import type { PortalStatusColor } from "../types";
 
 const ALLOWED_EXT = ["jpg", "jpeg", "png", "webp"];
 const MAX_SIZE = 10 * 1024 * 1024;
@@ -94,6 +95,21 @@ const STAGE_LABEL: Record<string, string> = {
   pending_item_ready: "Pending Item Ready",
   pending_delivery_service: "Pending Delivery / Service",
   completed: "Completed",
+};
+
+// Map stage → StatusPill palette so the supplier header uses the
+// same visual vocabulary as the customer portal (server-side
+// `status_color` isn't returned on the supplier endpoint).
+const STAGE_COLOR: Record<string, PortalStatusColor> = {
+  pending_review: "grey",
+  under_verification: "amber",
+  pending_solution: "amber",
+  pending_inspection: "violet",
+  pending_item_pickup: "violet",
+  pending_supplier_pickup: "violet",
+  pending_item_ready: "violet",
+  pending_delivery_service: "blue",
+  completed: "green",
 };
 
 const ALLOWED_STAGE_ACTIONS: { value: string; label: string }[] = [
@@ -265,48 +281,122 @@ export function PortalSupplierCasePage() {
   const cs = data.case;
   const stageLabel = STAGE_LABEL[cs.stage] || cs.stage;
 
+  const stageColor = STAGE_COLOR[cs.stage] ?? "grey";
+
   return (
     <PortalFrame>
-      <main className="mx-auto max-w-4xl px-4 py-6 print:max-w-none print:p-0">
-        {/* Title */}
-        <div className="border-2 border-ink bg-surface text-center">
-          <h1 className="py-3 text-[18px] font-bold tracking-wide text-ink">
-            SUPPLIER SERVICE REQUEST
-          </h1>
+      {/* Header — assr_no + stage pill + supplier name + dates. Mirrors
+          PortalCaseDetail so the two portals feel like the same shell. */}
+      <div className="rounded-lg border border-border bg-surface p-5">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="font-mono text-lg font-bold">{cs.assr_no}</span>
+          <StatusPill color={stageColor} label={stageLabel} />
         </div>
-
-        {/* Top metadata strip */}
-        <FormRow>
-          <FormCell label="ASSR NO" value={cs.assr_no} bold />
-          <FormCell label="Request Date" value={fmtDate(cs.complained_date)} />
-          <FormCell label="Category" value={cs.issue_category || cs.service_category || "—"} />
-        </FormRow>
-        <FormRow>
-          <FormCell label="Ref No" value={cs.ref_no || "—"} />
-          <FormCell label="PO No" value={cs.po_no || "—"} />
-          <FormCell label="Service Category" value={cs.service_category || "—"} />
-        </FormRow>
-
-        {/* Supplier Info */}
-        <SectionHeader>Supplier Info</SectionHeader>
-        <FormRow>
-          <FormCell label="Supplier Name" value={data.supplier_name || cs.creditor_code || "—"} />
-          <FormCell label="Service Status" value={stageLabel} bold />
-        </FormRow>
-
-        {/* Problem Description */}
-        <SectionHeader>Problem Description</SectionHeader>
-        <div className="border border-ink/40 bg-surface px-3 py-2 text-[12px] text-ink">
-          {cs.complaint_issue || "—"}
+        {(data.supplier_name || cs.creditor_code) && (
+          <div className="mt-1 text-[13px] text-ink-secondary">
+            {data.supplier_name || cs.creditor_code}
+          </div>
+        )}
+        <div className="mt-1 text-[12px] text-ink-muted">
+          Reported {fmtDate(cs.complained_date)}
+          {cs.supplier_pickup_at && cs.supplier_pickup_at !== "—" && <> · Picked up {fmtDate(cs.supplier_pickup_at)}</>}
+          {cs.items_ready_at && cs.items_ready_at !== "—" && <> · Ready {fmtDate(cs.items_ready_at)}</>}
         </div>
+        {(cs.po_no || cs.ref_no || cs.service_category) && (
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border pt-2.5 text-[11px] text-ink-muted">
+            {cs.po_no && <span>PO: <span className="font-mono text-ink">{cs.po_no}</span></span>}
+            {cs.ref_no && <span>Ref: <span className="font-mono text-ink">{cs.ref_no}</span></span>}
+            {cs.service_category && <span>Category: <span className="text-ink">{cs.service_category}</span></span>}
+          </div>
+        )}
+      </div>
 
-        {/* Items */}
-        <ItemsTable items={data.items} />
+      {/* Items under service */}
+      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
+        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          Items under service
+        </h2>
+        {data.items.length === 0 ? (
+          <div className="text-[12px] text-ink-muted">No items recorded.</div>
+        ) : (
+          <ul className="space-y-2">
+            {data.items.map((it) => (
+              <li key={it.id} className="flex items-center gap-3 text-[13px]">
+                <Package size={14} className="text-ink-muted" />
+                <span className="font-mono text-[11px]">{it.item_code}</span>
+                <span className="flex-1 truncate text-ink-secondary">{it.item_description || ""}</span>
+                {it.qty != null && <span className="text-[11px] text-ink-muted">× {it.qty}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
-        {/* Service Issue + Operation QC Checked pictures */}
-        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+      {/* Reported issue */}
+      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          Reported issue
+        </h2>
+        <div className="whitespace-pre-line text-sm">{cs.complaint_issue || "—"}</div>
+        {(cs.issue_category || cs.service_category) && (
+          <div className="mt-2 text-[11px] text-ink-muted">
+            Category: {cs.issue_category || cs.service_category}
+          </div>
+        )}
+      </section>
+
+      {/* Goods Returned Note — read-only, from Houzs */}
+      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
+        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          Goods Returned Note <span className="ml-1 normal-case tracking-normal text-ink-muted/70">from Houzs</span>
+        </h2>
+        <div className="whitespace-pre-line text-sm">
+          {cs.goods_returned_note?.trim() || (
+            <span className="text-ink-muted">Houzs hasn't attached a send-out note for this job yet.</span>
+          )}
+        </div>
+      </section>
+
+      {/* Service Note — editable, supplier owns */}
+      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
+        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          Service Note
+        </h2>
+        <textarea
+          value={serviceNoteDraft}
+          onChange={(e) => setServiceNoteDraft(e.target.value)}
+          rows={4}
+          placeholder="What was serviced, findings, parts changed — saved with the case."
+          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+          maxLength={2000}
+        />
+        <div className="mt-2 flex items-center justify-between">
+          <span aria-live="polite" className="text-[10px] text-ink-muted">
+            {serviceNoteDraft.length}/2000
+          </span>
+          <Button
+            variant="primary"
+            onClick={saveServiceNote}
+            disabled={
+              savingServiceNote ||
+              serviceNoteDraft.trim() === (cs.supplier_service_note ?? "").trim()
+            }
+            className="h-8 px-3 text-[11px]"
+          >
+            {savingServiceNote ? "Saving…" : "Save service note"}
+          </Button>
+        </div>
+      </section>
+
+      {/* Photos — Service Issue + Operation QC Checked */}
+      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
+        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          Photos &amp; evidence
+        </h2>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <PictureBlock
-            title="Service Issue (Attach Reference Picture)"
+            title="Service issue"
+            subtitle="How the item arrived"
             category="evidence"
             token={token}
             attachments={data.attachments.filter((a) => a.category === "evidence")}
@@ -315,7 +405,8 @@ export function PortalSupplierCasePage() {
             onArchive={archivePhoto}
           />
           <PictureBlock
-            title="Operation QC Checked (Attach Reference Picture)"
+            title="Operation QC checked"
+            subtitle="Repair result / final QC"
             category="completion"
             token={token}
             attachments={data.attachments.filter((a) => a.category === "completion")}
@@ -324,109 +415,45 @@ export function PortalSupplierCasePage() {
             onArchive={archivePhoto}
           />
         </div>
-
-        {/* Proof of Service */}
-        <SectionHeader>Proof of Service</SectionHeader>
-        <FormRow>
-          <FormCell label="Supplier Pickup Date" value={fmtDate(cs.supplier_pickup_at)} />
-          <FormCell label="Supplier Ready Date" value={fmtDate(cs.items_ready_at)} />
-        </FormRow>
-        <FormRow>
-          <FormCell label="Proof of Pickup Date" value={<SigPlaceholder />} />
-          <FormCell label="Proof of Return Date" value={<SigPlaceholder />} />
-        </FormRow>
-
-        {/* Service Note + Goods Returned Note — Mig 106. Service Note
-            is what the supplier writes about the job (persistent,
-            editable). Goods Returned Note is the send-out slip Houzs
-            handed them with the item — read-only reference. */}
-        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <div className="border border-ink/40 bg-surface">
-            <div className="border-b border-ink/40 bg-bg/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink">
-              Supplier Service Note
-            </div>
-            <textarea
-              aria-label="Supplier service note"
-              value={serviceNoteDraft}
-              onChange={(e) => setServiceNoteDraft(e.target.value)}
-              rows={4}
-              placeholder="What was serviced, findings, parts changed — saved with the case."
-              className="w-full resize-none border-0 bg-transparent px-3 py-2 text-[12px] outline-none"
-              maxLength={2000}
-            />
-            <div className="flex items-center justify-between border-t border-ink/40 px-3 py-1.5 text-[10px] text-ink-muted">
-              <span aria-live="polite">{serviceNoteDraft.length}/2000</span>
-              <Button
-                variant="primary"
-                onClick={saveServiceNote}
-                disabled={
-                  savingServiceNote ||
-                  (serviceNoteDraft.trim() === (cs.supplier_service_note ?? "").trim())
-                }
-                className="h-8 px-3 text-[11px]"
-              >
-                {savingServiceNote ? "Saving…" : "Save service note"}
-              </Button>
-            </div>
-          </div>
-          <div className="border border-ink/40 bg-surface">
-            <div className="border-b border-ink/40 bg-bg/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink">
-              Goods Returned Note <span className="ml-1 text-ink-muted/70">from Houzs</span>
-            </div>
-            <div className="whitespace-pre-wrap px-3 py-2 text-[12px] text-ink">
-              {cs.goods_returned_note?.trim() || (
-                <span className="text-ink-muted">
-                  Houzs hasn't attached a send-out note for this job yet.
-                </span>
-              )}
-            </div>
-          </div>
+        <div className="mt-3 text-[10px] text-ink-muted">
+          JPG / PNG / WEBP · up to 10 MB each.
         </div>
+      </section>
 
-        {/* Supplier Remarks + Warehouse Ack */}
-        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <div className="border border-ink/40 bg-surface">
-            <div className="border-b border-ink/40 bg-bg/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink">
-              Supplier Remarks <span className="ml-1 text-ink-muted/70">— one-off messages</span>
-            </div>
-            <textarea
-              aria-label="Supplier remarks"
-              value={remark}
-              onChange={(e) => setRemark(e.target.value)}
-              rows={4}
-              placeholder="Add a remark — sent to Houzs Operations on submit."
-              className="w-full resize-none border-0 bg-transparent px-3 py-2 text-[12px] outline-none"
-              maxLength={2000}
-            />
-            <div className="flex items-center justify-between border-t border-ink/40 px-3 py-1.5 text-[10px] text-ink-muted">
-              <span aria-live="polite">{remark.length}/2000</span>
-              <Button
-                variant="primary"
-                onClick={postRemark}
-                disabled={!remark.trim() || savingRemark}
-                className="h-8 px-3 text-[11px]"
-              >
-                {savingRemark ? "Sending…" : "Send remark"}
-              </Button>
-            </div>
-          </div>
-          <div className="border border-ink/40 bg-surface">
-            <div className="border-b border-ink/40 bg-bg/60 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink">
-              Warehouse Acknowledgement
-            </div>
-            <div className="space-y-1.5 px-3 py-2 text-[12px]">
-              <div>Warehouse Verified & Acknowledged:</div>
-              <div className="text-ink-muted">Name :</div>
-              <div className="text-ink-muted">Date Received :</div>
-            </div>
-          </div>
+      {/* Remarks — one-off messages */}
+      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
+        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          Add a remark
+        </h2>
+        <textarea
+          value={remark}
+          onChange={(e) => setRemark(e.target.value)}
+          rows={3}
+          placeholder="One-off message sent to Houzs Operations on submit."
+          className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+          maxLength={2000}
+        />
+        <div className="mt-2 flex items-center justify-between">
+          <span aria-live="polite" className="text-[10px] text-ink-muted">
+            {remark.length}/2000
+          </span>
+          <Button
+            variant="primary"
+            onClick={postRemark}
+            disabled={!remark.trim() || savingRemark}
+            className="h-8 px-3 text-[11px]"
+          >
+            {savingRemark ? "Sending…" : "Send remark"}
+          </Button>
         </div>
+      </section>
 
-        {/* Stage update buttons */}
-        <div className="mt-4 rounded border border-accent/40 bg-accent/5 p-3 print:hidden">
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-accent">
+      {/* Update job status — hidden once completed */}
+      {cs.stage !== "completed" && (
+        <section className="mt-5 rounded-lg border border-accent/40 bg-accent-soft/20 p-5 print:hidden">
+          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-accent">
             Update job status
-          </div>
+          </h2>
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
             {ALLOWED_STAGE_ACTIONS.map((s) => (
               <Button
@@ -444,133 +471,36 @@ export function PortalSupplierCasePage() {
           <p className="mt-2 text-[10px] text-ink-muted">
             Houzs Operations is notified on every status change.
           </p>
-        </div>
+        </section>
+      )}
 
-        {/* Footer actions */}
-        <div className="mt-5 flex flex-col items-stretch justify-center gap-2 sm:flex-row sm:items-center sm:gap-3 print:hidden">
-          <Button variant="primary" onClick={() => window.print()} icon={<Printer size={14} />}>
-            Print Supplier Template
-          </Button>
-          <Button variant="secondary" onClick={() => nav(-1)} icon={<ArrowLeft size={14} />}>
-            Back
+      {/* Footer actions */}
+      <div className="mt-5 flex flex-col items-stretch justify-center gap-2 sm:flex-row sm:items-center sm:gap-3 print:hidden">
+        <Button variant="secondary" onClick={() => window.print()} icon={<Printer size={14} />}>
+          Print
+        </Button>
+        <Button variant="ghost" onClick={() => nav(-1)} icon={<ArrowLeft size={14} />}>
+          Back
+        </Button>
+      </div>
+
+      {err && (
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-err/40 bg-err/5 px-3 py-2 text-sm text-err print:hidden">
+          <span>{err}</span>
+          <Button variant="ghost" onClick={() => load()} className="h-7 px-2 text-[11px]">
+            Reload
           </Button>
         </div>
-
-        {err && (
-          <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-err/40 bg-err/5 px-3 py-2 text-[11px] text-err print:hidden">
-            <span>{err}</span>
-            <Button variant="ghost" onClick={() => load()} className="h-7 px-2 text-[11px]">
-              Reload
-            </Button>
-          </div>
-        )}
-      </main>
+      )}
     </PortalFrame>
   );
 }
 
-// ── Building blocks (Lim-style paper-form cells) ───────────────────
-
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mt-3 border-2 border-ink bg-ink text-surface">
-      <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function FormRow({ children }: { children: React.ReactNode }) {
-  // Border-collapse-like: each FormRow joins its cells edge-to-edge,
-  // and adjacent rows share the same outer border for the paper look.
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 -mt-px first:mt-0">
-      {children}
-    </div>
-  );
-}
-
-function FormCell({
-  label,
-  value,
-  bold,
-}: {
-  label: string;
-  value: React.ReactNode;
-  bold?: boolean;
-}) {
-  return (
-    <div className="-ml-px flex items-stretch border border-ink/40 first:ml-0">
-      <div className="w-32 shrink-0 border-r border-ink/40 bg-bg/60 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink">
-        {label}
-      </div>
-      <div className={`flex-1 px-3 py-1.5 text-[12px] ${bold ? "font-semibold text-ink" : "text-ink"}`}>
-        {value || "—"}
-      </div>
-    </div>
-  );
-}
-
-function ItemsTable({
-  items,
-}: {
-  items: SupplierCase["items"];
-}) {
-  // Lim's form fixes the table at 5 rows — preserve that for parity.
-  const filledRows = items.slice(0, 5);
-  const emptyRows = Math.max(0, 5 - filledRows.length);
-  return (
-    <div className="mt-3 border border-ink/40">
-      <table className="w-full text-[12px]">
-        <thead>
-          <tr className="bg-ink text-surface">
-            <th className="border-r border-ink/40 px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ width: 40 }}>
-              NO
-            </th>
-            <th className="border-r border-ink/40 px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider">
-              ITEM
-            </th>
-            <th className="border-r border-ink/40 px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider" style={{ width: 60 }}>
-              QTY
-            </th>
-            <th className="px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wider">
-              REMARK (IF ANY)
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {filledRows.map((i, idx) => (
-            <tr key={i.id} className="border-t border-ink/40">
-              <td className="border-r border-ink/40 px-2 py-1 align-top">{idx + 1}</td>
-              <td className="border-r border-ink/40 px-2 py-1 align-top">
-                {i.item_description ? `${i.item_description}` : ""}
-                {i.item_code && (
-                  <span className="ml-1 text-ink-muted">({i.item_code})</span>
-                )}
-              </td>
-              <td className="border-r border-ink/40 px-2 py-1 align-top">{i.qty ?? 1}</td>
-              <td className="px-2 py-1 align-top text-ink-muted"></td>
-            </tr>
-          ))}
-          {Array.from({ length: emptyRows }).map((_, idx) => (
-            <tr key={`empty-${idx}`} className="border-t border-ink/40">
-              <td className="border-r border-ink/40 px-2 py-1 align-top text-ink-muted">
-                {filledRows.length + idx + 1}
-              </td>
-              <td className="border-r border-ink/40 px-2 py-1">&nbsp;</td>
-              <td className="border-r border-ink/40 px-2 py-1">&nbsp;</td>
-              <td className="px-2 py-1">&nbsp;</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+// ── Building blocks ────────────────────────────────────────────────
 
 function PictureBlock({
   title,
+  subtitle,
   category,
   token,
   attachments,
@@ -579,6 +509,7 @@ function PictureBlock({
   onArchive,
 }: {
   title: string;
+  subtitle?: string;
   category: "evidence" | "completion";
   token: string;
   attachments: SupplierCase["attachments"];
@@ -593,11 +524,18 @@ function PictureBlock({
   }
 
   return (
-    <div className="border border-ink/40 bg-surface">
-      <div className="flex items-center justify-between gap-2 border-b border-ink/40 bg-bg/60 px-3 py-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink">{title}</span>
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-ink">
+            {title}
+          </div>
+          {subtitle && (
+            <div className="text-[10px] text-ink-muted">{subtitle}</div>
+          )}
+        </div>
         <label
-          className={`inline-flex cursor-pointer items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink hover:border-accent/40 print:hidden ${
+          className={`inline-flex cursor-pointer items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1 text-[11px] font-semibold text-ink hover:border-accent/40 print:hidden ${
             uploading ? "pointer-events-none opacity-50" : ""
           }`}
           aria-label={`Attach photo for ${title}`}
@@ -614,11 +552,11 @@ function PictureBlock({
         </label>
       </div>
       {attachments.length === 0 ? (
-        <div className="flex h-20 items-center justify-center text-[11px] text-ink-muted/70 sm:h-32">
+        <div className="flex h-24 items-center justify-center rounded-md border border-dashed border-border/60 bg-bg/30 text-[11px] text-ink-muted">
           No photo yet
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-2 p-2 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {attachments.map((a) => (
             <SupplierPhoto
               key={a.id}
@@ -689,28 +627,16 @@ function SupplierPhoto({
 }
 
 function SupplierCaseSkeleton() {
+  // Placeholder shapes match the card sections of the real page so the
+  // load-in doesn't jump.
   return (
-    <main className="mx-auto max-w-4xl px-4 py-6">
-      <Skeleton className="h-10 w-full" />
-      <div className="mt-3 space-y-2">
-        <Skeleton className="h-9 w-full" />
-        <Skeleton className="h-9 w-full" />
-      </div>
-      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-32 w-full" />
-      </div>
-      <div className="mt-4">
-        <Skeleton className="h-40 w-full" />
-      </div>
-      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <Skeleton className="h-28 w-full" />
-        <Skeleton className="h-28 w-full" />
-      </div>
-    </main>
+    <>
+      <Skeleton className="h-24 w-full rounded-lg" />
+      <Skeleton className="mt-5 h-32 w-full rounded-lg" />
+      <Skeleton className="mt-5 h-28 w-full rounded-lg" />
+      <Skeleton className="mt-5 h-40 w-full rounded-lg" />
+      <Skeleton className="mt-5 h-40 w-full rounded-lg" />
+    </>
   );
 }
 
-function SigPlaceholder() {
-  return <span className="text-[11px] italic text-ink-muted/70">WH signature</span>;
-}
