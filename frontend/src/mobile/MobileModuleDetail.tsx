@@ -4,6 +4,7 @@ import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { MODULE_CONFIGS } from "./MobileModuleList";
+import { MobileEditableLines, LINE_SHAPES } from "./MobileLineEditor";
 import "./mobile.css";
 
 // ── Field-ops parity (owner "现场为主") ──────────────────────────────────────
@@ -1205,14 +1206,26 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
             </div>
 
             <Eyebrow>Line items</Eyebrow>
-            <div style={cardStyle}>
-              {isLoading && <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>Loading{"…"}</div>}
-              {!!error && !isLoading && <div style={{ fontSize: 11.5, color: "#b23a3a", padding: "9px 0" }}>Couldn't load line items. Please try again.</div>}
-              {!isLoading && !error && (items.length ? items.map((it, i) => {
-                const l = map.line(it);
-                return <LineItem key={s(it?.id) || i} name={l.name} sub={l.sub} qty={l.qty} unitCenti={l.unitCenti} amountCenti={l.amountCenti} />;
-              }) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>No line items.</div>)}
-            </div>
+            {LINE_SHAPES[moduleKey] ? (
+              <MobileEditableLines
+                moduleKey={moduleKey}
+                docId={id}
+                header={header}
+                items={items}
+                isLoading={isLoading}
+                error={!!error}
+                onChanged={invalidateDetail}
+              />
+            ) : (
+              <div style={cardStyle}>
+                {isLoading && <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>Loading{"…"}</div>}
+                {!!error && !isLoading && <div style={{ fontSize: 11.5, color: "#b23a3a", padding: "9px 0" }}>Couldn't load line items. Please try again.</div>}
+                {!isLoading && !error && (items.length ? items.map((it, i) => {
+                  const l = map.line(it);
+                  return <LineItem key={s(it?.id) || i} name={l.name} sub={l.sub} qty={l.qty} unitCenti={l.unitCenti} amountCenti={l.amountCenti} />;
+                }) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>No line items.</div>)}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1416,6 +1429,25 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
           <div style={{ ...cardStyle, padding: 13 }}>
             <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>No details to show.</div>
           </div>
+        )}
+
+        {/* Line items — the doc-like simple modules (Purchase Invoice, Sales /
+            Purchase Return) render + edit their lines here. Sales Returns
+            previously fell to the flat header dump with NO line view; now the
+            fetched bundle's items render, editable per the doc's lock rule. */}
+        {wantDoc && LINE_SHAPES[moduleKey] && (
+          <>
+            <Eyebrow>Line items</Eyebrow>
+            <MobileEditableLines
+              moduleKey={moduleKey}
+              docId={id}
+              header={docHeader}
+              items={(docQ.data?.items as any[]) ?? []}
+              isLoading={docQ.isLoading}
+              error={docQ.isError}
+              onChanged={invalidateDoc}
+            />
+          </>
         )}
 
         {wantSupplier && (
