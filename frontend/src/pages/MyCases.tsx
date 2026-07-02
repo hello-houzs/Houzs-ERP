@@ -88,9 +88,9 @@ export function MyCases() {
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
       <PageHeader
-        crumbs={[{ label: "My Cases" }]}
+        eyebrow="Service Cases"
         title="My Cases"
-        subtitle={
+        description={
           userName
             ? `Service cases where you're the sales agent (matched on "${userName}").`
             : "Service cases where you're the sales agent."
@@ -105,7 +105,7 @@ export function MyCases() {
         </div>
       ) : listQ.error ? (
         <div className="mt-6 rounded-md border border-err/40 bg-err/5 px-3 py-2 text-sm text-err">
-          {listQ.error?.message || "Could not load cases"}
+          {listQ.error || "Could not load cases"}
         </div>
       ) : cases.length === 0 ? (
         <div className="mt-6 rounded-lg border border-dashed border-border bg-bg/40 p-8 text-center text-[13px] text-ink-muted">
@@ -213,7 +213,7 @@ export function MyCaseDetail() {
         </PanelSection>
       ) : detail.error ? (
         <PanelSection title="Error">
-          <div className="text-[12px] text-err">{detail.error.message}</div>
+          <div className="text-[12px] text-err">{detail.error}</div>
         </PanelSection>
       ) : c ? (
         <>
