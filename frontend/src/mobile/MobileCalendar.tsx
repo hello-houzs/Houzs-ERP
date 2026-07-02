@@ -18,10 +18,13 @@ import "./mobile.css";
  *   task:    { id, project_id, project_code, project_name, brand, organizer,
  *     title, due_date, status, project_status, owner_name, is_overdue }
  *
- * The prototype's brand / section / organizer selects and the confirmed /
- * pending / cancelled legend map directly onto these fields. Projects render
- * as event bars on their start_date; tasks render when the "Tasks" toggle is
- * on (keyed off due_date).
+ * The brand / section / organizer selects are wired to the SAME lookup
+ * endpoints the desktop Projects calendar uses — /api/projects/brands,
+ * /api/projects/sections-distinct and /api/projects/organizers — so the
+ * dropdowns list every configured value (not only the ones that happen to
+ * fall in the visible month). The confirmed / pending / cancelled legend maps
+ * onto project.status. Projects render as event bars on their start_date;
+ * tasks render when the "Tasks" toggle is on (keyed off due_date).
  *
  * The "My holidays" toggle overlays Malaysian federal public holidays, sourced
  * from the SAME local table the desktop Projects calendar uses
@@ -125,6 +128,10 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
   // backend feed needed. Injected as purple bars in the events memo below.
   const [showHolidays, setShowHolidays] = useState(false);
   const [expand, setExpand] = useState(false);
+  // Day-detail sheet — opened by tapping a date cell or a "+N more" overflow
+  // link, mirroring the desktop CalendarDayModal. Holds the tapped day (1-31)
+  // so the sheet can list that day's project/task bars + public holidays.
+  const [daySheet, setDaySheet] = useState<number | null>(null);
 
   // Fetch the full month in one call, keyed by month so navigation refetches.
   const from = iso(year, month, 1);
@@ -140,10 +147,31 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
   const projects = data?.projects ?? [];
   const tasks = data?.tasks ?? [];
 
-  // Filter option lists come from the live rows so they always reflect reality.
-  const brandOptions = useMemo(() => uniqueSorted(projects.map((p) => p.brand)), [projects]);
-  const sectionOptions = useMemo(() => uniqueSorted(projects.map((p) => p.active_section_name)), [projects]);
-  const orgOptions = useMemo(() => uniqueSorted(projects.map((p) => p.organizer)), [projects]);
+  // Filter option lists come from the SAME lookup endpoints the desktop
+  // Projects calendar uses, so every configured brand / section / organizer is
+  // selectable — not just the ones that happen to land in the visible month.
+  // All three are gated by `projects` page access (same as the events feed).
+  const { data: brandsData } = useQuery({
+    queryKey: ["mobile-calendar-brands"],
+    queryFn: () => api.get<{ data: string[] }>("/api/projects/brands"),
+    staleTime: 300_000,
+  });
+  const { data: sectionsData } = useQuery({
+    queryKey: ["mobile-calendar-sections"],
+    queryFn: () => api.get<{ data: string[] }>("/api/projects/sections-distinct"),
+    staleTime: 300_000,
+  });
+  const { data: organizersData } = useQuery({
+    queryKey: ["mobile-calendar-organizers"],
+    queryFn: () => api.get<{ data: { id: number; name: string }[] }>("/api/projects/organizers"),
+    staleTime: 300_000,
+  });
+  const brandOptions = brandsData?.data ?? [];
+  const sectionOptions = sectionsData?.data ?? [];
+  const orgOptions = useMemo(
+    () => uniqueSorted((organizersData?.data ?? []).map((o) => o.name)),
+    [organizersData]
+  );
 
   // Normalize projects (+ optionally tasks) into grid events, then filter.
   const events = useMemo<CalEvent[]>(() => {
@@ -270,7 +298,7 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
           </select>
           <div style={{ display: "flex", gap: 7 }}>
             <select value={sectionF} onChange={(e) => setSectionF(e.target.value)} className="cal-sel" style={{ flex: 1 }}>
-              <option value="all">All venues</option>
+              <option value="all">All sections</option>
               {sectionOptions.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
             <select value={orgF} onChange={(e) => setOrgF(e.target.value)} className="cal-sel" style={{ flex: 1 }}>
@@ -315,22 +343,36 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
         {error && <div style={{ ...emptyBox, color: "var(--red)" }}>Couldn't load the calendar. Pull to retry.</div>}
 
         {!isLoading && !error && mode === "month" && (
-          <MonthGrid weeks={weeks} byDay={byDay} expand={expand} onExpand={() => setExpand(true)} empty={events.length === 0} onOpen={onOpenProject} />
+          <MonthGrid weeks={weeks} byDay={byDay} expand={expand} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} />
         )}
 
         {!isLoading && !error && mode === "week" && (
           <WeekAgenda weeks={weeks} year={year} month={month} byDay={byDay} onOpen={onOpenProject} />
         )}
       </div>
+
+      {/* Day-detail sheet — tapping a date cell or a "+N more" link surfaces
+          every event on that day (projects, tasks and public holidays),
+          mirroring the desktop CalendarDayModal. */}
+      {daySheet != null && (
+        <DaySheet
+          year={year}
+          month={month}
+          day={daySheet}
+          events={byDay[daySheet] ?? []}
+          onClose={() => setDaySheet(null)}
+          onOpen={(id) => { setDaySheet(null); onOpenProject?.(id); }}
+        />
+      )}
     </div>
   );
 }
 
-function MonthGrid({ weeks, byDay, expand, onExpand, empty, onOpen }: {
+function MonthGrid({ weeks, byDay, expand, onOpenDay, empty, onOpen }: {
   weeks: (number | null)[][];
   byDay: Record<number, CalEvent[]>;
   expand: boolean;
-  onExpand: () => void;
+  onOpenDay: (day: number) => void;
   empty: boolean;
   onOpen?: (projectId: number) => void;
 }) {
@@ -358,27 +400,110 @@ function MonthGrid({ weeks, byDay, expand, onExpand, empty, onOpen }: {
         });
         const cap = expand ? cells.length : 2;
         const overflow = cells.length - cap;
+        // The day that owns the first hidden event — "+N more" drills into it
+        // (mirrors desktop, where the overflow link opens that day's detail).
+        const overflowDay = overflow > 0 ? w[cells[cap].idx] : null;
         return (
           <div key={wi} className="wk" style={last ? { borderBottom: "1px solid var(--line-card)", borderRadius: "0 0 8px 8px" } : undefined}>
             <div className="nums">
-              {w.map((d, i) => <div key={i}>{d || ""}</div>)}
+              {w.map((d, i) => {
+                const hasEvents = d != null && (byDay[d]?.length ?? 0) > 0;
+                return (
+                  <div
+                    key={i}
+                    onClick={hasEvents ? () => onOpenDay(d as number) : undefined}
+                    className={hasEvents ? "cal-daynum has-ev" : undefined}
+                    role={hasEvents ? "button" : undefined}
+                    title={hasEvents ? "Tap to see this day's events" : undefined}
+                  >{d || ""}</div>
+                );
+              })}
             </div>
             {cells.slice(0, cap).map(({ e, idx }, i) => (
               <div
                 key={`${e.key}-${i}`}
                 className="cal-bar"
                 title={e.sub || undefined}
-                onClick={() => { if (e.kind !== "holiday") onOpen?.(e.projectId); }}
+                onClick={() => { if (e.kind === "holiday") onOpenDay(dayOf(e.date)); else onOpen?.(e.projectId); }}
                 style={{ ["--bar" as string]: e.color, marginLeft: `${(idx * 14.2857).toFixed(3)}%` }}
               >{e.label}</div>
             ))}
-            {overflow > 0 && (
-              <div className="cal-more" onClick={onExpand}>+{overflow} more</div>
+            {overflow > 0 && overflowDay != null && (
+              <div className="cal-more" onClick={() => onOpenDay(overflowDay)}>+{overflow} more</div>
             )}
           </div>
         );
       })}
     </>
+  );
+}
+
+// Day-detail bottom sheet — lists every event on a tapped day (projects,
+// tasks and public holidays). Reuses the app's bottom-sheet chrome from
+// mobile.css (.sheet-bd / .sheet / .grab / .sheet-head / .sheet-x /
+// .sheet-scroll). Mirrors the desktop CalendarDayModal.
+function DaySheet({ year, month, day, events, onClose, onOpen }: {
+  year: number;
+  month: number;
+  day: number;
+  events: CalEvent[];
+  onClose: () => void;
+  onOpen: (projectId: number) => void;
+}) {
+  const heading = new Date(year, month, day).toLocaleDateString("en-GB", {
+    weekday: "long", day: "numeric", month: "long", year: "numeric",
+  });
+  const holidays = events.filter((e) => e.kind === "holiday");
+  const items = events.filter((e) => e.kind !== "holiday");
+  return (
+    <div className="sheet-bd" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="grab" />
+        <div className="sheet-head">
+          <div>
+            <div className="ey" style={{ color: "var(--brand)" }}>Day view</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: "var(--ink)" }}>{heading}</div>
+          </div>
+          <button className="sheet-x" onClick={onClose} aria-label="Close">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
+        </div>
+        <div className="sheet-scroll" style={{ gap: 9 }}>
+          {holidays.length > 0 && (
+            <div style={{ borderRadius: 10, border: "1px solid #c9cbe3", background: "#ecedf6", padding: "9px 12px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", color: "#474d79" }}>Public holiday</div>
+              <div style={{ fontSize: 12.5, color: "#474d79", marginTop: 2 }}>{holidays.map((h) => h.label).join(", ")}</div>
+            </div>
+          )}
+          {items.length === 0 ? (
+            <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "20px 0" }}>No projects or tasks on this day.</div>
+          ) : (
+            items.map((e, i) => (
+              <div
+                key={`${e.key}-${i}`}
+                className="card"
+                onClick={() => onOpen(e.projectId)}
+                style={{ padding: "11px 13px", borderLeft: `4px solid ${e.color}`, cursor: "pointer" }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 800, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.label}</span>
+                  {e.status && (
+                    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 20, background: `color-mix(in srgb, ${e.color} 16%, white)`, color: "var(--brand-d)", flex: "none" }}>{e.status}</span>
+                  )}
+                </div>
+                {(e.sub || e.organizer) && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5, fontSize: 11.5, color: "var(--mut)", minWidth: 0 }}>
+                    {e.sub && <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{e.sub}</span>}
+                    {e.sub && e.organizer && <span style={{ opacity: .4, flex: "none" }}>·</span>}
+                    {e.organizer && <span style={{ whiteSpace: "nowrap", flex: "none" }}>{e.organizer}</span>}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
