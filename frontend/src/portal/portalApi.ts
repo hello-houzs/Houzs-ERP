@@ -7,6 +7,8 @@
 // `baseUrl` resolves to the Worker at build time via VITE_API_URL
 // (see frontend/.env.production). On dev it's empty so the Vite
 // proxy handles forwarding.
+import { humanHttpMessage } from "../api/client";
+
 const baseUrl =
   (import.meta.env.VITE_API_URL as string) ||
   "https://autocount-sync-api.houzs-erp.workers.dev";
@@ -66,9 +68,10 @@ async function req<T>(
   }, isBinary ? PORTAL_UPLOAD_TIMEOUT_MS : PORTAL_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    let msg = text;
-    try { msg = JSON.parse(text).error || text; } catch {}
-    throw new PortalApiError(res.status, msg || `HTTP ${res.status}`);
+    // Plain-language message for the customer — never a raw status code, JSON
+    // blob, or HTML error page (humanHttpMessage prefers the server's own
+    // {error|message|detail} sentence, else maps the status to plain words).
+    throw new PortalApiError(res.status, humanHttpMessage(res.status, text));
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -88,13 +91,13 @@ export const portalApi = {
       },
       body,
     }, PORTAL_UPLOAD_TIMEOUT_MS);
-    if (!res.ok) throw new PortalApiError(res.status, await res.text());
+    if (!res.ok) throw new PortalApiError(res.status, humanHttpMessage(res.status, await res.text().catch(() => "")));
     return (await res.json()) as T;
   },
 
   async fetchBlobUrl(path: string, token: string): Promise<string> {
     const res = await portalFetch(url(path), { headers: { Authorization: `Bearer ${token}` } }, PORTAL_TIMEOUT_MS);
-    if (!res.ok) throw new PortalApiError(res.status, res.statusText);
+    if (!res.ok) throw new PortalApiError(res.status, humanHttpMessage(res.status, ""));
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },

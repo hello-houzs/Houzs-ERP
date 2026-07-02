@@ -80,7 +80,7 @@ export function ResetPassword() {
           setState({ kind: "error", message: d.error || "Invalid link" });
         }
       })
-      .catch((e) => setState({ kind: "error", message: e?.message || "Network error" }));
+      .catch(() => setState({ kind: "error", message: "We couldn't reach the server. Please check your connection and try again." }));
   }, [token]);
 
   async function submit(e: React.FormEvent) {
@@ -106,12 +106,22 @@ export function ResetPassword() {
         body: JSON.stringify({ password }),
       });
       if (!r.ok) {
-        const d = await r.json().catch(() => ({ error: "Failed" }));
-        throw new Error(d.error || "Failed");
+        // Prefer the server's own plain reason; otherwise a plain fallback —
+        // never a raw status code or response body.
+        const d = await r.json().catch(() => ({} as { error?: string }));
+        throw new Error(
+          d.error || "We couldn't reset your password. The link may have expired — please request a new one.",
+        );
       }
       setState({ kind: "done" });
     } catch (e: any) {
-      setSubmitError(e?.message || "Failed");
+      // A thrown Error above already carries a plain sentence; a bare network
+      // failure (TypeError "Failed to fetch") must not leak — show plain words.
+      setSubmitError(
+        e?.name === "TypeError"
+          ? "We couldn't reach the server. Please check your connection and try again."
+          : e?.message || "We couldn't reset your password. Please try again.",
+      );
     } finally {
       setSubmitting(false);
     }

@@ -123,9 +123,9 @@ function ConnectionTab() {
       await fetch(`${api.baseUrl}/health`);
       setConnectionOk(true);
       toast.success("Connection OK");
-    } catch (e: any) {
+    } catch {
       setConnectionOk(false);
-      toast.error(`Connection failed: ${e?.message || e}`);
+      toast.error("Couldn't reach the server. Please check your connection and try again.");
     } finally {
       setTesting(false);
     }
