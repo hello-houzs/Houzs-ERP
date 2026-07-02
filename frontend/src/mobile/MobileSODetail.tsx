@@ -5,7 +5,6 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { uploadSlipFull, fetchPaymentSlipUrl } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
-import { generateSalesOrderPdf } from "../vendor/scm/lib/sales-order-pdf";
 import "./mobile.css";
 
 /* Shapes are the subset of the /mfg-sales-orders/:docNo + /:docNo/payments
@@ -85,7 +84,6 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
   const confirm = useConfirm();
   const notify = useNotify();
   const [busy, setBusy] = useState(false);
-  const [pdfBusy, setPdfBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [payOpen, setPayOpen] = useState(false);
 
@@ -147,33 +145,6 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
   const canIssueDo = !!onIssueDo && ph !== "draft" && ph !== "cancelled"
     && !["CANCELLED", "CLOSED", "ON_HOLD"].includes(rawStatus) && hasUndelivered;
 
-  /* Print PDF — parity with desktop's Print PDF button. Fetches the SAME full
-     bundle (header + items + pwpCodes via GET /:docNo, payments via
-     /:docNo/payments) the desktop feeds generateSalesOrderPdf, then saves the
-     PDF. The trimmed detail query above is display-only, so we re-fetch the
-     full header here rather than print a stripped document. */
-  const printPdf = async () => {
-    if (pdfBusy) return;
-    setPdfBusy(true);
-    try {
-      const [bundle, payResp] = await Promise.all([
-        authedFetch<{ salesOrder: Record<string, unknown>; items: unknown[]; pwpCodes?: unknown[] }>(`/mfg-sales-orders/${encodeURIComponent(docNo)}`),
-        authedFetch<{ payments?: unknown[] }>(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`).catch(() => ({ payments: [] })),
-      ]);
-      await generateSalesOrderPdf(
-        bundle.salesOrder as never,
-        bundle.items as never,
-        (payResp.payments ?? []) as never,
-        "save",
-        (bundle.pwpCodes ?? []) as never,
-      );
-    } catch (e) {
-      void notify({ title: "Couldn't generate the PDF", body: e instanceof Error ? e.message : String(e), tone: "error" });
-    } finally {
-      setPdfBusy(false);
-    }
-  };
-
   /* Delete a persisted payment — parity with the desktop PaymentsTable trash
      action. In-app confirm, then DELETE /:docNo/payments/:id; on success the
      payments + header (balance) queries invalidate so the KPIs update live. */
@@ -202,12 +173,6 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
         <div className="hdr-row">
           <button className="back" onClick={onBack}><span className="chev">{"‹"}</span> Sales Orders</button>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {/* Print PDF — parity with desktop SO Detail's Print PDF button. */}
-            {h && (
-              <button onClick={() => void printPdf()} disabled={pdfBusy} aria-label="Print PDF" className="iconbtn" style={{ opacity: pdfBusy ? 0.5 : 1 }}>
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z" /></svg>
-              </button>
-            )}
             {h && <StatusPill status={h.status} />}
           </div>
         </div>

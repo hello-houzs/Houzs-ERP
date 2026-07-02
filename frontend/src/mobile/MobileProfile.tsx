@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { useNotify } from "../vendor/scm/components/NotifyDialog";
-import { usePrompt } from "../vendor/scm/components/PromptDialog";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -30,10 +28,6 @@ import "./mobile.css";
  *                          affordance.
  *  - Change password     : POST /api/auth/me/password { current, next } —
  *                          self-service, mirrors the desktop Profile page.
- *  - 2FA (TOTP)          : /api/totp/{status,setup,enable,disable} — full
- *                          self-service enrollment, mirrors desktop Profile.
- *  - Profile photo       : PUT/DELETE /api/users/me/profile-pic (binary, 5MB),
- *                          streamed for display via GET /api/users/:id/profile-pic.
  *  - My Team             : reuses GET /api/users to build the reporting
  *                          line (manager) + downline (direct reports).
  *  - Notifications       : NO backend endpoint exists — persisted to
@@ -81,128 +75,6 @@ const avatarColor = (seed: string): string => {
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) & 0xffff;
   return AVATAR_COLORS[h % AVATAR_COLORS.length];
 };
-
-// Streams the caller's own profile pic from R2 (bearer-authed, so <img src> is a
-// blob: URL) with a camera overlay to upload/replace and, when a pic exists, a
-// remove affordance below. Mirrors the desktop Profile identity card. The pic
-// key comes off the auth user (users.profile_pic_r2_key); a change reloads auth
-// so the key + this thumbnail refresh together. Falls back to the initials
-// avatar when there's no pic or the fetch fails.
-function ProfileAvatarEditable({ name }: { name: string }) {
-  const { user, reload } = useAuth();
-  const notify = useNotify();
-  const fileRef = useRef<HTMLInputElement | null>(null);
-  const [url, setUrl] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const picKey = user?.profile_pic_r2_key ?? null;
-
-  useEffect(() => {
-    if (!picKey || !user?.id) {
-      setUrl(null);
-      return;
-    }
-    let live = true;
-    let made: string | null = null;
-    api
-      .fetchBlobUrl(`/api/users/${user.id}/profile-pic`)
-      .then((u) => {
-        if (!live) {
-          URL.revokeObjectURL(u);
-          return;
-        }
-        made = u;
-        setUrl(u);
-      })
-      .catch(() => {
-        if (live) setUrl(null);
-      });
-    return () => {
-      live = false;
-      if (made) URL.revokeObjectURL(made);
-    };
-  }, [picKey, user?.id]);
-
-  async function upload(file: File) {
-    if (!file.type.startsWith("image/")) {
-      await notify({ title: "Wrong file type", body: "Pick an image file (JPG or PNG)." });
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      await notify({ title: "Image too large", body: "The image must be under 5 MB." });
-      return;
-    }
-    setBusy(true);
-    try {
-      await api.putBinary(
-        `/api/users/me/profile-pic?name=${encodeURIComponent(file.name)}`,
-        file,
-        file.type,
-      );
-      await reload();
-    } catch (e) {
-      await notify({ title: "Upload failed", body: e instanceof Error ? e.message.replace(/^\d+:\s*/, "") : "Try again." });
-    } finally {
-      setBusy(false);
-      if (fileRef.current) fileRef.current.value = "";
-    }
-  }
-
-  async function remove() {
-    setBusy(true);
-    try {
-      await api.del("/api/users/me/profile-pic");
-      await reload();
-    } catch (e) {
-      await notify({ title: "Couldn't remove", body: e instanceof Error ? e.message.replace(/^\d+:\s*/, "") : "Try again." });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div style={{ position: "relative", flex: "none" }}>
-      {url ? (
-        <img
-          src={url}
-          alt=""
-          style={{ width: 58, height: 58, borderRadius: "50%", objectFit: "cover", border: "2px solid rgba(216,168,90,.5)", display: "block", opacity: busy ? 0.6 : 1 }}
-        />
-      ) : (
-        <div style={{ width: 58, height: 58, borderRadius: "50%", background: "#16695f", border: "2px solid rgba(216,168,90,.5)", color: "#d8a85a", fontSize: 20, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", opacity: busy ? 0.6 : 1 }}>
-          {initials(name, user?.email)}
-        </div>
-      )}
-      <button
-        type="button"
-        onClick={() => fileRef.current?.click()}
-        disabled={busy}
-        aria-label="Change profile photo"
-        style={{ position: "absolute", right: -3, bottom: -3, width: 24, height: 24, borderRadius: "50%", background: "#15161a", border: "1.5px solid rgba(216,168,90,.6)", display: "flex", alignItems: "center", justifyContent: "center", cursor: busy ? "default" : "pointer", padding: 0 }}
-      >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#d8a85a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z" /><circle cx="12" cy="13" r="4" /></svg>
-      </button>
-      {picKey && !busy && (
-        <button
-          type="button"
-          onClick={remove}
-          style={{ position: "absolute", left: "50%", transform: "translateX(-50%)", bottom: -18, whiteSpace: "nowrap", fontSize: 9, fontWeight: 700, letterSpacing: ".04em", color: "rgba(231,234,228,.7)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
-        >
-          Remove
-        </button>
-      )}
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        style={{ display: "none" }}
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) void upload(f);
-        }}
-      />
-    </div>
-  );
-}
 
 // ── Component ──
 export function MobileProfile({ onLogout }: { onLogout: () => void }) {
@@ -301,7 +173,9 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
         <div style={{ position: "relative", overflow: "hidden", borderRadius: 18, background: "#15161a", padding: "20px 18px", boxShadow: "0 12px 32px -16px rgba(17,24,16,.45)" }}>
           <div style={{ position: "absolute", right: -50, top: -60, width: 200, height: 200, borderRadius: "50%", background: "radial-gradient(circle,rgba(22,105,95,.55),transparent 70%)", pointerEvents: "none" }} />
           <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 14 }}>
-            <ProfileAvatarEditable name={name} />
+            <div style={{ width: 58, height: 58, flex: "none", borderRadius: "50%", background: "#16695f", border: "2px solid rgba(216,168,90,.5)", color: "#d8a85a", fontSize: 20, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              {initials(name, user?.email)}
+            </div>
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 19, fontWeight: 800, color: "#fff", lineHeight: 1.15 }}>{name}</div>
               <div style={{ fontSize: 12.5, color: "rgba(231,234,228,.82)", marginTop: 3 }}>{roleLine}</div>
@@ -473,8 +347,6 @@ function PersonalScreen({ onBack, myRow }: { onBack: () => void; myRow: MemberRo
 // Change-password mirrors the desktop Profile page: POST /api/auth/me/password
 // { current, next }. The backend proves possession with the current password,
 // enforces its own strength rule, and revokes OTHER sessions (keeps this one).
-// Two-factor (TOTP) enrollment lives below the password card, wired to the
-// /api/totp/* self-service endpoints — same UX as the desktop Profile.
 function SecurityScreen({ onBack }: { onBack: () => void }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -529,197 +401,7 @@ function SecurityScreen({ onBack }: { onBack: () => void }) {
       <div style={{ fontSize: 11, color: "#9aa093", marginTop: 11, lineHeight: 1.5, padding: "0 2px" }}>
         Changing your password signs out every other device.
       </div>
-
-      <div style={{ ...sectionLabel, marginTop: 22 }}>Two-factor authentication</div>
-      <TwoFactor />
     </SubScreen>
-  );
-}
-
-// ── Two-factor (TOTP) self-service ──
-// Three states, mirroring the desktop Profile TwoFactorSection:
-//   off       -> "Enable 2FA" -> POST /api/totp/setup (secret + otpauth_uri)
-//   enrolling -> show setup key + open-in-app link, confirm a 6-digit code
-//                via POST /api/totp/enable -> backup codes shown ONCE
-//   on        -> backup-codes-remaining + "Disable" (asks for a code first)
-// The secret is shown for manual entry and the otpauth_uri is a tap-to-open
-// deep link (mobile authenticators register the scheme), so no QR renderer is
-// needed. Disable requires a current TOTP (or backup) code — a hijacked session
-// can't quietly turn 2FA off.
-function TwoFactor() {
-  const notify = useNotify();
-  const prompt = usePrompt();
-  const [status, setStatus] = useState<{ enabled: boolean; backup_codes_remaining: number } | null>(null);
-  const [phase, setPhase] = useState<"idle" | "enrolling">("idle");
-  const [setup, setSetup] = useState<{ secret: string; otpauth_uri: string } | null>(null);
-  const [code, setCode] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [backupCodes, setBackupCodes] = useState<string[] | null>(null);
-
-  const load = async () => {
-    try {
-      const s = await api.get<{ enabled: boolean; backup_codes_remaining: number }>("/api/totp/status");
-      setStatus(s);
-    } catch {
-      setStatus({ enabled: false, backup_codes_remaining: 0 });
-    }
-  };
-  useEffect(() => {
-    void load();
-  }, []);
-
-  const clean = (m: string | undefined) => (m || "").replace(/^\d+:\s*/, "");
-
-  const beginSetup = async () => {
-    setErr(null);
-    setBusy(true);
-    try {
-      const s = await api.post<{ secret: string; otpauth_uri: string }>("/api/totp/setup", {});
-      setSetup(s);
-      setPhase("enrolling");
-    } catch (e) {
-      setErr(clean(e instanceof Error ? e.message : undefined) || "Couldn't start setup.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const confirmEnable = async () => {
-    setErr(null);
-    setBusy(true);
-    try {
-      const res = await api.post<{ backup_codes: string[] }>("/api/totp/enable", { code: code.trim() });
-      setBackupCodes(res.backup_codes);
-      setPhase("idle");
-      setSetup(null);
-      setCode("");
-      await load();
-    } catch (e) {
-      const m = e instanceof Error ? e.message : "";
-      setErr(m.includes("400") ? "That code didn't match — try again." : clean(m) || "Couldn't enable 2FA.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const disable = async () => {
-    const entered = await prompt({
-      title: "Turn off two-factor",
-      body: "Enter a current 6-digit code (or a backup code) to confirm.",
-      placeholder: "123456",
-      confirmLabel: "Disable",
-      validate: (v) => (v.trim().length < 6 ? "Enter your 6-digit code or a backup code." : null),
-    });
-    if (entered == null) return;
-    setErr(null);
-    setBusy(true);
-    try {
-      await api.post("/api/totp/disable", { code: entered.trim() });
-      setBackupCodes(null);
-      await load();
-    } catch (e) {
-      setErr(clean(e instanceof Error ? e.message : undefined) || "Couldn't disable — check the code.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 14, padding: 14 }}>
-      {/* One-time backup codes — shown once, right after enabling. */}
-      {backupCodes && (
-        <div style={{ border: "1px solid rgba(22,105,95,.4)", background: "#e1efed", borderRadius: 11, padding: 12, marginBottom: 14 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 800, color: "#0c3f39" }}>Save these backup codes now</div>
-          <div style={{ fontSize: 11, color: "#3a5a54", marginTop: 4, lineHeight: 1.5 }}>
-            Each code works once if you lose your authenticator. Store them somewhere safe — they won't be shown again.
-          </div>
-          <div className="money" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 10 }}>
-            {backupCodes.map((c) => (
-              <span key={c} style={{ background: "#fff", borderRadius: 8, padding: "6px 4px", textAlign: "center", fontSize: 13, fontWeight: 700, letterSpacing: ".04em", color: "#11140f" }}>{c}</span>
-            ))}
-          </div>
-          <button
-            onClick={() => setBackupCodes(null)}
-            style={{ marginTop: 12, width: "100%", background: "var(--teal)", color: "#fff", border: "none", borderRadius: 10, padding: "10px", fontSize: 12.5, fontWeight: 700, fontFamily: "inherit", cursor: "pointer" }}
-          >
-            I've saved them
-          </button>
-        </div>
-      )}
-
-      {status?.enabled ? (
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: "#2f8a5b", background: "#e2f0e9", borderRadius: 999, padding: "4px 10px" }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2f8a5b" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-              Enabled
-            </span>
-            <span style={{ fontSize: 11.5, color: "#767b6e" }}>
-              {status.backup_codes_remaining} backup code{status.backup_codes_remaining === 1 ? "" : "s"} left
-            </span>
-          </div>
-          {err && <div style={{ fontSize: 11.5, color: "#b23a3a", marginBottom: 8 }}>{err}</div>}
-          <button
-            onClick={disable}
-            disabled={busy}
-            style={{ width: "100%", background: "#fbf1f0", color: "#b23a3a", border: "1px solid #e3c4c1", borderRadius: 11, padding: "11px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}
-          >
-            {busy ? "Working…" : "Disable two-factor"}
-          </button>
-        </div>
-      ) : phase === "enrolling" && setup ? (
-        <div>
-          <div style={{ fontSize: 12, color: "#5a5f52", lineHeight: 1.5 }}>
-            In your authenticator app choose "Add account" then "Enter a setup key" and type the key below (account: your email, type: time-based). On this phone you can tap the link to open your app directly.
-          </div>
-          <div style={{ ...kvLabel, marginTop: 12 }}>Setup key</div>
-          <code className="money" style={{ display: "block", wordBreak: "break-all", background: "#f4f6f3", borderRadius: 8, padding: "8px 10px", marginTop: 5, fontSize: 13, letterSpacing: ".06em", color: "#11140f" }}>{setup.secret}</code>
-          <a href={setup.otpauth_uri} style={{ display: "inline-block", marginTop: 8, fontSize: 12, fontWeight: 700, color: "var(--teal)" }}>Open in authenticator app</a>
-          <div style={{ ...kvLabel, marginTop: 14 }}>Enter the 6-digit code to confirm</div>
-          <input
-            inputMode="numeric"
-            value={code}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 8))}
-            placeholder="123456"
-            autoComplete="one-time-code"
-            className="money"
-            style={{ width: "100%", marginTop: 6, border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", fontSize: 15, letterSpacing: ".2em", color: "var(--ink)", outline: "none" }}
-          />
-          {err && <div style={{ fontSize: 11.5, color: "#b23a3a", marginTop: 8 }}>{err}</div>}
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button
-              onClick={confirmEnable}
-              disabled={busy || code.trim().length < 6}
-              style={{ flex: 1, background: "var(--teal)", color: "#fff", border: "none", borderRadius: 11, padding: "11px", fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: busy || code.trim().length < 6 ? "default" : "pointer", opacity: busy || code.trim().length < 6 ? 0.6 : 1 }}
-            >
-              {busy ? "Verifying…" : "Enable"}
-            </button>
-            <button
-              onClick={() => { setPhase("idle"); setSetup(null); setCode(""); setErr(null); }}
-              disabled={busy}
-              style={{ ...tinyBtn, padding: "11px 16px" }}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div>
-          <div style={{ fontSize: 12, color: "#5a5f52", lineHeight: 1.5, marginBottom: 12 }}>
-            Protect your account with an authenticator app (Google Authenticator, Authy, 1Password). Recommended for Owner and Director accounts.
-          </div>
-          {err && <div style={{ fontSize: 11.5, color: "#b23a3a", marginBottom: 8 }}>{err}</div>}
-          <button
-            onClick={beginSetup}
-            disabled={busy}
-            style={{ width: "100%", background: "var(--teal)", color: "#fff", border: "none", borderRadius: 11, padding: "12px", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}
-          >
-            {busy ? "Working…" : "Enable 2FA"}
-          </button>
-        </div>
-      )}
-    </div>
   );
 }
 

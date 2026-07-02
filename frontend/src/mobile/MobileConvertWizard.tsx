@@ -46,17 +46,14 @@ import "./mobile.css";
  * with confirmShortStock:true — so we simply call it and let that run.
  * ------------------------------------------------------------------------- */
 
-export type ConvertTarget = "do" | "si" | "grn" | "po" | "dr" | "pi" | "pr";
+export type ConvertTarget = "do" | "si" | "grn" | "po";
 
-type SourceKind = "so" | "do" | "po" | "grn";
+type SourceKind = "so" | "do" | "po";
 
 /* Per-target wiring: which source list to pick from, the eyebrow/title copy,
    and whether the flow has a line-level qty picker.
-   • hasLinePicker  — SO→DO/PO, DO→SI, DO→Sales-Return pick lines + qty.
-   • no line picker — GRN receives every PO line; PI/PR copy every remaining GRN
-     line (whole-GRN convert, trim afterwards in the created doc).
-   • grnWhole       — the source is ONE POSTED GRN (single-select, no multi-PO
-     supplier grouping). PI/PR both create from a single grnId. */
+   • hasLinePicker  — SO→DO/PO, DO→SI pick lines + qty.
+   • no line picker — GRN receives every PO line (whole-PO convert). */
 const META: Record<
   ConvertTarget,
   { title: string; eyebrow: string; source: SourceKind; sourceNoun: string; hasLinePicker: boolean }
@@ -65,9 +62,6 @@ const META: Record<
   si: { title: "New Sales Invoice", eyebrow: "Finance", source: "do", sourceNoun: "Delivery Order", hasLinePicker: true },
   grn: { title: "New Goods Receipt", eyebrow: "Procurement", source: "po", sourceNoun: "Purchase Order", hasLinePicker: false },
   po: { title: "New Purchase Order", eyebrow: "Procurement", source: "so", sourceNoun: "Sales Order", hasLinePicker: true },
-  dr: { title: "New Sales Return", eyebrow: "Finance", source: "do", sourceNoun: "Delivery Order", hasLinePicker: true },
-  pi: { title: "New Purchase Invoice", eyebrow: "Procurement", source: "grn", sourceNoun: "Goods Receipt", hasLinePicker: false },
-  pr: { title: "New Purchase Return", eyebrow: "Procurement", source: "grn", sourceNoun: "Goods Receipt", hasLinePicker: false },
 };
 
 // ── Money / helpers ────────────────────────────────────────────────────────
@@ -110,11 +104,6 @@ type PoListRow = {
   id: string; po_number: string; status: string | null; po_date: string | null;
   total_centi: number | null; supplier?: { id?: string; code?: string; name?: string } | null;
 };
-type GrnListRow = {
-  id: string; grn_number: string; status: string | null; received_at: string | null;
-  total_centi: number | null; supplier?: { id?: string; code?: string; name?: string } | null;
-  purchase_order?: { po_number?: string } | null;
-};
 
 // ── Convertible-line shapes (from the remaining GETs) ────────────────────────
 type SoDeliverableLine = {
@@ -156,9 +145,9 @@ export function MobileConvertWizard({
   const notify = useNotify();
 
   // step 1 → source picked ; step 2 → lines/qty (or GRN supplier confirm) ; step 3 handled by submit.
-  // A single-source target (SO→DO/PO, DO→SI, DO→Sales-Return, GRN→PI/PR) seeds
-  // selectedSourceId from initialSourceId; only the multi-PO GRN flow (source
-  // "po") starts empty and builds selectedPoIds.
+  // A single-source target (SO→DO/PO, DO→SI) seeds selectedSourceId from
+  // initialSourceId; only the multi-PO GRN flow (source "po") starts empty and
+  // builds selectedPoIds.
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
     meta.source !== "po" ? (initialSourceId ?? null) : null,
   ); // doc_no (SO) or id (DO / GRN)
@@ -169,7 +158,7 @@ export function MobileConvertWizard({
   const [q, setQ] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [deliveryNoteRef, setDeliveryNoteRef] = useState(""); // GRN optional
-  const [notes, setNotes] = useState(""); // GRN / PR optional
+  const [notes, setNotes] = useState(""); // GRN optional
 
   const step: 1 | 2 = meta.source === "po"
     ? (selectedPoIds.length > 0 ? 2 : 1)
@@ -181,8 +170,6 @@ export function MobileConvertWizard({
     queryFn: () => {
       if (meta.source === "so") return authedFetch<{ salesOrders?: SoListRow[] }>("/mfg-sales-orders?limit=200");
       if (meta.source === "do") return authedFetch<{ deliveryOrders?: DoListRow[] }>("/delivery-orders-mfg?limit=200");
-      // PI/PR convert from ONE posted GRN — /*/from-grn requires status POSTED.
-      if (meta.source === "grn") return authedFetch<{ grns?: GrnListRow[] }>("/grns?status=POSTED&limit=200");
       return authedFetch<{ purchaseOrders?: PoListRow[] }>("/mfg-purchase-orders?limit=200");
     },
     staleTime: 30_000,
@@ -211,14 +198,6 @@ export function MobileConvertWizard({
         .filter((r) => isProcessible(r.status))
         .filter((r) => !needle || `${str(r.debtor_name)} ${r.do_number}`.toLowerCase().includes(needle));
     }
-    if (meta.source === "grn") {
-      // Single-select POSTED GRN → PI / PR. The list query already scopes to
-      // POSTED, but keep the guard so a stale cache never offers a non-postable
-      // GRN (from-grn 409s on anything but POSTED).
-      return ((data?.grns ?? []) as GrnListRow[])
-        .filter((r) => str(r.status).toUpperCase() === "POSTED")
-        .filter((r) => !needle || `${str(r.supplier?.name)} ${r.grn_number}`.toLowerCase().includes(needle));
-    }
     // PO (GRN): filter to one supplier at a time so /grns/from-pos never 400s
     // on mixed_suppliers. Once a supplier is chosen, show only that supplier.
     return ((data?.purchaseOrders ?? []) as PoListRow[])
@@ -241,8 +220,8 @@ export function MobileConvertWizard({
     return [...seen.entries()].map(([id, name]) => ({ id, name }));
   }, [sourceQuery.data, meta.source]);
 
-  // ── Convertible-lines query (SO→DO/PO, DO→SI, DO→Sales-Return). GRN-from-POs
-  //    and GRN→PI/PR have no line picker. ──────────────────────────────────────
+  // ── Convertible-lines query (SO→DO/PO, DO→SI). GRN-from-POs has no line
+  //    picker. ──────────────────────────────────────────────────────────────
   const linesQuery = useQuery({
     enabled: meta.hasLinePicker && !!selectedSourceId,
     queryKey: ["convert-lines", target, selectedSourceId],
@@ -260,12 +239,10 @@ export function MobileConvertWizard({
           qty: String(Number(l.remaining) || 0),
         }));
       }
-      // DO source (id): SI invoices the remaining pool; the Sales Return uses the
-      // SAME Pending pool (delivered − invoiced − returned) via returnable-do-lines.
-      const doLinesPath = target === "dr"
-        ? `/delivery-returns/returnable-do-lines?doIds=${encodeURIComponent(selectedSourceId!)}`
-        : `/sales-invoices/invoiceable-do-lines?doIds=${encodeURIComponent(selectedSourceId!)}`;
-      const res = await authedFetch<{ lines?: DoInvoiceableLine[] }>(doLinesPath);
+      // DO source (id): SI invoices the remaining pool.
+      const res = await authedFetch<{ lines?: DoInvoiceableLine[] }>(
+        `/sales-invoices/invoiceable-do-lines?doIds=${encodeURIComponent(selectedSourceId!)}`,
+      );
       return (res.lines ?? []).map<PickLine>((l) => ({
         lineId: l.doItemId,
         label: str(pick(l, "description")) || str(pick(l, "itemCode")) || "—",
@@ -328,37 +305,6 @@ export function MobileConvertWizard({
         const created = res?.created ?? [];
         newDocNo = created.map((p) => str(p.poNumber)).filter(Boolean).join(", ");
         await qc.invalidateQueries({ queryKey: ["mobile-module"] });
-      } else if (target === "dr") {
-        // Sales Return from a Delivery Order — picks the remaining (Pending) DO
-        // lines + qty; server re-derives the pool and writes the return-in stock.
-        const body = { picks: picks.map((l) => ({ doItemId: l.lineId, qty: clampQty(l.qty, l.remaining) })) };
-        const res = await authedFetch<{ returnNumber?: string }>("/delivery-returns/from-dos", {
-          method: "POST",
-          body: JSON.stringify(body),
-        });
-        newDocNo = str(res?.returnNumber);
-        await qc.invalidateQueries({ queryKey: ["mobile-module"] });
-      } else if (target === "pi") {
-        // Purchase Invoice from ONE posted GRN — whole-GRN convert (copies every
-        // remaining accepted line at its billed price). selectedSourceId = grnId.
-        const res = await authedFetch<{ invoiceNumber?: string }>("/purchase-invoices/from-grn", {
-          method: "POST",
-          body: JSON.stringify({ grnId: selectedSourceId }),
-        });
-        newDocNo = str(res?.invoiceNumber);
-        await qc.invalidateQueries({ queryKey: ["mobile-module"] });
-      } else if (target === "pr") {
-        // Purchase Return from ONE posted GRN — whole-GRN convert; optional
-        // header reason/notes. Per-line trimming happens in the created PR.
-        const body: Record<string, unknown> = { grnId: selectedSourceId };
-        if (notes.trim()) body.notes = notes.trim();
-        if (deliveryNoteRef.trim()) body.reason = deliveryNoteRef.trim();
-        const res = await authedFetch<{ returnNumber?: string }>("/purchase-returns/from-grn", {
-          method: "POST",
-          body: JSON.stringify(body),
-        });
-        newDocNo = str(res?.returnNumber);
-        await qc.invalidateQueries({ queryKey: ["mobile-module"] });
       } else {
         // GRN — receives all lines of the selected POs (one supplier).
         const body: Record<string, unknown> = { purchaseOrderIds: selectedPoIds };
@@ -385,13 +331,8 @@ export function MobileConvertWizard({
     }
   }
 
-  // Can we submit? DO/SI/PO/Sales-Return need >=1 pick; GRN-from-POs needs >=1
-  // selected PO; PI/PR need one selected GRN.
-  const canCreate = meta.hasLinePicker
-    ? picks.length > 0
-    : meta.source === "grn"
-      ? !!selectedSourceId
-      : selectedPoIds.length > 0;
+  // Can we submit? DO/SI/PO need >=1 pick; GRN-from-POs needs >=1 selected PO.
+  const canCreate = meta.hasLinePicker ? picks.length > 0 : selectedPoIds.length > 0;
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -412,9 +353,7 @@ export function MobileConvertWizard({
             ? `Convert from ${meta.source === "po" ? "one or more Purchase Orders" : `a ${meta.sourceNoun}`}`
             : meta.hasLinePicker
               ? "Choose the lines and quantities to convert"
-              : meta.source === "grn"
-                ? `Review — copies every remaining line of the Goods Receipt`
-                : "Review — the receipt takes every line of the selected orders"}
+              : "Review — the receipt takes every line of the selected orders"}
         </div>
         {/* Step-progress bar (spec markup): filled brand segments up to the current step. */}
         <div style={{ display: "flex", gap: 5, marginTop: 11 }}>
@@ -472,18 +411,6 @@ export function MobileConvertWizard({
             target={target}
             onSetLine={setLine}
             onChangeSource={() => { setSelectedSourceId(null); setLines([]); }}
-          />
-        ) : meta.source === "grn" ? (
-          <GrnDocReviewStep
-            target={target}
-            grnLabel={str(
-              (sources as GrnListRow[]).find((r) => str(r.id) === str(selectedSourceId))?.grn_number,
-            ) || "the selected Goods Receipt"}
-            reason={deliveryNoteRef}
-            notes={notes}
-            onReason={setDeliveryNoteRef}
-            onNotes={setNotes}
-            onChangeSource={() => { setSelectedSourceId(null); }}
           />
         ) : (
           <GrnReviewStep
@@ -573,38 +500,6 @@ function SourceStep({
     );
   }
 
-  // GRN — single-source tap (PI / PR convert from one posted Goods Receipt).
-  if (kind === "grn") {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-        {(rows as GrnListRow[]).map((r) => {
-          const docNo = str(r.grn_number);
-          const po = str(r.purchase_order?.po_number);
-          return (
-            <div key={str(r.id)} onClick={() => onPickSingle(str(r.id))} className="so-row">
-              <div className="so-row-head">
-                <span className="so-row-name" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {str(r.supplier?.name) || docNo}
-                </span>
-                {r.status && (
-                  <span className="spill" style={{ background: "#f4f6f3", color: "#767b6e", border: "1px solid #e3e6e0", flex: "none" }}>{str(r.status)}</span>
-                )}
-              </div>
-              <div className="so-grid">
-                <span className="so-k">Receipt</span>
-                <span className="so-v money" style={{ fontWeight: 700, color: "#0c3f39" }}>{docNo || "—"}</span>
-                <span className="so-k">{po ? "PO" : "Date"}</span>
-                <span className="so-v money">{po || dm(r.received_at)}</span>
-                <span className="so-k">Total</span>
-                <span className="so-v money" style={{ fontSize: 14, fontWeight: 800, color: "#11140f" }}>RM {rm(r.total_centi)}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  }
-
   // SO / DO — single-source tap.
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
@@ -654,7 +549,7 @@ function LinesStep({
   if (loading) return <Muted>Loading lines…</Muted>;
   if (error) return <Muted danger>Couldn't load the convertible lines. Please try again.</Muted>;
 
-  const noun = target === "si" ? "invoice" : target === "po" ? "purchase" : target === "dr" ? "return" : "deliver";
+  const noun = target === "si" ? "invoice" : target === "po" ? "purchase" : "deliver";
   if (!lines.length) {
     return (
       <>
@@ -739,51 +634,6 @@ function GrnReviewStep({
             <span className="fld-l">Notes</span>
             <input className="fld-i" value={notes} onChange={(e) => onNotes(e.target.value)} placeholder="Optional" />
           </label>
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ── Step 2 (PI / PR): whole-GRN review, no line picker ───────────────────────
-// PI: POST /purchase-invoices/from-grn { grnId } copies every remaining accepted
-// line at its billed price. PR: POST /purchase-returns/from-grn { grnId, reason?,
-// notes? } copies every remaining line; the operator trims qty in the created PR.
-function GrnDocReviewStep({
-  target, grnLabel, reason, notes, onReason, onNotes, onChangeSource,
-}: {
-  target: ConvertTarget;
-  grnLabel: string;
-  reason: string;
-  notes: string;
-  onReason: (v: string) => void;
-  onNotes: (v: string) => void;
-  onChangeSource: () => void;
-}) {
-  const isPr = target === "pr";
-  return (
-    <>
-      <ChangeSource onClick={onChangeSource} label="Change Goods Receipt" />
-      <div className="so-card">
-        <div className="so-hd"><h2 className="so-ti">{isPr ? "Returning" : "Invoicing"} {grnLabel}</h2></div>
-        <div className="so-bd">
-          <div style={{ fontSize: 11.5, color: "#767b6e" }}>
-            {isPr
-              ? "Every remaining line of the Goods Receipt is copied into a new Purchase Return. Adjust quantities from the return detail afterwards if needed."
-              : "Every remaining line of the Goods Receipt is billed at its received price into a new Purchase Invoice. Adjust from the invoice detail afterwards if needed."}
-          </div>
-          {isPr && (
-            <>
-              <label className="fld">
-                <span className="fld-l">Reason</span>
-                <input className="fld-i" value={reason} onChange={(e) => onReason(e.target.value)} placeholder="Return reason (optional)" />
-              </label>
-              <label className="fld">
-                <span className="fld-l">Notes</span>
-                <input className="fld-i" value={notes} onChange={(e) => onNotes(e.target.value)} placeholder="Optional" />
-              </label>
-            </>
-          )}
         </div>
       </div>
     </>
