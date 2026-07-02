@@ -396,14 +396,27 @@ class PreparedStatement {
       }
     } catch (e) {
       if (!isDeadConnError(e)) throw e;
-      // Cold/dead/hung Hyperdrive connection — retry once on a fresh client
-      // (its own slot opens a new origin connection, so cold-pool windows
-      // self-heal). The retry is intentionally untimed: a slow-but-healthy
-      // query still completes within Workers' own cap.
-      console.warn(`[db-retry] ${String((e as Error).message).slice(0, 70)}`);
-      res = (await this.makeSql().unsafe(text, this.args as never[])) as unknown as T[] & {
-        count?: number;
-      };
+      // Cold/dead/hung Hyperdrive connection — retry on a FRESH client (its own
+      // slot opens a new origin connection, so cold-pool windows self-heal). Up
+      // to 3 tries with a short backoff: a login (or any query) right after an
+      // idle period was the visible 503 — the first request warms the pool, so
+      // absorbing the warm-up server-side means the user never sees the 503.
+      // Each attempt is untimed (a slow-but-healthy query still fits Workers' cap).
+      const RETRIES = 3;
+      let ok: (T[] & { count?: number }) | undefined;
+      let lastErr: unknown = e;
+      for (let i = 0; i < RETRIES && ok === undefined; i++) {
+        console.warn(`[db-retry ${i + 1}/${RETRIES}] ${String((lastErr as Error)?.message ?? lastErr).slice(0, 70)}`);
+        try {
+          ok = (await this.makeSql().unsafe(text, this.args as never[])) as unknown as T[] & { count?: number };
+        } catch (e2) {
+          lastErr = e2;
+          if (!isDeadConnError(e2)) throw e2; // a REAL error on retry → surface it
+          if (i < RETRIES - 1) await new Promise((r) => setTimeout(r, 250 + i * 400));
+        }
+      }
+      if (ok === undefined) throw lastErr;
+      res = ok;
     }
     // Every query in the app funnels through here — a single threshold log
     // turns `wrangler tail` into a slow-query dashboard (Hookka pattern).
