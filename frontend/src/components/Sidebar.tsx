@@ -45,7 +45,6 @@ import {
   BarChart3,
   Map,
   Megaphone,
-  FolderTree,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -291,7 +290,6 @@ export const NAV_TABS: NavTab[] = [
         anyAccess: ["scm.procurement", "scm.procurement.products", "scm.procurement.suppliers", "scm.procurement.mrp", "scm.procurement.po", "scm.procurement.grn", "scm.procurement.pi", "scm.procurement.pr"],
         children: [
           { to: "/scm/products", label: "Products & Maintenance", icon: Sofa, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.products"] },
-          { to: "/scm/categories", label: "Categories", icon: FolderTree, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.products"] },
           { to: "/scm/suppliers", label: "Suppliers", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.suppliers"] },
           { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.mrp"] },
           { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.po"] },
