@@ -259,6 +259,9 @@ export interface AssrActivity {
   created_at: string;
   // Mig 064 — drives the timeline filter pills.
   category?: AssrActivityCategory | null;
+  // Where the activity originated (e.g. "customer_portal" vs office) — used by
+  // the case-detail header + timeline actor role.
+  source_channel?: string | null;
 }
 
 export interface AssrLogistics {
