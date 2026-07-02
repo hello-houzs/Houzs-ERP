@@ -748,7 +748,7 @@ deliveryPlanning.get('/', async (c) => {
       // for the Warehouse column, not the region).
       region: primaryRegion,
       regions: [...regionSet],
-      warehouse_id: primaryWh,
+      warehouse_id: primaryWh as string | null,
       warehouse_code: primaryWh ? (whCode.get(primaryWh) ?? null) : null,
       warehouse_name: primaryWh ? (whName.get(primaryWh) ?? null) : null,
       customer_state: r.customer_state ?? null,
