@@ -66,15 +66,21 @@ export async function issueSupplierToken(
   creditorCode: string | null,
   ttlDays: number = SUPPLIER_PORTAL_TTL_DAYS
 ): Promise<string> {
+  // Postgres rejects `column IS ?` — the RHS of IS must be a literal
+  // (NULL / TRUE / FALSE / DISTINCT FROM ...), not a bound param. Match
+  // both a real creditor_code AND the "no creditor resolved yet" NULL
+  // case by folding both sides through COALESCE with an empty-string
+  // sentinel (real codes never look like ''). Works on SQLite (dev
+  // fallback) and Postgres (prod) identically.
   const existing = await env.DB.prepare(
     `SELECT token FROM assr_supplier_tokens
       WHERE assr_id = ?
-        AND (creditor_code IS ? OR creditor_code = ?)
+        AND COALESCE(creditor_code, '') = COALESCE(?, '')
         AND revoked_at IS NULL
         AND (expires_at IS NULL OR expires_at > datetime('now'))
       ORDER BY created_at DESC LIMIT 1`
   )
-    .bind(assrId, creditorCode, creditorCode)
+    .bind(assrId, creditorCode)
     .first<{ token: string }>();
   if (existing) return existing.token;
 
