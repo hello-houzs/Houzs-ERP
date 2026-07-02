@@ -2757,10 +2757,10 @@ function DetailContent({
               SLA calculation. service_category was removed when the
               intake form was simplified — the issue_category taxonomy
               now drives both the dashboard breakdown and triage. */}
-          {/* PR 4 — Issue + Product Info side-by-side above the stage
-              accordion, matching the design's overview strip. Stacks
-              on narrow viewports (grid-cols-1 default, md:grid-cols-2). */}
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {/* PR 5 refresh — Overview strip at the top of the left column
+              matches the design: Issue · Product · Customer side-by-
+              side on lg+ (3 cols), stacks on narrower viewports. */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
           <PanelSection title="Issue" icon={<AlertCircle size={13} />}>
             <InlineEdit
               label="Complaint"
@@ -3029,6 +3029,30 @@ function DetailContent({
               )}
             </div>
           </PanelSection>
+
+          {/* PR 5 refresh — Customer overview card (moved from the
+              right rail). Compact key-value list only; the address
+              wraps to a single line inside the card. */}
+          <PanelSection title="Customer" icon={<User size={13} />}>
+            <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
+            <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
+            <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
+            <FieldRow label="Agent">{c.sales_agent || "—"}</FieldRow>
+            <FieldRow label="Location">{c.location || "—"}</FieldRow>
+            <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
+            {(c.addr1 || c.addr2 || c.addr3 || c.addr4) && (
+              <FieldRow label="Address">
+                {[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}
+              </FieldRow>
+            )}
+            <InlineEdit
+              label="Email"
+              value={c.customer_email}
+              onSave={(v) => patch({ customer_email: v })}
+              placeholder="customer@example.com"
+            />
+            {c.ref_no && <FieldRow label="Ref No" mono>{c.ref_no}</FieldRow>}
+          </PanelSection>
           </div>
 
           {/* PR 3 redesign — Stage Accordion. Wraps Verification /
@@ -3049,8 +3073,18 @@ function DetailContent({
                 complaint (captured in the Issue card above). */}
             <StageRow
               stageId="pending_review"
-              title="Pending Review"
-              summary="Case registered — awaiting Service Admin"
+              title="Review"
+              summary={
+                c.stage === "pending_review"
+                  ? "Case received & logged — awaiting Service Admin"
+                  : `Case received & logged · ${
+                      (detail.data?.activity ?? []).find(
+                        (a: any) => a.action === "created",
+                      )?.source_channel === "customer_portal"
+                        ? "Customer Portal"
+                        : "Service Admin"
+                    } · ${formatDate(c.complained_date)}`
+              }
               currentStage={c.stage}
               stages={activeStages}
               openStage={openStage}
@@ -3067,10 +3101,14 @@ function DetailContent({
             {/* under_verification — QC Issue Inspection on receipt */}
             <StageRow
               stageId="under_verification"
-              title="Under Verification"
+              title="Verification"
               summary={
-                c.verification_outcome
-                  ? `Outcome: ${c.verification_outcome.replace(/_/g, " ")}`
+                c.verification_outcome === "accepted"
+                  ? "Office confirms the reported issue is valid"
+                  : c.verification_outcome === "rejected"
+                  ? "Rejected — not our issue"
+                  : c.verification_outcome === "needs_more_info"
+                  ? "Awaiting more info from the customer"
                   : "Awaiting QC issue inspection"
               }
               currentStage={c.stage}
@@ -3096,12 +3134,10 @@ function DetailContent({
             {/* pending_solution — pick resolution method + set supplier */}
             <StageRow
               stageId="pending_solution"
-              title="Pending Solution"
+              title="Solution"
               summary={
                 c.resolution_method
-                  ? `${resolutionLabel(c.resolution_method)} — ${
-                      resolutionRoute(c.resolution_method) === "supplier" ? "Supplier flow" : "Internal flow"
-                    }`
+                  ? `Selected: ${c.resolution_method}`
                   : "Set resolution method to route the case"
               }
               currentStage={c.stage}
@@ -3213,8 +3249,12 @@ function DetailContent({
                 Ready). */}
             <StageRow
               stageId="pending_inspection"
-              title="Pending Inspection"
-              summary="Physical inspection — pending workflow assignment"
+              title="Inspection · QC Issue Inspection"
+              summary={
+                c.stage === "pending_inspection"
+                  ? "QC issue inspection on receipt · action required now"
+                  : "QC Issue Inspection (on receipt): assess the reported defect from photos & description, then decide whether to accept the case."
+              }
               currentStage={c.stage}
               stages={activeStages}
               openStage={openStage}
@@ -3230,7 +3270,7 @@ function DetailContent({
             {/* pending_item_pickup — customer-side pickup */}
             <StageRow
               stageId="pending_item_pickup"
-              title="Pending Item Pickup"
+              title="Item Pickup"
               summary={
                 c.customer_pickup_at
                   ? `Collected ${formatDate(c.customer_pickup_at)}`
@@ -3259,7 +3299,7 @@ function DetailContent({
             {/* pending_supplier_pickup — supplier collects from us */}
             <StageRow
               stageId="pending_supplier_pickup"
-              title="Pending Supplier Pickup"
+              title="Supplier Pickup"
               summary={
                 c.supplier_pickup_at
                   ? `Supplier collected ${formatDate(c.supplier_pickup_at)}`
@@ -3307,7 +3347,7 @@ function DetailContent({
             {/* pending_item_ready — QC Inspection after supplier return */}
             <StageRow
               stageId="pending_item_ready"
-              title="Pending Item Ready"
+              title="Item Ready"
               summary={
                 c.inspection_result
                   ? `QC: ${c.inspection_result}${c.items_ready_at ? ` · ready ${formatDate(c.items_ready_at)}` : ""}`
@@ -3333,7 +3373,7 @@ function DetailContent({
             {/* pending_delivery_service — logistics rows + related POs */}
             <StageRow
               stageId="pending_delivery_service"
-              title="Pending Delivery / Service"
+              title="Delivery"
               summary={
                 logistics.length
                   ? `${logistics.length} logistics ${logistics.length === 1 ? "trip" : "trips"}`
@@ -3483,23 +3523,10 @@ function DetailContent({
             </DetailMain>
 
             <DetailAside>
-          {/* Customer & Order */}
-          <PanelSection title="Customer" icon={<User size={13} />}>
-            <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
-            <FieldRow label="Ref No" mono>{c.ref_no || "—"}</FieldRow>
-            <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
-            <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
-            <InlineEdit
-              label="Email"
-              value={c.customer_email}
-              onSave={(v) => patch({ customer_email: v })}
-              placeholder="customer@example.com"
-            />
-            <FieldRow label="Location">{c.location || "—"}</FieldRow>
-            <FieldRow label="Agent">{c.sales_agent || "—"}</FieldRow>
-            <FieldRow label="Date">{formatDate(c.complained_date)}</FieldRow>
-            {c.addr1 && <FieldRow label="Address">{[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}</FieldRow>}
-          </PanelSection>
+          {/* PR 5 refresh — Customer moved to the 3-col overview row
+              at the top of the left column (alongside Issue + Product),
+              matching the design's overview strip. Right rail is now
+              Assigned to · SLA · Timeline only. */}
 
           {/* Assigned To — Design PR 2. Unassigned uses a dashed
               amber placeholder so it reads as "attention needed" from
