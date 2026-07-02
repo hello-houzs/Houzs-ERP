@@ -131,29 +131,28 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
             {rows.map((r) => {
               const cancelled = (r.status ?? "").toLowerCase() === "cancelled";
               const ref = r.ref ?? r.po_doc_no ?? "";
+              const balance = total(r) - (r.paid_total_centi ?? 0);
               return (
-                <div key={r.doc_no} onClick={() => onOpen(r.doc_no)} className={cancelled ? "card cancelled" : "card"} style={{ cursor: "pointer", ...(cancelled ? { opacity: .55, filter: "grayscale(.5)" } : null) }}>
-                  <div className="card-b" style={{ padding: "12px 13px" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                      <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.debtor_name || "—"}</span>
-                      <StatusPill status={r.status} />
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5, fontSize: 11.5, color: "var(--mut)" }}>
-                      <span className="money">{r.doc_no}</span>
-                      <span style={{ opacity: .5 }}>·</span>
-                      <span>{ref || <span style={{ color: "var(--mut2)" }}>—</span>}</span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 11, color: "var(--ink2)" }}>
-                      <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Processing</span>
-                      <span style={{ fontWeight: 600 }}>{dm(r.processing_date)}</span>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#c2c6bd" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-                      <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Delivery</span>
-                      <span style={{ fontWeight: 600 }}>{dm(r.customer_delivery_date || r.internal_expected_dd)}</span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
-                      <span style={{ fontSize: 10, color: "var(--mut2)" }}>{dm(r.so_date)} · created</span>
-                      <span className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--brand-d)" }}>RM {rm(total(r))}</span>
-                    </div>
+                /* Card layout ported VERBATIM from the owner's MobileSoList design:
+                   name + Badge / doc_no · ref / Processing → Delivery (→ glyph) /
+                   Balance … total footer. Wired to our real row fields (dual-read
+                   camelCase ?? snake_case handled upstream). */
+                <div key={r.doc_no} onClick={() => onOpen(r.doc_no)} className={cancelled ? "card cancelled" : "card"} style={{ cursor: "pointer", padding: "12px 13px", ...(cancelled ? { opacity: .55, filter: "grayscale(.5)" } : null) }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.debtor_name || "—"}</span>
+                    <StatusPill status={r.status} />
+                  </div>
+                  <div className="money" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5 }}>{r.doc_no}{ref ? ` · ${ref}` : ""}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 11, color: "var(--ink2)" }}>
+                    <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Processing</span>
+                    <span className="money" style={{ fontWeight: 600 }}>{dm(r.processing_date)}</span>
+                    <span style={{ color: "#c2c6bd" }}>&rarr;</span>
+                    <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Delivery</span>
+                    <span className="money" style={{ fontWeight: 600 }}>{dm(r.customer_delivery_date || r.internal_expected_dd)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
+                    <span style={{ fontSize: 10, color: "var(--mut2)" }}>Balance RM {rm(balance)}</span>
+                    <span className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--brand-d)" }}>RM {rm(total(r))}</span>
                   </div>
                 </div>
               );
