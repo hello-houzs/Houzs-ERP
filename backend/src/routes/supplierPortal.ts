@@ -38,25 +38,28 @@ const SUPPLIER_CATEGORY = new Set(["evidence", "completion"]);
 app.get("/case", async (c) => {
   const { assr_id } = c.get("supplierScope");
 
-  // TEMP DEBUG — surface which SELECT is failing in prod so we can
-  // stop guessing from the "Something went wrong" wrapper. Revert
-  // this wrapper once the root cause is fixed.
-  try {
-
+  // Hand-picked columns for the supplier view — no customer phone,
+  // full address, or internal cost. addr1 + addr4 (line 1 + postcode)
+  // are for delivery routing only. Mig 106 added supplier_service_note
+  // (supplier owns) + goods_returned_note (Houzs writes, supplier
+  // reads).
+  //
+  // NB: keep this SELECT free of SQL `--` comments. The d1-compat
+  // shim over Hyperdrive collapses the prepared statement to a
+  // single line before sending it to Postgres, so a `--` anywhere
+  // in the middle comments out the entire tail (including the FROM
+  // clause), producing "syntax error at end of input". Prose stays
+  // in JS comments here; the SQL is a column list, nothing more.
   const cs = await c.env.DB.prepare(
     `SELECT id, assr_no, stage, complained_date, complaint_issue,
             issue_category, resolution_method, service_category,
             po_no, ref_no,
-            -- only address line 1 + postcode — protect customer privacy
             addr1, addr4, location,
             customer_name,
             supplier_pickup_at, items_ready_at,
             do_date, delivery_order,
             creditor_code,
             stage_entered_at, stage_target_days,
-            -- Mig 106 — supplier's own service record + the goods-
-            -- returned slip we sent with the item (read-only for the
-            -- supplier; helps them cross-reference what came in).
             supplier_service_note, goods_returned_note
        FROM assr_cases WHERE id = ?`
   )
@@ -108,16 +111,6 @@ app.get("/case", async (c) => {
     attachments: attachments.results ?? [],
     stage_history: history.results ?? [],
   });
-
-  } catch (e: any) {
-    // TEMP DEBUG passthrough — remove once root cause is fixed.
-    return c.json({
-      _debug: true,
-      error: String(e?.message ?? e),
-      stack: String(e?.stack ?? "").split("\n").slice(0, 3).join(" | "),
-      assr_id,
-    }, 500);
-  }
 });
 
 // ── POST /stage ─────────────────────────────────────────────────────
