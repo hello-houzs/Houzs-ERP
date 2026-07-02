@@ -280,10 +280,13 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     .letterhead .company .co-name { font-weight: 700; font-size: 10pt; letter-spacing: 0.3pt; text-transform: uppercase; }
     .letterhead .company .reg-no { font-family: "Roboto Mono", monospace; font-size: 8pt; margin-top: 0.5pt; }
 
-    .doc-title { text-align: center; margin: 0 0 6mm 0; }
-    .doc-title h1 { margin: 0; font-size: 14pt; font-weight: 500; letter-spacing: 4pt; text-transform: uppercase; }
-    .doc-title .subtitle { margin-top: 2mm; font-size: 9pt; letter-spacing: 2pt; text-transform: uppercase; color: #555; }
-    .doc-title .ref { margin-top: 3mm; font-family: "Roboto Mono", monospace; font-size: 10pt; }
+    /* Design refresh — Plex Serif for the document title, left-aligned
+       to sit next to the report meta on the right (the header row is
+       still centered by the parent .doc-title container). */
+    .doc-title { text-align: left; margin: 0 0 8mm 0; }
+    .doc-title h1 { margin: 0; font-family: "IBM Plex Serif", "Georgia", serif; font-size: 22pt; font-weight: 700; letter-spacing: 0.2pt; line-height: 1.05; }
+    .doc-title .subtitle { margin-top: 2mm; font-family: "Roboto Mono", monospace; font-size: 8.5pt; letter-spacing: 1.5pt; text-transform: uppercase; color: #555; }
+    .doc-title .ref { margin-top: 3mm; font-family: "Roboto Mono", monospace; font-size: 10pt; color: #333; }
 
     /* Info strip with optional QR panel on the side */
     .info {
@@ -388,6 +391,46 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     }
     .ack .sig-grid .sig-box {
       height: 18mm; border-bottom: 0.6pt solid #000;
+    }
+
+    /* Design refresh — dual sign-off block for the customer + supplier
+       variants. Two side-by-side panels; each has bullet checkboxes
+       for what the counter-party is confirming, then a signature line
+       and a name+date row. Black-and-white only; prints cleanly on
+       mono printers. */
+    .signoff {
+      margin-top: 8mm; page-break-inside: avoid;
+      display: grid; grid-template-columns: 1fr 1fr; border: 0.6pt solid #000;
+    }
+    .signoff .panel { padding: 5mm 6mm 6mm; }
+    .signoff .panel + .panel { border-left: 0.6pt solid #000; }
+    .signoff .panel h3 {
+      margin: 0 0 4mm 0; font-family: "IBM Plex Serif", "Georgia", serif;
+      font-size: 12pt; font-weight: 700;
+    }
+    .signoff .check {
+      display: flex; align-items: flex-start; gap: 4mm; margin-bottom: 3.5mm;
+      font-size: 10pt; line-height: 1.4;
+    }
+    .signoff .check .box {
+      width: 4.5mm; height: 4.5mm; border: 0.8pt solid #000; flex-shrink: 0; margin-top: 0.6mm;
+    }
+    .signoff .sig-rule {
+      border-top: 0.6pt solid #000; margin-top: 6mm; padding-top: 2mm;
+    }
+    .signoff .sig-rule .cap {
+      font-family: "Roboto Mono", monospace; font-size: 7.5pt;
+      letter-spacing: 0.8pt; text-transform: uppercase; color: #6a6a6a; font-weight: 700;
+    }
+    .signoff .name-date {
+      display: flex; gap: 6mm; margin-top: 6mm;
+    }
+    .signoff .name-date .cell {
+      flex: 1; border-bottom: 0.5pt solid #666; padding-bottom: 1.5mm;
+    }
+    .signoff .name-date .cell .cap {
+      font-family: "Roboto Mono", monospace; font-size: 7.5pt;
+      letter-spacing: 0.8pt; text-transform: uppercase; color: #6a6a6a; font-weight: 700;
     }
 
     .foot { padding-top: 2mm; border-top: 0.5pt solid #000; text-align: center; font-size: 8pt; color: #555; letter-spacing: 0.5pt; }
@@ -666,34 +709,97 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     </section>
     ` : ""}
 
+    ${isCustomer ? `
+    <!-- Customer variant sign-off (design refresh) — Customer + Warehouse
+         side-by-side, each with tick-box confirmations and signature
+         line. Prints in black & white on the same sheet as the case
+         report, so the customer + warehouse ack lands together with
+         the details they're signing off on. -->
+    <section>
+      <h2 class="sec">Acknowledgement &amp; Sign-off</h2>
+      <div class="signoff">
+        <div class="panel">
+          <h3>Customer</h3>
+          <div class="check">
+            <span class="box"></span>
+            <span>I confirm the reported issue and details above are correct.</span>
+          </div>
+          <div class="check">
+            <span class="box"></span>
+            <span>I have received the serviced / replaced item in good condition.</span>
+          </div>
+          <div class="sig-rule">
+            <span class="cap">Signature</span>
+          </div>
+          <div class="name-date">
+            <div class="cell"><span class="cap">Name</span></div>
+            <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Warehouse</h3>
+          <div class="check">
+            <span class="box"></span>
+            <span>Goods inspected and received in good condition.</span>
+          </div>
+          <div class="check">
+            <span class="box"></span>
+            <span>Service / repair completed per the plan above.</span>
+          </div>
+          <div class="sig-rule">
+            <span class="cap">Received &amp; signed</span>
+          </div>
+          <div class="name-date">
+            <div class="cell"><span class="cap">Name</span></div>
+            <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    ` : ""}
+
     ${isSupplier ? `
-    <!-- Supplier acknowledgement — paper signature lines + condition check -->
-    <section class="ack">
-      <h2 class="sec">Acknowledgement</h2>
-      <div class="check-row">
-        <span class="box"></span>
-        <span>Goods inspected and received in good condition by the supplier.</span>
-      </div>
-      <div class="check-row">
-        <span class="box"></span>
-        <span>Service / repair completed per the resolution plan above.</span>
-      </div>
-      <div class="sig-grid">
-        <div>
-          <div class="sig-box"></div>
-          <div class="sig">Supplier — printed name &amp; signature</div>
+    <!-- Supplier variant sign-off (design refresh) — Supplier + Houzs
+         Century representative, matching the design's Supplier Service
+         Order acknowledgement layout. -->
+    <section>
+      <h2 class="sec">Acknowledgement &amp; Sign-off</h2>
+      <div class="signoff">
+        <div class="panel">
+          <h3>Supplier</h3>
+          <div class="check">
+            <span class="box"></span>
+            <span>Goods inspected and received in good condition.</span>
+          </div>
+          <div class="check">
+            <span class="box"></span>
+            <span>Service / repair completed per the resolution plan above.</span>
+          </div>
+          <div class="sig-rule">
+            <span class="cap">Signature</span>
+          </div>
+          <div class="name-date">
+            <div class="cell"><span class="cap">Name</span></div>
+            <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
+          </div>
         </div>
-        <div>
-          <div class="sig-box"></div>
-          <div class="sig">Date</div>
-        </div>
-        <div>
-          <div class="sig-box"></div>
-          <div class="sig">Houzs Century representative — printed name &amp; signature</div>
-        </div>
-        <div>
-          <div class="sig-box"></div>
-          <div class="sig">Date</div>
+        <div class="panel">
+          <h3>Houzs Century Representative</h3>
+          <div class="check">
+            <span class="box"></span>
+            <span>Verified supplier work meets the resolution plan.</span>
+          </div>
+          <div class="check">
+            <span class="box"></span>
+            <span>Handover accepted for return to the warehouse.</span>
+          </div>
+          <div class="sig-rule">
+            <span class="cap">Verified &amp; signed</span>
+          </div>
+          <div class="name-date">
+            <div class="cell"><span class="cap">Name</span></div>
+            <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
+          </div>
         </div>
       </div>
     </section>
