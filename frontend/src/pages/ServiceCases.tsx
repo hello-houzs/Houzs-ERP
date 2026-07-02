@@ -3062,6 +3062,11 @@ function DetailContent({
             patch={patch}
             transition={transition}
             dialog={dialog}
+            caseId={id}
+            attachments={attachments}
+            archived={!!c.archived_at}
+            detail={detail}
+            toast={toast}
           />
 
           {/* ── Resolution (filled as the case progresses) ────── */}
@@ -4006,13 +4011,9 @@ function InspectionCard({
   dialog: ReturnType<typeof useDialog>;
   toast: ReturnType<typeof useToast>;
 }) {
-  const stageReached = INSPECTION_STAGES_OR_LATER.includes(c.stage);
-  const hasResult = c.inspection_result != null;
-  const hasReport = (attachments ?? []).some(
-    (a: any) => a?.category === "inspection_report"
-  );
-  if (!stageReached && !hasResult && !hasReport) return null;
-
+  // Always visible so ops can pre-fill / cross-check even before the
+  // item reaches the post-supplier-return checkpoint. Matches the
+  // VerificationCard (QC Issue Inspection) which also has no gate.
   return (
     <PanelSection
       icon={<ShieldCheck size={13} />}
@@ -4020,7 +4021,7 @@ function InspectionCard({
       title={
         <>
           QC Inspection{" "}
-          <span className="font-normal normal-case tracking-normal text-ink-muted/70">— after repair, pass → Logistics</span>
+          <span className="font-normal normal-case tracking-normal text-ink-muted/70">— after supplier return</span>
         </>
       }
     >
@@ -4071,11 +4072,21 @@ function VerificationCard({
   patch,
   transition,
   dialog,
+  caseId,
+  attachments,
+  archived,
+  detail,
+  toast,
 }: {
   c: AssrCase;
   patch: (body: Record<string, any>) => Promise<void>;
   transition: (stage: AssrStage) => Promise<void>;
   dialog: ReturnType<typeof useDialog>;
+  caseId: number;
+  attachments: any[];
+  archived: boolean;
+  detail: ReturnType<typeof useQuery>;
+  toast: ReturnType<typeof useToast>;
 }) {
   const [rootDraft, setRootDraft] = useState(c.verified_root_cause ?? "");
   const [saving, setSaving] = useState(false);
@@ -4230,6 +4241,23 @@ function VerificationCard({
           {formatDate(c.verified_at)}
         </div>
       )}
+
+      {/* Photos / videos taken at receipt inspection — evidence of
+          what the item looked like BEFORE it went to the supplier.
+          Distinct category from the post-return QC report so both
+          checkpoints keep their own paper trail. */}
+      <MilestoneAttachmentSlot
+        caseId={caseId}
+        category="receipt_evidence"
+        label="QC Issue Inspection Photos / Videos"
+        emptyLabel="No inspection photos uploaded yet."
+        uploadLabel="Upload photo / video"
+        attachments={attachments}
+        archived={archived}
+        detail={detail}
+        dialog={dialog}
+        toast={toast}
+      />
     </PanelSection>
   );
 }
@@ -4250,6 +4278,7 @@ function VerificationCard({
 type MilestoneCategory =
   | "sign_off"
   | "inspection_report"
+  | "receipt_evidence"
   | "pickup_form"
   | "ready_doc"
   | "delivery_pod";
