@@ -315,10 +315,6 @@ export function MobileScan({
           </div>
         ) : (
           <>
-            <div style={{ fontSize: 12.5, color: "#767b6e", lineHeight: 1.5, marginBottom: 14 }}>
-              Snap the handwritten / printed slip and the payment slip. After scanning, the New Sales Order form opens prefilled — review every field, then save to create the order.
-            </div>
-
             <div id="scan-shots" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 8 }}>
               {[0, 1].map((i) => {
                 const idx = i as 0 | 1;
@@ -367,6 +363,14 @@ export function MobileScan({
               })}
             </div>
             <div style={{ fontSize: 10.5, color: "#9aa093", textAlign: "center" }}>Front slip + payment slip · 2 photos</div>
+
+            {/* Design #scan: amber helper note box (design's #f3ece0 / #e8dcc5 /
+                #6a4a1e amber trio). Copy reflects our real flow — the scan opens
+                the New SO form prefilled for review, it does not silently create a
+                background draft. */}
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 9, background: "#f3ece0", border: "1px solid #e8dcc5", borderRadius: 11, padding: 11, marginTop: 12, fontSize: 11, color: "#6a4a1e", lineHeight: 1.5 }}>
+              We read the slip and open the New Sales Order form prefilled. Review every field, correct anything the reader missed, then save to create the order.
+            </div>
 
             {salesperson && (
               <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 11, color: "#767b6e" }}>
