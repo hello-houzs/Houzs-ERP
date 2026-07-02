@@ -34,7 +34,23 @@ export const DELIVERY_STATE_LABEL: Record<DeliveryState, string> = {
 export type RegionCode = string;
 export type RegionKey = 'ALL' | RegionCode;
 
+/* A board row is either a Sales-Order delivery (the original rows) or a
+   Service-Case (ASSR) job. row_type discriminates; it defaults to 'so' for the
+   long-standing SO rows (the backend now stamps it explicitly on every row). */
+export type PlanningRowType = 'so' | 'assr';
+/* ASSR job kind (only meaningful when row_type === 'assr'). */
+export type AssrJobKind = 'customer_pickup' | 'delivery';
+
 export type PlanningOrder = {
+  /* SO rows: 'so' (default). ASSR (service-case) rows: 'assr'. */
+  row_type: PlanningRowType;
+  /* ASSR-only. The service case's NUMERIC id (drives the /assr/:id detail route)
+     and its human ref (= assr_no, shown in the SO No. cell). null on SO rows. */
+  assr_id: number | null;
+  ref: string | null;
+  /* ASSR-only. Whether the job is a customer pickup or a delivery. null on SO
+     rows. */
+  job_kind: AssrJobKind | null;
   so_doc_no: string;
   debtor_code: string | null;
   debtor_name: string | null;
@@ -199,12 +215,18 @@ export function useUpdateDeliveryFields() {
    values (driver name / lorry plate / the effective delivery date) used purely
    for the optimistic cache patch — they are NOT sent to the API. */
 export type ScheduleDeliveryVars = {
-  type: 'so' | 'do';
+  /* 'so' | 'do' are the original SO/DO schedule paths. 'assr' schedules a
+     service-case job (Delivery Planning ASSR rows) — the backend now accepts it;
+     for ASSR the id is the service case's id and jobKind carries the row's kind. */
+  type: 'so' | 'do' | 'assr';
   id: string;
   scheduleDate?: string | null;
   deliveryState?: DeliveryState | null;
   driverId?: string | null;
   lorryId?: string | null;
+  /* ASSR-only: forwarded so the backend knows which job (pickup vs delivery) is
+     being scheduled. Ignored for 'so' | 'do'. */
+  jobKind?: AssrJobKind | null;
   /* Display-only, for optimistic UI (never posted). */
   driverNameOptimistic?: string | null;
   lorryPlateOptimistic?: string | null;
@@ -213,7 +235,7 @@ export type ScheduleDeliveryVars = {
 export function useScheduleDelivery() {
   const qc = useQueryClient();
   return useMutation<{ ok: true }, Error, ScheduleDeliveryVars, { snapshots: Array<[readonly unknown[], PlanningResponse]> }>({
-    mutationFn: ({ type, id, scheduleDate, deliveryState, driverId, lorryId }) => {
+    mutationFn: ({ type, id, scheduleDate, deliveryState, driverId, lorryId, jobKind }) => {
       /* Only include keys the caller actually set, so an unrelated field is never
          nulled out by an inline single-field edit. */
       const body: Record<string, unknown> = {};
@@ -221,6 +243,7 @@ export function useScheduleDelivery() {
       if (deliveryState !== undefined) body.deliveryState = deliveryState;
       if (driverId !== undefined) body.driverId = driverId;
       if (lorryId !== undefined) body.lorryId = lorryId;
+      if (jobKind !== undefined) body.jobKind = jobKind;
       return authedFetch<{ ok: true }>(`/delivery-planning/${type}/${id}/schedule`, {
         method: 'PATCH', body: JSON.stringify(body),
       });
@@ -237,7 +260,12 @@ export function useScheduleDelivery() {
         qc.setQueryData<PlanningResponse>(key, {
           ...prev,
           orders: prev.orders.map((o) => {
-            if (o.so_doc_no !== vars.id) return o;
+            /* Match by the row's identity: ASSR rows key on the numeric case id
+               (vars.id is that id as a string); SO/DO rows key on so_doc_no. */
+            const matches = vars.type === 'assr'
+              ? o.row_type === 'assr' && String(o.assr_id ?? '') === vars.id
+              : o.so_doc_no === vars.id;
+            if (!matches) return o;
             const next: PlanningOrder = { ...o };
             if (vars.deliveryState !== undefined && vars.deliveryState !== null) next.delivery_state = vars.deliveryState;
             if (vars.scheduleDate !== undefined) next.amended_delivery_date = vars.scheduleDate;

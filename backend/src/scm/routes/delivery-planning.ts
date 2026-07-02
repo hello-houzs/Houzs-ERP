@@ -677,6 +677,13 @@ deliveryPlanning.get('/', async (c) => {
     const primaryWh = warehouseIds[0] ?? null;
 
     return {
+      // Row discriminator + ASSR-parity fields. SO rows are always 'so' with no
+      // Service-Case ref / job_kind. ADDITIVE — every existing SO field below is
+      // untouched (see the ASSR union after this map for the 'assr' rows).
+      row_type: 'so' as 'so' | 'assr',
+      ref: null as string | null,
+      job_kind: null as 'customer_pickup' | 'delivery' | null,
+      assr_id: null as number | null,
       so_doc_no: docNo,
       debtor_code: r.debtor_code ?? null,
       debtor_name: r.debtor_name ?? null,
@@ -731,15 +738,17 @@ deliveryPlanning.get('/', async (c) => {
       // this SO has no (non-DRAFT/CANCELLED) DO yet — drives the "DO Date" column.
       do_date: doExecByDoc.get(docNo)?.do_date ?? null,
       // stock — stock_remark is the correctly-gated label (never "READY (PARTIAL)"
-      // for an acc-only / service-only SO); stock_status mirrors it.
-      stock_status: readiness.isFullyReady ? 'READY' : readyToShip ? 'READY (PARTIAL)' : 'PENDING',
-      stock_remark: readiness.stockRemark,
-      is_main_ready: readiness.isMainReady,
+      // for an acc-only / service-only SO); stock_status mirrors it. Static types
+      // widened to `| null` so ASSR rows (no stock) share this row shape; the SO
+      // runtime VALUES are unchanged.
+      stock_status: (readiness.isFullyReady ? 'READY' : readyToShip ? 'READY (PARTIAL)' : 'PENDING') as string | null,
+      stock_remark: readiness.stockRemark as string | null,
+      is_main_ready: readiness.isMainReady as boolean | null,
       // region(s): the customer-state bucket(s); plus the warehouse label (kept
       // for the Warehouse column, not the region).
       region: primaryRegion,
       regions: [...regionSet],
-      warehouse_id: primaryWh,
+      warehouse_id: primaryWh as string | null,
       warehouse_code: primaryWh ? (whCode.get(primaryWh) ?? null) : null,
       warehouse_name: primaryWh ? (whName.get(primaryWh) ?? null) : null,
       customer_state: r.customer_state ?? null,
@@ -752,11 +761,140 @@ deliveryPlanning.get('/', async (c) => {
     };
   });
 
+  /* 7b. ADDITIVELY union in Service-Case (ASSR) rows. A Service Case appears on
+        the board ONLY when it carries a relevant date — customer_pickup_at (we go
+        collect the faulty item) OR do_date (we go deliver it back) — and is still
+        OPEN (closed_at IS NULL AND archived_at IS NULL). Each SET trigger date
+        emits ONE row (a case with BOTH dates shows two rows: one job_kind
+        'customer_pickup', one 'delivery'), so each leg schedules independently.
+        assr_cases lives in the PUBLIC schema (not scm) — read it via c.env.DB
+        (the D1-shim raw SQL over Postgres public.*, the same path the SO
+        active-venue lookup uses), NOT the scm-scoped supabase client. Wrapped
+        defensively: any failure logs + leaves the SO rows untouched. */
+  type BoardRow = (typeof orders)[number];
+  const assrOrders: BoardRow[] = [];
+  try {
+    // Explicit lowercase aliases → deterministic snake_case result keys
+    // (sidesteps any driver camelCasing). Only OPEN cases with a trigger date.
+    const assrRows = await c.env.DB.prepare(
+      `SELECT id            AS id,
+              assr_no       AS assr_no,
+              status        AS status,
+              customer_name AS customer_name,
+              phone         AS phone,
+              location      AS location,
+              customer_pickup_at AS customer_pickup_at,
+              do_date       AS do_date,
+              addr1 AS addr1, addr2 AS addr2, addr3 AS addr3, addr4 AS addr4
+         FROM assr_cases
+        WHERE closed_at IS NULL
+          AND archived_at IS NULL
+          AND (customer_pickup_at IS NOT NULL OR do_date IS NOT NULL)`,
+    ).all<{
+      id: number | null; assr_no: string | null; status: string | null;
+      customer_name: string | null; phone: string | null; location: string | null;
+      customer_pickup_at: string | null; do_date: string | null;
+      addr1: string | null; addr2: string | null; addr3: string | null; addr4: string | null;
+    }>();
+
+    for (const a of (assrRows.results ?? [])) {
+      const assrNo = String(a.assr_no ?? '').trim();
+      if (!assrNo) continue;
+      // Region buckets from the case LOCATION/state — REUSE the SAME config
+      // mapping SO rows use (stateToRegionsFromConfig), so ASSR rows filter by
+      // the region tab exactly like SOs.
+      const stateRegions = stateToRegionsFromConfig(regionCfg, a.location, null);
+      const primaryRegion = stateRegions[0] ?? FALLBACK_DEFAULT_REGION;
+      const regionSet = new Set<Region>(stateRegions);
+      const address = [a.addr1, a.addr2, a.addr3, a.addr4].filter(Boolean).join(', ') || null;
+
+      // One row per SET trigger date. job_kind = which date drives THIS row; the
+      // effective/board date is that trigger date so it lands in the schedule
+      // column. A date-but-not-yet-delivered case = PENDING_SCHEDULE (reuse the
+      // existing enum). Stock columns are null/'—' for ASSR rows.
+      const legs: Array<{ jobKind: 'customer_pickup' | 'delivery'; date: string }> = [];
+      if (a.customer_pickup_at) legs.push({ jobKind: 'customer_pickup', date: a.customer_pickup_at });
+      if (a.do_date)            legs.push({ jobKind: 'delivery',        date: a.do_date });
+
+      for (const leg of legs) {
+        // so_doc_no is the React rowKey on the board — a case with two legs must
+        // yield two DISTINCT keys, so suffix with the job_kind.
+        const rowKey = `${assrNo}#${leg.jobKind}`;
+        assrOrders.push({
+          row_type: 'assr',
+          ref: assrNo,
+          job_kind: leg.jobKind,
+          assr_id: a.id != null ? Number(a.id) : null,
+          so_doc_no: rowKey,
+          debtor_code: null,
+          debtor_name: a.customer_name ?? null,
+          phone: a.phone ?? null,
+          branding: null,
+          status: a.status ?? '',
+          // A set date but not yet delivered → Pending Delivery (owner: a dated
+          // service case surfaces under Pending Delivery until it's scheduled out).
+          delivery_state: 'PENDING_DELIVERY',
+          delivery_state_override: null,
+          balance_centi: 0,
+          balance_centi_live: null,
+          local_total_centi: 0,
+          so_date: null,
+          processing_date: null,
+          // The trigger date maps into the board date fields so it lands in the
+          // schedule / Days-Left column exactly like an SO's effective date.
+          customer_delivery_date: leg.date,
+          amend_date_from_customer: null,
+          amended_delivery_date: leg.date,
+          amend_reason: null,
+          effective_delivery_date: leg.date,
+          internal_expected_dd: leg.date,
+          days_left: daysBetween(today, leg.date),
+          address,
+          postcode: null,
+          building_type: null,
+          possession_date: null,
+          house_type: null,
+          replacement_disposal: null,
+          referral: null,
+          time_range: null,
+          time_confirmed: null,
+          arrival_at: null,
+          departure_at: null,
+          shipout_date: null,
+          customer_delivered_date: null,
+          eta_arriving_port: null,
+          delivery_substatus: null,
+          arrives_em_warehouse_date: null,
+          do_date: leg.jobKind === 'delivery' ? leg.date : null,
+          // Stock columns are not meaningful for a Service Case.
+          stock_status: null,
+          stock_remark: null,
+          is_main_ready: null,
+          region: primaryRegion,
+          regions: [...regionSet],
+          warehouse_id: null,
+          warehouse_code: null,
+          warehouse_name: null,
+          customer_state: a.location ?? null,
+          delivered_qty: 0,
+          remaining_qty: 0,
+          crew: null,
+          delivery_orders: [],
+        });
+      }
+    }
+  } catch (e) {
+    // Defensive: a malformed / edge ASSR case must NEVER break the SO rows.
+    console.warn(`[delivery-planning] ASSR union skipped: ${String((e as Error).message).slice(0, 120)}`);
+  }
+
+  const allOrders = [...orders, ...assrOrders];
+
   /* 8. Counts per state — computed over the REGION-filtered set so the state
         tab badges reflect the active region. The state filter is applied AFTER
         counting (so switching state tabs doesn't change the badge numbers). The
         region param is validated against the config's region codes. */
-  const regionFiltered = orders.filter((o) => matchesRegion(o, regionParam, regionCfg.validCodes));
+  const regionFiltered = allOrders.filter((o) => matchesRegion(o, regionParam, regionCfg.validCodes));
   const counts = emptyCounts();
   for (const o of regionFiltered) counts[o.delivery_state] += 1;
   counts.ALL = regionFiltered.length;
@@ -951,6 +1089,10 @@ const scheduleSchema = z.object({
   scheduleDate: z.string().nullable().optional(),  // YYYY-MM-DD
   // Optional MANUAL override of the derived delivery_state (cache column).
   deliveryState: z.enum(['PENDING_DELIVERY', 'PENDING_SCHEDULE', 'OVERDUE', 'DELIVERED']).nullable().optional(),
+  // ASSR ONLY (type='assr'): which driving date the board row represents, so the
+  // scheduleDate write-back targets the matching assr_cases column
+  // (customer_pickup_at vs do_date). Ignored for so | do.
+  jobKind: z.enum(['customer_pickup', 'delivery']).nullable().optional(),
   // ── Optional trip wiring ───────────────────────────────────────────────────
   // Scheduling an order onto a trip. Either tripId (append to an existing trip)
   // OR {lorryId, driverId, tripDate?} (find-or-create a trip for that lorry+date).
@@ -988,12 +1130,39 @@ async function nextTripNo(sb: any): Promise<string> {
 deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
   const type = c.req.param('type').toLowerCase();
   const id = c.req.param('id');
-  if (type !== 'so' && type !== 'do') return c.json({ error: 'bad_type', reason: 'type must be so | do' }, 400);
+  if (type !== 'so' && type !== 'do' && type !== 'assr') {
+    return c.json({ error: 'bad_type', reason: 'type must be so | do | assr' }, 400);
+  }
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
   const parsed = scheduleSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: 'invalid_body', reason: parsed.error.message }, 400);
   const p = parsed.data;
+
+  /* ── ASSR (Service Case) schedule write-back ─────────────────────────────────
+     Two-way editing of the board date: writing scheduleDate updates the case's
+     DRIVING date on public.assr_cases. Which column depends on jobKind —
+     'customer_pickup' → customer_pickup_at, 'delivery' → do_date. No trip/crew
+     wiring for ASSR legs (out of scope). Kept fully SEPARATE from the SO/DO path
+     below, which stays byte-for-byte unchanged. assr_cases is PUBLIC → c.env.DB. */
+  if (type === 'assr') {
+    if (p.scheduleDate === undefined) return c.json({ error: 'no_changes' }, 400);
+    const caseId = Number(id);
+    if (!Number.isFinite(caseId)) return c.json({ error: 'bad_id', reason: 'assr id must be numeric' }, 400);
+    // jobKind decides the target column. Default to 'delivery' (do_date) when
+    // absent — the frontend row carries job_kind and should always send it.
+    const col = p.jobKind === 'customer_pickup' ? 'customer_pickup_at' : 'do_date';
+    try {
+      const res = await c.env.DB.prepare(
+        `UPDATE assr_cases SET ${col} = ?, updated_at = datetime('now')
+          WHERE id = ? AND closed_at IS NULL AND archived_at IS NULL`,
+      ).bind(p.scheduleDate, caseId).run();
+      if (!res.meta.changes) return c.json({ error: 'not_found' }, 404);
+    } catch (e) {
+      return c.json({ error: 'update_failed', reason: String((e as Error).message).slice(0, 200) }, 500);
+    }
+    return c.json({ ok: true, assr: { id: caseId, job_kind: col === 'do_date' ? 'delivery' : 'customer_pickup', [col]: p.scheduleDate }, trip: null });
+  }
 
   const wantsTrip = p.tripId != null || p.lorryId != null;
 
