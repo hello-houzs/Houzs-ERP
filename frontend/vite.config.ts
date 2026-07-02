@@ -173,6 +173,14 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      // Pin dev to 5173 so `npm run dev` doesn't drift up to 5174 /
+      // 5175 / 5180 when another Vite is already running. strictPort
+      // fails fast instead of auto-picking a random free port, which
+      // matters here because the PWA service worker is registered
+      // per-origin and stale registrations on other ports serve
+      // cached bundles.
+      port: 5173,
+      strictPort: true,
       proxy: {
         // Only /api/* gets forwarded. SPA routes (/track,
         // /portal/case/:token, /survey/:token, etc.) fall through to
