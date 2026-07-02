@@ -1632,22 +1632,24 @@ function StopDetail({
           </div>
         )}
 
-        {/* Setup & dismantle photo group + 3D floor plan (Setup jobs). */}
+        {/* Setup & dismantle photos — v4 unified 2-group POD structure: group 1
+            "Overall booth" (on arrival) + group 2 "Setup complete (POD)"
+            (completion proof). Section sub-label "POD · upload on site". */}
         {isSetup && (
           <div className="card" style={{ marginBottom: 12 }}>
             <div className="card-h">
-              <span className="card-t">Setup &amp; dismantle</span>
-              <span className="card-sub">upload on site</span>
+              <span className="card-t">Setup &amp; dismantle photos</span>
+              <span className="card-sub">POD · upload on site</span>
             </div>
             <div className="card-b">
               <PdPhotoGroup
-                title="Setup photos"
-                note="after install"
+                title="Overall booth"
+                note="on arrival"
                 onCapture={goToDo}
               />
               <PdPhotoGroup
-                title="Dismantle photos"
-                note="old item removed"
+                title="Setup complete (POD)"
+                note="completion proof"
                 onCapture={goToDo}
               />
               <PdAttach
