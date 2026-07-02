@@ -235,6 +235,7 @@ export interface AssrAttachment {
     | "signature"
     | "sign_off"
     | "inspection_report"
+    | "receipt_evidence"
     | "pickup_form"
     | "ready_doc"
     | "delivery_pod";
