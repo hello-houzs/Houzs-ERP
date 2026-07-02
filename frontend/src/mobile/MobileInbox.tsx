@@ -35,35 +35,6 @@ function activityLine(a: NotificationItem): string {
   }
 }
 
-/** Small colored dot + rounded icon chip per action, echoing the design
- *  prototype's per-category color coding. */
-function actionStyle(action: string): { dot: string; path: string } {
-  switch (action) {
-    case "note":
-    case "checklist_status":
-    case "checklist_add":
-    case "checklist_remove":
-      // speech bubble
-      return { dot: "#16695f", path: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" };
-    case "stage_change":
-      // arrow
-      return { dot: "#6e4d12", path: "M5 12h14M13 6l6 6-6 6" };
-    case "finance_edit":
-      // banknote
-      return { dot: "#2f8a5b", path: "M2 7h20v10H2zM12 12h.01M6 12h.01M18 12h.01" };
-    case "created":
-    case "restored":
-      // check
-      return { dot: "#2f8a5b", path: "M20 6 9 17l-5-5" };
-    case "archived":
-      // box
-      return { dot: "#b23a3a", path: "M4 8h16v11H4zM2 4h20v4H2zM10 12h4" };
-    default:
-      // bell
-      return { dot: "#16695f", path: "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" };
-  }
-}
-
 /**
  * Mobile Inbox (notifications feed). Presentation ported VERBATIM from the
  * owner's mobile design prototype (`#inbox` section + `renderInbox`) using the
@@ -123,6 +94,10 @@ export function MobileInbox({
     }
   };
 
+  // Designer feed layout (#inbox): an "Activity / Inbox" header with a
+  // "Mark all read" text action, then Today / Earlier groups where each row is
+  // its own card — a leading unread dot, the title, a one-line body, and the
+  // relative time. Wired to the shared notifications feed + bulk mark-read.
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
@@ -131,31 +106,20 @@ export function MobileInbox({
             <span className="chev">{"‹"}</span> Menu
           </button>
         )}
-        <div className="hdr-row">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
             <div className="eyebrow">Activity</div>
-            <div className="scr-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              Inbox
-              {totalUnread > 0 && (
-                <span style={{ minWidth: 20, height: 20, padding: "0 6px", borderRadius: 999, background: "var(--red)", color: "#fff", fontSize: 11, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
-                  {totalUnread > 99 ? "99+" : totalUnread}
-                </span>
-              )}
-            </div>
+            <div className="scr-title">Inbox</div>
           </div>
           <button
             onClick={markAll}
             disabled={marking || totalUnread === 0}
-            className="back"
             style={{
-              display: "flex", alignItems: "center", gap: 5, height: 34, padding: "0 12px",
-              border: "1px solid var(--line-card)", borderRadius: 9, background: "var(--bg)",
-              color: "var(--ink2)", fontSize: 12, fontWeight: 700,
+              background: "none", border: "none", color: "#16695f", fontWeight: 600, fontSize: 12.5,
               cursor: marking || totalUnread === 0 ? "default" : "pointer",
               opacity: totalUnread === 0 ? 0.5 : 1,
             }}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
             {marking ? "Marking…" : "Mark all read"}
           </button>
         </div>
@@ -170,24 +134,20 @@ export function MobileInbox({
         ) : (
           <>
             {today.length > 0 && (
-              <>
-                <div className="fld-l" style={{ margin: "0 2px 9px" }}>Today</div>
-                <div className="card" style={{ overflow: "hidden", marginBottom: 14 }}>
-                  {today.map((item, i) => (
-                    <Row key={item.id} item={item} first={i === 0} unread={(unreadByProject[item.project_id] ?? 0) > 0} onOpen={onOpen} />
-                  ))}
-                </div>
-              </>
+              <div>
+                <div className="fld-l" style={{ marginBottom: 8 }}>Today</div>
+                {today.map((item) => (
+                  <Row key={item.id} item={item} unread={(unreadByProject[item.project_id] ?? 0) > 0} onOpen={onOpen} />
+                ))}
+              </div>
             )}
             {earlier.length > 0 && (
-              <>
-                <div className="fld-l" style={{ margin: "0 2px 9px" }}>Earlier</div>
-                <div className="card" style={{ overflow: "hidden" }}>
-                  {earlier.map((item, i) => (
-                    <Row key={item.id} item={item} first={i === 0} unread={(unreadByProject[item.project_id] ?? 0) > 0} onOpen={onOpen} />
-                  ))}
-                </div>
-              </>
+              <div>
+                <div className="fld-l" style={{ marginBottom: 8 }}>Earlier</div>
+                {earlier.map((item) => (
+                  <Row key={item.id} item={item} unread={(unreadByProject[item.project_id] ?? 0) > 0} onOpen={onOpen} />
+                ))}
+              </div>
             )}
           </>
         )}
@@ -197,42 +157,34 @@ export function MobileInbox({
 }
 
 function Row({
-  item, first, unread, onOpen,
+  item, unread, onOpen,
 }: {
   item: NotificationItem;
-  first: boolean;
   unread: boolean;
   onOpen?: (item: NotificationItem) => void;
 }) {
-  const { dot, path } = actionStyle(item.action);
   const title = item.project_name || item.project_code || "Project";
   return (
-    <button
+    <div
+      className="card"
+      style={{ padding: "12px 13px", display: "flex", gap: 10, cursor: onOpen ? "pointer" : "default" }}
       onClick={() => onOpen?.(item)}
-      style={{
-        display: "flex", alignItems: "center", gap: 11, width: "100%", textAlign: "left",
-        background: "none", border: "none", borderTop: first ? undefined : "1px solid var(--line2)",
-        padding: "11px 13px", cursor: onOpen ? "pointer" : "default", fontFamily: "inherit",
-      }}
     >
-      <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: dot, visibility: unread ? "visible" : "hidden" }} />
-      <span style={{ width: 32, height: 32, flex: "none", borderRadius: 9, background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={path} /></svg>
-      </span>
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ display: "block", fontSize: 13, fontWeight: unread ? 800 : 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <span style={{ width: 7, height: 7, borderRadius: "50%", background: unread ? "#b23a3a" : "transparent", flex: "none", marginTop: 5 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {title}
           {item.brand && (
-            <span className="money" style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 400, color: "var(--mut2)" }}>{item.brand}</span>
+            <span className="money" style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 400, color: "#9aa093" }}>{item.brand}</span>
           )}
-        </span>
-        <span style={{ display: "block", fontSize: 11.5, color: "var(--mut)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        </div>
+        <div style={{ fontSize: 11.5, color: "#767b6e", marginTop: 2, lineHeight: 1.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {activityLine(item)}
-        </span>
-      </span>
-      <span className="tnum" style={{ fontSize: 10, color: "var(--mut2)", flex: "none" }} title={item.created_at}>
-        {relativeTime(item.created_at)}
-      </span>
-    </button>
+        </div>
+        <div className="money" style={{ fontSize: 10, color: "#9aa093", marginTop: 3 }} title={item.created_at}>
+          {relativeTime(item.created_at)}
+        </div>
+      </div>
+    </div>
   );
 }
