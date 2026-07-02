@@ -15,11 +15,21 @@ type SoHeader = {
   debtor_name: string | null;
   status: string | null;
   phone: string | null;
+  email: string | null;
+  customer_type: string | null;
+  salesperson_id: string | number | null;
   sales_location: string | null;
   customer_state: string | null;
   ref: string | null;
   customer_so_no: string | null;
   po_doc_no: string | null;
+  building_type: string | null;
+  venue: string | null;
+  note: string | null;
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  postcode: string | null;
   processing_date: string | null;
   customer_delivery_date: string | null;
   internal_expected_dd: string | null;
@@ -38,8 +48,11 @@ type SoHeader = {
 type SoItem = {
   id: string;
   description: string | null;
+  variants: string | null;
   item_code: string | null;
   qty: number | null;
+  unit_price_centi: number | null;
+  total_centi: number | null;
   line_delivery_date: string | null;
   /* Live delivery balance per line (qty − delivered + returned) — stamped by
      the detail GET. Drives the "anything left to deliver?" gate for Issue DO,
@@ -50,6 +63,12 @@ type SoPayment = {
   id: string;
   paid_at: string | null;
   method: string | null;
+  merchant_provider: string | null;
+  installment_months: number | null;
+  online_type: string | null;
+  approval_code: string | null;
+  account_sheet: string | null;
+  collected_by_name: string | null;
   amount_centi: number | null;
   slip_key: string | null;
 };
@@ -63,6 +82,20 @@ const dm = (d: string | null | undefined) => {
   const dt = new Date(d);
   if (isNaN(+dt)) return "—";
   return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+};
+/* Full date for the locked read-only fields (design renders e.g. "14 Jun 2026").
+   Empty / unparseable → em-dash so the .fld-ro cell never shows a raw string. */
+const dl = (d: string | null | undefined) => {
+  if (!d) return "—";
+  const dt = new Date(d);
+  if (isNaN(+dt)) return "—";
+  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+};
+/* Locked-field value or em-dash — a field the detail endpoint doesn't return
+   (or returns empty) renders as "—" inside the .fld-ro box, per the brief. */
+const val = (v: string | null | undefined) => {
+  const s = (v ?? "").toString().trim();
+  return s.length ? s : "—";
 };
 /* DRAFT → Draft, CANCELLED → Cancelled, everything else (CONFIRMED,
    IN_PRODUCTION, READY_TO_SHIP, SHIPPED, DELIVERED …) reads as a live/Submitted
@@ -98,9 +131,17 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
     staleTime: 15_000,
   });
 
+  const staffQ = useStaff();
   const h = detail.data?.salesOrder;
   const items = detail.data?.items ?? [];
   const payments = paymentsQ.data?.payments ?? [];
+
+  /* Salesperson NAME — the detail header carries only salesperson_id (a staff
+     UUID), so resolve it against the shared /staff list. Falls back to em-dash
+     while loading or when the id has no matching active staff row. */
+  const salespersonName = h?.salesperson_id != null
+    ? (staffQ.data ?? []).find((s) => String(s.id) === String(h.salesperson_id))?.name ?? null
+    : null;
 
   const setStatus = async (status: string, confirmMsg?: string) => {
     if (busy) return;
@@ -198,50 +239,76 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
 
         {!detail.isLoading && !detail.error && h && (
           <div>
+            {/* Locked-view hint (design VERBATIM) — Edit unlocks the same New SO
+                form; there's no in-place edit here, so wording drops the mode. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#eef1ec", border: "1px solid #e3e6e0", borderRadius: 10, padding: "9px 11px", marginBottom: 12, fontSize: 11, color: "#5c6156" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#767b6e" strokeWidth="2" strokeLinecap="round"><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+              Locked view — tap Edit to change.
+            </div>
+
             {/* KPI — Total / Paid / Balance (nowrap tabular money, cards min-width:0) */}
             <div style={{ display: "flex", gap: 9, marginBottom: 12 }}>
-              <div className="card" style={{ flex: 1, minWidth: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Total</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(total(h))}</div></div></div>
-              <div className="card" style={{ flex: 1, minWidth: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Paid</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--green)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(h.paid_centi_total)}</div></div></div>
-              <div className="card" style={{ flex: 1, minWidth: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Balance</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: bal > 0 ? "var(--red)" : "var(--ink)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(bal)}</div></div></div>
+              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Total</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(total(h))}</div></div></div>
+              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Paid</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--green)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(h.paid_centi_total)}</div></div></div>
+              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Balance</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: bal > 0 ? "var(--red)" : "var(--ink)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(bal)}</div></div></div>
             </div>
 
-            <div className="card" style={{ marginBottom: 11 }}>
-              <div className="card-h"><span className="card-t">Order info</span></div>
-              <div className="row"><span className="row-l">Processing</span><span className="row-v strong tnum">{dm(h.processing_date)}</span></div>
-              <div className="row"><span className="row-l">Delivery</span><span className="row-v strong tnum">{dm(h.customer_delivery_date || h.internal_expected_dd)}</span></div>
-              <div className="row"><span className="row-l">Location</span><span className="row-v">{h.sales_location || h.customer_state || <span style={{ color: "var(--mut2)" }}>—</span>}</span></div>
-              <div className="row"><span className="row-l">Created</span><span className="row-v tnum">{dm(h.so_date || h.created_at)}</span></div>
-            </div>
+            {/* Customer — locked .fld-ro fields (design layout VERBATIM) */}
+            <div className="card"><div className="card-h"><span className="card-t">Customer</span></div><div className="card-b">
+              <RoField label="Customer name" value={val(h.debtor_name)} />
+              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Phone" value={val(h.phone)} mono /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Email" value={val(h.email)} /></div></div>
+              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Customer type" value={val(h.customer_type)} /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Salesperson" value={val(salespersonName)} /></div></div>
+              <RoField label="Customer SO ref" value={val(h.customer_so_no ?? h.ref)} mono />
+            </div></div>
 
-            <div className="card" style={{ marginBottom: 11 }}>
-              <div className="card-h"><span className="card-t">Customer</span></div>
-              <div className="row"><span className="row-l">Phone</span><span className="row-v tnum money">{h.phone || <span style={{ color: "var(--mut2)" }}>—</span>}</span></div>
-              <div className="row"><span className="row-l">Reference</span><span className="row-v money">{h.customer_so_no || h.ref || h.po_doc_no || <span style={{ color: "var(--mut2)" }}>—</span>}</span></div>
-            </div>
+            {/* Order info */}
+            <div className="card"><div className="card-h"><span className="card-t">Order info</span></div><div className="card-b">
+              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Building type" value={val(h.building_type)} /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Venue" value={val(h.venue)} /></div></div>
+              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Processing date" value={dl(h.processing_date ?? h.internal_expected_dd)} mono /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Delivery date" value={dl(h.customer_delivery_date ?? h.internal_expected_dd)} mono /></div></div>
+              <RoField label="Sales location" value={val(h.sales_location ?? h.customer_state)} />
+              <RoField label="Note" value={val(h.note)} />
+            </div></div>
 
-            <div className="card" style={{ marginBottom: 11 }}>
-              <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{items.length} {items.length === 1 ? "line" : "lines"}</span></div>
-              {items.length ? items.map((it) => (
-                <div key={it.id} style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{it.description || it.item_code || "—"}</div>
-                      <div style={{ fontSize: 10, color: "var(--mut2)", marginTop: 3 }} className="tnum">Delivery {dm(it.line_delivery_date)}</div>
-                    </div>
-                    <div style={{ textAlign: "right", whiteSpace: "nowrap", fontSize: 11, color: "var(--mut)" }} className="tnum">×{it.qty ?? 0}</div>
+            {/* Delivery address — composed from the address columns; em-dash when blank */}
+            <div className="card"><div className="card-h"><span className="card-t">Delivery address</span></div><div className="card-b">
+              <RoField label="Address" value={composeAddress(h)} />
+            </div></div>
+
+            {/* Line items — description / variants / SKU / ×qty / line total */}
+            <div className="card"><div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{items.length} {items.length === 1 ? "line" : "lines"}</span></div>
+              {items.length ? items.map((it, i) => (
+                <div key={it.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "11px 13px", borderTop: i ? "1px solid var(--line2)" : "none" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{it.description || it.item_code || "—"}</div>
+                    {it.variants && it.variants.trim() ? <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }}>{it.variants}</div> : null}
+                    <div className="money" style={{ fontSize: 10, color: "var(--mut2)", marginTop: 3 }}>SKU {val(it.item_code)}</div>
+                  </div>
+                  <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <div className="money" style={{ fontSize: 13, fontWeight: 700, color: "#0c3f39" }}>RM {rm(lineTotalCenti(it))}</div>
+                    <div className="money" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>×{it.qty ?? 0}</div>
                   </div>
                 </div>
               )) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No items.</div>}
             </div>
 
-            <div className="card">
-              <div className="card-h"><span className="card-t">Payments</span>{!!payments.length && <span className="card-sub">{payments.length}</span>}</div>
+            {/* Payments — read-only rows (method / date · account · collected_by /
+                approval / amount), design layout. "+ Record payment" affordance in
+                the card header opens our RecordPaymentSheet (real workflow, kept). */}
+            <div className="card"><div className="card-h"><span className="card-t">Payments</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {!!payments.length && <span className="card-sub">{payments.length}</span>}
+                {ph !== "cancelled" && bal > 0 && (
+                  <button type="button" disabled={busy} onClick={() => { setActionError(null); setPayOpen(true); }} style={{ border: "none", background: "transparent", color: "var(--teal)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0, opacity: busy ? 0.55 : 1 }}>+ Record payment</button>
+                )}
+              </span>
+            </div>
               {paymentsQ.isLoading && <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>Loading{"…"}</div>}
-              {!paymentsQ.isLoading && (payments.length ? payments.map((p) => (
-                <div key={p.id} style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+              {!paymentsQ.isLoading && (payments.length ? payments.map((p, i) => (
+                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "11px 13px", borderTop: i ? "1px solid var(--line2)" : "none", alignItems: "center" }}>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>{methodLabel(p.method)}</div>
-                    <div style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 2 }} className="tnum">{dm(p.paid_at)}</div>
+                    <div className="money" style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 2 }}>{[dm(p.paid_at), p.account_sheet, p.collected_by_name].filter((x) => x && String(x).trim()).join(" · ")}</div>
+                    {p.approval_code ? <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>Approval {p.approval_code}</div> : null}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     {p.slip_key ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
@@ -336,6 +403,32 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
    operator recognises (transfer surfaces as "Online" per the shared map). */
 const METHOD_LABELS: Record<string, string> = { cash: "Cash", transfer: "Online", merchant: "Merchant", installment: "Installment" };
 const methodLabel = (m: string | null): string => (m ? METHOD_LABELS[m] ?? m : "—");
+
+/* Locked read-only field — the design's `.fld` + `.fld-l` + `.fld-ro` trio, the
+   detail screen's whole "form rendered locked" idiom. `mono` opts the value into
+   tabular-nums (phone / doc refs / dates) via the shared `.money` class. */
+function RoField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="fld">
+      <span className="fld-l">{label}</span>
+      <div className={`fld-ro${mono ? " money" : ""}`}>{value}</div>
+    </div>
+  );
+}
+
+/* Delivery address — composed from the address columns the detail header
+   carries (address1/2, city, customer_state, postcode). All blank → em-dash. */
+function composeAddress(h: SoHeader): string {
+  const parts = [h.address1, h.address2, h.city, [h.customer_state, h.postcode].filter((x) => x && String(x).trim()).join(" ")]
+    .map((x) => (x ?? "").toString().trim())
+    .filter((x) => x.length);
+  return parts.length ? parts.join(", ") : "—";
+}
+
+/* Line total — prefer the persisted total_centi; fall back to unit_price × qty
+   for older rows that never stamped it. */
+const lineTotalCenti = (it: SoItem): number =>
+  it.total_centi ?? Math.round((it.unit_price_centi ?? 0) * (it.qty ?? 0));
 
 /* Slip link on a persisted payment row — fetches a short-lived presigned URL on
    demand (GET /:docNo/payments/:id/slip-url) and opens it in a new tab. */
