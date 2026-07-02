@@ -989,11 +989,13 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
         <div style={cancelled ? { opacity: 0.55, pointerEvents: "none" } : undefined}>
         <Eyebrow>Details</Eyebrow>
         {configFields ? (
-          <div style={{ background: "#fff", border: "1px solid #e3e6e0", borderRadius: 13, overflow: "hidden", marginBottom: 13, padding: "0 12px" }}>
+          // Designer MobileDetail.tsx: a single titled .card whose body is a list
+          // of .row label/value pairs (row-l muted label, row-v money value).
+          <div className="card" style={{ marginBottom: 13 }}>
             {configFields.map((f) => (
-              <div className="docrow" key={f.label} style={{ justifyContent: "space-between" }}>
-                <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{f.label}</span>
-                <span className="money" style={{ fontSize: 13.5, fontWeight: 600, color: "#11140f", textAlign: "right", wordBreak: "break-word" }}>{f.value}</span>
+              <div className="row" key={f.label}>
+                <span className="row-l">{f.label}</span>
+                <span className="row-v money" style={{ wordBreak: "break-word" }}>{f.value}</span>
               </div>
             ))}
           </div>
