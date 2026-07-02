@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
+import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import "./mobile.css";
 
 // ---------------------------------------------------------------------------
@@ -37,8 +39,19 @@ type Announcement = {
   updatedAt: string | null;
   attachments: Attachment[];
   targetType: string;
+  targetDeptIds?: number[];
+  targetPositionIds?: number[];
+  targetUserIds?: number[];
   category: string;
 };
+
+// Audience-picker lookups. Dept + position come from the same core endpoints the
+// desktop Announcements composer uses (/api/departments, /api/positions);
+// user-level targeting reuses /api/users (gated by users.read). Every field
+// optional so a leaner backend never crashes the picker.
+type Dept = { id: number; name: string };
+type Position = { id: number; name: string; department_name?: string | null };
+type UserRow = { id: number; name: string | null; email: string; status?: string | null };
 
 type BannerResponse = {
   success?: boolean;
@@ -287,14 +300,30 @@ const CATEGORY_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "SOP", label: "SOP" },
   { value: "LEARNING", label: "Learning" },
 ];
-const AUDIENCE_OPTIONS = ["All staff", "Sales", "Logistics", "Procurement", "Finance"];
+
+// Which id-bucket a notice targets. ALL = everyone (back-compat default); the
+// other three map 1:1 to the backend's targetDeptIds / targetPositionIds /
+// targetUserIds. Mirrors the desktop composer's Bucket.
+type Bucket = "ALL" | "DEPT" | "POSITION" | "USER";
+const BUCKETS: Array<{ value: Bucket; label: string }> = [
+  { value: "ALL", label: "All staff" },
+  { value: "DEPT", label: "Departments" },
+  { value: "POSITION", label: "Positions" },
+  { value: "USER", label: "People" },
+];
+
+const toIso = (localDateTime: string): string | null => {
+  if (!localDateTime.trim()) return null;
+  const t = Date.parse(localDateTime);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+};
 
 export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
   const { can } = useAuth();
   const canCreate = can("announcements.write");
   const qc = useQueryClient();
 
-  const [view, setView] = useState<"list" | "detail" | "compose">("list");
+  const [view, setView] = useState<"list" | "detail" | "compose" | "edit">("list");
   const [openId, setOpenId] = useState<string | null>(null);
 
   const { data, isLoading, error } = useQuery({
@@ -302,6 +331,37 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
     queryFn: () => api.get<BannerResponse>("/api/announcements/banner"),
     staleTime: 30_000,
   });
+
+  // Audience-picker lookups — fetched only for publishers (they gate the
+  // compose/edit UI). retry:false so a 403 on /api/users just yields [] and the
+  // People bucket hides itself, rather than crashing or spamming retries.
+  const deptsQ = useQuery({
+    queryKey: ["mobile-ann-depts"],
+    queryFn: () => api.get<{ departments: Dept[] }>("/api/departments"),
+    enabled: canCreate,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const positionsQ = useQuery({
+    queryKey: ["mobile-ann-positions"],
+    queryFn: () => api.get<{ positions: Position[] }>("/api/positions"),
+    enabled: canCreate,
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const usersQ = useQuery({
+    queryKey: ["mobile-ann-users"],
+    queryFn: () => api.get<{ users: UserRow[] }>("/api/users"),
+    enabled: canCreate,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const lookups = {
+    depts: deptsQ.data?.departments ?? [],
+    positions: positionsQ.data?.positions ?? [],
+    users: (usersQ.data?.users ?? []).filter((u) => (u.status ?? "active") === "active"),
+    usersDenied: !!usersQ.error,
+  };
 
   const list = data?.data ?? [];
   // acked ids from the banner; locally-acked ids clear the dot without a refetch.
@@ -322,10 +382,25 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
   if (view === "compose" && canCreate) {
     return (
       <Compose
+        lookups={lookups}
         onClose={() => setView("list")}
         onPublished={() => {
           qc.invalidateQueries({ queryKey: ["mobile-announcements"] });
           setView("list");
+        }}
+      />
+    );
+  }
+
+  if (view === "edit" && open && canCreate) {
+    return (
+      <Compose
+        editing={open}
+        lookups={lookups}
+        onClose={() => setView("detail")}
+        onPublished={() => {
+          qc.invalidateQueries({ queryKey: ["mobile-announcements"] });
+          setView("detail");
         }}
       />
     );
@@ -336,8 +411,18 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
       <Detail
         ann={open}
         canReceipts={canCreate}
+        canManage={canCreate}
         acked={ackedIds.has(open.id)}
         onAcked={() => markAcked(open.id)}
+        onEdit={() => setView("edit")}
+        onDeleted={() => {
+          qc.invalidateQueries({ queryKey: ["mobile-announcements"] });
+          setOpenId(null);
+          setView("list");
+        }}
+        onDeactivated={() => {
+          qc.invalidateQueries({ queryKey: ["mobile-announcements"] });
+        }}
         onBack={() => setView("list")}
       />
     );
@@ -425,19 +510,65 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
 function Detail({
   ann,
   canReceipts,
+  canManage,
   acked,
   onAcked,
+  onEdit,
+  onDeleted,
+  onDeactivated,
   onBack,
 }: {
   ann: Announcement;
   canReceipts: boolean;
+  canManage: boolean;
   acked: boolean;
   onAcked: () => void;
+  onEdit: () => void;
+  onDeleted: () => void;
+  onDeactivated: () => void;
   onBack: () => void;
 }) {
+  const confirm = useConfirm();
+  const notify = useNotify();
   const [localAck, setLocalAck] = useState(acked);
   const [acking, setAcking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [active, setActive] = useState(ann.isActive);
   const isAcked = acked || localAck;
+
+  const toggleActive = async () => {
+    if (busy) return;
+    const next = !active;
+    setBusy(true);
+    try {
+      await api.patch(`/api/announcements/${encodeURIComponent(ann.id)}`, { isActive: next });
+      setActive(next);
+      onDeactivated();
+    } catch (e) {
+      await notify({ title: "Couldn't update", body: e instanceof Error ? e.message.replace(/^\d+:\s*/, "") : "Try again." });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (busy) return;
+    const ok = await confirm({
+      title: "Delete this announcement?",
+      body: "It is removed for everyone and can't be recovered. To hide it temporarily, deactivate it instead.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/announcements/${encodeURIComponent(ann.id)}`);
+      onDeleted();
+    } catch (e) {
+      setBusy(false);
+      await notify({ title: "Couldn't delete", body: e instanceof Error ? e.message.replace(/^\d+:\s*/, "") : "Try again." });
+    }
+  };
 
   const ack = async () => {
     if (isAcked || acking) return;
@@ -476,6 +607,35 @@ function Detail({
             <Receipts ann={ann} />
           </div>
         )}
+
+        {canManage && (
+          <div style={{ marginTop: 22 }}>
+            <div className="fld-l" style={{ margin: "0 2px 8px" }}>Manage</div>
+            <div style={{ background: "#fff", border: "1px solid #e3e6e0", borderRadius: 12, padding: "12px 13px" }}>
+              {!active && (
+                <div style={{ fontSize: 11.5, color: "#a16a2e", background: "#f3ece0", borderRadius: 8, padding: "7px 9px", marginBottom: 10 }}>
+                  This announcement is inactive — recipients no longer see it.
+                </div>
+              )}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={onEdit} disabled={busy} className="tinybtn" style={{ flex: 1, padding: 10, cursor: busy ? "default" : "pointer" }}>
+                  Edit
+                </button>
+                <button onClick={toggleActive} disabled={busy} className="tinybtn" style={{ flex: 1, padding: 10, opacity: busy ? 0.6 : 1, cursor: busy ? "default" : "pointer" }}>
+                  {active ? "Deactivate" : "Reactivate"}
+                </button>
+              </div>
+              <button
+                onClick={remove}
+                disabled={busy}
+                className="tinybtn"
+                style={{ width: "100%", marginTop: 8, padding: 10, background: "#fbf1f0", borderColor: "#e3c4c1", color: "#b23a3a", opacity: busy ? 0.6 : 1, cursor: busy ? "default" : "pointer" }}
+              >
+                Delete announcement
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <footer className="actbar" id="ann-d-ackbar">
@@ -494,15 +654,60 @@ function Detail({
   );
 }
 
-function Compose({ onClose, onPublished }: { onClose: () => void; onPublished: () => void }) {
+type Lookups = { depts: Dept[]; positions: Position[]; users: UserRow[]; usersDenied: boolean };
+
+// Convert an ISO instant to the value a <input type="datetime-local"> expects
+// (local wall-clock, no timezone suffix, minute precision).
+const isoToLocalInput = (iso: string | null): string => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(+d)) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+// Derive the initial audience bucket from an existing notice's target arrays.
+const bucketOf = (a: Announcement | undefined): Bucket => {
+  if (!a) return "ALL";
+  if ((a.targetUserIds?.length ?? 0) > 0) return "USER";
+  if ((a.targetDeptIds?.length ?? 0) > 0) return "DEPT";
+  if ((a.targetPositionIds?.length ?? 0) > 0) return "POSITION";
+  return "ALL";
+};
+
+// Compose (create) OR edit an announcement. In edit mode the title/body/category/
+// audience/expiry are pre-filled and we PATCH instead of POST; existing
+// attachments are shown read-only (edit here re-sends the same manifest so a save
+// never drops them — new uploads append). Audience targeting is real: dept +
+// position always available; People (user ids) only when /api/users is readable.
+function Compose({
+  editing,
+  lookups,
+  onClose,
+  onPublished,
+}: {
+  editing?: Announcement;
+  lookups: Lookups;
+  onClose: () => void;
+  onPublished: () => void;
+}) {
   const { user } = useAuth();
-  const [title, setTitle] = useState("");
-  const [category, setCategory] = useState(CATEGORY_OPTIONS[0].value);
-  const [audience, setAudience] = useState(AUDIENCE_OPTIONS[0]);
-  const [body, setBody] = useState("");
+  const isEdit = !!editing;
+
+  const [title, setTitle] = useState(editing?.title ?? "");
+  const [category, setCategory] = useState(editing?.category || CATEGORY_OPTIONS[0].value);
+  const [bucket, setBucket] = useState<Bucket>(bucketOf(editing));
+  const [selDepts, setSelDepts] = useState<Set<number>>(new Set(editing?.targetDeptIds ?? []));
+  const [selPositions, setSelPositions] = useState<Set<number>>(new Set(editing?.targetPositionIds ?? []));
+  const [selUsers, setSelUsers] = useState<Set<number>>(new Set(editing?.targetUserIds ?? []));
+  const [userSearch, setUserSearch] = useState("");
+  const [expiresAt, setExpiresAt] = useState(isoToLocalInput(editing?.expiresAt ?? null));
+  const [body, setBody] = useState(editing?.body ?? "");
   const [files, setFiles] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const existingAtts = editing?.attachments ?? [];
 
   const addFiles = (picked: FileList | null) => {
     if (!picked || !picked.length) return;
@@ -510,19 +715,36 @@ function Compose({ onClose, onPublished }: { onClose: () => void; onPublished: (
   };
   const removeFile = (idx: number) => setFiles((prev) => prev.filter((_, i) => i !== idx));
 
+  const toggle = (set: Set<number>, id: number): Set<number> => {
+    const next = new Set(set);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  };
+
+  const filteredUsers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return lookups.users;
+    return lookups.users.filter(
+      (u) => (u.name ?? "").toLowerCase().includes(q) || (u.email ?? "").toLowerCase().includes(q),
+    );
+  }, [lookups.users, userSearch]);
+
   const publish = async () => {
     const t = title.trim();
     if (!t) {
       setErr("Title is required.");
       return;
     }
+    if (bucket === "DEPT" && selDepts.size === 0) { setErr("Pick at least one department, or choose All staff."); return; }
+    if (bucket === "POSITION" && selPositions.size === 0) { setErr("Pick at least one position, or choose All staff."); return; }
+    if (bucket === "USER" && selUsers.size === 0) { setErr("Pick at least one person, or choose All staff."); return; }
     setErr(null);
     setSaving(true);
     try {
       // Two-step upload manifest: PUT each file to the 'compose' scope, collect
-      // {r2Key, mime} entries, then attach them to the create body. A failed
-      // upload is skipped rather than blocking the notice.
-      const attachments: Attachment[] = [];
+      // {r2Key, mime} entries. A failed upload is skipped rather than blocking.
+      const uploaded: Attachment[] = [];
       for (const f of files) {
         const ext = (f.name.split(".").pop() || "bin").toLowerCase();
         try {
@@ -532,38 +754,55 @@ function Compose({ onClose, onPublished }: { onClose: () => void; onPublished: (
             f.type || "application/octet-stream",
           );
           if (manifest?.r2Key) {
-            attachments.push({ r2Key: manifest.r2Key, name: f.name, mime: manifest.mime, size: manifest.size });
+            uploaded.push({ r2Key: manifest.r2Key, name: f.name, mime: manifest.mime, size: manifest.size });
           }
         } catch {
           /* skip this file; publish the rest. */
         }
       }
-      // Audience targeting beyond company-wide needs dept/position/user ids the
-      // mobile compose doesn't resolve, so we publish company-wide (ALL_USERS).
-      // The audience picker is a publisher-facing hint; it is NOT shown to
-      // recipients. TODO(verify): wire audience -> targetDeptIds when a lookup exists.
-      await api.post("/api/announcements", {
+
+      // Real audience targeting — one bucket at a time (mirrors desktop). ALL
+      // sends no target arrays (backend derives ALL_USERS). Empty arrays on a
+      // non-selected bucket keep the other buckets from being wiped on edit.
+      const payload: Record<string, unknown> = {
         title: t,
         body: body.trim(),
         category,
-        attachments,
-      });
+        expiresAt: toIso(expiresAt),
+      };
+      if (isEdit) {
+        // Edit: send all three buckets so target_type recomputes cleanly, plus
+        // the merged attachment set (kept existing + newly uploaded).
+        payload.targetDeptIds = bucket === "DEPT" ? Array.from(selDepts) : [];
+        payload.targetPositionIds = bucket === "POSITION" ? Array.from(selPositions) : [];
+        payload.targetUserIds = bucket === "USER" ? Array.from(selUsers) : [];
+        payload.attachments = [...existingAtts, ...uploaded];
+        await api.patch(`/api/announcements/${encodeURIComponent(editing!.id)}`, payload);
+      } else {
+        if (bucket === "DEPT") payload.targetDeptIds = Array.from(selDepts);
+        if (bucket === "POSITION") payload.targetPositionIds = Array.from(selPositions);
+        if (bucket === "USER") payload.targetUserIds = Array.from(selUsers);
+        payload.attachments = uploaded;
+        await api.post("/api/announcements", payload);
+      }
       onPublished();
     } catch (e) {
-      setErr(e instanceof Error ? e.message.replace(/^\d+:\s*/, "") : "Couldn't publish. Try again.");
+      setErr(e instanceof Error ? e.message.replace(/^\d+:\s*/, "") : "Couldn't save. Try again.");
       setSaving(false);
     }
   };
 
   const poster = user?.name?.trim() || "your account";
+  // People bucket only offered when the directory is readable.
+  const buckets = lookups.usersDenied ? BUCKETS.filter((b) => b.value !== "USER") : BUCKETS;
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
         <div className="hdr-row">
           <div>
-            <div className="eyebrow">Compose</div>
-            <div className="scr-title">New announcement</div>
+            <div className="eyebrow">{isEdit ? "Edit" : "Compose"}</div>
+            <div className="scr-title">{isEdit ? "Edit announcement" : "New announcement"}</div>
           </div>
           <span onClick={onClose} style={{ fontSize: 24, color: "var(--mut)", cursor: "pointer", lineHeight: 1 }}>×</span>
         </div>
@@ -577,22 +816,77 @@ function Compose({ onClose, onPublished }: { onClose: () => void; onPublished: (
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 9 }}>
-          <label className="fld" style={{ flex: 1 }}>
-            <span className="fld-l">Category</span>
-            <select className="fld-i" value={category} onChange={(e) => setCategory(e.target.value)}>
-              {CATEGORY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </label>
-          <label className="fld" style={{ flex: 1 }}>
-            <span className="fld-l">Send to</span>
-            <select className="fld-i" value={audience} onChange={(e) => setAudience(e.target.value)}>
-              {AUDIENCE_OPTIONS.map((o) => <option key={o}>{o}</option>)}
-            </select>
-          </label>
+        <label className="fld" style={{ marginBottom: 12 }}>
+          <span className="fld-l">Category</span>
+          <select className="fld-i" value={category} onChange={(e) => setCategory(e.target.value)}>
+            {CATEGORY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+
+        {/* Audience targeting — bucket selector + the matching id picker. */}
+        <div className="fld-l" style={{ margin: "0 2px 7px" }}>Send to</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 9 }}>
+          {buckets.map((b) => {
+            const on = bucket === b.value;
+            return (
+              <button
+                key={b.value}
+                onClick={() => setBucket(b.value)}
+                className="tinybtn"
+                style={{ padding: "7px 13px", background: on ? "var(--brand)" : "#fff", borderColor: on ? "var(--brand)" : "var(--line)", color: on ? "#fff" : "var(--ink)" }}
+              >
+                {b.label}
+              </button>
+            );
+          })}
         </div>
-        <div style={{ fontSize: 10.5, color: "#9aa093", margin: "-1px 2px 10px" }}>
-          Recipients only see announcements sent to them — this audience isn't shown to them.
+
+        {bucket === "DEPT" && (
+          <PickerBox empty={lookups.depts.length === 0 ? "No departments" : null}>
+            {lookups.depts.map((d) => (
+              <CheckRow key={d.id} label={d.name} checked={selDepts.has(d.id)} onToggle={() => setSelDepts((s) => toggle(s, d.id))} />
+            ))}
+          </PickerBox>
+        )}
+        {bucket === "POSITION" && (
+          <PickerBox empty={lookups.positions.length === 0 ? "No positions" : null}>
+            {lookups.positions.map((p) => (
+              <CheckRow
+                key={p.id}
+                label={p.name}
+                sub={p.department_name ?? undefined}
+                checked={selPositions.has(p.id)}
+                onToggle={() => setSelPositions((s) => toggle(s, p.id))}
+              />
+            ))}
+          </PickerBox>
+        )}
+        {bucket === "USER" && (
+          <>
+            <input
+              className="fld-i"
+              value={userSearch}
+              onChange={(e) => setUserSearch(e.target.value)}
+              placeholder="Search people…"
+              style={{ marginBottom: 8 }}
+            />
+            <PickerBox empty={filteredUsers.length === 0 ? "No people" : null}>
+              {filteredUsers.map((u) => (
+                <CheckRow
+                  key={u.id}
+                  label={u.name || u.email.split("@")[0]}
+                  sub={u.email}
+                  checked={selUsers.has(u.id)}
+                  onToggle={() => setSelUsers((s) => toggle(s, u.id))}
+                />
+              ))}
+            </PickerBox>
+          </>
+        )}
+        <div style={{ fontSize: 10.5, color: "#9aa093", margin: "8px 2px 12px" }}>
+          {bucket === "ALL"
+            ? "Everyone sees this announcement."
+            : "Only the people you pick see it — the audience isn't shown to recipients."}
         </div>
 
         <label className="fld" style={{ marginBottom: 12 }}>
@@ -603,8 +897,33 @@ function Compose({ onClose, onPublished }: { onClose: () => void; onPublished: (
           <span className="fld-l">Body</span>
           <textarea className="fld-i" value={body} onChange={(e) => setBody(e.target.value)} rows={6} style={{ resize: "none" }} placeholder="Write the announcement…" />
         </label>
+        <label className="fld" style={{ marginBottom: 12 }}>
+          <span className="fld-l">Expires (optional)</span>
+          <input className="fld-i" type="datetime-local" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+        </label>
+        {expiresAt && (
+          <div style={{ fontSize: 10.5, color: "#9aa093", margin: "-6px 2px 12px" }}>
+            Hidden from recipients after this time.{" "}
+            <span onClick={() => setExpiresAt("")} style={{ color: "#a16a2e", fontWeight: 700, cursor: "pointer" }}>Clear</span>
+          </div>
+        )}
 
-        <div className="fld-l" style={{ margin: "6px 0 7px" }}>Attachments</div>
+        {isEdit && existingAtts.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div className="fld-l" style={{ margin: "0 2px 7px" }}>Current attachments</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {existingAtts.map((a) => (
+                <div key={a.r2Key} style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid #e3e6e0", borderRadius: 9, padding: "7px 10px" }}>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: "#11140f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+                  <span style={{ fontSize: 10.5, color: "#9aa093" }}>{fmtSize(a.size)}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 10, color: "#9aa093", marginTop: 6 }}>Existing files are kept. Add more below.</div>
+          </div>
+        )}
+
+        <div className="fld-l" style={{ margin: "6px 0 7px" }}>{isEdit ? "Add attachments" : "Attachments"}</div>
         <div style={{ display: "flex", gap: 9 }}>
           <label className="tinybtn" style={{ flex: 1, padding: 11, textAlign: "center", cursor: "pointer" }}>
             + Photo / Video
@@ -636,9 +955,34 @@ function Compose({ onClose, onPublished }: { onClose: () => void; onPublished: (
 
       <footer className="actbar">
         <button onClick={publish} disabled={saving} className="btn" style={{ cursor: saving ? "default" : "pointer", opacity: saving ? 0.6 : 1 }}>
-          {saving ? "Publishing…" : "Publish announcement"}
+          {saving ? "Saving…" : isEdit ? "Save changes" : "Publish announcement"}
         </button>
       </footer>
     </div>
+  );
+}
+
+// A scrollable, bordered checkbox list used by every audience picker.
+function PickerBox({ empty, children }: { empty: string | null; children: React.ReactNode }) {
+  return (
+    <div style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 12, maxHeight: 220, overflowY: "auto" }}>
+      {empty ? (
+        <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "18px 0" }}>{empty}</div>
+      ) : (
+        children
+      )}
+    </div>
+  );
+}
+
+function CheckRow({ label, sub, checked, onToggle }: { label: string; sub?: string; checked: boolean; onToggle: () => void }) {
+  return (
+    <label style={{ display: "flex", alignItems: "center", gap: 11, padding: "10px 12px", cursor: "pointer", borderTop: "1px solid #eceee9" }}>
+      <input type="checkbox" checked={checked} onChange={onToggle} style={{ width: 18, height: 18, accentColor: "var(--brand)", flex: "none" }} />
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+        {sub && <span style={{ display: "block", fontSize: 10.5, color: "#9aa093", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</span>}
+      </span>
+    </label>
   );
 }
