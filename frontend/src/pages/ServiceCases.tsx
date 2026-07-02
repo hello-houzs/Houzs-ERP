@@ -2390,8 +2390,12 @@ function DetailContent({
   // Activity timeline filter. 'all' = show everything; the others
   // narrow to one category. System-emitted events (stage_change,
   // assigned, etc.) live under 'system'.
+  // Design PR 2 — filter tabs by role, not by legacy activity.category.
+  //   service  = internal staff / stage-changes (not customer/supplier portal)
+  //   customer = anything the customer posted or uploaded on their portal
+  //   supplier = anything the supplier posted / did via /portal/supplier
   const [activityFilter, setActivityFilter] = useState<
-    "all" | "purchasing" | "customer" | "system"
+    "all" | "service" | "customer" | "supplier"
   >("all");
   const [transitioning, setTransitioning] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -3276,58 +3280,134 @@ function DetailContent({
             {c.addr1 && <FieldRow label="Address">{[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}</FieldRow>}
           </PanelSection>
 
-          {/* PIC — Operations team members only */}
-          <PanelSection title="PIC" icon={<UserPlus size={13} />}>
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                Assigned To
-              </div>
-              <select
-                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
-                value={c.assigned_to ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  patch({ assigned_to: v ? parseInt(v, 10) : null });
-                }}
-              >
-                <option value="">— unassigned —</option>
-                {opsUserOptions.map((u) => (
-                  <option key={u.id} value={u.id}>{u.name}</option>
-                ))}
-              </select>
-            </div>
+          {/* Assigned To — Design PR 2. Unassigned uses a dashed
+              amber placeholder so it reads as "attention needed" from
+              across the page; picking a user snaps to the standard
+              filled select. */}
+          <PanelSection title="Assigned to" icon={<UserPlus size={13} />}>
+            <select
+              className={cn(
+                "w-full appearance-none rounded-md px-3 py-2 pr-8 text-[13px] outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20",
+                c.assigned_to == null
+                  ? "border border-dashed border-amber-500/60 bg-amber-50/60 font-semibold text-amber-800"
+                  : "border border-border bg-surface text-ink",
+              )}
+              value={c.assigned_to ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                patch({ assigned_to: v ? parseInt(v, 10) : null });
+              }}
+            >
+              <option value="">Unassigned — click to assign</option>
+              {opsUserOptions.map((u) => (
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
           </PanelSection>
 
-          {/* SLA — compact; whole card turns red when overdue */}
+          {/* SLA — Design PR 2. Full red card + big mono countdown +
+              progress bar when overdue. The subtitle keeps the deadline
+              date and priority tier for context. */}
           {(() => {
-            const breached = c.stage !== "completed" && c.is_breached === 1;
+            const closed = c.stage === "completed";
+            const breached = !closed && c.is_breached === 1;
+            const hasSla = c.deadline_at != null;
             const h = c.hours_to_deadline ?? 0;
-            const days = Math.round(Math.abs(h) / 24);
+            const absH = Math.abs(h);
+            const days = Math.floor(absH / 24);
+            const hours = Math.round(absH - days * 24);
+            const value = closed
+              ? "Closed"
+              : !hasSla
+              ? "No SLA set"
+              : `${days > 0 ? `${days}d ` : ""}${hours}h`;
+            const label = closed
+              ? ""
+              : !hasSla
+              ? ""
+              : breached
+              ? "Overdue by"
+              : "Time left";
+            const slaHours = c.sla_hours ?? 168;
+            const fillPct = closed
+              ? 0
+              : breached
+              ? 100
+              : hasSla
+              ? Math.min(100, Math.max(0, 100 - (h / slaHours) * 100))
+              : 0;
             return (
               <div
                 className={cn(
-                  "mb-3 rounded-lg border px-4 py-2.5 shadow-stone",
+                  "mb-3 rounded-lg border px-5 py-4 shadow-stone",
                   breached ? "border-err/40 bg-err/5" : "border-border bg-surface",
                 )}
               >
-                <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
-                  <Clock size={12} /> SLA
-                </div>
-                <div className="mt-0.5 text-[11.5px] text-ink-secondary">
-                  Deadline {c.deadline_at ? formatDate(c.deadline_at) : "—"} ·{" "}
-                  <span className="capitalize">{c.priority}</span>
-                </div>
-                <div className="mt-0.5 text-[14px] font-bold leading-tight">
-                  {c.stage === "completed" ? (
-                    <span className="text-synced">Closed</span>
-                  ) : breached ? (
-                    <span className="text-err">{days} {days === 1 ? "day" : "days"} overdue</span>
-                  ) : c.deadline_at ? (
-                    <span className="text-synced">{Math.max(0, Math.round(h / 24))} days left</span>
-                  ) : (
-                    <span className="text-ink-muted">No SLA set</span>
+                <div className="mb-3 flex items-center justify-between">
+                  <div
+                    className={cn(
+                      "flex items-center gap-1.5 text-[13px] font-bold",
+                      breached ? "text-err" : "text-ink",
+                    )}
+                  >
+                    <Clock size={13} /> SLA
+                  </div>
+                  {breached && (
+                    <span className="rounded bg-err px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-white">
+                      Overdue
+                    </span>
+                  )}
+                  {closed && (
+                    <span className="rounded bg-synced/15 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-synced">
+                      Closed
+                    </span>
                   )}
                 </div>
+                <div className="flex items-baseline justify-between">
+                  <span
+                    className={cn(
+                      "text-[12px]",
+                      breached ? "text-err/80" : "text-ink-secondary",
+                    )}
+                  >
+                    {label || "SLA"}
+                  </span>
+                  <span
+                    className={cn(
+                      "font-mono text-[20px] font-semibold leading-none",
+                      breached ? "text-err" : closed ? "text-synced" : "text-ink",
+                    )}
+                  >
+                    {value}
+                  </span>
+                </div>
+                {hasSla && !closed && (
+                  <>
+                    <div
+                      className={cn(
+                        "mt-2.5 h-2 overflow-hidden rounded-full",
+                        breached ? "bg-err/15" : "bg-border",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "h-full rounded-full transition-all",
+                          breached ? "bg-err" : "bg-synced",
+                        )}
+                        style={{ width: `${fillPct}%` }}
+                      />
+                    </div>
+                    <div
+                      className={cn(
+                        "mt-2 text-[11px]",
+                        breached ? "text-err/70" : "text-ink-muted",
+                      )}
+                    >
+                      Due {formatDate(c.deadline_at)} ·{" "}
+                      <span className="capitalize">{c.priority}</span> tier
+                    </div>
+                  </>
+                )}
               </div>
             );
           })()}
@@ -3408,16 +3488,16 @@ function DetailContent({
               </div>
             )}
 
-            {/* Filter pills (mig 064) — narrow the timeline to one
-                category. System events (stage changes, assignments)
-                live under 'system'. */}
-            <div className="mb-3 flex flex-wrap gap-1">
+            {/* Filter tabs — Design PR 2. Roles reflect who authored the
+                activity (Service = internal, Customer = via customer
+                portal, Supplier = via supplier portal). */}
+            <div className="mb-3 flex flex-wrap gap-1.5">
               {(
                 [
                   { value: "all" as const, label: "All" },
-                  { value: "purchasing" as const, label: "Purchasing" },
+                  { value: "service" as const, label: "Service" },
                   { value: "customer" as const, label: "Customer" },
-                  { value: "system" as const, label: "Service Admin" },
+                  { value: "supplier" as const, label: "Supplier" },
                 ]
               ).map((opt) => {
                 const active = activityFilter === opt.value;
@@ -3426,10 +3506,10 @@ function DetailContent({
                     key={opt.value}
                     onClick={() => setActivityFilter(opt.value)}
                     className={cn(
-                      "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors",
+                      "rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors",
                       active
-                        ? "border-accent bg-accent text-white"
-                        : "border-border text-ink-muted hover:border-accent/50 hover:text-ink",
+                        ? "bg-primary text-white"
+                        : "border border-border bg-bg text-ink-muted hover:text-ink",
                     )}
                   >
                     {opt.label}
@@ -3442,9 +3522,17 @@ function DetailContent({
                 each row anchors to a small ring marker so the eye can
                 trace the case's history at a glance. */}
             {(() => {
+              // Design PR 2 — derive an actor role from source_channel /
+              // action so the filter tabs and the per-entry pill agree.
+              const roleOf = (a: any): "customer" | "supplier" | "service" => {
+                const ch = a.source_channel;
+                if (ch === "customer_portal" || a.source === "customer" || a.action === "customer_comment") return "customer";
+                if (ch === "supplier_portal") return "supplier";
+                return "service";
+              };
               const rows = activity.filter((a: any) => {
                 if (activityFilter === "all") return true;
-                return (a.category ?? "system") === activityFilter;
+                return roleOf(a) === activityFilter;
               });
               if (rows.length === 0) {
                 return (
@@ -3541,6 +3629,7 @@ function DetailContent({
                         if (a.note) body = a.note;
                         break;
                     }
+                    const actorRole = roleOf(a);
                     return (
                       <li key={a.id} className="group relative">
                         <span
@@ -3548,9 +3637,11 @@ function DetailContent({
                             "absolute -left-5 top-1 h-3.5 w-3.5 rounded-full border-2 bg-surface",
                             isEscalated
                               ? "border-err"
-                              : isCustomer
-                                ? "border-accent"
-                                : "border-border"
+                              : actorRole === "customer"
+                                ? "border-amber-500"
+                                : actorRole === "supplier"
+                                  ? "border-primary"
+                                  : "border-border"
                           )}
                         />
                         <div className="flex items-center gap-2 text-[10.5px] text-ink-muted">
@@ -3587,22 +3678,18 @@ function DetailContent({
                             {title}
                           </div>
                         )}
-                        <div className="text-[10.5px] text-ink-muted">
-                          by {author}
-                          {a.category && a.source !== "customer" && (
-                            <span
-                              className={cn(
-                                "ml-1.5 inline-block rounded-full px-1.5 py-0 text-[9px] font-semibold uppercase tracking-wider align-middle",
-                                a.category === "purchasing" &&
-                                  "bg-amber-100 text-amber-800",
-                                a.category === "customer" &&
-                                  "bg-accent/15 text-accent",
-                                a.category === "system" && "bg-bg text-ink-muted"
-                              )}
-                            >
-                              {a.category === "system" ? "Service Admin" : a.category}
-                            </span>
-                          )}
+                        <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-ink-muted">
+                          <span
+                            className={cn(
+                              "rounded px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-wider",
+                              actorRole === "customer" && "bg-amber-100 text-amber-800",
+                              actorRole === "supplier" && "bg-primary/10 text-primary",
+                              actorRole === "service" && "bg-bg text-ink-secondary",
+                            )}
+                          >
+                            {actorRole === "service" ? "Service" : actorRole === "customer" ? "Customer" : "Supplier"}
+                          </span>
+                          <span>by {author}</span>
                         </div>
                         {body && (
                           <div
