@@ -20,9 +20,9 @@ interface AuthState {
 export type LoginResult = { kind: "ok" } | { kind: "totp"; challenge: string };
 
 interface AuthContextValue extends AuthState {
-  login: (email: string, password: string) => Promise<LoginResult>;
+  login: (email: string, password: string, remember?: boolean) => Promise<LoginResult>;
   /** Second step of a 2FA login — exchange the challenge + code for a session. */
-  verifyTotpLogin: (challenge: string, code: string) => Promise<void>;
+  verifyTotpLogin: (challenge: string, code: string, remember?: boolean) => Promise<void>;
   logout: () => Promise<void>;
   bootstrap: (email: string, name: string, password: string) => Promise<void>;
   acceptInvite: (token: string, name: string, password: string) => Promise<void>;
@@ -52,12 +52,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const fetchMe = useCallback(async () => {
-    try {
-      const res = await api.get<{ user: AuthUser }>("/api/auth/me");
-      setState((prev) => ({ ...prev, user: res.user, loading: false }));
-    } catch {
-      tokenStore.clear();
-      setState((prev) => ({ ...prev, user: null, loading: false }));
+    // Validate the stored token. CRUCIAL: only a genuine 401 means the session is
+    // gone — clear it and show login. A transient failure (cold-pool 503, a brief
+    // network drop, a timeout) must NOT wipe a still-valid 7-day session, or the
+    // user is logged out every time the app cold-starts. Retry a few times, and if
+    // it still fails, keep the token so a later reload re-validates in place.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await api.get<{ user: AuthUser }>("/api/auth/me");
+        setState((prev) => ({ ...prev, user: res.user, loading: false }));
+        return;
+      } catch (e) {
+        if ((e as { status?: number })?.status === 401) {
+          tokenStore.clear();
+          setState((prev) => ({ ...prev, user: null, loading: false }));
+          return;
+        }
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+        // Transient + exhausted: keep the token (do NOT log the user out); just
+        // drop the loading gate. A reload once the server is reachable restores them.
+        setState((prev) => ({ ...prev, loading: false }));
+        return;
+      }
     }
   }, []);
 
@@ -98,7 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(
-    async (email: string, password: string): Promise<LoginResult> => {
+    async (email: string, password: string, remember = true): Promise<LoginResult> => {
       const res = await api.post<{ token?: string; totp_required?: boolean; challenge?: string }>(
         "/api/auth/login",
         { email, password },
@@ -108,7 +127,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (res.totp_required && res.challenge) {
         return { kind: "totp", challenge: res.challenge };
       }
-      tokenStore.set(res.token!);
+      // remember → persist in localStorage (survives close); else session-only.
+      tokenStore.set(res.token!, remember);
       await fetchMe();
       await fetchStatus();
       return { kind: "ok" };
@@ -117,12 +137,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const verifyTotpLogin = useCallback(
-    async (challenge: string, code: string) => {
+    async (challenge: string, code: string, remember = true) => {
       const res = await api.post<{ token: string }>("/api/auth/totp/login", {
         challenge,
         code,
       });
-      tokenStore.set(res.token);
+      tokenStore.set(res.token, remember);
       await fetchMe();
       await fetchStatus();
     },

@@ -76,7 +76,7 @@ export function MobileLogin() {
     try {
       if (remember) localStorage.setItem(REMEMBER_KEY, email.trim());
       else localStorage.removeItem(REMEMBER_KEY);
-      const res = await login(email.trim(), password);
+      const res = await login(email.trim(), password, remember);
       if (res.kind === "totp") { setChallenge(res.challenge); setBusy(false); }
       // res.kind === "ok": AuthContext sets the user; AuthGate swaps to the app.
     } catch (e) {
@@ -89,7 +89,7 @@ export function MobileLogin() {
     if (busy || !challenge) return;
     setErr(null); setBusy(true);
     try {
-      await verifyTotpLogin(challenge, code.trim());
+      await verifyTotpLogin(challenge, code.trim(), remember);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Invalid code.");
       setBusy(false);

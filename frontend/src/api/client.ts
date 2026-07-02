@@ -24,19 +24,30 @@ const TOKEN_KEY = "auth:token";
 export const tokenStore = {
   get(): string {
     try {
-      return localStorage.getItem(TOKEN_KEY) || "";
+      // Persistent (Remember me) tokens live in localStorage; session-only ones in
+      // sessionStorage. Read either so a returning user is recognised.
+      return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || "";
     } catch {
       return "";
     }
   },
-  set(token: string) {
+  /** persistent = true (Remember me) → localStorage, survives browser close.
+   *  persistent = false → sessionStorage, cleared when the tab/app closes. */
+  set(token: string, persistent = true) {
     try {
-      localStorage.setItem(TOKEN_KEY, token);
+      if (persistent) {
+        localStorage.setItem(TOKEN_KEY, token);
+        sessionStorage.removeItem(TOKEN_KEY);
+      } else {
+        sessionStorage.setItem(TOKEN_KEY, token);
+        localStorage.removeItem(TOKEN_KEY);
+      }
     } catch {}
   },
   clear() {
     try {
       localStorage.removeItem(TOKEN_KEY);
+      sessionStorage.removeItem(TOKEN_KEY);
     } catch {}
   },
 };
