@@ -170,12 +170,10 @@
   /* Backwards-compat alias — some old components still reference --font-display */
   --font-display: var(--font-mark);
   --font-cn:      "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-  /* Commander 2026-05-29 — codes / SKUs / doc numbers should read in the same
-     system font as everything else (the monospace face looked like a different,
-     eye-straining typeface). Point --font-mono at the system stack so every
-     "code" chip across the app matches in one change. Column alignment that
-     needs fixed-width digits uses `font-variant-numeric: tabular-nums`. */
-  --font-mono:    var(--font-system);
+  /* Theme C type spec (Nick 2026-07-03): codes / SKUs / doc numbers use
+     IBM Plex Mono — the 金额/编号 role alongside --font-money. (Reverts
+     the 2026-05-29 sans alias.) */
+  --font-mono:    var(--font-money);
   /* Money / financial figures — IBM Plex Mono for ledger-grade tabular digits
      so amounts align by decimal across rows and in detail drawers. The ONLY
      web font reintroduced; used solely on amount cells via this token. */
