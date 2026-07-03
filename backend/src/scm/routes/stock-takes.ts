@@ -28,7 +28,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const stockTakes = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -246,10 +246,7 @@ stockTakes.post('/', async (c) => {
     return c.json({ error: 'scope_empty', reason: 'No SKUs match the chosen scope.' }, 400);
   }
 
-  const takeNo = await nextTakeNo(sb);
-
   const headerInsert: Record<string, unknown> = {
-    take_no:      takeNo,
     status:       'OPEN',
     warehouse_id: warehouseId,
     scope_type:   scopeType,
@@ -259,8 +256,11 @@ stockTakes.post('/', async (c) => {
   };
   if (body.takeDate) headerInsert.take_date = body.takeDate;
 
-  const { data: headerData, error: hErr } = await sb
-    .from('stock_takes').insert(headerInsert).select(HEADER).single();
+  const { data: headerData, error: hErr } = await insertWithDocNoRetry<{ id: string; take_no: string }>(
+    () => nextTakeNo(sb),
+    (takeNo) => sb
+      .from('stock_takes').insert({ take_no: takeNo, ...headerInsert }).select(HEADER).single(),
+  );
   if (hErr) {
     if (hErr.code === '42501') return c.json({ error: 'forbidden', reason: hErr.message }, 403);
     return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
