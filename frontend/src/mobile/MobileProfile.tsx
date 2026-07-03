@@ -37,7 +37,7 @@ import "./mobile.css";
  *  - Help & support      : static contact + guide rows.
  * ------------------------------------------------------------------ */
 
-type Screen = "home" | "personal" | "security" | "notif" | "language" | "help" | "team";
+type Screen = "home" | "personal" | "notif" | "language" | "help" | "team";
 
 // Subset of the /api/users row (TeamMember) we consume here. Every field
 // optional so a leaner/older backend never crashes the screen.
@@ -112,9 +112,6 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
   if (screen === "personal") {
     return <PersonalScreen onBack={() => setScreen("home")} myRow={myRow} />;
   }
-  if (screen === "security") {
-    return <SecurityScreen onBack={() => setScreen("home")} />;
-  }
   if (screen === "notif") {
     return <NotificationsScreen onBack={() => setScreen("home")} />;
   }
@@ -148,11 +145,13 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
   // declare it yet, so read through a cast; never render NaN.
   const points = Number((user as { points_balance?: number } | null)?.points_balance ?? 0);
 
-  // Designer layout VERBATIM (MobileProfile.tsx): dark header, dark identity
+  // Designer layout VERBATIM (v7 MobileProfile.tsx): dark header, dark identity
   // card with initials avatar + name/sub, a 2-card stat row, an Account card of
-  // plain rows, an App card, danger Log out, version line. Wired to our real
-  // /me + roster + /assr; sub-screens (Personal / Password / Notifications /
-  // Language / Help & Support / My Team) unchanged.
+  // plain rows (Personal details / Notifications / Language / My Team — matching
+  // the design's 4 rows, no Password row), an App card, danger Log out, version
+  // line. Wired to our real /me + roster + /assr. The stat cards keep honest,
+  // real-data labels (Open cases / Points) — this service ERP has no orders/sales
+  // MTD source, so we do NOT show the design's "Orders MTD / Sales MTD".
   return (
     <div className="hz-m screen" style={{ background: "var(--app-bg)" }}>
       <header className="hdr" style={{ background: "#15161a", borderBottom: "none" }}>
@@ -177,7 +176,6 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
         <div className="fld-l" style={{ margin: "6px 2px 8px" }}>Account</div>
         <div className="card">
           <Item label="Personal details" onClick={() => setScreen("personal")} />
-          <Item label="Password" onClick={() => setScreen("security")} />
           <Item label="Notifications" onClick={() => setScreen("notif")} />
           <Item label="Language" right="English" onClick={() => setScreen("language")} />
           <Item label="My Team" onClick={() => setScreen("team")} />
@@ -321,88 +319,6 @@ function PersonalScreen({ onBack, myRow }: { onBack: () => void; myRow: MemberRo
         </>
       )}
     </SubScreen>
-  );
-}
-
-// ── Password & security (self-service) ──
-// Change-password mirrors the desktop Profile page: POST /api/auth/me/password
-// { current, next }. The backend proves possession with the current password,
-// enforces its own strength rule, and revokes OTHER sessions (keeps this one).
-function SecurityScreen({ onBack }: { onBack: () => void }) {
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-
-  const changePw = useMutation({
-    mutationFn: (b: { current: string; next: string }) =>
-      api.post<{ ok: boolean }>("/api/auth/me/password", b),
-    onSuccess: () => {
-      setErr(null);
-      setDone(true);
-      setCurrent("");
-      setNext("");
-      setConfirm("");
-    },
-    onError: (e: any) =>
-      setErr(e?.message?.replace(/^\d+:\s*/, "") || "Couldn't change password. Try again."),
-  });
-
-  const submit = () => {
-    setDone(false);
-    if (!current.trim()) { setErr("Enter your current password."); return; }
-    if (next.length < 8) { setErr("New password must be at least 8 characters."); return; }
-    if (next !== confirm) { setErr("New passwords don't match."); return; }
-    setErr(null);
-    changePw.mutate({ current, next });
-  };
-
-  return (
-    <SubScreen title="Password & security" sub="Change your account password" onBack={onBack}>
-      <div style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 14, padding: 14 }}>
-        <PwField label="Current password" value={current} onChange={setCurrent} autoComplete="current-password" />
-        <PwField label="New password" value={next} onChange={setNext} autoComplete="new-password" />
-        <PwField label="Confirm new password" value={confirm} onChange={setConfirm} autoComplete="new-password" />
-        {err && <div style={{ fontSize: 11.5, color: "#b23a3a", marginTop: 10 }}>{err}</div>}
-        {done && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#2f8a5b", marginTop: 10, fontWeight: 600 }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2f8a5b" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-            Password changed. Other devices were signed out.
-          </div>
-        )}
-        <button
-          onClick={submit}
-          disabled={changePw.isPending}
-          style={{ width: "100%", marginTop: 14, background: "var(--teal)", color: "#fff", border: "none", borderRadius: 11, padding: "12px", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit", cursor: changePw.isPending ? "default" : "pointer", opacity: changePw.isPending ? 0.6 : 1 }}
-        >
-          {changePw.isPending ? "Saving…" : "Change password"}
-        </button>
-      </div>
-      <div style={{ fontSize: 11, color: "#9aa093", marginTop: 11, lineHeight: 1.5, padding: "0 2px" }}>
-        Changing your password signs out every other device.
-      </div>
-    </SubScreen>
-  );
-}
-
-function PwField({ label, value, onChange, autoComplete }: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  autoComplete: string;
-}) {
-  return (
-    <label style={{ display: "block", marginBottom: 12 }}>
-      <div style={kvLabel}>{label}</div>
-      <input
-        type="password"
-        value={value}
-        autoComplete={autoComplete}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ width: "100%", marginTop: 6, border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", fontFamily: "inherit", fontSize: 14, color: "var(--ink)", outline: "none" }}
-      />
-    </label>
   );
 }
 

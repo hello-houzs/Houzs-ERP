@@ -282,10 +282,10 @@ function CaseList({
   });
   const all = data?.data ?? [];
 
-  // Spec chips (service-list): All / Pending pickup / Item ready / Delivery / Completed.
+  // Design chips (m-service): All / Pending / Item ready / Delivery / Completed.
   const CHIPS: { key: string; label: string; match: (r: Any) => boolean }[] = [
     { key: "all", label: "All", match: () => true },
-    { key: "pending", label: "Pending pickup", match: (r) => ["pending_item_pickup", "pending_supplier_pickup", "pending_review", "under_verification", "pending_solution", "pending_inspection"].includes(stageOf(r)) },
+    { key: "pending", label: "Pending", match: (r) => ["pending_item_pickup", "pending_supplier_pickup", "pending_review", "under_verification", "pending_solution", "pending_inspection"].includes(stageOf(r)) },
     { key: "item_ready", label: "Item ready", match: (r) => stageOf(r) === "pending_item_ready" },
     { key: "delivery", label: "Delivery", match: (r) => stageOf(r) === "pending_delivery_service" },
     { key: "completed", label: "Completed", match: (r) => stageOf(r) === "completed" },
@@ -332,7 +332,7 @@ function CaseList({
                 <span className="chev">‹</span> Menu
               </button>
             ) : null}
-            <div className="eyebrow">Quality</div>
+            <div className="eyebrow">After-sales</div>
             <div className="scr-title">Service Cases</div>
           </div>
           <button onClick={onNew} className="iconbtn" aria-label="New service case">
@@ -368,20 +368,19 @@ function CaseList({
               const cancelled = statusOf(r).toLowerCase() === "cancelled";
               const sla = slaText(hoursToDeadline(r));
               const item = get(r, "itemDescription", "item_description", "itemCode", "item_code");
-              // Spec card: name + stage badge · case_no · product · issue · priority + SLA.
+              // Design card (.so-row): title(customer) + stage pill, then a
+              // .so-grid of the config field rows — Case · Item · Issue · SLA.
               return (
-                <div key={id} className="card" onClick={() => onOpen(id)} style={{ cursor: "pointer", ...(cancelled ? { opacity: 0.55, filter: "grayscale(.5)" } : null) }}>
-                  <div className="card-b" style={{ padding: "12px 13px" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                      <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", ...cellEllipsis }}>{customer(r)}</span>
-                      <span className={`badge ${stageBadgeClass(stageOf(r))}`} style={{ flex: "none" }}>{prettyStage(stageOf(r))}</span>
-                    </div>
-                    <div className="tnum" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5, ...cellEllipsis }}>{String(caseNo(r))}{item ? ` · ${String(item)}` : ""}</div>
-                    <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 6, ...cellEllipsis }}>{issueOf(r) ? String(issueOf(r)) : "—"}</div>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
-                      <span className={`badge ${priorityBadgeClass(priorityOf(r))}`}>{cap(priorityOf(r))}</span>
-                      {sla && <span style={{ fontSize: 11, fontWeight: 700, color: sla.overdue ? "var(--red)" : "var(--mut)" }}>{sla.label}</span>}
-                    </div>
+                <div key={id} className={`so-row${cancelled ? " cancelled" : ""}`} onClick={() => onOpen(id)} style={{ cursor: "pointer" }}>
+                  <div className="so-row-head" style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                    <span className="so-row-name" style={{ flex: 1, minWidth: 0, whiteSpace: "normal" }}>{customer(r)}</span>
+                    <span style={{ flex: "none" }}><span className={`badge ${stageBadgeClass(stageOf(r))}`}>{prettyStage(stageOf(r))}</span></span>
+                  </div>
+                  <div className="so-grid">
+                    <span className="so-k">Case</span><span className="so-v money">{String(caseNo(r))}</span>
+                    <span className="so-k">Item</span><span className="so-v">{item ? String(item) : "—"}</span>
+                    <span className="so-k">Issue</span><span className="so-v">{issueOf(r) ? String(issueOf(r)) : "—"}</span>
+                    <span className="so-k">SLA</span><span className="so-v" style={sla?.overdue ? { color: "var(--red)", fontWeight: 700 } : undefined}>{sla ? sla.label : "—"}</span>
                   </div>
                 </div>
               );
@@ -502,23 +501,6 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     return (lookupData?.items ?? []).filter((it) => !existing.has(it.item_code));
   }, [lookupData, items]);
 
-  // ── Change stage → POST /:id/transition (confirmed) ─────────────
-  const changeStage = async () => {
-    if (busy) return;
-    const cur = stageOf(c);
-    const target = await choose({
-      title: "Change stage to",
-      body: `Currently ${prettyStage(cur)}.`,
-      options: STAGES.filter((s) => s.key !== cur).map((s) => ({ value: s.key, label: s.label })),
-    });
-    if (!target) return;
-    const label = STAGES[STAGE_INDEX[target]]?.label ?? target;
-    if (!(await confirm({ title: `Move to ${label}?`, confirmLabel: "Change stage" }))) return;
-    await runWrite(async () => {
-      await api.post(`/api/assr/${id}/transition`, { stage: target });
-    }, "Stage change failed");
-  };
-
   // ── Print copy → 3 variants via /api/assr-print/:id?variant= ────
   const printCopy = async () => {
     const variant = await choose({
@@ -628,25 +610,26 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      {/* header (.hdr) — back + stage badge · eyebrow {case_no · priority} · customer */}
+      {/* header (.hdr) — design: back "‹ Cases" + Archive · eyebrow "Service
+          Case" · case_no (money) · customer. */}
       <header className="hdr">
         <div className="hdr-row">
           <button className="back" onClick={onBack}>
-            <span className="chev">‹</span> Service Cases
+            <span className="chev">‹</span> Cases
           </button>
           {!isLoading && !error && (
-            <span style={{ display: "flex", gap: 6, flex: "none" }}>
-              {isArchived && <span className="badge b-grey">Archived</span>}
-              <span className={`badge ${stageBadgeClass(stageOf(c))}`}>{prettyStage(stageOf(c))}</span>
-            </span>
+            isArchived ? (
+              <span className="badge b-grey" style={{ flex: "none" }}>Archived</span>
+            ) : (
+              <button onClick={archiveCase} disabled={busy} className="tinybtn" style={{ flex: "none", opacity: busy ? 0.5 : 1 }}>Archive</button>
+            )
           )}
         </div>
-        <div className="eyebrow tnum" style={{ marginTop: 7 }}>
-          {String(caseNo(c))}{priorityOf(c) ? ` · ${cap(priorityOf(c))}` : ""}
-        </div>
-        <div className="scr-title">
+        <div className="eyebrow" style={{ marginTop: 7 }}>Service Case</div>
+        <div className="scr-title money">{String(caseNo(c))}</div>
+        <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 3 }}>
           {customer(c)}
-          {assignedTo ? <span style={{ fontSize: 11.5, fontWeight: 400, color: "var(--mut)" }}> · Assigned {String(assignedTo)}</span> : null}
+          {assignedTo ? <span> · Assigned {String(assignedTo)}</span> : null}
         </div>
       </header>
 
@@ -655,17 +638,35 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load this case.</div>}
         {!isLoading && !error && (
           <>
-            {/* chip row (.spill) */}
-            <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 12 }}>
+            {/* status chip row — stage pill + SLA-overdue pill (design) */}
+            <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginBottom: 9 }}>
               <Spill colors={STAGE_PILL[stageOf(c)] ?? [FIELD_BG, MUTED]} dot>{prettyStage(stageOf(c))}</Spill>
-              <Spill colors={PRIORITY_PILL[priorityOf(c)] ?? PRIORITY_PILL.normal}>{cap(priorityOf(c))}</Spill>
-              {leadDays != null && <Spill colors={["#f3ece0", BROWN]}>Lead {Number(leadDays).toFixed(1)}d</Spill>}
-              {resolutionMethod && <Spill colors={["#e2f0e9", GREEN]}>{resolutionLabel(String(resolutionMethod))}</Spill>}
               {sla?.overdue && <Spill colors={["#f8eaea", RED]}>{sla.label}</Spill>}
             </div>
 
-            {/* Portal link (.tinybtn) — Print + Advance live in the actbar (spec) */}
+            {/* SLA banner — surfaced right below status (design) */}
+            <div style={{ display: "flex", alignItems: "center", gap: 9, background: sla?.overdue ? "#f8eaea" : FIELD_BG, border: `1px solid ${sla?.overdue ? "#f0d4d4" : "#e3e6e0"}`, borderRadius: 12, padding: "10px 13px", marginBottom: 12 }}>
+              <svg width="16" height="16" style={{ flex: "none" }} viewBox="0 0 24 24" fill="none" stroke={sla?.overdue ? RED : MUTED} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 8v4M12 16h.01" /></svg>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: sla?.overdue ? RED : "var(--ink-2)" }}>
+                  {sla ? (sla.overdue ? `SLA breached · ${sla.label}` : sla.label) : "No SLA deadline"}
+                </div>
+                <div style={{ fontSize: 11, color: sla?.overdue ? "#7a2222" : MUTED, marginTop: 1 }}>
+                  Deadline {dm(get(c, "deadlineAt", "deadline_at"))} · Priority {cap(priorityOf(c))}
+                </div>
+              </div>
+            </div>
+
+            {/* meta line — Priority / Lead time / Resolution (design inline) */}
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11, color: MUTED, marginBottom: 13 }}>
+              <span>Priority <b style={{ color: INK }}>{cap(priorityOf(c))}</b></span>
+              {leadDays != null && <span>Lead time <b style={{ color: INK }}>{Number(leadDays).toFixed(1)}d</b></span>}
+              {resolutionMethod && <span>Resolution <b style={{ color: INK }}>{resolutionLabel(String(resolutionMethod))}</b></span>}
+            </div>
+
+            {/* Print copy + Portal link (design .tinybtn row) */}
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <button onClick={printCopy} disabled={isLoading || !!error} className="tinybtn" style={{ flex: 1, padding: 9, opacity: isLoading || error ? 0.5 : 1 }}>Print copy</button>
               <button
                 onClick={async () => {
                   if (!portalToken) return;
@@ -685,52 +686,69 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               </button>
             </div>
 
-            {/* Workflow card — design VERBATIM framing (.card + "Workflow"
-                label). Our real 9-stage pipeline stays tap-to-jump (POST
-                /transition), so the dots keep the legend + interactivity. */}
-            <div className="card"><div className="card-b">
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <span className="fld-l" style={{ marginBottom: 0 }}>Workflow</span>
-                <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: GREEN }} /><span style={{ fontSize: 10, color: "var(--ink-2)" }}>Done</span></span>
-                  <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: RED }} /><span style={{ fontSize: 10, color: "var(--ink-2)" }}>Current</span></span>
-                </span>
-              </div>
-              <div className="hz-scroll" style={{ display: "flex", gap: 2, overflowX: "auto", paddingBottom: 4 }}>
-                {STAGES.map((s, i) => {
-                  const done = curStageIdx >= 0 && i < curStageIdx;
-                  const current = i === curStageIdx;
-                  const fg = done ? GREEN : current ? RED : MUTED;
-                  const jump = async () => {
-                    if (busy || current) return;
-                    if (!(await confirm({ title: `Move to ${s.label}?`, confirmLabel: "Change stage" }))) return;
-                    await runWrite(async () => {
-                      await api.post(`/api/assr/${id}/transition`, { stage: s.key });
-                    }, "Stage change failed");
-                  };
-                  return (
-                    <div key={s.key} className="pstage" onClick={jump} style={{ cursor: busy || current ? "default" : "pointer" }}>
-                      <span className="pdot" style={{
-                        background: done ? GREEN : current ? RED : "#fff",
-                        color: done || current ? "#fff" : GREY,
-                        border: done || current ? "none" : `2px solid ${LINE}`,
-                      }}>
-                        {done ? (
-                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-                        ) : (
-                          i + 1
-                        )}
-                      </span>
-                      <span style={{ fontSize: 8.5, fontWeight: current ? 800 : 600, color: fg, lineHeight: 1.1 }}>{s.label}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div></div>
+            {/* pipeline — Done/Current legend + 9-stage dots (design). Real
+                tap-to-jump (POST /transition) kept on each dot. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "0 2px 8px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: GREEN }} /><span style={{ fontSize: 10, color: "#414539" }}>Done</span></div>
+              <div style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: RED }} /><span style={{ fontSize: 10, color: "#414539" }}>Current</span></div>
+            </div>
+            <div className="hz-scroll" style={{ display: "flex", gap: 2, overflowX: "auto", padding: "4px 2px 10px" }}>
+              {STAGES.map((s, i) => {
+                const done = curStageIdx >= 0 && i < curStageIdx;
+                const current = i === curStageIdx;
+                const fg = done ? GREEN : current ? RED : MUTED;
+                const jump = async () => {
+                  if (busy || current) return;
+                  if (!(await confirm({ title: `Move to ${s.label}?`, confirmLabel: "Change stage" }))) return;
+                  await runWrite(async () => {
+                    await api.post(`/api/assr/${id}/transition`, { stage: s.key });
+                  }, "Stage change failed");
+                };
+                return (
+                  <div key={s.key} className="pstage" onClick={jump} style={{ cursor: busy || current ? "default" : "pointer" }}>
+                    <span className="pdot" style={{
+                      background: done ? GREEN : current ? RED : "#fff",
+                      color: done || current ? "#fff" : GREY,
+                      border: done || current ? "none" : `2px solid ${LINE}`,
+                    }}>
+                      {done ? (
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                      ) : (
+                        i + 1
+                      )}
+                    </span>
+                    <span style={{ fontSize: 8.5, fontWeight: current ? 800 : 600, color: fg, lineHeight: 1.1 }}>{s.label}</span>
+                  </div>
+                );
+              })}
+            </div>
 
-            {/* Issue (Edit → Save) — the complaint lives here as the editable
-                Complaint field. The redundant top "Reported issue" banner was
-                removed so the complaint text isn't shown twice. */}
+            {/* Advance stage to — inline select (design). Confirms, then POSTs
+                the transition; kept in sync with the actbar Advance button. */}
+            <label className="fld" style={{ marginBottom: 12 }}>
+              <span className="fld-l">Advance stage to</span>
+              <select
+                value={stageOf(c)}
+                disabled={busy || isArchived}
+                onChange={async (e) => {
+                  const target = e.target.value;
+                  if (!target || target === stageOf(c)) return;
+                  const label = STAGES[STAGE_INDEX[target]]?.label ?? target;
+                  if (!(await confirm({ title: `Move to ${label}?`, confirmLabel: "Change stage" }))) return;
+                  await runWrite(async () => {
+                    await api.post(`/api/assr/${id}/transition`, { stage: target });
+                  }, "Stage change failed");
+                }}
+                className="fld-i"
+              >
+                {STAGES.map((s) => (
+                  <option key={s.key} value={s.key}>{s.label}</option>
+                ))}
+              </select>
+            </label>
+
+            {/* Issue (Edit → Save) — Complaint / Issue category / Priority, and
+                the defect photo grid lives INSIDE this section (design). */}
             <EditableAcc
               title="Issue"
               open
@@ -743,18 +761,26 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               onSave={(body) => patchCase(body, "Couldn't save issue")}
             >
               <KV label="Status" value={statusOf(c) ? cap(statusOf(c).replace(/_/g, " ")) : "—"} />
+              {/* Photos / videos (design keeps these under Issue) → PUT /:id/attachments */}
+              <PhotoGrid caseId={id} attachments={attachments} onChanged={refetch} notify={notify} confirm={confirm} />
             </EditableAcc>
 
-            {/* Product & PO (design wording) */}
-            <Acc
-              title="Product & PO"
+            {/* Product info (design wording) — items + "+ Add item" + Product
+                category (editable) + PO No (read-only). */}
+            <EditableAcc
+              title="Product info"
               open
+              busy={busy}
+              fields={[
+                { key: "product_category", label: "Product category", value: get(c, "productCategory", "product_category"), type: "text" },
+              ]}
+              onSave={(body) => patchCase(body, "Couldn't save product info")}
               headSlot={
                 availableItems.length ? (
                   <span
                     onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) addItem(); }}
                     className="tinybtn"
-                    style={{ marginLeft: "auto", color: BROWN, opacity: busy ? 0.5 : 1 }}
+                    style={{ color: BROWN, opacity: busy ? 0.5 : 1 }}
                   >
                     + Add item
                   </span>
@@ -780,43 +806,55 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               )) : (
                 <div style={{ fontSize: 12, color: GREY, padding: "2px 0" }}>No items recorded.</div>
               )}
-              <KV label="PO No" value={relatedPOs.map((p) => String(get(p, "docNo", "doc_no") ?? "")).filter(Boolean).join(", ") || "—"} mono />
-            </Acc>
+              <KV label="PO No" value={(poNo ? [String(poNo)] : []).concat(relatedPOs.map((p) => String(get(p, "docNo", "doc_no") ?? "")).filter(Boolean)).join(", ") || "—"} mono />
+            </EditableAcc>
 
-            {/* Under Verification (brown left-border) — verification_outcome + verified_root_cause */}
-            <EditableAcc
-              title="Verification"
-              open
-              accent={BROWN}
-              note="on receipt"
-              busy={busy}
-              fields={[
-                { key: "verification_outcome", label: "Outcome", value: get(c, "verificationOutcome", "verification_outcome"), type: "select", options: [{ value: "", label: "Not verified yet" }, ...VERIFICATION_OPTIONS.map((o) => ({ value: o.value, label: o.label }))] },
-                { key: "verified_root_cause", label: "Root cause", value: get(c, "verifiedRootCause", "verified_root_cause"), type: "textarea" },
-              ]}
-              onSave={(body) => patchCase(body, "Couldn't save verification")}
-            >
+            {/* Issue inspection (brown left-border, "on receipt") — Outcome as
+                design pick-buttons + Root cause + verified-by note. */}
+            <Acc title="Issue inspection" open accent={BROWN} note="on receipt">
+              <div className="fld-l">Outcome</div>
+              <div style={{ display: "flex", gap: 7, margin: "6px 0 10px", flexWrap: "wrap" }}>
+                {VERIFICATION_OPTIONS.map((o) => {
+                  const active = String(get(c, "verificationOutcome", "verification_outcome") ?? "") === o.value;
+                  return (
+                    <button
+                      key={o.value}
+                      onClick={() => { if (!busy && !active) patchCase({ verification_outcome: o.value }, "Couldn't save verification"); }}
+                      disabled={busy}
+                      className="tinybtn"
+                      style={active ? { background: TEAL, borderColor: TEAL, color: "#fff" } : undefined}
+                    >
+                      {o.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <RootCauseField
+                value={get(c, "verifiedRootCause", "verified_root_cause")}
+                busy={busy}
+                onSave={(v) => patchCase({ verified_root_cause: v || null }, "Couldn't save verification")}
+              />
               {get(c, "verifiedByName", "verified_by_name") && (
                 <div style={{ fontSize: 10.5, color: MUTED, background: FIELD_BG, borderRadius: 9, padding: "8px 10px", marginTop: 8 }}>
                   Verified by {String(get(c, "verifiedByName", "verified_by_name"))} · {dm(get(c, "verifiedAt", "verified_at"))}
                 </div>
               )}
-            </EditableAcc>
+            </Acc>
 
-            {/* Resolution + supplier */}
+            {/* Resolution + supplier (design) — method + supplier card (Open →)
+                + Supplier status update + Supplier pickup date. */}
             <EditableAcc
               title="Resolution"
               open
               busy={busy}
               fields={[
                 { key: "resolution_method", label: "Resolution method", value: resolutionMethod, type: "select", options: [{ value: "", label: "—" }, ...resolutionOptions.map((o) => ({ value: o, label: resolutionLabel(o) }))] },
-                { key: "action_remark", label: "Action remark", value: get(c, "actionRemark", "action_remark"), type: "textarea" },
-                { key: "customer_pickup_at", label: "Customer pickup date", value: get(c, "customerPickupAt", "customer_pickup_at"), type: "date" },
+                { key: "action_remark", label: "Supplier status update", value: get(c, "actionRemark", "action_remark"), type: "textarea" },
                 { key: "supplier_pickup_at", label: "Supplier pickup date", value: get(c, "supplierPickupAt", "supplier_pickup_at"), type: "date" },
               ]}
               onSave={(body) => patchCase(body, "Couldn't save resolution")}
             >
-              {/* Supplier / creditor — read-only. */}
+              {/* Supplier / creditor — read-only card with Open → (design). */}
               <div className="fld-l" style={{ marginTop: 8 }}>Supplier</div>
               {creditorCode ? (
                 <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid #e3e6e0`, borderRadius: 10, padding: "10px 11px", marginTop: 5 }}>
@@ -828,13 +866,10 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               ) : (
                 <div style={{ fontSize: 11, color: GREY, marginTop: 5 }}>No supplier linked.</div>
               )}
-
-              {/* Procurement / PO — read-only. */}
-              <div className="fld-l" style={{ marginTop: 12 }}>PO No</div>
-              <KV label="PO number" value={poNo ? String(poNo) : "—"} mono />
             </EditableAcc>
 
-            {/* QC inspection (green left-border, "after repair") — inspection_result + items_ready_at */}
+            {/* QC inspection (green left-border, "after repair") — QC result +
+                QC inspection date + hint + Upload inspection report. */}
             <EditableAcc
               title="QC inspection"
               accent={GREEN}
@@ -847,24 +882,24 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               onSave={(body) => patchCase(body, "Couldn't save QC result")}
             >
               <div style={{ fontSize: 10, color: GREY, marginTop: 2 }}>Pass + date → becomes the Item Ready date. Fail → stays pending.</div>
+              <QcReportUpload caseId={id} onChanged={refetch} notify={notify} />
             </EditableAcc>
 
-            {/* Defect photos / videos → PUT /:id/attachments */}
-            <PhotoGrid caseId={id} attachments={attachments} onChanged={refetch} notify={notify} confirm={confirm} />
-
-            {/* Reference & logistics (Edit → Save) */}
+            {/* Reference & logistics — Delivery date + (customer) Pickup date
+                two-up (design). Distinct columns from Resolution's supplier
+                pickup so no field is double-bound. */}
             <EditableAcc
               title="Reference & logistics"
               busy={busy}
               fields={[
-                { key: "ref_no", label: "Ref No", value: get(c, "refNo", "ref_no"), type: "text" },
-                { key: "delivery_order", label: "Delivery order", value: get(c, "deliveryOrder", "delivery_order"), type: "text" },
-                { key: "do_date", label: "DO date", value: get(c, "doDate", "do_date"), type: "date" },
+                { key: "do_date", label: "Delivery date", value: get(c, "doDate", "do_date"), type: "date" },
+                { key: "customer_pickup_at", label: "Pickup date", value: get(c, "customerPickupAt", "customer_pickup_at"), type: "date" },
               ]}
               onSave={(body) => patchCase(body, "Couldn't save reference")}
             />
 
-            {/* Customer (Edit → Save, .pgrid2 read view) */}
+            {/* Customer (Edit → Save, .pgrid2 read view — design field set:
+                SO No, Ref No, Customer, Phone, Location, Agent, Date, Address). */}
             <EditableAcc
               title="Customer"
               open
@@ -878,32 +913,33 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               ]}
               onSave={(body) => patchCase(body, "Couldn't save customer")}
             >
-              {/* Read-only extras (desktop parity): Ref No + full address. */}
-              <KV label="Ref No" value={String(get(c, "refNo", "ref_no") ?? "—")} mono />
-              <KV
-                label="Address"
-                value={
-                  [get(c, "addr1"), get(c, "addr2"), get(c, "addr3"), get(c, "addr4")]
-                    .filter(Boolean)
-                    .join(", ") || "—"
-                }
-                multiline
-              />
               <div className="pgrid2">
                 <PGrid label="SO No" value={String(get(c, "docNo", "doc_no") ?? "—")} mono />
+                <PGrid label="Ref No" value={String(get(c, "refNo", "ref_no") ?? "—")} mono />
                 <PGrid label="Date" value={dm(get(c, "complainedDate", "complained_date", "createdAt", "created_at"))} />
+                <PGrid
+                  label="Address"
+                  span
+                  multiline
+                  value={
+                    [get(c, "addr1"), get(c, "addr2"), get(c, "addr3"), get(c, "addr4")]
+                      .filter(Boolean)
+                      .join(", ") || "—"
+                  }
+                />
               </div>
             </EditableAcc>
 
-            {/* PIC — Assign (reassign assigned_to via PATCH /:id, desktop parity) */}
+            {/* PIC — right-header = current assignee; Assign reassigns via PATCH */}
             <Acc
               title="PIC"
               open
+              headRight={assignedTo ? String(assignedTo) : "Unassigned"}
               headSlot={
                 <span
                   onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) assignPic(); }}
                   className="tinybtn"
-                  style={{ marginLeft: "auto", color: BROWN, opacity: busy ? 0.5 : 1 }}
+                  style={{ color: BROWN, opacity: busy ? 0.5 : 1 }}
                 >
                   Assign
                 </span>
@@ -913,22 +949,20 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               <KV label="Created by" value={String(get(c, "createdByName", "created_by_name") ?? "—")} />
             </Acc>
 
-            {/* SLA banner */}
-            <div style={{ background: sla?.overdue ? "#f8eaea" : FIELD_BG, border: `1px solid ${sla?.overdue ? "#f0d4d4" : "#e3e6e0"}`, borderRadius: 13, padding: "12px 14px", marginBottom: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={sla?.overdue ? RED : MUTED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
-                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: sla?.overdue ? RED : MUTED }}>SLA</span>
-              </div>
-              <div style={{ fontSize: 12, color: sla?.overdue ? "#7a2222" : "var(--ink-2)", marginTop: 5 }}>
-                Deadline {dm(get(c, "deadlineAt", "deadline_at"))} · {cap(priorityOf(c))}
-              </div>
-              {sla && (
-                <div style={{ fontSize: 15, fontWeight: 800, color: sla.overdue ? RED : GREEN, marginTop: 2 }}>{sla.label}</div>
-              )}
-            </div>
-
-            {/* Timeline (.pacc) with audience chips + add-note + rbadge rows */}
-            <Acc title="Timeline" open>
+            {/* Timeline (.pacc) with "+ Add note" header, audience chips + rows */}
+            <Acc
+              title="Timeline"
+              open
+              headSlot={
+                <span
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); const el = document.getElementById(`svc-note-${id}`); el?.focus(); }}
+                  className="tinybtn"
+                  style={{ background: BROWN, borderColor: BROWN, color: "#fff" }}
+                >
+                  + Add note
+                </span>
+              }
+            >
               {timelineCats.length > 1 && (
                 <div className="hz-scroll" style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 6, paddingBottom: 2 }}>
                   {timelineCats.map((cat) => {
@@ -957,6 +991,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               {/* add note input */}
               <div style={{ display: "flex", gap: 7, marginBottom: 4 }}>
                 <input
+                  id={`svc-note-${id}`}
                   value={noteDraft}
                   onChange={(e) => setNoteDraft(e.target.value)}
                   placeholder={noteAudience === "customer" ? "Add a customer-visible note" : "Add an internal note"}
@@ -1002,13 +1037,6 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
           </>
         )}
       </div>
-
-      {/* actbar (spec #service-detail) — Archive/Print (ghost) + Advance (primary). */}
-      <footer className="actbar" style={{ display: "flex", gap: 9 }}>
-        <button onClick={archiveCase} disabled={busy || isLoading || !!error || isArchived} className="btn-ghost" style={{ flex: 1, opacity: busy || isLoading || error || isArchived ? 0.5 : 1 }}>Archive</button>
-        <button onClick={printCopy} disabled={isLoading || !!error} className="btn-ghost" style={{ flex: 1, opacity: isLoading || error ? 0.5 : 1 }}>Print</button>
-        <button onClick={changeStage} disabled={busy || isLoading || !!error || isArchived} className="btn" style={{ flex: 1.4, opacity: busy || isLoading || error || isArchived ? 0.5 : 1 }}>Advance stage →</button>
-      </footer>
     </div>
   );
 }
@@ -1123,69 +1151,84 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   return (
     <div className="hz-m" style={{ position: "absolute", inset: 0, zIndex: 20, background: "rgba(17,20,15,.4)", display: "flex", flexDirection: "column", justifyContent: "flex-end" }} onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--app-bg)", borderTopLeftRadius: 18, borderTopRightRadius: 18, maxHeight: "92%", display: "flex", flexDirection: "column", paddingBottom: "env(safe-area-inset-bottom)" }}>
-        {/* header (.hdr) — back "Cancel" + title (spec #service-new) */}
+        {/* header (.hdr) — design: eyebrow "Document" + title, top-right × close */}
         <header className="hdr" style={{ borderTopLeftRadius: 18, borderTopRightRadius: 18 }}>
-          <div className="hdr-row">
-            <button className="back" onClick={onClose}>
-              <span className="chev">‹</span> Cancel
-            </button>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div className="eyebrow">Document</div>
+              <div className="scr-title" style={{ marginTop: 2 }}>New Service Case</div>
+            </div>
+            <span onClick={onClose} role="button" aria-label="Close" style={{ fontSize: 24, color: MUTED, cursor: "pointer", lineHeight: 1 }}>×</span>
           </div>
-          <div className="scr-title">New Service Case</div>
         </header>
 
-        <div className="scroll hz-scroll" style={{ padding: 14, display: "flex", flexDirection: "column", gap: 11 }}>
-          {/* Customer / SO + Product + Issue card (.card) */}
-          <div className="card"><div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-            {/* SO picker — real search-so lookup, not free text. */}
-            <div className="fld" style={{ position: "relative" }}>
-              <span className="fld-l">Customer / SO lookup *</span>
-              {soPicked ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid ${TEAL}`, borderRadius: 10, padding: "9px 11px", background: FIELD_BG }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="money" style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(soPicked, "docNo", "doc_no"))}</div>
-                    <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(soPicked, "debtorName", "debtor_name") ?? "—")}</div>
-                  </div>
-                  <button onClick={clearSo} aria-label="Change SO" className="tinybtn" style={{ flex: "none", padding: "3px 9px" }}>Change</button>
-                </div>
-              ) : (
-                <>
-                  <input value={soQuery} onChange={(e) => setSoQuery(e.target.value)} placeholder="Search SO no or customer (2+ chars)" className="fld-i money" />
-                  {soQuery.trim().length >= 2 && (
-                    <div style={{ marginTop: 5, border: `1px solid #e3e6e0`, borderRadius: 10, overflow: "hidden", maxHeight: 190, overflowY: "auto" }} className="hz-scroll">
-                      {soLoading && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>Searching…</div>}
-                      {!soLoading && !soResults.length && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>No matching sales orders.</div>}
-                      {soResults.map((hit, i) => (
-                        <button
-                          key={String(get(hit, "docNo", "doc_no")) + i}
-                          onClick={() => pickSo(hit)}
-                          style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderTop: i ? "1px solid #eceee9" : "none", background: "#fff", padding: "9px 11px", cursor: "pointer" }}
-                        >
-                          <div className="money" style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(hit, "docNo", "doc_no"))}</div>
-                          <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(hit, "debtorName", "debtor_name") ?? "—")}{get(hit, "phone") ? ` · ${String(get(hit, "phone"))}` : ""}</div>
-                        </button>
-                      ))}
+        <div className="scroll hz-scroll" style={{ padding: 14 }}>
+          {/* ── Sales Order card (.so-card) — SO lookup + affected product ── */}
+          <div className="so-card">
+            <div className="so-hd"><h2 className="so-ti">Sales Order</h2></div>
+            <div className="so-bd">
+              {/* SO picker — real search-so lookup, presented as the design's
+                  "SO # / reference / customer" field + Lookup affordance. */}
+              <div className="fld" style={{ position: "relative" }}>
+                <span className="fld-l">SO # / reference / customer *</span>
+                {soPicked ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid ${TEAL}`, borderRadius: 10, padding: "9px 11px", background: FIELD_BG }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="money" style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(soPicked, "docNo", "doc_no"))}</div>
+                      <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(soPicked, "debtorName", "debtor_name") ?? "—")}</div>
                     </div>
-                  )}
-                </>
-              )}
+                    <button onClick={clearSo} aria-label="Change SO" className="tinybtn" style={{ flex: "none", padding: "3px 9px" }}>Change</button>
+                  </div>
+                ) : (
+                  <>
+                    <input value={soQuery} onChange={(e) => setSoQuery(e.target.value)} placeholder="SO #, reference, or customer name…" className="fld-i money" />
+                    {soQuery.trim().length >= 2 && (
+                      <div style={{ marginTop: 5, border: `1px solid #e3e6e0`, borderRadius: 10, overflow: "hidden", maxHeight: 190, overflowY: "auto" }} className="hz-scroll">
+                        {soLoading && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>Searching…</div>}
+                        {!soLoading && !soResults.length && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>No matching sales orders.</div>}
+                        {soResults.map((hit, i) => (
+                          <button
+                            key={String(get(hit, "docNo", "doc_no")) + i}
+                            onClick={() => pickSo(hit)}
+                            style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderTop: i ? "1px solid #eceee9" : "none", background: "#fff", padding: "9px 11px", cursor: "pointer" }}
+                          >
+                            <div className="money" style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(hit, "docNo", "doc_no"))}</div>
+                            <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(hit, "debtorName", "debtor_name") ?? "—")}{get(hit, "phone") ? ` · ${String(get(hit, "phone"))}` : ""}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              {/* Affected product — SO line-item picker when the SO is known;
+                  free text otherwise. Backend requires at least one item_code. */}
+              <label className="fld">
+                <span className="fld-l">Affected product *</span>
+                {soItems.length ? (
+                  <select value={itemCode} onChange={(e) => setItemCode(e.target.value)} className="fld-i money">
+                    <option value="">— select item —</option>
+                    {soItems.map((it, i) => {
+                      const code = String(get(it, "itemCode", "item_code") ?? "");
+                      const desc = get(it, "itemDescription", "item_description");
+                      return <option key={code + i} value={code}>{code}{desc ? ` — ${String(desc)}` : ""}</option>;
+                    })}
+                  </select>
+                ) : (
+                  <input value={itemCode} onChange={(e) => setItemCode(e.target.value)} placeholder="Affected item code — e.g. AK-GUARDIAN MATT (K)" className="fld-i money" />
+                )}
+              </label>
             </div>
-            {/* Product — SO line-item picker when the SO is known; free text otherwise. */}
-            <label className="fld">
-              <span className="fld-l">Product *</span>
-              {soItems.length ? (
-                <select value={itemCode} onChange={(e) => setItemCode(e.target.value)} className="fld-i money">
-                  <option value="">— select item —</option>
-                  {soItems.map((it, i) => {
-                    const code = String(get(it, "itemCode", "item_code") ?? "");
-                    const desc = get(it, "itemDescription", "item_description");
-                    return <option key={code + i} value={code}>{code}{desc ? ` — ${String(desc)}` : ""}</option>;
-                  })}
-                </select>
-              ) : (
-                <input value={itemCode} onChange={(e) => setItemCode(e.target.value)} placeholder="Affected item code — e.g. AK-GUARDIAN MATT (K)" className="fld-i money" />
-              )}
-            </label>
-            <div className="fld-row">
+          </div>
+
+          {/* ── Issue card (.so-card) — description, category, priority ── */}
+          <div className="so-card">
+            <div className="so-hd"><h2 className="so-ti">Issue</h2></div>
+            <div className="so-bd">
+              <label className="fld">
+                <span className="fld-l">Issue description *</span>
+                <textarea value={complaint} onChange={(e) => setComplaint(e.target.value)} rows={3} placeholder="Describe the issue…" className="fld-i" style={{ resize: "none" }} />
+              </label>
               <label className="fld">
                 <span className="fld-l">Issue category *</span>
                 <select value={category} onChange={(e) => setCategory(e.target.value)} className="fld-i">
@@ -1204,21 +1247,14 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                 </select>
               </label>
             </div>
-            <label className="fld">
-              <span className="fld-l">Issue description *</span>
-              <textarea value={complaint} onChange={(e) => setComplaint(e.target.value)} rows={3} placeholder="Describe the defect / fault" className="fld-i" style={{ resize: "none" }} />
-            </label>
-          </div></div>
+          </div>
 
-          {/* Attachments (.card) — up to 5, uploaded after create */}
-          <div className="card">
-            <div className="card-h">
-              <span className="card-t">Attachments</span>
-              <span className="card-sub">{files.length} / 5</span>
-            </div>
-            <div className="card-b">
+          {/* ── Defect photos / videos card (.so-card) — up to 5, uploaded after create ── */}
+          <div className="so-card">
+            <div className="so-hd"><h2 className="so-ti">Defect photos / videos</h2><span className="so-sub">{files.length} / 5</span></div>
+            <div className="so-bd">
               {files.length > 0 && (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7, marginBottom: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7 }}>
                   {files.map((f, i) => (
                     <div key={i} style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid #e3e6e0`, display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}>
                       <span style={{ fontSize: 9, color: MUTED, textAlign: "center", wordBreak: "break-word", lineHeight: 1.2 }}>{f.name}</span>
@@ -1234,13 +1270,13 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                 </div>
               )}
               {files.length < 5 && (
-                <label style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, border: "1px dashed var(--mut2)", borderRadius: 11, padding: 18, background: "var(--bg)", cursor: "pointer" }}>
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={TEAL} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--brand)" }}>Add photo / video / PDF</span>
+                <label style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, border: "1px dashed #c2c6bd", borderRadius: 11, padding: 18, background: FIELD_BG, cursor: "pointer" }}>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={TEAL} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M7 9l5-5 5 5" /><path d="M5 20h14" /></svg>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: TEAL }}>Add Photos / Videos</span>
                   <input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf" multiple style={{ display: "none" }} onChange={onPickFiles} />
                 </label>
               )}
-              <div style={{ fontSize: 10, color: "var(--mut2)", marginTop: 7, textAlign: "center" }}>JPG / PNG / WEBP / MP4 / PDF · 5MB each · up to 5</div>
+              <div style={{ fontSize: 10, color: GREY, marginTop: 7, textAlign: "center" }}>JPG / PNG / WEBP / MP4 / PDF · 5MB each · up to 5 files · drag, drop, or paste</div>
             </div>
           </div>
 
@@ -1259,7 +1295,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
               ? uploadProgress
                 ? `Uploading ${uploadProgress.done}/${uploadProgress.total}…`
                 : "Creating…"
-              : "Create case"}
+              : "Create Case"}
           </button>
         </footer>
       </div>
@@ -1295,9 +1331,10 @@ function Acc({
     <details className="pacc" open={open} style={accent ? { borderLeft: `3px solid ${accent}` } : undefined}>
       <summary>
         <span className="psec-t">{title}</span>
+        {/* first right-side element gets the auto margin so it hugs the right */}
         {note && <span style={{ marginLeft: "auto", fontSize: 10, color: GREY }}>{note}</span>}
-        {headRight && <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 600, color: INK }}>{headRight}</span>}
-        {headSlot}
+        {headRight && <span style={{ marginLeft: note ? 0 : "auto", fontSize: 11, fontWeight: 600, color: INK }}>{headRight}</span>}
+        {headSlot && <span style={{ marginLeft: note || headRight ? 8 : "auto", display: "inline-flex" }}>{headSlot}</span>}
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: note || headRight || headSlot ? 0 : "auto" }}><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">{children}</div>
@@ -1377,6 +1414,7 @@ function EditableAcc({
   open,
   accent,
   note,
+  headSlot,
   children,
 }: {
   title: string;
@@ -1386,6 +1424,7 @@ function EditableAcc({
   open?: boolean;
   accent?: string;
   note?: string;
+  headSlot?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
@@ -1422,8 +1461,9 @@ function EditableAcc({
       <summary>
         <span className="psec-t">{title}</span>
         {note && !editing && <span style={{ marginLeft: "auto", fontSize: 10, color: GREY, marginRight: 8 }}>{note}</span>}
+        {headSlot && !editing && <span style={{ marginLeft: note ? 0 : "auto", marginRight: 8, display: "inline-flex" }}>{headSlot}</span>}
         {!editing && (
-          <span onClick={startEdit} className="tinybtn" style={{ marginLeft: note ? 0 : "auto" }}>Edit</span>
+          <span onClick={startEdit} className="tinybtn" style={{ marginLeft: note || headSlot ? 0 : "auto" }}>Edit</span>
         )}
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
@@ -1510,6 +1550,83 @@ function isoDateOnly(v: any): string {
   return dt.toISOString().slice(0, 10);
 }
 
+// ── Root cause inline field (Issue inspection) — text input with a Save
+// affordance that patches verified_root_cause. Kept separate from the
+// EditableAcc grid because the design renders it under the Outcome buttons.
+function RootCauseField({ value, busy, onSave }: { value: any; busy: boolean; onSave: (v: string) => Promise<void> }) {
+  const initial = value == null ? "" : String(value);
+  const [draft, setDraft] = useState(initial);
+  const [lastInitial, setLastInitial] = useState(initial);
+  // Re-sync the draft when the underlying value changes (after a refetch)
+  // and the user hasn't diverged from the previously-seen value.
+  if (initial !== lastInitial) {
+    setLastInitial(initial);
+    setDraft(initial);
+  }
+  const dirty = draft.trim() !== initial.trim();
+  return (
+    <label className="fld">
+      <span className="fld-l">Root cause</span>
+      <div style={{ display: "flex", gap: 7 }}>
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          className="fld-i"
+          style={{ flex: 1, minWidth: 0 }}
+          placeholder="Verified root cause"
+        />
+        {dirty && (
+          <button
+            onClick={() => onSave(draft.trim())}
+            disabled={busy}
+            className="tinybtn"
+            style={{ flex: "none", background: TEAL, borderColor: TEAL, color: "#fff", opacity: busy ? 0.6 : 1 }}
+          >
+            {busy ? "…" : "Save"}
+          </button>
+        )}
+      </div>
+    </label>
+  );
+}
+
+// ── QC inspection report upload → PUT /:id/attachments?category=qc ──
+// Design's "Upload inspection report" button. Streams a single file to the
+// same raw-binary attachments endpoint used elsewhere, tagged category=qc.
+function QcReportUpload({ caseId, onChanged, notify }: { caseId: number; onChanged: () => void; notify: ReturnType<typeof useNotify> }) {
+  const [uploading, setUploading] = useState(false);
+  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = (e.target.files ?? [])[0];
+    e.target.value = "";
+    if (!file) return;
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ATTACH_EXTS.has(ext)) {
+      await notify({ title: "Unsupported file", body: "Allowed: JPG, PNG, WEBP, MP4, PDF.", tone: "error" });
+      return;
+    }
+    setUploading(true);
+    try {
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/assr/${caseId}/attachments?category=qc&ext=${ext}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      onChanged();
+    } catch (err: any) {
+      await notify({ title: "Upload failed", body: err?.message || "Please try again.", tone: "error" });
+    } finally {
+      setUploading(false);
+    }
+  };
+  return (
+    <label className="tinybtn" style={{ display: "inline-flex", marginTop: 9, cursor: uploading ? "default" : "pointer", opacity: uploading ? 0.6 : 1 }}>
+      {uploading ? "Uploading…" : "↑ Upload inspection report"}
+      <input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf" style={{ display: "none" }} disabled={uploading} onChange={onPick} />
+    </label>
+  );
+}
+
 // ── Defect photos / videos grid → PUT /:id/attachments ────────────
 // Shows every non-archived attachment as an auth-fetched thumbnail
 // (blob URL) and lets staff capture / pick up to 5 more per batch.
@@ -1583,41 +1700,33 @@ function PhotoGrid({
     }
   };
 
+  // Design: rendered INSIDE the Issue section as a "Photos / videos (N)"
+  // label + a 3-column grid whose last cell is a dashed "Add" tile.
   return (
-    <Acc
-      title="Defect photos / videos"
-      open
-      headRight={`${attachments.length}`}
-    >
-      {attachments.length ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7, marginBottom: 10 }}>
-          {attachments.map((att, i) => (
-            <AttachThumb key={get(att, "id") ?? i} att={att} onArchive={() => archive(att)} />
-          ))}
-        </div>
-      ) : (
-        <div style={{ fontSize: 12, color: GREY, padding: "2px 0 10px" }}>No photos or videos yet.</div>
-      )}
-      <label style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, background: TEAL, borderRadius: 13, padding: 13, cursor: uploading ? "default" : "pointer", opacity: uploading ? 0.6 : 1 }}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
-          <circle cx="12" cy="13" r="3" />
-        </svg>
-        <span style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>
-          {uploading ? `Uploading ${uploading.done}/${uploading.total}…` : "Add photos / videos"}
-        </span>
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf"
-          multiple
-          style={{ display: "none" }}
-          disabled={!!uploading}
-          onChange={onPick}
-        />
-      </label>
-      <div style={{ fontSize: 10, color: GREY, marginTop: 6 }}>Up to 5 per batch · JPG / PNG / WEBP / MP4 / PDF.</div>
-    </Acc>
+    <>
+      <div className="fld-l" style={{ marginTop: 8 }}>Photos / videos ({attachments.length})</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginTop: 6 }}>
+        {attachments.map((att, i) => (
+          <AttachThumb key={get(att, "id") ?? i} att={att} onArchive={() => archive(att)} />
+        ))}
+        <label style={{ border: "1px dashed #c2c6bd", borderRadius: 11, aspectRatio: "1", background: FIELD_BG, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, cursor: uploading ? "default" : "pointer", opacity: uploading ? 0.6 : 1 }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={TEAL} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
+            <circle cx="12" cy="13" r="3" />
+          </svg>
+          <span style={{ fontSize: 9, fontWeight: 700, color: TEAL }}>{uploading ? `${uploading.done}/${uploading.total}` : "Add"}</span>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf"
+            multiple
+            style={{ display: "none" }}
+            disabled={!!uploading}
+            onChange={onPick}
+          />
+        </label>
+      </div>
+    </>
   );
 }
 
