@@ -125,6 +125,9 @@ the current-state reference.
 ### Project Maintenance (DESKTOP)
 56. The 6 config managers (Brands, Event Types, Organizers, **Venues**, Cost Rates, Checklist) are now **collapsible** sections with count badges (Brands open by default) — kills the long scroll.
 
+### Profile (MobileProfile)
+57. The two stat tiles now match the v7 design's **Orders MTD / Sales MTD** (previously placeholder "Open cases / Points"). Wired to a new self-scoped SCM endpoint `GET /api/scm/mfg-sales-orders/my-mtd` — the caller's OWN sales orders created this Malaysia-calendar month (count + summed value, excluding CANCELLED/DRAFT). A non-sales user sees 0 / RM 0.00.
+
 ---
 
 ## Still open (flagged, awaiting direction)

@@ -58,7 +58,7 @@ import { orderSofaModuleRowsWithinBuilds, sortSoLinesByGroupRank } from '../shar
 import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
-import { rangeBoundsMy, todayMyt } from '../lib/my-time';
+import { monthBoundsMy, rangeBoundsMy, todayMyt } from '../lib/my-time';
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
@@ -957,6 +957,35 @@ mfgSalesOrders.get('/', async (c) => {
   }
 
   return c.json({ salesOrders: rows });
+});
+
+/* Salesperson MTD scoreboard — feeds the mobile Profile v7 tiles
+   (Orders MTD / Sales MTD). Self-scoped the same way as '/mine':
+   salesperson_id === auth user id, on the caller's RLS-scoped client, so a
+   caller only ever sees their OWN orders. Counts orders created within the
+   current Malaysia-calendar month, excluding CANCELLED / DRAFT (not real
+   sales). Registered BEFORE '/:docNo' so 'my-mtd' is never a doc-no param. */
+mfgSalesOrders.get('/my-mtd', async (c) => {
+  const sb = c.get('supabase'); const user = c.get('user');
+  // Current month in Malaysia time → UTC [start, end) bounds for created_at.
+  const ymd = todayMyt();
+  const { startUtc, endUtc } = monthBoundsMy(Number(ymd.slice(0, 4)), Number(ymd.slice(5, 7)) - 1);
+  // A single salesperson's monthly orders never approach the 1000-row cap.
+  const { data, error } = await sb
+    .from('mfg_sales_orders')
+    .select('local_total_centi, total_revenue_centi')
+    .eq('salesperson_id', user.id)
+    .not('status', 'in', '("CANCELLED","DRAFT")')
+    .gte('created_at', startUtc)
+    .lt('created_at', endUtc)
+    .limit(1000);
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  const rows = (data ?? []) as Array<{ local_total_centi: number | null; total_revenue_centi: number | null }>;
+  const mtd_sales_centi = rows.reduce(
+    (sum, r) => sum + Number(r.local_total_centi ?? r.total_revenue_centi ?? 0),
+    0,
+  );
+  return c.json({ mtd_orders: rows.length, mtd_sales_centi });
 });
 
 /* POS "My orders" board — the salesperson's OWN Sales Orders, lightweight

@@ -97,17 +97,21 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
     [roster, user?.id],
   );
 
-  // Open cases stat — the core /api/assr list (same source as the mobile
-  // Service screen). A case is "open" while its stage is not "completed".
-  const casesQ = useQuery({
-    queryKey: ["mobile-profile-assr"],
-    queryFn: () => api.get<{ data?: Array<{ stage?: string | null }> }>("/api/assr?per_page=200"),
+  // Salesperson MTD scoreboard (v7 tiles: Orders MTD / Sales MTD) — the
+  // caller's OWN sales orders this Malaysia-calendar month, from the SCM
+  // backend. Self-scoped server-side (salesperson_id === caller). A non-sales
+  // user simply sees 0 / RM 0.00.
+  const mtdQ = useQuery({
+    queryKey: ["mobile-profile-mtd"],
+    queryFn: () =>
+      api.get<{ mtd_orders?: number; mtd_sales_centi?: number }>(
+        "/api/scm/mfg-sales-orders/my-mtd",
+      ),
     staleTime: 60_000,
     retry: false,
   });
-  const openCases = (casesQ.data?.data ?? []).filter(
-    (r) => String(r?.stage ?? "") !== "completed",
-  ).length;
+  const mtdOrders = Number(mtdQ.data?.mtd_orders ?? 0);
+  const mtdSalesCenti = Number(mtdQ.data?.mtd_sales_centi ?? 0);
 
   if (screen === "personal") {
     return <PersonalScreen onBack={() => setScreen("home")} myRow={myRow} />;
@@ -141,17 +145,12 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
   // Designer sub-line: "{position} · {venue}". We have no venue on /me, so the
   // honest analogue is position · department (the real org placement).
   const roleLine = [position || role, dept].filter(Boolean).join(" · ") || "Team member";
-  // Points come off the auth user (users.points_balance) — AuthUser doesn't
-  // declare it yet, so read through a cast; never render NaN.
-  const points = Number((user as { points_balance?: number } | null)?.points_balance ?? 0);
-
   // Designer layout VERBATIM (v7 MobileProfile.tsx): dark header, dark identity
   // card with initials avatar + name/sub, a 2-card stat row, an Account card of
   // plain rows (Personal details / Notifications / Language / My Team — matching
   // the design's 4 rows, no Password row), an App card, danger Log out, version
-  // line. Wired to our real /me + roster + /assr. The stat cards keep honest,
-  // real-data labels (Open cases / Points) — this service ERP has no orders/sales
-  // MTD source, so we do NOT show the design's "Orders MTD / Sales MTD".
+  // line. Wired to our real /me + roster. The stat row shows the design's
+  // "Orders MTD / Sales MTD" from the caller's own sales orders this month.
   return (
     <div className="hz-m screen" style={{ background: "var(--app-bg)" }}>
       <header className="hdr" style={{ background: "#15161a", borderBottom: "none" }}>
@@ -169,8 +168,8 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
         </div>
 
         <div style={{ display: "flex", gap: 9, margin: "12px 0" }}>
-          <div className="card" style={{ flex: 1, margin: 0 }}><div className="card-b" style={{ textAlign: "center", padding: 11 }}><div className="money" style={{ fontSize: 15, fontWeight: 800 }}>{openCases.toLocaleString("en-US")}</div><div className="fld-l" style={{ marginTop: 3 }}>Open cases</div></div></div>
-          <div className="card" style={{ flex: 1, margin: 0 }}><div className="card-b" style={{ textAlign: "center", padding: 11 }}><div className="money" style={{ fontSize: 15, fontWeight: 800, color: "#a16a2e" }}>{(Number.isFinite(points) ? points : 0).toLocaleString("en-US")}</div><div className="fld-l" style={{ marginTop: 3 }}>Points</div></div></div>
+          <div className="card" style={{ flex: 1, margin: 0 }}><div className="card-b" style={{ textAlign: "center", padding: 11 }}><div className="money" style={{ fontSize: 15, fontWeight: 800 }}>{mtdOrders.toLocaleString("en-US")}</div><div className="fld-l" style={{ marginTop: 3 }}>Orders MTD</div></div></div>
+          <div className="card" style={{ flex: 1, margin: 0 }}><div className="card-b" style={{ textAlign: "center", padding: 11 }}><div className="money" style={{ fontSize: 15, fontWeight: 800, color: "#a16a2e" }}>{"RM " + (mtdSalesCenti / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div><div className="fld-l" style={{ marginTop: 3 }}>Sales MTD</div></div></div>
         </div>
 
         <div className="fld-l" style={{ margin: "6px 2px 8px" }}>Account</div>
