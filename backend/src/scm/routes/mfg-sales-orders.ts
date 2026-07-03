@@ -127,6 +127,9 @@ import { soDeliverableRemaining, soLineDeliveries, computeSoLifecycle, soCurrent
 import { derivePlanningState } from './delivery-planning';
 import { computeMrp, mrpLineCoverage } from './mrp';
 import type { Env, Variables } from '../env';
+/* scan-bg-job — the headless createDraftSalesOrder below runs the create core
+   without a request-scoped client; it uses the scm-scoped service client. */
+import { getSupabaseService } from '../../db/supabase';
 
 export const mfgSalesOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
 mfgSalesOrders.use('*', supabaseAuth);
@@ -1743,7 +1746,31 @@ mfgSalesOrders.post('/backfill-warehouses', async (c) => {
   return c.json({ filled, skipped, orders: docNos.length });
 });
 
-mfgSalesOrders.post('/', async (c) => {
+/* ── SO create core (scan-bg-job factoring, 2026-07-04) ─────────────────────
+   The POST / handler body below is PRICING-CRITICAL and must stay the single
+   authority for SO creation. The background scan job (scan-so.ts /enqueue)
+   needs to create a DRAFT SO AFTER the HTTP request has already returned, so
+   the handler body is factored MECHANICALLY into `createSalesOrderCore` — the
+   body is UNCHANGED; it now takes a minimal structural context instead of the
+   full Hono context. The HTTP route wires the real context through (auth /
+   validation / response behaviour identical), while `createDraftSalesOrder`
+   below feeds it a synthetic context built from Env + the identities captured
+   at enqueue time. `c.json(body, status)` inside the core returns a plain
+   outcome object; the HTTP route re-emits it as the real JSON response. */
+export type SoCreateOutcome = { status: number; body: Record<string, unknown> };
+export type SoCreateContext = {
+  req: { json(): Promise<unknown> };
+  /* supabase keeps the REAL client type — the core body relies on the typed
+     query builders for callback inference (an `any` here turns every
+     `.map((r) => ...)` inside the body into an implicit-any TS7006). */
+  get(key: 'supabase'): Variables['supabase'];
+  get(key: 'user'): { id: string; user_metadata?: unknown };
+  get(key: 'houzsUser'): Variables['houzsUser'];
+  env: Env;
+  json(body: unknown, status?: number): SoCreateOutcome;
+};
+
+async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome> {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   /* PR #46 — accept customerName as alias for debtorName (rename in flight).
@@ -3680,7 +3707,63 @@ mfgSalesOrders.post('/', async (c) => {
   catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] post-create failed:', e); }
 
   return c.json({ docNo }, 201);
+}
+
+/* HTTP route — auth (router-level supabaseAuth) + the real Hono context wired
+   into the core verbatim, so the request path behaves exactly as before the
+   factoring. The dynamic-status cast is safe: every core outcome status is a
+   contentful JSON status the old inline c.json calls already used. */
+mfgSalesOrders.post('/', async (c) => {
+  const out = await createSalesOrderCore({
+    req: { json: () => c.req.json() },
+    get: ((key: 'supabase' | 'user' | 'houzsUser') => c.get(key as 'supabase')) as unknown as SoCreateContext['get'],
+    env: c.env,
+    json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
+  });
+  return c.json(out.body, out.status as 201);
 });
+
+/* ── createDraftSalesOrder — headless SO create for the background scan job ──
+   Runs the SAME createSalesOrderCore (pricing / guards / doc-no / audit all
+   identical) without an HTTP request: the scan /enqueue endpoint captures the
+   caller's identities while the request is still authed, and the waitUntil
+   pipeline replays them here through a synthetic context.
+     - salespersonId  = c.get('user').id captured at enqueue (scm.staff UUID —
+       the SCM auth bridge identity the interactive create stamps).
+     - houzsUserId    = c.get('houzsUser').id captured at enqueue (public users
+       bigint — drives the venue-by-active-project auto-fill). No permissions
+       are carried, so hasHouzsPerm gates resolve false — the draft is always
+       self-attributed, exactly like a self-scoped interactive caller.
+   Uses the scm-scoped service-role client (getSupabaseService) — authorization
+   already happened at enqueue time; there is no request-scoped client here. */
+export async function createDraftSalesOrder(
+  env: Env,
+  opts: {
+    salespersonId: string;
+    salespersonName?: string | null;
+    houzsUserId?: number | null;
+    body: Record<string, unknown>;
+  },
+): Promise<SoCreateOutcome> {
+  const svc = getSupabaseService(env);
+  const syntheticGet = (key: 'supabase' | 'user' | 'houzsUser'): unknown => {
+    if (key === 'supabase') return svc;
+    if (key === 'user') {
+      return {
+        id: opts.salespersonId,
+        user_metadata: opts.salespersonName ? { name: opts.salespersonName } : undefined,
+      };
+    }
+    // houzsUser — id only; permissions intentionally absent (see doc above).
+    return opts.houzsUserId != null ? { id: opts.houzsUserId } : undefined;
+  };
+  return createSalesOrderCore({
+    req: { json: async () => opts.body },
+    get: syntheticGet as unknown as SoCreateContext['get'],
+    env,
+    json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
+  });
+}
 
 /* ── POST /recompute-allocation — re-walk every active SO line, flip
        PENDING/READY against live inventory, advance / regress SO header

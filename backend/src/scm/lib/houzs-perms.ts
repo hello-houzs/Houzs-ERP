@@ -12,22 +12,26 @@
 // request payload (e.g. price-override flag, salesperson stamping).
 // ----------------------------------------------------------------------------
 
-import type { Context, MiddlewareHandler } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { hasPermission } from '../../services/permissions';
 import type { Env, Variables } from '../env';
 
-type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
+/* Structural source of the stashed houzsUser — satisfied by the real Hono
+   context AND by mfg-sales-orders' SoCreateContext (the factored SO-create
+   core runs headless for the background scan job with a synthetic context).
+   Only `get('houzsUser')` is required; nothing else on the context is read. */
+type HouzsUserSource = { get(key: 'houzsUser'): Variables['houzsUser'] };
 
 /** Read the REAL Houzs caller's granted permissions (Set fast path, array
  *  fallback). Returns an empty array when the bridge has not stashed them
  *  (defence-in-depth — every authed request should populate houzsUser). */
-function grantedFor(c: AppContext): ReadonlyArray<string> | ReadonlySet<string> {
+function grantedFor(c: HouzsUserSource): ReadonlyArray<string> | ReadonlySet<string> {
   const hu = c.get('houzsUser');
   return hu?.permissions_set ?? hu?.permissions ?? [];
 }
 
 /** Inline check — true when the caller holds `perm` (or the `*` wildcard). */
-export function hasHouzsPerm(c: AppContext, perm: string): boolean {
+export function hasHouzsPerm(c: HouzsUserSource, perm: string): boolean {
   return hasPermission(grantedFor(c), perm);
 }
 
