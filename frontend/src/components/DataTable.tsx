@@ -695,7 +695,10 @@ export function DataTable<T>({
         const col = allColumns.find((c) => c.key === key);
         return col?.getValue ? { getValue: col.getValue, allowed: new Set(vals) } : null;
       })
-      .filter((g): g is { getValue: (row: T) => unknown; allowed: Set<string> } => !!g);
+      .filter(
+        (g): g is { getValue: NonNullable<Column<T>["getValue"]>; allowed: Set<string> } =>
+          g !== null
+      );
     if (getters.length === 0) return rows;
     return rows.filter((r) =>
       getters.every((g) => g.allowed.has(filterKeyOf(g.getValue(r))))
