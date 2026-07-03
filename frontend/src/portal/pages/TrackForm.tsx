@@ -27,7 +27,7 @@ export function TrackForm() {
       );
       nav(`/portal/case/${res.token}`, { replace: true });
     } catch (e: any) {
-      setErr(e?.message || "Could not find that case.");
+      setErr(e?.message || "Couldn't find that case.");
     } finally {
       setBusy(false);
     }

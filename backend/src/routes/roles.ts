@@ -124,7 +124,7 @@ app.post("/", requirePermission("roles.manage"), async (c) => {
  */
 app.patch("/:id", requirePermission("roles.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const db = getDb(c.env);
   const row = await db
@@ -203,7 +203,7 @@ app.get("/pages", requirePermission("roles.read"), async (c) => {
  */
 app.get("/:id/page-access", requirePermission("roles.read"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const db = getDb(c.env);
 
   const roleRow = await db
@@ -250,7 +250,7 @@ app.get("/:id/page-access", requirePermission("roles.read"), async (c) => {
  */
 app.patch("/:id/page-access", requirePermission("roles.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const body = await c.req.json<{
     entries: Array<{ page_key: string; level: string }>;
@@ -308,7 +308,7 @@ app.patch("/:id/page-access", requirePermission("roles.manage"), async (c) => {
  */
 app.delete("/:id", requirePermission("roles.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const db = getDb(c.env);
   const row = await db

@@ -105,7 +105,7 @@ app.post("/event-types", requirePermission("projects.manage"), async (c) => {
 
 app.patch("/event-types/:id", requirePermission("projects.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const body = await c.req.json<{
     name?: string;
     sort_order?: number;
@@ -145,7 +145,7 @@ app.patch("/event-types/:id", requirePermission("projects.manage"), async (c) =>
 
 app.delete("/event-types/:id", requirePermission("projects.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   // Soft-delete: set active=0. Projects pointing at this type keep
   // their event_type_id (FK is ON DELETE SET NULL but we prefer to
   // keep the historical link visible).
@@ -204,7 +204,7 @@ app.post("/brands", requirePermission("projects.manage"), async (c) => {
 
 app.patch("/brands/:id", requirePermission("projects.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const body = await c.req.json<{
     name?: string;
     color?: string;
@@ -265,7 +265,7 @@ app.patch("/brands/:id", requirePermission("projects.manage"), async (c) => {
 
 app.delete("/brands/:id", requirePermission("projects.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   // Soft-delete. Existing projects keep their brand label; the brand
   // just stops appearing in new-project pickers.
   await c.env.DB.prepare(

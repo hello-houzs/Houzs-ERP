@@ -199,7 +199,7 @@ app.post("/", requirePermission("users.manage"), async (c) => {
 /** PATCH /api/positions/:id  Body: { name?, department_id?, level?, sort_order?, active? } */
 app.patch("/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const db = getDb(c.env);
   const row = await db
@@ -241,7 +241,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
 /** DELETE /api/positions/:id  Refuses if any user still holds it. */
 app.delete("/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const db = getDb(c.env);
   const row = await db
@@ -288,7 +288,7 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
  */
 app.get("/:id/page-access", requirePermission("users.read"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const db = getDb(c.env);
 
   const posRow = await db
@@ -326,7 +326,7 @@ app.get("/:id/page-access", requirePermission("users.read"), async (c) => {
  */
 app.patch("/:id/page-access", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const body = await c.req.json<{ entries: Array<{ page_key: string; level: string }> }>();
   if (!body || !Array.isArray(body.entries) || body.entries.length === 0) {

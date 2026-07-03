@@ -319,7 +319,7 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
 
       <div className="scroll hz-scroll" style={{ padding: "11px 12px" }}>
         {loading && <Muted>Loading&#8230;</Muted>}
-        {!loading && error && <Muted tone="error">Could not load mail. {error}</Muted>}
+        {!loading && error && <Muted tone="error">Couldn't load mail. {error}</Muted>}
         {!loading && !error && folder === "drafts" && (
           <div className="empty">
             <div className="empty-t">No drafts here</div>
@@ -475,19 +475,19 @@ function MailThread({
   };
 
   const toggleStar = () =>
-    patch({ starred: !thread?.starred }, thread?.starred ? "Star removed." : "Starred.", "Could not update star.");
+    patch({ starred: !thread?.starred }, thread?.starred ? "Star removed." : "Starred.", "Couldn't update star.");
 
   const archive = () =>
     closed
-      ? patch({ status: "open" }, "Moved to Inbox.", "Could not move to Inbox.")
-      : patch({ status: "closed" }, "Archived.", "Could not archive.");
+      ? patch({ status: "open" }, "Moved to Inbox.", "Couldn't move to Inbox.")
+      : patch({ status: "closed" }, "Archived.", "Couldn't archive.");
 
-  const markUnread = () => patch({ unread: true }, "Marked as unread.", "Could not update.");
+  const markUnread = () => patch({ unread: true }, "Marked as unread.", "Couldn't update.");
 
   const trash = async () => {
     if (!thread || busy) return;
     if (trashed) {
-      await patch({ trashed: false }, "Restored from Trash.", "Could not restore.");
+      await patch({ trashed: false }, "Restored from Trash.", "Couldn't restore.");
       return;
     }
     const okConfirm = await confirm({
@@ -497,7 +497,7 @@ function MailThread({
       danger: true,
     });
     if (!okConfirm) return;
-    await patch({ trashed: true }, "Moved to Trash.", "Could not move to Trash.");
+    await patch({ trashed: true }, "Moved to Trash.", "Couldn't move to Trash.");
     onBack();
   };
 
@@ -523,7 +523,7 @@ function MailThread({
       await api.patch(`/api/mail-center/threads/${thread.id}`, { labels: [...chips, clean] });
       reload();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not add label.");
+      toast.error(e instanceof Error ? e.message : "Couldn't add label.");
     } finally {
       setBusy(false);
       setLabelOpen(false);
@@ -538,7 +538,7 @@ function MailThread({
       });
       reload();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not remove label.");
+      toast.error(e instanceof Error ? e.message : "Couldn't remove label.");
     } finally {
       setBusy(false);
     }
@@ -609,7 +609,7 @@ function MailThread({
 
       <div className="scroll" style={{ padding: 14 }}>
         {loading && <Muted>Loading&#8230;</Muted>}
-        {!loading && error && <Muted tone="error">Could not load this thread. {error}</Muted>}
+        {!loading && error && <Muted tone="error">Couldn't load this thread. {error}</Muted>}
         {!loading && !error && messages.length === 0 && <Muted>No messages in this thread.</Muted>}
         {!loading &&
           !error &&
@@ -835,7 +835,7 @@ function AttachmentChip({ a }: { a: Attachment }) {
       const url = await api.fetchBlobUrl(a.url);
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not open attachment.");
+      toast.error(e instanceof Error ? e.message : "Couldn't open attachment.");
     }
   };
   return (
@@ -888,7 +888,7 @@ function MailReply({
       toast.success("Reply sent.");
       onSent();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not send reply.");
+      toast.error(e instanceof Error ? e.message : "Couldn't send reply.");
     } finally {
       setSending(false);
     }
@@ -963,7 +963,7 @@ function MailCompose({
       toast.success("Email sent.");
       onSent();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not send email.");
+      toast.error(e instanceof Error ? e.message : "Couldn't send email.");
     } finally {
       setSending(false);
     }

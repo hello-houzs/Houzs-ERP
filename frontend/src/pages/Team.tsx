@@ -316,10 +316,13 @@ function MembersTab({
   const invites = useQuery<{ invitations: Invitation[] }>(() =>
     api.get("/api/users/invitations")
   );
-  // refetchOnMount "always" + staleTime 0 so a role/department/position
-  // freshly created on a sibling tab shows up in the invite dropdowns the
-  // moment this tab (and its InvitePanel) remounts — no stale snapshot.
-  const freshList = { refetchOnMount: "always" as const, staleTime: 0 };
+  // PERF: these were refetchOnMount "always" + staleTime 0, which forced a
+  // full-screen load on EVERY Team visit. Freshness is already guaranteed
+  // without that: every create/update goes through the MutationCache hook
+  // (lib/queryClient.ts) which invalidates same-tab queries and broadcasts
+  // to sibling tabs — and invalidation ignores staleTime. A 60s staleTime
+  // just lets a plain revisit serve the cached snapshot instantly.
+  const freshList = { staleTime: 60_000 };
   const roles = useQuery<{ roles: Role[] }>(
     () => api.get("/api/roles"),
     [],
@@ -522,7 +525,7 @@ function MembersTab({
     const link = inv.invite_url || `${window.location.origin}/#invite=${inv.token}`;
     navigator.clipboard.writeText(link).then(
       () => toast.success("Invite link copied to clipboard"),
-      () => toast.error("Could not access clipboard")
+      () => toast.error("Couldn't access clipboard")
     );
   }
 
@@ -4018,7 +4021,7 @@ export function InvitePanel({
       issued.invite_url || `${window.location.origin}/#invite=${issued.token}`;
     navigator.clipboard.writeText(link).then(
       () => toast.success("Invite link copied"),
-      () => toast.error("Could not access clipboard")
+      () => toast.error("Couldn't access clipboard")
     );
   }
 

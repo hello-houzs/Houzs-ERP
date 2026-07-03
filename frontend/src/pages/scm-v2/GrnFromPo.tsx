@@ -456,7 +456,7 @@ export const GrnFromPo = () => {
         setAppending(false);
         setDialog({
           title: 'Add failed',
-          body: e instanceof Error ? e.message : 'Could not append the picked lines to this GRN.',
+          body: e instanceof Error ? e.message : "Couldn't append the picked lines to this GRN.",
         });
       }
       return;

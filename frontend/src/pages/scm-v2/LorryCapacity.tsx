@@ -246,7 +246,7 @@ export const LorryCapacity = () => {
                 onSetRepair={(days) =>
                   setRepair.mutate(
                     { id: l.lorry_id, from, to, days },
-                    { onError: (e) => notify({ title: 'Could not save repair days.', body: e instanceof Error ? e.message : String(e), tone: 'error' }) },
+                    { onError: (e) => notify({ title: "Couldn't save repair days.", body: e instanceof Error ? e.message : String(e), tone: 'error' }) },
                   )}
               />
             ))}
