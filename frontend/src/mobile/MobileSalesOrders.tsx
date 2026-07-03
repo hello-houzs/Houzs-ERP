@@ -5,29 +5,62 @@ import "./mobile.css";
 
 type SoRow = {
   doc_no: string; debtor_name: string | null; status: string | null;
-  sales_location: string | null; customer_state: string | null; ref: string | null; po_doc_no: string | null;
+  sales_location: string | null; warehouse_name: string | null;
+  customer_state: string | null; ref: string | null; po_doc_no: string | null;
   customer_so_no: string | null;
   processing_date: string | null; customer_delivery_date: string | null; internal_expected_dd: string | null;
   so_date: string | null; created_at: string | null;
   local_total_centi: number | null; total_revenue_centi: number | null; paid_total_centi: number | null;
   balance_centi: number | null; balance_centi_live: number | null;
+  /* Fulfilment status the list endpoint derives per SO (only rendered when the
+     row actually carries it — a Draft/Cancelled SO has none). */
+  planning_state: string | null;
+  is_fully_ready: boolean | null; is_main_ready: boolean | null; ready_categories: string[] | null;
 };
 
 const rm = (centi: number | null | undefined) =>
   ((centi ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/* Numeric DD/MM/YYYY (owner-locked desktop/mobile date format — never month names). */
 const dm = (d: string | null | undefined) => {
   if (!d) return "—";
   const dt = new Date(d); if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  const p = (n: number) => `${n}`.padStart(2, "0");
+  return `${p(dt.getDate())}/${p(dt.getMonth() + 1)}/${dt.getFullYear()}`;
 };
 const total = (r: SoRow) => r.local_total_centi ?? r.total_revenue_centi ?? 0;
+const paid = (r: SoRow) => r.paid_total_centi ?? 0;
+const balance = (r: SoRow) => r.balance_centi_live ?? r.balance_centi ?? (total(r) - paid(r));
+const isCancelled = (r: SoRow) => (r.status ?? "").toLowerCase() === "cancelled";
+const soDate = (r: SoRow) => r.so_date ?? r.created_at ?? null;
 
-/** Sales Orders list — 1:1 with the owner's v7 mobile design, wired to the same
- *  /api/scm/mfg-sales-orders the desktop uses (row-scoped + permission-gated by
- *  the backend). */
+/* Period chips → client-side date buckets. The list endpoint returns all rows
+   (no server range param), so — like the owner's prototype — we bucket by
+   so_date locally. */
+type Range = "all" | "this-month" | "last-month" | "next-month" | "this-year";
+const RANGES: [Range, string][] = [
+  ["all", "All"], ["this-month", "This month"], ["last-month", "Last month"],
+  ["next-month", "Next month"], ["this-year", "This year"],
+];
+function inRange(r: SoRow, range: Range): boolean {
+  if (range === "all") return true;
+  const raw = soDate(r); if (!raw) return false;
+  const d = new Date(raw); if (isNaN(+d)) return false;
+  const now = new Date(); const y = now.getFullYear(); const m = now.getMonth();
+  if (range === "this-year") return d.getFullYear() === y;
+  const bucket =
+    range === "this-month" ? new Date(y, m, 1) :
+    range === "last-month" ? new Date(y, m - 1, 1) :
+    new Date(y, m + 1, 1); // next-month
+  return d.getFullYear() === bucket.getFullYear() && d.getMonth() === bucket.getMonth();
+}
+
+/** Sales Orders list — 1:1 with the owner's mobile prototype (`#so-list`), wired
+ *  to the same /api/scm/mfg-sales-orders the desktop uses (row-scoped +
+ *  permission-gated by the backend). Summary bar + period chips + card + FAB. */
 export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => void; onOpen: (docNo: string) => void; onNew: () => void }) {
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
+  const [range, setRange] = useState<Range>("all");
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["mobile-so-list"],
@@ -40,43 +73,71 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
     const needle = q.trim().toLowerCase();
     return all.filter((r) => {
       if (status !== "all" && (r.status ?? "").toLowerCase() !== status.toLowerCase()) return false;
+      if (!inRange(r, range)) return false;
       if (needle && !`${r.debtor_name ?? ""} ${r.doc_no} ${r.customer_so_no ?? ""} ${r.ref ?? ""} ${r.po_doc_no ?? ""}`.toLowerCase().includes(needle)) return false;
       return true;
     });
-  }, [all, q, status]);
+  }, [all, q, status, range]);
 
-  const filterActive = status !== "all";
+  /* Summary bar totals — exclude cancelled orders (mirrors the prototype: a
+     voided order contributes neither revenue nor outstanding). */
+  const summary = useMemo(() => {
+    let rev = 0, out = 0;
+    for (const r of rows) {
+      if (isCancelled(r)) continue;
+      rev += total(r);
+      const b = balance(r); if (b > 0) out += b;
+    }
+    return { count: rows.length, rev, out };
+  }, [rows]);
+
+  const filterActive = status !== "all" || range !== "all";
 
   return (
-    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
+    <div className="hz-m" style={{ position: "relative", display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
         <div className="hdr-row">
           <div>
             <div className="eyebrow">Supply chain</div>
             <div className="scr-title">Sales Orders</div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button onClick={onScan} aria-label="Scan slip" className="iconbtn">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></svg>
-            </button>
-            <button onClick={onNew} aria-label="New sales order" className="iconbtn">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-            </button>
-          </div>
+          <button onClick={onScan} aria-label="Scan slip" className="iconbtn">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></svg>
+          </button>
         </div>
         <div className="hdr-row" style={{ marginTop: 11 }}>
           <div className="searchbar">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search doc no · customer" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customer · SO · reference" />
           </div>
           <button onClick={() => setStatus((s) => (s === "all" ? "Submitted" : s === "Submitted" ? "Draft" : s === "Draft" ? "Cancelled" : "all"))} className="iconbtn" style={{ position: "relative" }} aria-label="Filter by status">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#414539" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5h18M6 12h12M10 19h4" /></svg>
-            {filterActive && <span style={{ position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%", background: "var(--red)", border: "1.5px solid #fff" }} />}
+            {filterActive && <span style={{ position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%", background: "var(--gold)", border: "1.5px solid #fff" }} />}
           </button>
         </div>
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
+        {/* Summary bar — N orders · RM rev · RM outstanding (outstanding hidden when zero). */}
+        {!isLoading && !error && (
+          <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", fontSize: 11.5, color: "var(--mut)", margin: "0 2px 11px" }}>
+            <span><b style={{ color: "var(--ink)" }}>{summary.count}</b> orders</span>
+            <span style={{ opacity: .4 }}>·</span>
+            <span className="money">RM {rm(summary.rev)} rev</span>
+            {summary.out > 0 && <>
+              <span style={{ opacity: .4 }}>·</span>
+              <span className="money" style={{ color: "var(--red)" }}>RM {rm(summary.out)} outstanding</span>
+            </>}
+          </div>
+        )}
+
+        {/* Period filter chips (h-scroll). */}
+        <div className="chips" style={{ marginBottom: 11 }}>
+          {RANGES.map(([key, label]) => (
+            <button key={key} onClick={() => setRange(key)} className={range === key ? "chip on" : "chip"}>{label}</button>
+          ))}
+        </div>
+
         {isLoading && (
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
             {[0, 1, 2].map((i) => (
@@ -93,36 +154,48 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
         {!isLoading && !error && (
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
             {rows.map((r) => {
-              const cancelled = (r.status ?? "").toLowerCase() === "cancelled";
-              const balance = total(r) - (r.paid_total_centi ?? 0);
+              const cancelled = isCancelled(r);
+              const warehouse = r.warehouse_name || r.sales_location;
               return (
-                /* Owner-locked v7 4-line SO card:
-                   L1  {customer name}                       ·  {status badge}
-                   L2  {doc_no} · {customer_so_no}           (muted, money class)
-                   L3  Processing {date} -> Delivery {date}
-                   L4  Balance {balance}                     ·  {total} (bold) */
+                /* Owner-locked SO card (prototype `soRowCard`):
+                   L1  {customer name}                          ·  {status badge}
+                   L2  {doc_no} · {customer_so_no}     |  {warehouse}
+                   L3  Processing {date}  ->  Delivery {date}
+                   L4  (Stock chip · Planning chip — only when the row carries them)
+                   L5  {created_at} · created                   ·  {total} (bold) */
                 <div key={r.doc_no} onClick={() => onOpen(r.doc_no)} className={cancelled ? "card cancelled" : "card"} style={{ cursor: "pointer", padding: "12px 13px", ...(cancelled ? { opacity: .55, filter: "grayscale(.5)" } : null) }}>
                   {/* Line 1 — customer name / status */}
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                     <span style={{ minWidth: 0, fontSize: 14, fontWeight: 800, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.debtor_name || "—"}</span>
                     <StatusPill status={r.status} />
                   </div>
-                  {/* Line 2 — doc_no · customer_so_no */}
-                  <div className="money" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {r.doc_no}{r.customer_so_no ? ` · ${r.customer_so_no}` : ""}
+                  {/* Line 2 — doc_no · customer_so_no  |  warehouse */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 5, fontSize: 11.5, color: "var(--mut)" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                      <span className="money" style={{ fontWeight: 700, color: "var(--brand-d)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.doc_no}</span>
+                      {r.customer_so_no && <><span style={{ opacity: .4, flex: "none" }}>·</span><span className="money" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.customer_so_no}</span></>}
+                    </span>
+                    {warehouse && (
+                      <span style={{ display: "flex", alignItems: "center", gap: 4, flex: "none", fontWeight: 600, color: "var(--ink2)" }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21V8l9-5 9 5v13" /><path d="M7 21v-8h10v8" /></svg>
+                        {warehouse}
+                      </span>
+                    )}
                   </div>
                   {/* Line 3 — Processing -> Delivery */}
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 11, color: "var(--ink2)" }}>
                     <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Processing</span>
-                    <span className="money" style={{ fontWeight: 600 }}>{dm(r.internal_expected_dd)}</span>
+                    <span className="money" style={{ fontWeight: 600 }}>{dm(r.internal_expected_dd ?? r.processing_date)}</span>
                     <span style={{ color: "#c2c6bd" }}>&rarr;</span>
                     <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Delivery</span>
                     <span className="money" style={{ fontWeight: 600 }}>{dm(r.customer_delivery_date)}</span>
                   </div>
-                  {/* Line 4 — Balance / total */}
+                  {/* Line 4 — fulfilment chips (only when live + present) */}
+                  <FulfilChips row={r} />
+                  {/* Line 5 — created / total */}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
-                    <span style={{ fontSize: 10, color: "var(--mut2)" }}>Balance RM {rm(balance)}</span>
-                    <span className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--brand-d)" }}>RM {rm(total(r))}</span>
+                    <span style={{ fontSize: 10, color: "var(--mut2)" }}>{dm(soDate(r))} · created</span>
+                    <span className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>RM {rm(total(r))}</span>
                   </div>
                 </div>
               );
@@ -137,6 +210,11 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
           </div>
         )}
       </div>
+
+      {/* Floating green "+" FAB — create a new sales order. */}
+      <button onClick={onNew} aria-label="New sales order" className="fab">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+      </button>
     </div>
   );
 }
@@ -152,4 +230,39 @@ function StatusPill({ status }: { status: string | null }) {
     "b-brand";
   const label = status ? status.charAt(0).toUpperCase() + status.slice(1).toLowerCase() : "—";
   return <span className={`badge ${cls}`} style={{ flex: "none" }}>{label}</span>;
+}
+
+/* Stock + Delivery-Planning chips (prototype `soFulfilChips`). Rendered ONLY
+   when the SO is live (not Draft/Cancelled) AND the row actually carries the
+   derived status — never faked. Stock reads the readiness booleans the list
+   endpoint emits; planning reads the derived `planning_state`. */
+function FulfilChips({ row }: { row: SoRow }) {
+  const s = (row.status ?? "").toLowerCase();
+  if (s === "draft" || s === "cancelled") return null;
+
+  const stock: [string, string, string] | null =
+    row.is_fully_ready ? ["Ready", "var(--green-bg)", "var(--green)"] :
+    (row.is_main_ready || (row.ready_categories?.length ?? 0) > 0) ? ["Partial", "var(--amber-bg)", "var(--amber)"] :
+    null;
+
+  const ps = (row.planning_state ?? "").toUpperCase();
+  const plan: [string, string, string] | null =
+    ps === "DELIVERED" ? ["Delivered", "var(--green-bg)", "var(--green)"] :
+    ps === "PENDING_SCHEDULE" ? ["Pending schedule", "var(--amber-bg)", "var(--amber)"] :
+    ps === "OVERDUE" ? ["Overdue", "var(--red-bg)", "var(--red)"] :
+    null;
+
+  if (!stock && !plan) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 9 }}>
+      {stock && <Chip label={stock[0]} bg={stock[1]} fg={stock[2]} />}
+      {plan && <Chip label={plan[0]} bg={plan[1]} fg={plan[2]} />}
+    </div>
+  );
+}
+
+function Chip({ label, bg, fg }: { label: string; bg: string; fg: string }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", fontSize: 10.5, fontWeight: 700, padding: "4px 10px", borderRadius: 20, background: bg, color: fg, whiteSpace: "nowrap" }}>{label}</span>
+  );
 }
