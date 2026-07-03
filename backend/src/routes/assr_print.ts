@@ -186,7 +186,9 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     ? supplierTargetDateIso((cs as any).stage_entered_at, (cs as any).stage_target_days)
     : null;
 
-  const trackerHtml = (isCustomer || isSupplier)
+  // Customer notice only — the boxed-grid office/supplier sheets are
+  // strict B&W per the print design, and the tracker renders in colour.
+  const trackerHtml = isCustomer
     ? renderStageTrackerHtml({
         history: stageHistory,
         currentStage: cs.stage,
