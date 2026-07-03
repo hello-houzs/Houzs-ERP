@@ -185,7 +185,7 @@ function Attachments({ ann }: { ann: Announcement }) {
 
   return (
     <div>
-      <div className="fld-l" style={{ margin: "0 2px 8px" }}>Attachments</div>
+      <div className="ey" style={{ color: "#767b6e", margin: "0 2px 8px" }}>Attachments</div>
       {photos.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 7, marginBottom: 8 }}>
           {photos.map((p) => (
@@ -254,7 +254,7 @@ function Receipts({ ann }: { ann: Announcement }) {
 
   return (
     <div style={{ marginTop: 18 }}>
-      <div className="fld-l" style={{ margin: "0 2px 8px" }}>Read receipts</div>
+      <div className="ey" style={{ color: "#767b6e", margin: "0 2px 8px" }}>Read receipts</div>
       <div style={{ background: "#fff", border: "1px solid #e3e6e0", borderRadius: 12, padding: "12px 13px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 7 }}>
           <span style={{ fontSize: 12.5, fontWeight: 700, color: "#11140f" }}>Read {read} / {total}</span>
@@ -395,69 +395,70 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
     );
   }
 
-  // Designer list layout (#m-ann): a hamburger header (returns to the module
-  // menu via onBack) with the "you only see ones sent to you" subtitle, then
-  // simple cards — title + red unread dot, byline (publisher · date), and a
-  // 2-line body clamp. The category chip + attachment count stay from the live
-  // wiring; a "New" affordance is kept for publishers (announcements.write).
+  // Designer list layout (#m-ann): a header row with a hamburger "Menu" (returns
+  // to the module menu via onBack) on the left and the "New" compose button on
+  // the right, then the "Announcements" title below. Cards (renderAnn) are
+  // buttons: a category-tinted speaker-icon tile, the title + green unread dot,
+  // a category chip + byline (publisher · date), and an attachment count. The
+  // category chip + attachment count come from the live wiring.
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <div className="scr-title">Announcements</div>
-            <div style={{ fontSize: 10.5, color: "#9aa093", marginTop: 3 }}>Published by HQ · you only see ones sent to you</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {canCreate && (
-              <button onClick={() => setView("compose")} className="tinybtn" style={{ background: "var(--brand)", borderColor: "var(--brand)", color: "#fff", display: "flex", alignItems: "center", gap: 5 }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-                New
-              </button>
-            )}
-            {onBack && (
-              <button onClick={onBack} style={{ background: "none", border: "none", color: "#16695f", cursor: "pointer" }} aria-label="Menu">
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
-              </button>
-            )}
-          </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
+          {onBack ? (
+            <span onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: "#16695f", cursor: "pointer" }}>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
+              Menu
+            </span>
+          ) : <span />}
+          {canCreate && (
+            <button onClick={() => setView("compose")} className="tinybtn" style={{ background: "var(--brand)", borderColor: "var(--brand)", color: "#fff", display: "flex", alignItems: "center", gap: 5 }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
+              New
+            </button>
+          )}
         </div>
+        <div className="scr-title">Announcements</div>
       </header>
 
-      <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
+      <div className="scroll hz-scroll" style={{ padding: 12, paddingBottom: 120 }}>
         {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load announcements. Pull to retry.</div>}
         {!isLoading && !error && (
-          <div id="ann-list">
+          <div id="ann-list" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
             {list.map((a) => {
               const unread = !ackedIds.has(a.id);
               const na = (a.attachments ?? []).length;
+              const col = catColor(a);
               return (
-                <div
+                <button
                   key={a.id}
-                  className="card"
-                  style={{ padding: 13, cursor: "pointer" }}
                   onClick={() => {
                     setOpenId(a.id);
                     setView("detail");
                   }}
+                  style={{ display: "flex", alignItems: "flex-start", gap: 11, width: "100%", textAlign: "left", background: "#fff", border: `1px solid ${unread ? "#bcdcd7" : "#e3e6e0"}`, borderRadius: 13, padding: "12px 13px", cursor: "pointer", fontFamily: "inherit" }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ fontSize: 14, fontWeight: 800, color: "#11140f" }}>{a.title}</span>
-                    {unread && <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#b23a3a", flex: "none", marginTop: 5 }} />}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 4 }}>
-                    <CatChip ann={a} />
-                    <span style={{ fontSize: 11, color: "#767b6e" }}>{byLine(a)} · {dm(a.createdAt)}</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#414539", marginTop: 7, lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{a.body}</div>
-                  {na > 0 && (
-                    <div style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 7, fontSize: 10.5, color: "#9aa093" }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8 12 17a4 4 0 0 1-6-6l9-9a3 3 0 0 1 4 4l-9 9" /></svg>
-                      {na} attachment{na > 1 ? "s" : ""}
-                    </div>
-                  )}
-                </div>
+                  <span style={{ width: 36, height: 36, flex: "none", borderRadius: 10, background: `${col}1f`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={col} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" /><path d="M16 8a4 4 0 0 1 0 8" /></svg>
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: unread ? 800 : 700, color: "#11140f", lineHeight: 1.25 }}>{a.title}</span>
+                      {unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "#16695f" }} />}
+                    </span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5 }}>
+                      <CatChip ann={a} />
+                      <span style={{ fontSize: 11, color: "#767b6e" }}>{byLine(a)} · {dm(a.createdAt)}</span>
+                    </span>
+                    {na > 0 && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6, fontSize: 10.5, color: "#9aa093" }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8 12 17a4 4 0 0 1-6-6l9-9a3 3 0 0 1 4 4l-9 9" /></svg>
+                        {na} attachment{na > 1 ? "s" : ""}
+                      </span>
+                    )}
+                  </span>
+                </button>
               );
             })}
             {!list.length && (
@@ -503,26 +504,28 @@ function Detail({
     onAcked();
   };
 
-  // Designer detail layout (#ann-detail): a back header carrying the title +
-  // byline (publisher · date), the body rendered inside a card, then inline
-  // attachments, publisher-only read receipts, and a sticky "Got it" ack bar.
+  // Designer detail layout (#ann-detail): the header holds ONLY the back link;
+  // the category chip + date, title, byline ("Posted by …") and body all render
+  // in the scroll body (body not boxed in a card), then inline attachments,
+  // publisher-only read receipts, and a sticky "Got it" ack bar.
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <button onClick={onBack} className="back">
-          <span className="chev">‹</span> Announcements
-        </button>
-        <div id="ann-d-meta" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
-          <CatChip ann={ann} />
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <button onClick={onBack} className="back">
+            <span className="chev">‹</span> Announcements
+          </button>
         </div>
-        <div id="ann-d-title" className="scr-title" style={{ marginTop: 6, lineHeight: 1.25 }}>{ann.title}</div>
-        <div id="ann-d-by" style={{ fontSize: 11, color: "#767b6e", marginTop: 4 }}>{byLine(ann)} · {dm(ann.createdAt)}</div>
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 40 }}>
-        <div className="card">
-          <div id="ann-d-body" className="card-b" style={{ fontSize: 13, lineHeight: 1.6, color: "#414539", whiteSpace: "pre-wrap" }}>{ann.body}</div>
+        <div id="ann-d-meta" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+          <CatChip ann={ann} />
+          <span style={{ fontSize: 11, color: "#9aa093", alignSelf: "center" }}>{dm(ann.createdAt)}</span>
         </div>
+        <div id="ann-d-title" style={{ fontSize: 21, fontWeight: 800, color: "#11140f", lineHeight: 1.25 }}>{ann.title}</div>
+        <div id="ann-d-by" style={{ fontSize: 11.5, color: "#767b6e", marginTop: 6 }}>Posted by {byLine(ann)}</div>
+        <div id="ann-d-body" style={{ fontSize: 13.5, lineHeight: 1.7, color: "#414539", marginTop: 14, whiteSpace: "pre-wrap" }}>{ann.body}</div>
         <div id="ann-d-atts" style={{ marginTop: 16 }}>
           <Attachments ann={ann} />
         </div>
@@ -668,7 +671,7 @@ function Compose({
         <div style={{ display: "flex", alignItems: "flex-start", gap: 9, background: "#f3ece0", border: "1px solid #e8dcc5", borderRadius: 11, padding: "10px 11px", marginBottom: 14 }}>
           <svg width="15" height="15" style={{ flex: "none", marginTop: 1 }} viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6Z" /></svg>
           <div style={{ fontSize: 11, color: "#5a3a14", lineHeight: 1.5 }}>
-            <b>Publishing rights</b> depend on your role. You're posting as <b>{poster}</b>.
+            <b>Publishing rights:</b> Management, HR &amp; department leads. You're posting as <b>{poster}</b>.
           </div>
         </div>
 

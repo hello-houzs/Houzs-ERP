@@ -75,66 +75,44 @@ const ROUTE_TO_CONFIG: Record<string, string> = {
  *  mobile screen and is still permission-gated by the matching desktop nav entry
  *  (an item whose nav tab isn't visible for the user's position is hidden). The
  *  bottom tabs cover Sales Orders / Calendar / Inbox / Profile. */
-// Menu icon paths — ported VERBATIM from the design's `var ICONS` map
-// (Houzs Mobile.html). Rendered inside a shared 24x24 stroke SVG (see MIcon).
-const MENU_ICONS: Record<string, React.ReactNode> = {
-  list: <path d="M5 4h14M5 9h14M5 14h14M5 19h9" />,
-  cart: <><path d="M2 3h2l2.4 12.4a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.6L21 6H6" /><circle cx="9" cy="20" r="1" /><circle cx="18" cy="20" r="1" /></>,
-  send: <><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></>,
-  box: <><path d="M21 8 12 3 3 8v8l9 5 9-5Z" /><path d="M3 8l9 5 9-5" /><path d="M12 13v8" /></>,
-  truck: <><path d="M10 17h4V5H2v12h3" /><path d="M20 17h2v-3.3a4 4 0 0 0-1.2-2.8L19 9h-5v8h1" /><circle cx="7.5" cy="17.5" r="2.5" /><circle cx="17.5" cy="17.5" r="2.5" /></>,
-  wrench: <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.7 2.7-2-2 2.7-2.7Z" />,
-  shield: <><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6Z" /><path d="m9 12 2 2 4-4" /></>,
-  users: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.9" /></>,
-  zap: <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z" />,
-  folder: <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z" />,
-  mail: <><rect x="2" y="4" width="20" height="16" rx="2" /><path d="m2 6 10 7 10-7" /></>,
-  mega: <><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" /><path d="M16 8a4 4 0 0 1 0 8" /></>,
-  receipt: <><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" /><path d="M8 7h8M8 11h8" /></>,
-  chart: <><path d="M3 3v18h18" /><rect x="7" y="10" width="3" height="7" /><rect x="12" y="6" width="3" height="11" /><rect x="17" y="13" width="3" height="4" /></>,
-  pkg: <><path d="M16 16l-4 2-4-2V8l4-2 4 2Z" /><path d="M12 6v12" /></>,
-  sofa: <><path d="M4 11V8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3" /><path d="M2 13a2 2 0 0 1 4 0v3h12v-3a2 2 0 0 1 4 0v5H2Z" /></>,
-  warehouse: <><path d="M3 21V8l9-5 9 5v13" /><path d="M7 21v-8h10v8" /></>,
-};
-
-const MOBILE_MENU_GROUPS: { group: string; icon: string; items: { to: string; label: string; icon: string }[] }[] = [
-  { group: "Sales & Finance", icon: "cart", items: [
-    { to: "/scm/sales-orders", label: "Sales Orders", icon: "cart" },
-    { to: "/scm/delivery-orders", label: "Delivery Orders", icon: "send" },
-    { to: "/scm/sales-invoices", label: "Sales Invoices", icon: "receipt" },
-    { to: "/scm/delivery-returns", label: "Sales Returns", icon: "box" },
+const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string }[] }[] = [
+  { group: "Sales & Finance", items: [
+    { to: "/scm/sales-orders", label: "Sales Orders" },
+    { to: "/scm/delivery-orders", label: "Delivery Orders" },
+    { to: "/scm/sales-invoices", label: "Sales Invoices" },
+    { to: "/scm/delivery-returns", label: "Sales Returns" },
   ]},
-  { group: "Projects · PMS", icon: "folder", items: [
-    { to: "/projects", label: "Projects", icon: "folder" },
+  { group: "Projects · PMS", items: [
+    { to: "/projects", label: "Projects" },
   ]},
-  { group: "After-sales", icon: "zap", items: [
-    { to: "/assr", label: "Service Case", icon: "zap" },
+  { group: "After-sales", items: [
+    { to: "/assr", label: "Service Case" },
   ]},
-  { group: "Procurement & MRP", icon: "pkg", items: [
-    { to: "/scm/mrp", label: "MRP · Stock Status", icon: "chart" },
-    { to: "/scm/purchase-orders", label: "Purchase Orders", icon: "list" },
-    { to: "/scm/grns", label: "Goods Receipt", icon: "pkg" },
-    { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: "receipt" },
-    { to: "/scm/purchase-returns", label: "Purchase Returns", icon: "box" },
-    { to: "/scm/products", label: "Products & Maintenance", icon: "sofa" },
-    { to: "/scm/suppliers", label: "Suppliers", icon: "truck" },
+  { group: "Procurement & MRP", items: [
+    { to: "/scm/mrp", label: "MRP · Stock Status" },
+    { to: "/scm/purchase-orders", label: "Purchase Orders" },
+    { to: "/scm/grns", label: "Goods Receipt" },
+    { to: "/scm/purchase-invoices", label: "Purchase Invoices" },
+    { to: "/scm/purchase-returns", label: "Purchase Returns" },
+    { to: "/scm/products", label: "Products & Maintenance" },
+    { to: "/scm/suppliers", label: "Suppliers" },
   ]},
-  { group: "Logistics", icon: "truck", items: [
-    { to: "/scm/delivery-planning", label: "Delivery Planning", icon: "send" },
-    { to: "/scm/fleet", label: "Fleet", icon: "truck" },
-    { to: "/scm/drivers", label: "Drivers", icon: "truck" },
+  { group: "Logistics", items: [
+    { to: "/scm/delivery-planning", label: "Delivery Planning" },
+    { to: "/scm/fleet", label: "Fleet" },
+    { to: "/scm/drivers", label: "Drivers" },
   ]},
-  { group: "Warehouse", icon: "warehouse", items: [
-    { to: "/scm/warehouses", label: "Warehouse", icon: "warehouse" },
-    { to: "/scm/inventory", label: "Inventory", icon: "box" },
+  { group: "Warehouse", items: [
+    { to: "/scm/warehouses", label: "Warehouse" },
+    { to: "/scm/inventory", label: "Inventory" },
   ]},
-  { group: "Organisation", icon: "users", items: [
-    { to: "/activity-inbox", label: "Inbox", icon: "mail" },
-    { to: "/team?tab=members", label: "Members", icon: "users" },
-    { to: "/team?tab=positions", label: "Positions", icon: "shield" },
-    { to: "/team?tab=departments", label: "Departments", icon: "box" },
-    { to: "/mail-center", label: "Mail Center", icon: "mail" },
-    { to: "/announcements", label: "Announcements", icon: "mega" },
+  { group: "Organisation", items: [
+    { to: "/activity-inbox", label: "Inbox" },
+    { to: "/team?tab=members", label: "Members" },
+    { to: "/team?tab=positions", label: "Positions" },
+    { to: "/team?tab=departments", label: "Departments" },
+    { to: "/mail-center", label: "Mail Center" },
+    { to: "/announcements", label: "Announcements" },
   ]},
 ];
 
@@ -199,7 +177,7 @@ function MobileAppInner() {
     return matches.length === 0 ? true : matches.some(visible);
   };
   const menuGroups = MOBILE_MENU_GROUPS
-    .map((g) => ({ group: g.group, icon: g.icon, items: g.items.filter((it) => allowed(it.to)) }))
+    .map((g) => ({ group: g.group, items: g.items.filter((it) => allowed(it.to)) }))
     .filter((g) => g.items.length > 0);
 
   const openRoute = (to: string, label: string) => {
@@ -300,9 +278,10 @@ function MobileAppInner() {
             <span className="tl">Service</span>
           </button>
           <div className="tab-center">
-            {/* center Menu disc — icon ported from the owner's MobileShell.tsx
-                (ICONS.menu hamburger). Opens our permission-gated module sheet. */}
-            <button className="disc" onClick={() => setMenuOpen(true)} aria-label="Menu">
+            {/* center Menu disc — icon ported VERBATIM from the owner's design
+                MobileShell.tsx (ICONS.menu hamburger, 21x21 stroke #fff). Toggles
+                the permission-gated module sheet, matching the design's toggle. */}
+            <button className="disc" onClick={() => setMenuOpen((s) => !s)} aria-label="Menu">
               <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
             </button>
           </div>
@@ -331,17 +310,16 @@ function MobileAppInner() {
               </button>
             </div>
             <div className="sheet-scroll">
-              {menuGroups.map(({ group, icon, items }) => (
+              {/* Grouped module menu — mirrors the owner's design MobileShell.tsx
+                  sheet: each group is a card with an uppercase group title and a
+                  2-column grid of plain label buttons (no per-item / per-group
+                  icons, no footer). Routing stays real via openRoute(it.to). */}
+              {menuGroups.map(({ group, items }) => (
                 <div className="mgroup" key={group}>
-                  <div className="mgh">
-                    <MIcon name={icon} color="#a16a2e" size={12} />
-                    <span className="gl">{group}</span>
-                    <span className="gr" />
-                  </div>
+                  <div className="mgh"><span className="gl">{group}</span></div>
                   <div className="mgrid">
                     {items.map((it) => (
                       <button className="mcard" key={it.to} onClick={() => openRoute(it.to, it.label)}>
-                        <span className="mi"><MIcon name={it.icon} color="#16695f" size={16} /></span>
                         <span className="ml">{it.label}</span>
                       </button>
                     ))}
@@ -350,24 +328,10 @@ function MobileAppInner() {
               ))}
               {menuGroups.length === 0 && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "24px 0" }}>No modules available for your position.</div>}
             </div>
-            <div className="sheet-foot">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6Z" /></svg>
-              <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".13em", textTransform: "uppercase", color: "#767b6e" }}>Houzs ERP</span>
-            </div>
           </div>
         </div>
       )}
     </div>
-  );
-}
-
-/** Menu tile icon — mirrors the design's `micon()` (24x24 stroke SVG, the
- *  path(s) pulled from MENU_ICONS). */
-function MIcon({ name, color, size }: { name: string; color: string; size: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      {MENU_ICONS[name] ?? null}
-    </svg>
   );
 }
 

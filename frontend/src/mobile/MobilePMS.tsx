@@ -740,21 +740,6 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             </details>
 
-            {/* financial snapshot (finance-gated) */}
-            {financeVisible && (
-              <FinancialSnapshot
-                finance={data.finance!}
-                lines={data.finance_lines}
-                canLogSale={canLogSale && !archived}
-                busy={busy}
-                setBusy={setBusy}
-                prompt={prompt}
-                notify={notify}
-                projectId={id}
-                reload={reload}
-              />
-            )}
-
             {/* tasklist */}
             <TasklistSectionView
               sections={data.sections}
@@ -807,6 +792,22 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               notify={notify}
               onSet={(status) => patchPayment(id, status, setBusy, notify, reload)}
             />
+
+            {/* financial snapshot (finance-gated) — design v7 places P&L as the
+                FINAL card, after the logistics + money sections. */}
+            {financeVisible && (
+              <FinancialSnapshot
+                finance={data.finance!}
+                lines={data.finance_lines}
+                canLogSale={canLogSale && !archived}
+                busy={busy}
+                setBusy={setBusy}
+                prompt={prompt}
+                notify={notify}
+                projectId={id}
+                reload={reload}
+              />
+            )}
           </>
         )}
       </div>

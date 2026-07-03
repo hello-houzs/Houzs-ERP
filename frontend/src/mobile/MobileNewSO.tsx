@@ -935,7 +935,7 @@ export function MobileNewSO({
       <header className="hdr">
         <div className="hdr-row">
           <button className="back" onClick={onBack}><span className="chev">{"‹"}</span> Cancel</button>
-          {mode === "edit" ? null : <span className="badge b-grey">DRAFT</span>}
+          {mode === "edit" ? null : <span className="badge b-grey">Draft</span>}
         </div>
         <div id="nso-title" className="scr-title" style={{ marginTop: 6 }}>{title}</div>
       </header>
