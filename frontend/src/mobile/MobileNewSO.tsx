@@ -8,42 +8,53 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import type { MobileScanPrefill } from "./MobileScan";
 import { MobileSkuPicker, type PickedSku } from "./MobileSkuPicker";
+import {
+  useMaintenanceConfig,
+  useSpecialAddons,
+  useModelAllowedOptionsByCode,
+  type MaintenanceConfig,
+  type ModelAllowedOptions,
+} from "../vendor/scm/lib/mfg-products-queries";
+import { useFabricColoursActive, type FabricColourRow } from "../vendor/scm/lib/fabric-queries";
+import { useFabricLibrary } from "../vendor/scm/lib/queries";
+import { activeOptions, maintPickerValues } from "../vendor/shared/maintenance-pools";
+import { missingVariantAxes } from "../vendor/shared/so-variant-rule";
 import "./mobile.css";
 
 /* ---------------------------------------------------------------------------
- * MobileNewSO — mobile New / Edit Sales Order FORM. 1:1 with the owner's mobile
- * design (#new-so): Customer / Order Info / Emergency Contact / Delivery Address
- * / Line Items (per-line delivery date + optional bedframe build panel) /
- * Payments cards, all under the .hz-m scope. Presentation ports the design's
- * verbatim markup + CSS classes (.hdr / .so-card / .so-hd / .so-ti / .so-sub /
- * .so-bd / .fld / .fld-l / .fld-i / .addline / .so-sub-row / .actbar / .btn from
- * mobile.css). Wired to the real backend:
+ * MobileNewSO — mobile New / Edit Sales Order as the Spec's 5-STEP WIZARD
+ * (Build Spec §"New / Edit Sales Order"): 1 Customer · 2 Order info · 3 Items ·
+ * 4 Payment · 5 Review, with a "Step N of 5" progress bar and step-gated
+ * validation. Presentation stays under the .hz-m scope with the design's card /
+ * field / button classes from mobile.css.
  *
+ * WIRED TO THE REAL BACKEND (unchanged contract from the prior build):
  *   • CREATE  POST  /mfg-sales-orders            (new / edit-draft) → { docNo }
  *   • EDIT    PATCH /mfg-sales-orders/:docNo      (header fields only)
+ *   • ITEMS   POST/PATCH/DELETE /mfg-sales-orders/:docNo/items
  *   • PREFILL GET   /mfg-sales-orders/:docNo      (header + items)
  *             GET   /mfg-sales-orders/:docNo/payments
- *
+ *   • PAY     POST  /mfg-sales-orders/:docNo/payments (slip-backed rows)
  * The backend recomputes honest pricing and mints the doc_no server-side, so we
- * never send a doc_no. Money crosses the wire as *_centi integers.
+ * never send a doc_no and money crosses the wire as *_centi integers.
  *
- * LINE ITEMS: each line picks a REAL catalog SKU via MobileSkuPicker (the
- * searchable bottom-sheet over useMfgProducts → GET /mfg-products). On CREATE we
- * send items[] with the picked item_code + item_group + variants + qty (mirrors
- * desktop's POST); the server recomputes the honest price and rejects >0.5%
- * drift, so we NEVER send an authoritative price — the unit price we send is a
- * catalog default only, and a blank processing/delivery date pair keeps the
- * order a plain draft (the server pairs-guards proc/deliv, so we submit them
- * all-or-nothing).
- *
- * On EDIT the PATCH /:docNo endpoint accepts HEADER fields only; line-item
- * mutations flow through the dedicated /:docNo/items endpoints. So the existing
- * lines load into the SAME editable cards and, on save, we diff them against the
- * frozen snapshot: added lines → POST /:docNo/items, changed lines → PATCH
- * /:docNo/items/:itemId, removed lines → DELETE /:docNo/items/:itemId (in-app
- * confirm). Line edits are locked (read-only) once the SO is SHIPPED+ / has a
- * downstream DO/SI (has_children), mirroring desktop. Payments stay read-only in
- * edit mode (their own screen owns them).
+ * CATEGORY-AWARE LINE VARIANTS — wired to the SAME real hooks the desktop
+ * SoLineCard uses (NOT hardcoded arrays). This is the fix the owner asked for:
+ *   • Fabrics  ← useFabricColoursActive()  (GET /fabric-colours) + fabric_library
+ *               series label via useFabricLibrary() (GET /fabric-library)
+ *   • Sofa     Seat height ← maintenanceConfig.sofaSizes
+ *              Leg height  ← maintenanceConfig.sofaLegHeights
+ *   • Bedframe Gap   ← maintenanceConfig.gaps
+ *              Divan ← maintenanceConfig.divanHeights
+ *              Leg   ← maintenanceConfig.legHeights
+ *              Total height = divan + leg + gap inches (computed, read-only)
+ * The maintenance pools come from useMaintenanceConfig('master') (GET
+ * /maintenance-config/resolved). Per-SKU allowed_options (Modular ON/OFF) filter
+ * every pool via useModelAllowedOptionsByCode, exactly as SoLineCard does. The
+ * REQUIRED axes per category are the shared so-variant-rule (sofa: seatHeight +
+ * legHeight + fabricCode; bedframe: divanHeight + legHeight + gap + fabricCode);
+ * mattress / accessory / others carry NO mandatory variants — the same rule the
+ * server 409-gates on. Save is blocked when any line is missing a required axis.
  * ------------------------------------------------------------------------- */
 
 type Mode = "new" | "edit" | "edit-draft";
@@ -54,10 +65,10 @@ type Mode = "new" | "edit" | "edit-draft";
    the AI original. */
 type ScanLineMetaSeed = { rawText: string; suggestedCode: string; confidence: number; seededCode: string; seededName: string };
 
-/* Line category — drives which variant panel shows (matches the new design's
-   category-aware line card). "sofa"/"bedframe" map to the backend item_group;
-   "" leaves the line a plain free-typed item (no mandatory variants). */
-type LineCat = "" | "sofa" | "bedframe";
+/* Line category — drives which variant panel shows (matches the desktop
+   SoLineCard). Only sofa/bedframe have mandatory variant panels; every other
+   group (mattress/accessory/others) is a plain line. */
+type LineCat = "" | "sofa" | "bedframe" | "mattress";
 
 type LineItem = {
   key: string;
@@ -77,17 +88,13 @@ type LineItem = {
   remark: string;
   photo: boolean; // per-line delivery/reference photo captured (display-only)
   cat: LineCat;
-  // Sofa spec
-  fabric: string;
-  seat: string;
-  // Bedframe spec
-  size: string;
-  head: string;
-  store: string;
-  // Bedframe build (also the sofa leg pick reuses `leg`)
-  divan: string;
-  leg: string;
-  gap: string;
+  /* variants — the canonical variant blob, SAME keys the desktop SoLineCard /
+     POST /mfg-sales-orders write. A fabric pick lands fabricCode + colourId +
+     fabricId + labels together; sofa fills seatHeight + legHeight; bedframe
+     fills divanHeight + legHeight + gap (+ totalHeight computed). We keep this
+     as ONE map (not scattered flat fields) so the create/edit body + the
+     required-axis rule read the exact structure the server expects. */
+  variants: Record<string, unknown>;
 };
 
 type Payment = {
@@ -170,18 +177,13 @@ const LINE_CATS: Array<{ value: LineCat; label: string }> = [
   { value: "", label: "General item" },
   { value: "sofa", label: "Sofa" },
   { value: "bedframe", label: "Bedframe" },
+  { value: "mattress", label: "Mattress" },
 ];
-// Sofa spec option lists (mirror the new design's NSO_* arrays)
-const FABRIC_OPTS = ["BO315-22 · Boston Charcoal", "BO315-04 · Boston Sand", "VL220-11 · Velour Teal"];
-const SEAT_OPTS = ['22"', '24"', '26"'];
-// Bedframe spec option lists
-const SIZE_OPTS = ["Single", "Super Single", "Queen", "King"];
-const HEAD_OPTS = ['Slim 20"', 'Standard 28"', 'Tall 40"', "No headboard"];
-const STORE_OPTS = ["No storage", "Side drawer ×2", "Hydraulic lift"];
-const DIVAN_OPTS = ['8"', '10"', '12"'];
-const LEG_OPTS = ['4"', '6"', '8"'];
-const GAP_OPTS = ['0"', '1"', '2"'];
-// Payment method-aware sub-field option lists
+/* Payment method-aware sub-field option lists. These are payment-terminal /
+   merchant metadata (bank names, installment plans, online rails), NOT product
+   variants — they have no product-config table, so they stay literal here.
+   (Only the product VARIANT lists were hardcoded-in-error; those now come from
+   the real Maintenance / fabric hooks.) */
 const BANK_OPTS = ["Maybank", "CIMB", "Public Bank", "HSBC", "RHB"];
 const PLAN_OPTS = ["One Shot", "6 months", "12 months", "24 months", "36 months"];
 const ONLINE_OPTS = ["Bank Transfer", "TNG eWallet", "DuitNow", "Cheque"];
@@ -192,59 +194,55 @@ const toCenti = (s: string) => Math.round(num(s) * 100);
 const fromCenti = (c: number | null | undefined) =>
   ((c ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt = (n: number) => n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const inchNum = (s: string) => parseInt(s, 10) || 0;
+/* Inches parser — mirrors SoLineCard.parseInches (handles `10"`, `10`, `-2`). */
+const parseInches = (s: unknown): number => {
+  if (s == null) return 0;
+  const m = String(s).match(/(-?\d+(?:\.\d+)?)/);
+  return m && m[1] ? Number(m[1]) : 0;
+};
 
 function newLine(): LineItem {
   return {
     key: uid(), itemCode: "", itemGroup: "", itemId: "",
     name: "", qty: "1", price: "0.00", ddate: "", remark: "", photo: false, cat: "",
-    fabric: FABRIC_OPTS[0], seat: '24"',
-    size: "Queen", head: 'Standard 28"', store: "No storage",
-    divan: '10"', leg: '6"', gap: '1"',
+    variants: {},
   };
 }
 
 /* item_group (catalog category, lowercase) → the line's `cat` axis, which
-   drives the sofa/bedframe variant panels. Only sofa/bedframe have panels;
-   every other group (mattress/accessory/others/service) is a plain line. */
+   drives the sofa/bedframe/mattress panels. sofa/bedframe have mandatory
+   variant panels; mattress shows an info note (no required axes); everything
+   else (accessory/others/service) is a plain line. */
 function catForGroup(group: string | null | undefined): LineCat {
   const g = (group ?? "").toLowerCase();
-  return g === "sofa" ? "sofa" : g === "bedframe" ? "bedframe" : "";
+  return g === "sofa" ? "sofa" : g === "bedframe" ? "bedframe" : g === "mattress" ? "mattress" : "";
 }
 
-/* Build a line's `variants` blob the same way the create path does, so ONE
-   builder feeds both the create body and the edit-mode POST/PATCH. Mirrors
-   desktop's canonical variant keys (bedframe: divanHeight/legHeight/gap/
-   fabricCode(+size/headboard/storage descriptive); sofa: seatHeight/legHeight/
-   fabricCode). remark rides as variants.remark AND the dedicated column. */
+/* Build a line's outgoing `variants` blob for the create/edit body. The blob is
+   already the canonical shape (kept live in LineItem.variants via the variant
+   pickers), so we just fold in the remark + a fresh computed totalHeight for
+   bedframes. Mirrors the desktop SoLineCard writes: bedframe carries
+   divanHeight/legHeight/gap/fabricCode(+colourId/fabricId/labels)/totalHeight;
+   sofa carries seatHeight/legHeight/fabricCode(+…). remark also rides the
+   dedicated column. */
 function buildVariants(l: LineItem): Record<string, unknown> {
-  const variants: Record<string, unknown> = {};
+  const variants: Record<string, unknown> = { ...(l.variants ?? {}) };
   if (l.remark.trim()) variants.remark = l.remark.trim();
+  else delete variants.remark;
   if (l.cat === "bedframe") {
-    variants.size = l.size;
-    variants.headboard = l.head;
-    variants.storage = l.store;
-    variants.divanHeight = l.divan;
-    variants.legHeight = l.leg;
-    variants.gap = l.gap;
-    variants.fabricCode = l.fabric;
-    variants.totalHeight = inchNum(l.divan) + inchNum(l.leg) + inchNum(l.gap);
-  } else if (l.cat === "sofa") {
-    variants.seatHeight = l.seat;
-    variants.legHeight = l.leg;
-    variants.fabricCode = l.fabric;
+    const th = parseInches(variants.divanHeight) + parseInches(variants.legHeight) + parseInches(variants.gap);
+    if (th > 0) variants.totalHeight = `${th}"`;
   }
   return variants;
 }
 
-/* Map a persisted SoItem (edit prefill) back into an editable LineItem. Reads
-   the descriptive variant keys buildVariants writes, dual-reading nothing new
-   (variants is a free-form blob, not driver-camelCased). Falls back to the
-   newLine() defaults for any axis the stored blob didn't carry. */
+/* Map a persisted SoItem (edit prefill) back into an editable LineItem. The
+   variants blob is a free-form JSON column (NOT driver-camelCased), so we carry
+   it through verbatim — the variant pickers below read the canonical keys off
+   it. remark falls back from the dedicated column to variants.remark. */
 function lineFromItem(it: SoItem): LineItem {
   const base = newLine();
-  const v = (it.variants ?? {}) as Record<string, unknown>;
-  const str = (x: unknown, fallback: string) => (typeof x === "string" && x ? x : fallback);
+  const v = { ...((it.variants ?? {}) as Record<string, unknown>) };
   const cat = catForGroup(it.item_group);
   return {
     ...base,
@@ -255,16 +253,9 @@ function lineFromItem(it: SoItem): LineItem {
     qty: String(it.qty ?? 1),
     price: fromCenti(it.unit_price_centi),
     ddate: (it.line_delivery_date ?? "").slice(0, 10),
-    remark: it.remark ?? str(v.remark, ""),
+    remark: it.remark ?? (typeof v.remark === "string" ? v.remark : ""),
     cat,
-    fabric: str(v.fabricCode, base.fabric),
-    seat: str(v.seatHeight, base.seat),
-    size: str(v.size, base.size),
-    head: str(v.headboard, base.head),
-    store: str(v.storage, base.store),
-    divan: str(v.divanHeight, base.divan),
-    leg: str(v.legHeight, base.leg),
-    gap: str(v.gap, base.gap),
+    variants: v,
   };
 }
 function newPayment(): Payment {
@@ -286,10 +277,24 @@ const planToMonths = (label: string): number | null => {
   return m ? Number(m[1]) : null;
 };
 
+/* ── Variant option pools (REAL hooks) — resolved once in MobileNewSO and
+   threaded to each LineCard. Each pool is { value, label } for a plain <select>.
+   fabricColours + fabricLib feed the multi-key fabric patch. */
+type Opt = { value: string; label: string };
+type VariantPools = {
+  ready: boolean; // maintenance config loaded (pools meaningful)
+  fabricColours: FabricColourRow[];
+  fabricSeries: Map<string, string>; // fabricId → series label
+  maint: MaintenanceConfig | null;
+};
+
+/* Wizard steps. */
+const STEPS = ["Customer", "Order info", "Items", "Payment", "Review"] as const;
+
 /* Method label → the backend's payment method enum (merchant | transfer | cash
  * | installment). Kept here for reference; payment ROWS are not POSTed on
- * create (each needs an uploaded slip session — see TODO(verify) below), so
- * this map is applied only if/when the slip-upload flow is wired. */
+ * create (each needs an uploaded slip session — see recordSlipBackedPayments),
+ * so this map is applied only when the slip-upload flow is wired. */
 export function MobileNewSO({
   mode,
   docNo,
@@ -312,14 +317,33 @@ export function MobileNewSO({
   const staffQ = useStaff();
   const isEdit = mode === "edit" || mode === "edit-draft";
 
+  /* ── Real variant sources (the fix) ─────────────────────────────────────
+     The SAME hooks the desktop SoLineCard reads. Maintenance config supplies
+     the sofa/bedframe height + gap pools; fabric_colours + fabric_library
+     supply the Fabrics dropdown; special-addons is fetched so the pool is warm
+     for the required-axis parity (specials are optional, not gated here). */
+  const maintQ = useMaintenanceConfig("master");
+  const maint = maintQ.data?.data ?? null;
+  const fabricColoursQ = useFabricColoursActive();
+  const fabricLibQ = useFabricLibrary();
+  useSpecialAddons(); // warm the pool (SoLineCard reads it; mobile keeps specials optional)
+
+  const pools: VariantPools = useMemo(() => {
+    const fabricSeries = new Map<string, string>();
+    for (const f of fabricLibQ.data ?? []) fabricSeries.set(f.id, f.label);
+    return {
+      ready: Boolean(maint),
+      fabricColours: fabricColoursQ.data ?? [],
+      fabricSeries,
+      maint,
+    };
+  }, [maint, fabricColoursQ.data, fabricLibQ.data]);
+
   /* One-shot seed derived from the scan handoff (new-from-scan only). Fields the
      mobile form binds to a fixed dropdown list (State / Customer Type / Building
      Type / payment method) only seed when the scanned value is IN that list —
      an off-list value is left blank for the operator to pick (never a bogus
-     option). Everything else (free-text) seeds verbatim. Computed once; the
-     scanPrefill prop is stable for this screen's lifetime (MobileApp remounts
-     the screen on navigation), so reading it in the state initializers is safe
-     and can't stomp later operator edits. */
+     option). Everything else (free-text) seeds verbatim. */
   const scanLines: Array<{ line: LineItem; meta: ScanLineMetaSeed }> = (scanPrefill?.lines ?? []).map((l) => {
     const line: LineItem = { ...newLine(), name: l.name, qty: l.qty || "1", price: l.price || "0.00", remark: l.remark };
     return { line, meta: { rawText: l.rawText, suggestedCode: l.suggestedCode, confidence: l.confidence, seededCode: l.itemCode, seededName: l.name } };
@@ -329,15 +353,7 @@ export function MobileNewSO({
   const inList = (v: string, list: string[]) => (list.includes(v) ? v : "");
 
   /* Seed ONE payment row per captured payment slip (scanPrefill.payments[]),
-     each carrying its OCR'd method/amount/approval. Method is mapped through the
-     dropdown list (an off-list method stays blank for the operator to pick).
-     Each row starts in the "uploading" phase and its carried File is stashed in
-     `scanSlipFiles` (keyed by row.key) so the on-mount effect below can pre-upload
-     it and attach the resulting slip session — mirroring PayCard.onPickSlip — so
-     recordSlipBackedPayments posts all N slip-backed rows on create.
-     Back-compat: when only the single `payment` (no `payments` array) is present,
-     seed one slip-less row exactly as before. Computed once — scanPrefill is
-     stable for this screen's lifetime (see note above). */
+     each carrying its OCR'd method/amount/approval. */
   const scanPaymentSlips = scanPrefill?.payments ?? [];
   const scanSlipFilesInit: Record<string, File> = {};
   const seededPays: Payment[] = scanPaymentSlips.length
@@ -391,36 +407,25 @@ export function MobileNewSO({
     scanLines.length > 0 ? scanLines.map((s) => s.line) : [newLine()],
   );
   const [pays, setPays] = useState<Payment[]>(() => seededPays);
-  /* Captured payment-slip Files from the scan handoff, keyed by seeded row.key —
-     consumed once by the on-mount effect that pre-uploads them. Held in a ref (not
-     state) so it never re-renders and is read exactly once. */
   const scanSlipFilesRef = useRef<Record<string, File>>(scanSlipFilesInit);
   // In edit mode: the ORIGINAL persisted items (frozen snapshot) used to diff
   // against the editable `lines` on save — POST added, PATCH changed, DELETE
   // removed. Payments stay read-only here (own screen).
   const [origItems, setOrigItems] = useState<SoItem[]>([]);
   const [existingPays, setExistingPays] = useState<SoPayment[]>([]);
-  /* Line-mutation lock (edit mode) — mirrors desktop SalesOrderDetail: line
-     add/edit/delete is blocked once the SO is SHIPPED+ / INVOICED / CLOSED /
-     CANCELLED or has a non-cancelled downstream DO/SI (has_children). The
-     backend also enforces this (soHasDownstream → 409); we gate the UI so the
-     operator never sends a doomed request. */
   const [lineLocked, setLineLocked] = useState(false);
   // SKU picker sheet — the line key it was opened for, or null when closed.
   const [pickerFor, setPickerFor] = useState<string | null>(null);
+
+  // Wizard step (0..4). Edit mode still walks the same 5 steps.
+  const [step, setStep] = useState(0);
 
   const [loading, setLoading] = useState(isEdit);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
 
-  /* ── Scan-Order review state (scanPrefill only) ─────────────────────────
-     Mirrors SalesOrderNew.tsx's fromScan carry-through. We keep the frozen
-     AI-original slip + sampleId + salesperson so SAVE can run the same
-     edit-gate learning POST desktop does, plus the AI-prefilled baseline (per
-     field) so scan-filled fields show a subtle "scanned" hint, and per-line
-     scan meta (rawText + suggested code) so the learning POST can pair the
-     operator's final line against the AI original. */
+  /* ── Scan-Order review state (scanPrefill only) ───────────────────────── */
   const [scanSampleId] = useState<string | null>(scanPrefill?.sampleId ?? null);
   const [scanSalesperson] = useState<string | null>(scanPrefill?.salesperson ?? null);
   const [scanAiOriginal] = useState<ExtractedSlip | null>(scanPrefill?.aiOriginal ?? null);
@@ -430,10 +435,6 @@ export function MobileNewSO({
     procDate?: string; delivDate?: string;
     addr1?: string; state?: string; city?: string; postcode?: string;
   };
-  /* AI-prefilled baseline (only fields the seed actually filled) — a field
-     whose current value equals its baseline is still showing the AI's guess, so
-     it gets the subtle "scanned" hint. A field the scan left blank has no
-     baseline entry and never shows the hint. */
   const [scanBaseline] = useState<ScanBaseline | null>(
     scanPrefill
       ? {
@@ -463,8 +464,6 @@ export function MobileNewSO({
         if (cancelled) return;
         const h = detail.salesOrder;
         setName(h.debtor_name ?? "");
-        // Customer SO ref lives in customer_so_no (desktop's field); fall back
-        // to the legacy `ref` column for older mobile-created rows.
         setCustRef(h.customer_so_no ?? h.ref ?? "");
         setPhone(stripPrefix(h.phone));
         setEmail(h.email ?? "");
@@ -482,16 +481,11 @@ export function MobileNewSO({
         setState(h.customer_state ?? "");
         setCity(h.city ?? "");
         setPostcode(h.postcode ?? "");
-        /* Load the persisted lines into the editable list (skip cancelled
-           rows — they're history, not editable). Keep the frozen snapshot for
-           the save-time diff. When the SO has no live lines, seed one blank
-           editable card so the operator can add the first item. */
         const liveItems = (detail.items ?? []).filter((it) => !it.cancelled);
         setOrigItems(liveItems);
         const editable = liveItems.map(lineFromItem);
         setLines(editable.length ? editable : [newLine()]);
         setExistingPays(payResp.payments ?? []);
-        /* Lock line mutations on SHIPPED+ / has_children (desktop parity). */
         const st = (detail.salesOrder.status ?? "").toUpperCase();
         const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
         setLineLocked(LOCKED.includes(st) || Boolean(detail.salesOrder.has_children));
@@ -506,14 +500,7 @@ export function MobileNewSO({
     };
   }, [isEdit, docNo]);
 
-  /* ── Pre-upload scan-seeded payment slips (new-from-scan only) ───────────
-     Each payment row seeded from scanPrefill.payments[] carries a captured File
-     (stashed in scanSlipFilesRef by key). On mount we upload every one via the
-     same uploadSlipFull({ file }) call PayCard.onPickSlip uses, then attach the
-     returned slip session to its row so recordSlipBackedPayments posts all N on
-     create. Runs async in the background — never blocks the form render; a failed
-     upload flips just that row to "error" (operator re-attaches from the row).
-     Each row started in "uploading". Fires once on mount. */
+  /* ── Pre-upload scan-seeded payment slips (new-from-scan only) ─────────── */
   useEffect(() => {
     const files = scanSlipFilesRef.current;
     const keys = Object.keys(files);
@@ -540,27 +527,63 @@ export function MobileNewSO({
   }, []);
 
   // ---- Totals ---------------------------------------------------------------
-  /* Display-only subtotal from the on-screen line prices. This is an ESTIMATE
-     for the operator — the server recomputes every line's honest price on save,
-     so the authoritative total lands on the SO detail after save. Lines are the
-     single source in both new + edit mode now (edit loads persisted lines into
-     the editable list). */
   const subtotal = useMemo(
     () => lines.reduce((a, l) => a + toCenti(l.price) * num(l.qty), 0),
     [lines],
   );
 
-  const title = mode === "edit-draft" ? "Edit Draft" : mode === "edit" ? "Edit" : "New Sales Order";
+  const title = mode === "edit-draft" ? "Edit Draft" : mode === "edit" ? "Edit Sales Order" : "New Sales Order";
 
   // ---- Validation -----------------------------------------------------------
   const emailOk = !email.trim() || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const nameErr = !name.trim();
   const phoneErr = !phone.trim();
   const emailErr = !email.trim() || !emailOk;
+  const dateXorErr = Boolean(procDate) !== Boolean(delivDate); // set together or both empty
+
+  /* Lines that carry identity (a picked SKU or a typed name). */
+  const namedLines = useMemo(() => lines.filter((l) => l.name.trim() || l.itemCode.trim()), [lines]);
+  const unpickedLines = useMemo(() => namedLines.filter((l) => !l.itemCode.trim()), [namedLines]);
+  /* Required-variant gate (shared so-variant-rule = server 409 parity). A line
+     with a picked SKU whose category has mandatory axes must fill them all. */
+  const linesMissingVariants = useMemo(
+    () => namedLines.filter((l) => l.itemCode.trim() && missingVariantAxes(l.itemGroup, l.variants).length > 0),
+    [namedLines],
+  );
+
+  /* Per-step "can advance" gate. Step 4 (Review, index 4) is terminal. */
+  const stepValid = (s: number): boolean => {
+    if (s === 0) return !nameErr && !phoneErr && !emailErr;
+    if (s === 1) return mode === "edit-draft" ? true : !dateXorErr;
+    if (s === 2) return namedLines.length >= 1 && unpickedLines.length === 0 && linesMissingVariants.length === 0;
+    return true; // payment (3) + review (4) impose no gate
+  };
+  const stepError = (s: number): string | null => {
+    if (s === 0 && !stepValid(0)) return "Fill in customer name, phone and a valid email.";
+    if (s === 1 && !stepValid(1)) return "Processing Date and Delivery Date must be set together, or both left empty.";
+    if (s === 2) {
+      if (namedLines.length < 1) return "Add at least one line item.";
+      if (unpickedLines.length > 0) return `Pick a product from the catalog for every line (${unpickedLines.length} still unpicked).`;
+      if (linesMissingVariants.length > 0) {
+        const l = linesMissingVariants[0];
+        const miss = missingVariantAxes(l.itemGroup, l.variants).map((a) => a.label).join(", ");
+        return `Complete the required options (${miss}) on "${l.name || l.itemCode}".`;
+      }
+    }
+    return null;
+  };
+
+  const goNext = () => {
+    setTouched(true);
+    const e = stepError(step);
+    if (e) { setError(e); return; }
+    setError(null);
+    setStep((s) => Math.min(STEPS.length - 1, s + 1));
+  };
+  const goBack = () => { setError(null); setStep((s) => Math.max(0, s - 1)); };
 
   /* Scanned hint — a field the scan filled shows a subtle "scanned" tag until
-     the operator changes it (once changed it's their own value, no tag). Only
-     meaningful on a scan-seeded SO (null baseline → never shown). */
+     the operator changes it. */
   const scanned = (key: keyof ScanBaseline, current: string): boolean => {
     if (!scanBaseline) return false;
     const base = scanBaseline[key];
@@ -568,21 +591,12 @@ export function MobileNewSO({
     return current === base;
   };
 
-  /* ── Edit-gate learning (scan-seeded SO only) ──────────────────────────
-     Mirrors SalesOrderNew.tsx's maybeLearnFromScan. We rebuild the operator's
-     FINAL values into the ExtractedSlip shape and compare against the frozen
-     AI-original; if anything the OCR can learn from changed, POST
-     /scan-so/samples/:id/confirm so the correction becomes a few-shot example +
-     re-distills the rep's rules. Fire-and-forget — never blocks or fails save.
-     The mobile form has no dropdown masters, so option picks are recorded as
-     operator-confirmed matches (the free-text final value wins). */
+  /* ── Edit-gate learning (scan-seeded SO only) ────────────────────────── */
   const maybeLearnFromScan = () => {
     if (!fromScan || !scanSampleId || !scanAiOriginal) return;
     const ai = scanAiOriginal;
     const optMatch = (v: string) => (v ? { value: v, confidence: 1, reason: "operator-confirmed" } : null);
     const norm = (s: string | null | undefined) => (s ?? "").trim();
-    // Operator phone is national (no +60); compare against the AI's raw phones by
-    // digits so a formatting-only difference doesn't count as a correction.
     const digits = (s: string) => s.replace(/\D+/g, "");
     const aiFirstPhoneDigits = digits(ai.phones?.[0] ?? "");
     const finalLines = lines.filter((l) => l.name.trim());
@@ -599,13 +613,9 @@ export function MobileNewSO({
     mark(norm(custType), norm(ai.customerTypeMatch?.value));
     mark(norm(buildingType), norm(ai.buildingTypeMatch?.value));
     mark(norm(pays[0]?.method), norm(ai.paymentMethodMatch?.value === "Installment" ? "Merchant" : ai.paymentMethodMatch?.value));
-    // Line count differing (operator added / removed a row) is a correction.
     if (finalLines.length !== ai.lines.length) changed = true;
     for (const l of finalLines) {
       const meta = scanLineMeta[l.key];
-      // A line with no scan meta was added by the operator → a correction. A
-      // seeded line whose NAME the operator retyped is the OCR's lesson (mobile
-      // has no SKU code, so the name is the learnable field).
       if (!meta || norm(l.name) !== norm(meta.seededName)) changed = true;
     }
 
@@ -636,9 +646,6 @@ export function MobileNewSO({
       customerTypeMatch: optMatch(custType),
       buildingTypeMatch: optMatch(buildingType),
       locationMatch: ai.locationMatch,
-      // Per-line correction — pair the slip's verbatim rawText (carried from the
-      // scan) with the operator's FINAL name/qty/price so the distiller learns
-      // this rep's handwriting. Mobile has no SKU code, so skuMatch stays null.
       lines: finalLines.map((l) => {
         const meta = scanLineMeta[l.key];
         return {
@@ -659,14 +666,8 @@ export function MobileNewSO({
     }).catch(() => { /* few-shot learning is best-effort — never blocks save */ });
   };
 
-  /* Post-create payment recording — the SO-create body's payments[] omits
-     onlineType / accountSheet / collectedBy / paidAt, so to preserve the full
-     sub-field set the design captures we record each SLIP-BACKED row AFTER the
-     SO exists, through the same POST /:docNo/payments the SO-detail screen uses.
-     Rows WITHOUT a slip are never posted (the backend requires a slip); they
-     stayed on-screen as display-only "planned" rows with a slip-required hint,
-     so nothing is silently dropped. Fires after create; a failed row surfaces a
-     notify but never rolls back the created SO. */
+  /* Post-create payment recording — records each SLIP-BACKED row AFTER the SO
+     exists, through the same POST /:docNo/payments the SO-detail screen uses. */
   async function recordSlipBackedPayments(createdDocNo: string) {
     const rows = pays.filter((p) => p.slipSession && toCenti(p.amount) > 0);
     if (rows.length === 0) return;
@@ -698,13 +699,7 @@ export function MobileNewSO({
     }
   }
 
-  /* Line-item body for POST /:docNo/items and the create body's items[]. We
-     send item_code + item_group + qty + variants + per-line delivery date + an
-     optional discount. The unit price rides along as a DEFAULT (mirrors what
-     desktop POSTs) — the server RECOMPUTES it honestly and rejects >0.5% drift,
-     so this figure is never authoritative. A blank itemCode is impossible here:
-     the save gate below blocks unpicked lines (POST /:docNo/items 400s on a
-     blank code anyway). */
+  /* Line-item body for POST /:docNo/items and the create body's items[]. */
   const itemBody = (l: LineItem): Record<string, unknown> => ({
     itemCode: l.itemCode,
     itemGroup: l.itemGroup || "others",
@@ -715,9 +710,7 @@ export function MobileNewSO({
     ...(Object.keys(buildVariants(l)).length ? { variants: buildVariants(l) } : {}),
   });
 
-  /* PATCH body for an existing line — item_code + item_group + qty + discount +
-     variants (server recomputes price). Sent only for a line whose priced shape
-     actually moved (see lineChanged). */
+  /* PATCH body for an existing line. */
   const itemPatchBody = (l: LineItem): Record<string, unknown> => ({
     itemCode: l.itemCode,
     itemGroup: l.itemGroup || "others",
@@ -728,11 +721,6 @@ export function MobileNewSO({
     variants: buildVariants(l),
   });
 
-  /* Did this edit-mode line change vs its persisted snapshot? Compares the
-     priced/identifying shape (code, group, qty, delivery date, variants) plus
-     description. Variants compare key-order-independently (Postgres jsonb
-     reorders keys) so an untouched line isn't re-PATCHed (which could trip the
-     backend's allowed_options re-validation on a since-changed pool). */
   const canonJson = (o: unknown): string => {
     if (o == null) return "null";
     if (typeof o !== "object") return JSON.stringify(o);
@@ -752,24 +740,18 @@ export function MobileNewSO({
     return false;
   };
 
-  /* Reconcile the editable `lines` against the frozen `origItems` snapshot,
-     applying each change through the dedicated /items endpoints. Returns the
-     number of writes that failed (each write is independent so one failure
-     doesn't abort the rest). */
   async function applyLineDiff(soDocNo: string): Promise<number> {
     const base = `/mfg-sales-orders/${encodeURIComponent(soDocNo)}/items`;
     let failed = 0;
-    // DELETE — snapshot rows whose id is no longer in the editable list.
     const liveIds = new Set(lines.map((l) => l.itemId).filter(Boolean));
     for (const snap of origItems) {
       if (liveIds.has(snap.id)) continue;
       try { await authedFetch(`${base}/${encodeURIComponent(snap.id)}`, { method: "DELETE" }); }
       catch { failed += 1; }
     }
-    // POST (new) / PATCH (changed) — walk the editable list.
     const snapById = new Map(origItems.map((s) => [s.id, s]));
     for (const l of lines) {
-      if (!l.itemCode.trim()) continue; // unpicked lines are blocked earlier
+      if (!l.itemCode.trim()) continue;
       if (!l.itemId) {
         try { await authedFetch(base, { method: "POST", body: JSON.stringify(itemBody(l)) }); }
         catch { failed += 1; }
@@ -789,25 +771,27 @@ export function MobileNewSO({
     setTouched(true);
     if (nameErr || phoneErr || emailErr) {
       setError("Please fill in the required fields: customer name, phone and a valid email.");
+      setStep(0);
       return;
     }
-    /* Honest-pricing prerequisite — every non-empty line MUST carry a real
-       catalog itemCode (picked from the SKU sheet) so the server can price it.
-       A named-but-unpicked line is blocked with a clear message rather than
-       silently sent (and rejected) with a blank code. */
-    const namedLines = lines.filter((l) => l.name.trim() || l.itemCode.trim());
-    const unpicked = namedLines.filter((l) => !l.itemCode.trim());
-    if (unpicked.length > 0) {
-      setError(`Pick a product from the catalog for every line (${unpicked.length} line${unpicked.length === 1 ? "" : "s"} still ha${unpicked.length === 1 ? "s" : "ve"} no product selected).`);
+    if (namedLines.length < 1) { setError("Add at least one line item."); setStep(2); return; }
+    if (unpickedLines.length > 0) {
+      setError(`Pick a product from the catalog for every line (${unpickedLines.length} line${unpickedLines.length === 1 ? "" : "s"} still ha${unpickedLines.length === 1 ? "s" : "ve"} no product selected).`);
+      setStep(2);
       return;
     }
-    // Save as Draft forces blank processing/delivery dates (the existing
-    // blank-date behavior keeps the order a plain draft); a normal Create keeps
-    // the pairs-guard so proc/deliv are set together or both empty.
+    if (linesMissingVariants.length > 0) {
+      const l = linesMissingVariants[0];
+      const miss = missingVariantAxes(l.itemGroup, l.variants).map((a) => a.label).join(", ");
+      setError(`Complete the required options (${miss}) on "${l.name || l.itemCode}".`);
+      setStep(2);
+      return;
+    }
     const procOut = asDraft ? "" : procDate;
     const delivOut = asDraft ? "" : delivDate;
     if (!asDraft && Boolean(procDate) !== Boolean(delivDate)) {
       setError("Processing Date and Delivery Date must be set together, or both left empty.");
+      setStep(1);
       return;
     }
     setError(null);
@@ -817,10 +801,8 @@ export function MobileNewSO({
       const ecPhoneOut = ecPhone.trim() ? "+60" + ecPhone.replace(/\s+/g, "") : null;
 
       if (isEdit && docNo) {
-        // EDIT — header fields only (line items / payments have their own endpoints).
         const patch: Record<string, unknown> = {
           debtorName: name.trim(),
-          // Matches desktop SO Detail's PATCH: customer_so_no via `customerSoNo`.
           customerSoNo: custRef.trim() || null,
           phone: phoneOut,
           email: email.trim(),
@@ -845,15 +827,6 @@ export function MobileNewSO({
           body: JSON.stringify(patch),
         });
 
-        /* Line-item diff → the dedicated /items endpoints (only when line edits
-           are allowed — a locked SO shows lines read-only and skips this). The
-           header PATCH above never touches lines, so we reconcile the editable
-           list against the frozen snapshot:
-             • line with no itemId          → POST   /:docNo/items       (added)
-             • line whose priced shape moved → PATCH  /:docNo/items/:id  (changed)
-             • snapshot id absent from list  → DELETE /:docNo/items/:id  (removed)
-           Every write is server-recomputed; we never send an authoritative
-           price. A failed write surfaces a notify but leaves the header saved. */
         if (!lineLocked) {
           const failed = await applyLineDiff(docNo);
           if (failed > 0) {
@@ -869,16 +842,11 @@ export function MobileNewSO({
       }
 
       // CREATE (new / edit-draft treated as create — mints a fresh doc_no).
-      // Real item_code + item_group + variants + qty per line; the server
-      // recomputes the honest price (fixes the old RM 0.00 blank-code path).
       const items = namedLines.map((l) => itemBody(l));
 
       const body: Record<string, unknown> = {
         customerName: name.trim(),
         debtorName: name.trim(),
-        // Customer's own SO reference → customer_so_no (desktop sends
-        // `customerSoNo`, backend writes it to customer_so_no on create;
-        // sending `ref` mis-routed it to the unrelated `ref` column).
         customerSoNo: custRef.trim() || null,
         phone: phoneOut,
         email: email.trim() || null,
@@ -898,21 +866,13 @@ export function MobileNewSO({
         emergencyContactRelationship: ecRel || null,
         salespersonId: salespersonId || null,
         items,
-        // Payments are NOT sent inline on create. The create body's payments[]
-        // omits onlineType / accountSheet / collectedBy / paidAt, so to keep the
-        // full sub-field set we record each slip-backed row AFTER create through
-        // POST /:docNo/payments (recordSlipBackedPayments below) — the same path
-        // the SO-detail screen uses. Slip-less rows stay display-only "planned".
       };
 
       const res = await authedFetch<{ docNo: string }>(`/mfg-sales-orders`, {
         method: "POST",
         body: JSON.stringify(body),
       });
-      // Record the slip-backed payment rows against the freshly-created SO.
       if (res?.docNo) await recordSlipBackedPayments(res.docNo);
-      // Edit-gate learning (scan-seeded SO only) — fire-and-forget, after the
-      // SO exists so a learning failure never blocks the save.
       maybeLearnFromScan();
       await qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
       if (res?.docNo && onSaved) onSaved(res.docNo);
@@ -925,16 +885,31 @@ export function MobileNewSO({
   }
 
   // ---- Render ---------------------------------------------------------------
+  const onLastStep = step === STEPS.length - 1;
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      {/* Header — design VERBATIM: a plain grey "Cancel" text button (no chevron)
-          top-left, a grey status pill top-right, the screen title below. */}
+      {/* Header — "Cancel" text button, Draft/Editing pill, title, and the
+          "Step N of 5 · {step name}" sub-line the Spec calls for. */}
       <header className="hdr">
         <div className="hdr-row">
           <button type="button" onClick={onBack} style={{ background: "none", border: "none", color: "var(--mut)", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>Cancel</button>
           <span className="badge b-grey">{mode === "edit" ? "Editing" : "Draft"}</span>
         </div>
         <div id="nso-title" className="scr-title" style={{ marginTop: 6 }}>{title}</div>
+        {!loading && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 5 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#16695f" }}>Step {step + 1} of {STEPS.length}</span>
+              <span style={{ fontSize: 11, color: "#767b6e" }}>{STEPS[step]}</span>
+            </div>
+            {/* Progress bar — 5 segments, filled up to the current step. */}
+            <div style={{ display: "flex", gap: 4 }}>
+              {STEPS.map((s, i) => (
+                <span key={s} style={{ flex: 1, height: 4, borderRadius: 999, background: i <= step ? "#16695f" : "#e3e6e0" }} />
+              ))}
+            </div>
+          </div>
+        )}
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: 12, paddingBottom: 24 }}>
@@ -942,7 +917,7 @@ export function MobileNewSO({
           <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "40px 0" }}>Loading{"…"}</div>
         ) : (
           <>
-            {fromScan && (
+            {fromScan && step === 0 && (
               <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 9, padding: "10px 12px", background: "#eaf2f0", border: "1px solid #cfe1dc", borderRadius: 12 }}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none", marginTop: 1 }}><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></svg>
                 <div style={{ fontSize: 11.5, color: "#16695f", lineHeight: 1.5 }}>
@@ -951,250 +926,264 @@ export function MobileNewSO({
               </div>
             )}
 
-            {/* Customer */}
-            <div className="card" style={{ marginBottom: 11 }}>
-              <div className="card-h"><span className="card-t">Customer</span></div>
-              {/* Field order + two-column pairing ported from the owner's design
-                  MobileNewSO Customer card: Name / Phone+Email / Customer type +
-                  Salesperson / Customer SO ref. All fields, validation, scanned
-                  hints and the +60 prefix box are ours, kept intact. */}
-              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                <Field label="Customer Name *" error={touched && nameErr} scanned={scanned("name", name)}>
-                  <input className="fld-i" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Lim Mei Hua" />
-                </Field>
-                <div style={{ display: "flex", gap: 9 }}>
-                  <Field label="Phone *" style={{ flex: 1 }} error={touched && phoneErr} scanned={scanned("phone", phone)}>
-                    <span style={{ display: "flex", alignItems: "stretch" }}>
-                      <span style={prefixBox}>+60</span>
-                      <input className="fld-i" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="1X-XXX XXXX" style={{ borderRadius: "0 9px 9px 0" }} />
-                    </span>
-                  </Field>
-                  <Field label="Email *" style={{ flex: 1 }} error={touched && emailErr}>
-                    <input className="fld-i" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="customer@example.com" />
-                  </Field>
-                </div>
-                <div style={{ display: "flex", gap: 9 }}>
-                  <Field label="Customer Type" style={{ flex: 1 }} scanned={scanned("custType", custType)}>
-                    <select className="fld-i" value={custType} onChange={(e) => setCustType(e.target.value)}>
-                      {CUSTOMER_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
-                    </select>
-                  </Field>
-                  <Field label="Salesperson" style={{ flex: 1 }}>
-                    <select className="fld-i" value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
-                      <option value="">{staffQ.isLoading ? "Loading…" : "Me (default)"}</option>
-                      {(staffQ.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
-                  </Field>
-                </div>
-                <Field label="Customer SO Ref" scanned={scanned("custRef", custRef)}>
-                  <input className="fld-i" value={custRef} onChange={(e) => setCustRef(e.target.value)} placeholder="Their PO / SO number" />
-                </Field>
-              </div>
-            </div>
-
-            {/* Order Info */}
-            <div className="card" style={{ marginBottom: 11 }}>
-              <div className="card-h"><span className="card-t">Order info</span></div>
-              {/* Two-column pairing from the design Order info card: Building type
-                  + Venue / Processing + Delivery / Note. */}
-              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                <div style={{ display: "flex", gap: 9 }}>
-                  <Field label="Building Type" style={{ flex: 1 }} scanned={scanned("buildingType", buildingType)}>
-                    <select className="fld-i" value={buildingType} onChange={(e) => setBuildingType(e.target.value)}>
-                      {BUILDING_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
-                    </select>
-                  </Field>
-                  <Field label="Venue" style={{ flex: 1 }} scanned={scanned("venue", venue)}>
-                    <input className="fld-i" value={venue} onChange={(e) => setVenue(e.target.value)} placeholder="Exhibition / outlet venue" />
-                  </Field>
-                </div>
-                <div style={{ display: "flex", gap: 9 }}>
-                  <Field label="Processing Date" style={{ flex: 1 }} scanned={scanned("procDate", procDate)}>
-                    <input className="fld-i" type="date" value={procDate} onChange={(e) => setProcDate(e.target.value)} />
-                  </Field>
-                  <Field label="Delivery Date" style={{ flex: 1 }} scanned={scanned("delivDate", delivDate)}>
-                    <input className="fld-i" type="date" value={delivDate} onChange={(e) => setDelivDate(e.target.value)} />
-                  </Field>
-                </div>
-                <Field label="Note" scanned={scanned("note", note)}>
-                  <input className="fld-i" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Internal notes — SO detail only" />
-                </Field>
-              </div>
-            </div>
-
-            {/* Emergency Contact */}
-            <div className="card" style={{ marginBottom: 11 }}>
-              <div className="card-h"><span className="card-t">Emergency Contact</span><span className="card-sub">If we can't reach the customer</span></div>
-              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                <Field label="Contact Name">
-                  <input className="fld-i" value={ecName} onChange={(e) => setEcName(e.target.value)} placeholder="e.g. Lim Mei Hua" />
-                </Field>
-                <Field label="Relationship">
-                  <select className="fld-i" value={ecRel} onChange={(e) => setEcRel(e.target.value)}>
-                    {RELATIONSHIPS.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
-                  </select>
-                </Field>
-                <Field label="Phone">
-                  <span style={{ display: "flex", alignItems: "stretch" }}>
-                    <span style={prefixBox}>+60</span>
-                    <input className="fld-i" type="tel" value={ecPhone} onChange={(e) => setEcPhone(e.target.value)} placeholder="1X-XXX XXXX" style={{ borderRadius: "0 9px 9px 0" }} />
-                  </span>
-                </Field>
-              </div>
-            </div>
-
-            {/* Delivery Address */}
-            <div className="card" style={{ marginBottom: 11 }}>
-              <div className="card-h"><span className="card-t">Delivery address</span></div>
-              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: 11, background: "#f4f6f3", border: "1px solid rgba(34,31,32,.12)", borderRadius: 12, cursor: "pointer" }}>
-                  <input type="checkbox" checked={addressLater} onChange={(e) => setAddressLater(e.target.checked)} style={{ marginTop: 2, width: 16, height: 16, accentColor: "#16695f" }} />
-                  <span>
-                    <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#11140f" }}>Fill in address later</span>
-                    <span style={{ fontSize: 11, color: "#767b6e" }}>Customer hasn't confirmed delivery address yet.</span>
-                  </span>
-                </label>
-                {!addressLater && (
-                  <>
-                    <Field label="Address Line 1" scanned={scanned("addr1", addr1)}>
-                      <input className="fld-i" value={addr1} onChange={(e) => setAddr1(e.target.value)} placeholder="Unit, street, area" />
+            {/* ── STEP 1 · Customer ─────────────────────────────────────── */}
+            {step === 0 && (
+              <>
+                <div className="card" style={{ marginBottom: 11 }}>
+                  <div className="card-h"><span className="card-t">Customer</span></div>
+                  <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                    <Field label="Customer Name *" error={touched && nameErr} scanned={scanned("name", name)}>
+                      <input className="fld-i" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Lim Mei Hua" />
                     </Field>
-                    <Field label="Address Line 2">
-                      <input className="fld-i" value={addr2} onChange={(e) => setAddr2(e.target.value)} placeholder="Apt, floor, building (optional)" />
-                    </Field>
-                    <Field label="State" scanned={scanned("state", state)}>
-                      <select className="fld-i" value={state} onChange={(e) => setState(e.target.value)}>
-                        {STATES.map((s) => <option key={s} value={s}>{s || "Pick state"}</option>)}
-                      </select>
-                    </Field>
-                    <div style={{ display: "flex", gap: 11 }}>
-                      <Field label="City" style={{ flex: 1 }} scanned={scanned("city", city)}>
-                        <input className="fld-i" value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" />
+                    <div style={{ display: "flex", gap: 9 }}>
+                      <Field label="Phone *" style={{ flex: 1 }} error={touched && phoneErr} scanned={scanned("phone", phone)}>
+                        <span style={{ display: "flex", alignItems: "stretch" }}>
+                          <span style={prefixBox}>+60</span>
+                          <input className="fld-i" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="1X-XXX XXXX" style={{ borderRadius: "0 9px 9px 0" }} />
+                        </span>
                       </Field>
-                      <Field label="Postcode" style={{ flex: 1 }} scanned={scanned("postcode", postcode)}>
-                        <input className="fld-i" inputMode="numeric" value={postcode} onChange={(e) => setPostcode(e.target.value)} placeholder="00000" />
+                      <Field label="Email *" style={{ flex: 1 }} error={touched && emailErr}>
+                        <input className="fld-i" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="customer@example.com" />
                       </Field>
                     </div>
-                    {/* Country is fixed to Malaysia; Sales Location is derived
-                        server-side from the salesperson's active venue, so both
-                        are shown read-only here (inert — no create-form source). */}
-                    <div style={{ display: "flex", gap: 11 }}>
+                    <div style={{ display: "flex", gap: 9 }}>
+                      <Field label="Customer Type" style={{ flex: 1 }} scanned={scanned("custType", custType)}>
+                        <select className="fld-i" value={custType} onChange={(e) => setCustType(e.target.value)}>
+                          {CUSTOMER_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
+                        </select>
+                      </Field>
+                      <Field label="Salesperson" style={{ flex: 1 }}>
+                        <select className="fld-i" value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
+                          <option value="">{staffQ.isLoading ? "Loading…" : "Me (default)"}</option>
+                          {(staffQ.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        </select>
+                      </Field>
+                    </div>
+                    <Field label="Customer SO Ref" scanned={scanned("custRef", custRef)}>
+                      <input className="fld-i" value={custRef} onChange={(e) => setCustRef(e.target.value)} placeholder="Their PO / SO number" />
+                    </Field>
+                  </div>
+                </div>
+
+                <div className="card" style={{ marginBottom: 11 }}>
+                  <div className="card-h"><span className="card-t">Emergency Contact</span><span className="card-sub">If we can't reach the customer</span></div>
+                  <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                    <Field label="Contact Name">
+                      <input className="fld-i" value={ecName} onChange={(e) => setEcName(e.target.value)} placeholder="e.g. Lim Mei Hua" />
+                    </Field>
+                    <Field label="Relationship">
+                      <select className="fld-i" value={ecRel} onChange={(e) => setEcRel(e.target.value)}>
+                        {RELATIONSHIPS.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="Phone">
+                      <span style={{ display: "flex", alignItems: "stretch" }}>
+                        <span style={prefixBox}>+60</span>
+                        <input className="fld-i" type="tel" value={ecPhone} onChange={(e) => setEcPhone(e.target.value)} placeholder="1X-XXX XXXX" style={{ borderRadius: "0 9px 9px 0" }} />
+                      </span>
+                    </Field>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* ── STEP 2 · Order info ───────────────────────────────────── */}
+            {step === 1 && (
+              <>
+                <div className="card" style={{ marginBottom: 11 }}>
+                  <div className="card-h"><span className="card-t">Order info</span></div>
+                  <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                    <div style={{ display: "flex", gap: 9 }}>
+                      <Field label="Building Type" style={{ flex: 1 }} scanned={scanned("buildingType", buildingType)}>
+                        <select className="fld-i" value={buildingType} onChange={(e) => setBuildingType(e.target.value)}>
+                          {BUILDING_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
+                        </select>
+                      </Field>
+                      {/* Venue is derived server-side from the salesperson's active
+                          project; shown read-only (Spec: derived). */}
+                      <Field label="Venue (auto)" style={{ flex: 1 }}>
+                        <input className="fld-i" value={venue} disabled placeholder="From salesperson" />
+                      </Field>
+                    </div>
+                    <div style={{ display: "flex", gap: 9 }}>
+                      <Field label="Processing Date" style={{ flex: 1 }} error={touched && dateXorErr} scanned={scanned("procDate", procDate)}>
+                        <input className="fld-i" type="date" value={procDate} onChange={(e) => setProcDate(e.target.value)} />
+                      </Field>
+                      <Field label="Delivery Date" style={{ flex: 1 }} error={touched && dateXorErr} scanned={scanned("delivDate", delivDate)}>
+                        <input className="fld-i" type="date" value={delivDate} onChange={(e) => setDelivDate(e.target.value)} />
+                      </Field>
+                    </div>
+                    <div style={{ fontSize: 10, color: "#9aa093", marginTop: -3 }}>Set both dates together, or leave both empty to keep this a draft.</div>
+                    <Field label="Note" scanned={scanned("note", note)}>
+                      <input className="fld-i" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Internal notes — SO detail only" />
+                    </Field>
+                    {/* Sales Location derives server-side from state → warehouse. */}
+                    <div style={{ display: "flex", gap: 9 }}>
                       <Field label="Country" style={{ flex: 1 }}>
                         <input className="fld-i" value="Malaysia" disabled />
                       </Field>
                       <Field label="Sales Location" style={{ flex: 1 }}>
-                        <input className="fld-i" value="Auto (from salesperson)" disabled />
+                        <input className="fld-i" value="Auto (from state)" disabled />
                       </Field>
                     </div>
-                  </>
-                )}
-              </div>
-            </div>
+                  </div>
+                </div>
 
-            {/* Line Items — editable in BOTH new + edit mode (edit loads the
-                persisted lines into the same cards; the diff on save applies to
-                the /items endpoints). Locked read-only once the SO is SHIPPED+ /
-                has downstream docs (desktop parity). */}
-            <div className="card" style={{ marginBottom: 11 }}>
-              <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{`${lines.length} ${lines.length === 1 ? "line" : "lines"}`}</span></div>
-              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                {lineLocked ? (
-                  <>
-                    {lines.length ? lines.map((l) => (
-                      <div key={l.key} style={roItemBox}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>{l.name || l.itemCode || "—"} <span style={{ color: "#9aa093" }}>{"×"}{num(l.qty)}</span></span>
-                          <span className="money" style={{ fontSize: 12.5, fontWeight: 800, color: "#0c3f39" }}>RM {fmt((toCenti(l.price) * num(l.qty)) / 100)}</span>
+                <div className="card" style={{ marginBottom: 11 }}>
+                  <div className="card-h"><span className="card-t">Delivery address</span></div>
+                  <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                    <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: 11, background: "#f4f6f3", border: "1px solid rgba(34,31,32,.12)", borderRadius: 12, cursor: "pointer" }}>
+                      <input type="checkbox" checked={addressLater} onChange={(e) => setAddressLater(e.target.checked)} style={{ marginTop: 2, width: 16, height: 16, accentColor: "#16695f" }} />
+                      <span>
+                        <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#11140f" }}>Fill in address later</span>
+                        <span style={{ fontSize: 11, color: "#767b6e" }}>Customer hasn't confirmed delivery address yet.</span>
+                      </span>
+                    </label>
+                    {!addressLater && (
+                      <>
+                        <Field label="Address Line 1" scanned={scanned("addr1", addr1)}>
+                          <input className="fld-i" value={addr1} onChange={(e) => setAddr1(e.target.value)} placeholder="Unit, street, area" />
+                        </Field>
+                        <Field label="Address Line 2">
+                          <input className="fld-i" value={addr2} onChange={(e) => setAddr2(e.target.value)} placeholder="Apt, floor, building (optional)" />
+                        </Field>
+                        <Field label="State" scanned={scanned("state", state)}>
+                          <select className="fld-i" value={state} onChange={(e) => setState(e.target.value)}>
+                            {STATES.map((s) => <option key={s} value={s}>{s || "Pick state"}</option>)}
+                          </select>
+                        </Field>
+                        <div style={{ display: "flex", gap: 11 }}>
+                          <Field label="City" style={{ flex: 1 }} scanned={scanned("city", city)}>
+                            <input className="fld-i" value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" />
+                          </Field>
+                          <Field label="Postcode" style={{ flex: 1 }} scanned={scanned("postcode", postcode)}>
+                            <input className="fld-i" inputMode="numeric" value={postcode} onChange={(e) => setPostcode(e.target.value)} placeholder="00000" />
+                          </Field>
                         </div>
-                      </div>
-                    )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "8px 0" }}>No items.</div>}
-                    <div style={{ fontSize: 10, color: "#9aa093", marginTop: 4 }}>This order is shipped or has downstream documents — line items can no longer be changed.</div>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                      {lines.map((l, i) => (
-                        <LineCard
-                          key={l.key}
-                          line={l}
-                          index={i}
-                          removable={lines.length > 1}
-                          onOpenPicker={() => setPickerFor(l.key)}
-                          onChange={(patch) => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, ...patch } : x)))}
-                          onRemove={async () => {
-                            /* No naked deletes — confirm in-app. A persisted line
-                               (itemId) is only actually removed from the SO when
-                               the diff runs on Save; dropping it from the list
-                               here stages that DELETE. */
-                            if (!(await confirm({ title: "Remove this line?", body: l.name ? `"${l.name}" will be removed from the order.` : undefined, confirmLabel: "Remove", danger: true }))) return;
-                            setLines((prev) => prev.filter((x) => x.key !== l.key));
-                          }}
-                        />
-                      ))}
-                    </div>
-                    <button className="addline" onClick={() => setLines((p) => [...p, newLine()])}>+ Add Line Item</button>
-                  </>
-                )}
-                <div className="so-sub-row"><span style={{ fontSize: 11, color: "var(--mut)" }}>Subtotal</span><span className="money" style={{ fontSize: 17, fontWeight: 800, color: "var(--brand-d)" }}>RM {fmt(subtotal / 100)}</span></div>
-                <div style={{ fontSize: 10, color: "#9aa093" }}>Prices are recomputed by the system when you save.</div>
-              </div>
-            </div>
-
-            {/* Payments */}
-            <div className="card" style={{ marginBottom: 11 }}>
-              <div className="card-h"><span className="card-t">Payments</span><span className="card-sub">Method · amount · slip</span></div>
-              <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                {isEdit ? (
-                  <>
-                    {existingPays.length ? existingPays.map((p) => (
-                      <div key={p.id} style={roItemBox}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                          <span style={{ fontSize: 12, color: "#414539" }}>{(p.paid_at ?? "").slice(0, 10) || "—"} {"·"} {p.method || "—"}</span>
-                          <span className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>RM {fromCenti(p.amount_centi)}</span>
-                        </div>
-                      </div>
-                    )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "8px 0" }}>No payments recorded.</div>}
-                    <div style={{ fontSize: 10, color: "#9aa093", marginTop: 4 }}>Payments are recorded from the SO detail screen.</div>
-                  </>
-                ) : (
-                  <>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                      {pays.map((p) => (
-                        <PayCard
-                          key={p.key}
-                          pay={p}
-                          staff={staffQ.data ?? []}
-                          onChange={(patch) => setPays((prev) => prev.map((x) => (x.key === p.key ? { ...x, ...patch } : x)))}
-                          onRemove={() => setPays((prev) => prev.filter((x) => x.key !== p.key))}
-                        />
-                      ))}
-                    </div>
-                    <button className="addline" onClick={() => setPays((p) => [...p, newPayment()])}>+ Add Payment</button>
-                    {!!pays.length && (
-                      <div style={{ fontSize: 10, color: "#a16a2e", marginTop: 6 }}>
-                        Each payment needs a slip to be recorded. Slip-backed rows are saved to the order on Create; rows without a slip stay as planned entries — add their slip here or from the SO detail screen.
-                      </div>
+                      </>
                     )}
-                  </>
-                )}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* ── STEP 3 · Items ────────────────────────────────────────── */}
+            {step === 2 && (
+              <div className="card" style={{ marginBottom: 11 }}>
+                <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{`${lines.length} ${lines.length === 1 ? "line" : "lines"}`}</span></div>
+                <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                  {lineLocked ? (
+                    <>
+                      {lines.length ? lines.map((l) => (
+                        <div key={l.key} style={roItemBox}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>{l.name || l.itemCode || "—"} <span style={{ color: "#9aa093" }}>{"×"}{num(l.qty)}</span></span>
+                            <span className="money" style={{ fontSize: 12.5, fontWeight: 800, color: "#0c3f39" }}>RM {fmt((toCenti(l.price) * num(l.qty)) / 100)}</span>
+                          </div>
+                        </div>
+                      )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "8px 0" }}>No items.</div>}
+                      <div style={{ fontSize: 10, color: "#9aa093", marginTop: 4 }}>This order is shipped or has downstream documents — line items can no longer be changed.</div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                        {lines.map((l, i) => (
+                          <LineCard
+                            key={l.key}
+                            line={l}
+                            index={i}
+                            pools={pools}
+                            removable={lines.length > 1}
+                            showErrors={touched}
+                            onOpenPicker={() => setPickerFor(l.key)}
+                            onChange={(patch) => setLines((prev) => prev.map((x) => (x.key === l.key ? { ...x, ...patch } : x)))}
+                            onRemove={async () => {
+                              if (!(await confirm({ title: "Remove this line?", body: l.name ? `"${l.name}" will be removed from the order.` : undefined, confirmLabel: "Remove", danger: true }))) return;
+                              setLines((prev) => prev.filter((x) => x.key !== l.key));
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <button className="addline" onClick={() => setLines((p) => [...p, newLine()])}>+ Add Line Item</button>
+                    </>
+                  )}
+                  <div className="so-sub-row"><span style={{ fontSize: 11, color: "var(--mut)" }}>Subtotal</span><span className="money" style={{ fontSize: 17, fontWeight: 800, color: "var(--brand-d)" }}>RM {fmt(subtotal / 100)}</span></div>
+                  <div style={{ fontSize: 10, color: "#9aa093" }}>Prices are recomputed by the system when you save.</div>
+                </div>
               </div>
-            </div>
+            )}
+
+            {/* ── STEP 4 · Payment ──────────────────────────────────────── */}
+            {step === 3 && (
+              <div className="card" style={{ marginBottom: 11 }}>
+                <div className="card-h"><span className="card-t">Payments</span><span className="card-sub">Method · amount · slip</span></div>
+                <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                  {isEdit ? (
+                    <>
+                      {existingPays.length ? existingPays.map((p) => (
+                        <div key={p.id} style={roItemBox}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                            <span style={{ fontSize: 12, color: "#414539" }}>{(p.paid_at ?? "").slice(0, 10) || "—"} {"·"} {p.method || "—"}</span>
+                            <span className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>RM {fromCenti(p.amount_centi)}</span>
+                          </div>
+                        </div>
+                      )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "8px 0" }}>No payments recorded.</div>}
+                      <div style={{ fontSize: 10, color: "#9aa093", marginTop: 4 }}>Payments are recorded from the SO detail screen.</div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                        {pays.map((p) => (
+                          <PayCard
+                            key={p.key}
+                            pay={p}
+                            staff={staffQ.data ?? []}
+                            onChange={(patch) => setPays((prev) => prev.map((x) => (x.key === p.key ? { ...x, ...patch } : x)))}
+                            onRemove={() => setPays((prev) => prev.filter((x) => x.key !== p.key))}
+                          />
+                        ))}
+                      </div>
+                      <button className="addline" onClick={() => setPays((p) => [...p, newPayment()])}>+ Add Payment</button>
+                      {!!pays.length && (
+                        <div style={{ fontSize: 10, color: "#a16a2e", marginTop: 6 }}>
+                          Each payment needs a slip to be recorded. Slip-backed rows are saved to the order on Create; rows without a slip stay as planned entries — add their slip here or from the SO detail screen.
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── STEP 5 · Review ───────────────────────────────────────── */}
+            {step === 4 && (
+              <ReviewStep
+                name={name} phone={phone} email={email} custType={custType} custRef={custRef}
+                buildingType={buildingType} venue={venue} procDate={procDate} delivDate={delivDate} note={note}
+                addressLater={addressLater} addr1={addr1} addr2={addr2} state={state} city={city} postcode={postcode}
+                lines={lines} pays={pays} isEdit={isEdit} subtotal={subtotal}
+                docNo={docNo}
+              />
+            )}
 
             {error && <div style={{ marginTop: 4, fontSize: 12, color: "#b23a3a", textAlign: "center", padding: "0 4px" }}>{error}</div>}
           </>
         )}
       </div>
 
-      {/* Action bar — design VERBATIM: just the button row. edit → [Save changes];
-          new / edit-draft → [Save draft][Create Sales Order]. (The running
-          subtotal lives inside the Line items card, per the design — no separate
-          summary strip here.) The design's edit footer also shows a "Cancel Order"
-          void button, but voiding an order is owned by the SO detail screen (real
-          status PATCH); this form never voids, so we don't mislabel Back as it. */}
+      {/* Action bar — wizard nav. Steps 1-4: [Back][Next]. Step 5 (Review):
+          [Back] + (edit → [Save changes]) / (new → [Save draft][Create]). */}
       {!loading && (
-        <footer id="nso-footer" className="actbar">
-          {mode === "edit" ? (
-            <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}>
+        <footer id="nso-footer" className="actbar" style={{ display: "flex", gap: 9 }}>
+          {step > 0 ? (
+            <button className="btn-ghost" disabled={submitting} onClick={goBack} style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}>Back</button>
+          ) : (
+            <button className="btn-ghost" disabled={submitting} onClick={onBack} style={{ flex: 1 }}>Cancel</button>
+          )}
+          {!onLastStep ? (
+            <button className="btn" disabled={submitting} onClick={goNext} style={{ flex: 1.3 }}>Next</button>
+          ) : mode === "edit" ? (
+            <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ flex: 1.3, opacity: submitting ? 0.6 : 1 }}>
               {submitting ? "Saving…" : "Save Changes"}
             </button>
           ) : (
@@ -1212,23 +1201,27 @@ export function MobileNewSO({
 
       {pickerFor && (
         <MobileSkuPicker
-          initialCat={lines.find((l) => l.key === pickerFor)?.cat ?? ""}
+          initialCat={mapPickerCat(lines.find((l) => l.key === pickerFor)?.cat)}
           onClose={() => setPickerFor(null)}
           onPick={(sku: PickedSku) => {
             /* Seed the line with the real catalog identity. `cat` derives from
                the picked group so the right variant panel shows; the unit price
                defaults from the catalog SELLING price (server recomputes on
-               save). We deliberately DON'T stomp the operator's typed qty /
-               remark / already-picked variants. */
+               save). Changing the SKU resets the variant blob (a bedframe's
+               divan pool differs from a sofa's) — mirrors SoLineCard.pickProduct
+               which reseeds variants on a fresh pick. We keep the operator's
+               typed qty / remark. */
             setLines((prev) => prev.map((x) => {
               if (x.key !== pickerFor) return x;
+              const nextCat = catForGroup(sku.itemGroup);
               return {
                 ...x,
                 itemCode: sku.itemCode,
                 itemGroup: sku.itemGroup,
                 name: sku.name,
-                cat: catForGroup(sku.itemGroup),
+                cat: nextCat,
                 price: fromCenti(sku.unitPriceCenti),
+                variants: nextCat === x.cat ? x.variants : {},
               };
             }));
             setPickerFor(null);
@@ -1237,6 +1230,11 @@ export function MobileNewSO({
       )}
     </div>
   );
+}
+
+/* LineCat → the SKU picker's category chip seed. */
+function mapPickerCat(c: LineCat | undefined): "" | "sofa" | "bedframe" {
+  return c === "sofa" ? "sofa" : c === "bedframe" ? "bedframe" : "";
 }
 
 /* Prefill helper — the stored phone is "+60xxxxxxxx"; the form's +60 prefix box
@@ -1263,8 +1261,6 @@ function Field({ label, error, scanned, style, children }: { label: string; erro
   );
 }
 
-/* Subtle marker that a field still holds the AI-scanned value (clears once the
-   operator edits it). Mirrors desktop's blue-diff idea, minimal for mobile. */
 function ScannedTag() {
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "1px 6px", borderRadius: 999, background: "#eaf2f0", color: "#16695f", fontSize: 8, fontWeight: 700, letterSpacing: ".04em" }}>
@@ -1274,31 +1270,118 @@ function ScannedTag() {
   );
 }
 
+/* ── Variant pool → option list builders (REAL sources) ───────────────────
+   These mirror SoLineCard's dropdown construction exactly: string pools
+   (gaps/sofaSizes) via maintPickerValues, priced pools (divan/leg/sofaLeg
+   heights) via activeOptions, both filtered by the Model's allowed_options.
+   `current` is the line's saved value so a value that fell out of the live
+   pool still renders (never blanks the select). */
+function restrictS(opts: string[], pool?: string[] | null): string[] {
+  return Array.isArray(pool) && pool.length > 0 ? opts.filter((o) => pool.includes(o)) : opts;
+}
+function restrictP<T extends { value: string }>(opts: T[], pool?: string[] | null): T[] {
+  return Array.isArray(pool) && pool.length > 0 ? opts.filter((o) => pool.includes(o.value)) : opts;
+}
+/* Numeric-aware sort (matches SoLineCard's sortByNumeric intent for height/gap
+   pools: 4" < 6" < 10"). Falls back to locale compare for non-numeric. */
+function sortNumeric<T extends { value: string }>(opts: T[]): T[] {
+  return [...opts].sort((a, b) => {
+    const na = parseInches(a.value), nb = parseInches(b.value);
+    if (na !== nb) return na - nb;
+    return a.value.localeCompare(b.value, undefined, { sensitivity: "base" });
+  });
+}
+
+/* Fabrics dropdown options — active fabric_colours filtered by the Model's
+   allowed_options.fabrics, plus the line's current value as "(current)" so an
+   edit never blanks. Mirrors SoLineCard.fabricOptions. */
+function fabricOptions(pools: VariantPools, allow: ModelAllowedOptions | null, current: string): Opt[] {
+  const pool = allow?.fabrics;
+  const colours = (Array.isArray(pool) && pool.length > 0)
+    ? pools.fabricColours.filter((c) => pool.includes(c.colourId))
+    : pools.fabricColours;
+  const opts: Opt[] = colours.map((c) => ({ value: c.colourId, label: c.colourId }));
+  opts.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+  if (current && !opts.some((o) => o.value === current)) opts.unshift({ value: current, label: `${current} (current)` });
+  return opts;
+}
+
 function LineCard({
   line,
   index,
+  pools,
   removable,
+  showErrors,
   onOpenPicker,
   onChange,
   onRemove,
 }: {
   line: LineItem;
   index: number;
+  pools: VariantPools;
   removable: boolean;
+  showErrors: boolean;
   onOpenPicker: () => void;
   onChange: (patch: Partial<LineItem>) => void;
   onRemove: () => void;
 }) {
   const amt = fmt(num(line.qty) * num(line.price));
-  const catLabel = LINE_CATS.find((c) => c.value === line.cat)?.label ?? "General item";
   const picked = Boolean(line.itemCode.trim());
+  const v = line.variants;
+
+  /* Per-SKU allowed_options (Modular ON/OFF), resolved by code exactly like
+     SoLineCard's useModelAllowedOptionsByCode. Empty/absent = no restriction. */
+  const allowQ = useModelAllowedOptionsByCode(line.itemCode || undefined);
+  const allow = allowQ.data ?? null;
+
+  const setVar = (patch: Record<string, unknown>) => onChange({ variants: { ...line.variants, ...patch } });
+
+  /* Fabric pick writes the SAME multi-key patch SoLineCard.pickFabricColour
+     sends: fabricCode + colourId + fabricId + series/colour labels. This is
+     what the server's allowed-fabric gate + cost/fabric-tier lookup key on. */
+  const pickFabric = (colourId: string) => {
+    const c = pools.fabricColours.find((x) => x.colourId === colourId);
+    const seriesLabel = c ? pools.fabricSeries.get(c.fabricId) ?? null : null;
+    setVar({
+      fabricCode: colourId,
+      colourId,
+      ...(c ? { fabricId: c.fabricId } : {}),
+      ...(seriesLabel ? { fabricLabel: seriesLabel } : {}),
+      ...(c?.label ? { colourLabel: c.label } : {}),
+      ...(c?.swatchHex ? { colourHex: c.swatchHex } : {}),
+    });
+  };
+
+  const maint = pools.maint;
+  const fabVal = String(v.fabricCode ?? "");
+  const fabOpts = fabricOptions(pools, allow, fabVal);
+
+  // Sofa pools (real): seat = sofaSizes (string), leg = sofaLegHeights (priced)
+  const sofaSeatOpts = maint
+    ? restrictS(maintPickerValues(maint.sofaSizes, String(v.seatHeight ?? "")), allow?.sizes).map((s) => ({ value: s, label: s }))
+    : [];
+  const sofaLegOpts = maint
+    ? sortNumeric(restrictP(activeOptions(maint.sofaLegHeights, String(v.legHeight ?? "")), allow?.leg_heights)).map((o) => ({ value: o.value, label: o.value }))
+    : [];
+
+  // Bedframe pools (real): gap (string), divan + leg (priced)
+  const bfGapOpts = maint
+    ? restrictS(maintPickerValues(maint.gaps, String(v.gap ?? "")), allow?.gaps).map((g) => ({ value: g, label: g }))
+    : [];
+  const bfDivanOpts = maint
+    ? sortNumeric(restrictP(activeOptions(maint.divanHeights, String(v.divanHeight ?? "")), allow?.divan_heights)).map((o) => ({ value: o.value, label: o.value }))
+    : [];
+  const bfLegOpts = maint
+    ? sortNumeric(restrictP(activeOptions(maint.legHeights, String(v.legHeight ?? "")), allow?.leg_heights)).map((o) => ({ value: o.value, label: o.value }))
+    : [];
+
+  const totalHeight = parseInches(v.divanHeight) + parseInches(v.legHeight) + parseInches(v.gap);
+  const missing = new Set(missingVariantAxes(line.itemGroup, line.variants).map((a) => a.key));
+
   return (
     <div style={{ border: "1px solid rgba(34,31,32,.12)", borderRadius: 11, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f4f6f3", borderBottom: "1px solid rgba(34,31,32,.1)" }}>
         <span style={{ width: 19, height: 19, flex: "none", borderRadius: 6, background: "#16695f", color: "#fff", fontSize: 10.5, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{index + 1}</span>
-        {/* SKU picker trigger — replaces the old free-typed name. Tapping opens
-            the searchable catalog bottom-sheet; the picked product's code + name
-            drive the line's item_code (so the server can price it). */}
         <button
           type="button"
           onClick={onOpenPicker}
@@ -1334,49 +1417,60 @@ function LineCard({
             <input className="fld-i" type="date" value={line.ddate} onChange={(e) => onChange({ ddate: e.target.value })} />
           </Field>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-          <Field label="Category" style={{ flex: 1 }}>
-            <select className="fld-i" value={line.cat} onChange={(e) => onChange({ cat: e.target.value as LineCat })}>
-              {LINE_CATS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-            </select>
-          </Field>
-          <span style={{ flex: 1, textAlign: "right", fontSize: 11, color: "#9aa093", paddingBottom: 9 }}>
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 11, color: "#9aa093" }}>
+            {LINE_CATS.find((c) => c.value === line.cat)?.label ?? "General item"}
+            {picked ? "" : " — pick a product"}
+          </span>
+          <span style={{ fontSize: 11, color: "#9aa093" }}>
             Amount <b className="money" style={{ fontSize: 13, fontWeight: 800, color: "#0c3f39" }}>RM {amt}</b>
           </span>
         </div>
 
-        {line.cat === "sofa" && (
+        {/* Category-aware variant panels — REAL hooks. Only render once a SKU is
+            picked and the maintenance pools have loaded. */}
+        {picked && !pools.ready && (
+          <div style={{ fontSize: 10.5, color: "#9aa093", padding: "4px 0" }}>Loading options{"…"}</div>
+        )}
+
+        {picked && pools.ready && line.cat === "sofa" && (
           <>
-            <SpecSel label="Fabric / colour" value={line.fabric} opts={FABRIC_OPTS} onChange={(v) => onChange({ fabric: v })} />
+            <SpecSel label="Fabric / colour" required invalid={showErrors && missing.has("fabricCode")}
+              value={fabVal} opts={fabOpts} onChange={pickFabric} emptyHint="No fabrics configured" />
             <div style={{ display: "flex", gap: 9 }}>
-              <SpecSel label="Seat height" value={line.seat} opts={SEAT_OPTS} onChange={(v) => onChange({ seat: v })} />
-              <SpecSel label="Leg height" value={line.leg} opts={LEG_OPTS} onChange={(v) => onChange({ leg: v })} />
+              <SpecSel label="Seat height" required invalid={showErrors && missing.has("seatHeight")}
+                value={String(v.seatHeight ?? "")} opts={sofaSeatOpts} onChange={(x) => setVar({ seatHeight: x })} />
+              <SpecSel label="Leg height" required invalid={showErrors && missing.has("legHeight")}
+                value={String(v.legHeight ?? "")} opts={sofaLegOpts} onChange={(x) => setVar({ legHeight: x })} />
             </div>
           </>
         )}
 
-        {line.cat === "bedframe" && (
+        {picked && pools.ready && line.cat === "bedframe" && (
           <>
-            <div style={{ display: "flex", gap: 8 }}>
-              <SpecSel label="Size" value={line.size} opts={SIZE_OPTS} onChange={(v) => onChange({ size: v })} />
-              <SpecSel label="Headboard" value={line.head} opts={HEAD_OPTS} onChange={(v) => onChange({ head: v })} />
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <SpecSel label="Fabric / colour" value={line.fabric} opts={FABRIC_OPTS} onChange={(v) => onChange({ fabric: v })} />
-              <SpecSel label="Storage" value={line.store} opts={STORE_OPTS} onChange={(v) => onChange({ store: v })} />
-            </div>
+            <SpecSel label="Fabric / colour" required invalid={showErrors && missing.has("fabricCode")}
+              value={fabVal} opts={fabOpts} onChange={pickFabric} emptyHint="No fabrics configured" />
             <div style={{ background: "#f4f6f3", border: "1px solid #e3e6e0", borderRadius: 10, padding: "9px 10px" }}>
               <div className="fld-l" style={{ marginBottom: 7 }}>Bedframe build</div>
               <div style={{ display: "flex", gap: 8 }}>
-                <SpecSel label="Divan" value={line.divan} opts={DIVAN_OPTS} onChange={(v) => onChange({ divan: v })} />
-                <SpecSel label="Leg" value={line.leg} opts={LEG_OPTS} onChange={(v) => onChange({ leg: v })} />
-                <SpecSel label="Gap" value={line.gap} opts={GAP_OPTS} onChange={(v) => onChange({ gap: v })} />
+                <SpecSel label="Divan" required invalid={showErrors && missing.has("divanHeight")}
+                  value={String(v.divanHeight ?? "")} opts={bfDivanOpts} onChange={(x) => setVar({ divanHeight: x })} />
+                <SpecSel label="Leg" required invalid={showErrors && missing.has("legHeight")}
+                  value={String(v.legHeight ?? "")} opts={bfLegOpts} onChange={(x) => setVar({ legHeight: x })} />
+                <SpecSel label="Gap" required invalid={showErrors && missing.has("gap")}
+                  value={String(v.gap ?? "")} opts={bfGapOpts} onChange={(x) => setVar({ gap: x })} />
               </div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8, paddingTop: 8, borderTop: "1px solid #e3e6e0", fontSize: 11, color: "#767b6e" }}>
-                Total height <strong className="money" style={{ color: "#0c3f39", fontSize: 13 }}>{inchNum(line.divan) + inchNum(line.leg) + inchNum(line.gap)}{'"'}</strong>
+                Total height <strong className="money" style={{ color: "#0c3f39", fontSize: 13 }}>{totalHeight > 0 ? `${totalHeight}"` : "—"}</strong>
               </div>
             </div>
           </>
+        )}
+
+        {picked && pools.ready && line.cat === "mattress" && (
+          <div style={{ fontSize: 10.5, color: "#767b6e", background: "#f4f6f3", border: "1px solid #e3e6e0", borderRadius: 9, padding: "7px 9px" }}>
+            Mattress SKUs carry their spec in the item itself — no per-line variants to pick.
+          </div>
         )}
 
         <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
@@ -1387,7 +1481,7 @@ function LineCard({
             <button
               type="button"
               onClick={() => onChange({ photo: false })}
-              title={catLabel + " reference photo captured"}
+              title="Reference photo captured"
               style={{ width: 46, flex: "none", alignSelf: "flex-end", height: 38, border: "1.5px solid #16695f", borderRadius: 9, background: "#e1efed", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2f8a5b" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
@@ -1408,11 +1502,26 @@ function LineCard({
   );
 }
 
-function SpecSel({ label, value, opts, onChange }: { label: string; value: string; opts: string[]; onChange: (v: string) => void }) {
+/* SpecSel — a labelled <select> bound to a real option list. `required`
+   renders a red ring when empty (missing axis); `emptyHint` shows when the real
+   pool returned no options (e.g. no fabric_colours seeded) so the operator
+   isn't staring at an empty dropdown wondering why. */
+function SpecSel({ label, value, opts, onChange, required = false, invalid = false, emptyHint }: {
+  label: string; value: string; opts: Opt[]; onChange: (v: string) => void;
+  required?: boolean; invalid?: boolean; emptyHint?: string;
+}) {
+  const hasCurrent = Boolean(value) && opts.some((o) => o.value === value);
   return (
-    <Field label={label} style={{ flex: 1 }}>
-      <select className="fld-i" value={value} onChange={(e) => onChange(e.target.value)}>
-        {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+    <Field label={label + (required ? " *" : "")} style={{ flex: 1 }}>
+      <select
+        className="fld-i"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={invalid ? { borderColor: "#b23a3a", boxShadow: "0 0 0 2px rgba(178,58,58,.12)" } : undefined}
+      >
+        <option value="" disabled>{opts.length === 0 && emptyHint ? emptyHint : "Select…"}</option>
+        {value && !hasCurrent && <option value={value}>{value} (current)</option>}
+        {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </Field>
   );
@@ -1450,15 +1559,15 @@ function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Arra
         </div>
         {pay.method === "Merchant" && (
           <div style={{ display: "flex", gap: 9 }}>
-            <SpecSel label="Bank" value={pay.bank} opts={BANK_OPTS} onChange={(v) => onChange({ bank: v })} />
-            <SpecSel label="Plan" value={pay.plan} opts={PLAN_OPTS} onChange={(v) => onChange({ plan: v })} />
+            <SpecSel label="Bank" value={pay.bank} opts={BANK_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ bank: vv })} />
+            <SpecSel label="Plan" value={pay.plan} opts={PLAN_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ plan: vv })} />
           </div>
         )}
         {pay.method === "Installment" && (
-          <SpecSel label="Installment plan" value={pay.plan} opts={PLAN_OPTS} onChange={(v) => onChange({ plan: v })} />
+          <SpecSel label="Installment plan" value={pay.plan} opts={PLAN_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ plan: vv })} />
         )}
         {pay.method === "Online" && (
-          <SpecSel label="Sub-type" value={pay.online} opts={ONLINE_OPTS} onChange={(v) => onChange({ online: v })} />
+          <SpecSel label="Sub-type" value={pay.online} opts={ONLINE_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ online: vv })} />
         )}
         <div style={{ display: "flex", gap: 9 }}>
           <Field label="Account Sheet" style={{ flex: 1 }}>
@@ -1503,6 +1612,106 @@ function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Arra
         )}
       </div>
     </div>
+  );
+}
+
+/* ── Review step (Step 5) — a read-only summary of every card before submit.
+   Money is an ESTIMATE (server recomputes on save). doc_no is server-minted, so
+   it reads "Assigned on save" until the SO exists. */
+function ReviewStep({
+  name, phone, email, custType, custRef, buildingType, venue, procDate, delivDate, note,
+  addressLater, addr1, addr2, state, city, postcode, lines, pays, isEdit, subtotal, docNo,
+}: {
+  name: string; phone: string; email: string; custType: string; custRef: string;
+  buildingType: string; venue: string; procDate: string; delivDate: string; note: string;
+  addressLater: boolean; addr1: string; addr2: string; state: string; city: string; postcode: string;
+  lines: LineItem[]; pays: Payment[]; isEdit: boolean; subtotal: number; docNo?: string;
+}) {
+  const R = ({ l, v }: { l: string; v: string }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "3px 0" }}>
+      <span style={{ fontSize: 11, color: "#767b6e" }}>{l}</span>
+      <span style={{ fontSize: 12, color: "#11140f", fontWeight: 600, textAlign: "right" }}>{v || "—"}</span>
+    </div>
+  );
+  const named = lines.filter((l) => l.name.trim() || l.itemCode.trim());
+  const variantLine = (l: LineItem): string => {
+    const v = l.variants;
+    const parts: string[] = [];
+    if (l.cat === "sofa") {
+      if (v.fabricCode) parts.push(`Fabric ${v.fabricCode}`);
+      if (v.seatHeight) parts.push(`Seat ${v.seatHeight}`);
+      if (v.legHeight) parts.push(`Leg ${v.legHeight}`);
+    } else if (l.cat === "bedframe") {
+      if (v.fabricCode) parts.push(`Fabric ${v.fabricCode}`);
+      if (v.divanHeight) parts.push(`Divan ${v.divanHeight}`);
+      if (v.legHeight) parts.push(`Leg ${v.legHeight}`);
+      if (v.gap) parts.push(`Gap ${v.gap}`);
+      if (v.totalHeight) parts.push(`Total ${v.totalHeight}`);
+    }
+    return parts.join(" · ");
+  };
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 11 }}>
+        <div className="card-h"><span className="card-t">Review</span><span className="card-sub">{isEdit ? "Confirm changes" : "Confirm before create"}</span></div>
+        <div className="card-b">
+          <div style={{ fontSize: 10, color: "#9aa093", marginBottom: 6 }}>Doc No · {docNo || "Assigned on save"}</div>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".04em", textTransform: "uppercase", color: "#11140f", margin: "6px 0 2px" }}>Customer</div>
+          <R l="Name" v={name} />
+          <R l="Phone" v={phone ? `+60 ${phone}` : ""} />
+          <R l="Email" v={email} />
+          <R l="Type" v={custType} />
+          <R l="SO Ref" v={custRef} />
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".04em", textTransform: "uppercase", color: "#11140f", margin: "10px 0 2px" }}>Order info</div>
+          <R l="Building" v={buildingType} />
+          <R l="Venue" v={venue} />
+          <R l="Processing" v={procDate} />
+          <R l="Delivery" v={delivDate} />
+          <R l="Note" v={note} />
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".04em", textTransform: "uppercase", color: "#11140f", margin: "10px 0 2px" }}>Delivery address</div>
+          {addressLater ? (
+            <R l="Address" v="Fill in later" />
+          ) : (
+            <R l="Address" v={[addr1, addr2, city, state, postcode].filter(Boolean).join(", ")} />
+          )}
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 11 }}>
+        <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{`${named.length} ${named.length === 1 ? "line" : "lines"}`}</span></div>
+        <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {named.map((l) => (
+            <div key={l.key} style={roItemBox}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: "#11140f" }}>{l.name || l.itemCode} <span style={{ color: "#9aa093" }}>{"×"}{num(l.qty)}</span></span>
+                <span className="money" style={{ fontSize: 12.5, fontWeight: 800, color: "#0c3f39" }}>RM {fmt((toCenti(l.price) * num(l.qty)) / 100)}</span>
+              </div>
+              {variantLine(l) && <div style={{ fontSize: 10.5, color: "#767b6e", marginTop: 3 }}>{variantLine(l)}</div>}
+              {l.remark.trim() && <div style={{ fontSize: 10.5, color: "#9aa093", marginTop: 2 }}>{l.remark.trim()}</div>}
+            </div>
+          ))}
+          <div className="so-sub-row"><span style={{ fontSize: 11, color: "var(--mut)" }}>Subtotal (estimate)</span><span className="money" style={{ fontSize: 17, fontWeight: 800, color: "var(--brand-d)" }}>RM {fmt(subtotal / 100)}</span></div>
+          <div style={{ fontSize: 10, color: "#9aa093" }}>The system recomputes the authoritative total when you save.</div>
+        </div>
+      </div>
+
+      {!isEdit && pays.length > 0 && (
+        <div className="card" style={{ marginBottom: 11 }}>
+          <div className="card-h"><span className="card-t">Payments</span><span className="card-sub">{pays.length} to record</span></div>
+          <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {pays.map((p) => (
+              <div key={p.key} style={roItemBox}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ fontSize: 12, color: "#414539" }}>{p.date} {"·"} {p.method}{p.slipPhase === "done" ? "" : " (planned)"}</span>
+                  <span className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>RM {fmt(num(p.amount))}</span>
+                </div>
+              </div>
+            ))}
+            <div style={{ fontSize: 10, color: "#a16a2e" }}>Only slip-backed payments are recorded on create.</div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

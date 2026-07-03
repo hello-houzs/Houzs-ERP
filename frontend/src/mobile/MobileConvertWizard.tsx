@@ -53,15 +53,22 @@ type SourceKind = "so" | "do" | "po";
 /* Per-target wiring: which source list to pick from, the eyebrow/title copy,
    and whether the flow has a line-level qty picker.
    • hasLinePicker  — SO→DO/PO, DO→SI pick lines + qty.
-   • no line picker — GRN receives every PO line (whole-PO convert). */
+   • no line picker — GRN receives every PO line (whole-PO convert).
+
+   The spec (#convert) titles the screen "Convert to {target}" (convertTitle);
+   `docTitle` is the plain document name reused by the create button + error
+   notify. */
 const META: Record<
   ConvertTarget,
-  { title: string; eyebrow: string; source: SourceKind; sourceNoun: string; hasLinePicker: boolean }
+  {
+    convertTitle: string; docTitle: string;
+    eyebrow: string; source: SourceKind; sourceNoun: string; hasLinePicker: boolean;
+  }
 > = {
-  do: { title: "New Delivery Order", eyebrow: "Logistics", source: "so", sourceNoun: "Sales Order", hasLinePicker: true },
-  si: { title: "New Sales Invoice", eyebrow: "Finance", source: "do", sourceNoun: "Delivery Order", hasLinePicker: true },
-  grn: { title: "New Goods Receipt", eyebrow: "Procurement", source: "po", sourceNoun: "Purchase Order", hasLinePicker: false },
-  po: { title: "New Purchase Order", eyebrow: "Procurement", source: "so", sourceNoun: "Sales Order", hasLinePicker: true },
+  do: { convertTitle: "Convert to Delivery Order", docTitle: "Delivery Order", eyebrow: "Logistics", source: "so", sourceNoun: "Sales Order", hasLinePicker: true },
+  si: { convertTitle: "Convert to Sales Invoice", docTitle: "Sales Invoice", eyebrow: "Finance", source: "do", sourceNoun: "Delivery Order", hasLinePicker: true },
+  grn: { convertTitle: "Convert to Goods Receipt", docTitle: "Goods Receipt", eyebrow: "Procurement", source: "po", sourceNoun: "Purchase Order", hasLinePicker: false },
+  po: { convertTitle: "Convert to Purchase Order", docTitle: "Purchase Order", eyebrow: "Procurement", source: "so", sourceNoun: "Sales Order", hasLinePicker: true },
 };
 
 // ── Money / helpers ────────────────────────────────────────────────────────
@@ -119,10 +126,11 @@ type DoInvoiceableLine = {
 type PickLine = {
   lineId: string;        // soItemId | doItemId
   label: string;         // item code / description
-  remaining: number;
+  origQty: number;       // the source line's ordered qty (0 when the GET omits it)
+  remaining: number;     // outstanding qty still convertible
   unitPriceCenti: number;
   checked: boolean;
-  qty: string;           // as typed
+  qty: string;           // as typed (the qty to convert this pass)
 };
 
 export function MobileConvertWizard({
@@ -233,19 +241,23 @@ export function MobileConvertWizard({
         return (res.lines ?? []).map<PickLine>((l) => ({
           lineId: l.soItemId,
           label: str(pick(l, "description")) || str(pick(l, "itemCode")) || "—",
+          origQty: Number(l.qty) || 0,
           remaining: Number(l.remaining) || 0,
           unitPriceCenti: Number(l.unitPriceCenti) || 0,
           checked: true,
           qty: String(Number(l.remaining) || 0),
         }));
       }
-      // DO source (id): SI invoices the remaining pool.
+      // DO source (id): SI invoices the remaining pool. The invoiceable-do-lines
+      // GET returns only `remaining` (no original qty), so origQty falls back to
+      // remaining — the "of {qty}" hint then simply shows the outstanding pool.
       const res = await authedFetch<{ lines?: DoInvoiceableLine[] }>(
         `/sales-invoices/invoiceable-do-lines?doIds=${encodeURIComponent(selectedSourceId!)}`,
       );
       return (res.lines ?? []).map<PickLine>((l) => ({
         lineId: l.doItemId,
         label: str(pick(l, "description")) || str(pick(l, "itemCode")) || "—",
+        origQty: Number(l.remaining) || 0,
         remaining: Number(l.remaining) || 0,
         unitPriceCenti: Number(l.unitPriceCenti) || 0,
         checked: true,
@@ -324,7 +336,7 @@ export function MobileConvertWizard({
       // treat any non-success as a plain in-app error (never a naked alert).
       const msg = e instanceof Error ? e.message : "Couldn't create the document.";
       if (!/^declined_/.test(msg)) {
-        await notify({ title: `Couldn't create ${meta.title.replace(/^New /, "")}`, body: humanize(msg), tone: "error" });
+        await notify({ title: `Couldn't create ${meta.docTitle}`, body: humanize(msg), tone: "error" });
       }
     } finally {
       setSubmitting(false);
@@ -333,6 +345,27 @@ export function MobileConvertWizard({
 
   // Can we submit? DO/SI/PO need >=1 pick; GRN-from-POs needs >=1 selected PO.
   const canCreate = meta.hasLinePicker ? picks.length > 0 : selectedPoIds.length > 0;
+
+  // Spec #convert sub-line: "From {{source_doc_no}}" once a source is chosen.
+  // Single-source → the picked SO doc_no / DO number; GRN → "N Purchase Orders".
+  const sourceLabel = useMemo(() => {
+    if (meta.source === "po") {
+      return selectedPoIds.length
+        ? `${selectedPoIds.length} Purchase Order${selectedPoIds.length === 1 ? "" : "s"}`
+        : "";
+    }
+    if (!selectedSourceId) return "";
+    if (meta.source === "so") return selectedSourceId; // doc_no is the id
+    const row = ((sourceQuery.data as any)?.deliveryOrders ?? []).find(
+      (r: DoListRow) => str(r.id) === selectedSourceId,
+    ) as DoListRow | undefined;
+    return row ? str(row.do_number) : "";
+  }, [meta.source, selectedPoIds, selectedSourceId, sourceQuery.data]);
+
+  // Spec step labels: 1 = pick source, 2 = pick lines (or GRN review).
+  const stepLabel = step === 1
+    ? "Select source"
+    : meta.hasLinePicker ? "Select lines to convert" : "Review the receipt";
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -344,16 +377,16 @@ export function MobileConvertWizard({
           <button onClick={onBack} className="back" aria-label="Cancel">
             <span className="chev">{"‹"}</span> Cancel
           </button>
-          <span style={{ fontSize: 11, color: "#767b6e" }}>Step {step} of 2</span>
+          <span style={{ fontSize: 11, color: "#767b6e" }}>Step {step} of 2 · {stepLabel}</span>
         </div>
         <div className="ey" style={{ color: "#a16a2e", marginTop: 6 }}>{meta.eyebrow}</div>
-        <div className="scr-title" style={{ marginTop: 2 }}>{meta.title}</div>
-        <div style={{ fontSize: 11.5, color: "#767b6e", marginTop: 3 }}>
-          {step === 1
-            ? `Convert from ${meta.source === "po" ? "one or more Purchase Orders" : `a ${meta.sourceNoun}`}`
-            : meta.hasLinePicker
-              ? "Choose the lines and quantities to convert"
-              : "Review — the receipt takes every line of the selected orders"}
+        <div className="scr-title" style={{ marginTop: 2 }}>{meta.convertTitle}</div>
+        <div className="tnum" style={{ fontSize: 11.5, color: "#767b6e", marginTop: 3 }}>
+          {/* Spec sub-line: "From {{source_doc_no}}" once a source is chosen;
+              before that, the invitation to pick one. */}
+          {sourceLabel
+            ? `From ${sourceLabel}`
+            : `Convert from ${meta.source === "po" ? "one or more Purchase Orders" : `a ${meta.sourceNoun}`}`}
         </div>
         {/* Step-progress bar (spec markup): filled brand segments up to the current step. */}
         <div style={{ display: "flex", gap: 5, marginTop: 11 }}>
@@ -439,7 +472,7 @@ export function MobileConvertWizard({
             onClick={submit}
             style={{ opacity: !canCreate || submitting ? 0.55 : 1 }}
           >
-            {submitting ? "Creating…" : `Create ${meta.title.replace(/^New /, "")}`}
+            {submitting ? "Creating…" : `Create ${meta.docTitle}`}
           </button>
         </footer>
       )}
@@ -565,6 +598,9 @@ function LinesStep({
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
         {lines.map((l) => {
           const qtyNum = clampQty(l.qty, l.remaining);
+          const ofQty = l.origQty > 0 ? l.origQty : l.remaining;
+          const dec = () => onSetLine(l.lineId, { qty: String(Math.max(1, qtyNum - 1)) });
+          const inc = () => onSetLine(l.lineId, { qty: String(clampQty(String(qtyNum + 1), l.remaining)) });
           return (
             <div key={l.lineId} className="card" style={{ padding: "11px 12px", borderColor: l.checked ? "var(--teal)" : undefined }}>
               <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
@@ -576,26 +612,45 @@ function LinesStep({
                 />
                 <span style={{ minWidth: 0, flex: 1 }}>
                   <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.label}</span>
-                  <span className="money" style={{ display: "block", marginTop: 3, fontSize: 11, color: "#767b6e" }}>
-                    Remaining {l.remaining} · RM {rm(l.unitPriceCenti)} each
+                  {/* Spec #convert meta: "Outstanding ×{outstanding} of {qty}". */}
+                  <span className="tnum" style={{ display: "block", marginTop: 3, fontSize: 11, color: "#767b6e" }}>
+                    Outstanding ×{l.remaining} of {ofQty} · RM {rm(l.unitPriceCenti)} each
                   </span>
                 </span>
               </label>
               {l.checked && (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 9, paddingTop: 9, borderTop: "1px solid #eceee9" }}>
-                  <label className="fld" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <span className="fld-l">Qty</span>
+                  {/* Spec stepper: − {convert_qty} + , clamped 1..remaining. */}
+                  <div style={{ display: "inline-flex", alignItems: "center", border: "1px solid #d6d9d2", borderRadius: 8 }}>
+                    <button
+                      type="button"
+                      aria-label="Decrease quantity"
+                      onClick={dec}
+                      disabled={qtyNum <= 1}
+                      style={{ width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", color: qtyNum <= 1 ? "#c2c6bd" : "#16695f", background: "none", border: "none", fontFamily: "inherit", fontSize: 17, cursor: qtyNum <= 1 ? "default" : "pointer" }}
+                    >
+                      −
+                    </button>
                     <input
-                      className="fld-i"
+                      className="tnum"
                       inputMode="numeric"
                       value={l.qty}
                       onChange={(e) => onSetLine(l.lineId, { qty: e.target.value })}
                       onBlur={() => onSetLine(l.lineId, { qty: String(clampQty(l.qty, l.remaining)) })}
-                      style={{ width: 62, textAlign: "center" }}
+                      aria-label="Quantity to convert"
+                      style={{ width: 40, height: 30, textAlign: "center", border: "none", borderLeft: "1px solid #eceee9", borderRight: "1px solid #eceee9", background: "none", outline: "none", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#11140f" }}
                     />
-                    <span style={{ fontSize: 10.5, color: "#9aa093" }}>/ {l.remaining}</span>
-                  </label>
-                  <span className="money" style={{ fontSize: 13, fontWeight: 800, color: "#0c3f39" }}>RM {rm(l.unitPriceCenti * qtyNum)}</span>
+                    <button
+                      type="button"
+                      aria-label="Increase quantity"
+                      onClick={inc}
+                      disabled={qtyNum >= l.remaining}
+                      style={{ width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", color: qtyNum >= l.remaining ? "#c2c6bd" : "#16695f", background: "none", border: "none", fontFamily: "inherit", fontSize: 17, cursor: qtyNum >= l.remaining ? "default" : "pointer" }}
+                    >
+                      +
+                    </button>
+                  </div>
+                  <span className="tnum" style={{ fontSize: 13, fontWeight: 800, color: "#0c3f39" }}>RM {rm(l.unitPriceCenti * qtyNum)}</span>
                 </div>
               )}
             </div>

@@ -522,7 +522,9 @@ export function MobileScan({
                 the New SO form prefilled for review, it does not silently create a
                 background draft. */}
             <div style={{ display: "flex", alignItems: "flex-start", gap: 9, background: "#f3ece0", border: "1px solid #e8dcc5", borderRadius: 11, padding: 11, marginTop: 12, fontSize: 11, color: "#6a4a1e", lineHeight: 1.5 }}>
-              We read the slip and open the New Sales Order form prefilled. Review every field, correct anything the reader missed, then save to create the order.
+              {/* Spec #scan amber info glyph on the left of the note. */}
+              <svg width="15" height="15" style={{ flex: "none", marginTop: 1 }} viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2"><circle cx="12" cy="12" r="9" /><path d="M12 8v4M12 16h.01" /></svg>
+              <span>We read the slip and open the New Sales Order form prefilled. Review every field, correct anything the reader missed, then save to create the order.</span>
             </div>
 
             {salesperson && (

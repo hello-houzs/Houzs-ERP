@@ -24,6 +24,13 @@ type SoHeader = {
   ref: string | null;
   customer_so_no: string | null;
   po_doc_no: string | null;
+  /* Emergency contact — the detail HEADER carries all three columns
+     (emergency_contact_name / _phone / _relationship). The Build Spec's
+     Customer card shows an "Emergency contact" row, HIDDEN entirely when no
+     phone is on file. Mirrors the desktop SO form's emergency block. */
+  emergency_contact_name: string | null;
+  emergency_contact_phone: string | null;
+  emergency_contact_relationship: string | null;
   building_type: string | null;
   venue: string | null;
   note: string | null;
@@ -54,7 +61,13 @@ type SoItem = {
      prototype's `variants: string` assumption crashed on .trim(). */
   item_group: string | null;
   variants: Record<string, unknown> | null;
+  /* description2 = the server-computed variant summary string (HOOKKA-style),
+     stamped on the line. Used as a fallback when the raw `variants` object is
+     absent/empty so the spec line still shows its category-aware spec text. */
+  description2: string | null;
   item_code: string | null;
+  /* Unit of measure — the Build Spec line item reads "SKU {sku} · {uom}". */
+  uom: string | null;
   qty: number | null;
   unit_price_centi: number | null;
   total_centi: number | null;
@@ -120,7 +133,6 @@ const total = (h: SoHeader) => h.local_total_centi ?? h.total_revenue_centi ?? 0
 export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: string; onBack: () => void; onEdit?: (docNo: string) => void; onIssueDo?: (docNo: string) => void }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
-  const notify = useNotify();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [payOpen, setPayOpen] = useState(false);
@@ -266,6 +278,12 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
               <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Phone" value={val(h.phone)} mono /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Email" value={val(h.email)} /></div></div>
               <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Customer type" value={val(h.customer_type)} /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Salesperson" value={val(salespersonName)} /></div></div>
               <RoField label="Customer SO ref" value={val(h.customer_so_no ?? h.ref)} mono />
+              {/* Emergency contact — whole row HIDDEN when no phone on file
+                  (Build Spec §6 + null-field rule: "hide the row"). Value =
+                  "name · phone (relationship)" from the header's emergency_* cols. */}
+              {(h.emergency_contact_phone ?? "").trim() ? (
+                <RoField label="Emergency contact" value={composeEmergency(h)} />
+              ) : null}
             </div></div>
 
             {/* Order info */}
@@ -287,8 +305,12 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
                 <div key={it.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "11px 13px", borderTop: i ? "1px solid var(--line2)" : "none" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{it.description || it.item_code || "—"}</div>
-                    {(() => { const vs = buildVariantSummary(it.item_group, it.variants); return vs ? <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }}>{vs}</div> : null; })()}
-                    <div className="money" style={{ fontSize: 10, color: "var(--mut2)", marginTop: 3 }}>SKU {val(it.item_code)}</div>
+                    {/* Category-aware variant spec (sofa Fabric·config / bedframe
+                        size·Headboard·Storage / mattress size·firmness·height) —
+                        built from the variants JSON; falls back to the server's
+                        stamped description2 summary when variants is empty. */}
+                    {(() => { const vs = buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? "").trim(); return vs ? <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }}>{vs}</div> : null; })()}
+                    <div className="money" style={{ fontSize: 10, color: "var(--mut2)", marginTop: 3 }}>SKU {val(it.item_code)}{(it.uom ?? "").trim() ? ` · ${it.uom!.trim()}` : ""}</div>
                   </div>
                   <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                     <div className="money" style={{ fontSize: 13, fontWeight: 700, color: "#0c3f39" }}>RM {rm(lineTotalCenti(it))}</div>
@@ -430,6 +452,17 @@ function composeAddress(h: SoHeader): string {
     .map((x) => (x ?? "").toString().trim())
     .filter((x) => x.length);
   return parts.length ? parts.join(", ") : "—";
+}
+
+/* Emergency contact — "name · phone (relationship)" from the header's
+   emergency_* columns. Only rendered when a phone exists (caller-gated), so a
+   blank name still shows the phone; relationship is appended in parens if set. */
+function composeEmergency(h: SoHeader): string {
+  const name = (h.emergency_contact_name ?? "").trim();
+  const phone = (h.emergency_contact_phone ?? "").trim();
+  const rel = (h.emergency_contact_relationship ?? "").trim();
+  const head = [name, phone].filter((x) => x.length).join(" · ");
+  return rel ? `${head} (${rel})` : head || "—";
 }
 
 /* Line total — prefer the persisted total_centi; fall back to unit_price × qty

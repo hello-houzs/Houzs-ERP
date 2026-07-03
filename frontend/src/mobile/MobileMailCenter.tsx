@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
+import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
 // Mobile Mail Center — the email client, wired to /api/mail-center. Kept at
@@ -137,6 +138,8 @@ function chipColors(label: string, catalog: Map<string, string>): [string, strin
   return labelColor(label);
 }
 
+// List-row time: HH:mm today, "Yesterday", else numeric DD/MM/YYYY (owner
+// standard — desktop-parity numeric dates, never short-month names).
 const fmtTime = (iso: string | null | undefined): string => {
   if (!iso) return "";
   const d = new Date(iso);
@@ -147,15 +150,16 @@ const fmtTime = (iso: string | null | undefined): string => {
   const yest = new Date(now);
   yest.setDate(now.getDate() - 1);
   if (d.toDateString() === yest.toDateString()) return "Yesterday";
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  return formatDate(d.toISOString());
 };
 
+// Message-bubble time: numeric DD/MM/YYYY + HH:mm.
 const fmtMsgTime = (m: Message): string => {
   const iso = m.direction === "outbound" ? m.sentAt || m.createdAt : m.receivedAt || m.createdAt;
   if (!iso) return "";
   const d = new Date(iso);
   if (isNaN(+d)) return "";
-  return d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  return `${formatDate(d.toISOString())} ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
 };
 
 const fmtBytes = (n: number): string => {
@@ -251,30 +255,38 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
     );
   }
 
-  // Designer list layout (#m-mail): eyebrow + title with a hamburger that
-  // returns to the module menu (our onBack), a horizontal folder chip strip,
-  // simple dot + from/subject/snippet rows, and a "+" compose FAB. Our mailbox
-  // switcher + search stay above the chips so every live filter is preserved.
+  // Designer list layout (#m-mail): a "Menu" (hamburger + label, left) that
+  // returns to the module menu via onBack + a "New" pencil button (right) that
+  // opens compose, then the "Mail Center" title below, the mailbox switcher, a
+  // search bar and the horizontal folder chip strip. Rows are avatar + name /
+  // subject / snippet / labels with a trailing unread dot. NO compose FAB — the
+  // "New" header button is the single compose entry point (matches the design).
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", position: "relative", background: "var(--app-bg)" }}>
       <header className="hdr">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <div className="eyebrow">Comms</div>
-            <div className="scr-title">Mail Center</div>
-          </div>
-          {onBack && (
-            <button onClick={onBack} style={{ background: "none", border: "none", color: "#16695f", cursor: "pointer" }} aria-label="Menu">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
+          {onBack ? (
+            <span onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: "#16695f", cursor: "pointer" }}>
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
-            </button>
-          )}
+              Menu
+            </span>
+          ) : <span />}
+          <button
+            onClick={() => setCompose({ mode: "new" })}
+            className="tinybtn"
+            style={{ background: "#16695f", borderColor: "#16695f", color: "#fff", display: "flex", alignItems: "center", gap: 5 }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+            New
+          </button>
         </div>
+        <div className="scr-title" style={{ marginBottom: 9 }}>Mail Center</div>
 
         <select
           value={mailbox}
           onChange={(e) => setMailbox(e.target.value)}
           className="cal-sel"
-          style={{ marginTop: 9, marginBottom: 9 }}
+          style={{ marginBottom: 9 }}
         >
           <option value="all">All mailboxes</option>
           {activeAddresses.map((a) => (
@@ -296,7 +308,7 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
           />
         </div>
 
-        <div className="chips" style={{ marginTop: 10, display: "flex", gap: 7, overflowX: "auto" }}>
+        <div className="chips" style={{ display: "flex", gap: 7, overflowX: "auto" }}>
           {FOLDERS.map(([f, label]) => (
             <button key={f} className={"chip" + (folder === f ? " on" : "")} onClick={() => setFolder(f)}>
               {label}
@@ -305,7 +317,7 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
         </div>
       </header>
 
-      <div className="scroll">
+      <div className="scroll hz-scroll" style={{ padding: "11px 12px" }}>
         {loading && <Muted>Loading&#8230;</Muted>}
         {!loading && error && <Muted tone="error">Could not load mail. {error}</Muted>}
         {!loading && !error && folder === "drafts" && (
@@ -320,54 +332,55 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
             <div className="empty-s">{folder === "trash" ? "Trash is empty." : `Nothing in ${folder}.`}</div>
           </div>
         )}
-        {!loading && !error && folder !== "drafts" && threads.map((t) => (
-          <ThreadRow key={t.id} t={t} colorMap={colorMap} onOpen={() => setOpenId(t.id)} />
-        ))}
+        {!loading && !error && folder !== "drafts" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {threads.map((t) => (
+              <ThreadRow key={t.id} t={t} colorMap={colorMap} onOpen={() => setOpenId(t.id)} />
+            ))}
+          </div>
+        )}
       </div>
-
-      <button
-        onClick={() => setCompose({ mode: "new" })}
-        aria-label="Compose"
-        style={{ position: "absolute", right: 16, bottom: 16, width: 52, height: 52, borderRadius: "50%", background: "#16695f", border: "none", color: "#fff", fontSize: 26, boxShadow: "0 12px 26px -10px rgba(17,24,16,.5)", cursor: "pointer" }}
-      >
-        +
-      </button>
     </div>
   );
 }
 
-// Designer list row (#m-mail): a leading unread dot, the counterparty name +
-// received time, the subject, a one-line snippet, and label chips. Star + reply
-// direction are kept from the live wiring.
+// Designer list row (#m-mail / renderMail): a leading counterparty AVATAR
+// (deterministic colour + initials), the name + star + received time, the
+// subject (bold when unread) with the thread message count, a one-line snippet,
+// label chips, and a TRAILING teal unread dot. The unread border tint + weight
+// come from the live thread.unread. Star + reply direction stay from the wiring.
 function ThreadRow({ t, colorMap, onOpen }: { t: Thread; colorMap: Map<string, string>; onOpen: () => void }) {
   const who = t.counterpartyName || t.counterpartyEmail || "(unknown)";
   return (
-    <div className="card" style={{ padding: "11px 13px", display: "flex", gap: 10, cursor: "pointer" }} onClick={onOpen}>
-      <span style={{ width: 6, height: 6, borderRadius: "50%", background: t.unread ? "#16695f" : "transparent", flex: "none", marginTop: 6 }} />
+    <div
+      onClick={onOpen}
+      style={{ display: "flex", gap: 11, background: "#fff", border: `1px solid ${t.unread ? "#bcdcd7" : "#e3e6e0"}`, borderRadius: 13, padding: "11px 12px", cursor: "pointer" }}
+    >
+      <div style={{ width: 38, height: 38, flex: "none", borderRadius: "50%", background: avColor(who), color: "#fff", fontSize: 13, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {initials(who)}
+      </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#11140f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{who}</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5, flex: "none" }}>
-            {t.starred && (
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="#d8a85a" stroke="#d8a85a" strokeWidth="1.5">
-                <path d="M12 2l3 6 6 .9-4.5 4.3 1 6-5.5-3-5.5 3 1-6L3 8.9 9 8Z" />
-              </svg>
-            )}
-            <span className="money" style={{ fontSize: 10.5, color: "#9aa093", whiteSpace: "nowrap" }}>{fmtTime(t.lastMessageAt)}</span>
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: t.unread ? 800 : 600, color: "#11140f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{who}</span>
+          {t.starred && (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="#d8a85a" stroke="#d8a85a" strokeWidth="1.5" style={{ flex: "none" }}>
+              <path d="M12 2l3 6 6 .9-4.5 4.3 1 6-5.5-3-5.5 3 1-6L3 8.9 9 8Z" />
+            </svg>
+          )}
+          <span className="money" style={{ fontSize: 10, color: "#9aa093", flex: "none", whiteSpace: "nowrap" }}>{fmtTime(t.lastMessageAt)}</span>
         </div>
-        <div style={{ fontSize: 12.5, fontWeight: 600, color: "#11140f", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <div style={{ fontSize: 12.5, fontWeight: t.unread ? 700 : 500, color: "#11140f", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {t.lastDirection === "outbound" ? "You: " : ""}
           {t.subject}
           {t.messageCount > 1 && <span style={{ color: "#9aa093", fontWeight: 600 }}> ({t.messageCount})</span>}
         </div>
-        <div style={{ fontSize: 11.5, color: "#767b6e", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.lastSnippet}</div>
+        <div style={{ fontSize: 11.5, color: "#767b6e", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.lastSnippet}</div>
         {t.labels.length > 0 && (
           <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
             {t.labels.map((l) => {
               const [bg, fg] = chipColors(l, colorMap);
               return (
-                <span key={l} style={{ display: "inline-block", fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 5, background: bg, color: fg }}>
+                <span key={l} className="rbadge" style={{ background: bg, color: fg }}>
                   {l}
                 </span>
               );
@@ -375,6 +388,7 @@ function ThreadRow({ t, colorMap, onOpen }: { t: Thread; colorMap: Map<string, s
           </div>
         )}
       </div>
+      {t.unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "#16695f", marginTop: 6 }} />}
     </div>
   );
 }
