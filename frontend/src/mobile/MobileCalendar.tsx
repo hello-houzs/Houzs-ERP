@@ -271,34 +271,45 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "#fff" }}>
+      {/* Header — brand lockup + search, matching the v7 calendar chrome. The
+          month nav / mode / filters live in the scroll body (below), per spec. */}
       <header className="hdr">
-        {/* Month nav — prev ‹ · centered month label · next › (spec lockup) */}
-        <div className="hdr-row">
-          <button onClick={() => nav(-1)} aria-label="Previous month" className="iconbtn">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2.2"><path d="M15 6l-6 6 6 6" /></svg>
-          </button>
-          <div className="scr-title" style={{ flex: 1, textAlign: "center" }}>{MONTHS[month]} {year}</div>
-          <button onClick={() => nav(1)} aria-label="Next month" className="iconbtn">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2.2"><path d="M9 6l6 6-6 6" /></svg>
-          </button>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ lineHeight: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#15161a" }}>HOUZS</div>
+            <div style={{ fontSize: 7.5, fontWeight: 700, letterSpacing: ".28em", color: "var(--brand)", marginTop: 2 }}>CENTURY · ERP</div>
+          </div>
+          <div className="iconbtn" aria-hidden>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#414539" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
+          </div>
+        </div>
+      </header>
+
+      <div className="scroll" style={{ padding: 12, paddingBottom: 120, background: "#fff" }}>
+        {/* Month nav — ‹ · Today · › · right-aligned month title (v7 lockup) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 11 }}>
+          <button onClick={() => nav(-1)} aria-label="Previous month" className="cal-navbtn">‹</button>
+          <button onClick={goToday} className="cal-today">Today</button>
+          <button onClick={() => nav(1)} aria-label="Next month" className="cal-navbtn">›</button>
+          <div style={{ flex: 1, fontSize: 17, fontWeight: 800, color: "#11140f", textAlign: "right" }}>{MONTHS[month]} {year}</div>
         </div>
 
         {/* Month / Week segmented toggle */}
-        <div style={{ display: "flex", background: "var(--bg)", border: "1px solid var(--line-card)", borderRadius: 10, padding: 3, marginTop: 10 }}>
+        <div style={{ display: "flex", background: "var(--bg)", border: "1px solid var(--line-card)", borderRadius: 10, padding: 3, marginBottom: 10 }}>
           {(["month", "week"] as const).map((mo) => (
             <button key={mo} onClick={() => setMode(mo)} className={`cal-seg${mode === mo ? " on" : ""}`}>{mo === "month" ? "Month" : "Week"}</button>
           ))}
         </div>
 
         {/* Filters — populated from the live feed (native selects hold many dynamic values) */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 9 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 10 }}>
           <select value={brandF} onChange={(e) => setBrandF(e.target.value)} className="cal-sel">
             <option value="all">All brands</option>
             {brandOptions.map((b) => <option key={b} value={b}>{b}</option>)}
           </select>
           <div style={{ display: "flex", gap: 7 }}>
             <select value={sectionF} onChange={(e) => setSectionF(e.target.value)} className="cal-sel" style={{ flex: 1 }}>
-              <option value="all">All sections</option>
+              <option value="all">All venues</option>
               {sectionOptions.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
             <select value={orgF} onChange={(e) => setOrgF(e.target.value)} className="cal-sel" style={{ flex: 1 }}>
@@ -307,13 +318,7 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
             </select>
           </div>
         </div>
-      </header>
 
-      <div className="scroll" style={{ padding: 12, paddingBottom: 120, background: "#fff" }}>
-        {/* Today jump + Tasks / My holidays / Expand toggles */}
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
-          <button onClick={goToday} className="cal-today">Today</button>
-        </div>
         {/* Tasks / My holidays / Expand toggles */}
         <div style={{ display: "flex", gap: 7, marginBottom: 10, flexWrap: "wrap" }}>
           <button onClick={() => setShowTasks((v) => !v)} className={`cal-tog${showTasks ? " on" : ""}`}>{showTasks ? "●" : "○"} Tasks</button>
@@ -343,7 +348,7 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
         {error && <div style={{ ...emptyBox, color: "var(--red)" }}>Couldn't load the calendar. Pull to retry.</div>}
 
         {!isLoading && !error && mode === "month" && (
-          <MonthGrid weeks={weeks} byDay={byDay} expand={expand} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} />
+          <MonthGrid weeks={weeks} byDay={byDay} expand={expand} onExpandAll={() => setExpand(true)} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} />
         )}
 
         {!isLoading && !error && mode === "week" && (
@@ -368,10 +373,11 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
   );
 }
 
-function MonthGrid({ weeks, byDay, expand, onOpenDay, empty, onOpen }: {
+function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen }: {
   weeks: (number | null)[][];
   byDay: Record<number, CalEvent[]>;
   expand: boolean;
+  onExpandAll: () => void;
   onOpenDay: (day: number) => void;
   empty: boolean;
   onOpen?: (projectId: number) => void;
@@ -398,11 +404,13 @@ function MonthGrid({ weeks, byDay, expand, onOpenDay, empty, onOpen }: {
         w.forEach((d, idx) => {
           if (d && byDay[d]) byDay[d].forEach((e) => cells.push({ e, idx }));
         });
-        const cap = expand ? cells.length : 2;
+        // v7 shows up to 4 event bars per week (all when Expand-all is on); the
+        // overflow "+N more" expands every bar inline.
+        const cap = expand ? cells.length : 4;
         const overflow = cells.length - cap;
-        // The day that owns the first hidden event — "+N more" drills into it
-        // (mirrors desktop, where the overflow link opens that day's detail).
-        const overflowDay = overflow > 0 ? w[cells[cap].idx] : null;
+        // The weekday column that owns the first hidden event — the "+N more"
+        // link sits under that column (v7 offsets it, not full-width).
+        const overflowIdx = overflow > 0 ? cells[cap].idx : 0;
         return (
           <div key={wi} className="wk" style={last ? { borderBottom: "1px solid var(--line-card)", borderRadius: "0 0 8px 8px" } : undefined}>
             <div className="nums">
@@ -428,8 +436,8 @@ function MonthGrid({ weeks, byDay, expand, onOpenDay, empty, onOpen }: {
                 style={{ ["--bar" as string]: e.color, marginLeft: `${(idx * 14.2857).toFixed(3)}%` }}
               >{e.label}</div>
             ))}
-            {overflow > 0 && overflowDay != null && (
-              <div className="cal-more" onClick={() => onOpenDay(overflowDay)}>+{overflow} more</div>
+            {overflow > 0 && (
+              <div className="cal-more" style={{ marginLeft: `${(overflowIdx * 14.2857).toFixed(3)}%` }} onClick={onExpandAll}>+{overflow} more</div>
             )}
           </div>
         );

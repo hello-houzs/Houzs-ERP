@@ -406,8 +406,32 @@ export function MobileDeliveryPlanning({
     >
       <header className="hdr">
         <div className="hdr-row">
-          <button className="back" onClick={onBack}>
-            <span className="chev">‹</span> Menu
+          <button
+            onClick={onBack}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12.5,
+              fontWeight: 700,
+              color: "#16695f",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+            }}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#16695f"
+              strokeWidth="2"
+              strokeLinecap="round"
+            >
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+            Menu
           </button>
           <span className="eyebrow">Transportation</span>
         </div>
