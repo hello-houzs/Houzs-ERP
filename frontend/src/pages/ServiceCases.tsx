@@ -109,36 +109,6 @@ const RESOLUTION_OPTIONS = [
 
 const PRIORITY_OPTIONS = ["low", "normal", "high", "urgent"] as const;
 
-// Priority pill (list view) — compact label + tone. The raw slug stays
-// in the tooltip and in getValue (filter/CSV).
-const PRIORITY_PILL: Record<string, { label: string; cls: string }> = {
-  low: { label: "Low", cls: "bg-ink-muted/10 text-ink-secondary" },
-  normal: { label: "Med", cls: "bg-accent-soft/60 text-accent" },
-  high: { label: "High", cls: "bg-warning-bg text-warning-text" },
-  urgent: { label: "Urgent", cls: "bg-err/10 text-err" },
-};
-
-// "24 Jun 2026" — medium date for the list's Date column (the design
-// uses month names there; the shared formatDate stays dd/mm/yyyy).
-function formatDateMedium(s: string | null): string {
-  if (!s) return "—";
-  const d = new Date(s);
-  if (isNaN(d.getTime())) return s.slice(0, 10);
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-// Whole-case age in days: complained_date → closed_at (or today while
-// still open). Rendered as the "Xd total" subline in the Date column.
-function totalCaseDays(
-  complained: string | null,
-  closed: string | null,
-): number | null {
-  if (!complained) return null;
-  const start = new Date(complained).getTime();
-  const end = closed ? new Date(closed).getTime() : Date.now();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
-  return Math.floor((end - start) / 86_400_000);
-}
 
 const NCR_OPTIONS = [
   "material_defect",
@@ -560,25 +530,9 @@ function CasesView({
               SLA
             </Badge>
           )}
-          {/* Dwell chip rides inside the Stage cell (design refresh):
-              On track <7d green · Slow 7–29d amber · Stuck ≥30d red. Priority
-              moved to its own pill column. */}
-          {r.stage !== "completed" && r.days_in_stage != null && (
-            <span
-              className={cn(
-                "shrink-0 text-[11px] font-semibold",
-                r.days_in_stage < 7
-                  ? "text-synced"
-                  : r.days_in_stage < 30
-                    ? "text-warning-text"
-                    : "text-err",
-              )}
-              title={`In ${caseStageLabel(r.stage)} for ${r.days_in_stage} day(s)`}
-            >
-              {r.days_in_stage < 7 ? "On track" : r.days_in_stage < 30 ? "Slow" : "Stuck"}{" "}
-              <span className="font-mono tabular-nums">{r.days_in_stage}d</span>
-            </span>
-          )}
+          {/* Dwell-days badge removed — the dedicated "Dwell" column now
+             carries the in-stage day count, so the Stage cell only shows the
+             stage name + the SLA flag. */}
         </div>
       ),
       // caseStageLabel (not the legacy StatusDot stageLabel) — the old
@@ -587,28 +541,57 @@ function CasesView({
       getValue: (r) => caseStageLabel(r.stage),
     },
     {
-      // Key kept as "priority_dwell" so saved column layouts (dt:* in
-      // localStorage) survive the rename. Dwell moved into the Stage
-      // cell; this column is now a plain priority pill (Low/Med/High/Urgent).
       key: "priority_dwell",
-      label: "Priority",
+      label: "Priority · Dwell",
       align: "left",
       filterable: true,
+      // Merged signal, single colour axis = DWELL so dot and text always
+      // agree (no clashing two-colour cells). DWELL in the current stage:
+      // On track <7d (green) / Slow 7–29d (amber) / Stuck ≥30d (red). The
+      // dot carries the same tier colour as the text. PRIORITY rides along
+      // as a red ring around the dot, shown only for Urgent/High.
       render: (r) => {
-        const p = PRIORITY_PILL[r.priority ?? "normal"] ?? PRIORITY_PILL.normal;
+        const d = r.days_in_stage;
+        const tier =
+          d == null || r.stage === "completed"
+            ? null
+            : d < 7
+              ? { label: "On track", text: "text-synced", dot: "bg-synced" }
+              : d < 30
+                ? { label: "Slow", text: "text-warning-text", dot: "bg-warning-text" }
+                : { label: "Stuck", text: "text-err font-semibold", dot: "bg-err" };
+        const dotColor = tier ? tier.dot : "bg-ink-muted/40";
+        const isHiPri = r.priority === "urgent" || r.priority === "high";
         return (
-          <span
-            title={`${r.priority ?? "normal"} priority`}
-            className={cn(
-              "inline-flex items-center rounded-full px-2 py-0.5 text-[10.5px] font-bold",
-              p.cls,
+          <div className="flex items-center gap-2">
+            <span
+              title={isHiPri ? `${r.priority} priority${tier ? ` · ${tier.label}` : ""}` : tier?.label || undefined}
+              className="inline-flex shrink-0 items-center justify-center"
+            >
+              <span
+                className={cn(
+                  "h-2.5 w-2.5 rounded-full",
+                  dotColor,
+                  isHiPri && "ring-2 ring-offset-1 ring-offset-surface ring-err",
+                )}
+              />
+            </span>
+            {tier ? (
+              <span
+                className={cn("text-[11.5px] font-medium", tier.text)}
+                title={`In ${caseStageLabel(r.stage)} for ${d} day(s)`}
+              >
+                {tier.label} <span className="font-mono tabular-nums">{d}d</span>
+              </span>
+            ) : (
+              <span className="text-ink-muted">—</span>
             )}
-          >
-            {p.label}
-          </span>
+          </div>
         );
       },
-      getValue: (r) => r.priority ?? "normal",
+      // Sort by dwell days — the actionable axis. Priority stays scannable
+      // via the dot colour even when sorted by dwell.
+      getValue: (r) => r.days_in_stage ?? -1,
     },
     {
       key: "doc_no",
@@ -621,22 +604,7 @@ function CasesView({
       key: "complained_date",
       filterable: true,
       label: "Date",
-      // Two-line cell per design: reported date ("24 Jun 2026") + total
-      // case age ("Xd total" — complained_date → closed_at, or today
-      // while open).
-      render: (r) => {
-        const total = totalCaseDays(r.complained_date, r.closed_at);
-        return (
-          <div className="leading-tight">
-            <div>{formatDateMedium(r.complained_date)}</div>
-            {total != null && (
-              <div className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                {total}d total
-              </div>
-            )}
-          </div>
-        );
-      },
+      render: (r) => formatDate(r.complained_date),
       getValue: (r) => formatDate(r.complained_date),
     },
     {
