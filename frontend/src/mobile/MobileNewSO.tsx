@@ -29,6 +29,7 @@ import {
   useModelAllowedOptionsByCode,
   type MaintenanceConfig,
   type ModelAllowedOptions,
+  type SpecialAddonRow,
 } from "../vendor/scm/lib/mfg-products-queries";
 import { useFabricColoursActive, type FabricColourRow } from "../vendor/scm/lib/fabric-queries";
 import { useFabricLibrary } from "../vendor/scm/lib/queries";
@@ -394,6 +395,9 @@ type VariantPools = {
   fabricColours: FabricColourRow[];
   fabricSeries: Map<string, string>; // fabricId → series label
   maint: MaintenanceConfig | null;
+  /* Special Add-ons pool (owner 2026-07-04) — the SAME special_addons defs the
+     desktop SoLineCard + server recompute price from. */
+  specialAddons: SpecialAddonRow[];
 };
 
 export function MobileNewSO({
@@ -443,7 +447,10 @@ export function MobileNewSO({
   const maint = maintQ.data?.data ?? null;
   const fabricColoursQ = useFabricColoursActive();
   const fabricLibQ = useFabricLibrary();
-  useSpecialAddons(); // warm the pool (SoLineCard reads it; mobile keeps specials optional)
+  /* Special Add-ons (owner 2026-07-04) — the mobile line editor now renders a
+     Specials accordion (bedframe + sofa), consuming the same pool it used to
+     only warm. */
+  const specialAddonsQ = useSpecialAddons();
 
   const pools: VariantPools = useMemo(() => {
     const fabricSeries = new Map<string, string>();
@@ -453,8 +460,9 @@ export function MobileNewSO({
       fabricColours: fabricColoursQ.data ?? [],
       fabricSeries,
       maint,
+      specialAddons: specialAddonsQ.data ?? [],
     };
-  }, [maint, fabricColoursQ.data, fabricLibQ.data]);
+  }, [maint, fabricColoursQ.data, fabricLibQ.data, specialAddonsQ.data]);
 
   /* One-shot seed derived from the scan handoff (new-from-scan only). */
   const scanLines: Array<{ line: LineItem; meta: ScanLineMetaSeed }> = (scanPrefill?.lines ?? []).map((l) => {
@@ -506,7 +514,6 @@ export function MobileNewSO({
   const [ecPhone, setEcPhone] = useState(scanPrefill?.emergencyPhone ?? "");
 
   // Delivery address
-  const [addressLater, setAddressLater] = useState(false);
   const [addr1, setAddr1] = useState(scanPrefill?.address1 ?? "");
   const [addr2, setAddr2] = useState("");
   const [state, setState] = useState(inList(scanPrefill?.state ?? "", STATES));
@@ -775,6 +782,21 @@ export function MobileNewSO({
     else if (selfDisplayName) setSalespersonId((prev) => prev || SELF_SALESPERSON);
   }, [isEdit, selfStaffMatch, selfDisplayName]);
 
+  /* Customer Type default (owner 2026-07-03) — a NEW SO defaults to the real
+     DB option whose label reads "New Customer" (matched case-insensitively);
+     if the API has no such option, fall back to the first option. Never on
+     EDIT (keeps the persisted value) and never once a value is already picked
+     (a scan-provided customerType wins). Fed by useSoDropdownOptions —
+     no fabricated option list. */
+  useEffect(() => {
+    if (isEdit) return;
+    if (customerTypeOpts.length === 0) return;
+    const preferred =
+      customerTypeOpts.find((o) => o.label.trim().toLowerCase() === "new customer") ??
+      customerTypeOpts[0];
+    if (preferred) setCustType((prev) => prev || preferred.value);
+  }, [isEdit, customerTypeOpts]);
+
   /* When State changes, clear a now-invalid City / Postcode (the cascade only
      offers cities/postcodes for the new state). Skipped while locked. */
   const onStateChange = (next: string) => {
@@ -805,6 +827,21 @@ export function MobileNewSO({
   const emailErr = emailProvided && !emailFormatOk; // only an error when a BAD email is typed
   const dateXorErr = Boolean(procDate) !== Boolean(delivDate); // set together or both empty
 
+  /* Address-required rule (owner 2026-07-03) — the delivery address is optional
+     by default (name + phone are the only required customer fields). BUT once
+     BOTH a Processing date AND a Delivery date are set the order is a firm
+     delivery, so State + City + Postcode + Address Line 1 become required. When
+     the dates aren't both set, an empty address simply saves empty. */
+  const addressRequired = Boolean(procDate) && Boolean(delivDate);
+  const missingAddress = addressRequired
+    ? [
+        !state.trim() ? "state" : null,
+        !city.trim() ? "city" : null,
+        !postcode.trim() ? "postcode" : null,
+        !addr1.trim() ? "address line 1" : null,
+      ].filter(Boolean) as string[]
+    : [];
+
   /* Dynamic "missing required fields" message — names ONLY what's actually
      missing/invalid (owner: don't say "name, phone and email" when only email
      is empty; email is optional anyway). */
@@ -816,6 +853,14 @@ export function MobileNewSO({
     if (miss.length === 0) return null;
     const joined = miss.length === 1 ? miss[0] : miss.slice(0, -1).join(", ") + " and " + miss[miss.length - 1];
     return `Fill in ${joined}.`;
+  };
+
+  /* Address validation message — only fires when both dates are set and the
+     delivery address is incomplete. */
+  const missingAddressMsg = (): string | null => {
+    if (missingAddress.length === 0) return null;
+    const joined = missingAddress.length === 1 ? missingAddress[0] : missingAddress.slice(0, -1).join(", ") + " and " + missingAddress[missingAddress.length - 1];
+    return `Both a Processing and a Delivery date are set, so fill in the delivery ${joined}.`;
   };
 
   const namedLines = useMemo(() => lines.filter((l) => l.name.trim() || l.itemCode.trim()), [lines]);
@@ -1117,6 +1162,12 @@ export function MobileNewSO({
       setError("Processing Date and Delivery Date must be set together, or both left empty.");
       return;
     }
+    /* Address becomes required only when this is a firm delivery (both dates set)
+       and we're not stashing a draft. Otherwise an empty address saves empty. */
+    if (!asDraft) {
+      const addrMsg = missingAddressMsg();
+      if (addrMsg) { setError(addrMsg); return; }
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -1134,8 +1185,8 @@ export function MobileNewSO({
           venueId: outgoingVenueId ?? undefined,
           venue: outgoingVenueName || null,
           note: note.trim() || null,
-          address1: addressLater ? null : addr1.trim() || null,
-          address2: addressLater ? null : addr2.trim() || null,
+          address1: addr1.trim() || null,
+          address2: addr2.trim() || null,
           customerState: state || null,
           city: city.trim() || null,
           postcode: postcode.trim() || null,
@@ -1185,8 +1236,8 @@ export function MobileNewSO({
         venueId: outgoingVenueId ?? undefined,
         venue: outgoingVenueName || null,
         note: note.trim() || null,
-        address1: addressLater ? null : addr1.trim() || null,
-        address2: addressLater ? null : addr2.trim() || null,
+        address1: addr1.trim() || null,
+        address2: addr2.trim() || null,
         customerState: state || null,
         city: city.trim() || null,
         postcode: postcode.trim() || null,
@@ -1427,16 +1478,12 @@ export function MobileNewSO({
             <div className="card" style={{ marginBottom: 11 }}>
               <div className="card-h"><span className="card-t">Delivery address</span></div>
               <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: 11, background: "#f4f6f3", border: "1px solid rgba(34,31,32,.12)", borderRadius: 12, cursor: "pointer" }}>
-                  <input type="checkbox" checked={addressLater} onChange={(e) => setAddressLater(e.target.checked)} style={{ marginTop: 2, width: 16, height: 16, accentColor: "#16695f" }} />
-                  <span>
-                    <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#11140f" }}>Fill in address later</span>
-                    <span style={{ fontSize: 11, color: "#767b6e" }}>Customer hasn't confirmed delivery address yet.</span>
-                  </span>
-                </label>
-                {!addressLater && (
-                  <>
-                    <Field label="Address Line 1" scanned={scanned("addr1", addr1)}>
+                {addressRequired && (
+                  <div style={{ fontSize: 10.5, color: "#a16a2e", background: "#fbf3e6", border: "1px solid #ecd9b6", borderRadius: 10, padding: "7px 10px" }}>
+                    Both a Processing and a Delivery date are set, so the full delivery address (State, City, Postcode and Address Line 1) is required.
+                  </div>
+                )}
+                <Field label={addressRequired ? "Address Line 1 *" : "Address Line 1"} error={touched && addressRequired && !addr1.trim()} scanned={scanned("addr1", addr1)}>
                       <input className="fld-i" value={addr1} onChange={(e) => setAddr1(e.target.value)} placeholder="Unit, street, area" />
                     </Field>
                     <Field label="Address Line 2">
@@ -1448,7 +1495,7 @@ export function MobileNewSO({
                         free-text inputs (the vendor no-data behaviour).
                         FIX D2 — State/City/Postcode freeze once the processing
                         date has passed (identity columns feed the supplier PO). */}
-                    <Field label="State" scanned={scanned("state", state)}>
+                    <Field label={addressRequired ? "State *" : "State"} error={touched && addressRequired && !state.trim()} scanned={scanned("state", state)}>
                       {localitiesReady ? (
                         <select
                           className="fld-i"
@@ -1471,7 +1518,7 @@ export function MobileNewSO({
                       )}
                     </Field>
                     <div style={{ display: "flex", gap: 11 }}>
-                      <Field label="City" style={{ flex: 1 }} scanned={scanned("city", city)}>
+                      <Field label={addressRequired ? "City *" : "City"} style={{ flex: 1 }} error={touched && addressRequired && !city.trim()} scanned={scanned("city", city)}>
                         {localitiesReady && cityOpts.length > 0 ? (
                           <select
                             className="fld-i"
@@ -1493,7 +1540,7 @@ export function MobileNewSO({
                           />
                         )}
                       </Field>
-                      <Field label="Postcode" style={{ flex: 1 }} scanned={scanned("postcode", postcode)}>
+                      <Field label={addressRequired ? "Postcode *" : "Postcode"} style={{ flex: 1 }} error={touched && addressRequired && !postcode.trim()} scanned={scanned("postcode", postcode)}>
                         {localitiesReady && postcodeOpts.length > 0 ? (
                           <select
                             className="fld-i"
@@ -1522,8 +1569,6 @@ export function MobileNewSO({
                         State, City and Postcode are locked — this order&apos;s processing date has passed and it is now on order to the supplier. Address lines can still be updated.
                       </div>
                     )}
-                  </>
-                )}
               </div>
             </div>
 
@@ -1536,7 +1581,7 @@ export function MobileNewSO({
                     {lines.length ? lines.map((l) => (
                       <div key={l.key} style={roItemBox}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>{l.name || l.itemCode || "—"} <span style={{ color: "#9aa093" }}>{"×"}{num(l.qty)}</span></span>
+                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>{l.itemCode || l.name || "—"} <span style={{ color: "#9aa093" }}>{"×"}{num(l.qty)}</span></span>
                           <span className="money" style={{ fontSize: 12.5, fontWeight: 800, color: "#0c3f39" }}>RM {fmt((toCenti(l.price) * num(l.qty)) / 100)}</span>
                         </div>
                       </div>
@@ -1637,10 +1682,14 @@ export function MobileNewSO({
             </button>
           ) : (
             <>
-              <button className="btn-ghost" disabled={submitting} onClick={() => save(true)} style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}>
+              {/* Equal-width pair (owner 2026-07-03): flex:1 + flexBasis:0 +
+                  minWidth:0 so both buttons take exactly half the row regardless
+                  of label length, and a shared height so the pair reads balanced
+                  (.btn sizes via padding, .btn-ghost via height — pin both to 48). */}
+              <button className="btn-ghost" disabled={submitting} onClick={() => save(true)} style={{ flex: "1 1 0", minWidth: 0, height: 48, opacity: submitting ? 0.6 : 1 }}>
                 {submitting ? "Saving…" : "Save draft"}
               </button>
-              <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}>
+              <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ flex: "1 1 0", minWidth: 0, height: 48, padding: 0, opacity: submitting ? 0.6 : 1 }}>
                 {submitting ? "Saving…" : "Create Sales Order"}
               </button>
             </>
@@ -1889,6 +1938,51 @@ function LineCard({
 
   const missing = new Set(missingVariantAxes(line.itemGroup, line.variants).map((a) => a.key));
 
+  /* ── Special Add-ons (owner 2026-07-04, mirrors SoLineCard verbatim) ──
+     Pool = active special_addons rows for this line's category ∩ the Model's
+     allowed_options.specials ticks (POS semantics: no ticks = nothing offered,
+     Modular is the ON/OFF authority). Ticking writes variants.specials (codes)
+     + specialChoices (required groups default to their first choice, like the
+     POS picker) + specialLabels (display snapshot) — the SAME vocabulary the
+     desktop + server honest-pricing recompute read. The +RM shown is the
+     addon's sellingPriceSen, display-only; the server prices the line. */
+  const specialsList = (val: unknown): string[] => {
+    if (Array.isArray(val)) return val.map(String).filter(Boolean);
+    if (typeof val === "string" && val) return [val];
+    return [];
+  };
+  const catUpper = line.itemGroup.toUpperCase();
+  const specialOptions = useMemo(() => {
+    const allowed = new Set(allow?.specials ?? []);
+    return pools.specialAddons.filter(
+      (a) => a.active && a.categories.includes(catUpper) && allowed.has(a.code),
+    );
+  }, [pools.specialAddons, catUpper, allow]);
+  const pickedSpecials = specialsList(v.specials ?? v.special);
+  const [specialsOpen, setSpecialsOpen] = useState(() => pickedSpecials.length > 0);
+  const specialChoicesMap: Record<string, string[]> =
+    v.specialChoices && typeof v.specialChoices === "object"
+      ? (v.specialChoices as Record<string, string[]>)
+      : {};
+  const toggleSpecial = (code: string) => {
+    const has = pickedSpecials.includes(code);
+    const nextPicked = has ? pickedSpecials.filter((c) => c !== code) : [...pickedSpecials, code];
+    const nextChoices: Record<string, string[]> = { ...specialChoicesMap };
+    if (has) {
+      delete nextChoices[code];
+    } else {
+      const def = pools.specialAddons.find((d) => d.code === code);
+      if (def && def.optionGroups.length > 0) {
+        nextChoices[code] = def.optionGroups.map((g) => (g.required && g.choices[0] ? g.choices[0].label : ""));
+      }
+    }
+    setVar({
+      specials: nextPicked,
+      specialChoices: nextChoices,
+      specialLabels: nextPicked.map((c) => pools.specialAddons.find((d) => d.code === c)?.label ?? c),
+    });
+  };
+
   const addPhotos = (files: File[]) => {
     if (files.length === 0) return;
     onChange({ photoFiles: [...line.photoFiles, ...files] });
@@ -1912,10 +2006,9 @@ function LineCard({
         >
           <span style={{ flex: 1, minWidth: 0 }}>
             {picked ? (
-              <>
-                <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: "#11140f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{line.name}</span>
-                <span style={{ display: "block", fontSize: 10, color: "#16695f", fontWeight: 700, marginTop: 1 }}>{line.itemCode}</span>
-              </>
+              /* Owner 2026-07-03 — show ONLY the product Code (the long name got
+                 squeezed/truncated in the narrow line row). */
+              <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: "#11140f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{line.itemCode}</span>
             ) : (
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "#9aa093" }}>Pick a product{"…"}</span>
             )}
@@ -1987,6 +2080,50 @@ function LineCard({
               </div>
             </div>
           </>
+        )}
+
+        {/* Special orders accordion (owner-approved 2026-07-04) — bedframe +
+            sofa. Hidden when the Model offers no specials and none are picked
+            (POS semantics). Collapsed by default; auto-open when the line
+            already carries specials (edit mode). */}
+        {picked && pools.ready && (line.cat === "sofa" || line.cat === "bedframe") && (specialOptions.length > 0 || pickedSpecials.length > 0) && (
+          <div style={{ border: "1px solid #e3e6e0", borderRadius: 10, overflow: "hidden" }}>
+            <button
+              type="button"
+              onClick={() => setSpecialsOpen((o) => !o)}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 10px", background: "#f4f6f3", border: "none", fontFamily: "inherit", cursor: "pointer" }}
+            >
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#11140f" }}>Special orders</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: "#16695f" }}>
+                {pickedSpecials.length > 0 ? `${pickedSpecials.length} selected` : ""}
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ transform: specialsOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }}><polyline points="6 9 12 15 18 9" /></svg>
+              </span>
+            </button>
+            {specialsOpen && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7, padding: "8px 10px" }}>
+                {specialOptions.map((a) => {
+                  const on = pickedSpecials.includes(a.code);
+                  return (
+                    <label key={a.code} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, cursor: "pointer" }}>
+                      <input type="checkbox" checked={on} onChange={() => toggleSpecial(a.code)} style={{ width: 16, height: 16, flex: "none", accentColor: "#16695f" }} />
+                      <span style={{ flex: 1, minWidth: 0, color: "#11140f" }}>{a.label}</span>
+                      <span className="money" style={{ fontSize: 11.5, color: "#767b6e", flex: "none" }}>+RM {(a.sellingPriceSen / 100).toFixed(2)}</span>
+                    </label>
+                  );
+                })}
+                {/* A previously-saved special whose code the Model no longer
+                    offers still shows (untickable ghost) so edit never hides
+                    what the order carries. */}
+                {pickedSpecials.filter((c) => !specialOptions.some((a) => a.code === c)).map((c) => (
+                  <label key={c} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, cursor: "pointer" }}>
+                    <input type="checkbox" checked onChange={() => toggleSpecial(c)} style={{ width: 16, height: 16, flex: "none", accentColor: "#16695f" }} />
+                    <span style={{ flex: 1, minWidth: 0, color: "#11140f" }}>{String((v.specialLabels as string[] | undefined)?.[pickedSpecials.indexOf(c)] ?? c)}</span>
+                    <span style={{ fontSize: 10.5, color: "#9aa093", flex: "none" }}>not in model</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         {picked && pools.ready && line.cat === "mattress" && (

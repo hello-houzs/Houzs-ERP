@@ -133,6 +133,16 @@ the current-state reference.
 59. **Complaint date field added to the New Service Case form** — a native date input in the Issue card (numeric DD/MM/YYYY, value `YYYY-MM-DD`), defaulting to today (MYT) and capped at today. Sent as `complained_date` and written to `assr_cases.complained_date` (the backend honours an explicit valid value, else falls back to today).
 60. **Issue row removed from the cases-list card** (owner: the full complaint made each card too tall). The `.so-grid` card now shows only Case · Item · SLA; the complaint text is still searchable and still shown in full on the case detail. Keeps the list scannable.
 
+### New/Edit SO polish batch (2026-07-04, sw v118)
+61. **Customer Type defaults to "New Customer"** on a NEW SO — matched case-insensitively against the real `so_dropdown_options` rows (falls back to the first option); EDIT keeps the persisted value; a scan-provided type wins.
+62. **"Fill in address later" checkbox removed.** The delivery address is simply optional: left empty it saves empty.
+63. **Address-required rule** — Customer Name + Phone stay the only always-required fields, BUT once BOTH a Processing date AND a Delivery date are set, State + City + Postcode + Address Line 1 become required (inline per-field errors + a plain-sentence blocker naming exactly what is missing).
+64. **Equal-width action buttons** — Save draft / Create Sales Order are a balanced 50/50 pair (`flex: 1 1 0` + shared 48px height).
+65. **Line item shows the product Code only** (the long name was squeezed to an unreadable truncation in the narrow row).
+66. **"Record Payment" renamed "Add Payment"** in the SO detail (both the payments-card link and the action button) — payment recording lives inside the Sales Order, per the owner's flow.
+67. **Special orders accordion on SO lines (bedframe + sofa)** — owner-approved mockup. Collapsed "Special orders · N selected" row under the variant selects; expanding lists the Model's allowed `special_addons` as checkboxes with a display-only `+RM` (sellingPriceSen). Ticking writes `variants.specials` + `specialChoices` (required option-groups default to their first choice) + `specialLabels` — the exact desktop SoLineCard vocabulary, so the server honest-pricing recompute prices them. Pool = active addons for the line's category ∩ the Model's `allowed_options.specials` ticks (POS semantics: no ticks = nothing offered). Auto-opens on edit when the line already carries specials; a saved special the Model no longer offers still shows as an untickable-ghost row so edits never hide what the order carries.
+68. **Catalog caching** — `useMfgProducts` now caches 5 minutes with `keepPreviousData`, so the SKU picker no longer blanks to "Loading Catalog" on every open/keystroke (vendored perf deviation, commented in-file).
+
 ---
 
 ## Full rebuild to Build Spec + prototype (2026-07-03, sw v107–v109)

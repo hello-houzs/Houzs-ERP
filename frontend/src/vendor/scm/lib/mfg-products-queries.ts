@@ -7,7 +7,7 @@
 // type is reduced to the one field the picker reads (`supplierCategories`);
 // extend it as later pages need more.
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { serviceNotify } from './dialog-service';
 import { verifiedSave, readbackGet, friendlySaveMessage } from './verified-save';
@@ -216,7 +216,13 @@ export function useMfgProducts(opts?: {
       return res.products;
     },
     enabled: opts?.enabled ?? true,
-    staleTime: 30_000,
+    /* HOUZS VENDOR perf deviation (owner 2026-07-03, "Loading Catalog is
+       slow"): the catalog is stable reference data, so cache it 5 min and
+       keep the previous page's rows on screen while a new (category, search)
+       key fetches — the mobile SKU picker no longer blanks to "Loading
+       Catalog" on every open/keystroke. */
+    staleTime: 5 * 60_000,
+    placeholderData: keepPreviousData,
     retry: 1,
     retryDelay: 800,
   });

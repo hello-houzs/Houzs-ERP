@@ -374,7 +374,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {!!payments.length && <span className="card-sub">{payments.length}</span>}
                 {ph !== "cancelled" && bal > 0 && (
-                  <button type="button" disabled={busy} onClick={() => { setActionError(null); setPayOpen(true); }} style={{ border: "none", background: "transparent", color: "var(--teal)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0, opacity: busy ? 0.55 : 1 }}>+ Record payment</button>
+                  <button type="button" disabled={busy} onClick={() => { setActionError(null); setPayOpen(true); }} style={{ border: "none", background: "transparent", color: "var(--teal)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0, opacity: busy ? 0.55 : 1 }}>+ Add payment</button>
                 )}
               </span>
             </div>
@@ -420,7 +420,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               any live (non-cancelled) order with a positive balance. Each payment
               needs a slip (backend enforces slip_required), captured in the sheet. */}
           {ph !== "cancelled" && bal > 0 && (
-            <button className="btn" disabled={busy} onClick={() => { setActionError(null); setPayOpen(true); }} style={{ marginBottom: 9, opacity: busy ? 0.55 : 1 }}>Record Payment</button>
+            <button className="btn" disabled={busy} onClick={() => { setActionError(null); setPayOpen(true); }} style={{ marginBottom: 9, opacity: busy ? 0.55 : 1 }}>Add Payment</button>
           )}
           {ph === "draft" && (
             <div style={{ display: "flex", gap: 9 }}>
