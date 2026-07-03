@@ -5334,27 +5334,6 @@ function ProjectSpecStrip({
             </button>
           )}
         </SpecCell>
-        <SpecCell label="Notion">
-          {editing ? (
-            <SpecTextField
-              editing
-              value={p.notion_url}
-              placeholder="https://notion.so/…"
-              onChange={(v) => patch({ notion_url: v })}
-            />
-          ) : p.notion_url ? (
-            <a
-              href={p.notion_url}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-[12.5px] font-medium text-accent hover:underline"
-            >
-              Open <ExternalLink size={10} />
-            </a>
-          ) : (
-            <SpecValue muted>—</SpecValue>
-          )}
-        </SpecCell>
         {p.start_date && (
           <SpecCell label="Add to Calendar">
             <a
