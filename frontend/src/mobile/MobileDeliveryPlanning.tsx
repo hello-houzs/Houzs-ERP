@@ -367,6 +367,21 @@ export function MobileDeliveryPlanning({
       ) + 1
     : 0;
 
+  // route_date = the date the active day bucket represents (today / tomorrow;
+  // History has no single date, so we fall back to the tab label). MUST be
+  // declared BEFORE the detailOrder early-return below, or opening a stop
+  // renders fewer hooks than the list view and React throws error #300.
+  const routeDate = useMemo(() => {
+    const now = new Date();
+    if (day === "today") return now;
+    if (day === "tomorrow") {
+      const t = new Date(now);
+      t.setDate(t.getDate() + 1);
+      return t;
+    }
+    return null;
+  }, [day]);
+
   if (detailOrder) {
     return (
       <StopDetail
@@ -379,19 +394,6 @@ export function MobileDeliveryPlanning({
     );
   }
 
-  // Designer header subline: "Monday · {route_date} · {driver} + {helper}".
-  // route_date = the date the active day bucket represents (today / tomorrow;
-  // History has no single date, so we fall back to the tab label).
-  const routeDate = useMemo(() => {
-    const now = new Date();
-    if (day === "today") return now;
-    if (day === "tomorrow") {
-      const t = new Date(now);
-      t.setDate(t.getDate() + 1);
-      return t;
-    }
-    return null;
-  }, [day]);
   const dayLabel = DAY_TABS.find((t) => t.key === day)?.label;
   const routeWeekday = routeDate
     ? routeDate.toLocaleDateString("en-GB", { weekday: "long" })
