@@ -36,7 +36,7 @@ import {
 } from '../shared/so-line-display';
 import { writeMovements, defaultWarehouseId, resolveWarehouseLotBatches } from '../lib/inventory-movements';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { recomputePcoReceived } from './purchase-consignment-receives';
 
@@ -393,7 +393,6 @@ purchaseConsignmentReturns.post('/', async (c) => {
   if (!Array.isArray(items) || !items.length) return c.json({ error: 'items_required' }, 400);
 
   const sb = c.get('supabase'); const user = c.get('user');
-  const returnNumber = await nextNum(sb);
 
   /* Reject (don't clamp) any PC-receive-linked line that exceeds its remaining
      (qty_accepted - returned_qty) — matches the add-line + edit paths, which
@@ -450,7 +449,9 @@ purchaseConsignmentReturns.post('/', async (c) => {
   // PC Return is created POSTED. The inventory OUT is booked by the resync below.
   const pcOrderId = (body.pcOrderId as string | undefined) ?? null;
   const pcReceiveId = (body.pcReceiveId as string | undefined) ?? null;
-  const { data: header, error: hErr } = await sb.from('purchase_consignment_returns').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
+    () => nextNum(sb),
+    (returnNumber) => sb.from('purchase_consignment_returns').insert({
     return_number: returnNumber,
     pc_order_id: pcOrderId,
     pc_receive_id: pcReceiveId,
@@ -462,7 +463,8 @@ purchaseConsignmentReturns.post('/', async (c) => {
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     created_by: user.id,
-  }).select(HEADER).single();
+  }).select(HEADER).single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 
@@ -533,12 +535,13 @@ purchaseConsignmentReturns.post('/from-pc-receives', async (c) => {
     return c.json({ error: 'no_rejected_qty', message: 'None of the selected receives have remaining rejected qty to return' }, 400);
   }
 
-  const returnNumber = await nextNum(sb);
   const recvNumbersJoined = recvList.map((g) => g.receive_number).join(', ');
   const totalRefund = rejectedItems.reduce((s, it) => s + (it._qty * it.unit_price_centi), 0);
 
   const primaryReceiveId = recvList[0]!.id;
-  const { data: header, error: hErr } = await sb.from('purchase_consignment_returns').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
+    () => nextNum(sb),
+    (returnNumber) => sb.from('purchase_consignment_returns').insert({
     return_number: returnNumber,
     pc_order_id: recvList[0]!.purchase_consignment_order_id,
     pc_receive_id: primaryReceiveId,
@@ -550,7 +553,8 @@ purchaseConsignmentReturns.post('/from-pc-receives', async (c) => {
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     created_by: user.id,
-  }).select('id, return_number').single();
+  }).select('id, return_number').single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 
@@ -617,10 +621,11 @@ purchaseConsignmentReturns.post('/from-pc-receive', async (c) => {
     .filter((it) => it._remaining > 0);
   if (lines.length === 0) return c.json({ error: 'nothing_to_return', message: 'Receive is fully returned' }, 400);
 
-  const returnNumber = await nextNum(sb);
   const totalRefund = lines.reduce((s, it) => s + (it._remaining * it.unit_price_centi), 0);
 
-  const { data: header, error: hErr } = await sb.from('purchase_consignment_returns').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
+    () => nextNum(sb),
+    (returnNumber) => sb.from('purchase_consignment_returns').insert({
     return_number: returnNumber,
     pc_order_id: g.purchase_consignment_order_id,
     pc_receive_id: g.id,
@@ -632,7 +637,8 @@ purchaseConsignmentReturns.post('/from-pc-receive', async (c) => {
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     created_by: user.id,
-  }).select('id, return_number').single();
+  }).select('id, return_number').single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 

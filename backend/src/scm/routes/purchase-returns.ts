@@ -17,7 +17,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements, defaultWarehouseId } from '../lib/inventory-movements';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { buildVariantSummary, computeVariantKey, type VariantAttrs } from '../shared';
 import {
@@ -433,7 +433,6 @@ purchaseReturns.post('/', async (c) => {
   if (!Array.isArray(items) || !items.length) return c.json({ error: 'items_required' }, 400);
 
   const sb = c.get('supabase'); const user = c.get('user');
-  const returnNumber = await nextNum(sb);
 
   /* Audit fix #3 — clamp each GRN-linked line to its remaining
      (qty_accepted - returned_qty) so a bare create can't over-return (the
@@ -485,7 +484,9 @@ purchaseReturns.post('/', async (c) => {
 
   /* PR-DRAFT-removal — PR is created POSTED, inventory OUT written inline. */
   const grnId = (body.grnId as string | undefined) ?? null;
-  const { data: header, error: hErr } = await sb.from('purchase_returns').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
+    () => nextNum(sb),
+    (returnNumber) => sb.from('purchase_returns').insert({
     return_number: returnNumber,
     purchase_order_id: (body.purchaseOrderId as string | undefined) ?? null,
     grn_id: grnId,
@@ -497,7 +498,8 @@ purchaseReturns.post('/', async (c) => {
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     created_by: user.id,
-  }).select(HEADER).single();
+  }).select(HEADER).single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 
@@ -574,14 +576,20 @@ purchaseReturns.post('/from-grns', async (c) => {
   // Generate PR number.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existingPrtNos } = await sb.from('purchase_returns').select('return_number').like('return_number', `PRT-${yymm}-%`);
-  const returnNumber = nextMonthlyDocNo(`PRT-${yymm}`, ((existingPrtNos ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+  // Minted inside insertWithDocNoRetry below so a concurrent-create collision
+  // (23505 on return_number) re-derives the next free number instead of 500ing.
+  const nextPrtNumber = async (): Promise<string> => {
+    const { data: existingPrtNos } = await sb.from('purchase_returns').select('return_number').like('return_number', `PRT-${yymm}-%`);
+    return nextMonthlyDocNo(`PRT-${yymm}`, ((existingPrtNos ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+  };
 
   const grnNumbersJoined = grnList.map((g) => g.grn_number).join(', ');
   const totalRefund = rejectedItems.reduce((s, it) => s + (it._qty * it.unit_price_centi), 0);
 
   const primaryGrnId = grnList[0]!.id;
-  const { data: header, error: hErr } = await sb.from('purchase_returns').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
+    nextPrtNumber,
+    (returnNumber) => sb.from('purchase_returns').insert({
     return_number: returnNumber,
     purchase_order_id: grnList[0]!.purchase_order_id,
     grn_id: primaryGrnId,                              // primary GRN ref
@@ -594,7 +602,8 @@ purchaseReturns.post('/from-grns', async (c) => {
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     created_by: user.id,
-  }).select('id, return_number').single();
+  }).select('id, return_number').single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 
@@ -665,10 +674,11 @@ purchaseReturns.post('/from-grn', async (c) => {
     .filter((it) => it._remaining > 0);
   if (lines.length === 0) return c.json({ error: 'nothing_to_return', message: 'GRN is fully returned' }, 400);
 
-  const returnNumber = await nextNum(sb);
   const totalRefund = lines.reduce((s, it) => s + (it._remaining * it.unit_price_centi), 0);
 
-  const { data: header, error: hErr } = await sb.from('purchase_returns').insert({
+  const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
+    () => nextNum(sb),
+    (returnNumber) => sb.from('purchase_returns').insert({
     return_number: returnNumber,
     purchase_order_id: g.purchase_order_id,
     grn_id: g.id,
@@ -680,7 +690,8 @@ purchaseReturns.post('/from-grn', async (c) => {
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     created_by: user.id,
-  }).select('id, return_number').single();
+  }).select('id, return_number').single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 

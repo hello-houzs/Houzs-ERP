@@ -24,7 +24,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements } from '../lib/inventory-movements';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const stockTransfers = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -296,10 +296,7 @@ stockTransfers.post('/', async (c) => {
   const items = (body.items as Array<Record<string, unknown>> | undefined) ?? [];
   if (items.length === 0) return c.json({ error: 'items_required' }, 400);
 
-  const transferNo = await nextTransferNo(sb);
-
   const headerInsert: Record<string, unknown> = {
-    transfer_no:        transferNo,
     status:             'POSTED',
     posted_at:          new Date().toISOString(),
     from_warehouse_id:  fromWarehouseId,
@@ -309,8 +306,11 @@ stockTransfers.post('/', async (c) => {
   };
   if (body.transferDate) headerInsert.transfer_date = body.transferDate;
 
-  const { data: headerData, error: hErr } = await sb
-    .from('stock_transfers').insert(headerInsert).select(HEADER).single();
+  const { data: headerData, error: hErr } = await insertWithDocNoRetry<{ id: string; transfer_no: string; from_warehouse_id: string; to_warehouse_id: string }>(
+    () => nextTransferNo(sb),
+    (transferNo) => sb
+      .from('stock_transfers').insert({ transfer_no: transferNo, ...headerInsert }).select(HEADER).single(),
+  );
   if (hErr) {
     if (hErr.code === '42501') return c.json({ error: 'forbidden', reason: hErr.message }, 403);
     return c.json({ error: 'insert_failed', reason: hErr.message }, 500);

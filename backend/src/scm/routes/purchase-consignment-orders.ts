@@ -43,7 +43,7 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { supabaseAuth } from '../middleware/auth';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import type { Env, Variables } from '../env';
 
 export const purchaseConsignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -280,11 +280,15 @@ purchaseConsignmentOrders.post('/', async (c) => {
     return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   })();
 
-  const { data: existingPc } = await supabase
-    .from('purchase_consignment_orders')
-    .select('pc_number')
-    .like('pc_number', `PCO-${yymm}-%`);
-  const pcNumber = nextMonthlyDocNo(`PCO-${yymm}`, ((existingPc ?? []) as Array<{ pc_number: string }>).map((r) => r.pc_number));
+  // Minted inside insertWithDocNoRetry below so a concurrent-create collision
+  // (23505 on pc_number) re-derives the next free number instead of 500ing.
+  const nextPcNumber = async (): Promise<string> => {
+    const { data: existingPc } = await supabase
+      .from('purchase_consignment_orders')
+      .select('pc_number')
+      .like('pc_number', `PCO-${yymm}-%`);
+    return nextMonthlyDocNo(`PCO-${yymm}`, ((existingPc ?? []) as Array<{ pc_number: string }>).map((r) => r.pc_number));
+  };
 
   // Compute totals.
   let subtotal = 0;
@@ -322,7 +326,6 @@ purchaseConsignmentOrders.post('/', async (c) => {
 
   // PC Order is created SUBMITTED directly (no DRAFT — migration 0154 default).
   const headerInsert: Record<string, unknown> = {
-    pc_number: pcNumber,
     supplier_id: supplierId,
     status: 'SUBMITTED',
     submitted_at: new Date().toISOString(),
@@ -340,11 +343,14 @@ purchaseConsignmentOrders.post('/', async (c) => {
   };
   if (body.poDate) headerInsert.po_date = body.poDate;
 
-  const { data: headerData, error: hErr } = await supabase
-    .from('purchase_consignment_orders')
-    .insert(headerInsert)
-    .select(HEADER_COLS)
-    .single();
+  const { data: headerData, error: hErr } = await insertWithDocNoRetry<{ id: string; pc_number: string }>(
+    nextPcNumber,
+    (pcNumber) => supabase
+      .from('purchase_consignment_orders')
+      .insert({ pc_number: pcNumber, ...headerInsert })
+      .select(HEADER_COLS)
+      .single(),
+  );
 
   if (hErr) {
     if (hErr.code === '42501') return c.json({ error: 'forbidden', reason: hErr.message }, 403);
