@@ -3153,6 +3153,44 @@ function DetailContent({
               options={resolutionOptions.length ? resolutionOptions : [...RESOLUTION_OPTIONS]}
               onSave={(v) => patch({ resolution_method: v })}
             />
+            {/* Refresh — route tag chip + consequence line right under
+                the resolution-method selector. Mirrors the design's
+                `_resSelect()` output so ops sees whether picking this
+                method routes the case to the supplier flow or keeps
+                it internal, plus a one-liner spelling out what that
+                means downstream. */}
+            {(() => {
+              const route = resolutionRoute(c.resolution_method);
+              const chipCls =
+                route === "supplier"
+                  ? "bg-accent-soft/60 text-accent"
+                  : route === "internal"
+                  ? "bg-synced/15 text-synced"
+                  : "bg-bg text-ink-muted";
+              const chipLabel =
+                route === "supplier" ? "Supplier" : route === "internal" ? "Internal" : "Route TBD";
+              const consequence =
+                route === "supplier"
+                  ? "Supplier flow: assign a supplier · adds Supplier Pickup + Item Ready"
+                  : route === "internal"
+                  ? "Internal handling: own team, no supplier needed"
+                  : "Select a method — it determines the supplier vs internal path";
+              return (
+                <div className="-mt-1 flex flex-wrap items-center gap-2 rounded-md border border-border-subtle bg-bg/40 px-3 py-2">
+                  <span
+                    className={cn(
+                      "rounded px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-wider",
+                      chipCls,
+                    )}
+                  >
+                    {chipLabel}
+                  </span>
+                  <span className="text-[11.5px] leading-snug text-ink-secondary">
+                    {consequence}
+                  </span>
+                </div>
+              );
+            })()}
             {/* Creditor (AutoCount) — derived from item_code via
                 StockItem.MainSupplier. Read-only; re-resolved when
                 item_code changes. Deep-links into the creditors tab
@@ -4632,14 +4670,106 @@ function InspectionCard({
   // Always visible so ops can pre-fill / cross-check even before the
   // item reaches the post-supplier-return checkpoint. Matches the
   // VerificationCard (QC Issue Inspection) which also has no gate.
+  const [qcOpen, setQcOpen] = useState(false);
+  // Refresh — QC Result dropdown carries a tone chip per option so
+  // ops sees the downstream route at a glance. DB values (pass /
+  // fail / na) stay unchanged; only the on-screen label + chip are
+  // remapped to match the design's language.
+  const QC_TAGS: {
+    value: "pass" | "fail" | "na";
+    slug: string;
+    label: string;
+    tone: "ok" | "warn" | "muted";
+  }[] = [
+    { value: "pass", slug: "approved", label: "Approved — to Delivery", tone: "ok" },
+    { value: "fail", slug: "need_send_back_supplier", label: "Send back to supplier", tone: "warn" },
+    { value: "na", slug: "others", label: "Others", tone: "muted" },
+  ];
+  const qcSel = QC_TAGS.find((o) => o.value === c.inspection_result);
+  const toneChip = (t: "ok" | "warn" | "muted") =>
+    t === "ok"
+      ? "bg-synced/15 text-synced"
+      : t === "warn"
+      ? "bg-accent-soft/60 text-accent"
+      : "bg-bg text-ink-muted";
   const inner = (
     <>
-      <InlineEdit
-        label="QC Result"
-        value={c.inspection_result}
-        options={[...INSPECTION_OPTIONS]}
-        onSave={(v) => patch({ inspection_result: v })}
-      />
+      <div>
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+          QC Result
+        </div>
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setQcOpen((v) => !v)}
+            className={cn(
+              "flex w-full items-center justify-between gap-2 rounded-md border bg-surface px-3 py-2.5 text-left text-[13px] outline-none transition-colors",
+              qcOpen ? "border-primary" : "border-border",
+            )}
+          >
+            {qcSel ? (
+              <span className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[11.5px] font-semibold text-primary">
+                  {qcSel.slug}
+                </span>
+                <span className="text-ink-secondary">· {qcSel.label}</span>
+                <span
+                  className={cn(
+                    "rounded px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-wider",
+                    toneChip(qcSel.tone),
+                  )}
+                >
+                  {qcSel.tone === "ok" ? "OK" : qcSel.tone === "warn" ? "Warn" : "Muted"}
+                </span>
+              </span>
+            ) : (
+              <span className="text-ink-muted">— select —</span>
+            )}
+            <span
+              className={cn(
+                "shrink-0 text-[12px] text-ink-muted transition-transform",
+                qcOpen && "rotate-180",
+              )}
+            >
+              ▾
+            </span>
+          </button>
+          {qcOpen && (
+            <div className="absolute z-30 mt-1 w-full overflow-hidden rounded-md border border-border bg-surface shadow-slab">
+              {QC_TAGS.map((o) => {
+                const active = c.inspection_result === o.value;
+                return (
+                  <button
+                    key={o.value}
+                    type="button"
+                    onClick={() => {
+                      patch({ inspection_result: o.value });
+                      setQcOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 border-b border-border-subtle px-3 py-2.5 text-left last:border-b-0 hover:bg-accent-soft/20",
+                      active && "bg-accent-soft/40",
+                    )}
+                  >
+                    <span className="font-mono text-[11.5px] font-semibold text-primary">
+                      {o.slug}
+                    </span>
+                    <span className="flex-1 text-[12.5px] text-ink-secondary">· {o.label}</span>
+                    <span
+                      className={cn(
+                        "rounded px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-wider",
+                        toneChip(o.tone),
+                      )}
+                    >
+                      {o.tone === "ok" ? "OK" : o.tone === "warn" ? "Warn" : "Muted"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
       <InlineEdit
         label="QC Date after supplier return"
         type="date"
