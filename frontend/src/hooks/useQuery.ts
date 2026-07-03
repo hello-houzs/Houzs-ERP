@@ -1,4 +1,4 @@
-import { useQuery as useTanstackQuery } from "@tanstack/react-query";
+import { useQuery as useTanstackQuery, keepPreviousData } from "@tanstack/react-query";
 
 export interface QueryState<T> {
   data: T | null;
@@ -42,7 +42,7 @@ export function useQuery<T>(
     ...(options.staleTime !== undefined && { staleTime: options.staleTime }),
     // keepPreviousData: hold the last successful data while the next key's
     // fetch is in flight, so a page/tab switch never blanks the list.
-    ...(options.keepPreviousData && { placeholderData: (prev: T | undefined) => prev }),
+    ...(options.keepPreviousData && { placeholderData: keepPreviousData }),
   });
   return {
     data: q.data ?? null,
