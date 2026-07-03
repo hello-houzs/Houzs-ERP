@@ -130,6 +130,23 @@ the current-state reference.
 
 ---
 
+## Full rebuild to Build Spec + prototype (2026-07-03, sw v107–v109)
+
+The mobile app had been built largely from the **simplified `react-tsx/` port**, which diverged from the owner's authoritative sources — the **Build Spec** (`Houzs ERP Mobile - Build Spec.html`) and the **prototype** (`houzs-mobile.html`). Owner caught the drift ("为什么你没看完我的file?"). Every screen was re-reconciled against Build Spec + prototype + react-tsx **together** (prototype + Spec authoritative; react-tsx = React-structure reference). Governing rule: **"全部跟着后端"** — where the design shows a field/axis the backend lacks, follow the real backend (omit/em-dash), never fabricate option lists. PRs #222/#223/#224.
+
+58. **Shell** — center menu disc icon is the prototype's **4-square grid/apps icon** (was a hamburger copied from the simplified mock).
+59. **SO list** — added the **summary bar** (`N orders · RM rev · RM outstanding`), **period filter chips** (All / This / Last / Next month / This year), warehouse label + Stock/Planning chips (shown only when the row carries the status), `created` date, and a floating **+ FAB** (was a header +).
+60. **SO detail (Job Card)** — confirmed it is the New-SO form rendered **locked** (`.fld-ro`) with a KPI money strip + status action bar; added emergency-contact row, `· uom`, and a `description2` variant-spec fallback.
+61. **New/Edit SO** — rebuilt into the Spec's **5-step wizard** (Customer · Order info · Items · Payment · Review) with a progress bar + step-gated validation. Line **variant dropdowns rewired from hardcoded arrays to the REAL desktop data**: fabric ← `fabric-colours`/`fabric-library` (700+ colours), sofa seat/leg + bedframe **divan/leg/gap** ← `maintenance-config/resolved` (with real `priceSen`), per-SKU filtering ← `product-models/by-code`, required-axis gate ← the server's `missingVariantAxes`, computed **Total height = divan+leg+gap**. Method-aware payment step. **Follow-backend:** bedframe size/headboard/storage + mattress firmness/height are NOT SO-line axes in the real system, so they are not shown (prototype-only mock fields).
+62. **Generic doc engine** (`MobileModuleList/Detail/Form`) — list card + locked-form detail + status action bar per module; added stock-transfers/stock-takes/regions/accounting/consignment-notes modules with real columns.
+63. **Delivery Planning / POD** — prototype clock pill, address+postcode, "View & deliver", move-in/reference rows; balance-only (never total) preserved for driver/helper.
+64. **Service / Calendar / Mail / Announcements / Inbox / Scan / Convert** — reconciled to prototype markup + numeric DD/MM/YYYY; fixed a phantom `product_category` → real `service_category`; Convert wizard is honestly 2-step (backend has no driver-assign step).
+65. **PMS** — **follow-backend stage vocabulary**: filter chips + badge use the real `projects.stage` enum (**Draft / Setup / Live / Dismantle / Completed**), not the design's Planning/Live/Settled; numbered-dot pipeline; dark header.
+
+**Verified live in-browser (v109):** SO Edit → Items step shows real Fabric (706)/Divan/Leg/Gap dropdowns from maintenance-config; PMS chips show the real backend stages.
+
+---
+
 ## Still open (flagged, awaiting direction)
 - **My Team depth** — single-level downline now; multi-level (reports-of-reports) optional.
 
