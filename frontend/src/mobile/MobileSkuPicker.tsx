@@ -47,6 +47,7 @@ export type PickedSku = {
 export function MobileSkuPicker({
   initialCat,
   onPick,
+  onPickMany,
   onClose,
 }: {
   /* The line's current category seeds the sheet's default chip so a bedframe
@@ -54,12 +55,20 @@ export function MobileSkuPicker({
      "All" or any other chip, so it never BLOCKS selecting another category. */
   initialCat?: SkuPickerCat;
   onPick: (sku: PickedSku) => void;
+  /* Optional multi-select. When provided, rows become toggleable and a footer
+     "Add N products" button hands back every selected SKU at once. When absent,
+     the sheet keeps the single-tap-to-add behaviour (back-compat). */
+  onPickMany?: (skus: PickedSku[]) => void;
   onClose: () => void;
 }) {
+  const multi = typeof onPickMany === "function";
   const seedCat: MfgCategory | "" =
     initialCat === "sofa" ? "SOFA" : initialCat === "bedframe" ? "BEDFRAME" : "";
   const [cat, setCat] = useState<MfgCategory | "">(seedCat);
   const [search, setSearch] = useState("");
+  /* Multi-select order-preserving pick list (keyed by catalog id → the picked
+     SKU) so "Add N products" hands back selections in the order tapped. */
+  const [picked, setPicked] = useState<Array<{ id: string; sku: PickedSku }>>([]);
 
   // The catalog read. Category "" omits the filter (shows all); search is a
   // server-side code/name match (GET /mfg-products?category=&search=).
@@ -120,27 +129,54 @@ export function MobileSkuPicker({
           ) : (
             rows.map((p) => {
               const priceSen = p.sell_price_sen ?? p.base_price_sen ?? 0;
+              const skuOf = (): PickedSku => ({
+                itemCode: p.code,
+                itemGroup: p.category.toLowerCase(),
+                name: p.name,
+                unitPriceCenti: p.sell_price_sen ?? 0,
+                category: p.category,
+              });
+              const isOn = multi && picked.some((x) => x.id === p.id);
               return (
                 <button
                   key={p.id}
                   type="button"
                   onClick={() => {
-                    onPick({
-                      itemCode: p.code,
-                      itemGroup: p.category.toLowerCase(),
-                      name: p.name,
-                      unitPriceCenti: p.sell_price_sen ?? 0,
-                      category: p.category,
-                    });
+                    if (multi) {
+                      // Toggle this row in/out of the running selection.
+                      setPicked((prev) =>
+                        prev.some((x) => x.id === p.id)
+                          ? prev.filter((x) => x.id !== p.id)
+                          : [...prev, { id: p.id, sku: skuOf() }],
+                      );
+                      return;
+                    }
+                    onPick(skuOf());
                     onClose();
                   }}
                   style={{
                     textAlign: "left", width: "100%", boxSizing: "border-box",
-                    border: "1px solid rgba(34,31,32,.12)", borderRadius: 11, background: "#fff",
+                    border: `1px solid ${isOn ? "#0c3f39" : "rgba(34,31,32,.12)"}`, borderRadius: 11,
+                    background: isOn ? "#f0f6f2" : "#fff",
                     padding: "10px 12px", cursor: "pointer", fontFamily: "inherit",
                     display: "flex", alignItems: "center", gap: 10,
                   }}
                 >
+                  {multi && (
+                    <span
+                      aria-hidden
+                      style={{
+                        flex: "none", width: 18, height: 18, borderRadius: 5,
+                        border: `1.6px solid ${isOn ? "#0c3f39" : "rgba(34,31,32,.28)"}`,
+                        background: isOn ? "#0c3f39" : "#fff",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                      }}
+                    >
+                      {isOn && (
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 6" /></svg>
+                      )}
+                    </span>
+                  )}
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#11140f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                     <span style={{ display: "block", fontSize: 10.5, color: "#767b6e", marginTop: 2 }}>
@@ -155,6 +191,27 @@ export function MobileSkuPicker({
             })
           )}
         </div>
+
+        {multi && (
+          <div className="sheet-foot">
+            <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: picked.length ? "#11140f" : "#9aa093" }}>
+              {picked.length} selected
+            </span>
+            <button
+              type="button"
+              className="btn"
+              disabled={picked.length === 0}
+              onClick={() => {
+                if (picked.length === 0) return;
+                onPickMany?.(picked.map((x) => x.sku));
+                onClose();
+              }}
+              style={{ flex: "none", opacity: picked.length === 0 ? 0.5 : 1, padding: "10px 16px" }}
+            >
+              {picked.length <= 1 ? "Add product" : `Add ${picked.length} products`}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
