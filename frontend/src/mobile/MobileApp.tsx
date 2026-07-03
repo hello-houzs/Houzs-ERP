@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { NotifyProvider, useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -148,10 +149,31 @@ export function MobileApp() {
 
 function MobileAppInner() {
   const { user, can, pageAccess, logout } = useAuth();
+  const notify = useNotify();
+  const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>("orders");
   const [menuOpen, setMenuOpen] = useState(false);
   const [screen, setScreen] = useState<Screen>({ t: "tab" });
   const back = () => setScreen({ t: "tab" });
+
+  /* Scan → background DRAFT: MobileScan has already FIRED the create fetch(es)
+     (they survive this navigation). We just land the operator back on the Orders
+     list, nudge its query to refetch so the fresh draft surfaces without a manual
+     reload, and confirm with a plain-language toast. */
+  const onScanDrafted = (count: number) => {
+    setTab("orders");
+    setScreen({ t: "tab" });
+    void qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
+    // The create is in flight; give it a beat, then refetch again so a slow POST
+    // still surfaces its draft without the operator reloading.
+    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list"] }); }, 2500);
+    void notify({
+      title: count > 1 ? `${count} drafts saved to Orders` : "Draft saved to Orders",
+      body: count > 1
+        ? "We're saving your scanned orders as drafts. Open each one from Orders to review it."
+        : "We're saving your scanned order as a draft. Open it from Orders to review it.",
+    });
+  };
 
   const visible = (t: NavTab): boolean => {
     if (t.perm && !can(t.perm)) return false;
@@ -204,7 +226,7 @@ function MobileAppInner() {
   // Overlay screens (pushed above the tab bar).
   if (screen.t === "so-detail") return <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} />;
   if (screen.t === "new-so") return <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
-  if (screen.t === "scan") return <MobileScan onBack={back} onExtracted={(prefill) => setScreen({ t: "new-so", mode: "new", scanPrefill: prefill })} />;
+  if (screen.t === "scan") return <MobileScan onBack={back} onDrafted={onScanDrafted} />;
   if (screen.t === "module") {
     const k = screen.key;
     const convertTarget = MODULE_TO_CONVERT[k];
