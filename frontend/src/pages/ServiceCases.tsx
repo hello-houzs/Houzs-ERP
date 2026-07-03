@@ -2710,17 +2710,16 @@ function DetailContent({
       ]}
       eyebrow="Service Case"
       title={c?.assr_no || "Loading…"}
+      titleClassName="font-serif text-[26px] font-semibold leading-none tracking-tight text-ink sm:text-[28px] lg:text-[32px]"
       description={
-        c
-          ? [
-              c.customer_name || "—",
-              c.ref_no ? `Ref ${c.ref_no}` : null,
-              `Stage: ${caseStageLabel(c.stage)}`,
-              c.assigned_to_name ? `Assigned ${c.assigned_to_name}` : null,
-            ]
-              .filter(Boolean)
-              .join("  ·  ")
-          : undefined
+        c ? (
+          <span className="text-[13.5px] text-ink-secondary">
+            Customer <b className="font-semibold text-ink">{c.customer_name || "—"}</b>
+            {" · "}Stage <b className="font-semibold text-accent">{caseStageLabel(c.stage)}</b>
+            {c.doc_no ? <> {" · "}<span className="font-mono text-[12.5px] text-ink-secondary">{c.doc_no}</span></> : null}
+            {c.ref_no ? <> {" · "}Ref <span className="font-mono text-[12.5px]">{c.ref_no}</span></> : null}
+          </span>
+        ) : undefined
       }
       backTo="/assr"
       loading={detail.loading && !c}
@@ -2825,12 +2824,10 @@ function DetailContent({
           {/* PR 3 redesign hook — accordion open state. Defaults to
               the case's current stage so the row that ops needs is
               already open when the page lands. */}
-          {/* PR 1 redesign — Workflow card + Status summary bar. Replaces
-              the old "Workflow Progress" strip and the pill row that
-              rendered stage/priority/SLA/resolution as discrete chips.
-              Print + Portal Link menus moved into DetailLayout actions
-              (above). */}
-          <div className="flex flex-col gap-4 border-b border-border bg-bg/40 px-5 py-4">
+          {/* Workflow card + Status summary bar sit at the same left/right
+              edges as the DetailGrid columns below (no extra padding wrapper
+              — matches the design's aligned rounded-card stack). */}
+          <div className="mb-3 space-y-3">
             <WorkflowCard
               currentStage={c.stage}
               stages={activeStages}
@@ -2849,10 +2846,10 @@ function DetailContent({
               SLA calculation. service_category was removed when the
               intake form was simplified — the issue_category taxonomy
               now drives both the dashboard breakdown and triage. */}
-          {/* PR 5 refresh — Overview strip at the top of the left column
-              matches the design: Issue · Product · Customer side-by-
-              side on lg+ (3 cols), stacks on narrower viewports. */}
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+          {/* Design overview strip — LEFT rail top: Issue + Product
+              side-by-side (2 cols on md+). Customer sits in the RIGHT
+              rail per design (1.62fr : 1fr split), not up here. */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <PanelSection title="Issue" icon={<AlertCircle size={13} />}>
             <InlineEdit
               label="Complaint"
@@ -3122,29 +3119,6 @@ function DetailContent({
             </div>
           </PanelSection>
 
-          {/* PR 5 refresh — Customer overview card (moved from the
-              right rail). Compact key-value list only; the address
-              wraps to a single line inside the card. */}
-          <PanelSection title="Customer" icon={<User size={13} />}>
-            <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
-            <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
-            <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
-            <FieldRow label="Agent">{c.sales_agent || "—"}</FieldRow>
-            <FieldRow label="Location">{c.location || "—"}</FieldRow>
-            <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
-            {(c.addr1 || c.addr2 || c.addr3 || c.addr4) && (
-              <FieldRow label="Address">
-                {[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}
-              </FieldRow>
-            )}
-            <InlineEdit
-              label="Email"
-              value={c.customer_email}
-              onSave={(v) => patch({ customer_email: v })}
-              placeholder="customer@example.com"
-            />
-            {c.ref_no && <FieldRow label="Ref No" mono>{c.ref_no}</FieldRow>}
-          </PanelSection>
           </div>
 
           {/* PR 3 redesign — Stage Accordion. Wraps Verification /
@@ -3655,10 +3629,27 @@ function DetailContent({
             </DetailMain>
 
             <DetailAside>
-          {/* PR 5 refresh — Customer moved to the 3-col overview row
-              at the top of the left column (alongside Issue + Product),
-              matching the design's overview strip. Right rail is now
-              Assigned to · SLA · Timeline only. */}
+          {/* Right rail per design: Customer · Assigned to · SLA · Timeline. */}
+          <PanelSection title="Customer" icon={<User size={13} />}>
+            <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
+            <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
+            <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
+            <FieldRow label="Agent">{c.sales_agent || "—"}</FieldRow>
+            <FieldRow label="Location">{c.location || "—"}</FieldRow>
+            <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
+            {(c.addr1 || c.addr2 || c.addr3 || c.addr4) && (
+              <FieldRow label="Address">
+                {[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}
+              </FieldRow>
+            )}
+            <InlineEdit
+              label="Email"
+              value={c.customer_email}
+              onSave={(v) => patch({ customer_email: v })}
+              placeholder="customer@example.com"
+            />
+            {c.ref_no && <FieldRow label="Ref No" mono>{c.ref_no}</FieldRow>}
+          </PanelSection>
 
           {/* Assigned To — Design PR 2. Unassigned uses a dashed
               amber placeholder so it reads as "attention needed" from
