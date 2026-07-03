@@ -3067,7 +3067,9 @@ function ProjectsCalendarView() {
     tasksByDate.set(key, arr);
   }
 
-  const monthLabel = anchor.toLocaleDateString("en-GB", { month: "2-digit", year: "numeric" });
+  // Calendar header shows the full month name (owner request 2026-07):
+  // "November 2025", not "11/2025". Row/cell dates stay numeric elsewhere.
+  const monthLabel = anchor.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   // Period label for the calendar header. Month → "April 2026"; week
   // → "06 Apr – 12 Apr 2026" so the user knows the exact window.
   const periodLabel =
