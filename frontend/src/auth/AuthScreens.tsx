@@ -213,7 +213,7 @@ export function LoginScreen() {
       // A 401 here means bad credentials — show that specific wording rather
       // than the generic "session expired" sentence the humanized message
       // carries. Match on the status flag (the message no longer embeds "401").
-      setErr(e?.status === 401 ? "Invalid email or password" : e?.message || "Login failed");
+      setErr(e?.status === 401 ? "Password incorrect." : e?.message || "Login failed");
     } finally {
       setBusy(false);
     }
