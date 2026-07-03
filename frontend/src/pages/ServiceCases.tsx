@@ -1366,7 +1366,7 @@ function CasesCalendarView({
     cells.push({ date: d, iso: isoLocal(d), inMonth: d.getMonth() === anchor.getMonth() });
   }
   const today = isoLocal(new Date());
-  const monthLabel = anchor.toLocaleDateString("en-MY", { month: "long", year: "numeric" });
+  const monthLabel = anchor.toLocaleDateString("en-GB", { month: "2-digit", year: "numeric" });
 
   // Wheel over the grid steps months (throttled, non-passive).
   const gridRef = useRef<HTMLDivElement>(null);
