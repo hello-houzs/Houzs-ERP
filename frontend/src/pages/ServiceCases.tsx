@@ -109,13 +109,13 @@ const RESOLUTION_OPTIONS = [
 
 const PRIORITY_OPTIONS = ["low", "normal", "high", "urgent"] as const;
 
-// Priority pill (list view) — compact Chinese label + tone. English
-// slug stays in the tooltip and in getValue (filter/CSV).
-const PRIORITY_PILL: Record<string, { zh: string; cls: string }> = {
-  low: { zh: "低", cls: "bg-ink-muted/10 text-ink-secondary" },
-  normal: { zh: "中", cls: "bg-accent-soft/60 text-accent" },
-  high: { zh: "高", cls: "bg-warning-bg text-warning-text" },
-  urgent: { zh: "急", cls: "bg-err/10 text-err" },
+// Priority pill (list view) — compact label + tone. The raw slug stays
+// in the tooltip and in getValue (filter/CSV).
+const PRIORITY_PILL: Record<string, { label: string; cls: string }> = {
+  low: { label: "Low", cls: "bg-ink-muted/10 text-ink-secondary" },
+  normal: { label: "Med", cls: "bg-accent-soft/60 text-accent" },
+  high: { label: "High", cls: "bg-warning-bg text-warning-text" },
+  urgent: { label: "Urgent", cls: "bg-err/10 text-err" },
 };
 
 // "24 Jun 2026" — medium date for the list's Date column (the design
@@ -272,7 +272,7 @@ const VIEW_HEADER: Record<
   },
   cases: {
     title: "Service Cases",
-    description: "After-sales service request workflow · 售后服务工单",
+    description: "After-sales service request workflow.",
   },
   metrics: {
     title: "Quality Metrics",
@@ -561,7 +561,7 @@ function CasesView({
             </Badge>
           )}
           {/* Dwell chip rides inside the Stage cell (design refresh):
-              正常 <7d green · 缓慢 7–29d amber · 滞留 ≥30d red. Priority
+              On track <7d green · Slow 7–29d amber · Stuck ≥30d red. Priority
               moved to its own pill column. */}
           {r.stage !== "completed" && r.days_in_stage != null && (
             <span
@@ -575,7 +575,7 @@ function CasesView({
               )}
               title={`In ${caseStageLabel(r.stage)} for ${r.days_in_stage} day(s)`}
             >
-              {r.days_in_stage < 7 ? "正常" : r.days_in_stage < 30 ? "缓慢" : "滞留"}{" "}
+              {r.days_in_stage < 7 ? "On track" : r.days_in_stage < 30 ? "Slow" : "Stuck"}{" "}
               <span className="font-mono tabular-nums">{r.days_in_stage}d</span>
             </span>
           )}
@@ -589,7 +589,7 @@ function CasesView({
     {
       // Key kept as "priority_dwell" so saved column layouts (dt:* in
       // localStorage) survive the rename. Dwell moved into the Stage
-      // cell; this column is now a plain priority pill (低/中/高/急).
+      // cell; this column is now a plain priority pill (Low/Med/High/Urgent).
       key: "priority_dwell",
       label: "Priority",
       align: "left",
@@ -604,7 +604,7 @@ function CasesView({
               p.cls,
             )}
           >
-            {p.zh}
+            {p.label}
           </span>
         );
       },
@@ -1048,8 +1048,8 @@ function StageStatStrip({
           the list/board/calendar, click again (or All) to clear. */}
       <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
         <div className="mb-3 flex items-center justify-between">
-          <div className="text-[13px] font-bold text-ink">阶段流程 · Stage funnel</div>
-          <span className="font-mono text-[10px] text-ink-muted">点击筛选 · click to filter</span>
+          <div className="text-[13px] font-bold text-ink">Stage funnel</div>
+          <span className="font-mono text-[10px] text-ink-muted">click to filter</span>
         </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           {[
